@@ -677,10 +677,10 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 		Summary:              "does x",
 		Input:                &flowstatev1.Task_Log_Inputs{},
 		Output:               &flowstatev1.Task_Log_Outputs{},
-		DeferredInputs:       []string{"expr"},
-		ExpressionInputs:     []string{"expr"},
-		SecretInputs:         []string{"token"},
-		RequiredSecretInputs: []string{"token"},
+		DeferredInputs:       []string{"message"},
+		ExpressionInputs:     []string{"message"},
+		SecretInputs:         []string{"message"},
+		RequiredSecretInputs: []string{"message"},
 		NeedsScope:           true,
 		ShapesOutputs:        true,
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
@@ -699,22 +699,22 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	if !manifest.GetNeedsScope() {
 		t.Error("needs_scope was not carried, so the task would not receive its scope")
 	}
-	if got := manifest.GetDeferredInputs(); len(got) != 1 || got[0] != "expr" {
-		t.Errorf("deferred_inputs = %v, want [expr]", got)
+	if got := manifest.GetDeferredInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("deferred_inputs = %v, want [message]", got)
 	}
 
 	// The two travel together here and are different claims: one says the plugin
 	// evaluates this input, the other says an author has to write it as `${...}`.
 	// A task can want either without the other, so carrying one and dropping the
 	// other would be invisible until a workload failed.
-	if got := manifest.GetExpressionInputs(); len(got) != 1 || got[0] != "expr" {
-		t.Errorf("expression_inputs = %v, want [expr]", got)
+	if got := manifest.GetExpressionInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("expression_inputs = %v, want [message]", got)
 	}
-	if got := manifest.GetSecretInputs(); len(got) != 1 || got[0] != "token" {
-		t.Errorf("secret_inputs = %v, want [token]", got)
+	if got := manifest.GetSecretInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("secret_inputs = %v, want [message]", got)
 	}
-	if got := manifest.GetRequiredSecretInputs(); len(got) != 1 || got[0] != "token" {
-		t.Errorf("required_secret_inputs = %v, want [token]", got)
+	if got := manifest.GetRequiredSecretInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("required_secret_inputs = %v, want [message]", got)
 	}
 
 	// The declaration three host surfaces read: the compiler keeps a shaping
@@ -732,15 +732,64 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 
 	// Mutating the task's slice afterwards must not change the manifest.
 	task.DeferredInputs[0] = "changed"
-	if manifest.GetDeferredInputs()[0] != "expr" {
+	if manifest.GetDeferredInputs()[0] != "message" {
 		t.Error("the manifest aliases the task's slice")
 	}
 	task.ExpressionInputs[0] = "changed"
-	if manifest.GetExpressionInputs()[0] != "expr" {
+	if manifest.GetExpressionInputs()[0] != "message" {
 		t.Error("the manifest aliases the task's expression-inputs slice")
 	}
 
 	if !proto.Equal(manifest, manifest) {
 		t.Error("the manifest is not a well-formed message")
+	}
+}
+
+// TestManifestRefusesTypoInInputNameList checks the fix for #1477: every
+// input-claim list is cross-checked against the input descriptor's fields,
+// so a typo in (e.g.) required_secret_inputs fails closed at build time
+// instead of silently letting a literal credential into durable history.
+func TestManifestRefusesTypoInInputNameList(t *testing.T) {
+	t.Parallel()
+
+	base := func() Task {
+		return Task{
+			Name:    "check",
+			Summary: "tests name validation",
+			Input:   &flowstatev1.Task_Log_Inputs{},
+			Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+				return nil, nil
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		setup func(*Task)
+	}{
+		{"deferred_inputs", func(t *Task) { t.DeferredInputs = []string{"tokn"} }},
+		{"expression_inputs", func(t *Task) { t.ExpressionInputs = []string{"tokn"} }},
+		{"secret_inputs", func(t *Task) { t.SecretInputs = []string{"tokn"} }},
+		{"required_secret_inputs", func(t *Task) {
+			t.SecretInputs = []string{"message"}
+			t.RequiredSecretInputs = []string{"tokn"}
+		}},
+		{"no input message", func(t *Task) {
+			t.Input = nil
+			t.SecretInputs = []string{"token"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			task := base()
+			tc.setup(&task)
+			_, err := task.manifest(nil)
+			if err == nil {
+				t.Fatal("manifest() succeeded with a typo in an input-name list; want an error")
+			}
+			if !strings.Contains(err.Error(), "tokn") && !strings.Contains(err.Error(), "token") {
+				t.Errorf("error does not name the bad input: %v", err)
+			}
+		})
 	}
 }

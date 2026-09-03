@@ -40,13 +40,13 @@ func TestAPluginCanRequireAnInputBeAnExpression(t *testing.T) {
 		Summary:          "checks something",
 		InputMessage:     "flowstate.v1.Task.Log.Inputs",
 		OutputMessage:    "flowstate.v1.Task.Log.Outputs",
-		DeferredInputs:   []string{"expect"},
-		ExpressionInputs: []string{"expect"},
+		DeferredInputs:   []string{"message"},
+		ExpressionInputs: []string{"message"},
 		NeedsScope:       true,
 	}, Config{})
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"expect"}, def.ExpressionInputs,
+	require.Equal(t, []string{"message"}, def.ExpressionInputs,
 		"the manifest declared it and the task definition does not carry it")
 
 	// Registered into the *default* registry, because that is the one
@@ -66,11 +66,11 @@ func TestAPluginCanRequireAnInputBeAnExpression(t *testing.T) {
 	// process per package.
 	require.NoError(t, flowstatev1.DefaultRegistry().Register(def))
 
-	assert.True(t, flowstatev1.MustBeExpression(task, "expect"),
-		"a plugin declared `expect` must be an expression and a registry holding it says otherwise")
+	assert.True(t, flowstatev1.MustBeExpression(task, "message"),
+		"a plugin declared `message` must be an expression and a registry holding it says otherwise")
 
 	// The negative direction, so this is not simply answering true.
-	assert.False(t, flowstatev1.MustBeExpression(task, "message"),
+	assert.False(t, flowstatev1.MustBeExpression(task, "level"),
 		"an input the plugin said nothing about is being required to be an expression")
 }
 

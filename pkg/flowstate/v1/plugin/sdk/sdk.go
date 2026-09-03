@@ -86,6 +86,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -893,6 +894,10 @@ func (t Task) manifest(prose *flowstatev1.DescriptorProse) (*pluginv1.TaskManife
 		return nil, fmt.Errorf("sdk: task %q output: %w", t.Name, err)
 	}
 
+	if err := t.checkInputNames(); err != nil {
+		return nil, err
+	}
+
 	return &pluginv1.TaskManifest{
 		Name:                 t.Name,
 		Summary:              t.Summary,
@@ -907,6 +912,41 @@ func (t Task) manifest(prose *flowstatev1.DescriptorProse) (*pluginv1.TaskManife
 		RequiredSecretInputs: slices.Clone(t.RequiredSecretInputs),
 		ShapesOutputs:        t.ShapesOutputs,
 	}, nil
+}
+
+// checkInputNames verifies that every name in the task's input-claim lists
+// (DeferredInputs, ExpressionInputs, SecretInputs, RequiredSecretInputs)
+// is a field of the input descriptor. A typo here fails open on the control
+// the list implements — most critically, a misspelled RequiredSecretInputs
+// entry lets a literal credential into durable history.
+func (t Task) checkInputNames() error {
+	var fields protoreflect.FieldDescriptors
+	if t.Input != nil {
+		fields = t.Input.ProtoReflect().Descriptor().Fields()
+	}
+
+	check := func(list []string, label string) error {
+		for _, name := range list {
+			if fields == nil || fields.ByName(protoreflect.Name(name)) == nil {
+				if t.Input == nil {
+					return fmt.Errorf("sdk: task %q %s names %q but the task declares no input message", t.Name, label, name)
+				}
+				return fmt.Errorf("sdk: task %q %s names %q which is not a field of its input message", t.Name, label, name)
+			}
+		}
+		return nil
+	}
+
+	if err := check(t.DeferredInputs, "deferred_inputs"); err != nil {
+		return err
+	}
+	if err := check(t.ExpressionInputs, "expression_inputs"); err != nil {
+		return err
+	}
+	if err := check(t.SecretInputs, "secret_inputs"); err != nil {
+		return err
+	}
+	return check(t.RequiredSecretInputs, "required_secret_inputs")
 }
 
 // describeMessage serializes a message's file descriptor and everything it

@@ -53,6 +53,10 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q outputs: %w", truncate(name, 64), err))
 	}
 
+	if err := checkManifestInputNames(inputs, manifest, name, p); err != nil {
+		return flowstatev1.TaskDef{}, err
+	}
+
 	return flowstatev1.TaskDef{
 		Name:           qualified,
 		Summary:        manifest.GetSummary(),
@@ -98,6 +102,34 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// is already covered by the same scan a built-in task's `bearer:` is.
 		Fn: p.taskFunc(manifest),
 	}, nil
+}
+
+// checkManifestInputNames verifies that every name in the manifest's
+// input-claim lists is a field of the reconstructed input descriptor.
+// Defense in depth: the SDK checks at build time; this catches a
+// malicious or buggy plugin at the host boundary.
+func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pluginv1.TaskManifest, name string, p *Plugin) error {
+	check := func(list []string, label string) error {
+		for _, entry := range list {
+			if inputs == nil || inputs.Fields().ByName(protoreflect.Name(entry)) == nil {
+				return pluginError(p.name, p.path, fmt.Errorf(
+					"task %q %s names %q which is not a field of its input message",
+					truncate(name, 64), label, truncate(entry, 64)))
+			}
+		}
+		return nil
+	}
+
+	if err := check(manifest.GetDeferredInputs(), "deferred_inputs"); err != nil {
+		return err
+	}
+	if err := check(manifest.GetExpressionInputs(), "expression_inputs"); err != nil {
+		return err
+	}
+	if err := check(manifest.GetSecretInputs(), "secret_inputs"); err != nil {
+		return err
+	}
+	return check(manifest.GetRequiredSecretInputs(), "required_secret_inputs")
 }
 
 // taskFunc returns the function that executes a task by asking the plugin to.
