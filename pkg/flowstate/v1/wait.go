@@ -367,9 +367,8 @@ func signalSenderValue(sender *SignalSender) *Value {
 // name resolvable in exactly the place that has a clock behind it in *every* case
 // keeps the awkward version from being expressible at all.
 //
-// It is reserved as a step id for the same reason: a step named `now` would be
-// silently shadowed inside a wait expression, and `flowfile` refuses it rather
-// than letting a reference quietly mean something else.
+// Since rooting, `now` is no longer reserved as a step id: the clock is bare
+// and the step is `steps.now`, so the two spellings cannot collide.
 const NowIdentifier = "now"
 
 // evalWaitExpr evaluates a wait's expression with [NowIdentifier] bound.
