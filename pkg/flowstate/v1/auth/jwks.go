@@ -302,7 +302,7 @@ func (ks *keySet) refreshLocked(ctx context.Context, now time.Time) error {
 
 	set, err := fetchJWKS(ctx, ks.client, jwksURL)
 	if err != nil {
-		ks.lastErr = issuerUnavailable(ks.issuer, jwksURL, err)
+		ks.lastErr = issuerUnavailable(ks.issuer, err)
 		return ks.lastErr
 	}
 
@@ -332,8 +332,7 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 
 	jwksURL, err := discoverJWKSURL(ctx, ks.client, ks.issuer)
 	if err != nil {
-		discoveryURL := strings.TrimSuffix(ks.issuer, "/") + discoveryPath
-		return "", issuerUnavailable(ks.issuer, discoveryURL, err)
+		return "", issuerUnavailable(ks.issuer, err)
 	}
 
 	ks.jwksURL = jwksURL
@@ -346,10 +345,10 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 // [*IssuerBlockedError] instead, so that [PublicReason] and `flow auth check`
 // can distinguish "the egress policy refused this" from "the issuer did not
 // answer".
-func issuerUnavailable(issuer, url string, err error) error {
+func issuerUnavailable(issuer string, err error) error {
 	var denied *netpolicy.DenyError
 	if errors.As(err, &denied) {
-		return &IssuerBlockedError{Issuer: issuer, URL: url, Deny: denied}
+		return &IssuerBlockedError{Issuer: issuer, Deny: denied}
 	}
 	return fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, issuer, err)
 }

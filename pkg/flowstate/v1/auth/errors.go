@@ -344,18 +344,21 @@ func (e *ClaimMismatchError) Unwrap() error {
 // discovery document or JSON Web Key Set was refused by the identity egress
 // policy rather than the issuer failing to answer. It wraps
 // [ErrIssuerUnavailable] so existing errors.Is checks still match, but names
-// the URL the policy denied, the rule responsible, and the trust policy's
-// egress: section as the remedy.
+// the denied hop (already redacted by [netpolicy.DenyError]), the rule
+// responsible, and the trust policy's egress: section as the remedy.
 type IssuerBlockedError struct {
 	Issuer string
-	URL    string
 	Deny   *netpolicy.DenyError
 }
 
 func (e *IssuerBlockedError) Error() string {
-	return fmt.Sprintf("%s: issuer %q keys blocked by identity egress policy: %s; "+
+	hop := e.Deny.Hop
+	if hop == "" {
+		hop = e.Deny.Target
+	}
+	return fmt.Sprintf("%v: issuer %q fetch of %s blocked by identity egress policy: %v; "+
 		"configure the trust policy's egress: section to allow this fetch",
-		ErrIssuerUnavailable, e.Issuer, e.Deny)
+		ErrIssuerUnavailable, e.Issuer, hop, e.Deny)
 }
 
 func (e *IssuerBlockedError) Unwrap() []error {

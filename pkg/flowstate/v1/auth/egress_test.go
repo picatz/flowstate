@@ -163,8 +163,8 @@ func TestAPrivateIssuerIsReachedByANamedOptionAndNotByDisablingTheBoundary(t *te
 // TestPolicyBlockedFetchReportsBlockedNotUnavailable is the regression for #1303:
 // an egress-policy denial must say "blocked by the identity egress policy", not
 // "temporarily unavailable". The error still wraps ErrIssuerUnavailable so
-// existing errors.Is checks match, but IssuerBlockedError carries the URL and
-// rule, and PublicReason names the cause.
+// existing errors.Is checks match, but IssuerBlockedError carries the denied
+// hop (already redacted) and rule, and PublicReason names the cause.
 func TestPolicyBlockedFetchReportsBlockedNotUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -194,8 +194,8 @@ func TestPolicyBlockedFetchReportsBlockedNotUnavailable(t *testing.T) {
 	var blocked *auth.IssuerBlockedError
 	require.ErrorAs(t, err, &blocked, "must be an IssuerBlockedError, not a plain wrap")
 	require.Equal(t, issuer.URL(), blocked.Issuer)
-	require.NotEmpty(t, blocked.URL)
 	require.NotNil(t, blocked.Deny)
+	require.NotEmpty(t, blocked.Deny.Hop, "the denied hop must be captured")
 
 	reason := auth.PublicReason(err)
 	require.Contains(t, reason, "blocked",
