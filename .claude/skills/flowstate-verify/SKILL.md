@@ -33,9 +33,10 @@ GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 \
 
 ## 3. Normalize and derive
 
-Use `make fmt`, not a bare repository-wide `gofmt`. Run generation and drift
-checks when schemas or generated surfaces may have changed. Do not edit generated
-files directly.
+Use `make fmt`, not a bare `gofmt` — a `gofmt` from `PATH` may be a different
+binary from the pinned toolchain's and can disagree on formatting. Run
+generation and drift checks when schemas or generated surfaces may have
+changed. Do not edit generated files directly.
 
 ## 4. Before a PR handoff
 
