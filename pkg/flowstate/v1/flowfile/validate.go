@@ -1957,7 +1957,7 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 		return
 	}
 	if sel := e.GetSelectExpr(); sel != nil {
-		// All four roots are recognised here, and an unrecognised root falls through
+		// All five roots are recognised here, and an unrecognised root falls through
 		// to the walk below so that `foo.bar` still reports `foo` as a bare name.
 		// That fall-through is what keeps adding a root from silently swallowing the
 		// diagnostic for a name that has none.

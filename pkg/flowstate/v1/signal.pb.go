@@ -244,9 +244,9 @@ func (x *SignalPolicyRule) GetSubjectFrom() *Value {
 // Signal names something a workload waits to be told.
 //
 // The payload a signal carries becomes the waiting step's outputs, which is what
-// makes a gate compose with everything else: `${approval.approved}` resolves the
-// way any other step reference does, so it works in an `if:`, in a task input,
-// and in a later expression, with no special form for signals.
+// makes a gate compose with everything else: `${steps.approval.payload.approved}`
+// resolves the way any other step reference does, so it works in an `if:`, in a
+// task input, and in a later expression, with no special form for signals.
 type Signal struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is what a sender addresses. It is part of the workload's contract with

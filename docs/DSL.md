@@ -1154,7 +1154,7 @@ holds that claim rather than assuming it.
 change — deciding them later is the Terraform `optional()` mistake this document
 already refused once.
 
-- **Workflow-level `vars:`** — constants and start-time derivations, referenced
+- **Workflow-level `vars:`** — literals, operators, and the profile's functions, referenced
   rooted: `${vars.region}`. Rooted because ambient, per principle 5.
 - **Step-level `vars:`** — private bindings, referenced bare within the step:
   `${modified}`. Bare because author-chosen and lexically local, the same standing
@@ -2353,8 +2353,9 @@ not a failing step forty minutes in. It is also what gives `flow validate` and t
 language server a schema source for `slack.post` on a machine that has the plugin,
 and the compiled spec a place to record what a run was compiled against — the
 profile-pinning logic, extended to the task surface, which replay will eventually
-demand. It lands with Phase 3, where `call:` forces the cross-file question anyway;
-the dotted-key *shape rule* is reserved now, while it costs one sentence. Task-queue
+demand. It landed with `plugins:`, where `call:` forces the cross-file question
+anyway; the dotted-key *shape rule* was reserved early, while it cost one sentence.
+Task-queue
 routing — a plugin task running on a specialized worker — stays a deployment
 concern and never becomes a Flowfile spelling.
 
@@ -2367,7 +2368,7 @@ What shipped is the spelling and its enforcement — the host registers
 own qualifier, `Task.name` admits at most one dot, and a dotted key naming an
 uninstalled plugin is diagnosed as an installation question rather than a spelling
 one. The `plugins:` version header, the submit-time catalog check, and the language
-server's two-level completion tree remain Phase 3 as planned.
+server's two-level completion tree have since landed.
 
 ### `exec:` will be built-in, denied by default
 
@@ -2411,7 +2412,7 @@ policy is, in its own reviewed change.
 | `value:` | **landed (#411)**, node kind, read as `${steps.<id>.value}` | nothing; the corpus proved otherwise, since `vars:` cannot read a step or an input |
 | `assert:` | held | `if:` + failure, pending Phase 2 `check:` |
 | `!expr` | refused | whole-value `${...}`, fence-optional where the schema knows |
-| plugin tasks | dotted keys, `plugins:` header in Phase 3 | — |
+| plugin tasks | dotted keys, `plugins:` header (**landed**) | — |
 
 Registry today: **`log`, `http`**. End state, once `exec` has its policy: **`log`,
 `http`, `exec`** — small enough to memorize, which is the property worth copying from
@@ -2549,15 +2550,13 @@ Worth noticing what is absent: no `cel:`, no `expr:` nested inside anything, no
 response names, and no evaluator branding anywhere an author looks. CEL is doing
 all of the work and none of the talking.
 
-And the CI-pipeline corpus entry, which is the same language plus the Phase 3
+And the CI-pipeline corpus entry, which is the same language plus the landed
 plugin surface and a policied `exec` — the file that makes "could be used for CI"
-a demonstration rather than a claim. **It does not compile today, deliberately:** it is
-the acceptance target for Phase 3, and this build answers it with `unknown key
-"plugins"`, the installation-question diagnostic for `github.clone` (`no plugin task
-"github.clone" is registered here; if the "github" plugin is installed on the worker
-this will run on, the file is fine…`), and `unknown task "exec"`. That is the corpus
-rule working as intended — a design that has not landed, kept visible — rather than a
-file that has gone stale.
+a demonstration rather than a claim. **It does not compile today, deliberately:**
+the `plugins:` header and plugin task resolution have landed, but the acceptance
+target still requires `exec`, and this build answers it with `unknown task "exec"`.
+That is the corpus rule working as intended — a design that has not landed, kept
+visible — rather than a file that has gone stale.
 
 The fence says `(proposed)` rather than plain `yaml`, which is how the corpus check
 tells a design sketch from a documented file: every plain `yaml` block opening with
@@ -2731,13 +2730,9 @@ contract, which has since shipped as `declared_outputs`
 (`examples/computed-outputs/`), is the only route by which a run can report a
 computed result at the run level.
 
-The `plugins:`
-header and dotted-key resolution land in Phase 3 with `call:`. `exec` lands only
+The `plugins:` header and dotted-key resolution have landed. `exec` lands only
 with its policy, gated the way workflow-side evaluation is gated on Worker
-Versioning: a capability that assumes a posture verifies it or stays off. The
-`Host.Register` seam — one call wide — is the highest-leverage unbuilt item in this
-document, because the catalog it populates is what every surface in principle 12
-reads.
+Versioning: a capability that assumes a posture verifies it or stays off.
 
 ## The third round: versions in flight, and what the engine already knows
 
@@ -2997,7 +2992,7 @@ $ echo $?
 1
 ```
 
-A run explaining itself, forever (spec-in-run live; plugin resolution Phase 3):
+A run explaining itself, forever (spec-in-run live; plugin resolution landed):
 
 ```
 $ flow inspect 018f3c2e --provenance
