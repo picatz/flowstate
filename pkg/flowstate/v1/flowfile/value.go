@@ -229,8 +229,9 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 	case *ast.StringNode:
 		return c.scalarString(n, node.Value, path, r, exprCtx)
 	case *ast.LiteralNode:
-		// A block scalar: | or >. Its text is a string like any other.
-		return c.scalarString(n, blockText(node), path, r, exprCtx)
+		// A block scalar: | or >. Its text is a string like any other, once the
+		// newline YAML itself appended is not mistaken for text the author wrote.
+		return c.scalarString(n, blockScalarText(blockText(node)), path, r, exprCtx)
 	case *ast.MappingNode, *ast.MappingValueNode, *ast.SequenceNode:
 		return c.composite(n, path, r)
 	default:
@@ -240,6 +241,46 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 		}
 		return &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
 	}
+}
+
+// blockScalarText drops the newline a block scalar's default chomping appended,
+// when what is left is exactly one fence.
+//
+// `value: |` followed by `${1 + 1}` is the natural spelling for an expression
+// that needs a line of its own, and it used to produce the *string* `"2\n"`:
+// the kept newline made the scalar a fence plus other text, which is
+// interpolation, so the value was `string(1 + 1) + "\n"`. Every step of that did
+// what it was specified to do and the answer was still one nobody wrote — and
+// `flow validate` said ok, because interpolating is legal. An `if:` written this
+// way was worse: the string `"true\n"` is refused at run time as not a bool,
+// after validation passed (#1445).
+//
+// A newline YAML appended is not text the author wrote, so the fence decides,
+// and the value is typed as the expression exactly as `|-` already gives.
+//
+// Two things are deliberately left alone. A scalar holding a fence *and* other
+// text (`${x}\nunits`) still interpolates, because there the newline sits
+// between things the author did write. And more than one trailing newline is
+// `|+` — chomping the author asked for explicitly — so those keep meaning what
+// they say.
+func blockScalarText(text string) string {
+	trimmed, chomped := strings.CutSuffix(text, "\n")
+	if !chomped || strings.HasSuffix(trimmed, "\n") {
+		return text
+	}
+
+	// Only when dropping it leaves a whole value: the same question
+	// [scalarString] is about to ask, asked here so that nothing else changes
+	// shape when the answer is no.
+	segs, err := scanInterpolation(trimmed)
+	if err != nil {
+		return text
+	}
+	if _, whole := wholeValueFence(segs, trimmed); !whole {
+		return text
+	}
+
+	return trimmed
 }
 
 // blockText returns the text of a block scalar, written with | or >.

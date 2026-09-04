@@ -515,6 +515,13 @@ value holds. A shaping task's `outputs:` keeps it too, and that one is a real
 distinction rather than a shortfall — a mapping there means a shaped set of names,
 so unfolding one would change what the file says.
 
+**A long expression may take a line of its own.** `value: |` or `value: >` followed
+by a single `${...}` is that expression, typed as it is written — the newline the
+block's default chomping appends is YAML's, not text the author wrote, so it does
+not turn the value into a string. Writing `|-` says the same thing and stays
+correct. A block scalar holding a fence *and* other text is still interpolation, and
+`|+` keeps the newlines it was explicitly asked to keep.
+
 **Folding is the other, smaller question, and stays parked.** `flow fmt` unfolds a
 folded block scalar into a single line. Re-folding is a re-wrapping decision — a
 width, and a rule for where a break may fall that no string can be corrupted by —
