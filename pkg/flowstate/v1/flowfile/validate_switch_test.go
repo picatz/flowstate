@@ -591,3 +591,111 @@ steps:
 	require.NotEmpty(t, ds, "an arm CEL can never reach must be refused as a duplicate")
 	assert.Contains(t, diagnosticMessages(ds), "is already handled by")
 }
+
+// enumInputHeader is a closed-domain fixture from an enum-typed input.
+const enumInputHeader = `edition: v2026.3
+name: t
+inputs:
+  env:
+    type: enum
+    values: [staging, production]
+    required: true
+steps:
+`
+
+func TestSwitchEnumInputImpossibleCase(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, enumInputHeader+`  - id: route
+    switch:
+      value: ${inputs.env}
+      cases:
+        - case: staging
+          steps: []
+        - case: sandbox
+          steps: []
+      default:
+        steps: []
+`)
+	require.NotEmpty(t, ds, "a case the enum cannot produce must be refused")
+	text := diagnosticMessages(ds)
+	assert.Contains(t, text, `case "sandbox" is not a value`)
+	assert.Contains(t, text, `"staging", "production"`)
+}
+
+func TestSwitchEnumInputExhaustiveness(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, enumInputHeader+`  - id: route
+    switch:
+      value: ${inputs.env}
+      cases:
+        - case: staging
+          steps: []
+`)
+	require.NotEmpty(t, ds, "an inexhaustive switch over an enum input must be refused")
+	text := diagnosticMessages(ds)
+	assert.Contains(t, text, `cases do not handle "production"`)
+}
+
+func TestSwitchEnumInputExhaustiveClean(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, enumInputHeader+`  - id: route
+    switch:
+      value: ${inputs.env}
+      cases:
+        - case: staging
+          steps: []
+        - case: production
+          steps: []
+`)
+	for _, d := range ds {
+		if strings.Contains(d.Message, "case") || strings.Contains(d.Message, "domain") {
+			t.Errorf("an exhaustive switch over an enum input should validate clean, got: %s", d.Message)
+		}
+	}
+}
+
+func TestSwitchEnumInputUnreachableDefault(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, enumInputHeader+`  - id: route
+    switch:
+      value: ${inputs.env}
+      cases:
+        - case: [staging, production]
+          steps: []
+      default:
+        steps: []
+`)
+	require.NotEmpty(t, ds, "a default no enum value can reach must be refused")
+	assert.Contains(t, diagnosticMessages(ds), "`default:` can never run")
+}
+
+func TestSwitchStringInputWithMustStaysSilent(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, `edition: v2026.3
+name: t
+inputs:
+  env:
+    type: string
+    required: true
+    must: this in ["staging", "production"]
+steps:
+  - id: route
+    switch:
+      value: ${inputs.env}
+      cases:
+        - case: sandbox
+          steps: []
+      default:
+        steps: []
+`)
+	for _, d := range ds {
+		if strings.Contains(d.Message, "sandbox") && strings.Contains(d.Message, "not a value") {
+			t.Errorf("a must: constraint is not a type; the domain should be open, got: %s", d.Message)
+		}
+	}
+}

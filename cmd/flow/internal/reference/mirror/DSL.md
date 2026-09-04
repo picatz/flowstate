@@ -2160,7 +2160,7 @@ Where the discriminant's domain is a property of the file — today, a wait's
 shaped output or a `value:` step whose shaping expression is built from string
 literals through conditionals and the read-side optional idioms (`optMap`,
 `optFlatMap`, `orValue`), the approval gate's own expression among them;
-enum-typed inputs extend the tier when they land — the validator checks the
+enum-typed inputs extend the tier — the validator checks the
 whole dispatch, every diagnostic fatal like every other in this language. A
 shaping expression that reaches for `value()`, or for anything else the walk
 does not read, still validates — it simply drops back to an open domain, silent
