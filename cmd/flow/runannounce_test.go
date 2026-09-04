@@ -214,7 +214,7 @@ func TestTheNarrationSaysTheSameThingStyledAndUnstyled(t *testing.T) {
 //
 // The narration lives on stderr and the document on stdout, and a program asked
 // for `-o json`/`-o jsonl` gets no narration at all. Compared against
-// [marshalRunDocument] over the same message rather than against a literal, so
+// [v1.MarshalRunDocument] over the same message rather than against a literal, so
 // this asserts "the bytes are the run document, unchanged" rather than
 // re-encoding a second opinion about what that document should be.
 func TestTheMachineShapesAreUntouchedByTheNarration(t *testing.T) {
@@ -229,7 +229,7 @@ func TestTheMachineShapesAreUntouchedByTheNarration(t *testing.T) {
 				"flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2", nil,
 				namedRun("computed-outputs")))
 
-			expected, err := marshalRunDocument(final, format == FormatJSON, false)
+			expected, err := v1.MarshalRunDocument(final, format == FormatJSON, false)
 			require.NoError(t, err)
 
 			assert.Equal(t, string(expected)+"\n", out.String(),

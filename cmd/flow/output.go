@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
@@ -152,7 +151,7 @@ func addOutputFlag(cmd *cobra.Command) {
 // Only those verbs, because it only means something there: a run's answer is the
 // one document this CLI renders rather than passes through, so everywhere else
 // `--raw` would be a flag that changes nothing, which is worse than a flag that is
-// absent. See rundoc.go for what the rendering is and why it is derived from the
+// absent. See pkg/flowstate/v1/rundoc.go for what the rendering is and why it is derived from the
 // descriptors rather than written down.
 func addRawOutputFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool("raw", false,
@@ -169,34 +168,17 @@ func resolveRawOutput(cmd *cobra.Command) bool {
 	return raw
 }
 
-// marshalJSON renders a message the way the schema describes it.
-//
-// protojson rather than encoding/json, so the field names are the schema's and an
-// enum is its name rather than the integer behind it — `"STATUS_COMPLETED"` reads,
-// and survives a renumbering that `4` would not.
-//
-// EmitUnpopulated is deliberate: a consumer indexing `.closeTime` on a run that has
-// not finished should find null rather than a missing key, because the two are the
-// same question and only one of them is answerable without knowing the schema.
-func marshalJSON(message proto.Message, indent bool) ([]byte, error) {
-	options := protojson.MarshalOptions{EmitUnpopulated: true}
-	if indent {
-		options.Indent = "  "
-	}
-
-	return options.Marshal(message)
-}
-
 // writeJSON writes one document, indented for a person who is about to read it and
 // compact for the line-per-record form.
 //
 // The schema's own shape, for the verbs whose answer *is* a schema document: a
 // compiled workflow, a validation report, a task catalog, a schedule. A run's
-// answer goes through [writeRunJSON] instead, which renders it — see rundoc.go for
+// answer goes through [writeRunJSON] instead, which renders it — see
+// pkg/flowstate/v1/rundoc.go for
 // what that means and why the two are different functions rather than one with a
 // mode.
 func writeJSON(surface *ui.UI, format OutputFormat, message proto.Message) error {
-	encoded, err := marshalJSON(message, format == FormatJSON)
+	encoded, err := v1.MarshalSchemaJSON(message, format == FormatJSON)
 	if err != nil {
 		return fmt.Errorf("rendering the answer as %s: %w", format, err)
 	}
@@ -254,11 +236,11 @@ func resolveRunRendering(cmd *cobra.Command) (runRendering, error) {
 // writeRunJSON writes one run document.
 //
 // The counterpart of [writeJSON] for the answers a run gives, and the only place
-// the rendering in rundoc.go is reached from — so `flow run`, `flow run local`,
+// the rendering in pkg/flowstate/v1/rundoc.go is reached from — so `flow run`, `flow run local`,
 // `flow get`, `flow watch` and `flow task run` cannot end up writing four
 // different documents about one finished run.
 func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message) error {
-	encoded, err := marshalRunDocument(message, rendering.format == FormatJSON, rendering.raw)
+	encoded, err := v1.MarshalRunDocument(message, rendering.format == FormatJSON, rendering.raw)
 	if err != nil {
 		return fmt.Errorf("rendering the answer as %s: %w", rendering.format, err)
 	}
@@ -366,7 +348,8 @@ const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdou
 //
 // It names the paths because a caller reading `--help` is deciding what to index,
 // and it makes the stability promise because the alternative is silence, and
-// silence is what makes people depend on a shape nobody agreed to. See rundoc.go
+// silence is what makes people depend on a shape nobody agreed to. See
+// pkg/flowstate/v1/rundoc.go
 // for how the rendering is derived from the schema.
 const runDocumentHelp = "\n\nThe run document on stdout is written for a program. A step's outputs " +
 	"are `.steps.<id>.<output>` — the path the file itself writes as " +
@@ -633,7 +616,7 @@ func writeStepOutputs(surface *ui.UI, rendering runRendering, response *v1.GetRe
 		return nil
 	}
 
-	encoded, err := marshalRunDocument(outputs, false, rendering.raw)
+	encoded, err := v1.MarshalRunDocument(outputs, false, rendering.raw)
 	if err != nil {
 		return fmt.Errorf("formatting the outputs of the run: %w", err)
 	}

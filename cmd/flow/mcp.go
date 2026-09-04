@@ -824,7 +824,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 
 	encoded, _, err := flowmcp.FitResultWithin(limit,
 		func() ([]byte, error) {
-			encoded, err := marshalJSON(report, false)
+			encoded, err := v1.MarshalSchemaJSON(report, false)
 			if err != nil {
 				return nil, fmt.Errorf("rendering the report: %w", err)
 			}
@@ -849,7 +849,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 			// cases and carries no refusal at all.
 			trimmed.Refused = capText(trimmed.GetRefused(), maxTestRefusedBytes)
 
-			encoded, err := marshalJSON(trimmed, false)
+			encoded, err := v1.MarshalSchemaJSON(trimmed, false)
 			if err != nil {
 				return nil, fmt.Errorf("rendering the report: %w", err)
 			}
@@ -910,7 +910,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 
 				var err error
 
-				encoded, err = marshalJSON(summary, false)
+				encoded, err = v1.MarshalSchemaJSON(summary, false)
 				if err != nil {
 					return nil, fmt.Errorf("rendering the report: %w", err)
 				}
@@ -1049,11 +1049,12 @@ func checkToolRunInputs(workflow *v1.Workflow, inputs map[string]*v1.Value) erro
 
 // runLocalResult is the document the tool answers with.
 //
-// The run is carried verbatim as the protojson of a GetResponse — the same bytes
-// `flow run local -o json` writes and the same message flowstate_get answers
-// with — so one expression reads a rehearsal and a production run alike. It is
-// wrapped rather than extended because logs are not part of that schema, and
-// inventing a field for them would make this surface a second dialect.
+// The run is carried verbatim as the run document [v1.MarshalRunDocument]
+// renders — byte for byte what `flow run local -o json` writes, and the same
+// rendering flowstate_get answers with — so one `jq` expression reads a
+// rehearsal and a production run alike, from either door (#1553). It is wrapped
+// rather than extended because logs are not part of that schema, and inventing a
+// field for them would make this surface a second dialect.
 type runLocalResult struct {
 	Run  json.RawMessage     `json:"run"`
 	Logs []runLocalLogRecord `json:"logs,omitempty"`
@@ -1213,7 +1214,12 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord, pr
 		return preflightNote + "; " + note
 	}
 
-	run, err := marshalJSON(response, false)
+	// The document `flow run local -o json` prints, not the schema's own
+	// protojson: `steps.<id>.<output>` rather than `stepValues.<id>.namedValues`,
+	// and a value rather than CEL's tagged encoding of one. An author rehearsing
+	// through the CLI and an agent rehearsing through this tool are reading one
+	// run, and before this they could not share a jq filter over it (#1553).
+	run, err := v1.MarshalRunDocument(response, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
 	}
@@ -1354,7 +1360,10 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord, pr
 // renderTrimmedRun encodes one shrinking step's document, with the note that
 // says what left and why.
 func renderTrimmedRun(trimmed *v1.GetResponse, note string) ([]byte, error) {
-	run, err := marshalJSON(trimmed, false)
+	// The same rendering the untrimmed answer uses, per [renderRunLocalResult]:
+	// a reduced answer that changed dialect on the way down would be the bug
+	// this fixed, reintroduced on exactly the runs too large to eyeball (#1553).
+	run, err := v1.MarshalRunDocument(trimmed, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
 	}

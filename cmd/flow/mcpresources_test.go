@@ -8,7 +8,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -158,7 +157,11 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 
 	flowmcp.StripCatalogDescriptors(response.Msg)
 
-	want, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response.Msg)
+	// [v1.MarshalRunDocument] rather than protojson directly: it is the one
+	// encoder every answer that leaves this surface goes through, so writing the
+	// expectation with protojson here would be the second copy this test exists
+	// to forbid.
+	want, err := v1.MarshalRunDocument(response.Msg, false, false)
 	require.NoError(t, err)
 
 	session := connectMCP(t, defaultLocalRunPosture())

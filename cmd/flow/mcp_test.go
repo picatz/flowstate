@@ -474,21 +474,18 @@ type runLocalAnswer struct {
 			Message string `json:"message"`
 			Kind    string `json:"kind"`
 		} `json:"error"`
+		// The run document's own spelling, which is the CLI's: a step's outputs
+		// under `steps.<id>`, each one the value rather than CEL's tagged
+		// encoding of it. The `stepValues.<id>.namedValues.<name>.literal` this
+		// replaced was the schema's wire shape, which no author ever sees and
+		// which made this surface a second dialect of one run (#1553).
 		Outputs struct {
-			StepValues map[string]struct {
-				NamedValues map[string]struct {
-					Literal map[string]any `json:"literal"`
-				} `json:"namedValues"`
-			} `json:"stepValues"`
+			Steps map[string]map[string]any `json:"steps"`
 		} `json:"outputs"`
 		// The run's answer, beside the transcript above, read by name for the
 		// reason the rest of this struct is: what an agent addresses is the
 		// field, not the Go type behind it.
-		RunOutputs struct {
-			Values map[string]struct {
-				Literal map[string]any `json:"literal"`
-			} `json:"values"`
-		} `json:"runOutputs"`
+		RunOutputs map[string]any `json:"runOutputs"`
 	} `json:"run"`
 	Logs []struct {
 		Level   string `json:"level"`
@@ -548,7 +545,7 @@ steps:
 
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
 
-	_, ok := answer.Run.Outputs.StepValues["greet"]
+	_, ok := answer.Run.Outputs.Steps["greet"]
 	assert.True(t, ok,
 		"the run reported nothing for the step it ran, so an agent cannot tell it ran: %+v",
 		answer.Run.Outputs)
@@ -593,11 +590,11 @@ steps:
 
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
 
-	approval, ok := answer.Run.Outputs.StepValues["approval"]
+	approval, ok := answer.Run.Outputs.Steps["approval"]
 	require.True(t, ok, "the wait reported no outputs: %+v", answer.Run.Outputs)
-	assert.Equal(t, false, approval.NamedValues["timed_out"].Literal["boolValue"],
+	assert.Equal(t, false, approval["timed_out"],
 		"a gate answered up front reported as timed out")
-	assert.NotEmpty(t, approval.NamedValues["payload"].Literal,
+	assert.NotEmpty(t, approval["payload"],
 		"the payload supplied in the tool's signals did not reach the waiting step")
 
 	require.NotEmpty(t, answer.Logs, "the step behind the gate did not run")
@@ -649,13 +646,13 @@ steps:
 
 	// The answer, in the field a durable run reports it in — which is what makes
 	// this tool's document the one flowstate_get answers with.
-	require.NotNil(t, answer.Run.RunOutputs.Values, "the run reported no declared outputs")
-	assert.Equal(t, "checkout",
-		answer.Run.RunOutputs.Values["placed"].Literal["stringValue"])
+	require.NotNil(t, answer.Run.RunOutputs, "the run reported no declared outputs")
+	assert.Equal(t, "checkout", answer.Run.RunOutputs["placed"])
 
-	// A whole number sent as JSON stays a whole number: protojson writes an int64
-	// as a string, and a float would have come back under doubleValue instead.
-	assert.Equal(t, "5", answer.Run.RunOutputs.Values["replicas"].Literal["int64Value"],
+	// A whole number sent as JSON stays a whole number, and arrives as one: the
+	// run document writes an int as an int, where the schema's protojson would
+	// have spelled it the string "5" under `literal.int64Value`.
+	assert.EqualValues(t, 5, answer.Run.RunOutputs["replicas"],
 		"an int input arrived as something other than an int")
 }
 
@@ -693,8 +690,8 @@ steps:
 	require.NotContains(t, rawText, secret,
 		"the actual secret string must be absent from the rendered bytes, not merely covered by a marker")
 
-	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
-	require.Equal(t, "us-east-1", answer.Run.RunOutputs.Values["region"].Literal["stringValue"],
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs["token"])
+	require.Equal(t, "us-east-1", answer.Run.RunOutputs["region"],
 		"a value the source did not mark sensitive must render unchanged")
 }
 
@@ -723,7 +720,7 @@ func TestTheRunLocalToolBoundsBeforeItRedacts(t *testing.T) {
 
 	require.NotContains(t, result.Content[0].(*mcp.TextContent).Text, secret,
 		"the actual secret string must be absent from the rendered bytes, not merely covered by a marker")
-	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"],
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs["token"],
 		"redaction stopped applying once the answer was big enough to bound")
 	assert.Contains(t, answer.Note, "reduced",
 		"the transcript was big enough to trigger the bound and the answer does not say so")
@@ -756,7 +753,7 @@ steps:
 `, secret),
 	})
 
-	require.Equal(t, secret, answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
+	require.Equal(t, secret, answer.Run.RunOutputs["token"])
 }
 
 // TestTheRunLocalToolRedactsAStepComputedSensitiveOutput is the Codex finding on
@@ -801,13 +798,13 @@ steps:
 		"the raw value must be absent from the whole tool result, including the step transcript — "+
 			"not only from the name it surfaced under as a declared output")
 
-	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
-	require.Equal(t, "us-east-1", answer.Run.RunOutputs.Values["region"].Literal["stringValue"],
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs["token"])
+	require.Equal(t, "us-east-1", answer.Run.RunOutputs["region"],
 		"a value the source did not mark sensitive must render unchanged")
 
-	fetched, ok := answer.Run.Outputs.StepValues["fetch"]
+	fetched, ok := answer.Run.Outputs.Steps["fetch"]
 	require.True(t, ok, "the step still ran and the transcript should say so: %+v", answer.Run.Outputs)
-	require.NotEqual(t, secret, fmt.Sprintf("%v", fetched.NamedValues["payload"].Literal),
+	require.NotEqual(t, secret, fmt.Sprintf("%v", fetched["payload"]),
 		"the step's own transcript entry must not carry the raw value either")
 }
 
@@ -1047,7 +1044,7 @@ func TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs(t *testing.T) {
 	require.NoError(t, json.Unmarshal(encoded, &answer),
 		"the bounded answer is not parseable, which makes a large run indistinguishable from a broken tool")
 
-	assert.Empty(t, answer.Run.RunOutputs.Values,
+	assert.Empty(t, answer.Run.RunOutputs,
 		"the declared outputs are what carried the answer past the cap and are still in it")
 	assert.NotEmpty(t, answer.Note, "the answer was trimmed and does not say so")
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status,
@@ -1084,7 +1081,7 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
 
-	require.Contains(t, answer.Run.RunOutputs.Values, "release",
+	require.Contains(t, answer.Run.RunOutputs, "release",
 		"the transcript was what did not fit, and the run's own answer went with it")
 
 	// Reduced, not emptied. `GetResponse.kind` is a required oneof, so a
@@ -1093,9 +1090,9 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 	// allows instead of clearing the arm (#853). The ordering this test exists
 	// to pin is unchanged and asserted either way: the transcript is what gave
 	// way, and the declared outputs are what survived.
-	assert.NotEmpty(t, answer.Run.Outputs.StepValues,
+	assert.NotEmpty(t, answer.Run.Outputs.Steps,
 		"the transcript arm was emptied, which is a GetResponse the schema rejects")
-	assert.Less(t, len(answer.Run.Outputs.StepValues), 64,
+	assert.Less(t, len(answer.Run.Outputs.Steps), 64,
 		"the transcript is still whole, so nothing was actually reduced")
 }
 
@@ -1127,9 +1124,9 @@ func TestASingleOversizedStepCannotDefeatTheBound(t *testing.T) {
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
 
-	require.Contains(t, answer.Run.Outputs.StepValues, "scrape",
+	require.Contains(t, answer.Run.Outputs.Steps, "scrape",
 		"the transcript arm lost its one step, which is a GetResponse the schema rejects")
-	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+	assert.Contains(t, answer.Run.Outputs.Steps["scrape"]["body"],
 		"[omitted:", "the oversized value survived as itself rather than as a size marker")
 	assert.Contains(t, answer.Note, `step "scrape"`,
 		"the note does not name the step that carried the weight")
@@ -1164,8 +1161,8 @@ func TestAStepThatOutgrowsItsProtoSizeInJSONCannotDefeatTheBound(t *testing.T) {
 
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
-	require.Contains(t, answer.Run.Outputs.StepValues, "scrape")
-	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+	require.Contains(t, answer.Run.Outputs.Steps, "scrape")
+	assert.Contains(t, answer.Run.Outputs.Steps["scrape"]["body"],
 		"[omitted:", "the expanding value survived as itself rather than as a size marker")
 	assert.Contains(t, answer.Note, `step "scrape"`)
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
@@ -1192,7 +1189,7 @@ func TestARunThatFitsIsNotTrimmed(t *testing.T) {
 	assert.Empty(t, answer.Note)
 	assert.Len(t, answer.Logs, 1)
 	assert.Equal(t, "hello",
-		answer.Run.Outputs.StepValues["greet"].NamedValues["body"].Literal["stringValue"])
+		answer.Run.Outputs.Steps["greet"]["body"])
 }
 
 // TestRunLocalLogsAreByteBounded covers the single-record direction of the

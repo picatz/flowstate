@@ -804,7 +804,7 @@ func reportRenderingJustUnderTheCap(t *testing.T) *v1.TestReport {
 	// Rung 0 is what is being sized here, and it has to keep fitting, or the
 	// report arrives already reduced and the debug floor has room to spare.
 	measure := func() int {
-		encoded, err := marshalJSON(report, false)
+		encoded, err := v1.MarshalSchemaJSON(report, false)
 		require.NoError(t, err)
 
 		return len(encoded)
@@ -814,7 +814,7 @@ func reportRenderingJustUnderTheCap(t *testing.T) *v1.TestReport {
 	// json.Marshal compacts a RawMessage, so protojson's spacing is spent
 	// before the bytes land. This is the one the wrapper competes with.
 	embedded := func() int {
-		encoded, err := marshalJSON(report, false)
+		encoded, err := v1.MarshalSchemaJSON(report, false)
 		require.NoError(t, err)
 
 		var compact bytes.Buffer

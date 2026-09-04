@@ -833,7 +833,7 @@ func printArmGaps(out io.Writer, theme ui.Theme, cov *flowtest.Coverage, require
 //
 // Coverage is a schema field on each [v1.TestReport] now
 // ([v1.TestReport.Coverage]), attached before this is called, so the whole
-// document renders through protojson (via [marshalJSON]): one encoder, the
+// document renders through protojson (via [v1.MarshalSchemaJSON]): one encoder, the
 // schema's field names and enum spellings, and no second rendering of the
 // report to disagree with the first, which is the mixing the house rule against
 // "one thing spelled twice" warns about. JSONL emits one report per line; JSON
@@ -842,7 +842,7 @@ func printArmGaps(out io.Writer, theme ui.Theme, cov *flowtest.Coverage, require
 func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileResult) error {
 	if format == FormatJSONL {
 		for _, r := range results {
-			encoded, err := marshalJSON(r.report, false)
+			encoded, err := v1.MarshalSchemaJSON(r.report, false)
 			if err != nil {
 				return fmt.Errorf("rendering a test report: %w", err)
 			}
@@ -857,7 +857,7 @@ func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileRes
 	for _, r := range results {
 		reports.Files = append(reports.Files, r.report)
 	}
-	encoded, err := marshalJSON(reports, true)
+	encoded, err := v1.MarshalSchemaJSON(reports, true)
 	if err != nil {
 		return fmt.Errorf("rendering the test report as %s: %w", format, err)
 	}

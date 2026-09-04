@@ -56,6 +56,13 @@ func (g *Generator) renderMCPReference() string {
 	b.WriteString("(validate, compile, read the catalog, rehearse a run) works with nothing else\n")
 	b.WriteString("stood up. The rest address durable runs, which only a server has, and say so\n")
 	b.WriteString("rather than failing opaquely when `--address` was not given.\n\n")
+	b.WriteString("Every tool answers with two forms of one document. The text block is the\n")
+	b.WriteString("document `--output json` prints, so a `jq` expression written against the CLI\n")
+	b.WriteString("reads an agent's answer unchanged: a run's outputs are `steps.<id>.<output>`\n")
+	b.WriteString("and a value is the value, not CEL's tagged encoding of one. `structuredContent`\n")
+	b.WriteString("carries the same answer in the schema's own protojson, for a client generated\n")
+	b.WriteString("against `flowstate.v1`. Both are counted against the surface's size limit,\n")
+	b.WriteString("because both leave the process.\n\n")
 
 	b.WriteString("| Tool | Answers | Request message |\n|---|---|---|\n")
 	for _, tool := range g.src.MCPTools {
