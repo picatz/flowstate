@@ -131,7 +131,7 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 		return
 	}
 
-	env, err := v1.DefaultEvaluator().Env()
+	env, err := loadClaimEnv(v1.DefaultEvaluator())
 	if err != nil {
 		// Nothing can be parsed without an environment, so this is the whole
 		// report for this list rather than one entry's worth of it.
@@ -399,7 +399,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		if err != nil {
 			failures = append(failures, &v1.Diagnostic{Field: field,
 				Message: fmt.Sprintf("check errored: %s\n           %s", claim.That,
-					checkErrorText(ev, err, claim.That, vars.withheld, sensitive))})
+					checkErrorText(ev, libs, err, claim.That, vars.withheld, sensitive))})
 			continue
 		}
 		held, ok := out.Value().(bool)
@@ -451,11 +451,11 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 //
 // Naming the var rather than withholding silently is the useful half: an author
 // reading it knows which claim to rewrite, and a name is not a value.
-func checkErrorText(ev *v1.Evaluator, err error, claim string, withheld withheldVars, sensitive sensitiveInputs) string {
+func checkErrorText(ev *v1.Evaluator, libs []string, err error, claim string, withheld withheldVars, sensitive sensitiveInputs) string {
 	if sensitive.WithholdAll() {
 		return "[withheld]"
 	}
-	if name, reads := claimReadsWithheld(ev, claim, withheld); reads {
+	if name, reads := claimReadsWithheld(ev, libs, claim, withheld); reads {
 		if name == "" {
 			return "[withheld: this claim indexes `vars` with an expression, so which var it " +
 				"reads is not known until it runs, and this file withholds at least one]"
@@ -474,11 +474,11 @@ func checkErrorText(ev *v1.Evaluator, err error, claim string, withheld withheld
 // come to disagree about what "reads a withheld var" means. A claim this
 // package cannot parse reads nothing: it never evaluated either, so its error
 // is about syntax rather than about a value.
-func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (string, bool) {
+func claimReadsWithheld(ev *v1.Evaluator, libs []string, claim string, withheld withheldVars) (string, bool) {
 	if len(withheld.names) == 0 {
 		return "", false
 	}
-	env, err := ev.Env()
+	env, err := claimEnv(ev, libs)
 	if err != nil {
 		return "", false
 	}
@@ -537,7 +537,7 @@ func checkWitnesses(ctx context.Context, ev *v1.Evaluator, libs []string, activa
 		return []string{"(values withheld: the redaction set could not be built)"}
 	}
 
-	env, err := ev.Env()
+	env, err := claimEnv(ev, libs)
 	if err != nil {
 		return nil
 	}

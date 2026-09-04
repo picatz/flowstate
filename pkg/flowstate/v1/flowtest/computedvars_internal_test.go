@@ -188,7 +188,7 @@ var varReferenceSites = map[string]struct {
 		answer: func(t *testing.T, spell func(string) string) string {
 			t.Helper()
 
-			name, reads := claimReadsWithheld(v1.DefaultEvaluator(),
+			name, reads := claimReadsWithheld(v1.DefaultEvaluator(), everyProfileLibrary(),
 				"{'known': 1}["+spell("token")+"] == 1", withheldVars{names: []string{"token"}})
 
 			return fmt.Sprintf("%s/%v", name, reads)
@@ -682,7 +682,7 @@ func TestWithheldLeafPathQuotesACELReservedMapKey(t *testing.T) {
 	assert.True(t, covered)
 	assert.Equal(t, `request["true"]`, name)
 
-	name, covered = claimReadsWithheld(v1.DefaultEvaluator(),
+	name, covered = claimReadsWithheld(v1.DefaultEvaluator(), everyProfileLibrary(),
 		`[0][size(vars.request["true"])] == 1`, withheld)
 	assert.True(t, covered, "a transformed evaluator error must fail closed for a reserved-key leaf")
 	assert.Equal(t, `request["true"]`, name)
