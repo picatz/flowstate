@@ -175,13 +175,20 @@ on an answer that is never coming.
 
 ### `govulncheck` stays legible
 
-`vulncheck` skips when no Go package is affected, and that is safe only because
-of where it still runs: **every** push to `main`, **every** merge group, and the
-weekly `deep.yml` schedule, each fetching the advisory database at run time. A
-new advisory therefore still arrives on a calendar rather than waiting for
-somebody to touch a `.go` file. What the skip removes is `govulncheck` being
-reported against the pull request that renamed a heading — which is the shape
-that made GO-2026-6061 look like an unrelated author's problem.
+`vulncheck` skips when no Go package is affected and no plugin module changed,
+and that is safe only because of where it still runs: **every** push to `main`,
+**every** merge group, and the weekly `deep.yml` schedule, each fetching the
+advisory database at run time. A new advisory therefore still arrives on a
+calendar rather than waiting for somebody to touch a `.go` file. What the skip
+removes is `govulncheck` being reported against the pull request that renamed a
+heading — which is the shape that made GO-2026-6061 look like an unrelated
+author's problem.
+
+Both `vulncheck` and `staticcheck` scan the root module **and** each of the six
+plugin modules under `plugins/*/`. The plugin modules carry the dependencies
+with the largest attack surface in the tree (go-git, pgx, modernc.org/sqlite,
+go-github, the OpenAI client), and each has its own `go.mod` outside the root
+module graph — so `./...` from the root never reaches them.
 
 Nothing caches the advisory database, and nothing should.
 
