@@ -660,6 +660,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	// A scripted signal naming a gate the workflow never waits on is the same
+	// shape: the delivery disappears, the gate times out, and the case passes
+	// green — a test certifying behaviour nobody wrote (#1443).
+	if err := checkSignalNames(test.Signals, workflow); err != nil {
+		caseError("%s", err)
+		return
+	}
+
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
 		caseError("%s", err)
@@ -1602,6 +1610,62 @@ func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
 		}
 		out[node.GetId()] = true
 	}
+}
+
+// checkSignalNames refuses a scripted signal whose name no
+// `wait_for_signal:`/`wait_for_signals:` in the compiled workflow declares.
+//
+// The reasoning is the same as [checkExpectationNames]: a signal delivered to a
+// name nobody waits on disappears, the gate times out, and the case passes
+// green — a test certifying behaviour nobody wrote. The signal surface is worse,
+// because the case does not even fail: the timeout is treated as the gate's own
+// outcome, and an `expect.outputs` written against the timed-out value succeeds.
+//
+// The set is [v1.SignalNames], which walks calls: a signal declared only inside
+// a callee's workflow is a legitimate delivery target, because the callee's
+// gates belong to this run. See [v1.SignalNames] for why the set is static.
+func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
+	if len(signals) == 0 {
+		return nil
+	}
+
+	declared := v1.SignalNames(spec)
+	if len(declared) == 0 {
+		return fmt.Errorf("signals[0].name %q: this workflow declares no signal gates "+
+			"(no wait_for_signal: or wait_for_signals: step), so no scripted signal can reach anything",
+			signals[0].Name)
+	}
+
+	set := map[string]bool{}
+	for _, name := range declared {
+		set[name] = true
+	}
+
+	sorted := make([]string, len(declared))
+	copy(sorted, declared)
+	sort.Strings(sorted)
+
+	for i, s := range signals {
+		if set[s.Name] {
+			continue
+		}
+		if suggestion, ok := nearest.Name(s.Name, sorted); ok {
+			return fmt.Errorf("signals[%d].name %q matches no gate this workflow waits on; did you mean %q?",
+				i, s.Name, suggestion)
+		}
+		return fmt.Errorf("signals[%d].name %q matches no gate this workflow waits on; "+
+			"the declared gates are: %s", i, s.Name, strings.Join(sorted, ", "))
+	}
+
+	return nil
+}
+
+// CheckSignalNames validates that every scripted signal in signals names a gate
+// the compiled workflow declares. It is the exported face of [checkSignalNames],
+// for callers that compile the workflow themselves — `flow validate` and the LSP
+// — rather than through [RunFile].
+func CheckSignalNames(signals []SignalScript, spec *v1.Workflow) error {
+	return checkSignalNames(signals, spec)
 }
 
 // assertExpectation compares a run's outcome against what the case declared,
