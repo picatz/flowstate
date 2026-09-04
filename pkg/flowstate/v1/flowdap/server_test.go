@@ -1078,3 +1078,54 @@ func TestAnExpressionThatDoesNotCompileFailsTheRequestNotTheSession(t *testing.T
 	c.await("response", "continue")
 	<-finished
 }
+
+// TestAnUndeclaredBreakpointComesBackUnverified is #1367 at the DAP seam.
+//
+// A breakpoint on a step the workflow does not declare used to come back
+// verified and then never be taken — a marker in the editor's gutter for a stop
+// that cannot happen, which is the silence a breakpoint exists to break. DAP has
+// a field for precisely this case, so the answer is per breakpoint: the client
+// keeps the markers it can have and is told, on the one it cannot, why.
+//
+// Refusing the whole request instead would be worse than the bug: one typo would
+// clear every breakpoint the person had set.
+func TestAnUndeclaredBreakpointComesBackUnverified(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled: true,
+		Steps:      []flowdebug.Step{{ID: "build"}, {ID: "deploy"}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+
+	c.send(2, "setFunctionBreakpoints", map[string]any{
+		"breakpoints": []map[string]any{{"name": "deploy"}, {"name": "deploi"}},
+	})
+	answer := c.await("response", "setFunctionBreakpoints")
+	assert.Equal(t, true, answer["success"],
+		"one undeclared name must not fail the request and clear every marker")
+
+	points := answer["body"].(map[string]any)["breakpoints"].([]any)
+	require.Len(t, points, 2, "a client is owed one answer per breakpoint it sent")
+
+	declared := points[0].(map[string]any)
+	assert.Equal(t, true, declared["verified"],
+		"a declared step lost its breakpoint to a neighbour's typo")
+
+	missing := points[1].(map[string]any)
+	assert.Equal(t, false, missing["verified"],
+		"a breakpoint on an undeclared step claims to be set and will never be taken")
+	assert.Contains(t, missing["message"], `no step named "deploi"`,
+		"the unverified answer must say why, in the words the prompt uses")
+}

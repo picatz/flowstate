@@ -631,10 +631,23 @@ func New(opts Options) (*Session, error) {
 		// this surface accepts, refused by the reader (Codex, #1109).
 		s.in.Buffer(make([]byte, 0, 4096), MaxCommandBytes+len("\n"))
 	}
+	// Checked against the inventory before any of them is armed, so a misspelled
+	// id is never reported as armed. A caller that supplied [Options.Steps] and a
+	// name none of them has gets the refusal the prompt gives, rather than a
+	// session that starts in modeRun and runs the workflow to its end without
+	// ever stopping — the same silence `break nosuchstep` used to have (#1367).
+	//
+	// An empty inventory refuses nothing, exactly as [Session.unknownStepNotice]
+	// documents: a caller that named no steps has said nothing about what exists.
 	for _, id := range opts.Breakpoints {
-		if id = strings.TrimSpace(id); id != "" {
-			s.breakpoints[id] = breakpoint{}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
 		}
+		if notice, unknown := s.unknownStepNotice(id); unknown {
+			return nil, fmt.Errorf("flowdebug: breakpoint: %s", notice)
+		}
+		s.breakpoints[id] = breakpoint{}
 	}
 
 	// Where the first stop lands, and why it depends on nothing else: an
