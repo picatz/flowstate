@@ -350,7 +350,7 @@ func invalidInputType(input, declared, got string, err error) error {
 	return &InputError{Input: input, Declared: declared, Got: got, Err: err}
 }
 
-// ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,// ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,
+// ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,
 // reporting false for anything else — including empty, which is not a kind
 // any classifier produces.
 //

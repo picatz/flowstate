@@ -379,7 +379,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// localRun is a finished local run in the shape the schema already has for one.// localRun is a finished local run in the shape the schema already has for one.
+// localRun is a finished local run in the shape the schema already has for one.
 //
 // A GetResponse rather than the bare outputs, because that is what the durable
 // driver's machine formats emit and the entire point is that one jq expression
