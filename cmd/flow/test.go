@@ -61,11 +61,13 @@ func newTestCommand() *cobra.Command {
 			"`coverage.allow_unreached` by the key the diagnostic prints.\n\n" +
 			"A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name " +
 			"the workflow does not have refuses the case before it runs, with a suggestion — a claim " +
-			"about a step that does not exist would otherwise pass vacuously forever. A stub the case " +
-			"declared and the run never answered through is reported as a warning: a fact about the " +
-			"case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs " +
-			"inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle " +
-			"in cases that never invoke its task.\n\n" +
+			"about a step that does not exist would otherwise pass vacuously forever. Three conditions " +
+			"are reported as warnings: a stub the case declared and the run never answered through, " +
+			"a task invoked with no stub declared for it, and an invocation that no declared stub " +
+			"answered. Each is a fact about the case's own scaffolding, not a verdict, unless " +
+			"`--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt from the " +
+			"idle-stub warning — a file-level catch-all is expected to sit idle in cases that " +
+			"never invoke its task.\n\n" +
 			"A failing case prints its transcript beneath the unmet expectation: what each step " +
 			"produced and when virtual time moved, which stub answered it, each scripted signal " +
 			"with its sender, and the `switch:` arm taken — the account the expectation was judged " +
@@ -117,16 +119,19 @@ flow test -o jsonl examples/`,
 		"fail when a workflow has a step, or a `switch:` arm, no test case reached and no "+
 			"coverage.allow_unreached entry records why")
 
-	// The same opt-in shape for the warning tier (#926): a warning is a fact
-	// worth reading that is not a verdict — today, a stub the case declared
-	// and the run never answered through — and this is the flag that promotes
-	// it to a reason the command exits non-zero. Stubs inherited from
-	// `defaults:` are exempt from the warning itself (see
-	// flowtest's unusedStubWarnings), so a file-level catch-all never trips a
-	// suite that opted in.
+	// The same opt-in shape for the warning tier (#926, #1356): a warning is a
+	// fact worth reading that is not a verdict, and this is the flag that
+	// promotes it to a reason the command exits non-zero. Three classes: an
+	// idle stub (declared and never answered through), an unstubbed task
+	// (invoked with no stub declared for it), and an unmatched invocation
+	// (stubs declared but none matching). Stubs inherited from `defaults:`
+	// are exempt from the idle-stub warning (see flowtest's
+	// unusedStubWarnings), so a file-level catch-all never trips a suite
+	// that opted in.
 	cmd.Flags().Bool("fail-on-warning", false,
-		"fail when a case reports a warning — a stub the case declared and the run never "+
-			"answered through — instead of only printing it")
+		"fail when a case reports a warning — a stub declared and never answered through, "+
+			"a task invoked with no stub declared, or an invocation that no declared stub answered — "+
+			"instead of only printing it")
 
 	// The `go test -run` precedent (#929 slice 1). The honesty line is the
 	// non-negotiable half of the feature: a skip must be a decision you can
