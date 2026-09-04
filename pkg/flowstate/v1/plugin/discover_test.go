@@ -331,6 +331,81 @@ func TestDiscoverIsSilentWithNothingShadowed(t *testing.T) {
 	}
 }
 
+// TestDiscoverIsSilentWhenOnlyExcludesTheShadowedName checks the other place
+// this warning can be noise: a colliding name that [Config.Only] will never
+// launch.
+//
+// Host.Open calls Discover before applying Only, so without this check
+// discovery would warn about a collision on a name the deployment's allowlist
+// excludes entirely — nothing this host will ever run was shadowed, and an
+// operator who narrowed --plugin to name a plugin *other* than the colliding
+// one has no way to act on an account of a fight neither contender was
+// entered in (#1369).
+func TestDiscoverIsSilentWhenOnlyExcludesTheShadowedName(t *testing.T) {
+	t.Parallel()
+
+	first, second := t.TempDir(), t.TempDir()
+	for _, dir := range []string{first, second} {
+		if err := os.WriteFile(filepath.Join(dir, BinaryPrefix+"shared"), []byte("x"), 0o755); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+	// Only names a plugin other than the colliding one, so "shared" is not
+	// something this host will load from either directory.
+	if err := os.WriteFile(filepath.Join(first, BinaryPrefix+"wanted"), []byte("x"), 0o755); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	var account strings.Builder
+	logger := slog.New(slog.NewTextHandler(&account, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	found, err := Discover(Config{
+		SearchPath: []string{first, second},
+		Only:       []string{"wanted"},
+		Logger:     logger,
+	})
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("discovered %d plugins, want 2 (the excluded collision still resolves to one winner)", len(found))
+	}
+
+	if strings.Contains(account.String(), "shadowed") {
+		t.Errorf("a collision on a name Only excludes drew a shadow warning: %q", account.String())
+	}
+}
+
+// TestDiscoverWarnsWhenOnlyIncludesTheShadowedName is the companion to the
+// test above: when the colliding name is one Only actually wants — or Only is
+// unset entirely — the warning fires exactly as it did before Only had any say
+// in it.
+func TestDiscoverWarnsWhenOnlyIncludesTheShadowedName(t *testing.T) {
+	t.Parallel()
+
+	first, second := t.TempDir(), t.TempDir()
+	for _, dir := range []string{first, second} {
+		if err := os.WriteFile(filepath.Join(dir, BinaryPrefix+"shared"), []byte("x"), 0o755); err != nil {
+			t.Fatalf("writing: %v", err)
+		}
+	}
+
+	var account strings.Builder
+	logger := slog.New(slog.NewTextHandler(&account, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if _, err := Discover(Config{
+		SearchPath: []string{first, second},
+		Only:       []string{"shared"},
+		Logger:     logger,
+	}); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	if !strings.Contains(account.String(), "shadowed") {
+		t.Errorf("a collision on a name Only wants drew no shadow warning: %q", account.String())
+	}
+}
+
 // TestDiscoverScansARepeatedDirectoryOnce is the boundary the shadow warning
 // opened. SearchPath is a list and the environment spells it as a path list,
 // so the same directory can legitimately appear twice — and scanning it again

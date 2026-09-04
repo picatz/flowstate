@@ -169,8 +169,17 @@ func Discover(cfg Config) ([]Found, error) {
 				// twice is that error with a larger blast radius, and it was
 				// reported below the level every one of this CLI's plugin
 				// surfaces logs at.
-				log.Warn("plugin binary is shadowed by an earlier search path entry",
-					"plugin", name, "using", existing.Path, "ignoring", path)
+				//
+				// Gated on cfg.wanted, because [Config.Only] is decided before
+				// this warning has anything to say: a name this host will never
+				// launch cannot lose a plugin it was never going to run, so
+				// warning about it would be an account of a collision that
+				// changes nothing for this deployment — noise an operator with
+				// a narrow allowlist has no way to act on (#1369).
+				if cfg.wanted(name) {
+					log.Warn("plugin binary is shadowed by an earlier search path entry",
+						"plugin", name, "using", existing.Path, "ignoring", path)
+				}
 				continue
 			}
 
