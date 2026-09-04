@@ -94,6 +94,35 @@ const (
 	// id rather than the file - so reaching the value at all is refused, derived
 	// or not.
 	DiagnosticCodeSensitiveInPrompt DiagnosticCode = "sensitive-in-prompt"
+
+	// DiagnosticCodeExpectationUnmet marks a claim a test file made that the run
+	// contradicted — a step the case said would run and did not, a `check:` that
+	// came back false, an outcome `expect.failed` named and the run did not
+	// reach.
+	//
+	// The class of every failure `flow test` reports that is not one of the two
+	// below: the file and the run disagree, and the file is the side making a
+	// claim. Distinct from the validation codes above because nothing here says
+	// the file is malformed — a case can be perfectly well-formed and wrong.
+	DiagnosticCodeExpectationUnmet DiagnosticCode = "expectation-unmet"
+
+	// DiagnosticCodeOutputMismatch marks a run's outputs disagreeing with
+	// `expect.outputs` — a value that differs, one the case named that the run
+	// did not produce, or one the run produced that the case does not name.
+	//
+	// Its own class because it is the failure a consumer most often wants to
+	// group: a diff of values is a different thing to look at from a claim about
+	// control flow, and the position it carries points at the entry rather than
+	// at the case.
+	DiagnosticCodeOutputMismatch DiagnosticCode = "output-mismatch"
+
+	// DiagnosticCodeStubUnmatched marks a task a case invoked that no stub it
+	// declared answered.
+	//
+	// Distinct from an unmet expectation because it is a hole in the case's own
+	// scaffolding rather than a disagreement about the run: nothing was claimed
+	// and contradicted, something the case needed to say was never said.
+	DiagnosticCodeStubUnmatched DiagnosticCode = "stub-unmatched"
 )
 
 // DiagnosticCodeInfo is one entry of the registry [DiagnosticCodes] returns —
@@ -159,6 +188,23 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 			Description: "An input declared `sensitive:` is written directly into a `log:` message, " +
 				"where it would be recorded in run history and stdout in the clear; log a " +
 				"value derived from it instead of the value itself.",
+		},
+		{
+			Code: DiagnosticCodeExpectationUnmet,
+			Description: "A claim a `*.test.yaml` case made is one the run contradicted — a step it " +
+				"said would run and did not, a `check:` that came back false, an outcome it " +
+				"named and the run did not reach. The case is well-formed and wrong.",
+		},
+		{
+			Code: DiagnosticCodeOutputMismatch,
+			Description: "A run's outputs disagree with a case's `expect.outputs` — a value that " +
+				"differs, one the case named that the run did not produce, or one the run " +
+				"produced that the case does not name.",
+		},
+		{
+			Code: DiagnosticCodeStubUnmatched,
+			Description: "A case invoked a task no stub it declared answered — a hole in the case's " +
+				"own scaffolding rather than a disagreement about the run.",
 		},
 		{
 			Code: DiagnosticCodeSensitiveInPrompt,

@@ -679,11 +679,22 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, trans
 			continue
 		}
 		for _, f := range c.GetFailures() {
+			// `file:line:column:` first, the way `flow validate` writes a
+			// diagnostic, so an editor's problem matcher opens the test file at
+			// the claim rather than at its first line (#1558). Omitted when the
+			// claim has no position — a key the author never wrote — since a
+			// prefix pointing at line 0 would be worse than none.
+			where := ""
+			if f.GetLine() != 0 {
+				where = theme.Muted.Render(fmt.Sprintf("%s:%d:%d: ",
+					report.GetFile(), f.GetLine(), f.GetColumn()))
+			}
+
 			if f.GetStep() != "" {
-				fmt.Fprintf(out, "       %s (step %q): %s\n", f.GetField(), f.GetStep(), f.GetMessage())
+				fmt.Fprintf(out, "       %s%s (step %q): %s\n", where, f.GetField(), f.GetStep(), f.GetMessage())
 				continue
 			}
-			fmt.Fprintf(out, "       %s: %s\n", f.GetField(), f.GetMessage())
+			fmt.Fprintf(out, "       %s%s: %s\n", where, f.GetField(), f.GetMessage())
 		}
 		for _, w := range c.GetWarnings() {
 			line := fmt.Sprintf("%s: %s", w.GetField(), w.GetMessage())

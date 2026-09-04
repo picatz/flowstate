@@ -219,7 +219,26 @@ func TestDiagnosticCodesAreAssigned(t *testing.T) {
 		}
 	}
 
+	// The registry is the repository's, not this package's. A code produced by
+	// another package is covered by that package's own guard rather than being
+	// reported dead here — flowtest's failure codes are pinned by
+	// TestRunTimeFailuresArePlacedInTheTestFile, which asserts the code of each
+	// class it places (#1558). Listing them is deliberate: a code that belongs to
+	// nobody still fails one of the two.
+	producedElsewhere := map[v1.DiagnosticCode]string{
+		v1.DiagnosticCodeExpectationUnmet: "flowtest",
+		v1.DiagnosticCodeOutputMismatch:   "flowtest",
+		v1.DiagnosticCodeStubUnmatched:    "flowtest",
+	}
+
 	for _, info := range v1.DiagnosticCodes() {
+		if owner, elsewhere := producedElsewhere[info.Code]; elsewhere {
+			assert.False(t, seen[info.Code],
+				"code %q is listed as %s's but this package produces it too; one owner, or neither guard means anything",
+				info.Code, owner)
+
+			continue
+		}
 		if info.Code == v1.DiagnosticCodeGeneral {
 			// The fallback, not a class any case is built to trigger on purpose —
 			// every case above that is not deliberately one of the other six still

@@ -266,6 +266,31 @@ type File struct {
 	// evaluate nothing, so there is nothing for a taint to travel through.
 	varsWithheld withheldVars
 
+	// doc is the parsed YAML this file was decoded from, kept so that a failure
+	// found while *running* a case can be placed in the file the way a problem
+	// found while loading one already is.
+	//
+	// The loader built this to locate its own diagnostics and then dropped it,
+	// which is why every run-time failure reached an editor as line 0, column 0
+	// (#1558). It is the same document and the same [document.positionOf], so
+	// the two kinds of finding agree about where a key is rather than computing
+	// it twice.
+	//
+	// Nil for a [File] built in Go rather than parsed: there is no text to point
+	// at, and [caseAnchor] answers nothing rather than guessing — the rule
+	// [document.positionOf] already keeps.
+	doc *document
+
+	// sources say where each of Tests was written, index for index.
+	//
+	// Not derivable from the index: a table's rows expand into the flat list, so
+	// case i may have been written at `tests[3].cases[2]` — see [caseSource],
+	// whose own doc says recomputing this afterward is impossible. The loader
+	// already carries it for its own diagnostics; keeping it is what lets a
+	// run-time failure be placed at the case that actually claimed it rather
+	// than at whatever `tests[i]` happens to be (#1558).
+	sources []caseSource
+
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
 	// inherits them and may override them, by the boring, stated rules
@@ -1243,7 +1268,12 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 		return nil, yamlProblem(err)
 	}
 
-	p := newProblems(newDocument(parsed))
+	// One document, read by both kinds of finding: the loader's own problems
+	// below, and — through [File.doc] — the failures a case produces when it
+	// runs (#1558).
+	file.doc = newDocument(parsed)
+
+	p := newProblems(file.doc)
 	tests := at("tests")
 
 	if len(file.Tests) == 0 {
@@ -1345,6 +1375,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	}
 	expanded, sources := expandTableEntries(p, file.Tests)
 	file.Tests = expanded
+	file.sources = sources
 
 	// Validated then merged before anything below bounds or checks a case, so
 	// every per-test check runs against the effective test a case actually
