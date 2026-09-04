@@ -722,6 +722,21 @@ const maxStepSuggestionInput = maxStepIDLength + nearest.MaxDistance
 // that decides what a step may actually be called.
 const maxStepIDLength = 128
 
+// UnknownStep reports whether a step id names nothing this session can reach,
+// with the notice explaining it.
+//
+// It is [Session.unknownStepNotice] for callers outside this package, so that a
+// front end which must answer per breakpoint — a DAP adapter, whose client sets
+// them one edit at a time and expects a verdict for each — can ask before it
+// sends, rather than losing a whole set to one typo. Programmatic callers that
+// have nothing to answer per id need not call it: [New] and
+// [Session.SetBreakpoints] apply the same check themselves.
+//
+// An empty inventory reports nothing unknown; see [Session.unknownStepNotice].
+func (s *Session) UnknownStep(id string) (string, bool) {
+	return s.unknownStepNotice(strings.TrimSpace(id))
+}
+
 // unknownStepNotice reports that a step id names nothing this run can reach,
 // in the words `flow debug replay` already refuses the same line with.
 //

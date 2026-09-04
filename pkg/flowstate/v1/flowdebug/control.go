@@ -419,6 +419,19 @@ func (s *Session) SetBreakpoints(ids []string) error {
 		}
 	}
 
+	// Also before anything is replaced, and for the same reason the count is: an
+	// id naming no declared step is never armed, so nothing here is ever reported
+	// as installed and then silently skipped at run time (#1367). A caller that
+	// wants to answer per breakpoint rather than lose the whole set asks
+	// [Session.UnknownStep] first and sends only what it holds — which is what
+	// the DAP adapter does, because a client sets breakpoints one edit at a time
+	// and expects each to come back with its own verdict.
+	for _, id := range ids {
+		if notice, unknown := s.UnknownStep(id); unknown {
+			return fmt.Errorf("flowdebug: %s", notice)
+		}
+	}
+
 	// One critical section, and that is the correctness of the method rather
 	// than a tidiness. The first draft emptied the set under the lock, released
 	// it, and then re-added each id through [Session.holdBreakpoint] — which

@@ -636,6 +636,18 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 			continue
 		}
 
+		// Answered per breakpoint rather than by refusing the set, which is the
+		// difference between a client showing one hollow marker and a client
+		// losing every marker it has. DAP has a field for exactly this, and a
+		// breakpoint on a step this run cannot reach is what it is for: it comes
+		// back unverified, carrying the reason the prompt would have printed,
+		// instead of verified and silently never taken (#1367).
+		if notice, unknown := s.session.UnknownStep(name); unknown {
+			answers = append(answers, breakpoint{Message: notice})
+
+			continue
+		}
+
 		names = append(names, name)
 		answers = append(answers, breakpoint{Verified: true})
 	}
