@@ -545,7 +545,13 @@ var varProfileFunctions = sync.OnceValue(func() map[string]bool {
 	if err != nil {
 		return gated
 	}
-	profile, err := varEvaluator().ProfileEnv(v1.CurrentProfile)
+	// Every profile's functions rather than this build's current one. A var is
+	// written once for a file whose cases may name different workflows, so
+	// there is no single spec's profile to read here — and reading
+	// [v1.CurrentProfile] would give a name a diagnostic only while this build
+	// happens to ship it, which is the build-profile-for-run-profile shape
+	// #1465 found in `must:` (#1512).
+	profile, err := varEvaluator().Env(everyProfileLibrary()...)
 	if err != nil {
 		return gated
 	}
