@@ -175,8 +175,8 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 			continue
 		}
 
-		return nil, fmt.Errorf("input %q is not declared by workflow %q%s",
-			name, wf.GetName(), declaresWhat(wf))
+		return nil, invalidInput(name, fmt.Errorf("input %q is not declared by workflow %q%s",
+			name, wf.GetName(), declaresWhat(wf)))
 	}
 
 	bound := make(map[string]*Value, len(declared))
@@ -200,8 +200,8 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 			case declaration.GetDefault() != nil:
 				value = declaration.GetDefault()
 			case declaration.GetRequired():
-				return nil, fmt.Errorf("input %q is required and was not given%s",
-					name, describedAs(declaration))
+				return nil, invalidInput(name, fmt.Errorf("input %q is required and was not given%s",
+					name, describedAs(declaration)))
 			default:
 				continue
 			}
@@ -212,7 +212,19 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		// hand: `flow validate` refuses a mistyped default in a Flowfile, and this is
 		// what refuses one in a message that never was a Flowfile.
 		if err := CheckInputValue(name, declaration, value); err != nil {
-			return nil, err
+			// The two type names, when this refusal is a type mismatch. Read off
+			// the same declaration and the same literal the refusal itself read,
+			// through the same two functions, so the fields cannot come to
+			// disagree with the sentence beside them. Left unset for every other
+			// refusal CheckInputValue makes — an expression, a secret reference,
+			// a missing value — because those compared no types.
+			got, isLiteral := inputTypeOf(value.GetLiteral())
+			if isLiteral {
+				return nil, invalidInputType(name,
+					DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got), err)
+			}
+
+			return nil, invalidInput(name, err)
 		}
 
 		// #204 found the element bound was gated on a declaration carrying
@@ -228,7 +240,7 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		// [maxListElements] for the resource, the reused walker, and why the
 		// limit is what it is.
 		if err := CheckInputConstraints(profile, name, declaration, value); err != nil {
-			return nil, err
+			return nil, invalidInput(name, err)
 		}
 
 		bound[name] = value

@@ -264,7 +264,93 @@ func RetryAfter(err error) time.Duration {
 	return 0
 }
 
-// ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,
+// An InputError is a submission the workflow's own declarations refuse: a name
+// it does not declare, a required input nobody gave, a value of the wrong type,
+// a `must:` a value does not satisfy.
+//
+// It exists because the caller needs to tell "you passed a bad argument" apart
+// from "Flowstate is broken", and until this type there was nothing to tell them
+// apart *by*. Every refusal at the submit boundary was a bare [fmt.Errorf], so
+// [ClassifyError] reported it as [ErrorKindInternal] — which errors.go defines
+// as a defect in Flowstate — and an embedder calling [RunWithInputs] could only
+// have known better by matching the sentence (#1552).
+//
+// # No Kind field
+//
+// A [TaskError] carries its kind because a task can fail many ways. This type
+// cannot: it is the submit boundary refusing a submission, which is
+// [ErrorKindInvalidInput] and nothing else. A field able to hold only one value
+// is a field somebody can eventually set to a second one, so the classification
+// is the type rather than something written on it, and [ClassifyError] is where
+// the two meet — one place, like every other kind.
+//
+// # Declared and Got
+//
+// Both are the schema's own words for a type, not Go's, and both are empty for a
+// refusal that is not about a type at all (a missing required input, an
+// undeclared name). A consumer reads them as "when present, this is a type
+// mismatch and these are the two types"; Err is always the whole sentence.
+type InputError struct {
+	// Input is the name the refusal concerns: the declaration's name, or the
+	// name a caller submitted when nothing declares it.
+	Input string
+
+	// Declared is the type the workflow declares for Input, when the refusal is
+	// about a type. Empty otherwise.
+	Declared string
+
+	// Got is what arrived instead, in the same vocabulary as Declared. Empty
+	// otherwise.
+	Got string
+
+	// Err is the refusal, worded once by whoever refused. It is the whole
+	// sentence a person reads, and the fields above are that sentence's facts
+	// made addressable rather than a second rendering of it.
+	Err error
+}
+
+// Error is the wrapped refusal's own sentence, unchanged.
+//
+// Nothing is prefixed. The binder's sentences already name the input ("input
+// %q is required and was not given"), and a wrapper adding `input "tenant":` in
+// front of that would say the name twice — the shape [TaskError.Error] avoids
+// through selfNamesTask, avoided here by construction instead.
+func (e *InputError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the refusal this classifies, so errors.Is still reaches
+// whatever the binder wrapped.
+func (e *InputError) Unwrap() error { return e.Err }
+
+// Retryable reports whether the failure could succeed if attempted again.
+//
+// Never: the submission is the caller's, and an identical submission is refused
+// identically. Present so this type answers the question [TaskError] answers,
+// rather than a caller having to know which error types have the method.
+func (e *InputError) Retryable() bool { return false }
+
+// invalidInput wraps a submit-boundary refusal so [ClassifyError] can see it.
+//
+// A helper rather than a literal at each site, so the fields a refusal does not
+// know stay unset by construction and a new refusal cannot accidentally invent
+// a Declared it never checked.
+func invalidInput(input string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &InputError{Input: input, Err: err}
+}
+
+// invalidInputType is [invalidInput] for the refusals that compared two types.
+func invalidInputType(input, declared, got string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &InputError{Input: input, Declared: declared, Got: got, Err: err}
+}
+
+// ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,// ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,
 // reporting false for anything else — including empty, which is not a kind
 // any classifier produces.
 //
@@ -334,6 +420,13 @@ func ClassifyError(err error) ErrorKind {
 	}
 	if _, ok := errors.AsType[*ExpressionError](err); ok {
 		return ErrorKindExpression
+	}
+	// After TaskError, which carries its own kind and must keep deciding for
+	// itself: a task refusing its inputs is already InvalidInput by that route,
+	// and a task whose failure wraps a submit refusal — a `call:` binding its
+	// callee's arguments — is still the task's failure to classify.
+	if _, ok := errors.AsType[*InputError](err); ok {
+		return ErrorKindInvalidInput
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrorKindTimeout
