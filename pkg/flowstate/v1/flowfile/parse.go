@@ -461,7 +461,11 @@ func StepTaskKeys(keys []string) []string {
 // refused with a diagnostic saying so. Use [ParseFile] to compile a file that
 // may contain one.
 func Parse(data []byte) (*v1.Workflow, *Positions, error) {
-	return parse(data, "", nil, new(int))
+	wf, pos, err := parse(data, "", nil, new(int))
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, pos, nil
 }
 
 // ParseFile compiles a Flowfile read from disk, exactly as [Parse] does, but
@@ -476,7 +480,11 @@ func ParseFile(path string) (*v1.Workflow, *Positions, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return parse(data, path, nil, new(int))
+	wf, pos, err := parse(data, path, nil, new(int))
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, pos, nil
 }
 
 // ParseAt is [Parse] for bytes that did not come from path but should be
@@ -488,7 +496,11 @@ func ParseFile(path string) (*v1.Workflow, *Positions, error) {
 // from disk, because a callee is a *different* file's content and this
 // function has no in-memory version of it to prefer.
 func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
-	return parse(data, path, nil, new(int))
+	wf, pos, err := parse(data, path, nil, new(int))
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, pos, nil
 }
 
 // parse is the whole of what both [Parse] and [ParseFile] do, plus what a
@@ -521,7 +533,15 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 	}
 	workflow := c.compile(file)
 	if len(c.diags) > 0 {
-		return nil, nil, c.sorted()
+		// The partial workflow and positions are returned alongside the
+		// diagnostics so that [validateParsed] can run the step-id checks
+		// that explain why an expression failed to parse — a step called
+		// `in` causes every reference to it to be a syntax error, and
+		// without this the id diagnostic is masked by the expression one.
+		//
+		// The public [Parse], [ParseFile] and [ParseAt] discard both on
+		// error, preserving their contract.
+		return workflow, c.pos, c.sorted()
 	}
 	return workflow, c.pos, nil
 }

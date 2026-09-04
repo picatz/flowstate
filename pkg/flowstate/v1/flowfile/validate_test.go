@@ -602,6 +602,45 @@ steps:
 	}
 }
 
+// TestCELUnusableStepIDReferencedByExpression is the regression for #1292: a step
+// with a CEL-unusable id like `in` whose expression a later step references. Before
+// the fix, only the expression's syntax error was reported — the id diagnostic that
+// explains *why* was masked, because the compiler's parse failure prevented the
+// validator from running at all. Both must appear, with the id diagnostic first.
+func TestCELUnusableStepIDReferencedByExpression(t *testing.T) {
+	t.Parallel()
+
+	src := `
+edition: v2026.3
+name: referenced-unusable-id
+steps:
+  - id: in
+    http:
+      url: https://example.com
+  - id: after
+    log:
+      message: ${steps.in.body}
+`
+	_, err := flowfile.ValidateSource([]byte(src))
+	require.Error(t, err, "expected diagnostics for both the id and the expression")
+
+	got := err.Error()
+	if !strings.Contains(got, "is punctuation in CEL") {
+		t.Errorf("missing id diagnostic; got:\n%s", got)
+	}
+	if !strings.Contains(got, "is not a valid expression") {
+		t.Errorf("missing expression parse error; got:\n%s", got)
+	}
+
+	// The id diagnostic must come before the expression error, because it is
+	// the root cause.
+	idPos := strings.Index(got, "is punctuation in CEL")
+	exprPos := strings.Index(got, "is not a valid expression")
+	if idPos > exprPos {
+		t.Errorf("id diagnostic should precede expression error; got:\n%s", got)
+	}
+}
+
 // TestBareNameDoesNotFabricateStepSuggestion covers the self-defeating diagnostic
 // that spliced the failed name back in after `steps.`: `${step.a.result}` — a typo
 // for `steps.a.result` — was told to write `steps.step`, a spelling that resolves to

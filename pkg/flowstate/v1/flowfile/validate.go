@@ -303,65 +303,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 
 	// Step IDs are the names expressions use, so they are validated before
 	// anything that depends on resolving a reference.
-	seen := make(map[string]int, len(wf.GetSteps()))
-	for i, node := range wf.GetSteps() {
-		id := node.GetId()
-
-		switch {
-		case id == "":
-			ds = append(ds, Diagnostic{
-				Field:   fmt.Sprintf("steps[%d]", i),
-				Message: "step has no id; every step needs an id so later steps can reference its outputs",
-			})
-		case isDeclarationRoot(id):
-			// A root itself. Refused as an id, and this is the one collision
-			// rooting *creates* rather than removes — worth stating, because the
-			// rest of this change is about deleting rules like it.
-			//
-			// It has to be refused here rather than left to resolve, because the
-			// runtime deliberately lets a step of this name win: a spec compiled
-			// before the root existed may contain one, and a worker replaying it
-			// must keep resolving the way it always did. That compatibility is only
-			// safe while no *new* file can create the situation — otherwise a step
-			// called `steps` shadows the root, and every rooted reference in the
-			// file resolves against that step's outputs instead. Which validates
-			// clean and fails at run time with `no such key`.
-			//
-			// Every root rather than only `steps`: the argument is about what a name
-			// hides, not about which root was written first.
-			ds = append(ds, Diagnostic{
-				Step:    id,
-				Message: "id " + shadowsRoot("step", id),
-			})
-		case slices.Contains(celUnusableStepIDs, id):
-			// Four words, where there used to be twenty-one — see celUnusableStepIDs
-			// for which seventeen rooting made legal and why these did not follow.
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another id",
-					id, v1.StepsRoot, id),
-			})
-		case !isCELIdentifier(id):
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is not a valid identifier, so ${%s.…} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore",
-					id, id),
-			})
-		}
-
-		if first, dup := seen[id]; dup && id != "" {
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"duplicate id, already used by step %d; ids must be unique or one step's outputs silently replace the other's",
-					first+1),
-			})
-		} else if id != "" {
-			seen[id] = i
-		}
-	}
+	ds = append(ds, validateStepIDs(wf.GetSteps())...)
 
 	ds = append(ds, validateDeclaredInputs(wf, profile)...)
 	ds = append(ds, validateTriggers(wf)...)
@@ -486,6 +428,80 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	ds = append(ds, validateDeclaredOutputs(wf, profile, scope, len(wf.GetSteps()))...)
 	if err := v1.CheckWorkflowAtomicBlockActivities(wf); err != nil {
 		ds = append(ds, Diagnostic{Message: err.Error()})
+	}
+
+	return ds
+}
+
+// validateStepIDs checks every top-level step's id for problems that exist
+// independently of the rest of the file: empty, unusable in CEL, not a valid
+// identifier, shadowing a declaration root, or duplicated.
+//
+// Extracted so that [validateParsed] can run it on a partial workflow when the
+// compiler reported diagnostics — a step called `in` causes every reference to
+// it to be a CEL syntax error, and without this the id diagnostic is masked by
+// the expression one (#1292).
+func validateStepIDs(steps []*v1.Node) Diagnostics {
+	var ds Diagnostics
+
+	seen := make(map[string]int, len(steps))
+	for i, node := range steps {
+		id := node.GetId()
+
+		switch {
+		case id == "":
+			ds = append(ds, Diagnostic{
+				Field:   fmt.Sprintf("steps[%d]", i),
+				Message: "step has no id; every step needs an id so later steps can reference its outputs",
+			})
+		case isDeclarationRoot(id):
+			// A root itself. Refused as an id, and this is the one collision
+			// rooting *creates* rather than removes — worth stating, because the
+			// rest of this change is about deleting rules like it.
+			//
+			// It has to be refused here rather than left to resolve, because the
+			// runtime deliberately lets a step of this name win: a spec compiled
+			// before the root existed may contain one, and a worker replaying it
+			// must keep resolving the way it always did. That compatibility is only
+			// safe while no *new* file can create the situation — otherwise a step
+			// called `steps` shadows the root, and every rooted reference in the
+			// file resolves against that step's outputs instead. Which validates
+			// clean and fails at run time with `no such key`.
+			//
+			// Every root rather than only `steps`: the argument is about what a name
+			// hides, not about which root was written first.
+			ds = append(ds, Diagnostic{
+				Step:    id,
+				Message: "id " + shadowsRoot("step", id),
+			})
+		case slices.Contains(celUnusableStepIDs, id):
+			// Four words, where there used to be twenty-one — see celUnusableStepIDs
+			// for which seventeen rooting made legal and why these did not follow.
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another id",
+					id, v1.StepsRoot, id),
+			})
+		case !isCELIdentifier(id):
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is not a valid identifier, so ${%s.…} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore",
+					id, id),
+			})
+		}
+
+		if first, dup := seen[id]; dup && id != "" {
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"duplicate id, already used by step %d; ids must be unique or one step's outputs silently replace the other's",
+					first+1),
+			})
+		} else if id != "" {
+			seen[id] = i
+		}
 	}
 
 	return ds
@@ -2270,32 +2286,35 @@ func isEditionDeclaration(line string) bool {
 
 // parseAndValidate compiles data and validates what it compiled to, resolving a
 // `call:` relative to path when there is one.
+//
+// Calls [parse] directly rather than the public [Parse]/[ParseAt], so that when
+// the compiler reports diagnostics, the partial workflow is still available for
+// [validateParsed] to run the step-id checks against.
 func parseAndValidate(data []byte, path string) (Diagnostics, error) {
-	if path == "" {
-		return validateParsed(Parse(data))
-	}
-	return validateParsed(ParseAt(data, path))
+	return validateParsed(parse(data, path, nil, new(int)))
 }
 
 func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {
 	if err != nil {
+		// When the compiler built a partial workflow alongside its
+		// diagnostics, run the step-id checks so that a CEL-unusable id
+		// is diagnosed next to the expression parse error it caused.
+		// Without this, `id: in` with a reference `${steps.in.result}`
+		// reports only the expression's syntax error — the id diagnostic
+		// that explains *why* is masked.
+		var compilerDiags Diagnostics
+		if wf != nil && errors.As(err, &compilerDiags) {
+			idDiags := validateStepIDs(wf.GetSteps())
+			positionDiagnostics(idDiags, positions)
+			if len(idDiags) > 0 {
+				return nil, append(idDiags, compilerDiags...)
+			}
+		}
 		return nil, err
 	}
 
 	ds := Validate(wf)
-	for i := range ds {
-		span, ok := positions.Locate(ds[i].Step, ds[i].Field)
-		if ds[i].Kind != "" {
-			// A kind key is addressed exactly rather than by the candidate search
-			// Locate does for a field, because a kind is a key of the step and there
-			// is nowhere else it could be.
-			span, ok = positions.LocateKind(ds[i].Step, ds[i].Kind)
-		}
-		if ok {
-			ds[i].Line = span.Start.Line
-			ds[i].Column = span.Start.Column
-		}
-	}
+	positionDiagnostics(ds, positions)
 
 	// Whether it will *fit* is a different question from whether it is well
 	// formed, and an author should meet it here rather than at submit.
@@ -2308,6 +2327,24 @@ func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnosti
 	}
 
 	return ds, nil
+}
+
+// positionDiagnostics places each diagnostic at its source position, when the
+// compiler recorded one.
+func positionDiagnostics(ds Diagnostics, positions *Positions) {
+	if positions == nil {
+		return
+	}
+	for i := range ds {
+		span, ok := positions.Locate(ds[i].Step, ds[i].Field)
+		if ds[i].Kind != "" {
+			span, ok = positions.LocateKind(ds[i].Step, ds[i].Kind)
+		}
+		if ok {
+			ds[i].Line = span.Start.Line
+			ds[i].Column = span.Start.Column
+		}
+	}
 }
 
 // validateWait checks a waiting step.
