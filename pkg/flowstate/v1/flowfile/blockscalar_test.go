@@ -27,6 +27,13 @@ import (
 //
 // The scalar is pasted in whole, so a case writes the block header and its
 // indented body exactly as an author would and the test reads like the file.
+//
+// A second step follows it, and that is not decoration: a block scalar at the
+// end of a document is terminated by the end of the document, so how many
+// trailing newlines it keeps is a question about the parser's handling of EOF
+// rather than about chomping. `|+` is the case that turns on exactly that
+// count, so the scalar is closed by a real line at lower indentation and every
+// case below means the same thing whoever parses it (Copilot, #1629).
 func blockValue(t *testing.T, scalar string) *v1.Value {
 	t.Helper()
 
@@ -34,7 +41,10 @@ func blockValue(t *testing.T, scalar string) *v1.Value {
 name: t
 steps:
   - id: a
-    value: ` + scalar + "\n"))
+    value: ` + scalar + `
+  - id: terminator
+    value: ${0}
+`))
 	require.NoError(t, err, "compiling %q", scalar)
 
 	return wf.GetSteps()[0].GetValue()
