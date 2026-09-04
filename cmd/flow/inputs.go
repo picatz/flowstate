@@ -211,8 +211,22 @@ func coerceInput(name, raw string, declaration *v1.InputDeclaration) (*v1.Value,
 // inputCoercionError says what was given, what the file declared, and what the
 // declared type looks like written down.
 func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, wants string) error {
-	return fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
-		name, raw, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration))
+	// A [v1.InputError] for the same reason the binder's own refusals are one:
+	// this is the caller's argument being refused, and an unclassified refusal
+	// is reported by [v1.ClassifyError] as Internal — a defect in Flowstate
+	// (#1552). It is the *only* refusal of this class that never reaches the
+	// binder, because a word a shell handed over cannot be coerced to the
+	// declared type at all, so nothing downstream would classify it.
+	//
+	// Got is left unset on purpose. What arrived is a shell word with no type
+	// yet, and naming one — "string", because that is what characters are —
+	// would report a type nobody declared and this function never decided.
+	return &v1.InputError{
+		Input:    name,
+		Declared: v1.DeclaredTypeName(declaration.GetType()),
+		Err: fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
+			name, raw, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration)),
+	}
 }
 
 // describedAs renders a declaration's description as a clause, for the reason the

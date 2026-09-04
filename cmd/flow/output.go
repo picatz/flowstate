@@ -250,6 +250,46 @@ func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message)
 	return err
 }
 
+// refuseRunLocally answers a refusal that happened before the run started.
+//
+// `--output json` means the answer is a document, and until this a submit
+// refusal was the one outcome of `flow run local` that broke that promise: a
+// run that *started* and failed wrote a GetResponse carrying STATUS_FAILED and
+// the reason, while a command line the workflow's own `inputs:` refused wrote
+// prose on stderr and an empty stdout. A caller that had asked for JSON had
+// nothing to parse, for the failure they were most likely to hit first (#1552).
+//
+// The same document, through the same writer, classified through the same
+// [v1.ClassifyError] the started-and-failed path uses — so the two agree by
+// construction rather than by two renderings that match today. A refusal about
+// the caller's own argument reports [v1.ErrorKindInvalidInput] rather than
+// "Internal", which is what [v1.InputError] exists to make knowable.
+//
+// The error is returned unchanged whatever the format, so the exit code, the
+// sentence a person reads on stderr, and every caller that matches on the chain
+// are exactly what they were. The text shape still writes no document, for the
+// reason the started-and-failed path gives: an empty stdout is a meaningful
+// answer there.
+func refuseRunLocally(surface *ui.UI, rendering runRendering, refusal error) error {
+	if !rendering.WantsDocument() {
+		return refusal
+	}
+
+	response := &v1.GetResponse{
+		Status: v1.RunResponse_STATUS_FAILED,
+		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+			Message: refusal.Error(),
+			Kind:    v1.ClassifyError(refusal).String(),
+		}},
+	}
+
+	if err := writeRunJSON(surface, rendering, response); err != nil {
+		return err
+	}
+
+	return refusal
+}
+
 // A mutation's result is an answer, so the verbs that perform one carry `--output`
 // too.
 //

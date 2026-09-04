@@ -169,10 +169,14 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// it look like the run got somewhere first.
 	inputs, err := runInputs(cmd, workflow)
 	if err != nil {
-		return err
+		// Through the same writer as the binder's refusals below. A word a shell
+		// handed over that cannot be the declared type is the same class of
+		// mistake as one the binder refuses, and a caller who asked for JSON is
+		// owed a document for both (#1552).
+		return refuseRunLocally(newSurface(cmd), rendering, err)
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
-		return err
+		return refuseRunLocally(newSurface(cmd), rendering, err)
 	}
 
 	// A workload that waits for a signal needs something able to deliver one, or it
