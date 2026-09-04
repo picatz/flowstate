@@ -226,6 +226,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
 			anchor.place(stopped.GetFailures())
+			anchor.place(stopped.GetWarnings())
 			report.Cases = append(report.Cases, stopped)
 			transcripts = append(transcripts, nil)
 
@@ -259,6 +260,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 			})
 		cancel()
 		anchor.place(result.GetFailures())
+		anchor.place(result.GetWarnings())
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())

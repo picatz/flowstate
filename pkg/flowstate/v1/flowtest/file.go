@@ -281,6 +281,16 @@ type File struct {
 	// [document.positionOf] already keeps.
 	doc *document
 
+	// sources say where each of Tests was written, index for index.
+	//
+	// Not derivable from the index: a table's rows expand into the flat list, so
+	// case i may have been written at `tests[3].cases[2]` — see [caseSource],
+	// whose own doc says recomputing this afterward is impossible. The loader
+	// already carries it for its own diagnostics; keeping it is what lets a
+	// run-time failure be placed at the case that actually claimed it rather
+	// than at whatever `tests[i]` happens to be (#1558).
+	sources []caseSource
+
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
 	// inherits them and may override them, by the boring, stated rules
@@ -1365,6 +1375,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	}
 	expanded, sources := expandTableEntries(p, file.Tests)
 	file.Tests = expanded
+	file.sources = sources
 
 	// Validated then merged before anything below bounds or checks a case, so
 	// every per-test check runs against the effective test a case actually

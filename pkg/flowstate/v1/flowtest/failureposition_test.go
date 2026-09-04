@@ -226,3 +226,127 @@ func fieldsOf(failures []*v1.Diagnostic) string {
 
 	return strings.Join(names, "; ")
 }
+
+// TestATableRowIsPlacedAtTheRowThatWroteIt is the case a flat `tests[i]` gets
+// wrong.
+//
+// A table entry's rows expand into the flat list the runner walks, so the third
+// effective case may have been written at `tests[0].cases[1]`. Deriving the path
+// from the runner's index would underline a different case's text — a false
+// position on a true finding, which is worse than none (Copilot, #1628).
+func TestATableRowIsPlacedAtTheRowThatWroteIt(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), positionWorkflow)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `edition: v2026.3
+tests:
+  - name: table
+    workflow: ./workflow.yaml
+    cases:
+      - name: first row
+        expect:
+          outputs:
+            total: 2
+            extra: unnamed
+      - name: second row
+        expect:
+          outputs:
+            total: 99
+            extra: unnamed
+`)
+
+	report := flowtest.RunFile(path)
+	require.Len(t, report.GetCases(), 2)
+
+	// The first row is correct, so only the second reports anything.
+	require.True(t, report.GetCases()[0].GetPassed(), "the first row should hold")
+
+	failure := failureFor(t, report.GetCases()[1].GetFailures(), "expect.outputs")
+	assert.Equal(t, uint32(14), failure.GetLine(),
+		"the second row's wrong value is on line 14; anchoring by flat index would point into the first row")
+}
+
+// TestAnInheritedClaimIsNotPlacedOnTheCase is the arithmetic half of the same
+// rule.
+//
+// `defaults:` prepends its check claims, so a case's own claims sit after them
+// and a merged index is not an index into what the author wrote. Translating it
+// is what keeps merged claim 0 — inherited — from underlining the case's own
+// first claim, which is text that is already right.
+func TestAnInheritedClaimIsNotPlacedOnTheCase(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), positionWorkflow)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `edition: v2026.3
+defaults:
+  check:
+    - that: ${1 == 2}
+tests:
+  - name: c
+    workflow: ./workflow.yaml
+    expect:
+      check:
+        - that: ${true}
+      outputs:
+        total: 2
+        extra: unnamed
+`)
+
+	report := flowtest.RunFile(path)
+	require.Len(t, report.GetCases(), 1)
+
+	// The inherited claim is the one that fails, and it is merged claim 0 while
+	// the case's own `check[0]` is the claim on line 10 that holds.
+	failure := failureFor(t, report.GetCases()[0].GetFailures(), "expect.check[0]")
+	assert.Zero(t, failure.GetLine(),
+		"an inherited claim must not borrow the case's own check[0] position")
+}
+
+// TestAWarningIsPlacedAndCodedToo covers the findings that are not failures.
+//
+// A task a case invoked with no stub to answer it is reported as a warning, and
+// an editor has the same reason to underline it: the fix is a `stubs:` entry.
+// Placing only failures left these at line 0 with an empty code, which is the
+// same gap #1558 is about (Copilot, #1628).
+func TestAWarningIsPlacedAndCodedToo(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.3
+name: reaches
+steps:
+  - id: fetch
+    http:
+      url: https://example.invalid/
+outputs:
+  code:
+    value: ${steps.fetch.status_code}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `edition: v2026.3
+tests:
+  - name: c
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: "inputs.url == 'https://other.invalid/'"
+        returns:
+          status_code: 200
+    expect:
+      outputs:
+        code: 200
+`)
+
+	report := flowtest.RunFile(path)
+	require.Len(t, report.GetCases(), 1)
+
+	warning := failureFor(t, report.GetCases()[0].GetWarnings(), "stubs")
+	assert.NotZero(t, warning.GetLine(),
+		"a warning an editor should underline must carry a position")
+	assert.Equal(t, string(v1.DiagnosticCodeStubUnmatched), warning.GetCode(),
+		"the stub code must actually be reachable, or it is dead in the registry")
+}

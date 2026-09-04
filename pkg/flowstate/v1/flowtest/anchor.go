@@ -7,96 +7,115 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// caseAnchor places a case's run-time failures in the file that claimed them.
+// caseAnchor places a case's run-time findings in the file that claimed them.
 //
-// A failure found while running says which key it contradicts — `expect.outputs`,
-// `expect.ran` — and often which entry of it, in [v1.Diagnostic.Value]. The
-// loader already computed where every key of this file is, so nothing here
-// re-derives a position: it walks that same document ([document.positionOf]),
-// which is what keeps a failure and a load-time problem agreeing about where
-// `expect.outputs` starts rather than disagreeing by a line.
+// A finding says which key it contradicts — `expect.outputs`, `expect.ran` —
+// and often which entry of it, in [v1.Diagnostic.Value]. The loader already
+// computed where every key of this file is, so nothing here re-derives a
+// position: it walks that same document ([document.positionOf]), which is what
+// keeps a failure and a load-time problem agreeing about where `expect.outputs`
+// starts rather than disagreeing by a line.
 //
-// Zero for a [File] that was built in Go rather than parsed, and for a key an
-// author never wrote — an `expect.failed` a case left unset is still reported
-// when the run fails, and there is no `expect.failed:` line to underline. That
-// is [document.positionOf]'s exact-or-nothing rule, kept deliberately: this
-// package would rather hand an editor no position than send an author to
-// correct a line that is already right.
+// Nothing is placed for a [File] built in Go rather than parsed, and nothing for
+// a key an author never wrote — an `expect.failed` a case left unset is still
+// reported when the run fails, and there is no `expect.failed:` line to
+// underline. That is [document.positionOf]'s exact-or-nothing rule, kept
+// deliberately: this package would rather hand an editor no position than send
+// an author to correct a line that is already right.
 type caseAnchor struct {
 	doc *document
 
-	// at is the case's own path, `tests[i]`, so a failure's field extends it
-	// rather than restating it.
-	at loc
+	// source is where this case was written, and how much of it it wrote for
+	// itself. Both matter: the path is not `tests[i]` for a table's row, and an
+	// index into a merged list is not an index into the document's.
+	source caseSource
+
+	// mergedStubs and mergedChecks are the lengths the case actually ran with,
+	// which is what a finding's index counts against.
+	mergedStubs  int
+	mergedChecks int
 }
 
-// HasPositions reports whether this file kept the parsed YAML that places a
-// run-time failure in it.
-//
-// True for a file that was loaded from bytes, false for one built in Go, whose
-// failures carry no line because there is no text they came from. Exported for
-// the fuzz target, which checks that the same bytes answer this the same way
-// twice rather than deep-comparing the index itself.
-func (f *File) HasPositions() bool { return f != nil && f.doc != nil }
-
 // anchorFor is the anchor for one case of a parsed file, or the zero anchor when
-// there is no document to place anything in.
+// there is nothing to place anything in.
 func anchorFor(file *File, index int) caseAnchor {
-	if file == nil || file.doc == nil {
+	if file == nil || file.doc == nil || index >= len(file.sources) {
 		return caseAnchor{}
 	}
 
-	return caseAnchor{doc: file.doc, at: at("tests").item(index)}
+	test := &file.Tests[index]
+
+	return caseAnchor{
+		doc:          file.doc,
+		source:       file.sources[index],
+		mergedStubs:  len(test.Stubs),
+		mergedChecks: len(test.Expect.Check),
+	}
 }
 
-// place fills in the position and code of every failure a case produced.
+// HasPositions reports whether this file kept the parsed YAML that places a
+// run-time finding in it.
 //
-// Called once where a case's failures are complete rather than at each of the
-// fifteen places one is built: what a failure is about is already written on it,
-// so placing them here keeps the rule in one place and means a new failure class
-// is located by saying what it is about rather than by remembering to look a
-// position up.
-func (a caseAnchor) place(failures []*v1.Diagnostic) {
-	for _, failure := range failures {
-		if failure == nil {
+// True for a file loaded from bytes, false for one built in Go, whose findings
+// carry no line because there is no text they came from. Exported for the fuzz
+// target, which checks that the same bytes answer this the same way twice rather
+// than deep-comparing the index itself.
+func (f *File) HasPositions() bool { return f != nil && f.doc != nil }
+
+// place fills in the position and code of every finding a case produced.
+//
+// Called where a case's findings are complete rather than at each of the fifteen
+// places one is built: what a finding is about is already written on it, so
+// placing them here keeps the rule in one place and means a new class is located
+// by saying what it is about rather than by remembering to look a position up.
+//
+// Warnings are placed by the same call as failures. A case that invoked a task
+// no stub answered is something an editor should underline at the `stubs:` block
+// exactly as it underlines a false claim at `expect:`; that one is a warning
+// rather than a failure says how loudly to report it, not whether it has a
+// place in the file.
+func (a caseAnchor) place(findings []*v1.Diagnostic) {
+	for _, finding := range findings {
+		if finding == nil {
 			continue
 		}
 
-		if failure.GetCode() == "" {
-			failure.Code = string(codeFor(failure.GetField()))
+		if finding.GetCode() == "" {
+			finding.Code = string(codeFor(finding.GetField()))
 		}
 
-		if a.doc == nil || failure.GetLine() != 0 {
+		if a.doc == nil || finding.GetLine() != 0 {
 			continue
 		}
-		if position, known := a.locate(failure); known {
-			failure.Line, failure.Column = uint32(position.line), uint32(position.column)
+		if position, known := a.locate(finding); known {
+			finding.Line, finding.Column = uint32(position.line), uint32(position.column)
 		}
 	}
 }
 
-// locate finds the most specific key this failure is about that the file
-// actually wrote.
+// locate finds the most specific key this finding is about that the case itself
+// wrote.
 //
-// Most specific first, and each step is exact: an output the case named is found
-// at `expect.outputs.<name>` and underlines that entry, while an output the run
-// produced that the case did *not* name has no entry of its own and falls back to
-// the `expect.outputs:` key it should have been added to. The document decides
-// which of those a failure is, so the two classes are told apart by what the
-// author wrote rather than by this package parsing its own messages.
-func (a caseAnchor) locate(failure *v1.Diagnostic) (position, bool) {
-	field := failure.GetField()
+// Most specific first, and every step is exact: an output the case named is
+// found at `expect.outputs.<name>` and underlines that entry, while an output
+// the run produced that the case did *not* name has no entry of its own and
+// falls back to the `expect.outputs:` key it should have been added to. The
+// document decides which of those a finding is, so the two classes are told
+// apart by what the author wrote rather than by this package parsing its own
+// messages.
+func (a caseAnchor) locate(finding *v1.Diagnostic) (position, bool) {
+	field := finding.GetField()
 	if field == "" {
 		return position{}, false
 	}
 
-	path := a.at
-	for _, step := range strings.Split(field, ".") {
-		path = extend(path, step)
+	path, ok := a.pathOf(field)
+	if !ok {
+		return position{}, false
 	}
 
-	// The entry, when the failure names one and the author wrote it.
-	if value := failure.GetValue(); value != "" {
+	// The entry, when the finding names one and the author wrote it.
+	if value := finding.GetValue(); value != "" {
 		if position, known := a.doc.positionOf(path.field(value)); known {
 			return position, true
 		}
@@ -120,35 +139,69 @@ func (a caseAnchor) locate(failure *v1.Diagnostic) (position, bool) {
 	return position{}, false
 }
 
-// extend adds one step of a failure's field to a path, reading the `name[i]`
-// form some of them are written in.
+// pathOf turns the field a finding names into a path in this document, or
+// reports that the case did not write the thing it addresses.
 //
-// A claim about one entry of a list names it that way — `expect.check[0]`,
-// `stubs[1]` — which is the spelling [loc.String] renders and this package's
-// prose already uses. Treating it as a key would look for a mapping entry
-// literally called "check[0]", find nothing, and quietly place the failure at
-// the enclosing key instead of the claim the author wrote.
-//
-// A malformed index is taken as a plain name rather than an error: this is
-// placing a diagnostic, and failing to place one is the documented outcome
-// already.
-func extend(path loc, step string) loc {
-	open := strings.IndexByte(step, '[')
-	if open <= 0 || !strings.HasSuffix(step, "]") {
-		return path.field(step)
+// The two indexed families need translating rather than copying, and they
+// translate in opposite directions, so they are named rather than folded into
+// one rule that would be wrong for one of them: [mergeDefaults] appends a case's
+// own stubs after the inherited ones it prepends for checks. An index outside
+// the case's own run addresses something it inherited, which has no position
+// here at all — a position on this case would underline a stub or a claim the
+// case did not write, which is the false position [document.positionOf] refuses
+// to produce by construction and this must not reintroduce by arithmetic.
+func (a caseAnchor) pathOf(field string) (loc, bool) {
+	switch name, index, indexed := splitIndex(field); {
+	case indexed && name == "stubs":
+		// A case's own stubs come first in the merged list ([caseSource.stubOrigin]).
+		if index >= a.source.ownStubs {
+			return nil, false
+		}
+
+		return a.source.path.field("stubs").item(index), true
+
+	case indexed && name == "expect.check":
+		// A case's own claims come last: [checkCheckClaims] subtracts the
+		// inherited ones prepended ahead of them to reach the authored index.
+		inherited := a.mergedChecks - a.source.ownChecks
+		if index < inherited {
+			return nil, false
+		}
+
+		return a.source.path.field("expect").field("check").item(index - inherited), true
 	}
 
-	index, err := strconv.Atoi(step[open+1 : len(step)-1])
-	if err != nil || index < 0 {
-		return path.field(step)
+	path := a.source.path
+	for _, step := range strings.Split(field, ".") {
+		path = path.field(step)
 	}
 
-	return path.field(step[:open]).item(index)
+	return path, true
 }
 
-// codeFor is the code a failure of this class carries.
+// splitIndex reads the `name[i]` form a finding about one entry of a list is
+// written in — `expect.check[0]`, `stubs[1]` — which is the spelling
+// [loc.String] renders and this package's prose already uses.
 //
-// The field a failure names is its class — a consumer grouping "an output the
+// A malformed index is not indexed rather than an error: this is placing a
+// diagnostic, and failing to place one is the documented outcome already.
+func splitIndex(field string) (name string, index int, indexed bool) {
+	open := strings.IndexByte(field, '[')
+	if open <= 0 || !strings.HasSuffix(field, "]") {
+		return field, 0, false
+	}
+
+	index, err := strconv.Atoi(field[open+1 : len(field)-1])
+	if err != nil || index < 0 {
+		return field, 0, false
+	}
+
+	return field[:open], index, true
+}
+
+// codeFor is the code a finding of this class carries.
+//
+// The field a finding names is its class — a consumer grouping "an output the
 // case did not name" apart from "an output whose value differs" is grouping by
 // what the claim was about — so the mapping is from field to code rather than
 // from a message this would have to parse.
@@ -158,7 +211,8 @@ func extend(path loc, step string) loc {
 // The named codes exist where a consumer has a reason to treat one differently,
 // and adding a class is adding a row rather than a mechanism.
 func codeFor(field string) v1.DiagnosticCode {
-	switch field {
+	name, _, _ := splitIndex(field)
+	switch name {
 	case "expect.outputs":
 		return v1.DiagnosticCodeOutputMismatch
 	case "stubs":
