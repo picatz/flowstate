@@ -183,6 +183,8 @@ func mcpCatalogResourceHandler(local *server.FlowstateServer) mcp.ResourceHandle
 			return nil, fmt.Errorf("reading the task catalog: %w", err)
 		}
 
+		StripCatalogDescriptors(resp.Msg)
+
 		encoded, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(resp.Msg)
 		if err != nil {
 			return nil, fmt.Errorf("rendering the task catalog: %w", err)

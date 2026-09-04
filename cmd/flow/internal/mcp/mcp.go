@@ -875,6 +875,15 @@ func dispatch(
 			out = deps.Redact(response)
 		}
 
+		// An agent reads the catalog for summaries, types and constraints —
+		// not the base64 FileDescriptorSet bytes it cannot decode. Strip
+		// them at the MCP boundary the same way sensitive values are
+		// projected out above: the RPC and `flow plugins -o json` are
+		// unchanged; this is a projection for a reader.
+		if response, ok := out.(*v1.GetCatalogResponse); ok {
+			StripCatalogDescriptors(response)
+		}
+
 		encode := func(message proto.Message) ([]byte, error) {
 			return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
 		}
@@ -976,6 +985,29 @@ func ToolError(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+	}
+}
+
+// StripCatalogDescriptors zeros the descriptor fields on every TaskDescription
+// in a GetCatalogResponse — input_descriptor, input_message, output_descriptor,
+// output_message — so the MCP surface answers with the rendered TaskFields an
+// agent reads, not the base64 FileDescriptorSet bytes it cannot decode.
+func StripCatalogDescriptors(resp *v1.GetCatalogResponse) {
+	strip := func(tasks []*v1.TaskDescription) {
+		for _, td := range tasks {
+			td.InputDescriptor = nil
+			td.InputMessage = ""
+			td.OutputDescriptor = nil
+			td.OutputMessage = ""
+		}
+	}
+	if c := resp.GetCatalog(); c != nil {
+		strip(c.GetTasks())
+	}
+	if p := resp.GetPlugins(); p != nil {
+		for _, pd := range p.GetPlugins() {
+			strip(pd.GetTasks())
+		}
 	}
 }
 

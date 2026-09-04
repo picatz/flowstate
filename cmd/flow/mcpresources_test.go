@@ -156,6 +156,8 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 	response, err := mustNewFlowstateServer(t, nil).GetCatalog(t.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
 	require.NoError(t, err)
 
+	flowmcp.StripCatalogDescriptors(response.Msg)
+
 	want, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response.Msg)
 	require.NoError(t, err)
 
@@ -193,6 +195,87 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(read.Contents[0].Text), &decoded))
 	assert.NotEmpty(t, decoded.Catalog.Tasks, "the catalog resource names no tasks")
 	assert.NotEmpty(t, decoded.Catalog.CELLibraries, "the catalog resource names no CEL libraries")
+}
+
+// TestCatalogOmitsDescriptorBytesFromTheMCPSurface verifies the projection
+// #1549 adds: the MCP tool and resource strip input_descriptor,
+// output_descriptor, input_message, and output_message from every
+// TaskDescription, while the underlying RPC still carries them.
+func TestCatalogOmitsDescriptorBytesFromTheMCPSurface(t *testing.T) {
+	t.Parallel()
+
+	srv := mustNewFlowstateServer(t, nil)
+
+	// The RPC itself must still carry descriptors — the projection is
+	// MCP-only, not a change to the RPC.
+	rpcResp, err := srv.GetCatalog(t.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
+	require.NoError(t, err)
+
+	hasDescriptorFields := false
+	for _, td := range rpcResp.Msg.GetCatalog().GetTasks() {
+		if len(td.GetInputDescriptor()) > 0 || len(td.GetOutputDescriptor()) > 0 ||
+			td.GetInputMessage() != "" || td.GetOutputMessage() != "" {
+			hasDescriptorFields = true
+			break
+		}
+	}
+	require.True(t, hasDescriptorFields,
+		"the RPC catalog carries no descriptor fields at all — the test cannot prove the MCP surface strips them")
+
+	// The MCP tool answer must carry no non-empty descriptor values.
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	called, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      flowmcp.ToolName("GetCatalog"),
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.False(t, called.IsError, "flowstate_get_catalog answered with an error")
+	require.Len(t, called.Content, 1)
+
+	text, ok := called.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+
+	var toolCatalog struct {
+		Catalog struct {
+			Tasks []struct {
+				InputDescriptor  string `json:"inputDescriptor"`
+				InputMessage     string `json:"inputMessage"`
+				OutputDescriptor string `json:"outputDescriptor"`
+				OutputMessage    string `json:"outputMessage"`
+			} `json:"tasks"`
+		} `json:"catalog"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(text.Text), &toolCatalog))
+	for _, td := range toolCatalog.Catalog.Tasks {
+		assert.Empty(t, td.InputDescriptor, "inputDescriptor not stripped")
+		assert.Empty(t, td.InputMessage, "inputMessage not stripped")
+		assert.Empty(t, td.OutputDescriptor, "outputDescriptor not stripped")
+		assert.Empty(t, td.OutputMessage, "outputMessage not stripped")
+	}
+
+	// The resource must agree.
+	read, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.CatalogResourceURI})
+	require.NoError(t, err)
+	require.Len(t, read.Contents, 1)
+
+	var resourceCatalog struct {
+		Catalog struct {
+			Tasks []struct {
+				InputDescriptor  string `json:"inputDescriptor"`
+				InputMessage     string `json:"inputMessage"`
+				OutputDescriptor string `json:"outputDescriptor"`
+				OutputMessage    string `json:"outputMessage"`
+			} `json:"tasks"`
+		} `json:"catalog"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(read.Contents[0].Text), &resourceCatalog))
+	for _, td := range resourceCatalog.Catalog.Tasks {
+		assert.Empty(t, td.InputDescriptor, "inputDescriptor not stripped from resource")
+		assert.Empty(t, td.InputMessage, "inputMessage not stripped from resource")
+		assert.Empty(t, td.OutputDescriptor, "outputDescriptor not stripped from resource")
+		assert.Empty(t, td.OutputMessage, "outputMessage not stripped from resource")
+	}
 }
 
 // TestEveryExampleResourceIsAValidFlowfile.
