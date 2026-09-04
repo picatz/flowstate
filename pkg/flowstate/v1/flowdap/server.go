@@ -642,6 +642,17 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 		// breakpoint on a step this run cannot reach is what it is for: it comes
 		// back unverified, carrying the reason the prompt would have printed,
 		// instead of verified and silently never taken (#1367).
+		//
+		// It reports only what the session's inventory knows, and `flow dap`
+		// builds its session before there is one: the workflow arrives in the
+		// client's own launch configuration as `program` (cmd/flow/dap.go), so at
+		// construction there is nothing to check a name against and every name
+		// fails open. That is the documented empty-inventory rule rather than an
+		// oversight here, and it is why this is right where the inventory exists —
+		// an embedder that passes Options.Steps, and the tests below — and latent
+		// where it does not. Closing that gap means giving a session its steps
+		// after construction and re-reporting breakpoints already answered, which
+		// is the editor-front work #1297 owns (Copilot, #1627).
 		if notice, unknown := s.session.UnknownStep(name); unknown {
 			answers = append(answers, breakpoint{Message: notice})
 

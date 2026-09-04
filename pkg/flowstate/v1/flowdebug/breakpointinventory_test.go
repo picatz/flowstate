@@ -113,8 +113,10 @@ func TestUnknownStepAnswersPerIDForAFrontEnd(t *testing.T) {
 	_, unknown = session.UnknownStep("deploy")
 	require.False(t, unknown, "a declared step must not be reported unknown")
 
-	// Surrounding space is not a different step id, the same way the prompt and
-	// SetBreakpoints already treat it.
+	// Surrounding space is not a different step id *here*, which is what lets the
+	// DAP adapter hand over a name straight from a client. It is not the rule
+	// everywhere: SetBreakpoints refuses whitespace outright through
+	// oneArgument, because the prompt it composes a line for cannot quote one.
 	_, unknown = session.UnknownStep("  deploy  ")
 	require.False(t, unknown)
 }

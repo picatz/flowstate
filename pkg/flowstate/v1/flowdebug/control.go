@@ -428,7 +428,7 @@ func (s *Session) SetBreakpoints(ids []string) error {
 	// and expects each to come back with its own verdict.
 	for _, id := range ids {
 		if notice, unknown := s.UnknownStep(id); unknown {
-			return fmt.Errorf("flowdebug: %s", notice)
+			return fmt.Errorf("flowdebug: breakpoint: %s", notice)
 		}
 	}
 
