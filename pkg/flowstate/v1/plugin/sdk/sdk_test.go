@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -307,23 +308,18 @@ func TestStructuredOutputsRoundTrip(t *testing.T) {
 	require.True(t, entries[0].GetValue().GetBoolValue())
 }
 
-// TestUnsupportedMessageOutputSaysWhatToDo checks the refusal, which is the part
-// an author actually meets.
+// TestWellKnownMessageOutputSaysWhatToDo checks the refusal that remains, which
+// is the part an author actually meets.
 //
-// Converting an arbitrary message would mean inventing a mapping from its fields
-// onto a CEL value — this package's invention rather than the schema's, whose
-// field names would come out however JSON naming mangles them and would not match
-// the descriptor the engine validates the task against. So it refuses, and the
-// error has to be worth receiving.
-func TestUnsupportedMessageOutputSaysWhatToDo(t *testing.T) {
+// A well-known type has a meaning outside its fields — a duration is a length of
+// time, not a {seconds, nanos} pair — so converting one field by field would
+// answer #1436 here rather than in the schema. It is refused, and the error has
+// to be worth receiving.
+func TestWellKnownMessageOutputSaysWhatToDo(t *testing.T) {
 	t.Parallel()
 
-	// A message-typed output that is neither spelling of "any shape".
-	_, err := EncodeOutputs(&flowstatev1.Node{
-		Id:   "x",
-		Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{Name: "echo"}},
-	})
-	require.Error(t, err, "an arbitrary message was converted rather than refused")
+	_, err := EncodeOutputs(&flowstatev1.Wait{Timeout: durationpb.New(time.Second)})
+	require.Error(t, err, "a well-known type was converted rather than refused")
 
 	for _, want := range []string{
 		"google.api.expr.v1alpha1.Value", // what to declare instead
@@ -332,6 +328,120 @@ func TestUnsupportedMessageOutputSaysWhatToDo(t *testing.T) {
 		require.Contains(t, err.Error(), want,
 			"the refusal does not tell the author what to do instead")
 	}
+}
+
+// TestNestedMessageOutputsBecomeMaps is the contract #1456 asks for: a task that
+// declares a typed nested message returns data a workflow can read, rather than
+// working on the empty case and failing on the first real one.
+//
+// A message becomes a map keyed by its own field names — the same shape the
+// engine's built-in bridge already produces — so `${steps.log.commits[0].name}`
+// means one thing whether the task is built in or shipped by a plugin. Not one
+// case here depends on a list being empty, which is the shape every test before
+// this one reached.
+func TestNestedMessageOutputsBecomeMaps(t *testing.T) {
+	t.Parallel()
+
+	// entriesOf reads a CEL map into a plain Go map, so a case can address one
+	// key without walking the entry list itself.
+	entriesOf := func(t *testing.T, v *expr.Value) map[string]*expr.Value {
+		t.Helper()
+		out := map[string]*expr.Value{}
+		for _, entry := range v.GetMapValue().GetEntries() {
+			out[entry.GetKey().GetStringValue()] = entry.GetValue()
+		}
+		return out
+	}
+
+	t.Run("a repeated message is a list of maps", func(t *testing.T) {
+		t.Parallel()
+
+		outputs, err := EncodeOutputs(&flowstatev1.Workflow{
+			DeclaredInputs: []*flowstatev1.InputDeclaration{
+				{Name: "shards", Required: true},
+				{Name: "dry_run"},
+			},
+		})
+		require.NoError(t, err)
+
+		list := outputs.GetNamedValues()["declared_inputs"].GetLiteral().GetListValue().GetValues()
+		require.Len(t, list, 2, "both elements must survive the conversion")
+
+		first := entriesOf(t, list[0])
+		require.Equal(t, "shards", first["name"].GetStringValue())
+		require.True(t, first["required"].GetBoolValue())
+
+		// Every field is present whether or not it was set, so a workflow reading
+		// the second element's `required` gets false rather than "no such key".
+		second := entriesOf(t, list[1])
+		require.Equal(t, "dry_run", second["name"].GetStringValue())
+		require.False(t, second["required"].GetBoolValue())
+	})
+
+	t.Run("a singular message nested in a message is a map", func(t *testing.T) {
+		t.Parallel()
+
+		outputs, err := EncodeOutputs(&flowstatev1.Node{
+			Id:   "fetch",
+			Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{Name: "echo"}},
+		})
+		require.NoError(t, err)
+
+		task := entriesOf(t, outputs.GetNamedValues()["task"].GetLiteral())
+		require.Equal(t, "echo", task["name"].GetStringValue())
+	})
+
+	t.Run("an unset singular message is null", func(t *testing.T) {
+		t.Parallel()
+
+		// This is also what makes a self-referential message type terminate:
+		// descending into an unset field would otherwise never bottom out.
+		outputs, err := EncodeOutputs(&flowstatev1.Node{Id: "fetch"})
+		require.NoError(t, err)
+
+		// The kind itself, not a GetNullValue accessor: a method value is non-nil
+		// whatever the encoding, so asserting on one proves nothing (Copilot, #1626).
+		require.IsType(t, &expr.Value_NullValue{},
+			outputs.GetNamedValues()["task"].GetLiteral().GetKind(),
+			"an unset message must be null rather than a map of zero fields")
+	})
+
+	t.Run("an alternative of a oneof nobody chose is null", func(t *testing.T) {
+		t.Parallel()
+
+		// DebugBinding's `answer` is a real oneof of two strings. Encoding the arm
+		// that was not taken as "" would leave a workflow unable to tell "no
+		// error" from "an empty error", and would describe the message as holding
+		// both alternatives at once.
+		outputs, err := EncodeOutputs(&flowstatev1.DebugBinding{
+			Answer: &flowstatev1.DebugBinding_Rendered{Rendered: "42"},
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, "42", outputs.GetNamedValues()["rendered"].GetLiteral().GetStringValue())
+		require.IsType(t, &expr.Value_NullValue{},
+			outputs.GetNamedValues()["error"].GetLiteral().GetKind(),
+			"the arm nobody took must be null rather than an empty string")
+	})
+
+	t.Run("a message inside a map value is a map", func(t *testing.T) {
+		t.Parallel()
+
+		outputs, err := EncodeOutputs(&flowstatev1.Workflow_StepOutputs{
+			StepValues: map[string]*flowstatev1.Node_Outputs{
+				"fetch": {NamedValues: map[string]*flowstatev1.Value{
+					"code": flowstatev1.NewLiteral(200),
+				}},
+			},
+		})
+		require.NoError(t, err)
+
+		steps := entriesOf(t, outputs.GetNamedValues()["step_values"].GetLiteral())
+		require.Contains(t, steps, "fetch")
+
+		named := entriesOf(t, entriesOf(t, steps["fetch"])["named_values"])
+		require.Equal(t, int64(200), named["code"].GetInt64Value())
+	})
 }
 
 // TestLiteral checks the helper on its own, including the shapes a plugin author

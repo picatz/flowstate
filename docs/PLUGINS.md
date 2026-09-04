@@ -274,10 +274,40 @@ named `steps.hi` now; run `flow fix` to rewrite this file
 
 That is the rooted-name rule the whole language follows, and it applies to a
 plugin's outputs exactly as it does to a built-in's
-([DSL.md](DSL.md#scope-and-the-id-namespace)). A task whose output shape is not fixed declares
-the field as `google.api.expr.v1alpha1.Value` and builds it with `sdk.Literal`
-(`sdk/values.go:430-450`); any other message type is refused rather than
-converted approximately (`sdk/values.go:399-412`).
+([DSL.md](DSL.md#scope-and-the-id-namespace)).
+
+An output field whose type is another message becomes a **map keyed by that
+message's own field names**, and a `repeated` one becomes a list of those maps.
+So a task declaring
+
+```protobuf
+message LogOutputs {
+  repeated Commit commits = 1;
+}
+
+message Commit {
+  string sha = 1;
+  Signature author = 2;      // itself a message: another map
+  repeated string parent_hashes = 3;
+}
+```
+
+is read by a workflow as `${steps.log.commits[0].author.name}` and
+`${steps.log.commits[0].parent_hashes}`. The keys are the descriptor's field
+names — `parent_hashes`, not `parentHashes` — so the schema you wrote is the
+shape the author sees, nested to any depth. Every field is present whether or
+not the task set it, so reading one the task left empty gives that field's zero
+value rather than failing with "no such key"; the exception is a singular
+message, which is `null` when unset.
+
+Two kinds are not converted. A well-known type — `google.protobuf.Timestamp`,
+`Duration` and their siblings — is refused, because what one means on the
+workflow side is a schema-wide question rather than this SDK's to answer
+(picatz/flowstate#1436); a task that needs one today carries it as a string, the
+way `Commit.author.when` above holds RFC 3339. And a task whose output shape is
+not fixed at all declares the field as `google.api.expr.v1alpha1.Value` and
+builds it with `sdk.Literal` (`sdk/values.go`), which stays the right choice for
+genuinely dynamic data such as a parsed response body.
 
 You can check a Flowfile against it without a worker, a server, or Temporal:
 

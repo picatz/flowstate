@@ -6,6 +6,12 @@ edition: v2026.3
 # exactly git.log's real contract (empty cursor = fresh walk, next_cursor fed back
 # to resume, truncated=false on the last page), so the loop drives the stub the
 # same way it drives the plugin.
+#
+# Each commit carries the whole shape git.log encodes — sha, message, the author
+# and committer signatures, and parent_hashes — rather than only the sha this
+# workflow happens to read. A stub the task cannot produce is a test lying about
+# production, and a Commit is a message, so on the workflow side it is a map
+# keyed by that message's own field names.
 tests:
   - name: pages a stubbed history to exhaustion, every commit exactly once
     workflow: ./log-paginate.yaml
@@ -16,8 +22,16 @@ tests:
         where: "inputs.cursor == ''"
         returns:
           commits:
-            - {sha: aaa1}
-            - {sha: aaa2}
+            - sha: aaa1
+              message: add the deploy key rotation runbook
+              parent_hashes: [aaa0]
+              author: {name: Ada Lovelace, email: ada@example.com, when: "2026-03-04T12:00:00Z"}
+              committer: {name: Ada Lovelace, email: ada@example.com, when: "2026-03-04T12:00:00Z"}
+            - sha: aaa2
+              message: pin the vendor image to a digest
+              parent_hashes: [aaa1]
+              author: {name: Ada Lovelace, email: ada@example.com, when: "2026-03-04T13:00:00Z"}
+              committer: {name: Release Bot, email: bot@example.com, when: "2026-03-04T13:05:00Z"}
           truncated: true
           next_cursor: cur-1
 
@@ -26,18 +40,31 @@ tests:
         where: "inputs.cursor == 'cur-1'"
         returns:
           commits:
-            - {sha: aaa3}
-            - {sha: aaa4}
+            - sha: aaa3
+              message: drop the unused staging credential
+              parent_hashes: [aaa2]
+              author: {name: Grace Hopper, email: grace@example.com, when: "2026-03-05T09:00:00Z"}
+              committer: {name: Grace Hopper, email: grace@example.com, when: "2026-03-05T09:00:00Z"}
+            - sha: aaa4
+              message: bound the log page size
+              parent_hashes: [aaa3]
+              author: {name: Grace Hopper, email: grace@example.com, when: "2026-03-05T10:00:00Z"}
+              committer: {name: Grace Hopper, email: grace@example.com, when: "2026-03-05T10:00:00Z"}
           truncated: true
           next_cursor: cur-2
 
       # Iteration 2: resumed at cur-2, the last commit, and truncated: false — the
-      # end of the history, which is what stops the loop.
+      # end of the history, which is what stops the loop. The root commit has no
+      # parents, which is the empty list rather than a missing field.
       - task: git.log
         where: "inputs.cursor == 'cur-2'"
         returns:
           commits:
-            - {sha: aaa5}
+            - sha: aaa5
+              message: initial import
+              parent_hashes: []
+              author: {name: Ada Lovelace, email: ada@example.com, when: "2026-03-01T08:00:00Z"}
+              committer: {name: Ada Lovelace, email: ada@example.com, when: "2026-03-01T08:00:00Z"}
           truncated: false
           next_cursor: ""
     expect:
