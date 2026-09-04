@@ -20,7 +20,7 @@ import (
 // and this CLI is where an author compares them. So they have to answer with the
 // same document, and they did not.
 //
-// `flow run` renders through [marshalJSON], which emits unpopulated fields;
+// `flow run` renders through [v1.MarshalSchemaJSON], which emits unpopulated fields;
 // `flow run local` rendered through a bare protojson.Marshal, which does not. One
 // finished step therefore read
 //
@@ -28,7 +28,7 @@ import (
 //	{"stepValues":{"hello":{}}}                   from the local one
 //
 // so `jq .stepValues.hello.namedValues` answered `{}` against production and `null`
-// against the rehearsal. That is exactly the difference [marshalJSON]'s comment
+// against the rehearsal. That is exactly the difference [v1.MarshalSchemaJSON]'s comment
 // exists to remove: a missing key and a null are the same question, and only one of
 // them is answerable without already knowing the schema.
 //

@@ -12,6 +12,14 @@ regenerated.
 stood up. The rest address durable runs, which only a server has, and say so
 rather than failing opaquely when `--address` was not given.
 
+Every tool answers with two forms of one document. The text block is the
+document `--output json` prints, so a `jq` expression written against the CLI
+reads an agent's answer unchanged: a run's outputs are `steps.<id>.<output>`
+and a value is the value, not CEL's tagged encoding of one. `structuredContent`
+carries the same answer in the schema's own protojson, for a client generated
+against `flowstate.v1`. Both are counted against the surface's size limit,
+because both leave the process.
+
 | Tool | Answers | Request message |
 |---|---|---|
 | `flowstate_validate` | locally | `flowstate.v1.ValidateRequest` |

@@ -1,4 +1,4 @@
-package main
+package flowstatev1
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,8 +16,6 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
-
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The run document is a rendering of the schema and must never become a second
@@ -118,7 +117,7 @@ func TestTheCollapsedWrappersAreTheOnesTheSchemaHas(t *testing.T) {
 
 		// Not in a run's answer, and collapsed anyway because the rule is
 		// structural rather than a list of exceptions. It is reached only through
-		// a [v1.Value] whose kind is `structure`, which the rendering hands to
+		// a [Value] whose kind is `structure`, which the rendering hands to
 		// protojson whole — so this entry records that the rule sees it, not that
 		// a document is affected by it.
 		"flowstate.v1.Value.Structure.Map",
@@ -153,10 +152,10 @@ func TestTheRenderingStaysOutOfWellKnownTypes(t *testing.T) {
 		"the rendering would enter a google.protobuf.Struct, whose protojson form has no "+
 			"field names to project through: it would write {} over the whole of it")
 
-	rendered, err := marshalRunDocument(held, false, false)
+	rendered, err := MarshalRunDocument(held, false, false)
 	require.NoError(t, err)
 
-	expected, err := marshalJSON(held, false)
+	expected, err := MarshalSchemaJSON(held, false)
 	require.NoError(t, err)
 
 	assert.JSONEq(t, string(expected), string(rendered),
@@ -179,33 +178,33 @@ func TestTheRunDocumentIsProtojsonWhereItDoesNotProject(t *testing.T) {
 	t.Parallel()
 
 	for _, message := range []proto.Message{
-		&v1.RunSummary{
+		&RunSummary{
 			WorkflowId: "flowstate-workflow-3f7c",
-			Status:     v1.RunResponse_STATUS_TIMED_OUT,
+			Status:     RunResponse_STATUS_TIMED_OUT,
 			StartTime:  timestamppb.New(mustTime(t, "2026-08-15T09:41:02.5Z")),
 		},
-		&v1.ListResponse{
-			Runs:          []*v1.RunSummary{{WorkflowId: "a"}, {WorkflowId: "b"}},
+		&ListResponse{
+			Runs:          []*RunSummary{{WorkflowId: "a"}, {WorkflowId: "b"}},
 			NextPageToken: "more",
 		},
-		&v1.MutationResult{Verb: "cancel", WorkflowId: "flowstate-workflow-3f7c", Result: resultRequested},
-		&v1.GetResponse{
+		&MutationResult{Verb: "cancel", WorkflowId: "flowstate-workflow-3f7c", Result: "requested"},
+		&GetResponse{
 			WorkflowId: "flowstate-workflow-3f7c",
 			RunId:      "0198f1e2-0000-7000-8000-000000000000",
-			Status:     v1.RunResponse_STATUS_FAILED,
-			Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+			Status:     RunResponse_STATUS_FAILED,
+			Kind: &GetResponse_Error{Error: &RunResponse_Error{
 				Message: "step \"fetch\": denied by egress policy",
-				Kind:    v1.ErrorKindPolicyDenied.String(),
+				Kind:    ErrorKindPolicyDenied.String(),
 			}},
 			StartTime: timestamppb.New(mustTime(t, "2026-08-15T09:41:02Z")),
 		},
-		v1.Catalog(),
+		Catalog(),
 	} {
 		t.Run(string(message.ProtoReflect().Descriptor().Name()), func(t *testing.T) {
-			expected, err := marshalJSON(message, false)
+			expected, err := MarshalSchemaJSON(message, false)
 			require.NoError(t, err)
 
-			rendered, err := marshalRunDocument(message, false, false)
+			rendered, err := MarshalRunDocument(message, false, false)
 			require.NoError(t, err)
 
 			assert.JSONEq(t, string(expected), string(rendered),
@@ -227,7 +226,7 @@ func TestTheRunDocumentIsProtojsonWhereItDoesNotProject(t *testing.T) {
 func TestTheRunDocumentSpeaksTheLanguageOfTheFile(t *testing.T) {
 	t.Parallel()
 
-	rendered, err := marshalRunDocument(richRunOutputs(), false, false)
+	rendered, err := MarshalRunDocument(richRunOutputs(), false, false)
 	require.NoError(t, err)
 
 	document := decodeDocument(t, rendered)
@@ -258,7 +257,7 @@ func TestTheRunDocumentSpeaksTheLanguageOfTheFile(t *testing.T) {
 
 // TestTheRunDocumentKeepsAValueItCannotSpellPlainly is the honest half of rule 2.
 //
-// A [v1.Value] is a oneof and only one arm of it is a value. An error is *about* a
+// A [Value] is a oneof and only one arm of it is a value. An error is *about* a
 // value, and flattening it would make a failure indistinguishable from a map
 // somebody computed — so it keeps the schema's own spelling, where the arm names
 // itself. The same applies to anything JSON cannot hold: a NaN has no spelling, and
@@ -266,21 +265,21 @@ func TestTheRunDocumentSpeaksTheLanguageOfTheFile(t *testing.T) {
 func TestTheRunDocumentKeepsAValueItCannotSpellPlainly(t *testing.T) {
 	t.Parallel()
 
-	outputs := &v1.Workflow_StepOutputs{
-		StepValues: map[string]*v1.Node_Outputs{
-			"step": {NamedValues: map[string]*v1.Value{
-				"failed": {Kind: &v1.Value_Error_{Error: &v1.Value_Error{
+	outputs := &Workflow_StepOutputs{
+		StepValues: map[string]*Node_Outputs{
+			"step": {NamedValues: map[string]*Value{
+				"failed": {Kind: &Value_Error_{Error: &Value_Error{
 					Message: "no",
-					Code:    v1.Value_Error_CODE_INTERNAL,
+					Code:    Value_Error_CODE_INTERNAL,
 				}}},
-				"unspellable": {Kind: &v1.Value_Literal{Literal: &expr.Value{
+				"unspellable": {Kind: &Value_Literal{Literal: &expr.Value{
 					Kind: &expr.Value_DoubleValue{DoubleValue: math.NaN()},
 				}}},
 			}},
 		},
 	}
 
-	rendered, err := marshalRunDocument(outputs, false, false)
+	rendered, err := MarshalRunDocument(outputs, false, false)
 	require.NoError(t, err)
 
 	document := decodeDocument(t, rendered)
@@ -308,10 +307,10 @@ func TestRawWritesTheSchemasOwnDocument(t *testing.T) {
 
 	outputs := richRunOutputs()
 
-	expected, err := marshalJSON(outputs, false)
+	expected, err := MarshalSchemaJSON(outputs, false)
 	require.NoError(t, err)
 
-	raw, err := marshalRunDocument(outputs, false, true)
+	raw, err := MarshalRunDocument(outputs, false, true)
 	require.NoError(t, err)
 
 	assert.Equal(t, string(expected), string(raw),
@@ -333,8 +332,8 @@ func TestRawWritesTheSchemasOwnDocument(t *testing.T) {
 func TestARunDocumentIsStableAcrossRuns(t *testing.T) {
 	t.Parallel()
 
-	rendered, err := marshalRunDocument(&v1.Workflow_StepOutputs{
-		StepValues: map[string]*v1.Node_Outputs{"quiet": {}},
+	rendered, err := MarshalRunDocument(&Workflow_StepOutputs{
+		StepValues: map[string]*Node_Outputs{"quiet": {}},
 	}, false, false)
 	require.NoError(t, err)
 
@@ -353,19 +352,19 @@ func TestARunDocumentIsStableAcrossRuns(t *testing.T) {
 
 // richRunOutputs is a finished run's transcript and answer, with one of every value
 // shape the rendering has an opinion about.
-func richRunOutputs() *v1.Workflow_StepOutputs {
-	return &v1.Workflow_StepOutputs{
-		StepValues: map[string]*v1.Node_Outputs{
-			"greet": {NamedValues: map[string]*v1.Value{
-				"result": v1.NewLiteral("hello"),
+func richRunOutputs() *Workflow_StepOutputs {
+	return &Workflow_StepOutputs{
+		StepValues: map[string]*Node_Outputs{
+			"greet": {NamedValues: map[string]*Value{
+				"result": NewLiteral("hello"),
 			}},
 			"quiet": {},
 		},
-		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
-			"count":  v1.NewLiteral(int64(3)),
-			"url":    v1.NewLiteral("https://example.com/a?b=1&c=2"),
-			"mixed":  v1.NewLiteralList(int64(1), "two"),
-			"nested": v1.NewLiteralMap(map[string]any{"ok": true}),
+		RunOutputs: &RunOutputs{Values: map[string]*Value{
+			"count":  NewLiteral(int64(3)),
+			"url":    NewLiteral("https://example.com/a?b=1&c=2"),
+			"mixed":  NewLiteralList(int64(1), "two"),
+			"nested": NewLiteralMap(map[string]any{"ok": true}),
 		}},
 	}
 }
@@ -415,4 +414,15 @@ func renderedName(field protoreflect.FieldDescriptor) string {
 	}
 
 	return field.JSONName()
+}
+
+// mustTime parses an RFC 3339 instant for a fixture, local to this file since
+// the document renderer moved here from cmd/flow (#1553).
+func mustTime(t *testing.T, value string) time.Time {
+	t.Helper()
+
+	parsed, err := time.Parse(time.RFC3339, value)
+	require.NoError(t, err)
+
+	return parsed
 }

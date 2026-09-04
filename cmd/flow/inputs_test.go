@@ -391,7 +391,7 @@ func TestCoercionReadsTheDeclarationRatherThanTheCharacters(t *testing.T) {
 			value, err := coerceInput("x", test.raw, declaration)
 			require.NoError(t, err)
 
-			encoded, err := marshalJSON(value.GetLiteral(), false)
+			encoded, err := v1.MarshalSchemaJSON(value.GetLiteral(), false)
 			require.NoError(t, err)
 			assert.Contains(t, string(encoded), test.want,
 				"%q under a %s declaration became %s", test.raw,
@@ -410,7 +410,7 @@ func TestANestedNumberIsReadAsWritten(t *testing.T) {
 		&v1.InputDeclaration{Name: "x", Type: v1.InputDeclaration_TYPE_STRUCT})
 	require.NoError(t, err)
 
-	encoded, err := marshalJSON(value.GetLiteral(), false)
+	encoded, err := v1.MarshalSchemaJSON(value.GetLiteral(), false)
 	require.NoError(t, err)
 
 	assert.Contains(t, string(encoded), `"int64Value":"2"`, "a whole field became something else")
@@ -425,7 +425,7 @@ func TestANestedNumberIsReadAsWritten(t *testing.T) {
 //
 // Plain JSON rather than a decoded [v1.GetResponse], which is what this used to do,
 // because plain JSON is what the document now carries: `.runOutputs.replicas` is
-// `3`, not `{"literal":{"int64Value":"3"}}`. See rundoc.go. That makes this helper
+// `3`, not `{"literal":{"int64Value":"3"}}`. See pkg/flowstate/v1/rundoc.go. That makes this helper
 // the same thing a `jq` expression is, which is the point of the tests below — an
 // int input that arrived as a string still fails here, and now fails on the
 // difference between `3` and `"3"` rather than on which arm of a union it carried.

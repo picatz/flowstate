@@ -109,10 +109,27 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		assert.Empty(t, notes,
 			"an answer that dropped nothing must not claim it dropped something")
 
-		expected, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response)
+		// The rendering `--output json` prints, not the schema's own protojson:
+		// this surface answers with one dialect of a run, and it is the one a
+		// reader of the CLI already knows (#1553).
+		expected, err := v1.MarshalRunDocument(response, false, false)
 		require.NoError(t, err)
 		assert.JSONEq(t, string(expected), document,
-			"an answer under the ceiling stopped being the protojson of its response message")
+			"an answer under the ceiling stopped being the document `--output json` prints")
+
+		// And the schema's own bytes are still reachable, beside it rather than
+		// instead of it, for a client that speaks the schema.
+		raw, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response)
+		require.NoError(t, err)
+		require.NotNil(t, result.StructuredContent,
+			"the schema's own form is gone, so a client that parses GetResponse has nothing to read")
+		// Re-marshalled rather than type-asserted: structuredContent crosses the
+		// protocol as JSON and arrives decoded, so what is compared is the
+		// document rather than the Go value that carried it.
+		structured, err := json.Marshal(result.StructuredContent)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(raw), string(structured),
+			"structuredContent stopped being the protojson of the response message")
 	})
 
 	// The bound is asserted *reached*, not merely unexceeded: the untouched
@@ -146,8 +163,20 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		// Parses, and parses as the message the schema says this tool answers
 		// with — not merely as some JSON object. Half a document would satisfy
 		// the length assertion above and nothing else.
+		// Read from structuredContent, which is where the schema's own form
+		// lives now: the text block is the rendered document, which protojson
+		// cannot parse back and was never meant to.
+		require.NotNil(t, result.StructuredContent,
+			"a reduced answer must still carry the schema's form for a client that parses it")
+
+		structured, err := json.Marshal(result.StructuredContent)
+		require.NoError(t, err)
+
+		// Strict by default: protojson.Unmarshal rejects a field the schema does
+		// not describe, so this is also where a note smuggled in beside the
+		// response's own fields would fail.
 		var got v1.GetResponse
-		require.NoError(t, protojson.Unmarshal([]byte(document), &got),
+		require.NoError(t, protojson.Unmarshal(structured, &got),
 			"the reduced answer stopped being a parseable GetResponse")
 
 		// Reduced, not cleared: `GetResponse.kind` is a required oneof, so an
@@ -176,12 +205,13 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		assert.Contains(t, notes[0], "flow get", "the note should say how to read what left")
 
 		// And the note stays *out* of the document. The first block is exactly
-		// the protojson of a GetResponse — the same bytes `--output json` prints
-		// — so a caller that unmarshals strictly is not broken on the day a run
-		// gets large. A note added as a field beside the response's own would
-		// fail here.
-		require.NoError(t, protojson.UnmarshalOptions{DiscardUnknown: false}.Unmarshal([]byte(document), &got),
-			"the answer carries a field the schema does not describe")
+		// the document `--output json` prints for the answer structuredContent
+		// carries, so a reader gets one run in one dialect on the day it gets
+		// large as well as on the day it fits.
+		expected, err := v1.MarshalRunDocument(&got, false, false)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(expected), document,
+			"the reduced document stopped being the rendering of the reduced answer beside it")
 
 		var fields map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal([]byte(document), &fields))

@@ -28,9 +28,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -830,6 +833,36 @@ func remoteCatalogCall(address string) func(
 	}
 }
 
+// answerPair is the two forms of one answer: the run document a reader of
+// `--output json` already knows, and the schema's own protojson beside it.
+//
+// See [dispatch] for why both leave the process and why the surface's bound
+// measures their concatenation rather than either one.
+type answerPair struct{ projected, raw []byte }
+
+// pairFor finds the pair behind the concatenation a ladder settled on.
+//
+// By bytes rather than by the rung's index, deliberately. The index would be
+// right only while every rung calls the encoder exactly once — which is
+// [getResponseLadder]'s contract today, and is exactly the kind of invariant a
+// rung added later breaks quietly. Getting it wrong would answer with a document
+// other than the one the bound was checked against, so it is derived from the
+// bytes the ladder returned rather than from a parallel count.
+func pairFor(pairs []answerPair, encoded []byte) (answerPair, bool) {
+	for _, pair := range pairs {
+		if len(pair.projected)+len(pair.raw) != len(encoded) {
+			continue
+		}
+
+		if bytes.Equal(pair.projected, encoded[:len(pair.projected)]) &&
+			bytes.Equal(pair.raw, encoded[len(pair.projected):]) {
+			return pair, true
+		}
+	}
+
+	return answerPair{}, false
+}
+
 // dispatch adapts one RPC into a tool handler.
 //
 // Arguments arrive as JSON and leave as protojson of the response message —
@@ -884,8 +917,48 @@ func dispatch(
 			StripCatalogDescriptors(response)
 		}
 
+		// Both forms of every answer, and the bound measures the pair.
+		//
+		// The text block is the bytes `--output json` prints, which is what this
+		// surface claimed to answer with and did not. A run document leaving the
+		// CLI is *rendered* — `2` rather than `{"literal":{"int64Value":"2"}}`,
+		// `steps.<id>.<output>` rather than `stepValues.<id>.namedValues` — and
+		// this encoded the schema's own protojson instead, so one run had two
+		// answers depending on which door a reader came through. An agent's loop
+		// alternates between them, and neither a jq filter nor an example in the
+		// reference could serve both (#1553).
+		//
+		// [v1.MarshalRunDocument] is that one rendering, and it renders only what
+		// its own rules say to: a message with no run document in it — a catalog,
+		// a validation report — comes back as the same bytes protojson wrote.
+		//
+		// The schema's own bytes stay reachable in structuredContent, because a
+		// client that speaks the schema was reading the text block to get them
+		// and projecting it away would take that with it. MCP has a field for
+		// exactly this, so neither reader is served by making the other parse
+		// something it does not want.
+		//
+		// Measured together, because both leave the process. Bounding only the
+		// text would make [MaxResultBytes] stop describing what a caller
+		// receives, which is the quiet kind of bound erosion the ladder exists
+		// to prevent — so the concatenation is what the ladder reduces against,
+		// and the pair for the rung it settles on is what gets sent.
+		var pairs []answerPair
+
 		encode := func(message proto.Message) ([]byte, error) {
-			return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
+			projected, err := v1.MarshalRunDocument(message, false, false)
+			if err != nil {
+				return nil, err
+			}
+
+			raw, err := v1.MarshalSchemaJSON(message, false)
+			if err != nil {
+				return nil, err
+			}
+
+			pairs = append(pairs, answerPair{projected: projected, raw: raw})
+
+			return slices.Concat(projected, raw), nil
 		}
 
 		// The bound this surface holds every answer to — see [MaxResultBytes].
@@ -944,20 +1017,37 @@ func dispatch(
 					ToolName(method.Name), len(encoded), MaxResultBytes)), nil
 			}
 
-			content := []mcp.Content{&mcp.TextContent{Text: string(encoded)}}
+			// The pair behind the bytes the ladder settled on, not `encoded`
+			// itself, which is the concatenation the bound was measured against
+			// rather than either document.
+			answer, ok := pairFor(pairs, encoded)
+			if !ok {
+				// Unreachable: `encoded` is whatever `encode` last returned, so
+				// its pair was recorded. Refused rather than guessed at, because
+				// the alternative is answering with a document that is not the
+				// one the bound was checked against.
+				return ToolError(fmt.Errorf(
+					"%s could not render the answer it settled on", ToolName(method.Name))), nil
+			}
+
+			content := []mcp.Content{&mcp.TextContent{Text: string(answer.projected)}}
 
 			// What left, as a second content block rather than a field in the
-			// document. The first block stays exactly the protojson of a
-			// GetResponse — the same bytes `--output json` prints, which is
-			// what keeps this surface from being a second dialect — so a
-			// caller that parses the answer is never handed a shape the schema
-			// does not describe. An MCP result is a list of blocks precisely
-			// so an annotation need not be smuggled into the payload.
+			// document. The first block stays exactly what `--output json`
+			// prints for the same response — rendered where a run document is
+			// rendered there, protojson where it is protojson there — which is
+			// what keeps this surface from being a second dialect, and is now
+			// true rather than merely intended (#1553). An MCP result is a list
+			// of blocks precisely so an annotation need not be smuggled into the
+			// payload.
 			if notes[rung] != "" {
 				content = append(content, &mcp.TextContent{Text: notes[rung]})
 			}
 
-			return &mcp.CallToolResult{Content: content}, nil
+			return &mcp.CallToolResult{
+				Content:           content,
+				StructuredContent: json.RawMessage(answer.raw),
+			}, nil
 		}
 
 		encoded, err := encode(out)
@@ -973,8 +1063,17 @@ func dispatch(
 				ToolName(method.Name), len(encoded), MaxResultBytes)), nil
 		}
 
+		// The pair, not `encoded`: that is the concatenation the bound was
+		// measured against, and neither document on its own.
+		answer, ok := pairFor(pairs, encoded)
+		if !ok {
+			return ToolError(fmt.Errorf(
+				"%s could not render the answer it settled on", ToolName(method.Name))), nil
+		}
+
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+			Content:           []mcp.Content{&mcp.TextContent{Text: string(answer.projected)}},
+			StructuredContent: json.RawMessage(answer.raw),
 		}, nil
 	})
 }

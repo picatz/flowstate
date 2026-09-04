@@ -22,7 +22,7 @@ import (
 // same" means, because they did not.
 //
 // The disagreement was not in what either driver executed. It was in the sixteen
-// characters of one renderer: `flow run` writes through [marshalJSON], which emits
+// characters of one renderer: `flow run` writes through [v1.MarshalSchemaJSON], which emits
 // unpopulated fields, and `flow run local` wrote through a bare protojson.Marshal,
 // which does not. `flow run local` also declared no `--output`, so the two formats
 // that exist for programs were reachable only from the driver that needs a server.
@@ -46,13 +46,13 @@ steps:
 // `hello` produces no named values. The durable driver emitted an empty map for
 // them and the local one omitted the key entirely, so a `jq` expression reaching
 // for the step's values answered `{}` against production and `null` against the
-// rehearsal. Those are the same question, and [marshalJSON]'s comment says why only
+// rehearsal. Those are the same question, and [v1.MarshalSchemaJSON]'s comment says why only
 // one of them is answerable: a reader who finds a key missing cannot tell an absent
 // value from a field this build has never heard of without going to the schema.
 //
 // The property outlived the spelling. The wrapper the two drivers disagreed about
 // is gone from the document — a message whose only field is a map is that map now,
-// see rundoc.go — so what is asserted is the same fact one level up: the *step* is
+// see pkg/flowstate/v1/rundoc.go — so what is asserted is the same fact one level up: the *step* is
 // named, with an empty object under it, rather than missing because it produced
 // nothing.
 //
@@ -182,7 +182,7 @@ func TestBothDriversAnswerWithTheSameFieldSet(t *testing.T) {
 
 	// What the durable driver hands its renderer: the server's own answer about a
 	// run, with the same oneof arm a completed run carries.
-	durable, err := marshalJSON(&v1.GetResponse{
+	durable, err := v1.MarshalSchemaJSON(&v1.GetResponse{
 		WorkflowId: "flowstate-workflow-3f7c",
 		RunId:      "1d1b0d0e",
 		Status:     v1.RunResponse_STATUS_COMPLETED,
@@ -222,7 +222,7 @@ func TestALocalRunThatFailsStillAnswersAMachineCaller(t *testing.T) {
 	assert.NotEmpty(t, failure["message"], "the failure carries no reason")
 
 	// #241's P2: the classification behind the prose survives the same round
-	// trip the message does — `flow run local -o json` through marshalJSON,
+	// trip the message does — `flow run local -o json` through v1.MarshalSchemaJSON,
 	// exactly the path an agent's own tooling reads.
 	//
 	// Checked as "some recognized kind arrived" rather than pinned to one

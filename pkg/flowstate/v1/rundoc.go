@@ -1,4 +1,4 @@
-package main
+package flowstatev1
 
 import (
 	"bytes"
@@ -10,10 +10,9 @@ import (
 	"sync"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
-
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // A run's answer has two readers and one of them was never served.
@@ -21,8 +20,8 @@ import (
 // The schema is the source of truth and the wire format is not negotiable: proto
 // field names are what the RPC surface speaks, and nothing here changes a byte of
 // what a server sends or a worker stores. But the shape a *specification* wants and
-// the shape a `jq` expression wants are not the same shape, and this CLI was
-// handing the first one to the second. Reaching a value a step produced read
+// the shape a `jq` expression wants are not the same shape, and every surface that
+// answered with a run was handing the first one to the second. Reaching a value a step produced read
 //
 //	.outputs.stepValues.greet.namedValues.result.literal.stringValue
 //
@@ -32,9 +31,13 @@ import (
 // value, in which `3` is `{"literal":{"int64Value":"3"}}` — an object, then a tag,
 // then a string, for an integer.
 //
-// So the friendly document is a *rendering*, made here at the CLI boundary, and
-// `--raw` writes the schema's own protojson for anything that wants the wire shape
-// (picatz/flowstate#328).
+// So the friendly document is a *rendering*, and `--raw` writes the schema's own
+// protojson for anything that wants the wire shape (picatz/flowstate#328).
+//
+// It lives here rather than in cmd/flow because the CLI is no longer its only
+// reader: the MCP surface answers an agent with the same document, and while this
+// was a cmd/flow-private function it could not, so one run had two answers
+// depending on which door a reader came through (picatz/flowstate#1553).
 //
 // # Why this is not a second shape that drifts
 //
@@ -49,8 +52,8 @@ import (
 //     wrapper comes back, honestly, rather than the renderer quietly dropping half
 //     a message.
 //
-//  2. A [v1.Value] holding a CEL literal is that literal, in JSON. The conversion
-//     is [v1.LiteralToGo], which is the repository's one spelling of it — flowtest
+//  2. A [Value] holding a CEL literal is that literal, in JSON. The conversion
+//     is [LiteralToGo], which is the repository's one spelling of it — flowtest
 //     and embed already read a recorded value through it, and this is the same
 //     value read the same way rather than a fourth switch over the same union.
 //
@@ -62,8 +65,9 @@ import (
 // re-derived, but literally the bytes protojson produced, carried through by
 // [projectValue] returning the raw subtree for any message that contains nothing to
 // project. That is what keeps `EmitUnpopulated`, int64-as-string, enum spellings,
-// timestamp formatting and NaN handling identical to every other document this CLI
-// writes: they are not reimplemented here, they are passed through.
+// timestamp formatting and NaN handling identical to every other document written
+// through [MarshalSchemaJSON]: they are not reimplemented here, they are passed
+// through.
 //
 // # What is deliberately not elided
 //
@@ -71,8 +75,9 @@ import (
 // other way for this document and it is the right answer: a `jq` expression that
 // works on one run has to work on the next, so `"runOutputs": null` on a workflow
 // that declares none is a stable answer to a stable question, where a missing key
-// is a second question. The eliding belongs to the human surface, which is a different
-// stream and already does it — see [writeRun].
+// is a second question. The eliding belongs to the human surface, which is a
+// different stream and already does it: see cmd/flow's writeRun, which is a
+// rendering for a person rather than a document for a program.
 
 // runDocumentNames are the field renames, keyed by the schema's own full field
 // name so a rename can never be ambiguous about which message it applies to.
@@ -84,7 +89,7 @@ import (
 //
 // `run_outputs` deliberately is *not* renamed, and the temptation to spell it
 // `outputs` — which is what a Flowfile calls the block that declares them — is
-// where a second name for one thing would have got in. [v1.GetResponse] already
+// where a second name for one thing would have got in. [GetResponse] already
 // has an `outputs` field: the transcript, in its oneof. So a rename would have
 // produced `.outputs` meaning the answer in the bare run document and the
 // transcript in `-o json`, and a reader moving between the two would have to know
@@ -116,8 +121,36 @@ const flowstatePackage protoreflect.FullName = "flowstate.v1"
 // raw writes protojson unchanged, which is what `--raw` asks for: the exact wire
 // shape, for a consumer that wants the schema's nouns because it is generating
 // against the schema.
-func marshalRunDocument(message proto.Message, indent, raw bool) ([]byte, error) {
-	encoded, err := marshalJSON(message, false)
+// MarshalSchemaJSON renders a message the way the schema describes it.
+//
+// protojson rather than encoding/json, so the field names are the schema's and an
+// enum is its name rather than the integer behind it — `"STATUS_COMPLETED"` reads,
+// and survives a renumbering that `4` would not.
+//
+// EmitUnpopulated is deliberate: a consumer indexing `.closeTime` on a run that has
+// not finished should find null rather than a missing key, because the two are the
+// same question and only one of them is answerable without knowing the schema.
+func MarshalSchemaJSON(message proto.Message, indent bool) ([]byte, error) {
+	options := protojson.MarshalOptions{EmitUnpopulated: true}
+	if indent {
+		options.Indent = "  "
+	}
+
+	return options.Marshal(message)
+}
+
+// MarshalRunDocument is the one rendering of a run document that leaves this
+// process.
+//
+// Exported so the MCP surface answers with the same bytes `--output json`
+// prints rather than the schema's own protojson, which is a different dialect of
+// the same run: `2` as `{"literal":{"int64Value":"2"}}`, `steps` as
+// `stepValues.<id>.namedValues`. An agent reading one and a person reading the
+// other could not share a jq filter, a schema, or an example (#1553).
+//
+// raw asks for the schema's protojson instead, for a reader that speaks it.
+func MarshalRunDocument(message proto.Message, indent, raw bool) ([]byte, error) {
+	encoded, err := MarshalSchemaJSON(message, false)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +171,7 @@ func marshalRunDocument(message proto.Message, indent, raw bool) ([]byte, error)
 	// Decoded into an order-preserving tree rather than a map, so a field that is
 	// carried through untouched comes out where protojson put it: in field-number
 	// order, which is the order the schema declares and the order every other
-	// document this CLI writes already uses.
+	// document this renderer writes already uses.
 	tree, err := decodeOrdered(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("reading the answer back: %w", err)
@@ -180,12 +213,12 @@ func projectValue(message protoreflect.Message, raw any) any {
 		// than being one, and flattening them would make `{"message": "..."}`
 		// from a failure indistinguishable from a map somebody computed. Those
 		// stay in the schema's own spelling, where the arm names itself.
-		literal, ok := message.Interface().(*v1.Value).GetKind().(*v1.Value_Literal)
+		literal, ok := message.Interface().(*Value).GetKind().(*Value_Literal)
 		if !ok {
 			return raw
 		}
 
-		// The whole [v1.Value] on the way out rather than the literal's own
+		// The whole [Value] on the way out rather than the literal's own
 		// subtree, because a value this cannot spell has to stay recognizable as a
 		// value: `{"literal":{"doubleValue":"NaN"}}` says what it is, where the
 		// inner `{"doubleValue":"NaN"}` alone is indistinguishable from a map some
@@ -299,7 +332,7 @@ func projectElement(field protoreflect.FieldDescriptor, value protoreflect.Value
 
 // projectLiteral renders a CEL literal as the value it is.
 //
-// Through [v1.LiteralToGo], which is the repository's one conversion from a
+// Through [LiteralToGo], which is the repository's one conversion from a
 // recorded literal to a plain Go value, rather than a switch of this file's own
 // over the same union — a value with one meaning written down twice is the defect
 // CLAUDE.md names first, and this one is already written down once.
@@ -315,7 +348,7 @@ func projectLiteral(message protoreflect.Message) (any, bool) {
 		return nil, false
 	}
 
-	native, err := v1.LiteralToGo(literal)
+	native, err := LiteralToGo(literal)
 	if err != nil {
 		return nil, false
 	}
@@ -441,7 +474,7 @@ func mapKeyJSON(key protoreflect.MapKey) string {
 // returned as the bytes protojson wrote, untouched and unvisited, so there is no
 // second encoder to disagree with the first about a field this file has never heard
 // of. Answering it needs the transitive question rather than the local one, because
-// a [v1.Value] two messages down is still a value to project.
+// a [Value] two messages down is still a value to project.
 //
 // Memoized per message type, and cycle-safe: the schema is recursive (a Node holds
 // Nodes), so a type already being decided answers false to itself and the enclosing
@@ -451,7 +484,7 @@ func projects(descriptor protoreflect.MessageDescriptor) bool {
 }
 
 // projectionDecisions memoizes [projects]. A cold decision walks the schema; every
-// document this CLI writes then reuses it.
+// document rendered after it reuses that decision.
 //
 // One process may render more than one document concurrently — `flow run` writing
 // a transcript while a test in the same binary renders another — so the two maps
@@ -644,7 +677,8 @@ func (o *orderedObject) MarshalJSON() ([]byte, error) {
 // keeps every number exactly as it was written.
 //
 // json.Number rather than float64 throughout, because the tree is re-encoded and a
-// number that made a round trip through a float64 is a number this CLI changed. A
+// number that made a round trip through a float64 is a number this renderer
+// changed. A
 // timestamp's nanoseconds and a 64-bit count are both in that category.
 func decodeOrdered(encoded []byte) (any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(encoded))

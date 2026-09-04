@@ -7,7 +7,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -168,10 +167,14 @@ func mcpDSLResourceHandler() mcp.ResourceHandler {
 
 // mcpCatalogResourceHandler serves the catalog as the RPC's own answer.
 //
-// Through the same handler and the same encoder flowstate_get_catalog uses, so
-// the resource and the tool cannot describe two different engines: this is the
-// `--output json` rule — one encoder, no second dialect — applied to a surface
-// where the second copy would be the more tempting one to hand-write.
+// Through the same handler and the same encoder flowstate_get_catalog uses —
+// [v1.MarshalRunDocument], which every answer leaving this surface goes through
+// — so the resource and the tool cannot describe two different engines: this is
+// the `--output json` rule — one encoder, no second dialect — applied to a
+// surface where the second copy would be the more tempting one to hand-write.
+// A catalog carries no run document, so what that renderer writes for it is the
+// bytes protojson wrote; going through it anyway is what keeps the claim true
+// the day one of these messages does.
 //
 // Computed per read rather than at registration, because a build's catalog is
 // not fixed until it is asked for: a plugin registers tasks at start-up, and a
@@ -185,7 +188,7 @@ func mcpCatalogResourceHandler(local *server.FlowstateServer) mcp.ResourceHandle
 
 		StripCatalogDescriptors(resp.Msg)
 
-		encoded, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(resp.Msg)
+		encoded, err := v1.MarshalRunDocument(resp.Msg, false, false)
 		if err != nil {
 			return nil, fmt.Errorf("rendering the task catalog: %w", err)
 		}
