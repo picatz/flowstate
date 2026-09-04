@@ -30,6 +30,15 @@ type caseAnchor struct {
 	at loc
 }
 
+// HasPositions reports whether this file kept the parsed YAML that places a
+// run-time failure in it.
+//
+// True for a file that was loaded from bytes, false for one built in Go, whose
+// failures carry no line because there is no text they came from. Exported for
+// the fuzz target, which checks that the same bytes answer this the same way
+// twice rather than deep-comparing the index itself.
+func (f *File) HasPositions() bool { return f != nil && f.doc != nil }
+
 // anchorFor is the anchor for one case of a parsed file, or the zero anchor when
 // there is no document to place anything in.
 func anchorFor(file *File, index int) caseAnchor {
