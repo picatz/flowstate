@@ -3,6 +3,7 @@ package sdk
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -299,6 +300,20 @@ func EncodeOutputs(msg proto.Message) (*flowstatev1.Node_Outputs, error) {
 
 // encodeField turns one field into a named value.
 func encodeField(msg protoreflect.Message, field protoreflect.FieldDescriptor) (*flowstatev1.Value, error) {
+	converted, err := encodeFieldValue(msg, field, 0)
+	if err != nil {
+		return nil, err
+	}
+	return literalValue(converted), nil
+}
+
+// encodeFieldValue turns one field into a CEL literal, whatever its cardinality.
+//
+// It is shared by the output message's own fields and by the fields of a nested
+// message, so a repeated string means the same thing at either depth. depth is
+// how many messages have been entered to reach this field, and is what
+// [encodeMessage] bounds.
+func encodeFieldValue(msg protoreflect.Message, field protoreflect.FieldDescriptor, depth int) (*expr.Value, error) {
 	value := msg.Get(field)
 
 	switch {
@@ -306,7 +321,7 @@ func encodeField(msg protoreflect.Message, field protoreflect.FieldDescriptor) (
 		entries := make([]*expr.MapValue_Entry, 0, value.Map().Len())
 		var mapErr error
 		value.Map().Range(func(key protoreflect.MapKey, element protoreflect.Value) bool {
-			converted, err := encodeScalar(field.MapValue(), element)
+			converted, err := encodeScalar(field.MapValue(), element, depth)
 			if err != nil {
 				mapErr = err
 				return false
@@ -320,35 +335,38 @@ func encodeField(msg protoreflect.Message, field protoreflect.FieldDescriptor) (
 		if mapErr != nil {
 			return nil, mapErr
 		}
-		return literalValue(&expr.Value{
+		return &expr.Value{
 			Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: entries}},
-		}), nil
+		}, nil
 
 	case field.IsList():
 		list := value.List()
 		values := make([]*expr.Value, 0, list.Len())
 		for i := range list.Len() {
-			converted, err := encodeScalar(field, list.Get(i))
+			converted, err := encodeScalar(field, list.Get(i), depth)
 			if err != nil {
 				return nil, err
 			}
 			values = append(values, converted)
 		}
-		return literalValue(&expr.Value{
+		return &expr.Value{
 			Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: values}},
-		}), nil
+		}, nil
 
 	default:
-		converted, err := encodeScalar(field, value)
-		if err != nil {
-			return nil, err
+		// An unset singular message is null rather than a map of its own zero
+		// fields. That is what proto3 presence already means, and it is also what
+		// makes a self-referential message type terminate: descending into an
+		// unset field would otherwise produce another unset field forever.
+		if field.Kind() == protoreflect.MessageKind && !isValueMessage(field.Message().FullName()) && !msg.Has(field) {
+			return &expr.Value{Kind: &expr.Value_NullValue{}}, nil
 		}
-		return literalValue(converted), nil
+		return encodeScalar(field, value, depth)
 	}
 }
 
 // encodeScalar turns one field value into a CEL literal.
-func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value) (*expr.Value, error) {
+func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value, depth int) (*expr.Value, error) {
 	switch field.Kind() {
 	case protoreflect.StringKind:
 		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: value.String()}}, nil
@@ -390,26 +408,42 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value) 
 			if literal := v.GetLiteral(); literal != nil {
 				return literal, nil
 			}
+			// Nothing was set at all, which is an absent output rather than a
+			// wrong one — the same null an unset message of any other type
+			// produces. The refusal below is for a value that holds something a
+			// task was supposed to have resolved first.
+			if v.GetKind() == nil {
+				return &expr.Value{Kind: &expr.Value_NullValue{}}, nil
+			}
 			return nil, fmt.Errorf(
 				"holds a %T rather than a value; a task's outputs must be values it computed",
 				v.GetKind(),
 			)
 		}
 
-		// Any other message is refused rather than converted.
+		// A well-known type is still refused. What a timestamp or a duration is
+		// on the workflow side is undecided (#1436), and converting one here
+		// would answer that question in this package rather than in the schema —
+		// the mistake the paragraph below exists to avoid.
+		if wellKnown(field.Message().FullName()) {
+			return nil, fmt.Errorf(
+				"has message type %s, which EncodeOutputs does not convert. "+
+					"Declare the field as %s to return data of any shape, and build it with sdk.Literal — "+
+					"for example `Data: sdk.Literal(map[string]any{\"items\": items})`",
+				field.Message().FullName(), celValueName,
+			)
+		}
+
+		// Any other message becomes a map keyed by its own field names.
 		//
-		// Converting one would mean inventing a mapping from its fields onto a
-		// CEL value, and that mapping would be this package's invention rather
-		// than the schema's: field names would come out however JSON naming
-		// mangles them, and the result would not match the descriptor the engine
-		// validates the task against. Refusing precisely is worth more than
-		// converting approximately, so the error says what to do instead.
-		return nil, fmt.Errorf(
-			"has message type %s, which EncodeOutputs does not convert. "+
-				"Declare the field as %s to return data of any shape, and build it with sdk.Literal — "+
-				"for example `Data: sdk.Literal(map[string]any{\"items\": items})`",
-			field.Message().FullName(), celValueName,
-		)
+		// The mapping is the schema's rather than this package's invention: the
+		// keys are the descriptor's field names, which is exactly what the
+		// engine's built-in bridge already produces for a nested message, so
+		// `${steps.log.commits[0].author.name}` reads the same whether the task
+		// is built in or shipped by a plugin. That is what makes "the schema is
+		// the contract" true for a plugin author who declares a typed nested
+		// message rather than an untyped value.
+		return encodeMessage(value.Message(), depth+1)
 	}
 
 	return nil, fmt.Errorf(
@@ -417,6 +451,51 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value) 
 		field.Kind(),
 	)
 }
+
+// encodeMessage turns a nested message into a CEL map keyed by field name.
+//
+// Every field is encoded, present or not, so a step output has the shape its
+// descriptor declares rather than a shape that varies with the data: reading
+// `commits[0].old_path` on a commit that was not a rename yields "" instead of
+// failing with "no such key". The one exception is a singular message field,
+// which is null when unset — see [encodeFieldValue].
+func encodeMessage(msg protoreflect.Message, depth int) (*expr.Value, error) {
+	if depth > maxOutputMessageDepth {
+		return nil, fmt.Errorf(
+			"nests messages more than %d deep, which EncodeOutputs does not convert",
+			maxOutputMessageDepth,
+		)
+	}
+
+	fields := msg.Descriptor().Fields()
+	entries := make([]*expr.MapValue_Entry, 0, fields.Len())
+	for i := range fields.Len() {
+		field := fields.Get(i)
+
+		converted, err := encodeFieldValue(msg, field, depth)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: %w", field.Name(), err)
+		}
+
+		entries = append(entries, &expr.MapValue_Entry{
+			Key:   &expr.Value{Kind: &expr.Value_StringValue{StringValue: string(field.Name())}},
+			Value: converted,
+		})
+	}
+
+	return &expr.Value{
+		Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: entries}},
+	}, nil
+}
+
+// maxOutputMessageDepth bounds how far EncodeOutputs descends into nested
+// messages.
+//
+// A message type may refer to itself, and the data a task returns is shaped by
+// whatever it read — a repository, a response body — so the nesting is not this
+// package's to trust. Presence alone already terminates the unset case; this
+// bounds the set one, and is far deeper than a task output any author writes.
+const maxOutputMessageDepth = 32
 
 // The two message types a task output may be declared as when its shape is not
 // fixed. They are named as constants because the check is by full name — a
@@ -426,6 +505,22 @@ const (
 	celValueName       = "google.api.expr.v1alpha1.Value"
 	flowstateValueName = "flowstate.v1.Value"
 )
+
+// isValueMessage reports whether a message type carries a value directly, rather
+// than being a message this package converts field by field.
+func isValueMessage(name protoreflect.FullName) bool {
+	return name == celValueName || name == flowstateValueName
+}
+
+// wellKnown reports whether a message type is one of protobuf's own.
+//
+// These are refused rather than converted: each has a meaning outside its
+// fields — a timestamp is an instant, not a {seconds, nanos} pair — and what
+// they become on the workflow side is #1436's to decide, once, for every
+// boundary rather than here for one.
+func wellKnown(name protoreflect.FullName) bool {
+	return strings.HasPrefix(string(name), "google.protobuf.")
+}
 
 // Literal builds a value of any shape, for a task output whose type is not fixed.
 //
