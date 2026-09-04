@@ -1514,9 +1514,31 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 	// used to fall through to the did-you-mean below, which told an author to
 	// retype a name that was already right — a false sentence about their file,
 	// which is worse than an unhelpful one (#1441).
-	containers := map[string]bool{}
-	parallelContainers(spec.GetSteps(), containers)
-	inCallee := calleeSteps(spec)
+	//
+	// Built on first miss rather than up front, unlike top and all above. Those
+	// two decide whether there *is* a miss, so every case pays for them; these
+	// two only word one, and a case whose names are all good — which is every
+	// passing case, on every run — should not walk the specification twice more,
+	// once of them into every callee (Copilot, #1632).
+	var (
+		containers map[string]bool
+		inCallee   map[string]calleeStep
+	)
+	misplaced := func(step string) (kind string, owner calleeStep, found bool) {
+		if containers == nil {
+			containers = map[string]bool{}
+			parallelContainers(spec.GetSteps(), containers)
+			inCallee = calleeSteps(spec)
+		}
+		if containers[step] {
+			return "parallel", calleeStep{}, true
+		}
+		if owner, exists := inCallee[step]; exists {
+			return "callee", owner, true
+		}
+
+		return "", calleeStep{}, false
+	}
 
 	checkTop := func(field, step string) error {
 		if top[step] {
@@ -1527,19 +1549,20 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 				"inside the loop's own results and never appear in the top-level transcript this claim "+
 				"is judged against; assert the loop's results through expect.outputs", field, step)
 		}
+		switch kind, owner, found := misplaced(step); {
 		// A `parallel:` step is real — the transcript names it, the debugger
 		// breaks on it — and records nothing under its own id, because the
 		// branches are the work. So the claim cannot be judged, and the reason
 		// is its kind rather than its spelling.
-		if containers[step] {
+		case found && kind == "parallel":
 			return fmt.Errorf("expect.%s names step %q, which is a parallel container: it groups "+
 				"branches and records no outputs of its own, so no claim about it can be checked; "+
 				"name the branch steps that ran instead", field, step)
-		}
+
 		// Spelled exactly as the callee spells it, about a workflow this file
 		// does not declare. Step ids are local to a Flowfile, so this stays a
 		// refusal; what changes is that it says where the step lives.
-		if owner, exists := inCallee[step]; exists {
+		case found:
 			return fmt.Errorf("expect.%s names step %q, which lives in workflow %q — reached by this "+
 				"workflow's %q step, not declared by it — and this claim is judged against the "+
 				"workflow under test; assert what the call produced through expect.outputs",
