@@ -354,12 +354,24 @@ func encodeFieldValue(msg protoreflect.Message, field protoreflect.FieldDescript
 		}, nil
 
 	default:
+		// The alternatives of a real oneof that were not chosen are absent, not
+		// zero. Emitting "" for every arm nobody took would leave a workflow
+		// unable to tell "no error" from "an empty error", and would describe a
+		// message as holding several alternatives at once when a oneof holds one.
+		//
+		// A proto3 `optional` field is a synthetic oneof and deliberately stays on
+		// the zero-value path below: its whole point is to be an ordinary field
+		// that may be absent, and it is not an alternative to anything.
+		if oneof := field.ContainingOneof(); oneof != nil && !oneof.IsSynthetic() && !msg.Has(field) {
+			return nullValue(), nil
+		}
+
 		// An unset singular message is null rather than a map of its own zero
 		// fields. That is what proto3 presence already means, and it is also what
 		// makes a self-referential message type terminate: descending into an
 		// unset field would otherwise produce another unset field forever.
 		if field.Kind() == protoreflect.MessageKind && !isValueMessage(field.Message().FullName()) && !msg.Has(field) {
-			return &expr.Value{Kind: &expr.Value_NullValue{}}, nil
+			return nullValue(), nil
 		}
 		return encodeScalar(field, value, depth)
 	}
@@ -413,7 +425,7 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value, 
 			// produces. The refusal below is for a value that holds something a
 			// task was supposed to have resolved first.
 			if v.GetKind() == nil {
-				return &expr.Value{Kind: &expr.Value_NullValue{}}, nil
+				return nullValue(), nil
 			}
 			return nil, fmt.Errorf(
 				"holds a %T rather than a value; a task's outputs must be values it computed",
@@ -542,6 +554,11 @@ func wellKnown(name protoreflect.FullName) bool {
 // of taking the process down.
 func Literal(v any) *expr.Value {
 	return flowstatev1.NewValue(v).GetLiteral()
+}
+
+// nullValue is the absent answer: a field a message does not hold.
+func nullValue() *expr.Value {
+	return &expr.Value{Kind: &expr.Value_NullValue{}}
 }
 
 // literalValue wraps a CEL literal as a step output.

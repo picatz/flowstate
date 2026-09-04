@@ -399,9 +399,29 @@ func TestNestedMessageOutputsBecomeMaps(t *testing.T) {
 		outputs, err := EncodeOutputs(&flowstatev1.Node{Id: "fetch"})
 		require.NoError(t, err)
 
-		require.NotNil(t, outputs.GetNamedValues()["task"].GetLiteral().GetNullValue,
+		// The kind itself, not a GetNullValue accessor: a method value is non-nil
+		// whatever the encoding, so asserting on one proves nothing (Copilot, #1626).
+		require.IsType(t, &expr.Value_NullValue{},
+			outputs.GetNamedValues()["task"].GetLiteral().GetKind(),
 			"an unset message must be null rather than a map of zero fields")
-		require.Nil(t, outputs.GetNamedValues()["task"].GetLiteral().GetMapValue())
+	})
+
+	t.Run("an alternative of a oneof nobody chose is null", func(t *testing.T) {
+		t.Parallel()
+
+		// DebugBinding's `answer` is a real oneof of two strings. Encoding the arm
+		// that was not taken as "" would leave a workflow unable to tell "no
+		// error" from "an empty error", and would describe the message as holding
+		// both alternatives at once.
+		outputs, err := EncodeOutputs(&flowstatev1.DebugBinding{
+			Answer: &flowstatev1.DebugBinding_Rendered{Rendered: "42"},
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, "42", outputs.GetNamedValues()["rendered"].GetLiteral().GetStringValue())
+		require.IsType(t, &expr.Value_NullValue{},
+			outputs.GetNamedValues()["error"].GetLiteral().GetKind(),
+			"the arm nobody took must be null rather than an empty string")
 	})
 
 	t.Run("a message inside a map value is a map", func(t *testing.T) {
