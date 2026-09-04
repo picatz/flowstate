@@ -1510,6 +1510,36 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 	topNames := candidates(top)
 	allNames := candidates(all)
 
+	// The two sets a name can be real in without being claimable here. Both
+	// used to fall through to the did-you-mean below, which told an author to
+	// retype a name that was already right — a false sentence about their file,
+	// which is worse than an unhelpful one (#1441).
+	//
+	// Built on first miss rather than up front, unlike top and all above. Those
+	// two decide whether there *is* a miss, so every case pays for them; these
+	// two only word one, and a case whose names are all good — which is every
+	// passing case, on every run — should not walk the specification twice more,
+	// once of them into every callee (Copilot, #1632).
+	var (
+		containers map[string]bool
+		inCallee   map[string]calleeStep
+	)
+	misplaced := func(step string) (kind string, owner calleeStep, found bool) {
+		if containers == nil {
+			containers = map[string]bool{}
+			parallelContainers(spec.GetSteps(), containers)
+			inCallee = calleeSteps(spec)
+		}
+		if containers[step] {
+			return "parallel", calleeStep{}, true
+		}
+		if owner, exists := inCallee[step]; exists {
+			return "callee", owner, true
+		}
+
+		return "", calleeStep{}, false
+	}
+
 	checkTop := func(field, step string) error {
 		if top[step] {
 			return nil
@@ -1518,6 +1548,25 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 			return fmt.Errorf("expect.%s names step %q, which is a loop body step: its outputs travel "+
 				"inside the loop's own results and never appear in the top-level transcript this claim "+
 				"is judged against; assert the loop's results through expect.outputs", field, step)
+		}
+		switch kind, owner, found := misplaced(step); {
+		// A `parallel:` step is real — the transcript names it, the debugger
+		// breaks on it — and records nothing under its own id, because the
+		// branches are the work. So the claim cannot be judged, and the reason
+		// is its kind rather than its spelling.
+		case found && kind == "parallel":
+			return fmt.Errorf("expect.%s names step %q, which is a parallel container: it groups "+
+				"branches and records no outputs of its own, so no claim about it can be checked; "+
+				"name the branch steps that ran instead", field, step)
+
+		// Spelled exactly as the callee spells it, about a workflow this file
+		// does not declare. Step ids are local to a Flowfile, so this stays a
+		// refusal; what changes is that it says where the step lives.
+		case found:
+			return fmt.Errorf("expect.%s names step %q, which lives in workflow %q — reached by this "+
+				"workflow's %q step, not declared by it — and this claim is judged against the "+
+				"workflow under test; assert what the call produced through expect.outputs",
+				field, step, owner.workflow, owner.callStep)
 		}
 		if suggestion, ok := nearest.Name(step, topNames); ok {
 			return fmt.Errorf("expect.%s names unknown step %q; did you mean %q?", field, step, suggestion)
@@ -1589,6 +1638,34 @@ func containsCallStep(nodes []*v1.Node) bool {
 		}
 	}
 	return false
+}
+
+// parallelContainers records the id of every `parallel:` step at any depth.
+//
+// Separate from [collectAllStepIDs] and [topLevelStepUniverse] rather than
+// folded into either, because a container is deliberately in neither: it
+// records no outputs under its own id, so adding it to a universe would make
+// `others: skipped` demand an account of a step that can never produce one.
+// What it is for is telling a real id apart from a typo, which is a question
+// about the *file* rather than about the transcript.
+func parallelContainers(nodes []*v1.Node, out map[string]bool) {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			out[node.GetId()] = true
+			for _, branch := range kind.Parallel.GetBranches() {
+				parallelContainers(branch.GetSteps(), out)
+			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				parallelContainers(body, out)
+			}
+		case *v1.Node_ForEach:
+			parallelContainers(kind.ForEach.GetBody(), out)
+		case *v1.Node_Loop:
+			parallelContainers(kind.Loop.GetBody(), out)
+		}
+	}
 }
 
 // collectAllStepIDs records every step id the workflow declares, at any depth —
