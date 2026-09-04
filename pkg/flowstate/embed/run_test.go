@@ -167,7 +167,7 @@ func TestRunLocal_EgressPolicyZeroValueIsConstantNotAmbient(t *testing.T) {
 		t.Fatal("expected the built-in http task to be registered")
 	}
 	t.Cleanup(func() {
-		if err := v1.DefaultRegistry().Register(original); err != nil {
+		if err := v1.DefaultRegistry().Replace(original); err != nil {
 			t.Fatalf("restoring the original http task: %v", err)
 		}
 	})
@@ -180,7 +180,7 @@ func TestRunLocal_EgressPolicyZeroValueIsConstantNotAmbient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("netpolicy.New: %v", err)
 	}
-	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(permissive)); err != nil {
+	if err := v1.DefaultRegistry().Replace(v1.HTTPTaskDef(permissive)); err != nil {
 		t.Fatalf("registering a permissive http task globally: %v", err)
 	}
 

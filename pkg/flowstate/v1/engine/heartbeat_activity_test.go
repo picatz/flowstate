@@ -49,7 +49,7 @@ import (
 // TestEveryTaskActivityHeartbeats keeps passing — the AST test only sees that
 // withHeartbeat was called, not what its goroutine actually does.
 func TestTaskActivityRecordsHeartbeatWhileRunning(t *testing.T) {
-	const taskName = "engine-heartbeat-behavior-record"
+	const taskName = "engine_heartbeat_behavior_record"
 
 	unblock := make(chan struct{})
 	var heartbeats atomic.Int32
@@ -139,7 +139,7 @@ func TestTaskActivityRecordsHeartbeatWhileRunning(t *testing.T) {
 // on activityOptionsFor's WaitForCancellation describes as "bounded by the
 // timeouts... and flow terminate is the verb for that case".
 func TestTaskActivityStopsPromptlyWhenContextIsCancelled(t *testing.T) {
-	const taskName = "engine-heartbeat-behavior-cancel"
+	const taskName = "engine_heartbeat_behavior_cancel"
 
 	started := make(chan struct{})
 	sawCancel := make(chan struct{})

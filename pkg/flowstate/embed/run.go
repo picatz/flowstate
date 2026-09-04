@@ -158,13 +158,13 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 	if egressPolicy == nil {
 		egressPolicy = v1.DefaultEgressPolicy()
 	}
-	if err := registry.Register(v1.HTTPTaskDef(egressPolicy)); err != nil {
+	if err := registry.Replace(v1.HTTPTaskDef(egressPolicy)); err != nil {
 		return nil, fmt.Errorf("flowstate/embed: RunLocal: registering the http task for the given egress policy: %w", err)
 	}
 
 	if opts.Tasks != nil {
 		for _, def := range opts.Tasks.defs() {
-			if err := registry.Register(def); err != nil {
+			if err := registry.Replace(def); err != nil {
 				// [Tasks.Register] already validated this definition; a
 				// failure here means this package's own bookkeeping
 				// disagreed with what it accepted.

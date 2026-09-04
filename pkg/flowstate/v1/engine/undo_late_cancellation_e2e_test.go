@@ -28,7 +28,7 @@ import (
 // then releases the activity to return success. Post-run history assertions prove
 // that activity completed (not failed or canceled) before workflow close.
 func TestRunWorkflowUndoOnLateCancellationDurable(t *testing.T) {
-	const taskName = "engine-late-cancellation-success"
+	const taskName = "engine_late_cancellation_success"
 
 	type hook struct {
 		started chan struct{}

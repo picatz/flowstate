@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -465,15 +466,24 @@ func NewRegistry() *Registry {
 	return &Registry{tasks: make(map[string]TaskDef)}
 }
 
-// Register adds a task definition, replacing any task already registered under
-// the same name.
-//
-// It reports an error for a definition that could not be executed — an empty
-// name or a nil function — so a misconfigured worker fails at startup rather
-// than mid-run.
-func (r *Registry) Register(def TaskDef) error {
+// taskNameRe is the per-segment grammar task.proto says the registry enforces:
+// a built-in is one bare word matching ^[a-z][a-z0-9_]*$; a plugin task is
+// plugin.task where the plugin segment matches ^[a-z0-9][a-z0-9-]*$ and the
+// task segment matches ^[a-z][a-z0-9_]*$.
+var taskNameRe = regexp.MustCompile(
+	`^[a-z][a-z0-9_]*$` + `|` + `^[a-z0-9][a-z0-9-]*\.[a-z][a-z0-9_]*$`,
+)
+
+// validateDef checks everything about a [TaskDef] that is independent of whether
+// the name already exists: grammar, nil function, input coherence, reserved keys.
+func (r *Registry) validateDef(def TaskDef) error {
 	if def.Name == "" {
 		return fmt.Errorf("task definition has no name")
+	}
+	if !taskNameRe.MatchString(def.Name) {
+		return fmt.Errorf("task %q does not match the task-name grammar "+
+			`(built-in: ^[a-z][a-z0-9_]*$, plugin: ^[a-z0-9][a-z0-9-]*\.[a-z][a-z0-9_]*$)`,
+			def.Name)
 	}
 	if def.Fn == nil {
 		return fmt.Errorf("task %q has no function", def.Name)
@@ -506,7 +516,45 @@ func (r *Registry) Register(def TaskDef) error {
 			"so `%s:` on a step would be ambiguous; the reserved names are %s",
 			def.Name, def.Name, strings.Join(ReservedStepKeys(), ", "))
 	}
+	return nil
+}
 
+// Register adds a task definition to the registry.
+//
+// It reports an error for a definition that could not be executed — an empty
+// name, a name that violates the grammar task.proto declares, a nil function,
+// or a duplicate of a name already registered — so a misconfigured worker fails
+// at startup rather than mid-run. Use [Registry.Replace] when the caller means
+// to overwrite an existing definition.
+func (r *Registry) Register(def TaskDef) error {
+	if err := r.validateDef(def); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.tasks[def.Name]; ok {
+		return fmt.Errorf("task %q is already registered (summary: %s); "+
+			"use Replace to overwrite it deliberately",
+			def.Name, existing.Summary)
+	}
+	r.tasks[def.Name] = def
+	return nil
+}
+
+// Replace overwrites an existing task definition with a new one, or adds it if
+// no definition by that name exists. It validates the definition the same way
+// [Register] does — the only difference is that a name already present is
+// overwritten rather than refused.
+//
+// This is the explicit-intent path the issue (#1431) requires: an embedder that
+// means to provide a different http implementation writes Replace, not Register,
+// so the call site documents the intent and the audit trail distinguishes
+// "added" from "replaced".
+func (r *Registry) Replace(def TaskDef) error {
+	if err := r.validateDef(def); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tasks[def.Name] = def

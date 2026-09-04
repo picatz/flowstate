@@ -118,6 +118,7 @@ func TestEachDispatchAttemptIsRecordedDurable(t *testing.T) {
 	var attempts atomic.Int32
 
 	require.NoError(t, v1.DefaultRegistry().Register(conformance.DispatchAuditTaskDef(&attempts)))
+	t.Cleanup(func() { v1.DefaultRegistry().Unregister(conformance.DispatchAuditTaskName) })
 
 	sink := &recordingSink{}
 	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink))
@@ -153,6 +154,7 @@ func TestADenialOnALaterAttemptIsRecordedDurable(t *testing.T) {
 
 	require.NoError(t, v1.DefaultRegistry().Register(
 		conformance.DispatchAuditTighteningTaskDef(&attempts, denying)))
+	t.Cleanup(func() { v1.DefaultRegistry().Unregister(conformance.DispatchAuditTaskName) })
 
 	sink := &recordingSink{}
 	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(sink))

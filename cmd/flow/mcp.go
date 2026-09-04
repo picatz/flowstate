@@ -413,7 +413,7 @@ func applyMCPEgressPolicy(cmd *cobra.Command) error {
 		return err
 	}
 
-	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
+	if err := v1.DefaultRegistry().Replace(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for flowstate_run_local: %w", err)
 	}
 

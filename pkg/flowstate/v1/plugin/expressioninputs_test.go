@@ -64,7 +64,7 @@ func TestAPluginCanRequireAnInputBeAnExpression(t *testing.T) {
 	// here for a stated reason rather than an assumed one: the name is a plugin's,
 	// nothing in this package enumerates the registry, and a Go test binary is one
 	// process per package.
-	require.NoError(t, flowstatev1.DefaultRegistry().Register(def))
+	require.NoError(t, flowstatev1.DefaultRegistry().Replace(def))
 
 	assert.True(t, flowstatev1.MustBeExpression(task, "message"),
 		"a plugin declared `message` must be an expression and a registry holding it says otherwise")

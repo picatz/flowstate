@@ -131,7 +131,7 @@ func loadPluginCatalog(cmd *cobra.Command) (*v1.PluginCatalog, error) {
 	}
 
 	for _, def := range defs {
-		if err := v1.DefaultRegistry().Register(def); err != nil {
+		if err := v1.DefaultRegistry().Replace(def); err != nil {
 			return nil, fmt.Errorf("%s: registering task %q: %w", path, def.Name, err)
 		}
 	}

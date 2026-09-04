@@ -47,7 +47,7 @@ func TestAPluginInputNamedOutputsIsAnOrdinaryInput(t *testing.T) {
 	// restored afterwards, for the reason the neighbouring plugin tests give: a
 	// registry has no way to remove a task, the name is a plugin's, and a Go test
 	// binary is one process per package.
-	require.NoError(t, flowstatev1.DefaultRegistry().Register(def))
+	require.NoError(t, flowstatev1.DefaultRegistry().Replace(def))
 	assert.False(t, flowstatev1.TaskShapesOutputs(task))
 
 	ds, err := flowfile.ValidateSource([]byte(shapingSource(task)))
@@ -74,7 +74,7 @@ func TestAPluginThatDeclaresShapingIsTreatedAsShaping(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, def.ShapesOutputs, "the manifest declared it and the task definition does not carry it")
 
-	require.NoError(t, flowstatev1.DefaultRegistry().Register(def))
+	require.NoError(t, flowstatev1.DefaultRegistry().Replace(def))
 	assert.True(t, flowstatev1.TaskShapesOutputs(task))
 
 	ds, err := flowfile.ValidateSource([]byte(shapingSource(task)))

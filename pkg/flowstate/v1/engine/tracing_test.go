@@ -191,7 +191,7 @@ func tracedSecretRuntime(t *testing.T) engine.TaskRuntimeConfig {
 func TestTaskSpanNamesTheSecretReferenceAndNeverTheSecret(t *testing.T) {
 	recorder := recordSpans(t)
 
-	const taskName = "traced-secret-task"
+	const taskName = "traced_secret_task"
 	registerSecretReadingTask(t, taskName, false)
 
 	var suite testsuite.WorkflowTestSuite
@@ -275,7 +275,7 @@ func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 // left no trace — which is what the guard in startTaskSpan makes cheap as well
 // as silent.
 func TestNoSpansWithoutATracerProvider(t *testing.T) {
-	const taskName = "untraced-secret-task"
+	const taskName = "untraced_secret_task"
 	registerSecretReadingTask(t, taskName, false)
 
 	var suite testsuite.WorkflowTestSuite

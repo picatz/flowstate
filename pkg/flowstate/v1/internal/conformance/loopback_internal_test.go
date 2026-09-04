@@ -37,10 +37,10 @@ func TestTheLoopbackExemptionOutlastsItsFirstHolder(t *testing.T) {
 	const mark = "sentinel · the loopback exemption test"
 	sentinel := original
 	sentinel.Summary = mark
-	if err := registry.Register(sentinel); err != nil {
+	if err := registry.Replace(sentinel); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = registry.Register(original) })
+	t.Cleanup(func() { _ = registry.Replace(original) })
 
 	registered := func() string {
 		def, _ := registry.Lookup("http")

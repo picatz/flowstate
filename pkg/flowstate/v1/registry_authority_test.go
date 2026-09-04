@@ -11,7 +11,7 @@ import (
 func TestRegistryRequiresCredentialInputsToCarryAuthority(t *testing.T) {
 	registry := v1.NewRegistry()
 	err := registry.Register(v1.TaskDef{
-		Name:             "cloud-call",
+		Name:             "cloud_call",
 		CredentialInputs: []string{"credential"},
 		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
 			return nil, nil
