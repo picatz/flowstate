@@ -224,7 +224,7 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 		if m.step != "" {
 			resolved, ok := taskOfStep[m.step]
 			if !ok {
-				return nil, unknownStepError(m.step, kindOfStep, taskOfStep)
+				return nil, unknownStepError(m.step, kindOfStep, taskOfStep, calleeSteps(spec))
 			}
 			task = resolved
 			m.stepScope = stubStepScope{workflow: spec.GetName(), step: m.step}
@@ -275,10 +275,23 @@ func describeStubTarget(m *compiledStub) string {
 // parallel) is told apart from one that does not exist at all, because the fix
 // differs: the first is a real id aimed at the wrong kind of step, the second is
 // a typo.
-func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[string]string) error {
+func unknownStepError(step string, kindOfStep, taskOfStep map[string]string, inCallee map[string]calleeStep) error {
 	if kind, exists := kindOfStep[step]; exists {
 		return fmt.Errorf("stub names step %q, which runs no task (it is a %s step) and so cannot be stubbed; "+
 			"stub a task step, or the task itself with `task:` and `where:`", step, kind)
+	}
+
+	// A name that is spelled exactly right, about a step this file cannot name.
+	// Step ids are local to a Flowfile, so a callee's step is genuinely not
+	// resolvable here — but answering a correct spelling with `did you mean
+	// "prep"?` tells an author to retype a right name as a different, unrelated
+	// one, which is a false sentence about their file (#1441). Say where the
+	// step lives and how to reach it instead.
+	if owner, exists := inCallee[step]; exists {
+		return fmt.Errorf("stub names step %q, which lives in workflow %q — reached by this workflow's "+
+			"%q step, not declared by it — and a `step:` stub resolves only against the workflow under "+
+			"test; stub the task it runs with `task:` and `where:`, which reaches inside a call",
+			step, owner.workflow, owner.callStep)
 	}
 
 	// Suggestions draw on every step the workflow has, not only the task
@@ -298,6 +311,106 @@ func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[
 		return fmt.Errorf("stub names unknown step %q; did you mean %q?", step, suggestion)
 	}
 	return fmt.Errorf("stub names unknown step %q, which this workflow has no task step for", step)
+}
+
+// calleeStep is where a step a caller cannot name actually lives: the workflow
+// that declares it, and the caller's own `call:` step that reaches it.
+//
+// Both halves are needed to be useful. The workflow name alone leaves an author
+// hunting for which of several calls goes there; the call step alone does not
+// say what file to open.
+type calleeStep struct {
+	workflow string
+	callStep string
+}
+
+// calleeSteps indexes every step declared by a workflow this one calls, by id.
+//
+// Only what [stepTasks] deliberately does not walk. The two are complements
+// rather than a wider version of one another: [stepTasks] answers "what can a
+// `step:` stub resolve to", which stops at a `call:` because step ids are local
+// to a Flowfile, and this answers "if it cannot, is the name nonetheless real
+// somewhere", which is the difference between a typo and a scope.
+//
+// The nearest owner wins where a callee itself calls another: the id is reported
+// against the call step in *this* workflow that leads to it, which is the one an
+// author can see.
+//
+// Descent through `call:` is bounded by [v1.MaxCallDepth], the same bound
+// execution follows calls to. That is the one direction this walk goes that its
+// siblings ([stepTasks], collectAllStepIDs) do not, so it is the one that needs
+// a bound of its own; body nesting is left exactly as unbounded as they leave
+// it, and is bounded upstream by the compiler. Stopping early costs only the
+// specific sentence: an id past the bound falls through to the generic refusal,
+// which is still true.
+func calleeSteps(spec *v1.Workflow) map[string]calleeStep {
+	found := map[string]calleeStep{}
+
+	var record func(nodes []*v1.Node, owner calleeStep, depth int)
+	record = func(nodes []*v1.Node, owner calleeStep, depth int) {
+		if depth > v1.MaxCallDepth {
+			return
+		}
+		for _, node := range nodes {
+			if _, seen := found[node.GetId()]; !seen && node.GetId() != "" {
+				found[node.GetId()] = owner
+			}
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					record(branch.GetSteps(), owner, depth)
+				}
+			case *v1.Node_ForEach:
+				record(kind.ForEach.GetBody(), owner, depth)
+			case *v1.Node_Loop:
+				record(kind.Loop.GetBody(), owner, depth)
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					record(body, owner, depth)
+				}
+			case *v1.Node_Call:
+				// A callee's own callees keep the outermost call step, which is
+				// the one written in the file the author is looking at.
+				if callee := kind.Call.GetWorkflow(); callee != nil {
+					record(callee.GetSteps(),
+						calleeStep{workflow: callee.GetName(), callStep: owner.callStep}, depth+1)
+				}
+			}
+		}
+	}
+
+	var walk func(nodes []*v1.Node, depth int)
+	walk = func(nodes []*v1.Node, depth int) {
+		if depth > v1.MaxCallDepth {
+			return
+		}
+		for _, node := range nodes {
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					walk(branch.GetSteps(), depth)
+				}
+			case *v1.Node_ForEach:
+				walk(kind.ForEach.GetBody(), depth)
+			case *v1.Node_Loop:
+				walk(kind.Loop.GetBody(), depth)
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					walk(body, depth)
+				}
+			case *v1.Node_Call:
+				if callee := kind.Call.GetWorkflow(); callee != nil {
+					record(callee.GetSteps(), calleeStep{
+						workflow: callee.GetName(),
+						callStep: node.GetId(),
+					}, depth+1)
+				}
+			}
+		}
+	}
+	walk(spec.GetSteps(), 0)
+
+	return found
 }
 
 // stepTasks walks a compiled workflow and returns two maps: every task step's id
@@ -336,6 +449,17 @@ func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[
 				// nothing is invoked. The expression is the value.
 				kindOfStep[node.GetId()] = "value"
 			case *v1.Node_Parallel:
+				// The container's own id, beside its branches' steps. Without it
+				// a stub aimed at a `parallel:` step — a step an author wrote,
+				// which the transcript names and the debugger breaks on — was
+				// answered with "unknown step, which this workflow has no task
+				// step for": a sentence false twice over about a step three
+				// lines above it, and one that sends an author looking for a
+				// misspelling that is not there (#1441). Like a `for_each` or a
+				// `switch`, there is nothing to stub on the container itself —
+				// the branches are the work — so it belongs in the map that
+				// tells that apart from a typo.
+				kindOfStep[node.GetId()] = "parallel"
 				for _, branch := range kind.Parallel.GetBranches() {
 					walk(branch.GetSteps())
 				}

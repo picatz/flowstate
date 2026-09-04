@@ -226,3 +226,152 @@ tests:
 	require.True(t, found,
 		"expected the closed claim to name the switch-body step that ran unnamed; got %v", c.GetFailures())
 }
+
+// parallelWorkflow is the smallest shape with a `parallel:` container: a real
+// step an author can see in the transcript, which records nothing under its own
+// id because its branches are the work.
+const parallelWorkflow = `
+edition: v2026.3
+name: gate
+steps:
+  - id: checks
+    parallel:
+      - steps:
+          - id: lint
+            log:
+              message: linting
+      - steps:
+          - id: unit
+            log:
+              message: testing
+outputs: {}
+`
+
+// TestRanNamingAParallelContainerGetsItsKind is the first of #1441's two false
+// sentences, on the `expect:` side.
+//
+// `flow test -v` prints `checks completed` in the very transcript this claim is
+// judged against, and the debugger breaks on the step — so answering a case that
+// names it with "unknown step, which this workflow has no step for" is false
+// twice over about a step written above it. It is the loop-body case exactly:
+// a real id whose kind, not whose spelling, is why no claim about it can be
+// checked.
+func TestRanNamingAParallelContainerGetsItsKind(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", parallelWorkflow)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: ran names the parallel container
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [checks, lint, unit]
+`))
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	require.Contains(t, c.GetError(), `expect.ran names step "checks", which is a parallel container`)
+	require.Contains(t, c.GetError(), "name the branch steps that ran instead",
+		"the refusal does not name the claim that works")
+
+	// The half that would still be false if the container were simply added to
+	// the universe: a real id is not a typo, and it is not unknown.
+	require.NotContains(t, c.GetError(), "did you mean")
+	require.NotContains(t, c.GetError(), "unknown step")
+}
+
+// TestTheParallelContainerStaysOutOfTheClosedClaim is the direction the fix
+// must not break.
+//
+// `others: skipped` is a closed claim over the steps that record outputs, and
+// the container records none — so naming only the branch steps has to keep
+// passing. A fix that put the container in the universe instead of beside it
+// would make every existing case with a `parallel:` block demand an account of
+// a step that can never give one.
+func TestTheParallelContainerStaysOutOfTheClosedClaim(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", parallelWorkflow)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: the branches account for the run
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [lint, unit]
+      others: skipped
+`))
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v", c.GetFailures())
+}
+
+// TestRanNamingACalleeStepSaysWhereItLives is the second of #1441's two false
+// sentences, on the `expect:` side.
+//
+// Step ids are local to a Flowfile, so a claim about a callee's step genuinely
+// cannot be judged here and stays a refusal. What was wrong is the sentence: a
+// name spelled exactly as the callee spells it was answered with a did-you-mean
+// pointing at an unrelated caller step, which tells an author to retype a right
+// name as a wrong one.
+//
+// The caller's step is deliberately one edit away from the callee's, because
+// that is what makes the old sentence appear rather than the generic one.
+func TestRanNamingACalleeStepSaysWhereItLives(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/callee.yaml", `
+edition: v2026.3
+name: shift-traffic
+steps:
+  - id: shift
+    log:
+      message: shifting
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: rollout
+steps:
+  - id: shifter
+    log:
+      message: preparing
+  - id: delegate
+    call: ./callee.yaml
+outputs: {}
+`)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: ran names a step of the callee
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [shift]
+`))
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	require.Contains(t, c.GetError(), `expect.ran names step "shift"`)
+	require.Contains(t, c.GetError(), `"shift-traffic"`,
+		"the refusal does not name the workflow the step actually lives in")
+	require.Contains(t, c.GetError(), `"delegate"`,
+		"the refusal does not name the call step that reaches it")
+	require.NotContains(t, c.GetError(), "did you mean",
+		"a step spelled exactly as the callee spells it was answered with a did-you-mean")
+}

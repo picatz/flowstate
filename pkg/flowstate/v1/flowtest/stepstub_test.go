@@ -237,3 +237,114 @@ tests:
 	require.Contains(t, err.Error(), "expect.others")
 	require.Contains(t, err.Error(), "skipped")
 }
+
+// TestStubByStepIdNamesAParallelContainerByItsKind is the first of #1441's two
+// false sentences.
+//
+// A `parallel:` step is a step an author wrote and can see run — the transcript
+// names it, the debugger breaks on it — and a stub aimed at it was answered
+// with "unknown step, which this workflow has no task step for". That sentence
+// is false twice over about a step written three lines above it, and it sends
+// an author looking for a misspelling that is not there.
+//
+// It is the same class the `value:` arm closed and for the same reason: the
+// container runs no task, so the honest answer names its kind and says what to
+// stub instead.
+func TestStubByStepIdNamesAParallelContainerByItsKind(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: parallel-fixture
+steps:
+  - id: checks
+    parallel:
+      - steps:
+          - id: lint
+            log:
+              message: linting
+      - steps:
+          - id: unit
+            log:
+              message: testing
+`)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: stubbing the parallel container
+    workflow: ./workflow.yaml
+    stubs:
+      - step: checks
+        returns: {}
+    expect: {}
+`))
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	require.Contains(t, c.GetError(), `step "checks"`)
+	require.Contains(t, c.GetError(), "runs no task")
+	require.Contains(t, c.GetError(), "parallel")
+
+	// The direction that would still be wrong if the container were merely
+	// added to the *task* map: a real id is not a typo, so nothing may suggest
+	// retyping it.
+	require.NotContains(t, c.GetError(), "did you mean")
+	require.NotContains(t, c.GetError(), "unknown step")
+}
+
+// TestStubByStepIdNamesTheCalleeAStepLivesIn is the second of #1441's two false
+// sentences.
+//
+// Step ids are local to a Flowfile, so a stub naming a callee's step cannot be
+// resolved here — that part is right, and [TestStubByStepIdDoesNotMatchACallee]
+// is why it must stay right. What was wrong is the sentence: a name spelled
+// exactly as the callee spells it was answered with `did you mean "prep"?`,
+// which is a suggestion to retype a correct name as a different, unrelated one.
+//
+// The honest answer says where the step actually lives and how to reach it.
+func TestStubByStepIdNamesTheCalleeAStepLivesIn(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/callee.yaml", `
+edition: v2026.3
+name: callee
+steps:
+  - id: fetch
+    log:
+      message: fetching
+`)
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: caller
+steps:
+  - id: fetcher
+    log:
+      message: preparing
+  - id: delegate
+    call: ./callee.yaml
+`)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: stubbing a step that lives in the callee
+    workflow: ./workflow.yaml
+    stubs:
+      - step: fetch
+        returns: {}
+    expect: {}
+`))
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	require.Contains(t, c.GetError(), `step "fetch"`)
+	require.Contains(t, c.GetError(), "callee",
+		"the refusal does not name the workflow the step actually lives in")
+	require.Contains(t, c.GetError(), "delegate",
+		"the refusal does not name the call step that reaches it")
+	require.Contains(t, c.GetError(), "task:",
+		"the refusal does not say how to stub a task inside a call")
+
+	// A correctly spelled name is not a typo. This is the false half.
+	require.NotContains(t, c.GetError(), "did you mean",
+		"a step spelled exactly as the callee spells it was answered with a did-you-mean")
+}
