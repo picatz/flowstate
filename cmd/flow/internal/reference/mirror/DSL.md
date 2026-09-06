@@ -644,6 +644,21 @@ declaration by `EvalRunOutputs` before it is reported, on both drivers. Structur
 named types are still #637's and #177's questions; this is the anonymous floor they
 stand on. See `examples/computed-outputs/`.
 
+*Since written, again (#1764):* **a `float` is a finite number.** A double can hold
+NaN and the infinities and JSON cannot spell them, so a declared `float` that carried
+one reached the run document — every `-o json`, `flow get` and MCP reader — as the
+schema's tagged encoding beside plain numbers, and a non-finite number in a durable
+record is almost always an upstream defect (a division by zero, an overflow) rather
+than an answer. So the declaration refuses them, at the boundary that owns it and on
+both drivers: `--input f=NaN` is refused at submit with `input "f" is declared float
+but was given NaN, which is not a finite number`, and a declared `float` output that
+computes one fails the run at completion with the same sentence about the output. A
+value *nobody* declared — a bare `value: ${0.0 / 0.0}` — is not refused; the run
+document spells it as the string `"NaN"`, `"Infinity"` or `"-Infinity"`, protojson's
+own spelling, and never as `{"literal": {"doubleValue": …}}`. An expression that can
+divide its way to a non-number says what it means instead, which is what
+`examples/computed-outputs/`'s `coverage:` guard is for.
+
 ### `state:` gets a byte bound now, not an open question
 
 The proposal flags a bound on entity `state:` as an open question. It is not one.
