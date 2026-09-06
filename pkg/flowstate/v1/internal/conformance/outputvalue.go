@@ -3,6 +3,7 @@ package conformance
 import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"math"
 )
 
 // A declared output whose value is already known is checked at the submit
@@ -103,6 +104,20 @@ func OutputValueRefusalCases() []Refusal {
 				says("a", "hello"),
 			),
 			Contains: "value_type and the legacy type must describe the same output type when both are set",
+		},
+		{
+			// #1764: a literal infinity under `type: float` is a promise the
+			// specification breaks against itself, knowable at submit. The
+			// computed half is in [InputOutputCases], judged at completion.
+			Name: "a literal non-finite float output is refused at submit",
+			Workflow: declares("outputs-literal-float-non-finite",
+				nil,
+				[]*v1.OutputDeclaration{
+					literalOutput("coverage", v1.NewLiteral(math.Inf(1)), v1.InputDeclaration_TYPE_FLOAT),
+				},
+				says("a", "hello"),
+			),
+			Contains: `output "coverage" is declared float but computed Infinity, which is not a finite number`,
 		},
 		{
 			// The enum half. A literal string outside the declared set is a

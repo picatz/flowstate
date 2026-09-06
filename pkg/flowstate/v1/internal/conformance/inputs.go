@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -331,6 +332,23 @@ func InputOutputCases(httpBaseURL string) []Case {
 					"untyped": v1.NewLiteral("whatever"),
 				},
 			),
+		},
+		{
+			// #1764, the computed half: a declared float that divides its way to
+			// NaN has broken its promise at the one moment its value exists, and
+			// the run fails there on both drivers rather than reporting a number
+			// no JSON reader can read. The literal half is in
+			// [OutputValueRefusalCases], refused at submit.
+			Name:          "a non-finite float output fails the run",
+			ExpectFailure: true,
+			Workflow: declares("outputs-float-non-finite",
+				nil,
+				[]*v1.OutputDeclaration{
+					typedOutput("ratio", `0.0 / 0.0`, v1.InputDeclaration_TYPE_FLOAT),
+				},
+				says("a", "hello"),
+			),
+			ExpectedErrorContains: `output "ratio" is declared float but computed NaN, which is not a finite number`,
 		},
 		{
 			// The negative direction of the same claim, which is what makes the
@@ -680,6 +698,20 @@ func InputRefusalCases() []Refusal {
 			Workflow: takesRegion(),
 			Inputs:   map[string]*v1.Value{"region": v1.NewExpr(`"eu-" + "west-1"`)},
 			Contains: `input "region" is an expression`,
+		},
+		{
+			// #1764: a float is a finite number. NaN is a double, so the type
+			// check alone admitted it, and it reached the run document as the
+			// schema's tagged encoding beside plain numbers. `--input f=NaN`
+			// parses on the CLI, so this is the boundary that has to say no.
+			Name: "a non-finite float input is refused",
+			Workflow: declares("inputs-finite-float",
+				[]*v1.InputDeclaration{input("ratio", v1.InputDeclaration_TYPE_FLOAT, true, nil)},
+				nil,
+				says("a", "hello"),
+			),
+			Inputs:   map[string]*v1.Value{"ratio": v1.NewLiteral(math.NaN())},
+			Contains: `input "ratio" is declared float but was given NaN, which is not a finite number`,
 		},
 		{
 			Name:     "a secret reference is refused",
