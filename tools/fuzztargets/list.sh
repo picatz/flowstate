@@ -31,9 +31,11 @@ shift
 # hypothetical "deeper" tier answer for "deep".
 out=$(awk -v tier="$tier" -v want="$*" -v self="$0" '
 	BEGIN {
+		# Counted as the names are kept rather than with length(keep): the
+		# length of an array is a gawk extension, and the runner awk is mawk.
+		selecting = 0
 		n = split(want, names, " ")
-		for (i = 1; i <= n; i++) if (names[i] != "") keep[names[i]] = 1
-		selecting = length(keep) > 0
+		for (i = 1; i <= n; i++) if (names[i] != "") { keep[names[i]] = 1; selecting = 1 }
 	}
 	/^[[:space:]]*#/ { next }
 	NF == 0          { next }
