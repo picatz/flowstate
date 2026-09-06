@@ -444,6 +444,9 @@ func BindWebhookTriggerSignal(
 	if err := event.Error(); err != nil {
 		return "", nil, "", fmt.Errorf("webhook %q: reading the delivery: %w", trigger.GetName(), err)
 	}
+	if err := checkWebhookBodyDepth(trigger.GetName(), event); err != nil {
+		return "", nil, "", err
+	}
 
 	// One scope holding `event` and nothing else, through the same [Scope]
 	// machinery every other evaluation uses, so the cost limit and the profile
@@ -512,6 +515,9 @@ func BindWebhookTriggerSignal(
 
 	payload = &Node_Outputs{NamedValues: values}
 	if err := CheckSignalPayloadSize(payload); err != nil {
+		return "", nil, "", fmt.Errorf("webhook %q: %w", trigger.GetName(), err)
+	}
+	if err := CheckSignalPayloadDepth(payload); err != nil {
 		return "", nil, "", fmt.Errorf("webhook %q: %w", trigger.GetName(), err)
 	}
 

@@ -589,7 +589,14 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// protects. The payload is the one part of a run's carried state somebody
 	// other than the run's owner sizes, and without this the refusal would
 	// land at the run's next Continue-As-New instead, on the wrong party.
+	//
+	// Depth beside size, for the same party: the byte bound admits a payload
+	// nested thousands of levels, and a run input that deep is refused at
+	// submit — see [v1.CheckSignalPayloadDepth] for the door this closes.
 	if err := v1.CheckSignalPayloadSize(req.Msg.GetPayload()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := v1.CheckSignalPayloadDepth(req.Msg.GetPayload()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -677,10 +684,13 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// The same door check [FlowstateServer.Signal] makes, for the same reason:
+	// The same door checks [FlowstateServer.Signal] makes, for the same reason:
 	// this RPC delivers a payload too, and one door with a bound and one
 	// without is no bound at all.
 	if err := v1.CheckSignalPayloadSize(req.Msg.GetPayload()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := v1.CheckSignalPayloadDepth(req.Msg.GetPayload()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 

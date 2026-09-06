@@ -451,6 +451,15 @@ func (s *LocalSignals) Deliver(name string, payload *Node_Outputs) error {
 // waiting under any more and moves time on it. That window is what #278's
 // first two attempts each left open somewhere else.
 func (s *LocalSignals) DeliverFrom(name string, payload *Node_Outputs, sender *SignalSender) error {
+	// The bound the server's Signal door applies, applied here so that a
+	// rehearsal refuses what production refuses rather than delivering a
+	// payload the durable driver would never have admitted (invariant 3).
+	// Before policy for the same reason the server checks it before tenancy:
+	// it is the sender's own data, and refusing it costs nothing.
+	if err := CheckSignalPayloadDepth(payload); err != nil {
+		return fmt.Errorf("flowstate: signal %q refused: %w", name, err)
+	}
+
 	if policy, declared := s.policies[name]; declared {
 		if err := SignalPolicyCheck(policy, sender.GetIdentity(), s.starter, s.hasStarter); err != nil {
 			return fmt.Errorf("flowstate: signal %q refused: %w", name, err)
