@@ -2320,7 +2320,11 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	// File-aware rather than reading the bytes and calling [flowfile.Unmarshal]:
 	// a `call:` step is resolved relative to this file's own directory, and only
 	// the path-aware entry points know it.
-	workflow, _, err := flowfile.ParseFile(path)
+	//
+	// One pass, not [flowfile.ParseFile] followed by [flowfile.ValidateSourceFile]:
+	// the second compiled the file again from its bytes, every expression parsed
+	// twice before a step ran (#1795).
+	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
 	if err != nil {
 		// Positioned diagnostics get a line each naming this file, like every
 		// other diagnostic surface. Wrapping the error instead put the filename on
@@ -2331,11 +2335,6 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 		if errors.As(err, &parsed) {
 			return nil, diagnosticsError(path, parsed)
 		}
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-
-	diagnostics, err := flowfile.ValidateSourceFile(path)
-	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(diagnostics) > 0 {

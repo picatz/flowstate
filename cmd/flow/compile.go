@@ -118,7 +118,12 @@ func runCompile(cmd *cobra.Command, args []string) error {
 
 	// Path-aware, so a `call:` step resolves relative to this file's own
 	// directory exactly as `flow validate` and `flow run` resolve it.
-	workflow, _, err := flowfile.ParseFile(path)
+	//
+	// Compiled and validated in one pass (#1795): the compiler accepts more than
+	// the validator does — a parse can succeed on a file validation would still
+	// object to — so the full check runs too, on the workflow already in hand
+	// rather than on the file a second time.
+	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
 	surface := newSurface(cmd)
 	if err != nil {
 		var pathErr *os.PathError
@@ -139,15 +144,9 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return errCompileRefused
 	}
 
-	// The compiler accepts more than the validator does — a parse can succeed on
-	// a file validation would still object to — so the full check runs too, and a
-	// file with diagnostics answers with them and no specification. A
+	// A file with diagnostics answers with them and no specification. A
 	// specification handed out beside a list of its problems would be an
 	// invitation to run it anyway.
-	diagnostics, err := flowfile.ValidateSourceFile(path)
-	if err != nil {
-		return fmt.Errorf("validating %s: %w", path, err)
-	}
 	if len(diagnostics) > 0 {
 		// stderr, which is the split this command turns on. `flow validate` writes
 		// diagnostics to stdout because they are its answer; here the answer is
