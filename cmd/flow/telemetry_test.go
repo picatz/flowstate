@@ -80,6 +80,17 @@ func isolateTelemetry(t *testing.T) {
 	// delegating instance this one may have pointed at a collector.
 	logglobal.SetLoggerProvider(noopLog.NewLoggerProvider())
 
+	// The error handler is a global of the same kind, with the same
+	// delegate-exactly-once trap: the SDK's default handler forwards to the
+	// first handler ever set and keeps forwarding to it after a "restore". So
+	// the baseline is a concrete handler that reads [telemetryLogger] at call
+	// time — never a handler holding a logger some test installed — and a test
+	// that wants to read what the SDK reported installs its own on top.
+	errorHandler := otel.GetErrorHandler()
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		telemetryLogger.Warn("telemetry reported an error", "err", err)
+	}))
+
 	telemetryState.mu.Lock()
 	started, handler, shutdown, err := telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err
 	telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err = false, nil, nil, nil
@@ -97,6 +108,7 @@ func isolateTelemetry(t *testing.T) {
 		otel.SetMeterProvider(meterProvider)
 		otel.SetTextMapPropagator(propagator)
 		logglobal.SetLoggerProvider(loggerProvider)
+		otel.SetErrorHandler(errorHandler)
 
 		telemetryState.mu.Lock()
 		telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err = started, handler, shutdown, err
