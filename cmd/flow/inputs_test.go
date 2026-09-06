@@ -298,17 +298,17 @@ func TestAMissingInputFileNamesTheFlag(t *testing.T) {
 	assert.Contains(t, err.Error()+stderr, "--input-file")
 }
 
-// TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsRead: the bound is
-// spent at the read, not after the parse and the Value conversion have been
+// TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsParsed: the read stops at
+// the bound and the refusal comes before the parse and the Value conversion are
 // built for a document the submission check would only refuse later.
-func TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsRead(t *testing.T) {
+func TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsParsed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "inputs.json")
 	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte(" "), maxInputFileBytes+1), 0o600))
 
 	_, err := inputsFromFile(path, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--input-file")
-	assert.Contains(t, err.Error(), "nothing was read",
+	assert.Contains(t, err.Error(), "nothing past the limit was read",
 		"the refusal has to be the size check's, not the parser's opinion of a megabyte of spaces")
 
 	// The same document, one byte shorter, reaches the parser: it is the parser
@@ -316,7 +316,7 @@ func TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsRead(t *testing.T) 
 	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte(" "), maxInputFileBytes), 0o600))
 	_, err = inputsFromFile(path, nil)
 	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "nothing was read")
+	assert.NotContains(t, err.Error(), "nothing past the limit was read")
 }
 
 // TestAnInputFileReadStopsAtTheBound asserts the reader is what stops, so a file

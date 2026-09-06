@@ -287,7 +287,7 @@ func readInputsFile(path string, r io.Reader) ([]byte, error) {
 	if len(data) > maxInputFileBytes {
 		return nil, fmt.Errorf(
 			"--input-file %s is over the %d byte limit the workflow and the inputs it is run with "+
-				"share; nothing was read. A run carries both across every suspension, so a large "+
+				"share; nothing past the limit was read. A run carries both across every suspension, so a large "+
 				"value belongs somewhere a step can fetch it rather than in the arguments",
 			path, maxInputFileBytes)
 	}
