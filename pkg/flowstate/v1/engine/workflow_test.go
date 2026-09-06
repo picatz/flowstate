@@ -1542,7 +1542,12 @@ func TestRunWorkflowExpressionElementBound(t *testing.T) {
 	for _, test := range conformance.ExpressionElementBoundCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
-			env := testSuite.NewTestWorkflowEnvironment()
+			// A boundary test: the at-bound case evaluates ten thousand
+			// elements on the workflow side, which is what the bound permits
+			// and what a deployed worker gives its deadlock budget to, and
+			// under the race detector that costs more than the test
+			// environment's one-second default. See [atABound].
+			env := atABound(testSuite.NewTestWorkflowEnvironment())
 			env.RegisterWorkflow(engine.Run)
 			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
