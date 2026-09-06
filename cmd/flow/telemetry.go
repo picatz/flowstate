@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -416,6 +421,15 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 	// [initTelemetry] through [startTelemetry] and nothing else.
 	otel.SetErrorHandler(newTelemetryErrorHandler(telemetryLogger, telemetryErrorInterval, time.Now))
 
+	// The SDK's internal logger is a second writer with the same defect, and
+	// it speaks first: an endpoint that does not parse is reported by the
+	// exporter's constructor through this logger — in the standard library's
+	// format, twice — before any error handler is consulted, and the exporter
+	// is then built against its default. Bridged to the same slog handler.
+	// The SDK writes its Info and Warn at logr verbosities the handler's
+	// Info floor filters out, so only its errors reach stderr, at ERROR.
+	otel.SetLogger(logr.FromSlogHandler(telemetryLogger.Handler()))
+
 	res, err := telemetryResource(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -574,19 +588,34 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		// a command's own teardown and main's — and shutting a provider down
 		// twice is at best wasted work and at worst an error report about
 		// something that already succeeded.
+		//
+		// Each shutdown's error goes to [otel.Handle] rather than being
+		// dropped, because the three providers do not agree about who reports
+		// a failed final export: the trace and log batch processors hand it to
+		// the error handler themselves and return only their exporter's own
+		// shutdown error, while the metric reader returns the export error and
+		// reports nothing — so a metrics-only deployment with a dead collector
+		// was silent at exactly the flush this comment says matters. The
+		// handler's once-per-interval rule absorbs any case where both happen.
 		once.Do(func() {
 			if tracerProvider != nil {
-				_ = tracerProvider.Shutdown(ctx)
+				if err := tracerProvider.Shutdown(ctx); err != nil {
+					otel.Handle(err)
+				}
 			}
 			if meterProvider != nil {
-				_ = meterProvider.Shutdown(ctx)
+				if err := meterProvider.Shutdown(ctx); err != nil {
+					otel.Handle(err)
+				}
 			}
 			// Logs batch exactly as spans do, so the last lines a process writes
 			// — which are the ones saying why it is leaving — are precisely the
 			// ones an unflushed provider drops. This is the same flush, not a
 			// second path: every exit already reaches here.
 			if loggerProvider != nil {
-				_ = loggerProvider.Shutdown(ctx)
+				if err := loggerProvider.Shutdown(ctx); err != nil {
+					otel.Handle(err)
+				}
 			}
 		})
 	}
@@ -617,12 +646,99 @@ const telemetryErrorInterval = time.Minute
 // telemetryErrorHandlerMaxDistinct bounds how many distinct failures the
 // handler remembers within one interval.
 //
-// The key is the error's text, and an error's text is written by whatever
-// failed — a peer's response, a resolver's message — so "distinct" is not a
-// number this process controls. Past the bound, everything new shares one
-// slot: reported once per interval, together, rather than remembered one by
-// one. Invariant 5: bound the work where it is spent.
+// The key is the failure's class rather than its text — see
+// [telemetryErrorClass] — but a class is still derived from what failed, and
+// the fallback for an error nothing here recognises is its text, which a peer
+// writes. So "distinct" is not a number this process controls, and past the
+// bound everything new shares one slot: reported once per interval, together
+// and marked as the overflow, rather than remembered one by one. Invariant 5:
+// bound the work where it is spent.
 const telemetryErrorHandlerMaxDistinct = 64
+
+// telemetryErrorClassMaxText bounds the text fallback of [telemetryErrorClass].
+const telemetryErrorClassMaxText = 128
+
+// httpStatusInExportError finds the status an OTLP exporter puts in its
+// "failed to send to <url>: <status> (...)" error, which is text and nothing
+// else: the exporters' typed retry errors live in their internal packages.
+var httpStatusInExportError = regexp.MustCompile(`failed to send to \S+: ([1-5])\d\d\b`)
+
+// telemetryErrorClass reduces an error to the thing that is the same about
+// every occurrence of it, so a failure that persists is one key.
+//
+// The full text is the wrong key: a collector's response body carries a
+// request id, a resolver's message carries the attempt, and keyed on those a
+// dead collector would be sixty-four "distinct" failures a minute and then the
+// overflow slot, which is the once-per-batch line this handler exists to stop.
+// What is stable about a failure is its shape — where the request got to and
+// what stopped it — and that is what this names:
+//
+//   - A transport failure ([url.Error]) by its operation and the network
+//     error's kind: a deadline, a timeout, an errno such as "connection
+//     refused", a DNS failure, or the error's type.
+//   - A response the exporter refused by its HTTP status class.
+//   - Anything else by the type of its root cause, falling back to bounded
+//     text for the untyped errors the standard library builds, because two
+//     of those with different text are genuinely different.
+func telemetryErrorClass(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return "url." + urlErr.Op + ": " + netErrorClass(urlErr.Err)
+	}
+
+	if match := httpStatusInExportError.FindStringSubmatch(err.Error()); match != nil {
+		return "http " + match[1] + "xx"
+	}
+
+	root := err
+	for {
+		next := errors.Unwrap(root)
+		if next == nil {
+			break
+		}
+		root = next
+	}
+	switch kind := fmt.Sprintf("%T", root); kind {
+	case "*errors.errorString", "*errors.joinError", "*fmt.wrapError", "*fmt.wrapErrors":
+		text := root.Error()
+		if len(text) > telemetryErrorClassMaxText {
+			text = text[:telemetryErrorClassMaxText]
+		}
+
+		return text
+	default:
+		return kind
+	}
+}
+
+// netErrorClass names what stopped a transport, most specific first.
+func netErrorClass(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline exceeded"
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno.Error()
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op + " " + fmt.Sprintf("%T", opErr.Err)
+	}
+
+	return fmt.Sprintf("%T", err)
+}
 
 // telemetryErrorHandler routes the SDK's errors to slog, once per interval per
 // distinct error.
@@ -647,40 +763,53 @@ func newTelemetryErrorHandler(logger *slog.Logger, interval time.Duration, now f
 
 // Handle implements [otel.ErrorHandler].
 //
-// An export failure names its signal and endpoint, which is what an operator
-// needs to know which collector to look at; the SDK's other errors carry only
-// their text. Both say for how long a repeat stays quiet, so a reader seeing
-// one line a minute knows the failure did not stop in between.
+// An export failure names its signal and, when the operator configured one,
+// its endpoint — which is what they need to know which collector to look at;
+// the SDK's other errors carry only their text. Every record names the class
+// the repeat rule keys on and for how long a repeat stays quiet, so a reader
+// seeing one line a minute knows the failure did not stop in between, and a
+// record from the overflow slot says so.
 func (h *telemetryErrorHandler) Handle(err error) {
 	if err == nil {
 		return
 	}
 
 	message := "telemetry reported an error"
-	key := err.Error()
+	class := telemetryErrorClass(err)
+	key := class
 	var attrs []any
 
 	var failure *exportFailure
 	if errors.As(err, &failure) {
 		message = "telemetry export failed"
-		key = failure.signal + "\x00" + failure.endpoint + "\x00" + key
-		attrs = append(attrs, "signal", failure.signal, "endpoint", failure.endpoint)
+		key = failure.signal + "\x00" + failure.endpoint + "\x00" + class
+		attrs = append(attrs, "signal", failure.signal)
+		if failure.endpoint != "" {
+			attrs = append(attrs, "endpoint", failure.endpoint)
+		}
 	}
 
-	if !h.first(key) {
+	report, overflow := h.first(key)
+	if !report {
 		return
 	}
 
-	h.logger.Warn(message, append(attrs, "err", err, "repeats_muted_for", h.interval)...)
+	attrs = append(attrs, "class", class, "err", err, "repeats_muted_for", h.interval)
+	if overflow {
+		attrs = append(attrs, "overflow", true)
+	}
+
+	h.logger.Warn(message, attrs...)
 }
 
 // first reports whether key has not been seen in the current interval, starting
-// a new interval when the current one has elapsed.
+// a new interval when the current one has elapsed, and whether the answer came
+// from the overflow slot.
 //
 // Past [telemetryErrorHandlerMaxDistinct] entries a new key shares the one
 // overflow slot, so the map holds at most the bound plus that slot and the
 // overflow is still said once per interval rather than never.
-func (h *telemetryErrorHandler) first(key string) bool {
+func (h *telemetryErrorHandler) first(key string) (report, overflow bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -691,17 +820,18 @@ func (h *telemetryErrorHandler) first(key string) bool {
 	}
 
 	if _, seen := h.seen[key]; seen {
-		return false
+		return false, false
 	}
 	if len(h.seen) >= telemetryErrorHandlerMaxDistinct {
 		key = ""
+		overflow = true
 		if _, seen := h.seen[key]; seen {
-			return false
+			return false, true
 		}
 	}
 	h.seen[key] = struct{}{}
 
-	return true
+	return true, overflow
 }
 
 // exportFailure is an exporter's error with the signal and endpoint it belongs
@@ -760,22 +890,22 @@ func (e taggedLogExporter) Export(ctx context.Context, records []sdklog.Record) 
 }
 
 // telemetryEndpoint is where a signal's exporter sends, as the operator wrote
-// it.
+// it, or empty when they wrote nothing.
 //
 // The OTLP exporters read the signal's own variable first and the general one
-// second, and fall back to localhost:4318 with neither; this reads them in the
-// same order so a warning names the value the operator can act on. For the
-// warning only: the exporters resolve their own configuration, and nothing
-// here feeds back into them.
+// second; this reads them in the same order so a warning names the value the
+// operator can act on. With neither set the exporter composes its own default
+// from a scheme, a host, a port and a per-signal path, each of them
+// overridable by a further variable, and a value restated here would be a
+// second spelling of that rule that drifts from it — so the attribute is left
+// out rather than misstated. For the warning only: the exporters resolve their
+// own configuration, and nothing here feeds back into them.
 func telemetryEndpoint(signal string) string {
 	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_" + strings.ToUpper(signal) + "_ENDPOINT"); endpoint != "" {
 		return endpoint
 	}
-	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
-		return endpoint
-	}
 
-	return "localhost:4318"
+	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 }
 
 // The third signal, and the two honest limits on it.

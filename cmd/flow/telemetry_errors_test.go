@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/url"
+	"os"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -186,6 +190,102 @@ func TestRepeatedExportFailuresAreOneRecordPerIntervalPerDistinctError(t *testin
 	require.Len(t, recorder.all(), 5, "a failure that persists across the interval is reported again")
 }
 
+// TestFailuresAreKeyedByClassNotByText is the rule that makes the rate limit
+// hold against a real collector: the text of a failure varies per request —
+// a response body with a request id, a dial error with an attempt — and a key
+// made of that text would say "distinct" sixty-four times a minute and then
+// fall into the overflow slot. The shape of the failure is what repeats.
+func TestFailuresAreKeyedByClassNotByText(t *testing.T) {
+	recorder := &recordedLogs{}
+	handler := newTelemetryErrorHandler(slog.New(recorder), time.Minute, time.Now)
+
+	refusedA := &url.Error{Op: "Post", URL: "http://collector:4318/v1/traces?attempt=1", Err: &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
+	refusedB := &url.Error{Op: "Post", URL: "http://collector:4318/v1/traces?attempt=2", Err: &net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
+	require.NotEqual(t, refusedA.Error(), refusedB.Error(), "the fixture must differ in text to prove anything")
+
+	handler.Handle(tagExportFailure("traces", "http://collector:4318", fmt.Errorf("traces export: %w", refusedA)))
+	handler.Handle(tagExportFailure("traces", "http://collector:4318", fmt.Errorf("traces export: %w", refusedB)))
+	require.Len(t, recorder.all(), 1, "two connection-refused failures with different text are one failure")
+	require.Equal(t, "url.Post: connection refused", attrs(recorder.all()[0])["class"])
+
+	handler.Handle(tagExportFailure("traces", "http://collector:4318",
+		errors.New(`failed to send to http://collector:4318/v1/traces: 503 Service Unavailable (body: request-id=a1)`)))
+	handler.Handle(tagExportFailure("traces", "http://collector:4318",
+		errors.New(`failed to send to http://collector:4318/v1/traces: 503 Service Unavailable (body: request-id=b2)`)))
+	require.Len(t, recorder.all(), 2, "two 5xx responses with different bodies are one failure")
+	require.Equal(t, "http 5xx", attrs(recorder.all()[1])["class"])
+
+	handler.Handle(tagExportFailure("traces", "http://collector:4318",
+		errors.New(`failed to send to http://collector:4318/v1/traces: 404 Not Found (body: request-id=c3)`)))
+	require.Len(t, recorder.all(), 3, "a 4xx is a different failure from a 5xx")
+	require.Equal(t, "http 4xx", attrs(recorder.all()[2])["class"])
+
+	timedOut := &url.Error{Op: "Post", URL: "http://collector:4318/v1/traces", Err: context.DeadlineExceeded}
+	handler.Handle(tagExportFailure("traces", "http://collector:4318", timedOut))
+	require.Len(t, recorder.all(), 4, "a deadline is a different failure from a refusal")
+	require.Equal(t, "url.Post: deadline exceeded", attrs(recorder.all()[3])["class"])
+}
+
+// TestAFailureWithoutAConfiguredEndpointNamesNone: when the operator set no
+// endpoint the exporter composed its own default, and restating that here
+// would be a second spelling of the exporter's rule. The record says the
+// signal and the reason, and omits the attribute rather than guessing it.
+func TestAFailureWithoutAConfiguredEndpointNamesNone(t *testing.T) {
+	recorder := &recordedLogs{}
+	handler := newTelemetryErrorHandler(slog.New(recorder), time.Minute, time.Now)
+
+	handler.Handle(tagExportFailure("traces", "", errors.New("connection refused")))
+
+	records := recorder.all()
+	require.Len(t, records, 1)
+	got := attrs(records[0])
+	require.Equal(t, "traces", got["signal"])
+	require.NotContains(t, got, "endpoint")
+}
+
+// TestTelemetryEndpointReportsWhatTheOperatorWrote pins the precedence the
+// exporters use — the signal's own variable over the general one — and that
+// nothing is invented when neither is set.
+func TestTelemetryEndpointReportsWhatTheOperatorWrote(t *testing.T) {
+	telemetryOff(t)
+	require.Empty(t, telemetryEndpoint("traces"), "with nothing set the exporter's default is the exporter's to state")
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://general:4318")
+	require.Equal(t, "http://general:4318", telemetryEndpoint("traces"))
+	require.Equal(t, "http://general:4318", telemetryEndpoint("metrics"))
+
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://traces-only:4318/v1/traces")
+	require.Equal(t, "http://traces-only:4318/v1/traces", telemetryEndpoint("traces"))
+	require.Equal(t, "http://general:4318", telemetryEndpoint("metrics"), "a signal's own variable overrides only that signal")
+}
+
+// TestAnEndpointThatDoesNotParseIsReportedThroughSlog covers the SDK's
+// internal logger, the writer #1691's error handler did not reach: an
+// endpoint the exporter's constructor cannot parse is reported through
+// [otel.SetLogger] before any error handler is consulted, and used to arrive
+// in the standard library's format, twice. Bridged, it is a slog record.
+func TestAnEndpointThatDoesNotParseIsReportedThroughSlog(t *testing.T) {
+	telemetryOff(t)
+	isolateTelemetry(t)
+	recorder := swapTelemetryLogger(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://[bad")
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err, "an endpoint that does not parse costs the endpoint, not the command")
+	defer shutdown(context.Background())
+
+	var parseFailures int
+	for _, record := range recorder.all() {
+		if record.Message != "parse url" {
+			continue
+		}
+		parseFailures++
+		require.Equal(t, slog.LevelError, record.Level)
+		require.Contains(t, attrs(record)["input"], "http://[bad", "the record must name the value the operator wrote")
+	}
+	require.Positive(t, parseFailures, "the SDK's report of the bad endpoint did not reach slog; records: %d", len(recorder.all()))
+}
+
 // TestUntaggedSDKErrorsStillReachSlog covers the SDK errors that are not an
 // export — a dropped span, a bad instrument name — which carry no signal and
 // no endpoint and must still not fall back to the standard library's log.
@@ -226,8 +326,14 @@ func TestDistinctErrorsAreBoundedPerInterval(t *testing.T) {
 		"the handler remembered %d distinct errors; the bound is %d plus one overflow slot", remembered, telemetryErrorHandlerMaxDistinct)
 
 	// Every distinct error up to the bound is said; past it the overflow is
-	// said once, not never and not per error.
-	require.Len(t, recorder.all(), telemetryErrorHandlerMaxDistinct+1)
+	// said once, not never and not per error, and the one record from the
+	// shared slot says that it is the overflow — a reader must be able to tell
+	// "this failure, muted" from "some failure past the bound, muted".
+	records := recorder.all()
+	require.Len(t, records, telemetryErrorHandlerMaxDistinct+1)
+	require.NotContains(t, attrs(records[0]), "overflow", "a failure within the bound is not the overflow")
+	require.Equal(t, "true", attrs(records[telemetryErrorHandlerMaxDistinct])["overflow"],
+		"the record from the shared slot must say so")
 
 	// The next interval starts clean, so the bound is per interval rather than
 	// for the life of the process.

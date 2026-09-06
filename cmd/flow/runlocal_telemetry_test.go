@@ -284,8 +284,10 @@ func TestALocalRunWithNoCollectorConfiguredExportsNothing(t *testing.T) {
 
 	require.Empty(t, collector.exported(),
 		"a run nobody configured for telemetry reached a collector anyway")
-	require.NotContains(t, res.Stderr, "WARNING: telemetry",
+	require.NotContains(t, res.Stderr, "telemetry is configured but could not be started",
 		"an unconfigured run warned about telemetry it was never asked for")
+	require.NotContains(t, res.Stderr, "level=WARN",
+		"an unconfigured run has nothing about telemetry to warn about")
 }
 
 // TestALocalRunSurvivesACollectorThatIsNotThere pins the disposition the
@@ -328,6 +330,14 @@ func TestALocalRunSurvivesACollectorThatIsNotThere(t *testing.T) {
 //
 // Through the binary rather than in process, for the reason the test above
 // gives: the report happens at [main]'s flush, which no in-process tier reaches.
+//
+// Three configurations, because the three signals do not report a failed
+// final export the same way — the trace and log processors hand it to the
+// error handler and the metric reader returns it from Shutdown, which
+// [initTelemetry]'s flush used to discard, so a metrics-only deployment with a
+// dead collector was silent — and because the SDK's internal logger is a
+// separate writer that speaks before any handler is consulted, when an
+// endpoint does not parse.
 func TestALocalRunReportsAnUnreachableCollectorThroughSlog(t *testing.T) {
 	bin := buildFlowBinary(t)
 
@@ -335,27 +345,79 @@ func TestALocalRunReportsAnUnreachableCollectorThroughSlog(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(tracedLocalWorkflow), 0o600))
 
 	const endpoint = "http://127.0.0.1:1"
-	cmd := flowBinaryCommand(bin, "run", "local", "-o", "json", path)
-	cmd.Env = append(cmd.Env,
-		"OTEL_EXPORTER_OTLP_ENDPOINT="+endpoint,
-		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=",
-		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=",
-		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=",
-	)
-
-	res := runFlowBinaryWith(t, cmd)
-	require.Equal(t, 0, res.ExitCode, "the run failed: %s", res.Output())
-	require.Contains(t, res.Stdout, `"first"`, "stdout must stay the document: %s", res.Output())
-
-	var warned int
-	for line := range strings.SplitSeq(strings.TrimSpace(res.Stderr), "\n") {
-		require.False(t, len(line) > 0 && line[0] >= '0' && line[0] <= '9',
-			"a stderr line begins with a digit, which is the standard library's log format and not this process's: %q\n%s", line, res.Stderr)
-		if strings.Contains(line, "level=WARN") && strings.Contains(line, `msg="telemetry export failed"`) && strings.Contains(line, "signal=traces") {
-			warned++
-			require.Contains(t, line, "endpoint="+endpoint, "the record must name the collector the operator configured")
-		}
+	tests := []struct {
+		name string
+		env  []string
+		// wantWarn is the signal one WARN export-failure record must name,
+		// or empty when the case is about the SDK's own report instead.
+		wantWarn string
+		// wantLine is a fragment one stderr line must carry.
+		wantLine string
+	}{
+		{
+			name: "every signal through the general endpoint",
+			env: []string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT=" + endpoint,
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=",
+				"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=",
+				"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=",
+			},
+			wantWarn: "traces",
+			wantLine: "endpoint=" + endpoint,
+		},
+		{
+			name: "metrics only",
+			env: []string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT=" + endpoint,
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=",
+				"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=",
+				"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=",
+				"OTEL_TRACES_EXPORTER=none",
+				"OTEL_LOGS_EXPORTER=none",
+				"OTEL_METRICS_EXPORTER=otlp",
+			},
+			wantWarn: "metrics",
+			wantLine: "endpoint=" + endpoint,
+		},
+		{
+			name: "an endpoint that does not parse",
+			env: []string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT=http://[bad",
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=",
+				"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=",
+				"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=",
+			},
+			wantLine: `level=ERROR msg="parse url"`,
+		},
 	}
-	require.Equal(t, 1, warned,
-		"a dead collector is one WARN record for the trace export, got %d in:\n%s", warned, res.Stderr)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := flowBinaryCommand(bin, "run", "local", "-o", "json", path)
+			cmd.Env = append(cmd.Env, test.env...)
+
+			res := runFlowBinaryWith(t, cmd)
+			require.Equal(t, 0, res.ExitCode, "the run failed: %s", res.Output())
+			require.Contains(t, res.Stdout, `"first"`, "stdout must stay the document: %s", res.Output())
+
+			var warned int
+			var found bool
+			for line := range strings.SplitSeq(strings.TrimSpace(res.Stderr), "\n") {
+				require.False(t, len(line) > 0 && line[0] >= '0' && line[0] <= '9',
+					"a stderr line begins with a digit, which is the standard library's log format and not this process's: %q\n%s", line, res.Stderr)
+				if strings.Contains(line, test.wantLine) {
+					found = true
+				}
+				if test.wantWarn != "" && strings.Contains(line, "level=WARN") &&
+					strings.Contains(line, `msg="telemetry export failed"`) && strings.Contains(line, "signal="+test.wantWarn) {
+					warned++
+				}
+			}
+			require.True(t, found, "no stderr line carries %q:\n%s", test.wantLine, res.Stderr)
+			if test.wantWarn != "" {
+				require.Equal(t, 1, warned,
+					"a dead collector is one WARN record for the %s export, got %d in:\n%s", test.wantWarn, warned, res.Stderr)
+			}
+		})
+	}
 }

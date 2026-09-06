@@ -40,7 +40,7 @@ var stdlibLogAllowed = map[string]string{
 // rather than the package, which is what a reader needs to fix it. Only the
 // exact path "log" matches: "log/slog" is the logger this repository wants.
 func TestNoNonTestFileImportsTheStandardLibraryLog(t *testing.T) {
-	root := repositoryRoot(t)
+	root := repoRoot(t)
 
 	var importing []string
 	fset := token.NewFileSet()
@@ -106,8 +106,12 @@ func TestNoNonTestFileImportsTheStandardLibraryLog(t *testing.T) {
 	}
 }
 
-// repositoryRoot walks up from this package to the directory holding go.mod.
-func repositoryRoot(t *testing.T) string {
+// repoRoot walks up from this package to the directory holding go.mod.
+//
+// The same helper, by the same name, as pkg/flowstate/v1's progress_test.go
+// and tools/agentconfig's, because a test helper cannot be imported across
+// package boundaries without exporting it; #1709 consolidates the copies.
+func repoRoot(t *testing.T) string {
 	t.Helper()
 
 	dir, err := os.Getwd()

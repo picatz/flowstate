@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -91,6 +92,12 @@ func isolateTelemetry(t *testing.T) {
 		telemetryLogger.Warn("telemetry reported an error", "err", err)
 	}))
 
+	// The SDK's internal logger has no getter, so it cannot be put back; the
+	// baseline is the bridge [initTelemetry] installs, over whatever
+	// [telemetryLogger] is at that moment — and again on the way out, after a
+	// test that swapped the logger has restored it.
+	otel.SetLogger(logr.FromSlogHandler(telemetryLogger.Handler()))
+
 	telemetryState.mu.Lock()
 	started, handler, shutdown, err := telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err
 	telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err = false, nil, nil, nil
@@ -109,6 +116,7 @@ func isolateTelemetry(t *testing.T) {
 		otel.SetTextMapPropagator(propagator)
 		logglobal.SetLoggerProvider(loggerProvider)
 		otel.SetErrorHandler(errorHandler)
+		otel.SetLogger(logr.FromSlogHandler(telemetryLogger.Handler()))
 
 		telemetryState.mu.Lock()
 		telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err = started, handler, shutdown, err
