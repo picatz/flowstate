@@ -55,6 +55,15 @@ func (e *syncEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
 	return nil
 }
 
+// all copies the records out under the lock, so an assertion never holds the
+// mutex across a request whose handler would need it to emit.
+func (e *syncEmitter) all() []*v1.AuditRecord {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return append([]*v1.AuditRecord(nil), e.records...)
+}
+
 // syncBuffer is a bytes.Buffer shared between the server's goroutines and the
 // test.
 type syncBuffer struct {
@@ -119,12 +128,11 @@ func TestTheListenersChainRecoversAHandlerPanic(t *testing.T) {
 	require.Contains(t, logOut.String(), "panic=boom")
 	require.NotContains(t, logOut.String(), "orders-1", "the payload does not reach the log")
 
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	require.Len(t, sink.records, 1, "the stub wrote no allow; the interceptor wrote the failure")
-	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_INTERNAL_ERROR, sink.records[0].GetDecision())
-	require.Equal(t, "Get", sink.records[0].GetRpc())
-	require.Equal(t, id, sink.records[0].GetCorrelationId())
+	records := sink.all()
+	require.Len(t, records, 1, "the stub wrote no allow; the interceptor wrote the failure")
+	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_INTERNAL_ERROR, records[0].GetDecision())
+	require.Equal(t, "Get", records[0].GetRpc())
+	require.Equal(t, id, records[0].GetCorrelationId())
 
 	require.Empty(t, errorLog.String(), "net/http saw no panic; before #1761 this held `http: panic serving`")
 
@@ -133,7 +141,7 @@ func TestTheListenersChainRecoversAHandlerPanic(t *testing.T) {
 	// mistaken for a panic.
 	_, err = client.Get(t.Context(), connect.NewRequest(&v1.GetRequest{}))
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	require.Len(t, sink.records, 1, "a validation refusal writes no record and reaches no handler")
+	require.Len(t, sink.all(), 1, "a validation refusal writes no record and reaches no handler")
 }
 
 // TestEveryListenerTakesTheSharedHandlerOptions is the source-level half:

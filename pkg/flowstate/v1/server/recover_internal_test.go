@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -17,8 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -355,6 +359,38 @@ func TestTheInterceptorLeavesAnAbortedHandlerAborted(t *testing.T) {
 	})
 }
 
+// TestARecoveredPanicIsRecordedOnTheRequestsSpan pins the trace half: the
+// interceptor is outermost, so otelconnect's span never sees the panic and
+// would end unset; the interceptor marks it instead, with the caller's error
+// and never the panic's words.
+func TestARecoveredPanicIsRecordedOnTheRequestsSpan(t *testing.T) {
+	t.Parallel()
+
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	s := mustNew(t, nil)
+	unary := s.RecoverInterceptor(nil).WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		panic("boom: not for the span")
+	})
+
+	ctx, span := provider.Tracer("test").Start(t.Context(), "flowstate.v1.WorkflowService/Get")
+	_, err := unary(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+	span.End()
+	require.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 1)
+	require.Equal(t, codes.Error, spans[0].Status.Code)
+	require.Equal(t, "panic", spans[0].Status.Description)
+
+	require.Len(t, spans[0].Events, 1, "one exception event, from RecordError")
+	require.Equal(t, "exception", spans[0].Events[0].Name)
+	require.Contains(t, fmt.Sprint(spans[0].Events), "correlation id")
+	require.NotContains(t, fmt.Sprint(spans[0].Events), "boom", "the panic's words stay on the log line")
+}
+
 // TestPanicTextIsBoundedAndSurvivesAValueThatCannotBeFormatted covers the two
 // ways a panic value can be worse than a string: a value whose own String
 // method panics, and one as large as the request that provoked it.
@@ -362,12 +398,13 @@ func TestPanicTextIsBoundedAndSurvivesAValueThatCannotBeFormatted(t *testing.T) 
 	t.Parallel()
 
 	// fmt recovers a String method's panic itself and renders it as
-	// "%!v(PANIC=…)"; the guard in panicText is for whatever fmt does not
-	// catch, and either way the recovery reaches the log line rather than
-	// dying a second time.
+	// "%!v(PANIC=…)" — unless formatting the panic's value panics in turn,
+	// which fmt re-raises as a nested panic. explodingStringer's String
+	// panics with another explodingStringer, so that is the case reached
+	// here, and the guard in panicText is what answers it.
 	var text string
 	require.NotPanics(t, func() { text = panicText(explodingStringer{}) })
-	require.Contains(t, text, "PANIC")
+	require.Equal(t, "<server.explodingStringer could not be formatted>", text)
 
 	huge := panicText(strings.Repeat("x", 2*maxPanicTextBytes))
 	require.Less(t, len(huge), maxPanicTextBytes+64)
@@ -378,7 +415,10 @@ func TestPanicTextIsBoundedAndSurvivesAValueThatCannotBeFormatted(t *testing.T) 
 
 type explodingStringer struct{}
 
-func (explodingStringer) String() string { panic("the panic value's own String panicked") }
+// String panics with a value whose own String panics, which is the one shape
+// fmt.Sprint does not contain: its recovery formats the panic value, and a
+// second panic inside that formatting is re-raised to the caller.
+func (explodingStringer) String() string { panic(explodingStringer{}) }
 
 // panicsCounted reads [metricschema.InstrumentServerPanics] for one method
 // from a collection, or zero when the instrument was never recorded.

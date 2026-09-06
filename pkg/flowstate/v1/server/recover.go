@@ -12,7 +12,9 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
@@ -45,11 +47,18 @@ import (
 // shape.
 //
 // The correlation id is minted here, before the handler runs, and placed in
-// the context so that [FlowstateServer.auditSubject] stamps it on every record
-// the request writes. That is what lets an operator join the allow to the
+// the context, from which the audit recorder reads it onto every record the
+// request writes. That is what lets an operator join the allow to the
 // failure: the trail's records carry no caller-chosen request id by design
 // (see AuditRecord in proto/flowstate/v1/audit.proto), and a server-minted one
 // is the only kind that can reach a durable sink.
+//
+// Being outermost has a cost on the trace: otelconnect sits inside this and
+// never sees the panic, so its span would end unset and its post-handler
+// duration and error measurements skip the request. The span is therefore
+// marked here — the error recorded on it and its status set — so a trace
+// shows the panic; the rpc.server.duration series does not carry it, and
+// [metricschema.InstrumentServerPanics] is the series to alert on.
 //
 // [connect.WithRecover] is the library's own recover interceptor and would do
 // the catching; it is not used because it hands its callback the request only
@@ -184,8 +193,17 @@ func (i *recoverInterceptor) recovered(ctx context.Context, spec connect.Spec, i
 			"rpc", method, "correlation_id", id, "error", err)
 	}
 
-	return connect.NewError(connect.CodeInternal,
+	err := connect.NewError(connect.CodeInternal,
 		fmt.Errorf("internal error; correlation id %s", id))
+
+	// The span otelconnect opened and will close without having seen the
+	// panic: see this file's doc. The caller's error, not the panic value —
+	// a span is exported, and the panic's words stay on the log line.
+	span := trace.SpanFromContext(ctx)
+	span.RecordError(err)
+	span.SetStatus(codes.Error, "panic")
+
+	return err
 }
 
 // rpcMethodName reduces a connect procedure — "/flowstate.v1.WorkflowService/Get"

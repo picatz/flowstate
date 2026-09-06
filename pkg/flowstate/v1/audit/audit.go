@@ -94,16 +94,16 @@ type Subject struct {
 	// the TrustedIssuer entry that admitted the caller, never token claims.
 	IssuerName string
 	Role       string
-
-	// CorrelationID is the server's own name for the request, minted before
-	// the handler ran and read back through [CorrelationIDFromContext]. Empty
-	// when no interceptor minted one — a handler driven directly in a test —
-	// which the record then reports as absent rather than inventing.
-	CorrelationID string
 }
 
 // correlationIDKey carries a request's correlation id through the context
 // from the interceptor that mints it to every seam that records under it.
+//
+// The context and not a Subject field, so that every control-plane record a
+// request writes carries the id whichever seam built the subject: a Subject
+// assembled by hand would otherwise silently lack it. Empty when no
+// interceptor minted one — a handler driven directly in a test — which the
+// record then reports as absent rather than inventing.
 type correlationIDKey struct{}
 
 // ContextWithCorrelationID returns ctx carrying id as the request's
@@ -247,8 +247,8 @@ func (r *Recorder) Deny(ctx context.Context, subject Subject, code v1.AuditDenyC
 //
 // The one record that is not a decision, and the one case a request writes
 // two. The allow before it stands — see AUDIT_DECISION_INTERNAL_ERROR in
-// proto/flowstate/v1/audit.proto — and subject.CorrelationID is what joins the
-// two. No deny code, because nothing was decided; no panic value, because a
+// proto/flowstate/v1/audit.proto — and the correlation id ctx carries is what
+// joins the two. No deny code, because nothing was decided; no panic value, because a
 // panic can quote the request that caused it and the process log is where
 // that goes.
 func (r *Recorder) InternalError(ctx context.Context, subject Subject) error {
@@ -293,7 +293,7 @@ func (r *Recorder) record(ctx context.Context, subject Subject, decision v1.Audi
 		return nil
 	}
 
-	record, err := r.newRecord(subject, decision, code)
+	record, err := r.newRecord(ctx, subject, decision, code)
 	if err != nil {
 		// Not a sink failure, and so not gated on required: a record that
 		// cannot be built means this seam cannot say what it just decided, and
@@ -365,8 +365,10 @@ func (r *Recorder) emit(ctx context.Context, record *v1.AuditRecord, decision v1
 		decision, operation, errors.Join(failures...))
 }
 
-// newRecord assembles the record, deriving everything derivable.
-func (r *Recorder) newRecord(subject Subject, decision v1.AuditDecision, code v1.AuditDenyCode) (*v1.AuditRecord, error) {
+// newRecord assembles the record, deriving everything derivable — the action
+// from the operation, and the correlation id from ctx, where the recover
+// interceptor put it before the handler ran.
+func (r *Recorder) newRecord(ctx context.Context, subject Subject, decision v1.AuditDecision, code v1.AuditDenyCode) (*v1.AuditRecord, error) {
 	var (
 		action v1.AuthorizationAction
 		err    error
@@ -397,7 +399,7 @@ func (r *Recorder) newRecord(subject Subject, decision v1.AuditDecision, code v1
 		DenyCode:      code,
 		IssuerName:    boundString(subject.IssuerName, MaxProvenanceBytes),
 		Role:          boundString(subject.Role, MaxProvenanceBytes),
-		CorrelationId: boundString(subject.CorrelationID, MaxCorrelationIDBytes),
+		CorrelationId: boundString(CorrelationIDFromContext(ctx), MaxCorrelationIDBytes),
 	}, nil
 }
 

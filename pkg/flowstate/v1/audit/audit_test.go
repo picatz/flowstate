@@ -874,9 +874,8 @@ func TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity(t *testing.
 
 	ctx := audit.ContextWithCorrelationID(t.Context(), "9b2c1c2e-0a5e-4a44-9b3e-1f0f5f2f0a1c")
 	require.NoError(t, recorder.InternalError(ctx, audit.Subject{
-		RPC:           "Get",
-		CorrelationID: audit.CorrelationIDFromContext(ctx),
-		Identity:      &v1.WorkloadIdentity{Subject: "agent-1", Namespace: "acme"},
+		RPC:      "Get",
+		Identity: &v1.WorkloadIdentity{Subject: "agent-1", Namespace: "acme"},
 	}))
 	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get"}))
 
@@ -895,10 +894,12 @@ func TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity(t *testing.
 	require.NotContains(t, exportedAttributes(exporter.exported[1]), "flowstate.audit.correlation_id",
 		"a record nothing minted an id for reports none rather than an empty one")
 
-	// The bound, held here as the schema holds it.
+	// The bound, held here as the schema holds it. The id is read from the
+	// context and never from the subject, so a seam that builds its subject
+	// by hand still records under the request's id.
 	require.Empty(t, audit.CorrelationIDFromContext(t.Context()))
-	overlong := audit.Subject{RPC: "Get", CorrelationID: strings.Repeat("x", audit.MaxCorrelationIDBytes+1)}
-	require.NoError(t, recorder.InternalError(t.Context(), overlong))
+	overlong := audit.ContextWithCorrelationID(t.Context(), strings.Repeat("x", audit.MaxCorrelationIDBytes+1))
+	require.NoError(t, recorder.InternalError(overlong, audit.Subject{RPC: "Get"}))
 	require.Len(t, exportedAttributes(exporter.exported[2])["flowstate.audit.correlation_id"], audit.MaxCorrelationIDBytes)
 }
 

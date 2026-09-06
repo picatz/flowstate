@@ -20,7 +20,10 @@ import (
 //     the emit is write-ahead and why there is no second record afterwards
 //     saying what happened: #993 wrote "accepted" before the acceptance
 //     existed, and an audit log is the one artifact here that must not be
-//     wrong.
+//     wrong. The one exception is a handler that panics after its allow:
+//     the recover interceptor (recover.go, picatz/flowstate#1761) writes an
+//     INTERNAL_ERROR record under the same correlation id, which is not a
+//     revision of the decision but the statement that nobody acted on it.
 //
 //   - Exactly one record per decision. Where a verb resolves a run twice —
 //     Signal, walking from a Continue-As-New chain's first run id to the
@@ -85,11 +88,6 @@ func (s *FlowstateServer) auditSubject(ctx context.Context, rpc string, kind v1.
 		Identity:     s.identityFor(ctx),
 		ResourceKind: kind,
 		ResourceKey:  key,
-		// Minted by the recover interceptor before the handler ran, so that
-		// an INTERNAL_ERROR record written after a panic can be joined to the
-		// allow this handler is about to write. Empty when nothing minted
-		// one, which the record reports as absent. See server/recover.go.
-		CorrelationID: audit.CorrelationIDFromContext(ctx),
 	}
 	if principal, ok := auth.PrincipalFromContext(ctx); ok {
 		subject.IssuerName = principal.IssuerName
