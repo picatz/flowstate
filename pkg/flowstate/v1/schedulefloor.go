@@ -154,16 +154,15 @@ func minuteAligned(key, label string) cadenceSource {
 
 // secondsCadence classifies a cadence by the seconds of the minute it names:
 // one second is once a minute at most, and several are as close as the nearest
-// pair, the wrap from the last to the first included.
-func secondsCadence(key, label string, seconds []int) cadenceSource {
-	offsets := make([]time.Duration, 0, len(seconds))
-	for _, s := range seconds {
+// pair, the wrap from the last to the first included. sorted is sorted and
+// distinct, as [secondsGap] requires.
+func secondsCadence(key, label string, sorted []int) cadenceSource {
+	offsets := make([]time.Duration, 0, len(sorted))
+	for _, s := range sorted {
 		offsets = append(offsets, time.Duration(s)*time.Second)
 	}
-	slices.Sort(offsets)
-	offsets = slices.Compact(offsets)
 
-	return cadenceSource{key: key, label: label, gap: secondsGap(seconds), offsets: offsets}
+	return cadenceSource{key: key, label: label, gap: secondsGap(sorted), offsets: offsets}
 }
 
 // cronCadenceSource classifies one expression [CheckCronExpression] has
@@ -222,6 +221,8 @@ func calendarCadence(index int, calendar *ScheduleTrigger_Calendar) cadenceSourc
 			seconds = append(seconds, v)
 		}
 	}
+	slices.Sort(seconds)
+	seconds = slices.Compact(seconds)
 
 	return secondsCadence("calendars", label, seconds)
 }

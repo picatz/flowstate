@@ -313,6 +313,18 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// clearly.
 	asSubmitted := specificationAsSubmitted(submitted, workflow)
 
+	// The name, before the count. A name already taken is the cluster's own
+	// refusal below, but the count comes first and would answer a tenant at
+	// the limit re-creating an existing name with "delete one" — advice about
+	// the wrong problem. One describe by the derived id settles it, and costs
+	// a round trip where the count costs a walk. The same sentence as the
+	// create's own refusal, for the same reason it is plain: within a tenant
+	// this is the caller's own schedule.
+	id := scheduleIDFor(namespace, name)
+	if _, err := temporal.ScheduleClient().GetHandle(ctx, id).Describe(ctx); err == nil {
+		return nil, scheduleAlreadyExists(name)
+	}
+
 	// How many schedules this tenant already holds, asked last: every refusal
 	// above is about the request and costs nothing but reading it, where the
 	// count walks the tenant's Temporal namespace, and a walk spent on a request
@@ -322,7 +334,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	}
 
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
-		ID:               scheduleIDFor(namespace, name),
+		ID:               id,
 		Spec:             spec,
 		Overlap:          overlapOf(trigger.GetOverlap()),
 		Paused:           req.Msg.GetPaused(),
@@ -411,11 +423,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		// transport-level type never reaches here. Matching what does not arrive is
 		// how a clear refusal turns back into a 500.
 		if errors.Is(err, sdk.ErrScheduleAlreadyRunning) {
-			// Named plainly, because within a tenant this is the caller's own
-			// schedule and telling them about it is not disclosure — the id
-			// derivation is what stops the same answer describing somebody else's.
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
-				"a schedule called %q already exists; delete it, or create this one under another name with --name", name))
+			return nil, scheduleAlreadyExists(name)
 		}
 
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("creating schedule %q: %w", name, err))
@@ -576,9 +584,22 @@ func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.C
 // serialize every create in the deployment behind the slowest tenant's
 // listing.
 func (s *FlowstateServer) checkScheduleCount(ctx context.Context, temporal client.Client, namespace string) error {
-	existing, _, err := s.tenantSchedules(ctx, temporal, namespace, v1.MaxSchedulesPerNamespace)
+	existing, truncated, err := s.tenantSchedules(ctx, temporal, namespace, v1.MaxSchedulesPerNamespace)
 	if err != nil {
 		return err
+	}
+
+	// A walk that hit the scan bound before it found the tenant's schedules
+	// has not counted them, and a limit enforced on an unknown count is not
+	// enforced. The refusal says what actually happened — the bound is the
+	// server's, and the entries past it were most likely other tenants' or
+	// another application's in the same Temporal namespace — so a caller
+	// is not told to delete schedules that were never the problem.
+	if truncated {
+		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
+			"could not count this namespace's schedules: the Temporal namespace holds more than the %d entries "+
+				"this server will read to enforce the limit, so the limit cannot be enforced; an operator needs "+
+				"to look at what else shares that namespace", maxScheduleScan))
 	}
 	if len(existing) >= v1.MaxSchedulesPerNamespace {
 		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
@@ -759,6 +780,16 @@ func (s *FlowstateServer) authorizeScheduleDecision(ctx context.Context, name st
 	}
 
 	return handle, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, nil
+}
+
+// scheduleAlreadyExists is the refusal for a name already taken within the
+// caller's tenant, whether the describe before the count found it or the
+// create itself did. Named plainly, because within a tenant this is the
+// caller's own schedule and telling them about it is not disclosure — the id
+// derivation is what stops the same answer describing somebody else's.
+func scheduleAlreadyExists(name string) error {
+	return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
+		"a schedule called %q already exists; delete it, or create this one under another name with --name", name))
 }
 
 // noSuchSchedule is the one answer every absent or unauthorized schedule gets.

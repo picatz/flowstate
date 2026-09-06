@@ -889,6 +889,13 @@ func TestTheScheduleCountIsPerTenantAndReachedBeforeItIsExceeded(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed.Msg.GetSchedules(), v1.MaxSchedulesPerNamespace, "the refused schedule was not created")
 
+	// At the limit, a name the tenant already holds is still its own refusal:
+	// "delete one" would be advice about the wrong problem.
+	_, err = fixture.teamA.CreateSchedule(t.Context(), request("standing-001"))
+	require.Error(t, err)
+	require.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err), "a re-create at the limit was answered with the count: %v", err)
+	require.ErrorContains(t, err, `a schedule called "standing-001" already exists`)
+
 	_, err = fixture.teamB.CreateSchedule(t.Context(), request("team-b-is-not-full"))
 	require.NoError(t, err, "another tenant's schedules do not count against this one")
 

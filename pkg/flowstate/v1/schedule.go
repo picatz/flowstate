@@ -649,11 +649,11 @@ func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration 
 // secondsGap is the shortest gap between two of the named seconds of a minute,
 // the wrap from the last to the first included. One second is a minute, by
 // the same wrap: from it round to itself.
-func secondsGap(seconds []int) time.Duration {
-	sorted := slices.Clone(seconds)
-	slices.Sort(sorted)
-	sorted = slices.Compact(sorted)
-
+//
+// sorted is sorted and distinct — what [expandCronField] returns, and what a
+// calendar's seconds are put into once, by its own reader — so the set is
+// ordered by whoever built it and not again by everyone who reads it.
+func secondsGap(sorted []int) time.Duration {
 	gap := time.Minute
 	for i, s := range sorted {
 		next := sorted[0] + 60
@@ -853,12 +853,11 @@ func CheckCronExpression(expression string) error {
 	original := expression
 
 	// A comment is Temporal's, not YAML's: the `#` is inside the quoted string, so
-	// nothing has stripped it by the time it reaches here.
-	if comment := strings.Index(expression, "#"); comment >= 0 {
-		expression = expression[:comment]
-	}
-
-	expression = strings.TrimSpace(expression)
+	// nothing has stripped it by the time it reaches here. Stripped the way
+	// [readCron] strips it, so the fields checked here are the fields read
+	// there: `#` inside a day-of-week field is the nth-weekday operator, and
+	// cutting at it would refuse `* * * * * 5#3 2030` for a year of 5.
+	expression = strings.TrimSpace(stripCronComment(expression))
 	if expression == "" {
 		return fmt.Errorf("cron expression %q says nothing about when to fire; write five fields, "+
 			"as in `0 9 * * MON-FRI` for 09:00 on weekdays", original)
@@ -996,7 +995,9 @@ func checkCronShorthand(original, expression string) error {
 // checkCronFields checks each field against the range its position allows.
 func checkCronFields(original string, fields []string, positions []cronField) error {
 	for i, field := range fields {
-		if _, _, err := expandCronField(field, positions[i]); err != nil {
+		// Read, not expanded: the year field alone names a thousand values,
+		// and none of them is consumed here.
+		if _, _, err := readCronField(field, positions[i]); err != nil {
 			return fmt.Errorf("cron expression %q: %w", original, err)
 		}
 	}
@@ -1004,25 +1005,37 @@ func checkCronFields(original string, fields []string, positions []cronField) er
 	return nil
 }
 
-// expandCronField reads one field of one expression: the values it names, in
-// the range its position allows; whether every element was one this models;
-// and what is wrong with it.
+// A cronSpan is one element of a field, read: every step-th value from low to
+// high, inclusive.
+type cronSpan struct {
+	low, high, step int
+}
+
+// readCronField reads one field of one expression: its elements, in the range
+// its position allows; whether every element was one this models; and what is
+// wrong with it.
 //
 // One reading for the three questions asked of a field — is it in range
 // ([checkCronFields]), which seconds does it name ([readCron], for the cadence
 // floor), and can its day and month ever agree ([checkCronCanFire]) — because
 // two readers of one grammar disagree on exactly the elements nobody tested.
+// The range check reads and stops; the other two materialize the values
+// through [expandCronField], since a year field read is 1,031 values nobody
+// asked for.
 //
 // It walks the comma-separated list, and within each element handles the `/`
 // step and the `-` range, refusing a number outside the field's range, a name
-// the field does not have, an empty element or range side, and a step that is
-// not a whole number above zero. Anything it does not recognize — `L`, `W`,
-// `15#3`, a range written high to low — is left alone and reported as
-// unmodelled, because those are real cron syntax somewhere and refusing one
-// would be this function inventing a restriction the cluster does not have.
-// `*` and `?` both take the whole field: `?` says "no opinion" in the day
-// fields, which names the same set.
-func expandCronField(field string, position cronField) (values []int, modelled bool, err error) {
+// the field does not have, an empty element or range side, a range with more
+// than one `-`, and a step that is not a whole number above zero. Anything it
+// does not recognize — `L`, `W`, `15#3`, a range written high to low — is left
+// alone and reported as unmodelled, because those are real cron syntax
+// somewhere and refusing one would be this function inventing a restriction
+// the cluster does not have. That is the only way an element goes unmodelled:
+// every bound of every range is range-checked before its shape is judged, so
+// nothing out of range hides behind a shape this does not read. `*` and `?`
+// both take the whole field: `?` says "no opinion" in the day fields, which
+// names the same set.
+func readCronField(field string, position cronField) (spans []cronSpan, modelled bool, err error) {
 	if field == "" {
 		return nil, false, fmt.Errorf("has an empty %s field", position.name)
 	}
@@ -1043,50 +1056,74 @@ func expandCronField(field string, position cronField) (values []int, modelled b
 			step = n
 		}
 
-		low, high := position.min, position.max
+		span := cronSpan{low: position.min, high: position.max, step: step}
 		switch value = strings.TrimSpace(value); value {
 		case "":
 			return nil, false, fmt.Errorf("has an empty element in its %s field; a list is written as 1,2,3 "+
 				"with a value on both sides of every comma", position.name)
 		case "*", "?":
 		default:
-			from, to, isRange := strings.Cut(value, "-")
-			if from == "" || (isRange && to == "") {
-				return nil, false, fmt.Errorf("has a %s range %q with a side missing; a range is written "+
+			bounds := strings.Split(value, "-")
+			for _, bound := range bounds {
+				if bound == "" {
+					return nil, false, fmt.Errorf("has a %s range %q with a side missing; a range is written "+
+						"low-high, as in 1-5", position.name, value)
+				}
+			}
+
+			// Every bound in range before the shape is judged, so `1-5-99` is
+			// refused for its 99 and not merely for its second `-`.
+			known := make([]bool, len(bounds))
+			values := make([]int, len(bounds))
+			for i, bound := range bounds {
+				if values[i], known[i], err = cronAtom(bound, position); err != nil {
+					return nil, false, err
+				}
+			}
+			if len(bounds) > 2 {
+				return nil, false, fmt.Errorf("has a %s range %q with more than one `-`; a range is written "+
 					"low-high, as in 1-5", position.name, value)
 			}
 
-			a, known, err := cronAtom(from, position)
-			if err != nil {
-				return nil, false, err
-			}
-			b, knownTo := a, true
+			span.low, span.high = values[0], values[0]
 			switch {
-			case isRange:
-				if b, knownTo, err = cronAtom(to, position); err != nil {
-					return nil, false, err
-				}
+			case len(bounds) == 2:
+				span.high = values[1]
 			case hasStep:
 				// `5/10` is "from 5, every 10", up to the field's end.
-				b = position.max
+				span.high = position.max
 			}
 
-			if !known || !knownTo || b < a {
+			if !known[0] || !known[len(bounds)-1] || span.high < span.low {
 				modelled = false
 				continue
 			}
-			low, high = a, b
 		}
 
-		for v := low; v <= high; v += step {
+		spans = append(spans, span)
+	}
+
+	return spans, modelled, nil
+}
+
+// expandCronField is [readCronField] with the values materialized, sorted and
+// distinct, for the two consumers that need them. nil when the field is not
+// modelled, since a partial set answers neither question.
+func expandCronField(field string, position cronField) (values []int, modelled bool, err error) {
+	spans, modelled, err := readCronField(field, position)
+	if err != nil || !modelled {
+		return nil, modelled, err
+	}
+
+	for _, span := range spans {
+		for v := span.low; v <= span.high; v += span.step {
 			values = append(values, v)
 		}
 	}
-
 	slices.Sort(values)
 	values = slices.Compact(values)
 
-	return values, modelled, nil
+	return values, true, nil
 }
 
 // cronAtom reads one number or name. known is false for syntax this does not

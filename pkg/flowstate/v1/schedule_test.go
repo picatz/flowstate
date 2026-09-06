@@ -971,6 +971,12 @@ func TestCronExpressionsThatCannotBeRight(t *testing.T) {
 		{name: "a range missing its end", cron: "0 9-  * * *", want: `hours range "9-" with a side missing`},
 		{name: "a list with an empty element", cron: "0, * * * * * *", want: "empty element in its seconds field"},
 		{name: "a step of zero", cron: "*/0 * * * *", want: `minutes step of "0"`},
+		// A second `-` is not a shape the reader leaves alone as somebody's
+		// dialect: every bound is range-checked first, so the 99 is refused
+		// for being 99 (as the base revision refused it), and a well-ranged
+		// `1-5-7` is refused for its shape rather than silently unmodelled.
+		{name: "a range with a second dash and an out-of-range bound", cron: "0 9 1-5-99 * *", want: "day of month is 99, which is outside 1-31"},
+		{name: "a range with a second dash", cron: "0 9 1-5-7 * *", want: "day of month range \"1-5-7\" with more than one `-`"},
 		{name: "a step that is not a number", cron: "*/x * * * *", want: `minutes step of "x"`},
 		// A date no year has: a schedule Temporal creates and never fires.
 		{name: "the thirty-first of February", cron: "0 0 31 2 *", want: "can never fire"},
@@ -1016,6 +1022,9 @@ func TestCronExpressionsThatMustBeAccepted(t *testing.T) {
 		// Syntax the checker does not model, and so must not refuse.
 		"0 9 L * *",
 		"0 9 * * 5#3",
+		// `#` inside the day-of-week field of the seven-field form is the
+		// nth-weekday operator, not a comment: cut there, the year reads as 5.
+		"* * * * * 5#3 2030",
 		"0 9 ? * MON",
 		"0 9 15W * *",
 		// Dates some year has, and dates a weekday might rescue under the
