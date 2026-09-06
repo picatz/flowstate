@@ -732,11 +732,8 @@ func checkWebhookBodyDepth(webhook string, event *Value) error {
 
 		// The body's own object is the first level, exactly as a run input's
 		// is: the walk starts where the sender's value starts.
-		if violation := walkConstraintValue(entry.GetValue(), 0, nil); violation != nil {
-			return inputSideConstraintBoundError("the body delivered to webhook", webhook, violation)
-		}
-
-		return nil
+		return CheckValueDepth("the body delivered to webhook", webhook,
+			&Value{Kind: &Value_Literal{Literal: entry.GetValue()}})
 	}
 
 	return nil
