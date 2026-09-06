@@ -33,6 +33,20 @@ const (
 	AuditDecision_AUDIT_DECISION_ALLOW AuditDecision = 1
 	// The caller was refused, and nothing was done.
 	AuditDecision_AUDIT_DECISION_DENY AuditDecision = 2
+	// The server failed inside the handler: it panicked after whatever decision
+	// it had already recorded, and the request was answered with an internal
+	// error rather than by the handler.
+	//
+	// Not a decision, and written for exactly that reason. The allow before it
+	// is still true — the caller was authorized — but a trail holding only
+	// that record says the request was permitted and nothing says it did not
+	// happen, which under --audit-required is neither the completeness the
+	// flag promises nor the availability the default does. The record carries
+	// the rpc and the identity the allow carried, the correlation_id the two
+	// share, and no deny code: nothing was decided. The panic's own words and
+	// its stack go to the process log, never here — a panic value can quote
+	// the request that caused it.
+	AuditDecision_AUDIT_DECISION_INTERNAL_ERROR AuditDecision = 3
 )
 
 // Enum value maps for AuditDecision.
@@ -41,11 +55,13 @@ var (
 		0: "AUDIT_DECISION_UNSPECIFIED",
 		1: "AUDIT_DECISION_ALLOW",
 		2: "AUDIT_DECISION_DENY",
+		3: "AUDIT_DECISION_INTERNAL_ERROR",
 	}
 	AuditDecision_value = map[string]int32{
-		"AUDIT_DECISION_UNSPECIFIED": 0,
-		"AUDIT_DECISION_ALLOW":       1,
-		"AUDIT_DECISION_DENY":        2,
+		"AUDIT_DECISION_UNSPECIFIED":    0,
+		"AUDIT_DECISION_ALLOW":          1,
+		"AUDIT_DECISION_DENY":           2,
+		"AUDIT_DECISION_INTERNAL_ERROR": 3,
 	}
 )
 
@@ -383,7 +399,9 @@ type AuditRecord struct {
 	// above — which the message rule above holds to, so the two vocabularies
 	// cannot both be absent and cannot both be present.
 	Action AuthorizationAction `protobuf:"varint,1,opt,name=action,proto3,enum=flowstate.v1.AuthorizationAction" json:"action,omitempty"`
-	// Allow or deny. Never UNSPECIFIED, for the same reason.
+	// Allow or deny — or, on the one record that is not a decision, the
+	// server's own failure to act on one (see AUDIT_DECISION_INTERNAL_ERROR).
+	// Never UNSPECIFIED, for the same reason.
 	Decision AuditDecision `protobuf:"varint,2,opt,name=decision,proto3,enum=flowstate.v1.AuditDecision" json:"decision,omitempty"`
 	// The WorkflowService method the decision was made for, by its schema name.
 	//
@@ -518,7 +536,21 @@ type AuditRecord struct {
 	// The role the same trusted-issuer entry assigned to the caller. Empty when
 	// the policy assigned none. It is bounded before emission and never copied
 	// from a token claim.
-	Role          string `protobuf:"bytes,11,opt,name=role,proto3" json:"role,omitempty"`
+	Role string `protobuf:"bytes,11,opt,name=role,proto3" json:"role,omitempty"`
+	// The server's own name for the request a control-plane record belongs to.
+	//
+	// Minted by the server's recover interceptor before the handler runs — a
+	// random identifier, never a caller-chosen request id — and carried by
+	// every record the request then writes. It exists for one join: a handler
+	// that panics after its allow record was written produces a second record
+	// with decision INTERNAL_ERROR, and the correlation id is what says the two
+	// are about one request. The caller receives the same id in its
+	// CodeInternal error and nothing else, so an operator can go from a
+	// reported failure to the trail's record without the error carrying a
+	// stack. Empty on enforcement records, which are made by a worker about a
+	// workload rather than about a request, and on records written by a server
+	// that predates this field.
+	CorrelationId string `protobuf:"bytes,16,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -658,11 +690,18 @@ func (x *AuditRecord) GetRole() string {
 	return ""
 }
 
+func (x *AuditRecord) GetCorrelationId() string {
+	if x != nil {
+		return x.CorrelationId
+	}
+	return ""
+}
+
 var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa5\r\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd5\r\n" +
 	"\vAuditRecord\x12C\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
@@ -685,14 +724,16 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\vissuer_name\x18\n" +
 	" \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\n" +
 	"issuerName\x12\x1c\n" +
-	"\x04role\x18\v \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x04role:\xcf\x04\xbaH\xcb\x04\x1a\xd0\x01\n" +
+	"\x04role\x18\v \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x04role\x12.\n" +
+	"\x0ecorrelation_id\x18\x10 \x01(\tB\a\xbaH\x04r\x02(@R\rcorrelationId:\xcf\x04\xbaH\xcb\x04\x1a\xd0\x01\n" +
 	"\x16audit_record.operation\x12Uexactly one of rpc, mcp_tool or enforcement_point must identify the audited operation\x1a_[this.rpc != '', this.mcp_tool != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xca\x01\n" +
 	"\x13audit_record.action\x12taction names the authorization vocabulary and is set for an rpc or mcp_tool decision, never for an enforcement point\x1a=(this.action != 0) == (this.rpc != '' || this.mcp_tool != '')\x1a\xa8\x01\n" +
-	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)*b\n" +
+	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)*\x85\x01\n" +
 	"\rAuditDecision\x12\x1e\n" +
 	"\x1aAUDIT_DECISION_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14AUDIT_DECISION_ALLOW\x10\x01\x12\x17\n" +
-	"\x13AUDIT_DECISION_DENY\x10\x02*\xed\x01\n" +
+	"\x13AUDIT_DECISION_DENY\x10\x02\x12!\n" +
+	"\x1dAUDIT_DECISION_INTERNAL_ERROR\x10\x03*\xed\x01\n" +
 	"\x15AuditEnforcementPoint\x12'\n" +
 	"#AUDIT_ENFORCEMENT_POINT_UNSPECIFIED\x10\x00\x12)\n" +
 	"%AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH\x10\x01\x12)\n" +

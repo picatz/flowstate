@@ -151,7 +151,9 @@ message AuditRecord {
   // cannot both be absent and cannot both be present.
   AuthorizationAction action = 1 [(buf.validate.field).enum = {defined_only: true}];
 
-  // Allow or deny. Never UNSPECIFIED, for the same reason.
+  // Allow or deny — or, on the one record that is not a decision, the
+  // server's own failure to act on one (see AUDIT_DECISION_INTERNAL_ERROR).
+  // Never UNSPECIFIED, for the same reason.
   AuditDecision decision = 2 [(buf.validate.field).enum = {
     defined_only: true
     not_in: [0]
@@ -312,6 +314,21 @@ message AuditRecord {
   // from a token claim.
   string role = 11 [(buf.validate.field).string.max_bytes = 128];
 
+  // The server's own name for the request a control-plane record belongs to.
+  //
+  // Minted by the server's recover interceptor before the handler runs — a
+  // random identifier, never a caller-chosen request id — and carried by
+  // every record the request then writes. It exists for one join: a handler
+  // that panics after its allow record was written produces a second record
+  // with decision INTERNAL_ERROR, and the correlation id is what says the two
+  // are about one request. The caller receives the same id in its
+  // CodeInternal error and nothing else, so an operator can go from a
+  // reported failure to the trail's record without the error carrying a
+  // stack. Empty on enforcement records, which are made by a worker about a
+  // workload rather than about a request, and on records written by a server
+  // that predates this field.
+  string correlation_id = 16 [(buf.validate.field).string.max_bytes = 64];
+
   // There is deliberately no MCP session id or JSON-RPC request id. The
   // session id is a process-local bearer-like routing capability, and the
   // request id is caller-chosen, variably typed, and not exposed at the SDK's
@@ -319,7 +336,10 @@ message AuditRecord {
   // unbounded peer text. One AuditRecord is the request correlation unit: one
   // resolved tool authorization decision, emitted exactly once. Tool errors
   // and cancellations after an allow do not rewrite that true decision into a
-  // deny or add a second outcome record.
+  // deny or add a second outcome record. The one second record is a handler
+  // panic (AUDIT_DECISION_INTERNAL_ERROR): not a revision of the allow, which
+  // stands, but the statement that the request it permitted was answered by
+  // nobody.
 }
 
 // AuditDecision is the answer itself.
@@ -332,6 +352,21 @@ enum AuditDecision {
 
   // The caller was refused, and nothing was done.
   AUDIT_DECISION_DENY = 2;
+
+  // The server failed inside the handler: it panicked after whatever decision
+  // it had already recorded, and the request was answered with an internal
+  // error rather than by the handler.
+  //
+  // Not a decision, and written for exactly that reason. The allow before it
+  // is still true — the caller was authorized — but a trail holding only
+  // that record says the request was permitted and nothing says it did not
+  // happen, which under --audit-required is neither the completeness the
+  // flag promises nor the availability the default does. The record carries
+  // the rpc and the identity the allow carried, the correlation_id the two
+  // share, and no deny code: nothing was decided. The panic's own words and
+  // its stack go to the process log, never here — a panic value can quote
+  // the request that caused it.
+  AUDIT_DECISION_INTERNAL_ERROR = 3;
 }
 
 // AuditEnforcementPoint is the closed list of worker-side seams that decide

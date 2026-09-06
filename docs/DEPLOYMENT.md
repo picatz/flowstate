@@ -1269,6 +1269,13 @@ series per configured attempt value. Task names pass through the shared
 cardinality limiter; attempt numbers, run/execution/delivery IDs, inputs, error
 messages, and secret values never become labels.
 
+**Server metrics**, recorded by the control plane's own interceptor chain
+(`pkg/flowstate/v1/server/recover.go`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.server.panics` | counter | — | `rpc.method` (the WorkflowService method name, e.g. `Get`) | One increment per RPC handler panic the server recovered; each also produces an `ERROR` log line and an `AUDIT_DECISION_INTERNAL_ERROR` audit record — see [Audit trail](#audit-trail) |
+
 **Temporal SDK metrics** are also live once telemetry is on: `initTelemetry`
 wires a `client.MetricsHandler` (`opentelemetry.NewMetricsHandler`, meter name
 `temporal-sdk`) into both the server's and the worker's Temporal client
@@ -1515,7 +1522,13 @@ allow record remains truthful and no second outcome record is emitted. This
 trail therefore cannot answer "did the signal actually reach the run" or "did
 the tool finish" — the run's own timeline, Temporal's event history, and
 ordinary execution diagnostics are the artifacts for those questions, not
-this one.
+this one. The one second record is a handler panic: the server's recover
+interceptor writes a record with decision `AUDIT_DECISION_INTERNAL_ERROR`
+for the same `rpc` and identity, sharing the server-minted `correlation_id`
+the request's allow record carries and that the caller is told in its
+`CodeInternal` error, while the panic value and stack go to the process log
+at `ERROR` and `flowstate.server.panics` increments — so the trail never
+says a request was permitted and nothing else when nobody answered it.
 
 ## Worker capacity
 
