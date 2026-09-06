@@ -7,12 +7,13 @@ import (
 	"slices"
 	"strconv"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // TimedOutOutput is the output every wait produces, reporting whether it ended
@@ -536,7 +537,7 @@ func EvalWaitDeadline(ctx context.Context, until *Value, scope *Scope, now time.
 		parsed, err := time.Parse(time.RFC3339, resolved)
 		if err != nil {
 			return time.Time{}, fmt.Errorf(
-				"wait_until produced %q, which is not an RFC 3339 time: %w", truncateForError(resolved), err)
+				"wait_until produced %q, which is not an RFC 3339 time: %w", textbound.Truncate(resolved, maxErrorValueBytes), err)
 		}
 		return parsed, nil
 
@@ -661,7 +662,7 @@ func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, la
 		parsed, err := ParseDuration(resolved)
 		if err != nil {
 			return 0, fmt.Errorf(
-				"%s produced %q, which is not a duration; write it as 30s, 5m, 1h, or 7d", label, truncateForError(resolved))
+				"%s produced %q, which is not a duration; write it as 30s, 5m, 1h, or 7d", label, textbound.Truncate(resolved, maxErrorValueBytes))
 		}
 
 		return parsed, nil
@@ -676,34 +677,15 @@ func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, la
 	}
 }
 
-// truncateForError bounds expression output on its way into a message.
+// maxErrorValueBytes bounds expression output on its way into a message, via
+// [textbound.Truncate].
 //
 // The bound is the point of it: every caller renders a value some other party
 // chose the size of — an expression's result here, a task's own answer in
 // [checkEnumMembership] and [CheckOutputConstraint] — into text that becomes a
 // run's failure, and a failure the durable driver cannot persist while the
 // local driver returns it is invariant 3 broken by a diagnostic.
-//
-// Cut at a rune boundary rather than a byte offset, for the reason
-// `flowtest.truncateRuneSafe` and `server.boundedFailure` both give: a byte cut
-// through a multi-byte UTF-8 sequence produces invalid UTF-8, which a proto3
-// string field will not hold and protojson refuses to encode at all — so one
-// overlong value would fail the whole response's marshalling rather than
-// shorten its own sentence. Task output is exactly where a multi-byte sequence
-// straddling the cut is likely rather than hypothetical.
-func truncateForError(s string) string {
-	const max = 64
-	if len(s) <= max {
-		return s
-	}
-
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-
-	return s[:cut] + "..."
-}
+const maxErrorValueBytes = 64
 
 // SignalNames returns every signal a workload can wait for, in the order they
 // appear, without repeats.

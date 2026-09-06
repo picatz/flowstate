@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -855,22 +855,15 @@ type stubVerdict struct {
 // (CLAUDE.md, "bound anything that consumes untrusted input").
 const maxUnmatchedStubValueLen = 200
 
-// truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting
-// at a rune boundary rather than a byte offset. A byte cut through the
-// middle of a multi-byte UTF-8 sequence produces invalid UTF-8, which
-// encoding/json (and so `-o json`, via protojson) refuses to encode as a
-// string at all, turning one test's overlong value into every case's JSON
-// report failing to marshal, not just this one line's own display (#386
-// follow-up).
+// truncateRuneSafe elides rendered past max with [textbound.Cut], so one
+// test's overlong value cannot leave invalid UTF-8 that fails every case's
+// `-o json` report (#386 follow-up). The cut is named in the text rather than
+// with textbound's bare "...", since a rendered input often ends in one.
 func truncateRuneSafe(rendered string, max int) string {
 	if len(rendered) <= max {
 		return rendered
 	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(rendered[cut]) {
-		cut--
-	}
-	return rendered[:cut] + "...(truncated)"
+	return textbound.Cut(rendered, max) + "...(truncated)"
 }
 
 // formatUnmatchedStubValue renders one invocation input for the failure

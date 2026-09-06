@@ -260,6 +260,59 @@ steps:
 	assert.Contains(t, diagnostics.Error(), "has no effect beside `every:`")
 }
 
+// TestACadenceUnderTheFloorIsReportedWithItsLine is the cadence floor where an
+// author meets it: against the key that carries the cadence, naming the value
+// written and the floor, with the sentence the server refuses the same file
+// with.
+func TestACadenceUnderTheFloorIsReportedWithItsLine(t *testing.T) {
+	t.Parallel()
+
+	scheduled := func(cadence string) []byte {
+		return []byte(`edition: v2026.3
+name: nightly-report
+triggers:
+  schedule:
+    ` + cadence + `
+steps:
+  - id: report
+    log:
+      message: reporting
+`)
+	}
+
+	diagnostics, err := flowfile.ValidateSource(scheduled("every: 1s"))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics, "`every: 1s` validates a schedule that fires every second")
+	assert.Contains(t, diagnostics.Error(), "triggers.schedule.every")
+	assert.Contains(t, diagnostics.Error(), "`every:` is 1s")
+	assert.Contains(t, diagnostics.Error(), v1.MinScheduleInterval.String())
+
+	diagnostics, err = flowfile.ValidateSource(scheduled("every: 60s"))
+	require.NoError(t, err)
+	assert.Empty(t, diagnostics, "the floor itself is a cadence the floor allows")
+
+	// Beside a `cron:` the refusal is still about the interval, and lands on it
+	// rather than on whichever cadence key the validator found first.
+	diagnostics, err = flowfile.ValidateSource(scheduled("every: 1s\n    cron: \"0 9 * * *\""))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics)
+	assert.Contains(t, diagnostics.Error(), "triggers.schedule.every")
+	assert.NotContains(t, diagnostics.Error(), "triggers.schedule.cron")
+	assert.Contains(t, diagnostics.Error(), "5:12:", "positioned on the `every:` line")
+
+	diagnostics, err = flowfile.ValidateSource(scheduled(`cron: "* * * * * * *"`))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics)
+	assert.Contains(t, diagnostics.Error(), "triggers.schedule.cron")
+	assert.Contains(t, diagnostics.Error(), "can fire every 1s")
+
+	// The other way a schedule can be wrong about when it fires: never.
+	diagnostics, err = flowfile.ValidateSource(scheduled(`cron: "0 0 31 2 *"`))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics)
+	assert.Contains(t, diagnostics.Error(), "can never fire")
+}
+
 // boundedRecoverySource is the spelling of everything this block gained with the
 // bounded recovery controls, written once for the reason [triggeredSource] is.
 //

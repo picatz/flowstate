@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -264,16 +263,10 @@ func newWorkflowServiceClientWithSource(
 	// exporter, no propagator, no headers, and this interceptor goes on
 	// recording into the no-op provider exactly as before.
 	//
-	// A warning rather than a refusal when telemetry cannot be configured. The
-	// command a person asked for is `flow get`, not `flow get with tracing`, and
-	// a mistyped endpoint should cost them the trace rather than the answer —
-	// but silently, and they would be reading an empty Grafana wondering which
-	// half was broken. Said once, on stderr, alongside the other things this
-	// client warns about.
-	if _, err := startTelemetry(context.Background()); err != nil {
-		log.Printf("WARNING: telemetry is configured but could not be started, "+
-			"so this command emits no trace: %v", err)
-	}
+	// A warning rather than a refusal when telemetry cannot be configured; see
+	// [startTelemetryOrWarn], which carries the argument. Through [infraLogger],
+	// the process's own logger, because a client command builds no other.
+	startTelemetryOrWarn(context.Background(), infraLogger())
 
 	var interceptors []connect.Interceptor
 	if otelInterceptor, err := otelconnect.NewInterceptor(); err == nil {

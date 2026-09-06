@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // Defaults for providers that read a secret from a command's output.
@@ -181,11 +183,7 @@ func summarize(s string) string {
 		return r
 	}, s)
 
-	if len(s) > 200 {
-		s = s[:200] + "…"
-	}
-
-	return s
+	return textbound.Truncate(s, 200)
 }
 
 // hasCommand reports whether an executable is available, for a constructor that

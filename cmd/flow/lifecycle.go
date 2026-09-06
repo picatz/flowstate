@@ -409,7 +409,8 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 			"to, empty where versioning is off); "+
 			`for example status == "FAILED"`)
 	listCmd.Flags().String("page-token", "",
-		"continue a previous listing from where it stopped")
+		"continue a previous listing from where it stopped; opaque, and accepted only by "+
+			"the server that issued it, with the same --filter and --page-size, within a day")
 	listCmd.Flags().Bool("all", false,
 		"keep asking until the listing is exhausted, rather than returning one page")
 

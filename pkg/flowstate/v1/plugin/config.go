@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
-	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
@@ -558,7 +558,7 @@ func (c Config) validate() error {
 
 	for _, entry := range c.Env {
 		if !isEnvEntry(entry) {
-			return fmt.Errorf("plugin: Env entry %q is not of the form KEY=VALUE", truncate(entry, 64))
+			return fmt.Errorf("plugin: Env entry %q is not of the form KEY=VALUE", textbound.Truncate(entry, 64))
 		}
 	}
 
@@ -650,19 +650,4 @@ func isEnvEntry(s string) bool {
 		}
 	}
 	return false
-}
-
-// truncate bounds text bound for an error message or a log line.
-//
-// It cuts on a rune boundary. Everything this bounds was chosen by another
-// process, so cutting mid-rune is not hypothetical, and a broken rune in a log
-// line is a log line some consumer will refuse to parse.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "..."
 }

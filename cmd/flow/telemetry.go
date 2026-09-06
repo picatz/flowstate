@@ -1,16 +1,21 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -24,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
@@ -84,6 +90,48 @@ import (
 // guarantee delivery — a collector that has stopped answering must cost a
 // person a few seconds at the end of a command, not hold the terminal.
 const telemetryFlushTimeout = 5 * time.Second
+
+// telemetryLogger is where telemetry's own warnings go.
+//
+// Telemetry describes the work and must never stop it, so a resource that
+// cannot be fully described, an interceptor that cannot be built and an
+// exporter that cannot reach its collector are each a warning here and a
+// continuation. Those warnings used to go through the standard library's `log`
+// — a different timestamp layout from every slog line beside them, the level
+// spelled inside the message, and never JSON when the process's handler was —
+// which made them the one kind of line a pipeline parsing the rest could not
+// parse (#1716, #1691). A slog text handler on stderr is the format
+// [infraLogger] gives the server's and worker's own lines.
+//
+// Without [telemetryLogHandler]'s OTLP bridge, deliberately. One of the
+// warnings this logger carries is "the log exporter cannot reach its
+// collector", and a record bridged into the exporter that just failed is the
+// next failure's cause.
+//
+// A variable so a test can read what was warned. It is swapped only by tests
+// that have already arranged the OTEL_* environment with t.Setenv, which is the
+// same non-parallel rule the exporter constructors below rely on.
+var telemetryLogger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+// startTelemetryOrWarn is [startTelemetry] for a command that must run whether
+// or not its telemetry can: `flow run local`, `flow task run`, and every client
+// command.
+//
+// A warning rather than a refusal, because the command a person asked for is
+// `flow get`, not `flow get with tracing`, and a mistyped endpoint should cost
+// them the trace rather than the answer — but not silently, or they would be
+// reading an empty Grafana wondering which half was broken. Through the
+// command's own logger, so the line has the shape of every other line that
+// command writes: a run's WARN pill, a client command's key=value record.
+//
+// One helper rather than the same sentence in three files, which is how the
+// three copies had already drifted apart by a clause each.
+func startTelemetryOrWarn(ctx context.Context, logger *slog.Logger) {
+	if _, err := startTelemetry(ctx); err != nil {
+		logger.Warn("telemetry is configured but could not be started, so this command emits no signals",
+			"err", err)
+	}
+}
 
 // telemetryConfigured reports whether the operator pointed telemetry anywhere.
 //
@@ -281,7 +329,8 @@ func telemetryResourceWith(ctx context.Context, detected ...resource.Option) (*r
 	// An instance id this process could not generate is one attribute fewer, not
 	// a command that fails to run. See [instanceID] for why it can fail at all.
 	if id, err := instanceID(); err != nil {
-		log.Printf("WARNING: telemetry cannot identify this instance, so signals from it will not be distinguishable from another copy's: %v", err)
+		telemetryLogger.Warn("telemetry cannot identify this instance, so its signals will not be distinguishable from another copy's",
+			"attribute", string(semconv.ServiceInstanceIDKey), "err", err)
 	} else {
 		attrs = append(attrs, semconv.ServiceInstanceID(id.String()))
 	}
@@ -298,7 +347,7 @@ func telemetryResourceWith(ctx context.Context, detected ...resource.Option) (*r
 			return nil, fmt.Errorf("describing this process to the collector: %w", err)
 		}
 
-		log.Printf("WARNING: some telemetry resource attributes were dropped: %v", err)
+		telemetryLogger.Warn("some telemetry resource attributes were dropped", "err", err)
 	}
 
 	return res, nil
@@ -364,6 +413,24 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		return nil, func(context.Context) {}, nil
 	}
 
+	// The SDK's own errors — an exporter that cannot reach its collector, above
+	// all — go through the process's logger from here on; see
+	// [telemetryErrorHandler]. Installed before any exporter is built, so it
+	// is in place for the first batch and stays in place when a later
+	// constructor fails and a client command continues past the error. One
+	// installation for every entry point, because every entry point reaches
+	// [initTelemetry] through [startTelemetry] and nothing else.
+	otel.SetErrorHandler(newTelemetryErrorHandler(telemetryLogger, telemetryErrorInterval, time.Now))
+
+	// The SDK's internal logger is a second writer with the same defect, and
+	// it speaks first: an endpoint that does not parse is reported by the
+	// exporter's constructor through this logger — in the standard library's
+	// format, twice — before any error handler is consulted, and the exporter
+	// is then built against its default. Bridged to the same slog handler.
+	// The SDK writes its Info and Warn at logr verbosities the handler's
+	// Info floor filters out, so only its errors reach stderr, at ERROR.
+	otel.SetLogger(logr.FromSlogHandler(telemetryLogger.Handler()))
+
 	res, err := telemetryResource(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -394,7 +461,9 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		if err != nil {
 			return fail(fmt.Errorf("configuring the trace exporter: %w", err))
 		}
-		tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
+		tracerProvider = sdktrace.NewTracerProvider(
+			sdktrace.WithBatcher(taggedTraceExporter{SpanExporter: exporter, endpoint: telemetryEndpoint("traces")}),
+			sdktrace.WithResource(res))
 		built = append(built, tracerProvider.Shutdown)
 	}
 	var meterProvider *sdkmetric.MeterProvider
@@ -404,7 +473,9 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		if err != nil {
 			return fail(fmt.Errorf("configuring the metric exporter: %w", err))
 		}
-		meterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)), sdkmetric.WithResource(res))
+		meterProvider = sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(taggedMetricExporter{Exporter: exporter, endpoint: telemetryEndpoint("metrics")})),
+			sdkmetric.WithResource(res))
 		built = append(built, meterProvider.Shutdown)
 		handler = opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{Meter: meterProvider.Meter("temporal-sdk")})
 
@@ -470,7 +541,9 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		if err != nil {
 			return fail(fmt.Errorf("configuring the log exporter: %w", err))
 		}
-		loggerProvider = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)), sdklog.WithResource(res))
+		loggerProvider = sdklog.NewLoggerProvider(
+			sdklog.WithProcessor(sdklog.NewBatchProcessor(taggedLogExporter{Exporter: exporter, endpoint: telemetryEndpoint("logs")})),
+			sdklog.WithResource(res))
 		built = append(built, loggerProvider.Shutdown)
 	}
 
@@ -516,24 +589,347 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		// a command's own teardown and main's — and shutting a provider down
 		// twice is at best wasted work and at worst an error report about
 		// something that already succeeded.
+		//
+		// Each shutdown's error goes to [otel.Handle] rather than being
+		// dropped, because the three providers do not agree about who reports
+		// a failed final export: the trace and log batch processors hand it to
+		// the error handler themselves and return only their exporter's own
+		// shutdown error, while the metric reader returns the export error and
+		// reports nothing — so a metrics-only deployment with a dead collector
+		// was silent at exactly the flush this comment says matters. The
+		// handler's once-per-interval rule absorbs any case where both happen.
 		once.Do(func() {
 			if tracerProvider != nil {
-				_ = tracerProvider.Shutdown(ctx)
+				if err := tracerProvider.Shutdown(ctx); err != nil {
+					otel.Handle(err)
+				}
 			}
 			if meterProvider != nil {
-				_ = meterProvider.Shutdown(ctx)
+				if err := meterProvider.Shutdown(ctx); err != nil {
+					otel.Handle(err)
+				}
 			}
 			// Logs batch exactly as spans do, so the last lines a process writes
 			// — which are the ones saying why it is leaving — are precisely the
 			// ones an unflushed provider drops. This is the same flush, not a
 			// second path: every exit already reaches here.
 			if loggerProvider != nil {
-				_ = loggerProvider.Shutdown(ctx)
+				if err := loggerProvider.Shutdown(ctx); err != nil {
+					otel.Handle(err)
+				}
 			}
 		})
 	}
 
 	return handler, shutdown, nil
+}
+
+// The eighth writer to the standard library's log, and the one this package
+// did not own.
+//
+// Every OTel SDK exporter reports a failed batch through the global error
+// handler, and the default handler is `log.Print`: a line in the standard
+// library's format, with no level and no key, once per batch. A worker beside
+// a collector that is down wrote that line every few seconds per signal, in
+// a shape no pipeline parsing the process's other lines could read (#1691).
+// [initTelemetry] installs [telemetryErrorHandler] instead, and the one
+// installation serves `flow run local`, `flow server` and `flow worker`,
+// because all three reach it through [startTelemetry].
+
+// telemetryErrorInterval is how often one distinct failure is worth a line.
+//
+// A collector that is down fails every batch, and a line per batch is a log
+// that says one thing a thousand times. Once a minute per distinct failure
+// keeps the fact visible for as long as it is true without drowning the lines
+// beside it.
+const telemetryErrorInterval = time.Minute
+
+// telemetryErrorHandlerMaxDistinct bounds how many distinct failures the
+// handler remembers within one interval.
+//
+// The key is the failure's class rather than its text — see
+// [telemetryErrorClass] — but a class is still derived from what failed, and
+// the fallback for an error nothing here recognises is its text, which a peer
+// writes. So "distinct" is not a number this process controls, and past the
+// bound everything new shares one slot: reported once per interval, together
+// and marked as the overflow, rather than remembered one by one. Invariant 5:
+// bound the work where it is spent.
+const telemetryErrorHandlerMaxDistinct = 64
+
+// telemetryErrorClassMaxText bounds the text fallback of [telemetryErrorClass].
+const telemetryErrorClassMaxText = 128
+
+// telemetryOverflowKey is the shared slot's key, and no real key can be it.
+//
+// A real key is either a tagged failure's `signal\x00endpoint\x00class`, which
+// begins with a signal name, or a bare class, which begins with "url.",
+// "http ", a Go type name, or error text [telemetryErrorClass] has stripped of
+// NUL. Nothing the handler is given can therefore begin with NUL, which is
+// what makes this reserved rather than merely unlikely — the empty string was
+// the previous choice, and an error whose text is empty keys to exactly that,
+// so one such error inside the bound would have taken the slot and silenced
+// every overflow after it.
+const telemetryOverflowKey = "\x00overflow"
+
+// httpStatusInExportError finds the status an OTLP exporter puts in its
+// "failed to send to <url>: <status> (...)" error, which is text and nothing
+// else: the exporters' typed retry errors live in their internal packages.
+var httpStatusInExportError = regexp.MustCompile(`failed to send to \S+: ([1-5])\d\d\b`)
+
+// telemetryErrorClass reduces an error to the thing that is the same about
+// every occurrence of it, so a failure that persists is one key.
+//
+// The full text is the wrong key: a collector's response body carries a
+// request id, a resolver's message carries the attempt, and keyed on those a
+// dead collector would be sixty-four "distinct" failures a minute and then the
+// overflow slot, which is the once-per-batch line this handler exists to stop.
+// What is stable about a failure is its shape — where the request got to and
+// what stopped it — and that is what this names:
+//
+//   - A transport failure ([url.Error]) by its operation and the network
+//     error's kind: a deadline, a timeout, an errno such as "connection
+//     refused", a DNS failure, or the error's type.
+//   - A response the exporter refused by its HTTP status class.
+//   - Anything else by the type of its root cause, falling back to bounded
+//     text for the untyped errors the standard library builds, because two
+//     of those with different text are genuinely different.
+func telemetryErrorClass(err error) string {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return "url." + urlErr.Op + ": " + netErrorClass(urlErr.Err)
+	}
+
+	if match := httpStatusInExportError.FindStringSubmatch(err.Error()); match != nil {
+		return "http " + match[1] + "xx"
+	}
+
+	root := err
+	for {
+		next := errors.Unwrap(root)
+		if next == nil {
+			break
+		}
+		root = next
+	}
+	switch kind := fmt.Sprintf("%T", root); kind {
+	case "*errors.errorString", "*errors.joinError", "*fmt.wrapError", "*fmt.wrapErrors":
+		// NUL is the handler's separator and the overflow key's first byte;
+		// text a peer wrote must not be able to spell either.
+		text := strings.ReplaceAll(root.Error(), "\x00", "�")
+		if len(text) > telemetryErrorClassMaxText {
+			text = text[:telemetryErrorClassMaxText]
+		}
+
+		return text
+	default:
+		return kind
+	}
+}
+
+// netErrorClass names what stopped a transport, most specific first.
+func netErrorClass(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline exceeded"
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "dns"
+	}
+
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno.Error()
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op + " " + fmt.Sprintf("%T", opErr.Err)
+	}
+
+	return fmt.Sprintf("%T", err)
+}
+
+// telemetryErrorHandler routes the SDK's errors to slog, once per interval per
+// distinct error.
+type telemetryErrorHandler struct {
+	logger   *slog.Logger
+	interval time.Duration
+	now      func() time.Time
+
+	mu    sync.Mutex
+	since time.Time
+	seen  map[string]struct{}
+}
+
+func newTelemetryErrorHandler(logger *slog.Logger, interval time.Duration, now func() time.Time) *telemetryErrorHandler {
+	return &telemetryErrorHandler{
+		logger:   logger,
+		interval: interval,
+		now:      now,
+		seen:     make(map[string]struct{}, telemetryErrorHandlerMaxDistinct+1),
+	}
+}
+
+// Handle implements [otel.ErrorHandler].
+//
+// An export failure names its signal and, when the operator configured one,
+// its endpoint — which is what they need to know which collector to look at;
+// the SDK's other errors carry only their text. Every record names the class
+// the repeat rule keys on and for how long a repeat stays quiet, so a reader
+// seeing one line a minute knows the failure did not stop in between, and a
+// record from the overflow slot says so.
+func (h *telemetryErrorHandler) Handle(err error) {
+	if err == nil {
+		return
+	}
+
+	message := "telemetry reported an error"
+	class := telemetryErrorClass(err)
+	key := class
+	var attrs []any
+
+	var failure *exportFailure
+	if errors.As(err, &failure) {
+		message = "telemetry export failed"
+		key = failure.signal + "\x00" + failure.endpoint + "\x00" + class
+		attrs = append(attrs, "signal", failure.signal)
+		if failure.endpoint != "" {
+			attrs = append(attrs, "endpoint", failure.endpoint)
+		}
+	}
+
+	report, overflow := h.first(key)
+	if !report {
+		return
+	}
+
+	attrs = append(attrs, "class", class, "err", err, "repeats_muted_for", h.interval)
+	if overflow {
+		attrs = append(attrs, "overflow", true)
+	}
+
+	h.logger.Warn(message, attrs...)
+}
+
+// first reports whether key has not been seen in the current interval, starting
+// a new interval when the current one has elapsed, and whether the answer came
+// from the overflow slot.
+//
+// Past [telemetryErrorHandlerMaxDistinct] entries a new key shares the one
+// overflow slot, so the map holds at most the bound plus that slot and the
+// overflow is still said once per interval rather than never.
+func (h *telemetryErrorHandler) first(key string) (report, overflow bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	now := h.now()
+	if now.Sub(h.since) >= h.interval {
+		h.since = now
+		clear(h.seen)
+	}
+
+	if _, seen := h.seen[key]; seen {
+		return false, false
+	}
+	if len(h.seen) >= telemetryErrorHandlerMaxDistinct {
+		key = telemetryOverflowKey
+		overflow = true
+		if _, seen := h.seen[key]; seen {
+			return false, true
+		}
+	}
+	h.seen[key] = struct{}{}
+
+	return true, overflow
+}
+
+// exportFailure is an exporter's error with the signal and endpoint it belongs
+// to.
+//
+// The SDK hands its error handler an error and nothing else, and the OTLP
+// exporters' errors do not agree on saying which signal failed — the trace
+// exporter's begins "traces export:", the metric exporter's "failed to upload
+// metrics", the log exporter's names neither — so the exporters are wrapped
+// where [initTelemetry] builds them and each failure is tagged with what that
+// function knows: which signal, and where it was going. Error() is the SDK's
+// text unchanged; the tag is read back with errors.As.
+type exportFailure struct {
+	signal, endpoint string
+	err              error
+}
+
+func (f *exportFailure) Error() string { return f.err.Error() }
+func (f *exportFailure) Unwrap() error { return f.err }
+
+func tagExportFailure(signal, endpoint string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &exportFailure{signal: signal, endpoint: endpoint, err: err}
+}
+
+// The three exporters, tagged. Each forwards everything to the SDK's exporter
+// and wraps only the error from the one method that sends.
+type taggedTraceExporter struct {
+	sdktrace.SpanExporter
+	endpoint string
+}
+
+func (e taggedTraceExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	return tagExportFailure("traces", e.endpoint, e.SpanExporter.ExportSpans(ctx, spans))
+}
+
+type taggedMetricExporter struct {
+	sdkmetric.Exporter
+	endpoint string
+}
+
+func (e taggedMetricExporter) Export(ctx context.Context, metrics *metricdata.ResourceMetrics) error {
+	return tagExportFailure("metrics", e.endpoint, e.Exporter.Export(ctx, metrics))
+}
+
+type taggedLogExporter struct {
+	sdklog.Exporter
+	endpoint string
+}
+
+func (e taggedLogExporter) Export(ctx context.Context, records []sdklog.Record) error {
+	return tagExportFailure("logs", e.endpoint, e.Exporter.Export(ctx, records))
+}
+
+// telemetryEndpoint is where a signal's exporter sends, as the operator wrote
+// it, or empty when they wrote nothing.
+//
+// The OTLP exporters read the signal's own variable first and the general one
+// second; this reads them in the same order so a warning names the value the
+// operator can act on. With neither set the exporter composes its own default
+// from a scheme, a host, a port and a per-signal path, each of them
+// overridable by a further variable, and a value restated here would be a
+// second spelling of that rule that drifts from it — so the attribute is left
+// out rather than misstated. For the warning only: the exporters resolve their
+// own configuration, and nothing here feeds back into them.
+//
+// Each variable is named in full rather than composed from the signal, so the
+// reference's own check can see that every one of them is documented.
+func telemetryEndpoint(signal string) string {
+	var own string
+	switch signal {
+	case "traces":
+		own = os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+	case "metrics":
+		own = os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+	case "logs":
+		own = os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+	}
+
+	return cmp.Or(own, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 }
 
 // The third signal, and the two honest limits on it.
@@ -656,9 +1052,9 @@ func temporalTracingInterceptor() interceptor.Interceptor {
 
 	tracing, err := opentelemetry.NewTracingInterceptor(temporalTracerOptions())
 	if err != nil {
-		log.Printf("WARNING: telemetry is configured but the Temporal tracing interceptor "+
-			"could not be built, so workflow and activity spans will not join the caller's "+
-			"trace: %v", err)
+		telemetryLogger.Warn("telemetry is configured but the Temporal tracing interceptor could not be built, "+
+			"so workflow and activity spans will not join the caller's trace",
+			"component", "temporal tracing interceptor", "err", err)
 
 		return nil
 	}

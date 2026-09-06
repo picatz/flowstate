@@ -226,6 +226,48 @@ with a sibling job that explains the interlock) until releases are switched on
 deliberately — #1216 carries that decision. It produces no check run for a pull
 request and is not in `verdict`'s `needs:`.
 
+### Three test jobs, and a fuzz job that runs what the diff reaches
+
+The docs-only path above was measured and fixed; the code path was not. On two
+`main` runs in September (`33894879891` and `33872952044`) the `test` job took
+11m29s and 11m46s, and inside it three steps that do not depend on one another
+ran back to back: `make test` (5m22s), the plugin modules (2m08s) and the
+ordering rehearsal (2m33s). `fuzz-smoke` ran thirteen targets for 30s each
+through one `go test -fuzz` per target, 9m28s, on every diff that reached any
+package holding a target — a flowfile change fuzzed `FuzzWebhookEventBinding`,
+which it cannot move (#1726).
+
+Since #1726:
+
+- `test` is three jobs: `test` (build, vet, gofmt, `make test`, and the
+  docs, examples, breaking and compose checks that need the root build),
+  `test-plugins` (`make test-plugins` and `make plugin-examples`) and
+  `test-ordering` (`make test-ordering`). Each is `needs: plan` and nothing
+  else, so the critical path is `plan` plus the root suite. `ciDecisions`
+  selects them separately — a plugin-only diff runs `test-plugins` and not
+  the root suite; a root Go change runs both, because every plugin module
+  replaces `github.com/picatz/flowstate` with `../..`; `test-ordering` follows
+  the local tier's ordering trigger plus `examples/`, which the flowtest fuzz
+  seeds read off disk. This is a split of independent Make targets, not a shard
+  of `make test`, so the objection under "Considered and excluded" still holds:
+  the command a contributor runs is the command CI runs.
+- `plan` publishes `fuzz_targets` beside the job booleans: the smoke-tier
+  targets whose package the diff reaches, in `targets.txt` order, and every
+  smoke target on a forced run. `fuzz-smoke` hands it to `make fuzz-smoke` as
+  `FUZZ_SMOKE_TARGETS`, and `tools/fuzztargets/list.sh` narrows to those names
+  — refusing a name the tier does not hold rather than fuzzing what is left.
+  Unset, the Makefile target runs the whole tier, which is what `make check`
+  wants. The job's own decision follows the list: it runs when there is at
+  least one target, so a diff reaching only a package with a deep-only target
+  (the engine) no longer runs a smoke job with nothing in it. Promoting a
+  target to smoke is an edit to `targets.txt`, which forces the full set.
+
+`tools/gate/ci_test.go` pins the new decisions, the exact target list a
+flowfile and an lsp change produce, that the `plan` job's `outputs:` block
+forwards every output the plan publishes, and that the `fuzz-smoke` step reads
+`fuzz_targets` — because the Makefile's default is the whole tier, and a step
+that dropped the variable would stay green at the old cost.
+
 ### Caching
 
 `actions/setup-go` derives its cache key from a hash of `cache-dependency-path`,
@@ -237,9 +279,12 @@ measured effect on run 31909221065: `vulncheck` scanned in **5s** against a warm
 from source and `proto` spent **52s** rebuilding `buf`, with nothing in the file
 explaining the difference.
 
-`proto` and `staticcheck` now name a file under `.github/cache-scope/` alongside
-`go.sum`, which gives each a key of its own. The files' contents are arbitrary
-and are deliberately *not* version pins: the tool versions live once, in
+`proto`, `staticcheck`, and since #1726 the three test jobs, each name a file
+under `.github/cache-scope/` alongside `go.sum`, which gives each a key of its
+own; `test-plugins` also keys on `plugins/*/go.sum`, so the plugin modules keep
+the warm cache they had when they shared the `test` job. The files' contents
+are arbitrary and are deliberately *not* version pins: the tool versions live
+once, in
 `ci.yml`'s `env:` block, and Go's build and module caches are content-addressed,
 so a key that fails to change after a version bump costs one cold build and a
 key that changes needlessly costs one cold build. Neither can produce a wrong
@@ -299,6 +344,52 @@ durations above:
 
 A 21% cut in compute and, on a fifth of pull requests, an answer in under a
 minute instead of six.
+
+### A code pull request, before
+
+Two `main` runs from 2026-09, per-job and per-step durations from the Actions
+API (#1726). Both are `main` pushes, so the full set; a code pull request
+reaching `pkg/flowstate/v1/flowfile` ran the same jobs bar `proto`, and so paid
+the same `test` and `fuzz-smoke`.
+
+| job | run `33894879891` (`eb8172f`) | run `33872952044` (`577c6bb`) |
+|---|---|---|
+| `plan` | 23s | 20s |
+| `test` | **11m29s** | **11m46s** |
+| `fuzz-smoke` | **9m28s** | **9m21s** |
+| `appearance` | 2m51s | 2m59s |
+| `staticcheck` | 2m06s | 2m34s |
+| `vulncheck` | 1m03s | 59s |
+| `proto` | 24s | 30s |
+| `verdict` | 3s | 4s |
+| **wall clock, push to verdict** | **12m04s** | 12m18s (plus 5m15s queued before `plan`) |
+
+Inside `test`, the three long steps did not depend on one another:
+
+| step | run 1 | run 2 |
+|---|---|---|
+| setup-go (cache restore) | 25s | 26s |
+| Build + Vet | 30s | 31s |
+| **Test** (`make test`) | **5m22s** | **5m29s** |
+| **Test plugin modules** | **2m08s** | **2m10s** |
+| Validate plugin examples | 17s | 18s |
+| **Ordering claims hold under a different schedule** | **2m33s** | **2m38s** |
+| docs / examples / breaking / compose checks | 6s | 7s |
+
+### The same, after
+
+**Not measured.** The split and the per-target fuzz selection were authored
+without access to the Actions API, so there is no "after" column here yet. What
+the design predicts, from the numbers above: the critical path becomes `plan`
+plus the root `test` job, about 6 minutes against 12; `test-plugins` and
+`test-ordering` run beside it at about 2m30s and 3m; and `fuzz-smoke` on a
+flowfile diff runs seven targets rather than thirteen, which on the linear
+estimate the job's own comment uses is about 4 minutes rather than 9. Billed
+job-minutes should move by the setup overhead of two more jobs — a checkout, a
+`setup-go` restore and a toolchain report each, about a minute together —
+minus whatever the fuzz selection saves. The first two runs on `main` after
+the change are where those numbers come from, and this section should be
+filled in from them rather than from this paragraph.
 
 ### What the queue is worth
 
@@ -464,7 +555,8 @@ the same category of mistake as a gate that passes without looking.
   affected-set skip already removes the whole job on the diffs that cannot
   reach it, which is the larger win, and `make test` staying one command is
   what keeps CI and the local rehearsal from disagreeing about what "the tests"
-  means.
+  means. The #1726 split is not this: it moved two other Make targets out of
+  the job, and `make test` is still one command.
 - **Diff-scoping the `test` job's own package list.** The same objection, one
   level worse: `make test` is what the Makefile, `make check` and CI all run,
   and splitting it would put the "one value written down twice" defect inside

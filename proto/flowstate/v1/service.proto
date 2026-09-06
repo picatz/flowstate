@@ -792,8 +792,12 @@ message ListRequest {
     lte: 1000
   }];
 
-  // PageToken continues a previous List. Opaque: it encodes where the scan
-  // stopped, and nothing else should be read from or written into it.
+  // PageToken continues a previous List. Opaque: it is a token the server
+  // issued and authenticated, and nothing should be read from or written into
+  // it. A token is accepted only by the server process that issued it, only
+  // from the tenant it was issued to, only with the same filter and page size
+  // it was issued for, and only for a day — each refusal says which. See
+  // ListCursor for what one carries.
   string page_token = 2 [(buf.validate.field).string = {max_len: 4096}];
 
   // Filter keeps only the runs a CEL expression answers yes about.
@@ -936,7 +940,46 @@ message ListResponse {
   // namespace shared by several tenants a scan can therefore end having found
   // few matches, or none, while plenty remain. An empty page with a token set
   // means "keep asking", and only an empty token means the listing is done.
+  //
+  // Opaque, and constructed by nobody but the server: see ListRequest.page_token
+  // for what is checked when it comes back, and ListCursor for its contents.
   string next_page_token = 2;
+}
+
+// ListCursor is what a page token carries, and is never sent as-is.
+//
+// A token is this message serialized, followed by an HMAC-SHA256 over those
+// bytes under a key the server process derived at startup, base64url-encoded.
+// The server refuses a token whose authentication code it did not produce, so
+// a caller cannot construct one and nothing about its layout is a contract: the
+// message is defined in the schema so the server has one wire-stable shape to
+// sign rather than a hand-written struct, not so that a client may read it.
+//
+// The key is per process. Two replicas do not share one yet, so a token issued
+// by one is refused by the other as not a token it issued; the key-sharing
+// question is the same one multi-replica MCP sessions raise (#1654) and is
+// answered there rather than twice.
+message ListCursor {
+  // Position is where the scan stopped, in the visibility store's own words:
+  // the page token Temporal handed back, carried intact and never inspected.
+  bytes position = 1;
+
+  // Namespace is the tenant the token was issued to. A token presented by a
+  // caller in another namespace is refused, whatever its position: a cursor
+  // is a place in one tenant's listing and means nothing in another's.
+  string namespace = 2;
+
+  // QueryDigest is a SHA-256 over the filter and the effective page size the
+  // token was issued for. The same cursor under a different filter names a
+  // page that need not exist, which would come back as a silently empty page
+  // rather than an error, so a token whose digest differs from the request's
+  // is refused instead.
+  bytes query_digest = 3;
+
+  // IssuedAt is when the server issued the token. A token older than a day is
+  // refused, so a stored cursor cannot resume a listing whose visibility has
+  // since changed.
+  google.protobuf.Timestamp issued_at = 4;
 }
 
 // WorkflowService is the service that provides operations for managing and running workflows.

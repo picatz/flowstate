@@ -3,7 +3,8 @@ package conformance
 import (
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -377,13 +378,7 @@ func sameAttributes(got, want map[string]string) bool {
 // sortedKeys names what was collected, for a failure message that says what the
 // run *did* record rather than only what it did not.
 func sortedKeys(collected map[string][]Point) []string {
-	names := make([]string, 0, len(collected))
-	for name := range collected {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	return names
+	return slices.Sorted(maps.Keys(collected))
 }
 
 // String renders one point for a failure message.

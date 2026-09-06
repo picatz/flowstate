@@ -12,13 +12,13 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/goccy/go-yaml"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -1461,7 +1461,8 @@ func (l *runLocalLogs) Handle(_ context.Context, record slog.Record) error {
 
 // boundedRunLocalLogString spends from remaining without splitting UTF-8. The
 // bounded clone prevents a short retained prefix from keeping an
-// attacker-sized backing string alive for the lifetime of the MCP call.
+// attacker-sized backing string alive for the lifetime of the MCP call. No
+// marker: the budget belongs to the whole log, not to one field.
 func boundedRunLocalLogString(s string, remaining *int) string {
 	if len(s) <= *remaining {
 		*remaining -= len(s)
@@ -1469,11 +1470,8 @@ func boundedRunLocalLogString(s string, remaining *int) string {
 	}
 
 	end := *remaining
-	for end > 0 && !utf8.RuneStart(s[end]) {
-		end--
-	}
 	*remaining = 0
-	return strings.Clone(s[:end])
+	return strings.Clone(textbound.Cut(s, end))
 }
 
 // WithAttrs returns a handler that also emits attrs, collecting into the same

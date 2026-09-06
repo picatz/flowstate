@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -965,4 +967,276 @@ func TestAProxiedTargetWithTooManyAddressesIsDenied(t *testing.T) {
 		_, err := get(t, policy, "http://wider.example:9/")
 		requireDenied(t, err, ReasonAddress, "more than the")
 	})
+}
+
+// neverDials replaces the transport's dialer under policy with one that fails
+// the test if it is reached. It is the proof that a request was decided before
+// the resolver or a socket was touched: not a stopwatch, which would measure
+// the machine, but the mechanism itself.
+func neverDials(t *testing.T, policy *Policy) {
+	t.Helper()
+
+	stdlibTransport(t, policy.Client()).DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		t.Errorf("the dialer was reached for %s %s; the policy should have decided before it", network, address)
+		return nil, errors.New("dialed")
+	}
+}
+
+// Test_Policy_Client_literalHostIsDecidedBeforeTheDial: a host that is already
+// an address is judged by inspection, with the dialer's own verdict, before
+// anything is resolved or opened (picatz/flowstate#1768).
+//
+// The dialer here is a tripwire rather than a host without IPv6, which is the
+// condition the defect needed: with the verdict taken only in the socket hook,
+// "[::1]" on such a host burned the whole dial timeout and came back undecided.
+// A verdict that never reaches the dialer cannot depend on what the dialer can
+// open, on any host.
+//
+// Mutation-proved: removing checkLiteralHost from checkRequestHop trips the
+// dialer for every row.
+func Test_Policy_Client_literalHostIsDecidedBeforeTheDial(t *testing.T) {
+	tests := []struct {
+		name   string
+		opts   []Option
+		url    string
+		reason Reason
+		detail string
+	}{
+		{name: "IPv6 loopback", url: "http://[::1]:80/", reason: ReasonAddress, detail: "loopback"},
+		{name: "IPv6 unique local", url: "http://[fd00::1]/", reason: ReasonAddress, detail: "unique-local"},
+		{name: "IPv6 link local", url: "http://[fe80::1]/", reason: ReasonAddress, detail: "link-local"},
+		{name: "IPv6 link local with a zone", url: "http://[fe80::1%25eth0]/", reason: ReasonAddress, detail: "link-local"},
+		{name: "IPv6 unspecified", url: "http://[::]/", reason: ReasonAddress, detail: "unspecified"},
+		{name: "IPv4 loopback", url: "http://127.0.0.1/", reason: ReasonAddress, detail: "loopback"},
+		{name: "IPv4 unspecified", url: "http://0.0.0.0/", reason: ReasonAddress, detail: "unspecified"},
+		{name: "IPv4 private", url: "http://10.0.0.1/", reason: ReasonAddress, detail: "private"},
+		{name: "cloud metadata", url: "http://169.254.169.254/latest/", reason: ReasonAddress, detail: "metadata"},
+		{name: "IPv4-mapped loopback", url: "http://[::ffff:127.0.0.1]/", reason: ReasonAddress, detail: "loopback"},
+		{name: "NAT64 loopback", url: "http://[64:ff9b::7f00:1]/", reason: ReasonAddress, detail: "loopback"},
+		{
+			name:   "a denied network beats an allowed category",
+			opts:   []Option{WithAllowLoopback(), WithDenyNetworks(netip.MustParsePrefix("::1/128"))},
+			url:    "http://[::1]/",
+			reason: ReasonAddress,
+			detail: "denied network",
+		},
+		{
+			name:   "the control plane is reserved by literal too",
+			opts:   []Option{WithAllowLoopback(), WithControlPlane("127.0.0.1:7233")},
+			url:    "http://127.0.0.1:7233/",
+			reason: ReasonControlPlane,
+			detail: "reserved",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy, err := New(test.opts...)
+			require.NoError(t, err)
+			neverDials(t, policy)
+
+			_, err = get(t, policy, test.url)
+			requireDenied(t, err, test.reason, test.detail)
+
+			var undecided *UndecidedError
+			require.False(t, errors.As(err, &undecided), "a literal the policy can judge is decided, not undecided")
+
+			var denied *DenyError
+			require.ErrorAs(t, err, &denied)
+			require.Equal(t, test.url, denied.Hop, "the denial names the hop it refused, as the dialer's does")
+		})
+	}
+
+	t.Run("a literal the policy permits still reaches the dialer", func(t *testing.T) {
+		// The negative direction: the pre-dial check refuses only what the
+		// dialer would, so a permitted literal is dialed and the socket hook
+		// still gets its turn.
+		server, _ := testServer(t, "ok")
+
+		policy, err := New(WithAllowLoopback())
+		require.NoError(t, err)
+
+		resp, err := get(t, policy, server.URL)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("a redirect to a literal is refused at the hop", func(t *testing.T) {
+		origin, _ := testServer(t, "")
+		origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "http://[fd00::1]/internal", http.StatusFound)
+		})
+
+		policy, err := New(WithAllowLoopback())
+		require.NoError(t, err)
+
+		_, err = get(t, policy, origin.URL)
+		requireDenied(t, err, ReasonAddress, "unique-local")
+
+		var denied *DenyError
+		require.ErrorAs(t, err, &denied)
+		require.Equal(t, "http://[fd00::1]/internal", denied.Hop)
+		require.True(t, denied.AfterRedirect, "the origin reached its peer before the hop was refused")
+	})
+}
+
+// Test_Policy_checkRequest_nonCanonicalIPv4: the inet_aton spellings are refused
+// as what they are, naming the address to write, and never reach a resolver
+// (picatz/flowstate#1768).
+func Test_Policy_checkRequest_nonCanonicalIPv4(t *testing.T) {
+	policy, err := New()
+	require.NoError(t, err)
+
+	for _, host := range []string{"127.1", "2130706433", "0x7f.0.0.1", "0177.0.0.1", "127.0.0.01"} {
+		t.Run(host, func(t *testing.T) {
+			u, err := url.Parse("http://" + host + "/latest/")
+			require.NoError(t, err)
+
+			err = policy.CheckURL(t.Context(), http.MethodGet, u)
+			requireDenied(t, err, ReasonRequest, "write 127.0.0.1")
+			require.Contains(t, err.Error(), fmt.Sprintf("host %q is not a canonical IPv4 address", host))
+		})
+	}
+
+	t.Run("through the client, before the dialer", func(t *testing.T) {
+		policy, err := New(WithAllowLoopback())
+		require.NoError(t, err)
+		neverDials(t, policy)
+
+		// Loopback is permitted, so the only thing refusing this is the
+		// spelling: a policy that would allow 127.0.0.1 still requires it to be
+		// written as 127.0.0.1.
+		_, err = get(t, policy, "http://127.1:9/")
+		requireDenied(t, err, ReasonRequest, "write 127.0.0.1")
+	})
+
+	t.Run("a name and a canonical literal are untouched", func(t *testing.T) {
+		policy, err := New(WithAllowLoopback())
+		require.NoError(t, err)
+
+		for _, raw := range []string{"https://api.example.com/", "http://127.0.0.1:9/", "http://[::1]:9/", "https://1password.com/"} {
+			u, err := url.Parse(raw)
+			require.NoError(t, err)
+			require.NoError(t, policy.CheckURL(t.Context(), http.MethodGet, u), raw)
+		}
+	})
+}
+
+// Test_Policy_dialWithVerdict_denialWins: when a dial has several legs and the
+// policy refused one of them, the refusal is what comes back, not the socket
+// error of a leg that never reached the hook (picatz/flowstate#1768).
+//
+// The dial is posed rather than made. A real [net.Dialer] produces this shape
+// only on a host missing an address family, where it reports the failed
+// socket and drops the denial the other leg received; the stand-in makes the
+// same two calls the dialer would, in the same order, and reports the same
+// error the dialer chose to.
+func Test_Policy_dialWithVerdict_denialWins(t *testing.T) {
+	policy, err := New()
+	require.NoError(t, err)
+
+	ctx := withAttrs(t.Context(), attrs{scheme: "http", host: "localhost", url: "http://localhost/"})
+
+	socketErr := &net.OpError{Op: "dial", Net: "tcp6", Err: os.NewSyscallError("socket", syscall.EAFNOSUPPORT)}
+
+	t.Run("a refused leg followed by an unopenable one", func(t *testing.T) {
+		dial := policy.dialWithVerdict(func(ctx context.Context, _, _ string) (net.Conn, error) {
+			// The IPv4 leg reaches the hook and is refused.
+			require.ErrorIs(t, policy.controlDial(ctx, "tcp4", "127.0.0.1:80", nil), ErrDenied)
+			// The IPv6 leg cannot open its socket, and the dialer reports that.
+			return nil, socketErr
+		})
+
+		_, err := dial(ctx, "tcp", "localhost:80")
+		requireDenied(t, err, ReasonAddress, "loopback")
+
+		var denied *DenyError
+		require.ErrorAs(t, err, &denied)
+		require.Equal(t, "http://localhost/", denied.Hop, "the denial still names the hop the dialer marked")
+
+		var undecided *UndecidedError
+		require.False(t, errors.As(err, &undecided), "a dial the policy refused a leg of is decided")
+	})
+
+	t.Run("an unopenable leg followed by a refused one", func(t *testing.T) {
+		// The other order: the dialer reports the denial itself, and the
+		// error keeps the shape it always had.
+		dial := policy.dialWithVerdict(func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp4", Err: policy.controlDial(ctx, "tcp4", "127.0.0.1:80", nil)}
+		})
+
+		_, err := dial(ctx, "tcp", "localhost:80")
+		requireDenied(t, err, ReasonAddress, "loopback")
+
+		var opErr *net.OpError
+		require.ErrorAs(t, err, &opErr, "the dialer's own wrapping is kept when it reported the denial")
+	})
+
+	t.Run("a permitted leg that then fails stays a transport error", func(t *testing.T) {
+		// The hook answered allow, so nothing is undecided and nothing is
+		// denied: the peer's refusal is the error.
+		refused := &net.OpError{Op: "dial", Net: "tcp4", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+		dial := policy.dialWithVerdict(func(ctx context.Context, _, _ string) (net.Conn, error) {
+			require.NoError(t, policy.controlDial(ctx, "tcp4", "93.184.216.34:80", nil))
+			return nil, refused
+		})
+
+		_, err := dial(ctx, "tcp", "example.com:80")
+		require.ErrorIs(t, err, syscall.ECONNREFUSED)
+		require.NotErrorIs(t, err, ErrDenied)
+
+		var undecided *UndecidedError
+		require.False(t, errors.As(err, &undecided))
+	})
+}
+
+// Test_Policy_dialWithVerdict_undecidedCause: a dial that failed before the
+// hook ran says which class of failure it was, so an operator can tell a host
+// that cannot resolve or open a socket from a policy that never answers
+// (picatz/flowstate#1768).
+func Test_Policy_dialWithVerdict_undecidedCause(t *testing.T) {
+	policy, err := New()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		err  error
+		want UndecidedCause
+		says string
+	}{
+		{
+			name: "the resolver failed",
+			err:  &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "127.1", IsNotFound: true}},
+			want: UndecidedByResolver,
+			says: "because the resolver failed: dial tcp: lookup 127.1: no such host",
+		},
+		{
+			name: "no socket could be opened",
+			err:  &net.OpError{Op: "dial", Net: "tcp", Addr: &net.TCPAddr{IP: net.ParseIP("2001:db8::1"), Port: 80}, Err: os.NewSyscallError("socket", syscall.EAFNOSUPPORT)},
+			want: UndecidedBySocket,
+			says: "because no socket could be opened: dial tcp [2001:db8::1]:80: socket: address family not supported by protocol",
+		},
+		{
+			name: "an unclassified failure keeps the message it had",
+			err:  errors.New("something else"),
+			says: "was interrupted before it decided: something else",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dial := policy.dialWithVerdict(func(context.Context, string, string) (net.Conn, error) {
+				return nil, test.err
+			})
+
+			_, err := dial(t.Context(), "tcp", "target:80")
+
+			var undecided *UndecidedError
+			require.ErrorAs(t, err, &undecided)
+			require.Equal(t, test.want, undecided.Cause)
+			require.Contains(t, err.Error(), test.says)
+			require.ErrorIs(t, err, test.err, "the dialer's own error is still there for errors.Is")
+			require.NotErrorIs(t, err, ErrDenied)
+		})
+	}
 }

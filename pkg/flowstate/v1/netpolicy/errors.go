@@ -226,11 +226,45 @@ type UndecidedError struct {
 	// Err is the context's own error, kept so that errors.Is(err,
 	// context.Canceled) and errors.Is(err, context.DeadlineExceeded) answer for
 	// this exactly as they answered for the bare value this replaced.
+	//
+	// For a dial that failed before the policy's hook ran it is the dialer's
+	// error instead, and Cause says which kind.
 	Err error
+
+	// Cause names the class of failure that stopped the policy short, when the
+	// dial path could tell: [UndecidedByResolver] for a name that did not
+	// resolve, [UndecidedBySocket] for an address whose socket could not be
+	// opened. Empty for an interrupted rule evaluation and for a dial failure
+	// of no recognised class, where Err says what it can.
+	//
+	// It is what lets an operator tell a broken host from a broken policy:
+	// "no socket could be opened" for an IPv6 literal on a host without IPv6
+	// is the host's problem, and the same message for every target is the
+	// worker's.
+	Cause UndecidedCause
 }
+
+// UndecidedCause is the class of failure an [UndecidedError] reports, in the
+// words its message uses.
+type UndecidedCause string
+
+const (
+	// UndecidedByResolver: the name never resolved, so the address policy was
+	// never shown an address.
+	UndecidedByResolver UndecidedCause = "the resolver failed"
+
+	// UndecidedBySocket: the address resolved, but no socket could be opened
+	// to it, so the dialer's hook — where the policy decides — never ran. On a
+	// host without IPv6 this is every IPv6 address.
+	UndecidedBySocket UndecidedCause = "no socket could be opened"
+)
 
 // Error implements the error interface.
 func (e *UndecidedError) Error() string {
+	if e.Cause != "" {
+		return fmt.Sprintf("egress policy evaluation for %s ended before it decided because %s: %v", e.Target, e.Cause, e.Err)
+	}
+
 	return fmt.Sprintf("egress policy evaluation for %s was interrupted before it decided: %v", e.Target, e.Err)
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
 )
@@ -719,7 +720,7 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 		mapped, ok := t.NamespaceMap[namespace]
 		if !ok {
 			return "", fmt.Errorf("%w: the %q claim of a token from %q is %q, which has no entry in namespace_map",
-				ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64))
+				ErrNoNamespace, t.NamespaceClaim, t.Name, textbound.Truncate(namespace, 64))
 		}
 		return mapped, nil
 	}
@@ -732,7 +733,7 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 	// reference is built from it.
 	if err := ValidateNamespace(namespace); err != nil {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is %q: %w",
-			ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64), err)
+			ErrNoNamespace, t.NamespaceClaim, t.Name, textbound.Truncate(namespace, 64), err)
 	}
 
 	return namespace, nil
@@ -1362,14 +1363,14 @@ func (t TrustedIssuer) algorithms() []jwa.Algorithm {
 // age it tolerates, and its claim rules.
 func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window lifetime, claims map[string]any, skew time.Duration) error {
 	if !slices.Contains(t.algorithms(), alg) {
-		return fmt.Errorf("%w: %q", ErrDisallowedAlgorithm, truncate(alg, 32))
+		return fmt.Errorf("%w: %q", ErrDisallowedAlgorithm, textbound.Truncate(alg, 32))
 	}
 
 	if !slices.ContainsFunc(audiences, func(audience string) bool {
 		return slices.Contains(t.Audiences, audience)
 	}) {
 		return fmt.Errorf("%w: token is addressed to %q, want one of %v",
-			ErrInvalidAudience, truncate(strings.Join(audiences, ", "), maxClaimValueLength), t.Audiences)
+			ErrInvalidAudience, textbound.Truncate(strings.Join(audiences, ", "), maxClaimValueLength), t.Audiences)
 	}
 
 	if t.MaxTokenAge > 0 {
@@ -1424,7 +1425,7 @@ func (r ClaimRule) check(claims map[string]any) error {
 
 	found := claimStrings(value)
 	if len(found) == 0 {
-		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf), Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
+		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf), Got: textbound.Truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
 	}
 
 	// Exclusion is checked before acceptance so that a rule carrying both
@@ -1436,8 +1437,8 @@ func (r ClaimRule) check(claims map[string]any) error {
 			return &ClaimMismatchError{
 				Claim:        r.Claim,
 				Want:         slices.Clone(r.AnyOf),
-				Got:          truncate(strings.Join(found, ", "), maxClaimValueLength),
-				RefusedValue: truncate(candidate, maxClaimValueLength),
+				Got:          textbound.Truncate(strings.Join(found, ", "), maxClaimValueLength),
+				RefusedValue: textbound.Truncate(candidate, maxClaimValueLength),
 			}
 		}
 	}
@@ -1457,7 +1458,7 @@ func (r ClaimRule) check(claims map[string]any) error {
 	return &ClaimMismatchError{
 		Claim: r.Claim,
 		Want:  slices.Clone(r.AnyOf),
-		Got:   truncate(strings.Join(found, ", "), maxClaimValueLength),
+		Got:   textbound.Truncate(strings.Join(found, ", "), maxClaimValueLength),
 	}
 }
 

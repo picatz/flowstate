@@ -1395,6 +1395,13 @@ func validateTriggers(wf *v1.Workflow) Diagnostics {
 	}
 
 	if err := v1.CheckScheduleTrigger(schedule); err != nil {
+		// A refusal that knows which key it is about lands on that key, so an
+		// `every:` under the floor in a block that also carries `cron:` is
+		// reported on the interval rather than on the expression beside it.
+		var cadence *v1.ScheduleCadenceError
+		if errors.As(err, &cadence) {
+			field = "triggers.schedule." + cadence.Key
+		}
 		ds = append(ds, Diagnostic{Field: field, Message: err.Error()})
 	}
 

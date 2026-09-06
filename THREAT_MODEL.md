@@ -162,7 +162,7 @@ admitted to a default tenant (`:119-142`, `:345`). Unauthenticated error text ne
 describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). Submitted
 specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`),
 and `List` is bounded by executions read and by requests made
-(`pkg/flowstate/v1/server/list.go:51`, `:63`).
+(`pkg/flowstate/v1/server/list.go:56`, `:68`).
 
 **Limits.** `flow server` serves plain HTTP when it is given no certificate, and it
 refuses to do that on any address but loopback unless `--tls-terminated-upstream`
@@ -369,7 +369,12 @@ TLS 1.2 with verified certificates; bounds request, dial, handshake and header
 phases; caps the body; and re-checks policy at every redirect hop, refusing an https
 to http downgrade (`pkg/flowstate/v1/netpolicy/netpolicy.go:9-20`, `:155`, `:499`).
 Address checks run in the dialer against the address actually dialed, so a
-DNS-rebinding answer gains nothing (`:26-31`, `:441`). CEL rules are compiled and
+DNS-rebinding answer gains nothing (`:26-31`, `:441`). A host that is already an
+IP literal is classified before the resolver or a socket is touched, with the
+dialer's own verdict, so a loopback or private literal is refused the same way on
+a host that cannot open that address family; a non-canonical IPv4 spelling
+(`127.1`, `0x7f.0.0.1`) is refused rather than resolved
+(`checkLiteralHost`, `legacyIPv4`; #1768). CEL rules are compiled and
 type-checked when configuration loads, deny beats allow, and a rule that errors
 denies (`:91-111`). Rules may key on the run's identity, including namespace, so one
 worker can serve two tenants with different reach

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
@@ -531,16 +532,6 @@ func publicReason(err error) string {
 	}
 }
 
-// truncate bounds a value taken from a token before it is placed in an error
-// message, so that a trusted-but-hostile issuer cannot flood an operator's
-// logs with a single claim.
-func truncate(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return strings.ToValidUTF8(s[:limit], "") + "..."
-}
-
 // AssumptionFailedError reports that the assumption policy permitted a target
 // and obtaining or applying the credential then failed: the assertion could not
 // be minted, the relying party refused or could not be reached, or the
@@ -570,7 +561,7 @@ type AssumptionFailedError struct {
 // Error implements the error interface.
 func (e *AssumptionFailedError) Error() string {
 	return fmt.Sprintf("auth: the assumption policy permitted %q and obtaining the credential then failed: %v",
-		truncate(e.Target, 128), e.Err)
+		textbound.Truncate(e.Target, 128), e.Err)
 }
 
 // Unwrap returns the original failure.

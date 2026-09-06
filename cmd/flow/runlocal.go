@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"time"
 
@@ -83,10 +82,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// Nothing is flushed here. [main] calls [flushTelemetry] after every command
 	// returns, precisely because a command that lives for a second is shorter
 	// than a batch exporter's window — which is this command exactly.
-	if _, err := startTelemetry(cmd.Context()); err != nil {
-		log.Printf("WARNING: telemetry is configured but could not be started, "+
-			"so this run emits no trace: %v", err)
-	}
+	//
+	// The warning goes through the run's own log handler — the one `log:` steps
+	// render through further down — so it has the WARN pill the rest of this
+	// command's stderr has rather than a line in a format nothing else here
+	// writes (#1716).
+	startTelemetryOrWarn(cmd.Context(),
+		slog.New(newRunLogHandler(cmd.ErrOrStderr(), newSurface(cmd).ErrTheme)))
 
 	// The same flag the worker takes, because a rehearsal under a different egress
 	// policy rehearses a different production. A file that does not load refuses

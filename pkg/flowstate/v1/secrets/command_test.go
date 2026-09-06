@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 )
@@ -209,7 +210,15 @@ func Test_summarize(t *testing.T) {
 	t.Run("long output is bounded", func(t *testing.T) {
 		got := summarize(strings.Repeat("x", 1000))
 		require.LessOrEqual(t, len(got), 210)
-		require.Contains(t, got, "…")
+		require.True(t, strings.HasSuffix(got, "..."), "a cut summary should say so, got %q", got)
+	})
+
+	t.Run("a rune straddling the bound is dropped whole", func(t *testing.T) {
+		// "é" is two bytes, at 199 and 200: a byte cut at 200 would leave its
+		// lead byte behind, and this error reaches a proto string field.
+		got := summarize(strings.Repeat("x", 199) + "é" + strings.Repeat("y", 100))
+		require.Equal(t, strings.Repeat("x", 199)+"...", got)
+		require.True(t, utf8.ValidString(got))
 	})
 }
 

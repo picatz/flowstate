@@ -8,7 +8,8 @@
 // smoke tier ran (#857). They all read this package or the file behind it now.
 // The shell side reads it through list.sh; Go callers read it here, and the
 // package's test holds the two readers to the same answer and the file itself
-// to the tree.
+// to the tree. tools/gate reads the smoke tier here to decide which targets a
+// diff reaches, and hands that list to list.sh through the Makefile (#1726).
 package fuzztargets
 
 import (
@@ -81,23 +82,6 @@ func InTier(tier string) []Target {
 	for _, t := range All() {
 		if t.InTier(tier) {
 			out = append(out, t)
-		}
-	}
-	return out
-}
-
-// Dirs returns the distinct package directories holding a target, in file
-// order. tools/gate maps these to import paths to decide whether a diff can
-// reach a fuzz target at all, which is why it is every tier's targets and not
-// one tier's: a package holding a deep-only target is still a package whose
-// change moves what a fuzzer explores.
-func Dirs() []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, t := range All() {
-		if !seen[t.Dir] {
-			seen[t.Dir] = true
-			out = append(out, t.Dir)
 		}
 	}
 	return out

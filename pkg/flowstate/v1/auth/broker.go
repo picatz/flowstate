@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"slices"
 	"time"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // Broker resolves the credentials a workload needs to call other systems.
@@ -204,7 +206,7 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 
 	exchanger, ok := b.targets[target]
 	if !ok {
-		return Credential{}, fmt.Errorf("%w: %q is not a configured target", ErrUnknownTarget, truncate(target, 128))
+		return Credential{}, fmt.Errorf("%w: %q is not a configured target", ErrUnknownTarget, textbound.Truncate(target, 128))
 	}
 
 	if err := identity.Validate(); err != nil {

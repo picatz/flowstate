@@ -242,6 +242,7 @@ func TestListRefusesAPageTokenItDidNotIssue(t *testing.T) {
 	}))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	require.ErrorContains(t, err, "page token is not a token this server issued")
 }
 
 // listRunIDs collects the workflow ids from one page of a listing, reporting an

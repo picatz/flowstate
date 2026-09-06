@@ -9,6 +9,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // maxDescriptorDepth bounds how deep an import graph may go.
@@ -53,7 +55,7 @@ func messageDescriptor(raw []byte, fullName string, cfg Config) (protoreflect.Me
 
 	name := protoreflect.FullName(fullName)
 	if !name.IsValid() {
-		return nil, fmt.Errorf("%w: %q is not a valid message name", ErrDescriptor, truncate(fullName, 128))
+		return nil, fmt.Errorf("%w: %q is not a valid message name", ErrDescriptor, textbound.Truncate(fullName, 128))
 	}
 
 	if len(raw) == 0 {
@@ -64,12 +66,12 @@ func messageDescriptor(raw []byte, fullName string, cfg Config) (protoreflect.Me
 		if err != nil {
 			return nil, fmt.Errorf(
 				"%w: names message %q with no descriptor, and this engine does not know that message",
-				ErrDescriptor, truncate(fullName, 128),
+				ErrDescriptor, textbound.Truncate(fullName, 128),
 			)
 		}
 		message, ok := desc.(protoreflect.MessageDescriptor)
 		if !ok {
-			return nil, fmt.Errorf("%w: %q is not a message", ErrDescriptor, truncate(fullName, 128))
+			return nil, fmt.Errorf("%w: %q is not a message", ErrDescriptor, textbound.Truncate(fullName, 128))
 		}
 		return message, nil
 	}
@@ -77,7 +79,7 @@ func messageDescriptor(raw []byte, fullName string, cfg Config) (protoreflect.Me
 	if len(raw) > cfg.MaxDescriptorBytes {
 		return nil, fmt.Errorf(
 			"%w: descriptor for %q is %d bytes, over the %d byte limit",
-			ErrDescriptor, truncate(fullName, 128), len(raw), cfg.MaxDescriptorBytes,
+			ErrDescriptor, textbound.Truncate(fullName, 128), len(raw), cfg.MaxDescriptorBytes,
 		)
 	}
 
@@ -105,7 +107,7 @@ func messageDescriptor(raw []byte, fullName string, cfg Config) (protoreflect.Me
 
 	return nil, fmt.Errorf(
 		"%w: could not reconstruct %q: %w",
-		ErrDescriptor, truncate(fullName, 128), errors.Join(attempts...),
+		ErrDescriptor, textbound.Truncate(fullName, 128), errors.Join(attempts...),
 	)
 }
 
@@ -156,7 +158,7 @@ func resolveMessage(files []*descriptorpb.FileDescriptorProto, name protoreflect
 
 	for _, file := range files {
 		if _, dup := linker.pending[file.GetName()]; dup {
-			return nil, fmt.Errorf("file %q appears twice", truncate(file.GetName(), 128))
+			return nil, fmt.Errorf("file %q appears twice", textbound.Truncate(file.GetName(), 128))
 		}
 		linker.pending[file.GetName()] = file
 	}
@@ -169,12 +171,12 @@ func resolveMessage(files []*descriptorpb.FileDescriptorProto, name protoreflect
 
 	desc, err := linker.linked.FindDescriptorByName(name)
 	if err != nil {
-		return nil, fmt.Errorf("the descriptor does not define %q", truncate(string(name), 128))
+		return nil, fmt.Errorf("the descriptor does not define %q", textbound.Truncate(string(name), 128))
 	}
 
 	message, ok := desc.(protoreflect.MessageDescriptor)
 	if !ok {
-		return nil, fmt.Errorf("%q is a %T rather than a message", truncate(string(name), 128), desc)
+		return nil, fmt.Errorf("%q is a %T rather than a message", textbound.Truncate(string(name), 128), desc)
 	}
 
 	return message, nil
@@ -261,17 +263,17 @@ func (l *linker) link(path string, depth int) (protoreflect.FileDescriptor, erro
 			return nil, fmt.Errorf(
 				"imports %q, which this engine no longer has: that file was split into twelve files in the same package. "+
 					"This plugin was built against the pre-split schema — rebuild it against the current one",
-				truncate(path, 128),
+				textbound.Truncate(path, 128),
 			)
 		}
 		return nil, fmt.Errorf(
 			"imports %q, which is neither included in the descriptor nor known to this engine",
-			truncate(path, 128),
+			textbound.Truncate(path, 128),
 		)
 	}
 
 	if _, cycle := l.linking[path]; cycle {
-		return nil, fmt.Errorf("imports form a cycle through %q", truncate(path, 128))
+		return nil, fmt.Errorf("imports form a cycle through %q", textbound.Truncate(path, 128))
 	}
 	l.linking[path] = struct{}{}
 	defer delete(l.linking, path)
@@ -282,17 +284,17 @@ func (l *linker) link(path string, depth int) (protoreflect.FileDescriptor, erro
 
 	for _, dep := range file.GetDependency() {
 		if _, err := l.link(dep, depth+1); err != nil {
-			return nil, fmt.Errorf("%q: %w", truncate(path, 128), err)
+			return nil, fmt.Errorf("%q: %w", textbound.Truncate(path, 128), err)
 		}
 	}
 
 	linked, err := protodesc.NewFile(file, l)
 	if err != nil {
-		return nil, fmt.Errorf("%q: %w", truncate(path, 128), err)
+		return nil, fmt.Errorf("%q: %w", textbound.Truncate(path, 128), err)
 	}
 
 	if err := l.linked.RegisterFile(linked); err != nil {
-		return nil, fmt.Errorf("%q: %w", truncate(path, 128), err)
+		return nil, fmt.Errorf("%q: %w", textbound.Truncate(path, 128), err)
 	}
 
 	return linked, nil

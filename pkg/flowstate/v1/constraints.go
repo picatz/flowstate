@@ -14,6 +14,7 @@ import (
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
@@ -896,7 +897,7 @@ func CheckOutputConstraint(profile string, decl *OutputDeclaration, value *Value
 			decl.GetName(), decl.GetMust(), redactedIfSensitive(decl.GetSensitive(), func() string {
 				got, _ := literalToNative(lit)
 
-				return truncateForError(fmt.Sprintf("%v", got))
+				return textbound.Truncate(fmt.Sprintf("%v", got), maxErrorValueBytes)
 			}))
 	}
 
@@ -1454,7 +1455,7 @@ type valueRendering struct {
 // show renders one value under this rendering's length rule.
 func (r valueRendering) show(s string) string {
 	if r.bounded {
-		return truncateForError(s)
+		return textbound.Truncate(s, maxErrorValueBytes)
 	}
 
 	return s

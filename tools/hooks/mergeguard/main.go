@@ -55,6 +55,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/tools/hooks/internal/hook"
 )
 
@@ -541,7 +542,7 @@ func fetchReviewThreadsPage(ctx context.Context, client *http.Client, endpoint, 
 		return zero, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return zero, fmt.Errorf("status %d: %s", resp.StatusCode, truncate(string(respBody), 300))
+		return zero, fmt.Errorf("status %d: %s", resp.StatusCode, textbound.Truncate(string(respBody), 300))
 	}
 
 	var gr graphQLResponse
@@ -555,13 +556,6 @@ func fetchReviewThreadsPage(ctx context.Context, client *http.Client, endpoint, 
 	return gr.Data.Repository.PullRequest.ReviewThreads, nil
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
 // denyMessage names every unresolved thread, so the operator knows exactly
 // what to clear rather than just that something is unresolved.
 func denyMessage(owner, repo string, number int, threads []thread) string {
@@ -569,7 +563,7 @@ func denyMessage(owner, repo string, number int, threads []thread) string {
 	fmt.Fprintf(&b, "%s/%s#%d has %d unresolved review thread(s); resolve them (or explicitly decide and record why not) before merging:\n", owner, repo, number, len(threads))
 	for _, t := range threads {
 		line := strings.ReplaceAll(strings.TrimSpace(t.Body), "\n", " ")
-		line = truncate(line, 140)
+		line = textbound.Truncate(line, 140)
 		if line == "" {
 			line = "(no comment body)"
 		}

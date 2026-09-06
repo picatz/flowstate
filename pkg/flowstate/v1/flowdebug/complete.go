@@ -3,12 +3,12 @@ package flowdebug
 import (
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 )
@@ -779,20 +779,15 @@ func RenderCompletion(answer Completion) string {
 	return out.String()
 }
 
-// capCompletionField truncates without splitting a UTF-8 encoding. It only
-// examines the bounded prefix: converting an untrusted name to []rune here
-// would recreate a proportional allocation before the rendering bound.
+// capCompletionField truncates to limit bytes, marker included, without
+// splitting a UTF-8 encoding. The marker is the single-rune "…" rather than
+// textbound's "..." so a cut name costs one column in the completion list.
 func capCompletionField(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
 
-	end := limit - len("…")
-	for end > 0 && !utf8.RuneStart(s[end]) {
-		end--
-	}
-
-	return s[:end] + "…"
+	return textbound.Cut(s, limit-len("…")) + "…"
 }
 
 // padRight pads to width, for the column a detail starts at.
