@@ -129,6 +129,7 @@ const maxStructureWalkNodes = 100_000
 func CheckStructureDepth(wf *Workflow) error {
 	var violation *ValueSite
 	var violationChain []string
+	var reached *constraintBoundViolation
 	nodesLeft := maxStructureWalkNodes
 	exhausted := false
 
@@ -150,10 +151,11 @@ func CheckStructureDepth(wf *Workflow) error {
 		// traversal this bounded validator must avoid.
 		if current.workflow != nil {
 			valueWalk := Walk{Value: func(site ValueSite) {
-				if valueDepthViolation(site.Value, 0) != nil {
+				if v := valueDepthViolation(site.Value, 0); v != nil && violation == nil {
 					s := site
 					violation = &s
 					violationChain = slices.Clone(current.chain)
+					reached = v
 				}
 			}}
 			walkWorkflowValuesBeforeSteps(current.workflow, valueWalk)
@@ -185,10 +187,11 @@ func CheckStructureDepth(wf *Workflow) error {
 			nodesLeft--
 
 			walkNodeValues(node, Walk{Value: func(site ValueSite) {
-				if violation == nil && valueDepthViolation(site.Value, 0) != nil {
+				if v := valueDepthViolation(site.Value, 0); v != nil && violation == nil {
 					s := site
 					violation = &s
 					violationChain = slices.Clone(nodeFrame.chain)
+					reached = v
 				}
 			}})
 			if violation != nil {
@@ -247,24 +250,18 @@ func CheckStructureDepth(wf *Workflow) error {
 		calledFrom = fmt.Sprintf(" (reached by calling %s)", callChainText(violationChain))
 	}
 
-	// The same sentence a submitted input past the bound gets
-	// ([inputSideConstraintBoundError]), because it is the same bound on the
-	// same resource: every walk over a value — an expression's, the secret
-	// authority's, compaction's — spends depth, and one number and one sentence
-	// are what let an author recognise the refusal wherever the value was
-	// written (#1765).
+	// The same sentence a submitted input past the bound gets, through the
+	// same function ([constraintBoundError]), because it is the same bound on
+	// the same resource: every walk over a value — an expression's, the secret
+	// authority's, compaction's — spends depth, and one sentence with the depth
+	// actually reached is what lets an author recognise the refusal wherever
+	// the value was written (#1765). Only the subject differs: which step and
+	// field, and the call chain it was reached through.
+	subject := where
 	if field != "" {
-		return fmt.Errorf(
-			"%s's %s nests more than %d levels deep%s, over the %d levels this server can walk cheaply "+
-				"while evaluating an expression over it (`if:`, `for_each`, `must:`, `unique:`); flatten "+
-				"it, or have a step read it from a reference instead of submitting it nested this deep",
-			where, field, MaxStructureDepth, calledFrom, MaxStructureDepth)
+		subject = fmt.Sprintf("%s's %s", where, field)
 	}
-	return fmt.Errorf(
-		"%s nests more than %d levels deep%s, over the %d levels this server can walk cheaply while "+
-			"evaluating an expression over it (`if:`, `for_each`, `must:`, `unique:`); flatten it, or "+
-			"have a step read it from a reference instead of submitting it nested this deep",
-		where, MaxStructureDepth, calledFrom, MaxStructureDepth)
+	return constraintBoundError(subject+calledFrom, reached)
 }
 
 // callChainText renders the steps a violation was reached through as

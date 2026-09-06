@@ -1328,21 +1328,29 @@ func valueDepthViolation(v *Value, depth int) *constraintBoundViolation {
 // inline before the two were split, kept unchanged so the input-side
 // refusal, and the tests pinning it, do not regress.
 func inputSideConstraintBoundError(kind, name string, v *constraintBoundViolation) error {
+	return constraintBoundError(fmt.Sprintf("%s %q", kind, name), v)
+}
+
+// constraintBoundError is [inputSideConstraintBoundError] for a subject already
+// rendered — `input "doc"`, or `step "deep"'s value` — so that a value the
+// specification carries ([CheckStructureDepth]) and a value a caller submitted
+// are refused in one sentence rather than two that agree today (#1765).
+func constraintBoundError(subject string, v *constraintBoundViolation) error {
 	if v.Depth {
 		return fmt.Errorf(
-			"%s %q nests %d levels deep, over the %d levels this server can walk cheaply while "+
+			"%s nests %d levels deep, over the %d levels this server can walk cheaply while "+
 				"evaluating an expression over it (`if:`, `for_each`, `must:`, `unique:`); a value nested "+
 				"this deeply is not a cost this server bounds any other way — flatten it, or have a step "+
 				"read it from a reference instead of submitting it nested this deep",
-			kind, name, v.DepthReached, maxConstraintValueDepth)
+			subject, v.DepthReached, maxConstraintValueDepth)
 	}
 	return fmt.Errorf(
-		"%s %q has at least %d list elements across its whole value, over the %d this server "+
+		"%s has at least %d list elements across its whole value, over the %d this server "+
 			"can evaluate a CEL expression over cheaply (`if:`, `for_each`, `must:`, `unique:` "+
 			"all pay the same cost); the caller's own choice of size is not a cost this server "+
 			"bounds any other way — page the work across multiple runs, or have a step read the "+
 			"list from a reference instead of submitting the whole thing as one input",
-		kind, name, v.ElementCount, maxListElements)
+		subject, v.ElementCount, maxListElements)
 }
 
 // taskOutputConstraintBoundError renders a [constraintBoundViolation] for a

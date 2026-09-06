@@ -38,8 +38,13 @@ func nestedMapLiteral(depth int) *expr.Value {
 // words a submitted input past the same bound is refused in.
 func ValueDepthRefusalCases() []Refusal {
 	past := v1.MaxStructureDepth + 1
-	sentence := fmt.Sprintf("nests more than %d levels deep, over the %d levels this server can walk cheaply "+
-		"while evaluating an expression over it", v1.MaxStructureDepth, v1.MaxStructureDepth)
+
+	// The whole sentence, with the depth reached, exactly as an input past the
+	// bound is refused: the case pins that the two paths share one function,
+	// not two that happen to agree.
+	sentence := fmt.Sprintf("nests %d levels deep, over the %d levels this server can walk cheaply while "+
+		"evaluating an expression over it (`if:`, `for_each`, `must:`, `unique:`); a value nested this "+
+		"deeply is not a cost this server bounds any other way", past, v1.MaxStructureDepth)
 
 	return []Refusal{
 		{
@@ -52,7 +57,7 @@ func ValueDepthRefusalCases() []Refusal {
 				},
 				Steps: []*v1.Node{says("a", "hello")},
 			},
-			Contains: sentence,
+			Contains: `the workflow's vars.d ` + sentence,
 		},
 		{
 			Name: "a step value literal nested past the depth bound is refused at submit",
@@ -64,7 +69,7 @@ func ValueDepthRefusalCases() []Refusal {
 					Kind: &v1.Node_Value{Value: &v1.Value{Kind: &v1.Value_Literal{Literal: nestedMapLiteral(past)}}},
 				}},
 			},
-			Contains: `step "deep"`,
+			Contains: `step "deep"'s value ` + sentence,
 		},
 	}
 }

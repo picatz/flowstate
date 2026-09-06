@@ -52,7 +52,8 @@ func TestALiteralPastTheDepthBoundIsRefusedInEveryPosition(t *testing.T) {
 	t.Parallel()
 
 	sentence := fmt.Sprintf("nests %d levels deep, over the %d levels this server can walk cheaply while "+
-		"evaluating an expression over it", v1.MaxStructureDepth+1, v1.MaxStructureDepth)
+		"evaluating an expression over it (`if:`, `for_each`, `must:`, `unique:`); a value nested this "+
+		"deeply is not a cost this server bounds any other way", v1.MaxStructureDepth+1, v1.MaxStructureDepth)
 
 	for _, position := range positions {
 		t.Run(position.name, func(t *testing.T) {

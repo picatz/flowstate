@@ -179,16 +179,19 @@ steps:
 // them: with only a two-step workflow to start from it never reaches a loop body or
 // a policy, and those are where a round trip is most easily lost.
 func FuzzRoundTrip(f *testing.F) {
-	// A `vars:` literal one level past the depth bound (#1765): refused by the
-	// compiler with the value bound's own sentence, never admitted as a CEL map
-	// literal the walks downstream cannot fully inspect.
-	tooDeep := `"leaf"`
-	for range v1.MaxStructureDepth + 1 {
-		tooDeep = "{k: " + tooDeep + "}"
+	// A `vars:` literal exactly at the depth bound (#1765): the deepest
+	// literal the compiler admits, so the round trip is exercised where the
+	// bound is, and a mutation one level deeper is refused rather than
+	// silently admitted as a CEL map literal the walks downstream cannot fully
+	// inspect. (A seed past the bound would be skipped by the harness below
+	// as a document that does not compile, and exercise nothing.)
+	atBound := `"leaf"`
+	for range v1.MaxStructureDepth {
+		atBound = "{k: " + atBound + "}"
 	}
 
 	for _, seed := range []string{
-		"edition: v2026.3\nname: deep\nvars:\n  d: " + tooDeep + "\nsteps:\n- id: a\n  log:\n    message: hi\n",
+		"edition: v2026.3\nname: deep\nvars:\n  d: " + atBound + "\nsteps:\n- id: a\n  log:\n    message: hi\n",
 		// A basic case to start with.
 		`edition: v2026.3
 name: hello
