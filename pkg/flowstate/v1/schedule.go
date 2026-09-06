@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +46,7 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 
 	for _, expression := range trigger.GetCron() {
 		if err := CheckCronExpression(expression); err != nil {
-			return err
+			return &ScheduleCadenceError{Key: "cron", Err: err}
 		}
 	}
 
@@ -77,7 +78,7 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 
 	for i, calendar := range trigger.GetCalendars() {
 		if err := checkScheduleCalendar(i, calendar); err != nil {
-			return err
+			return &ScheduleCadenceError{Key: "calendars", Err: err}
 		}
 	}
 
@@ -92,6 +93,23 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 	// sentence here, at `flow schedule create` and at the server.
 	return checkScheduleCadenceFloor(trigger)
 }
+
+// A ScheduleCadenceError is a refusal about one key of a schedule block —
+// `every`, `cron` or `calendars` — so a caller with a line to point at can
+// point at the key that was refused rather than at whichever cadence key it
+// happened to find first. A block carrying both `every:` and `cron:` is
+// refused for its interval on the interval's line.
+type ScheduleCadenceError struct {
+	// Key is the schedule key the refusal is about, as an author spells it.
+	Key string
+
+	// Err is the refusal, worded for an author.
+	Err error
+}
+
+func (e *ScheduleCadenceError) Error() string { return e.Err.Error() }
+
+func (e *ScheduleCadenceError) Unwrap() error { return e.Err }
 
 // The catch-up window's bounds, and what an unset one takes.
 //
@@ -475,37 +493,60 @@ func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar, timeZone string) 
 	}
 }
 
-// cronMinimumPeriod reports the shortest interval an expression accepted by
-// [CheckCronExpression] can fire at, for use as the denominator of a firing
-// count that must never come out too low.
+// A cronReading is what one expression [CheckCronExpression] has accepted
+// says about when it fires, read once so that the two consumers that need it
+// — the backfill estimate in [cronMinimumPeriod] and the cadence floor in
+// [checkScheduleCadenceFloor] — cannot read the same expression two ways.
 //
-// It reads the grammar that function reads, in the same order — comment, zone
+// It walks the grammar that function walks, in the same order — comment, zone
 // prefix, shorthand, field count — because classifying the raw string instead
-// gets every accepted form but the bare five-field one wrong. `@daily` and
-// `CRON_TZ=UTC 0 9 * * *` are not five whitespace-separated fields, and calling
-// them one-second cadences estimates a two-day backfill of `@daily` at 172,800
-// firings and refuses it, when it produces two.
+// gets every accepted form but the bare five-field one wrong: `@daily` and
+// `CRON_TZ=UTC 0 9 * * *` are not five whitespace-separated fields, and
+// calling them one-second cadences estimates a two-day backfill of `@daily`
+// at 172,800 firings and refuses it, when it produces two.
+type cronReading struct {
+	// zone is the zone governing the expression: its own `CRON_TZ=`/`TZ=`
+	// prefix when it carries one, else the trigger's `time_zone` — the same
+	// precedence Temporal itself gives it, so a day-or-longer shorthand's DST
+	// exposure is decided by whichever zone actually governs it.
+	zone string
+
+	// interval and phase are `@every <interval>[/<phase>]`. interval is zero
+	// for every other form.
+	interval time.Duration
+	phase    time.Duration
+
+	// nominal is the wall-clock resolution of every other form: an hour for
+	// `@hourly`, a day for `@daily`, a minute for the five- and six-field
+	// forms and for a seven-field form that fires on one second. A month is
+	// 28 days and a year 365, because a lower bound on the period is an upper
+	// bound on the firings. It is a second for a form this does not
+	// recognize, which is the fail-closed reading.
+	nominal time.Duration
+
+	// seconds is the seven-field form's first field, expanded, and nil for
+	// every other form, all of which fire on the minute. secondsUnmodelled
+	// says that field is written in syntax [expandCronField] does not expand.
+	seconds           []int
+	secondsUnmodelled bool
+}
+
+// readCron classifies one expression against the trigger's own `time_zone`.
 //
-// triggerTimeZone is the schedule's own `time_zone`, read when the expression
-// carries no `CRON_TZ=`/`TZ=` prefix of its own — an expression's own prefix
-// overrides the schedule's zone for that one entry, the same precedence
-// Temporal itself gives it, so a day-or-longer shorthand's DST exposure is
-// decided by whichever zone actually governs it.
-//
-// Anything it cannot classify is charged the fastest cadence there is. That is
-// the fail-closed direction here: an over-estimate refuses a backfill somebody
-// then writes more narrowly, where an under-estimate is the fan-out this whole
-// check exists to stop.
-func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration {
+// The error is an `@every` whose interval or phase this cannot read.
+// [CheckCronExpression] leaves those to the cluster, which is right for a
+// grammar question; what an unreadable one costs is each consumer's decision.
+func readCron(expression, triggerTimeZone string) (cronReading, error) {
+	original := expression
+	reading := cronReading{zone: triggerTimeZone, nominal: time.Second}
 	expression = strings.TrimSpace(stripCronComment(expression))
 
-	zoneName := triggerTimeZone
 	if zone, rest, found := strings.Cut(expression, " "); found {
 		if after, ok := strings.CutPrefix(zone, "CRON_TZ="); ok {
-			zoneName = after
+			reading.zone = after
 			expression = strings.TrimSpace(rest)
 		} else if after, ok := strings.CutPrefix(zone, "TZ="); ok {
-			zoneName = after
+			reading.zone = after
 			expression = strings.TrimSpace(rest)
 		}
 	}
@@ -513,53 +554,116 @@ func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration 
 	if strings.HasPrefix(expression, "@") {
 		head, rest, _ := strings.Cut(expression, " ")
 		if strings.EqualFold(head, "@every") {
-			// `@every` carries its own interval, and the same reading
-			// CheckCronExpression leaves to the cluster is the one charged
-			// here; an interval it cannot read is charged a second.
-			if period, err := time.ParseDuration(strings.TrimSpace(rest)); err == nil && period > 0 {
-				return period
-			}
-			return time.Second
+			return readCronInterval(reading, original, strings.TrimSpace(rest))
 		}
-		// The fixed shorthands, each charged the shortest period it can mean:
-		// a month is charged 28 days and a year 365, because a lower bound on
-		// the period is an upper bound on the firings. Every shorthand here
-		// goes through [wallClockCadencePeriod] for the same reason
-		// [calendarMinimumPeriod]'s every-resolution-but-second case does:
-		// each fires on a wall-clock boundary, whose minimum gap this
-		// package can bound only in UTC, regardless of whether the boundary
-		// is an hour or a year.
 		switch strings.ToLower(head) {
 		case "@hourly":
-			return wallClockCadencePeriod(zoneName, time.Hour)
+			reading.nominal = time.Hour
 		case "@daily", "@midnight":
-			return wallClockCadencePeriod(zoneName, 24*time.Hour)
+			reading.nominal = 24 * time.Hour
 		case "@weekly":
-			return wallClockCadencePeriod(zoneName, 7*24*time.Hour)
+			reading.nominal = 7 * 24 * time.Hour
 		case "@monthly":
-			return wallClockCadencePeriod(zoneName, 28*24*time.Hour)
+			reading.nominal = 28 * 24 * time.Hour
 		case "@yearly", "@annually":
-			return wallClockCadencePeriod(zoneName, 365*24*time.Hour)
-		default:
-			return time.Second
+			reading.nominal = 365 * 24 * time.Hour
+		}
+
+		return reading, nil
+	}
+
+	fields := strings.Fields(expression)
+	switch len(fields) {
+	case 5, 6:
+		// Minute-resolution: the five ordinary fields, and the same five with a
+		// year appended.
+		reading.nominal = time.Minute
+	case 7:
+		// Seconds first. The field decides how much faster than a minute this
+		// can fire, and is read here so that nothing else reads it.
+		reading.nominal = time.Minute
+		seconds, modelled, err := expandCronField(fields[0], cronSecond)
+		if err != nil || !modelled {
+			reading.secondsUnmodelled = true
+		} else {
+			reading.seconds = seconds
 		}
 	}
 
-	switch len(strings.Fields(expression)) {
-	case 5, 6:
-		// Minute-resolution: the five ordinary fields, and the same five with a
-		// year appended. Routed through [wallClockCadencePeriod] for the same
-		// reason the shorthands above are: an ordinary cron entry fires on a
-		// wall-clock minute boundary, whose minimum gap this package can
-		// bound only in UTC. A named zone can shift by more than a minute at
-		// an offset change, so a sub-minute rollback can repeat a matching
-		// local minute in under sixty seconds.
-		return wallClockCadencePeriod(zoneName, time.Minute)
-	default:
-		// Seven fields put seconds first. Anything else is not an expression
-		// CheckCronExpression accepts, and is charged the fastest cadence.
-		return time.Second
+	return reading, nil
+}
+
+// readCronInterval reads `@every <interval>[/<phase>]`.
+//
+// The phase shifts every firing by a fixed amount and cannot be dropped:
+// `@every 1m/30s` fires on the half-minute, and beside a cadence on the minute
+// that is a firing every thirty seconds.
+func readCronInterval(reading cronReading, original, spec string) (cronReading, error) {
+	interval, phase, hasPhase := strings.Cut(spec, "/")
+
+	d, err := ParseDuration(strings.TrimSpace(interval))
+	if err != nil || d <= 0 {
+		return reading, fmt.Errorf("cron expression %q has an `@every` interval this cannot read; write it "+
+			"as 15m, 1h or 7d, or use the schedule's own `every:` key", original)
 	}
+	reading.interval = d
+
+	if hasPhase {
+		p, err := ParseDuration(strings.TrimSpace(phase))
+		if err != nil || p < 0 {
+			return reading, fmt.Errorf("cron expression %q has an `@every` phase this cannot read; write it "+
+				"as a duration such as 30s after the `/`, or leave the `/` off", original)
+		}
+		reading.phase = p
+	}
+
+	return reading, nil
+}
+
+// cronMinimumPeriod reports the shortest interval an expression accepted by
+// [CheckCronExpression] can fire at, for use as the denominator of a firing
+// count that must never come out too low.
+//
+// Anything it cannot classify is charged the fastest cadence there is. That is
+// the fail-closed direction here: an over-estimate refuses a backfill somebody
+// then writes more narrowly, where an under-estimate is the fan-out this whole
+// check exists to stop.
+func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration {
+	reading, err := readCron(expression, triggerTimeZone)
+	switch {
+	case err != nil, reading.secondsUnmodelled:
+		return time.Second
+	case reading.interval > 0:
+		return reading.interval
+	case len(reading.seconds) > 1:
+		// Two seconds of one minute are real seconds apart whatever the zone:
+		// no offset change moves one second of a minute relative to another.
+		return secondsGap(reading.seconds)
+	default:
+		// Every other form fires on a wall-clock boundary, whose minimum gap
+		// this package can bound only in UTC — see [wallClockCadencePeriod].
+		return wallClockCadencePeriod(reading.zone, reading.nominal)
+	}
+}
+
+// secondsGap is the shortest gap between two of the named seconds of a minute,
+// the wrap from the last to the first included. One second is a minute, by
+// the same wrap: from it round to itself.
+func secondsGap(seconds []int) time.Duration {
+	sorted := slices.Clone(seconds)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+
+	gap := time.Minute
+	for i, s := range sorted {
+		next := sorted[0] + 60
+		if i+1 < len(sorted) {
+			next = sorted[i+1]
+		}
+		gap = min(gap, time.Duration(next-s)*time.Second)
+	}
+
+	return gap
 }
 
 // CheckScheduleBackfill bounds an operator-requested historical replay before
@@ -892,7 +996,7 @@ func checkCronShorthand(original, expression string) error {
 // checkCronFields checks each field against the range its position allows.
 func checkCronFields(original string, fields []string, positions []cronField) error {
 	for i, field := range fields {
-		if err := checkCronFieldValue(field, positions[i]); err != nil {
+		if _, _, err := expandCronField(field, positions[i]); err != nil {
 			return fmt.Errorf("cron expression %q: %w", original, err)
 		}
 	}
@@ -900,56 +1004,109 @@ func checkCronFields(original string, fields []string, positions []cronField) er
 	return nil
 }
 
-// checkCronFieldValue checks one field of one expression.
+// expandCronField reads one field of one expression: the values it names, in
+// the range its position allows; whether every element was one this models;
+// and what is wrong with it.
 //
-// It walks the comma-separated list, and within each element handles the `/` step
-// and the `-` range, refusing a number outside the field's range and a name the
-// field does not have. Anything it does not recognize — `L`, `W`, `#`, a `?` — is
-// left alone, because those are real cron syntax somewhere and refusing one would be
-// this function inventing a restriction the cluster does not have.
-func checkCronFieldValue(field string, position cronField) error {
+// One reading for the three questions asked of a field — is it in range
+// ([checkCronFields]), which seconds does it name ([readCron], for the cadence
+// floor), and can its day and month ever agree ([checkCronCanFire]) — because
+// two readers of one grammar disagree on exactly the elements nobody tested.
+//
+// It walks the comma-separated list, and within each element handles the `/`
+// step and the `-` range, refusing a number outside the field's range, a name
+// the field does not have, an empty element or range side, and a step that is
+// not a whole number above zero. Anything it does not recognize — `L`, `W`,
+// `15#3`, a range written high to low — is left alone and reported as
+// unmodelled, because those are real cron syntax somewhere and refusing one
+// would be this function inventing a restriction the cluster does not have.
+// `*` and `?` both take the whole field: `?` says "no opinion" in the day
+// fields, which names the same set.
+func expandCronField(field string, position cronField) (values []int, modelled bool, err error) {
 	if field == "" {
-		return fmt.Errorf("has an empty %s field", position.name)
+		return nil, false, fmt.Errorf("has an empty %s field", position.name)
 	}
 
+	modelled = true
 	for _, element := range strings.Split(field, ",") {
-		// A step applies to whatever precedes it; the step size itself is a count
-		// rather than a value in the field's range, so only the left half is checked
-		// against the range.
-		value, _, _ := strings.Cut(element, "/")
+		value, stepText, hasStep := strings.Cut(element, "/")
 
-		for _, bound := range strings.Split(value, "-") {
-			if err := checkCronAtom(bound, position); err != nil {
-				return err
+		// A step applies to whatever precedes it; the step size itself is a
+		// count rather than a value in the field's range.
+		step := 1
+		if hasStep {
+			n, err := strconv.Atoi(strings.TrimSpace(stepText))
+			if err != nil || n <= 0 {
+				return nil, false, fmt.Errorf("has a %s step of %q; a step is a whole number greater than zero, "+
+					"as in */15", position.name, stepText)
 			}
+			step = n
+		}
+
+		low, high := position.min, position.max
+		switch value = strings.TrimSpace(value); value {
+		case "":
+			return nil, false, fmt.Errorf("has an empty element in its %s field; a list is written as 1,2,3 "+
+				"with a value on both sides of every comma", position.name)
+		case "*", "?":
+		default:
+			from, to, isRange := strings.Cut(value, "-")
+			if from == "" || (isRange && to == "") {
+				return nil, false, fmt.Errorf("has a %s range %q with a side missing; a range is written "+
+					"low-high, as in 1-5", position.name, value)
+			}
+
+			a, known, err := cronAtom(from, position)
+			if err != nil {
+				return nil, false, err
+			}
+			b, knownTo := a, true
+			switch {
+			case isRange:
+				if b, knownTo, err = cronAtom(to, position); err != nil {
+					return nil, false, err
+				}
+			case hasStep:
+				// `5/10` is "from 5, every 10", up to the field's end.
+				b = position.max
+			}
+
+			if !known || !knownTo || b < a {
+				modelled = false
+				continue
+			}
+			low, high = a, b
+		}
+
+		for v := low; v <= high; v += step {
+			values = append(values, v)
 		}
 	}
 
-	return nil
+	slices.Sort(values)
+	values = slices.Compact(values)
+
+	return values, modelled, nil
 }
 
-// checkCronAtom checks one number or name.
-func checkCronAtom(atom string, position cronField) error {
+// cronAtom reads one number or name. known is false for syntax this does not
+// model, which is not an error.
+func cronAtom(atom string, position cronField) (value int, known bool, err error) {
 	atom = strings.TrimSpace(atom)
-
-	// `*` and the empty half of `*/5` say "every", and `?` says "no opinion" in the
-	// day fields. Neither is a value.
-	if atom == "" || atom == "*" || atom == "?" {
-		return nil
-	}
 
 	if number, err := strconv.Atoi(atom); err == nil {
 		if number < position.min || number > position.max {
-			return fmt.Errorf("%s is %d, which is outside %d-%d", position.name, number, position.min, position.max)
+			return 0, false, fmt.Errorf("%s is %d, which is outside %d-%d",
+				position.name, number, position.min, position.max)
 		}
 
-		return nil
+		return number, true, nil
 	}
 
 	upper := strings.ToUpper(atom)
-	for _, name := range position.names {
+	for i, name := range position.names {
 		if upper == name {
-			return nil
+			return position.min + i, true, nil
 		}
 	}
 
@@ -958,7 +1115,7 @@ func checkCronAtom(atom string, position cronField) error {
 	// diagnostic about a restriction Flowstate does not have.
 	for _, r := range upper {
 		if r < 'A' || r > 'Z' {
-			return nil
+			return 0, false, nil
 		}
 	}
 
@@ -967,13 +1124,13 @@ func checkCronAtom(atom string, position cronField) error {
 	// is left alone. A field with neither names nor symbols holds numbers and
 	// nothing else, and a word in one cannot be right anywhere.
 	if position.symbols && len(position.names) == 0 {
-		return nil
+		return 0, false, nil
 	}
 	if len(position.names) == 0 {
-		return fmt.Errorf("%s is %q, and %s is written as a number", position.name, atom, position.name)
+		return 0, false, fmt.Errorf("%s is %q, and %s is written as a number", position.name, atom, position.name)
 	}
 
-	return fmt.Errorf("%s is %q, which is not one of %s", position.name, atom, strings.Join(position.names, ", "))
+	return 0, false, fmt.Errorf("%s is %q, which is not one of %s", position.name, atom, strings.Join(position.names, ", "))
 }
 
 // checkTimeZoneName reports whether a string is shaped like an IANA zone name.

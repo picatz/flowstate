@@ -1426,6 +1426,23 @@ The checker is deliberately generous: `L`, `W`, `15#3` and `?` are cron syntax i
 not model, and it lets them through rather than inventing a restriction Flowstate does
 not have.
 
+Two more things are wrong on every cluster, and both are refused with a line. A cadence
+faster than **one minute** — `every: 1s`, a seven-field expression whose seconds field
+names more than one second, an `@every 30s`, a calendar with several `second:` values —
+is refused naming the value written and the floor (`MinScheduleInterval`). A schedule is
+a standing instruction that starts a run each time it fires, under a tenant's fairness
+key, with nobody present; a workload that has to do something every second wants a loop
+inside one run, where it is bounded by that run's own budget. Because the cadences in one
+block are unioned, the floor is also checked across them: two cadences that fire on
+different seconds of the minute are refused together even when each is slow enough alone,
+since nothing short of evaluating them can prove they never share a minute — align them on
+one second, or write the union as one expression. And an expression whose day-of-month and
+month can never agree, `0 0 31 2 *`, is refused as one that can never fire, because Temporal
+would create it and it would start nothing, forever, with zero runs as the only evidence.
+The server holds `flow schedule create` to both with the same sentences, and to a count:
+one tenant may hold at most 100 schedules (`MaxSchedulesPerNamespace`), refused past that
+with `ResourceExhausted` — see `docs/DEPLOYMENT.md`, "Noisy neighbor".
+
 **Bounded recovery: the window, the catch-up, and what happens after a failure.** The
 same block accepts four more keys, and each one exists to make a schedule's behavior
 after something has gone wrong a thing somebody wrote down rather than a default they

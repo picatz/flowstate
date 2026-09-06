@@ -3,8 +3,6 @@ package flowstatev1
 import (
 	"fmt"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -20,7 +18,9 @@ import (
 // boundaries and cannot; a seven-field one fires at the seconds its first field
 // names, and two of those are as close as the nearest pair; an interval fires
 // every so many nanoseconds and says so; a calendar's `second:` is the same set
-// a seven-field expression writes as its first field.
+// a seven-field expression writes as its first field. A cron expression is read
+// by [readCron], the one walk the backfill estimate reads it by too, so the two
+// cannot classify one expression two ways.
 //
 // That covers each cadence alone. A trigger's cadences are *unioned* — a firing
 // happens whenever any of them matches — so two cadences that are each slower
@@ -51,6 +51,9 @@ const _ = uint(time.Minute - MinScheduleInterval)
 // shortest gap: how close two of its own firings can be, and which seconds of
 // the minute it can fire on at all.
 type cadenceSource struct {
+	// key is the schedule key the cadence was written under, for the refusal.
+	key string
+
 	// label names the cadence the way a diagnostic should.
 	label string
 
@@ -63,34 +66,42 @@ type cadenceSource struct {
 	// distinct, when they are a set this file can enumerate.
 	offsets []time.Duration
 
-	// lattice, when offsets is empty, says the cadence fires on every multiple
-	// of this spacing within the minute: an interval that does not divide into
-	// minutes reaches every one of them eventually.
+	// lattice, when offsets is empty, says the cadence fires on every point
+	// shift + k×lattice of the minute: an interval that does not divide into
+	// minutes reaches every one of them eventually, and an `@every` phase
+	// moves them all by the same amount.
 	lattice time.Duration
+	shift   time.Duration
 }
 
 // checkScheduleCadenceFloor refuses a trigger that can fire more often than
 // [MinScheduleInterval] allows: each cadence on its own, then every pair.
+//
+// Every refusal is a [ScheduleCadenceError] naming the key it is about, so a
+// block carrying both `every:` and `cron:` is refused for its interval on the
+// interval's line. A pair is refused on the later of the two keys.
 func checkScheduleCadenceFloor(trigger *ScheduleTrigger) error {
 	var sources []cadenceSource
 
 	if every := trigger.GetEvery(); every != nil {
 		d := every.AsDuration()
 		if d < MinScheduleInterval {
-			return fmt.Errorf("`every:` is %s; the shortest cadence a schedule may fire at is %s, "+
-				"so write `every: %s` or longer", d, MinScheduleInterval, MinScheduleInterval)
+			return &ScheduleCadenceError{Key: "every", Err: fmt.Errorf(
+				"`every:` is %s; the shortest cadence a schedule may fire at is %s, so write `every: %s` or longer",
+				d, MinScheduleInterval, MinScheduleInterval)}
 		}
-		sources = append(sources, intervalCadence("`every:`", d))
+		sources = append(sources, intervalCadence("every", "`every:`", d, 0))
 	}
 
 	for _, expression := range trigger.GetCron() {
-		source, err := cronCadence(expression)
+		source, err := cronCadenceSource(expression)
 		if err != nil {
-			return err
+			return &ScheduleCadenceError{Key: "cron", Err: err}
 		}
 		if source.gap < MinScheduleInterval {
-			return fmt.Errorf("%s can fire every %s; the shortest cadence a schedule may fire at is %s",
-				source.label, source.gap, MinScheduleInterval)
+			return &ScheduleCadenceError{Key: "cron", Err: fmt.Errorf(
+				"%s can fire every %s; the shortest cadence a schedule may fire at is %s",
+				source.label, source.gap, MinScheduleInterval)}
 		}
 		sources = append(sources, source)
 	}
@@ -98,8 +109,9 @@ func checkScheduleCadenceFloor(trigger *ScheduleTrigger) error {
 	for i, calendar := range trigger.GetCalendars() {
 		source := calendarCadence(i, calendar)
 		if source.gap < MinScheduleInterval {
-			return fmt.Errorf("%s can fire every %s; the shortest cadence a schedule may fire at is %s",
-				source.label, source.gap, MinScheduleInterval)
+			return &ScheduleCadenceError{Key: "calendars", Err: fmt.Errorf(
+				"%s can fire every %s; the shortest cadence a schedule may fire at is %s",
+				source.label, source.gap, MinScheduleInterval)}
 		}
 		sources = append(sources, source)
 	}
@@ -107,9 +119,10 @@ func checkScheduleCadenceFloor(trigger *ScheduleTrigger) error {
 	for i := 1; i < len(sources); i++ {
 		for j := range i {
 			if gap := crossGap(sources[j], sources[i]); gap < MinScheduleInterval {
-				return fmt.Errorf("%s and %s together can fire %s apart; the shortest cadence a schedule may "+
-					"fire at is %s. Fire both on the same second of the minute, or write the union as one cadence",
-					sources[j].label, sources[i].label, gap, MinScheduleInterval)
+				return &ScheduleCadenceError{Key: sources[i].key, Err: fmt.Errorf(
+					"%s and %s together can fire %s apart; the shortest cadence a schedule may fire at is %s. "+
+						"Fire both on the same second of the minute, or write the union as one cadence",
+					sources[j].label, sources[i].label, gap, MinScheduleInterval)}
 			}
 		}
 	}
@@ -118,14 +131,16 @@ func checkScheduleCadenceFloor(trigger *ScheduleTrigger) error {
 }
 
 // intervalCadence classifies a cadence that fires every d, measured from the
-// epoch: on the minute when d is a whole number of minutes, and otherwise on
-// every multiple of whatever d and a minute have in common.
-func intervalCadence(label string, d time.Duration) cadenceSource {
-	source := cadenceSource{label: label, gap: d}
+// epoch and shifted by phase: on one second of the minute when d is a whole
+// number of minutes, and otherwise on every multiple of whatever d and a
+// minute have in common, shifted by the phase.
+func intervalCadence(key, label string, d, phase time.Duration) cadenceSource {
+	source := cadenceSource{key: key, label: label, gap: d}
 	if g := gcdDuration(d, time.Minute); g == time.Minute {
-		source.offsets = []time.Duration{0}
+		source.offsets = []time.Duration{phase % time.Minute}
 	} else {
 		source.lattice = g
+		source.shift = phase % g
 	}
 
 	return source
@@ -133,14 +148,14 @@ func intervalCadence(label string, d time.Duration) cadenceSource {
 
 // minuteAligned is a cadence that fires on minute boundaries and no faster —
 // every cron form without a seconds field, and a calendar that writes none.
-func minuteAligned(label string) cadenceSource {
-	return cadenceSource{label: label, gap: time.Minute, offsets: []time.Duration{0}}
+func minuteAligned(key, label string) cadenceSource {
+	return cadenceSource{key: key, label: label, gap: time.Minute, offsets: []time.Duration{0}}
 }
 
 // secondsCadence classifies a cadence by the seconds of the minute it names:
 // one second is once a minute at most, and several are as close as the nearest
 // pair, the wrap from the last to the first included.
-func secondsCadence(label string, seconds []int) cadenceSource {
+func secondsCadence(key, label string, seconds []int) cadenceSource {
 	offsets := make([]time.Duration, 0, len(seconds))
 	for _, s := range seconds {
 		offsets = append(offsets, time.Duration(s)*time.Second)
@@ -148,69 +163,36 @@ func secondsCadence(label string, seconds []int) cadenceSource {
 	slices.Sort(offsets)
 	offsets = slices.Compact(offsets)
 
-	gap := time.Minute
-	if len(offsets) > 1 {
-		for i := range offsets {
-			d := time.Minute - offsets[i] + offsets[0]
-			if i+1 < len(offsets) {
-				d = offsets[i+1] - offsets[i]
-			}
-			gap = min(gap, d)
-		}
-	}
-
-	return cadenceSource{label: label, gap: gap, offsets: offsets}
+	return cadenceSource{key: key, label: label, gap: secondsGap(seconds), offsets: offsets}
 }
 
-// cronCadence classifies one expression [CheckCronExpression] has accepted,
-// reading the grammar in the order that function reads it.
+// cronCadenceSource classifies one expression [CheckCronExpression] has
+// accepted, through the same [readCron] the backfill estimate reads it by.
 //
-// The error is for an `@every` whose interval this cannot read. The checker
-// leaves that interval to the cluster, which is right for a grammar question;
-// it is not right here, because an interval nobody can read is an interval
-// nobody can hold to a floor.
-func cronCadence(expression string) (cadenceSource, error) {
+// The errors are what that reading cannot answer: an `@every` interval or
+// phase it cannot read, and a seconds field written in syntax it does not
+// expand. The backfill estimate charges those a second and moves on, because a
+// backfill over-refused is rewritten more narrowly; a floor that charged them a
+// second would refuse with a sentence about a gap nobody wrote, so it says
+// what it could not read instead.
+func cronCadenceSource(expression string) (cadenceSource, error) {
 	label := fmt.Sprintf("cron expression %q", expression)
 
-	body := strings.TrimSpace(stripCronComment(expression))
-	if zone, rest, found := strings.Cut(body, " "); found &&
-		(strings.HasPrefix(zone, "CRON_TZ=") || strings.HasPrefix(zone, "TZ=")) {
-		body = strings.TrimSpace(rest)
+	reading, err := readCron(expression, "")
+	switch {
+	case err != nil:
+		return cadenceSource{}, fmt.Errorf("%w, so it cannot be held to the shortest cadence of %s",
+			err, MinScheduleInterval)
+	case reading.interval > 0:
+		return intervalCadence("cron", label, reading.interval, reading.phase), nil
+	case reading.secondsUnmodelled:
+		return cadenceSource{}, fmt.Errorf("%s has a seconds field this cannot read, so it cannot be held to the "+
+			"shortest cadence of %s; write the seconds as a number, a list, a range or a step", label, MinScheduleInterval)
+	case reading.seconds != nil:
+		return secondsCadence("cron", label, reading.seconds), nil
+	default:
+		return minuteAligned("cron", label), nil
 	}
-
-	if strings.HasPrefix(body, "@") {
-		head, rest, _ := strings.Cut(body, " ")
-		if !strings.EqualFold(head, "@every") {
-			return minuteAligned(label), nil
-		}
-
-		// `@every <interval>[/<phase>]`: the interval is what sets the gap, and
-		// a phase only shifts it.
-		interval, _, _ := strings.Cut(strings.TrimSpace(rest), "/")
-		d, err := ParseDuration(strings.TrimSpace(interval))
-		if err != nil || d <= 0 {
-			return cadenceSource{}, fmt.Errorf("%s has an `@every` interval this cannot read, so it cannot be held "+
-				"to the shortest cadence of %s; write the interval as 15m, 1h or 7d, or use the schedule's "+
-				"own `every:` key", label, MinScheduleInterval)
-		}
-
-		return intervalCadence(label, d), nil
-	}
-
-	fields := strings.Fields(body)
-	if len(fields) != 7 {
-		return minuteAligned(label), nil
-	}
-
-	seconds, ok := cronFieldValues(fields[0], cronSecond)
-	if !ok {
-		// A seconds field written in a form this does not expand is charged
-		// the fastest cadence a seconds field can carry, which refuses it: the
-		// alternative is accepting a cadence this never measured.
-		return cadenceSource{label: label, gap: time.Second, lattice: time.Second}, nil
-	}
-
-	return secondsCadence(label, seconds), nil
 }
 
 // calendarCadence classifies a calendar by its `second:` field, which defaults
@@ -221,7 +203,7 @@ func calendarCadence(index int, calendar *ScheduleTrigger_Calendar) cadenceSourc
 
 	ranges := calendar.GetSecond()
 	if len(ranges) == 0 {
-		return minuteAligned(label)
+		return minuteAligned("calendars", label)
 	}
 
 	var seconds []int
@@ -241,7 +223,7 @@ func calendarCadence(index int, calendar *ScheduleTrigger_Calendar) cadenceSourc
 		}
 	}
 
-	return secondsCadence(label, seconds)
+	return secondsCadence("calendars", label, seconds)
 }
 
 // crossGap is a lower bound on how close a firing of one cadence can come to
@@ -254,11 +236,13 @@ func calendarCadence(index int, calendar *ScheduleTrigger_Calendar) cadenceSourc
 func crossGap(a, b cadenceSource) time.Duration {
 	switch {
 	case a.lattice > 0 && b.lattice > 0:
-		return gcdDuration(a.lattice, b.lattice)
+		// Points shift_a + k×g_a against shift_b + m×g_b: their differences
+		// are shift_a − shift_b plus every multiple of gcd(g_a, g_b).
+		return residueGap(gcdDuration(a.lattice, b.lattice), a.shift-b.shift)
 	case a.lattice > 0:
-		return latticeGap(a.lattice, b.offsets)
+		return latticeGap(a, b.offsets)
 	case b.lattice > 0:
-		return latticeGap(b.lattice, a.offsets)
+		return latticeGap(b, a.offsets)
 	}
 
 	gap := time.Minute
@@ -278,15 +262,28 @@ func crossGap(a, b cadenceSource) time.Duration {
 // latticeGap is [crossGap] for an interval against a set of seconds: a second
 // on the lattice is a spacing away from the lattice's next point, and one off
 // it is as close as its distance to the nearest.
-func latticeGap(spacing time.Duration, offsets []time.Duration) time.Duration {
-	gap := spacing
+func latticeGap(lattice cadenceSource, offsets []time.Duration) time.Duration {
+	gap := lattice.lattice
 	for _, offset := range offsets {
-		if r := offset % spacing; r > 0 {
-			gap = min(gap, r, spacing-r)
-		}
+		gap = min(gap, residueGap(lattice.lattice, offset-lattice.shift))
 	}
 
 	return gap
+}
+
+// residueGap is how far delta is from the nearest multiple of spacing, with a
+// delta that is itself a multiple charged the spacing: the point coincides
+// with one lattice point, and the next is a spacing away.
+func residueGap(spacing, delta time.Duration) time.Duration {
+	r := delta % spacing
+	if r < 0 {
+		r += spacing
+	}
+	if r == 0 {
+		return spacing
+	}
+
+	return min(r, spacing-r)
 }
 
 // gcdDuration is the greatest duration dividing both, by Euclid.
@@ -296,81 +293,6 @@ func gcdDuration(a, b time.Duration) time.Duration {
 	}
 
 	return a.Abs()
-}
-
-// cronFieldValues expands one field into the values it names, in the range
-// its position allows.
-//
-// Only the numeric grammar: `*`, a number or name, a range, a list, and a step
-// over any of them. Anything else — `L`, `W`, `15#3`, a range that runs
-// backwards — answers false, which every caller reads as "not something this
-// judges" rather than as a set.
-func cronFieldValues(field string, position cronField) ([]int, bool) {
-	var values []int
-
-	for _, element := range strings.Split(field, ",") {
-		value, stepText, hasStep := strings.Cut(element, "/")
-
-		step := 1
-		if hasStep {
-			n, err := strconv.Atoi(strings.TrimSpace(stepText))
-			if err != nil || n <= 0 {
-				return nil, false
-			}
-			step = n
-		}
-
-		low, high := position.min, position.max
-		if value = strings.TrimSpace(value); value != "*" && value != "?" && value != "" {
-			from, to, isRange := strings.Cut(value, "-")
-			a, ok := cronAtomValue(from, position)
-			if !ok {
-				return nil, false
-			}
-			low = a
-			switch {
-			case isRange:
-				b, ok := cronAtomValue(to, position)
-				if !ok {
-					return nil, false
-				}
-				high = b
-			case hasStep:
-				// `5/10` is "from 5, every 10", up to the field's end.
-			default:
-				high = a
-			}
-		}
-
-		if low < position.min || high > position.max || low > high {
-			return nil, false
-		}
-		for v := low; v <= high; v += step {
-			values = append(values, v)
-		}
-	}
-
-	slices.Sort(values)
-	values = slices.Compact(values)
-
-	return values, len(values) > 0
-}
-
-// cronAtomValue reads one number, or one of the names the position has.
-func cronAtomValue(atom string, position cronField) (int, bool) {
-	atom = strings.TrimSpace(atom)
-	if n, err := strconv.Atoi(atom); err == nil {
-		return n, true
-	}
-
-	upper := strings.ToUpper(atom)
-	for i, name := range position.names {
-		if upper == name {
-			return position.min + i, true
-		}
-	}
-
-	return 0, false
 }
 
 // daysInMonth is the most days a month can have, February at its leap-year
@@ -386,7 +308,8 @@ var daysInMonth = [13]int{0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
 // whether a restricted day of week is ANDed with the day of month or ORed with
 // it, and under the OR reading such an expression fires on the weekday named
 // — so an expression that could be right under either reading is left alone,
-// which is this checker's standing bias.
+// which is this checker's standing bias. Left alone likewise when either field
+// carries syntax [expandCronField] does not model.
 func checkCronCanFire(original string, fields []string, positions []cronField) error {
 	dayOfMonth, month, dayOfWeek := -1, -1, -1
 	for i, position := range positions {
@@ -406,12 +329,12 @@ func checkCronCanFire(original string, fields []string, positions []cronField) e
 		return nil
 	}
 
-	days, ok := cronFieldValues(fields[dayOfMonth], cronDayOfMonth)
-	if !ok {
+	days, modelled, err := expandCronField(fields[dayOfMonth], cronDayOfMonth)
+	if err != nil || !modelled {
 		return nil
 	}
-	months, ok := cronFieldValues(fields[month], cronMonth)
-	if !ok {
+	months, modelled, err := expandCronField(fields[month], cronMonth)
+	if err != nil || !modelled {
 		return nil
 	}
 

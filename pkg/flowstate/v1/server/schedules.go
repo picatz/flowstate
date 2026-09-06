@@ -212,15 +212,6 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	// How many schedules this tenant already holds, before the cluster is asked
-	// to hold one more. Here rather than earlier because the count is read out
-	// of the tenant's own Temporal namespace, which the line above resolves;
-	// here rather than later because everything after this is composition of a
-	// request that has already been accepted.
-	if err := s.checkScheduleCount(ctx, temporal, namespace); err != nil {
-		return nil, err
-	}
-
 	// The same derivation [FlowstateServer.prepareCreate] applies to a directly
 	// submitted run, through the same function, so a scheduled run lands on its
 	// tenant's fleet exactly as a submitted one does. Resolved at creation
@@ -321,6 +312,14 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// touches it — computing it after would read the same message and say so less
 	// clearly.
 	asSubmitted := specificationAsSubmitted(submitted, workflow)
+
+	// How many schedules this tenant already holds, asked last: every refusal
+	// above is about the request and costs nothing but reading it, where the
+	// count walks the tenant's Temporal namespace, and a walk spent on a request
+	// that was going to be refused anyway is work spent for no answer.
+	if err := s.checkScheduleCount(ctx, temporal, namespace); err != nil {
+		return nil, err
+	}
 
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID:               scheduleIDFor(namespace, name),
@@ -476,7 +475,7 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	schedules, truncated, err := s.tenantSchedules(ctx, temporal, namespace)
+	schedules, truncated, err := s.tenantSchedules(ctx, temporal, namespace, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -492,10 +491,12 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 //
 // The one walk [FlowstateServer.ListSchedules] answers with and
 // [FlowstateServer.CreateSchedule] counts against, so what a tenant is refused
-// for holding is exactly what `flow schedule list` shows them holding. truncated
-// reports the scan bound being reached, which a listing presents as a partial
-// answer and a count has to treat as no answer at all.
-func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.Client, namespace string) ([]*v1.ScheduleSummary, bool, error) {
+// for holding is exactly what `flow schedule list` shows them holding. upTo,
+// when positive, stops the walk once that many of the tenant's own schedules
+// have been seen — a count that only needs to know whether a limit is reached
+// has no reason to read past it. truncated reports the scan bound being
+// reached, which a listing presents as a partial answer.
+func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.Client, namespace string, upTo int) ([]*v1.ScheduleSummary, bool, error) {
 	iterator, err := temporal.ScheduleClient().List(ctx, client.ScheduleListOptions{})
 	if err != nil {
 		return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
@@ -512,6 +513,9 @@ func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.C
 	// than an assumption: an empty page with a next-page token ends the iteration
 	// here rather than continuing it.
 	for iterator.HasNext() {
+		if upTo > 0 && len(schedules) >= upTo {
+			break
+		}
 		if scanned >= maxScheduleScan {
 			truncated = true
 			break
@@ -555,10 +559,13 @@ func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.C
 // that is the code a client's retry logic already reads as "not now, and not
 // by rewriting the request".
 //
-// A scan that reached its bound is refused the same way. Whether such a tenant
-// is under the limit is unknown, and a count that cannot be finished is not a
-// count of zero — the fail-closed direction, and the only one in which the
-// limit still means anything once it has been reached.
+// Only the tenant's own schedules count, and the walk stops at the limit. A
+// Temporal namespace is shared — other tenants, other applications — so the
+// entries walked are not the entries counted, and the scan bound can be
+// reached before this tenant's hundredth has been seen. That leaves the count
+// an undercount, which admits the schedule: the scan bound is a bound on how
+// complete a listing's answer is, never a refusal, because the tenant it would
+// refuse cannot delete the entries that consumed it.
 //
 // Counted and then created, with nothing holding the two together: two
 // creates racing at the limit can both count ninety-nine and both succeed,
@@ -569,14 +576,9 @@ func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.C
 // serialize every create in the deployment behind the slowest tenant's
 // listing.
 func (s *FlowstateServer) checkScheduleCount(ctx context.Context, temporal client.Client, namespace string) error {
-	existing, truncated, err := s.tenantSchedules(ctx, temporal, namespace)
+	existing, _, err := s.tenantSchedules(ctx, temporal, namespace, v1.MaxSchedulesPerNamespace)
 	if err != nil {
 		return err
-	}
-	if truncated {
-		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
-			"the namespace holds more schedules than one listing reads (%d), so whether it is under its limit "+
-				"of %d cannot be known; delete schedules before creating another", maxScheduleScan, v1.MaxSchedulesPerNamespace))
 	}
 	if len(existing) >= v1.MaxSchedulesPerNamespace {
 		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(

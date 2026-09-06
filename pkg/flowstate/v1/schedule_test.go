@@ -179,11 +179,19 @@ func TestScheduleBackfillIsBoundedByCadence(t *testing.T) {
 			"cron %q fires well under the limit over the widest permitted window", expression)
 	}
 
-	// The seven-field form puts seconds first and so is charged a second, as is
-	// a calendar, which carries its own seconds field.
+	// The seven-field form puts seconds first and is charged what that field
+	// says — every second here — as is a calendar, which carries its own
+	// seconds field. A seven-field form naming one second fires once a minute
+	// at most and is charged that, by the same reading the cadence floor uses.
 	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
 		&v1.ScheduleTrigger{Cron: []string{"* * * * * * 2030"}}, backfill(v1.MaxScheduleBackfillSpan)),
 		"more than 100000 firings")
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"30 * * * * * 2030"}}, backfill(v1.MaxScheduleBackfillSpan)),
+		"one second of every minute over 31 days is 44,640 firings")
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"@every 1d"}}, backfill(v1.MaxScheduleBackfillSpan)),
+		"a day is a duration the DSL writes, and `@every 1d` is 31 firings")
 
 	// `#` inside a day-of-week field is the nth-weekday operator, not a
 	// comment. Cutting at the first one loses a field, which turns this
@@ -956,6 +964,14 @@ func TestCronExpressionsThatCannotBeRight(t *testing.T) {
 		{name: "seconds out of range in the seven-field form", cron: "60 0 9 * * * *", want: "seconds is 60"},
 		{name: "a word where a number belongs", cron: "abc 9 * * *", want: `minutes is "abc"`},
 		{name: "a word where an hour belongs", cron: "0 noon * * *", want: `hours is "noon"`},
+		// Grammar the one field reader refuses, so the same expression cannot
+		// get a grammar diagnostic from the range check and a cadence sentence
+		// from the floor.
+		{name: "a range missing its start", cron: "-5 * * * * * *", want: `seconds range "-5" with a side missing`},
+		{name: "a range missing its end", cron: "0 9-  * * *", want: `hours range "9-" with a side missing`},
+		{name: "a list with an empty element", cron: "0, * * * * * *", want: "empty element in its seconds field"},
+		{name: "a step of zero", cron: "*/0 * * * *", want: `minutes step of "0"`},
+		{name: "a step that is not a number", cron: "*/x * * * *", want: `minutes step of "x"`},
 		// A date no year has: a schedule Temporal creates and never fires.
 		{name: "the thirty-first of February", cron: "0 0 31 2 *", want: "can never fire"},
 		{name: "the thirtieth of February", cron: "0 0 30 2 *", want: "can never fire"},
@@ -1108,9 +1124,54 @@ func TestScheduleCadenceFloorHoldsAtItsEdge(t *testing.T) {
 		}
 
 		// An `@every` this cannot read cannot be held to the floor, and the
-		// checker says so rather than guessing either way.
+		// checker says so rather than guessing either way — the phase too, since
+		// a phase shifts every firing and an unreadable one is an unknown shift.
 		assert.ErrorContains(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: []string{"@every fortnightly"}}),
-			"cannot read")
+			"interval this cannot read")
+		assert.ErrorContains(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: []string{"@every 1h/abc"}}),
+			"phase this cannot read")
+
+		// A seconds field written in syntax the reader does not expand is not
+		// guessed at either way; the refusal names what it could not read.
+		assert.ErrorContains(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: []string{"5W * * * * * *"}}),
+			"seconds field this cannot read")
+	})
+
+	t.Run("a phased @every beside another cadence", func(t *testing.T) {
+		t.Parallel()
+
+		// `@every 1m/30s` fires on the half-minute: slow enough alone, and thirty
+		// seconds from anything on the minute. Dropping the phase accepts both.
+		for name, cron := range map[string][]string{
+			"a minute phased by thirty seconds beside every minute": {"* * * * *", "@every 1m/30s"},
+			"an hour phased by thirty seconds beside a daily":       {"0 9 * * *", "@every 1h/30s"},
+			"an interval off the minute phased beside a daily":      {"0 9 * * *", "@every 90s/15s"},
+			"two phased intervals":                                  {"@every 1m/10s", "@every 1m/40s"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				err := v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: cron})
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "together can fire")
+				assert.Contains(t, err.Error(), floor)
+			})
+		}
+
+		// A phase that is a whole number of minutes leaves the firings on the
+		// minute, and a phase matching the other cadence's second is the same
+		// second.
+		for name, cron := range map[string][]string{
+			"a phase of whole minutes beside every minute": {"* * * * *", "@every 1h/2m"},
+			"a phase on the other cadence's second":        {"30 0 9 * * * *", "@every 1h/30s"},
+			"a phased interval alone":                      {"@every 1m/30s"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				assert.NoError(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: cron}))
+			})
+		}
 	})
 
 	t.Run("calendars", func(t *testing.T) {
