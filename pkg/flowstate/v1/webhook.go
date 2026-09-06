@@ -301,8 +301,9 @@ func CheckWebhookVerifyScheme(name, scheme string, key *Value) error {
 func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	if key == nil {
 		return fmt.Errorf("webhook %q declares no `idempotency_key:`; delivery is at-least-once, so without one "+
-			"every redelivery starts a second run. Write the value the sender repeats on a retry, such as "+
-			"`idempotency_key: ${event.headers[\"stripe-signature\"]}` or an id from the body",
+			"every redelivery starts a second run. Write the value the sender repeats on a retry — the "+
+			"event's own id, such as `idempotency_key: ${event.body.id}` — and never a signature header, "+
+			"which a sender computes afresh for every attempt",
 			name)
 	}
 
@@ -313,9 +314,9 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	expression, computed := key.GetKind().(*Value_Expr)
 	if !computed || !celExprReferencesIdentifier(expression.Expr.GetExpr(), EventRoot) {
 		return fmt.Errorf("webhook %q writes an `idempotency_key:` that does not depend on the delivery, so "+
-			"every delivery would be named alike; write an expression over `%s`, such as "+
-			"`${%s.%s[\"stripe-signature\"]}` or an id from the body",
-			name, EventRoot, EventRoot, EventHeadersField)
+			"every delivery would be named alike; write an expression over `%s` that the sender repeats "+
+			"on a retry, such as the event's id in the body: `${%s.%s.id}`",
+			name, EventRoot, EventRoot, EventBodyField)
 	}
 
 	return nil
@@ -703,8 +704,8 @@ func WebhookTriggerNames(wf *Workflow) []string {
 //
 // Header names are lower-cased, which is the one normalization the mapping performs
 // and the reason it is performed here rather than by each caller: HTTP header names
-// are case-insensitive, so `${event.headers["stripe-signature"]}` has to find a
-// header a sender spelled `Stripe-Signature`. A stored delivery replayed by
+// are case-insensitive, so `${event.headers["x-shopify-webhook-id"]}` has to find
+// a header a sender spelled `X-Shopify-Webhook-Id`. A stored delivery replayed by
 // `flow test` and a live one therefore agree about what an expression sees.
 // checkWebhookBodyDepth refuses a delivery whose body nests deeper than
 // [MaxStructureDepth], before `idempotency_key:`, `with:` or `signal.correlate:`

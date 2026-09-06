@@ -23,6 +23,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -239,8 +240,9 @@ func TestADeliveryStartsARun(t *testing.T) {
 	assert.Equal(t, `"flowstate://webhook#order-webhook/storefront"`, string(memo["flowstate.starter"].GetData()),
 		"the run does not record the trigger as its principal")
 
-	// And the delivery id is not the idempotency key: the usual key is a
-	// signature header, and a memo is durable and broadly readable.
+	// And the delivery id is not the idempotency key: a key is whatever the
+	// author's expression read from the delivery, and a memo is durable and
+	// broadly readable.
 	assert.NotContains(t, string(memo["flowstate.delivery"].GetData()), "evt_start",
 		"the raw idempotency key was written into durable history")
 }
@@ -282,6 +284,59 @@ func TestARedeliveryDoesNotStartASecondRun(t *testing.T) {
 	require.Equal(t, http.StatusOK, afterward.StatusCode)
 	assert.Equal(t, first.RunID, readAccepted(t, afterward).RunID,
 		"a redelivery after the run completed started a second run")
+}
+
+// TestARetrySignedAfreshJoinsTheRun is the receiver's half of
+// [conformance.WebhookRedeliveryCases]: a provider's real retry — the same body
+// under a fresh `Stripe-Signature` — joins the run the first delivery started,
+// which the byte-identical resend above cannot prove. Before the corpus example
+// keyed on the body's id, this table read three runs for one event (#1775).
+func TestARetrySignedAfreshJoinsTheRun(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	key := secrets.NewSecret(secrets.NewRef("env", "STRIPE_WEBHOOK_SECRET"), webhookSecret)
+
+	for _, test := range conformance.WebhookRedeliveryCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			t.Parallel()
+
+			receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
+				"", []*v1.Workflow{test.Workflow}, keyStore(t, webhookSecret))
+			require.NoError(t, err)
+
+			path := "/webhooks/" + test.Workflow.GetName() + "/" + test.Trigger().GetName()
+
+			var first server.AcceptedDelivery
+			for attempt := range test.SignedAt {
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(test.Body)))
+				for name, value := range test.Headers(key, time.Now(), attempt) {
+					req.Header.Set(name, value)
+				}
+
+				recorder := httptest.NewRecorder()
+				receiver.ServeHTTP(recorder, req)
+				resp := recorder.Result()
+
+				if attempt == 0 {
+					require.Equal(t, http.StatusAccepted, resp.StatusCode, "the first delivery did not start a run")
+					first = readAccepted(t, resp)
+					require.False(t, first.Joined)
+					continue
+				}
+
+				require.Equal(t, http.StatusOK, resp.StatusCode,
+					"attempt %d was not answered as a redelivery: %s", attempt, test.Why)
+
+				accepted := readAccepted(t, resp)
+				assert.True(t, accepted.Joined, "attempt %d started a run of its own: %s", attempt, test.Why)
+				assert.Equal(t, first.WorkflowID, accepted.WorkflowID)
+				assert.Equal(t, first.RunID, accepted.RunID, "attempt %d landed on a different run", attempt)
+			}
+		})
+	}
 }
 
 // TestConcurrentRedeliveriesStartOneRun is the claim a dedupe has to make and the

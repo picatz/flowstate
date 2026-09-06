@@ -63,9 +63,11 @@ func newLintCommand() *cobra.Command {
 		Short: "Suggest the canonical spelling where a Flowfile is legal but not idiomatic",
 		Long: "Walk Flowfiles and report where one is written in a way the style charter " +
 			"(docs/STYLE.md) has an opinion about: a conditional nested inside a conditional, " +
-			"one expression stated three or more times, and a chain of sibling `if:` steps " +
+			"one expression stated three or more times, a chain of sibling `if:` steps " +
 			"testing one value for equality where a `switch:` would let the validator check " +
-			"the branches.\n\n" +
+			"the branches, and a webhook `idempotency_key:` that reads a signature header, " +
+			"which a sender computes afresh on every retry and so names the attempt rather " +
+			"than the event.\n\n" +
 			"Every file this reports on is legal, validates, and runs. These are suggestions, " +
 			"which is what tier 4 of the charter means: it warns and never blocks, and this " +
 			"command exits 0 on every finding it has. `--strict` opts into a nonzero exit, " +

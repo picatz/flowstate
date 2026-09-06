@@ -855,9 +855,10 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 		// How this run started, for the workflow's own steps to read: which
 		// webhook, admitted as which principal, by which delivery. The delivery id
 		// is the digest [webhookDeliveryID] already computed and never the
-		// idempotency key it names — the usual key is a signature header, and this
-		// value is written to history, which invariant 8 calls durable and broadly
-		// readable.
+		// idempotency key it names — a key is whatever an author's expression
+		// read from a sender-shaped delivery, possibly credential-shaped, and
+		// this value is written to history, which invariant 8 calls durable and
+		// broadly readable.
 		Trigger: v1.NewWebhookTriggerContext(
 			route.trigger.GetName(), identity.GetSubject(), deliveryID),
 	})
@@ -1075,8 +1076,9 @@ func (r *WebhookReceiver) audited(returned, refusal error) error {
 // is an expression over an attacker-chosen payload, so it can contain anything at
 // all — characters Temporal refuses, a length past its limit, or a crafted value
 // intended to collide with an id somebody else's run is addressed by. And a key
-// is frequently a *signature header*, which is credential-shaped material that
-// must not become a durable, broadly readable identifier. A digest is neither: it
+// may read a *signature header* — the wrong key, and `flow lint` says so, but a
+// legal one — which is credential-shaped material that must not become a
+// durable, broadly readable identifier. A digest is neither: it
 // is fixed-length, alphabet-safe, and reveals nothing about the key it names.
 //
 // The tenant, the workflow and the trigger are inside the digest, so the same
@@ -1133,7 +1135,7 @@ func decodeDeliveryBody(body []byte) (any, error) {
 // webhookHeaders flattens a request's headers into what `event.headers` holds.
 //
 // The first value of each, which is what an expression reading
-// `event.headers["stripe-signature"]` means. Lower-cased by
+// `event.headers["x-shopify-webhook-id"]` means. Lower-cased by
 // [v1.NewWebhookEvent] on the way into `event`, so a stored delivery and a live
 // one produce the same value for the same header spelled differently.
 func webhookHeaders(header http.Header) map[string]string {
