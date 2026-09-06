@@ -92,6 +92,12 @@ func (l Limits) programOptions() []cel.ProgramOption {
 	if l.InterruptCheckFrequency > 0 {
 		opts = append(opts, cel.InterruptCheckFrequency(l.InterruptCheckFrequency))
 	}
+	// Unconditional, unlike the two above: the element bound is #204's constant,
+	// not a limit a caller tunes, and an evaluator with no cost budget (a test's)
+	// must still refuse a list an expression manufactured past it. See
+	// cellistbound.go for why the bound sits on the program rather than in any
+	// one library.
+	opts = append(opts, cel.CustomDecorator(boundListResults))
 	return opts
 }
 
@@ -598,7 +604,7 @@ var extensionLibraries = map[string][]cel.EnvOption{
 	"digest":         {digestLibrary()},
 	"encoders":       {ext.Encoders()},
 	"json":           {jsonLibrary()},
-	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), foldLibrary()},
+	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), foldLibrary(), listRangeLibrary()},
 	"math":           {ext.Math()},
 	"optional":       {cel.OptionalTypes()},
 	"protos":         {ext.Protos()},

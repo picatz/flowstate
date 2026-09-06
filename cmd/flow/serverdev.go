@@ -744,6 +744,7 @@ func devWorkerOptions() worker.Options {
 	return worker.Options{
 		Interceptors:             temporalWorkerInterceptors(),
 		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
+		WorkflowPanicPolicy:      engine.WorkerWorkflowPanicPolicy,
 		WorkerStopTimeout:        v1.DefaultWorkerStopTimeout,
 	}
 }

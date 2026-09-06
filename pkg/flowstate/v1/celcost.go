@@ -181,6 +181,20 @@ func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, r
 		return &cost
 	}
 
+	// lists.range is priced by the elements it produced, which is cel-go's own
+	// pricing for it (ext/lists.go's trackListOutputSize) and unreachable on this
+	// path for the overload-ID reason above. Without it a range costs 1 unit at
+	// any size, so a comprehension could allocate the element bound
+	// (cellistbound.go) ten thousand times over for a few thousand units. Priced
+	// this way, a hundred `lists.range(10000)` calls spend [DefaultCostLimit].
+	if function == listsRangeFunction {
+		cost := uint64(1)
+		if n := sizeOf(result); n > 1 {
+			cost = uint64(n)
+		}
+		return &cost
+	}
+
 	switch result.Type() {
 	case types.StringType, types.BytesType:
 		chars = sizeOf(result)

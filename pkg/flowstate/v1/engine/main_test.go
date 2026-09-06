@@ -162,6 +162,18 @@ func newTemporalNamespace(t *testing.T) client.Client {
 func newTemporalNamespaceWithIdentity(t *testing.T, identity string) client.Client {
 	t.Helper()
 
+	return newTemporalNamespaceWithOptions(t, client.Options{Identity: identity})
+}
+
+// newTemporalNamespaceWithOptions is the shared body of the constructors
+// above, for the caller that has something else to say about the client — the
+// poison-pill test hands its worker a logger it can read back, since what the
+// SDK logs about a workflow task is the only evidence of whether one was
+// retried. HostPort and Namespace are this harness's to set; the rest of
+// options is the caller's.
+func newTemporalNamespaceWithOptions(t *testing.T, options client.Options) client.Client {
+	t.Helper()
+
 	if withoutDevServer() {
 		t.Skip("skipping: needs the shared Temporal dev server, which this process did not start (-short, or a fuzzing run); CI runs the full suite")
 	}
@@ -177,11 +189,9 @@ func newTemporalNamespaceWithIdentity(t *testing.T, identity string) client.Clie
 		})
 	require.NoError(t, err, "registering a Temporal namespace for this test")
 
-	temporal, err := client.Dial(client.Options{
-		HostPort:  devServer.FrontendHostPort(),
-		Namespace: namespace,
-		Identity:  identity,
-	})
+	options.HostPort = devServer.FrontendHostPort()
+	options.Namespace = namespace
+	temporal, err := client.Dial(options)
 	require.NoError(t, err)
 	t.Cleanup(temporal.Close)
 
@@ -227,11 +237,15 @@ func namespaceNameFor(t *testing.T) string {
 }
 
 // startWorker runs the engine's workflow and activities against one namespace,
-// stopping when the test does, with the SDK's own worker defaults.
+// stopping when the test does, with the SDK's own worker defaults and the one
+// policy every deployed worker carries: a workflow task that panics fails the
+// run rather than retrying forever ([engine.WorkerWorkflowPanicPolicy]).
 func startWorker(t *testing.T, temporal client.Client) {
 	t.Helper()
 
-	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
+	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{
+		WorkflowPanicPolicy: engine.WorkerWorkflowPanicPolicy,
+	})
 	engine.Register(w)
 
 	require.NoError(t, w.Start())

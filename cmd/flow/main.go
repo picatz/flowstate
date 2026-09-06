@@ -796,6 +796,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		DeploymentOptions:                      deployment,
 		Interceptors:                           interceptors,
 		DeadlockDetectionTimeout:               v1.WorkerDeadlockDetectionTimeout,
+		WorkflowPanicPolicy:                    engine.WorkerWorkflowPanicPolicy,
 		Identity:                               identity,
 		WorkerStopTimeout:                      stopTimeout,
 		MaxConcurrentActivityExecutionSize:     capacity.maxConcurrentActivities,

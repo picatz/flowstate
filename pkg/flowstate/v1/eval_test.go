@@ -436,6 +436,36 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowExpressionElementBound covers the local driver's half of
+// #1769: a list manufactured inside an expression past the element bound.
+//
+// The same cases run against the durable driver in the engine package — see
+// the identically-named test there. Both reach the bound through the one
+// evaluator every expression compiles under ([v1.Limits.programOptions]), and
+// the elapsed-time assertion is the half of the claim that was the defect: at
+// eb8172f the local driver *completed* the issue's file in fourteen seconds
+// while the durable one never completed it, so agreeing on failure is not
+// enough — both must refuse before the quadratic work runs.
+func TestRunWorkflowExpressionElementBound(t *testing.T) {
+	for _, test := range conformance.ExpressionElementBoundCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			started := time.Now()
+			out, err := v1.Run(t.Context(), test.Workflow)
+			elapsed := time.Since(started)
+
+			if test.ExpectFailure {
+				require.Error(t, err, "a list built past the element bound must be refused")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+				require.Less(t, elapsed, 3*time.Second,
+					"the refusal landed only after the work it exists to prevent")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowTaskOutputSizeBound covers the local driver's half of #787:
 // a single task's result weighing more than Temporal will store as an
 // activity result. The local driver has no server to refuse an oversized
