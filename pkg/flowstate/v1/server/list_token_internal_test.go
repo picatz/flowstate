@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"testing"
 	"time"
 
@@ -270,6 +271,52 @@ func TestListRefusesAnExpiredPageToken(t *testing.T) {
 		require.Error(t, err)
 		require.ErrorContains(t, err, "page token has expired")
 	})
+}
+
+// TestARejectedPositionIsTheCallersToRestart pins what happens when a token
+// this server issued names a position Temporal no longer accepts.
+//
+// The code proves who issued the token, not that the position inside it is
+// still one the visibility store has — a store swapped under a running server
+// within the token's lifetime leaves signed positions that name nothing. That
+// is the caller's to start over from, said in this server's words: Temporal's
+// own text can name namespaces this deployment does not disclose. A first
+// page hands Temporal no position at all, so an error there is the server's.
+func TestARejectedPositionIsTheCallersToRestart(t *testing.T) {
+	t.Parallel()
+
+	const temporalsOwnWords = "namespace some-other-tenant-namespace: invalid token"
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.MatchedBy(func(request *workflowservice.ListWorkflowExecutionsRequest) bool {
+		return len(request.GetNextPageToken()) == 0
+	})).Return(&workflowservice.ListWorkflowExecutionsResponse{
+		Executions:    []*workflow.WorkflowExecutionInfo{{Execution: &common.WorkflowExecution{WorkflowId: "mine"}}},
+		NextPageToken: []byte("a position the store then forgot"),
+	}, nil)
+	temporal.On("ListWorkflow", mock.Anything, mock.MatchedBy(func(request *workflowservice.ListWorkflowExecutionsRequest) bool {
+		return len(request.GetNextPageToken()) > 0
+	})).Return(nil, errors.New(temporalsOwnWords))
+
+	server := mustNew(t, temporal)
+	token := issuedToken(t, t.Context(), server, &v1types.ListRequest{PageSize: 1})
+
+	_, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 1, PageToken: token}))
+	require.Error(t, err, "a position the store rejected was answered with a page")
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"a rejected position was reported as something other than the caller's to restart: %v", err)
+	require.ErrorContains(t, err, "the page token names a position this listing no longer has")
+	require.NotContains(t, err.Error(), temporalsOwnWords, "Temporal's own text was relayed to the caller")
+
+	// And the first page, which carried no position, is the one case that is
+	// not the token's fault.
+	firstPageFails := &mocks.Client{}
+	firstPageFails.On("ListWorkflow", mock.Anything, mock.Anything).Return(nil, errors.New("visibility store unavailable"))
+
+	_, err = mustNew(t, firstPageFails).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 1}))
+	require.Error(t, err)
+	require.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+		"a first-page failure, which no token could have caused, was blamed on the caller: %v", err)
 }
 
 // TestTheEndOfAListingIsAnEmptyToken pins that exhaustion is still reported

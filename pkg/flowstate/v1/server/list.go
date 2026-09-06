@@ -87,11 +87,18 @@ const (
 	// listTokenLifetime is how long a page token stays usable after it was
 	// issued.
 	//
-	// A day is plenty for a listing and short enough that a cursor somebody
-	// stored cannot resume a listing whose visibility has since changed: runs
-	// retained past their retention are gone, tenants may have been remapped,
-	// and a position from before either is not a position in the listing the
-	// caller would get by starting over.
+	// A day is plenty for a listing, and the bound does two things a signature
+	// alone does not. A stored cursor cannot resume a listing whose visibility
+	// has since changed — runs past their retention are gone, and a position
+	// from before that is not one the caller would get by starting over. And
+	// a token that leaks is usable for a day rather than for the life of the
+	// process: it names a position in one tenant's listing, which is worth
+	// little, but it is worth little for a bounded time rather than an
+	// unbounded one.
+	//
+	// Not a bound across tenant remaps: the key is per process and the
+	// namespace mapping is fixed at construction, so a remap restarts the
+	// process and the new key refuses every earlier token on its own.
 	listTokenLifetime = 24 * time.Hour
 
 	// listTokenKeySize is the HMAC-SHA256 key length, which is also the length
@@ -205,11 +212,20 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			Query: listQuery,
 		})
 		if err != nil {
-			// Not the caller's fault, whichever page this is. The position handed
-			// to Temporal is either its own previous answer, unchanged, or the
-			// one a token carried — and a token only gets this far once its
-			// authentication code proves the position came from this server, so
-			// there is no malformed cursor left for Temporal to be refusing.
+			// A position Temporal refuses is still the caller's to start over
+			// from, and the sentence is still ours. The authentication code
+			// proves this server issued the token; it does not prove Temporal
+			// still accepts the position inside it — a visibility store swapped
+			// under a running server, within the day a token lives, leaves a
+			// signed position that names nothing. Reported as InvalidArgument
+			// with a sentence of our own rather than by relaying Temporal's,
+			// which can name namespaces this deployment does not otherwise
+			// disclose. Only a first page, which handed Temporal no position at
+			// all, is an error that cannot be the token's.
+			if len(cursor) > 0 {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("the page token names a position this listing no longer has; start the listing again"))
+			}
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing runs: %w", err))
 		}
 
@@ -557,13 +573,21 @@ func (s *FlowstateServer) issuePageToken(position []byte, namespace string, quer
 	return base64.RawURLEncoding.EncodeToString(s.sealListCursor(cursor)), nil
 }
 
-// sealListCursor appends the authentication code a serialized cursor is
-// accepted by.
-func (s *FlowstateServer) sealListCursor(cursor []byte) []byte {
+// listCursorMAC computes the authentication code over a serialized cursor.
+//
+// The one place the signed input is defined, called by both the sealing and
+// the opening side, so what is signed and what is verified cannot drift apart.
+func (s *FlowstateServer) listCursorMAC(cursor []byte) []byte {
 	mac := hmac.New(sha256.New, s.listTokenKey)
 	mac.Write(cursor)
 
-	return mac.Sum(cursor)
+	return mac.Sum(nil)
+}
+
+// sealListCursor appends the authentication code a serialized cursor is
+// accepted by.
+func (s *FlowstateServer) sealListCursor(cursor []byte) []byte {
+	return append(cursor, s.listCursorMAC(cursor)...)
 }
 
 // openPageToken authenticates the token a caller returns and yields the
@@ -586,9 +610,7 @@ func (s *FlowstateServer) openPageToken(token, namespace string, query []byte, n
 
 	cursor, code := sealed[:len(sealed)-listTokenKeySize], sealed[len(sealed)-listTokenKeySize:]
 
-	mac := hmac.New(sha256.New, s.listTokenKey)
-	mac.Write(cursor)
-	if !hmac.Equal(mac.Sum(nil), code) {
+	if !hmac.Equal(s.listCursorMAC(cursor), code) {
 		return nil, errors.New("page token is not a token this server issued")
 	}
 
