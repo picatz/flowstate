@@ -1,0 +1,34 @@
+name: Design record
+description: A decision to be recorded before code, with alternatives compared against the invariants.
+labels: ["kind/design-record", "design"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: The decision
+      description: The question in one paragraph, and why it has to be decided now rather than later.
+    validations:
+      required: true
+  - type: textarea
+    id: sketch
+    attributes:
+      label: Smallest concrete sketch
+      description: The smallest Flowfile, API, or code shape that exposes the choice.
+      render: yaml
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and invariants
+      description: Each alternative against the invariants in AGENTS.md and docs/ARCHITECTURE.md, with the current source or document that makes each constraint real.
+    validations:
+      required: true
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation
+      description: Which alternative and why. Separate observation, hypothesis, proposal, and decision.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What is true once the decision is recorded and implemented.
