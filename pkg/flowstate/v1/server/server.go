@@ -1341,6 +1341,17 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, err
 	}
 
+	// What this submission is, if the caller gave it a request id: the address
+	// it takes when nothing else addresses it, and the digests a retry is
+	// recognized by. Composed from the caller's own copy of the specification
+	// and the inputs as just bound — see [newSubmissionKey] — and from the
+	// namespace the identity above attested, never one the request named. Nil
+	// when the field is unset, which is every request before it existed.
+	submission, err := newSubmissionKey(identity.GetNamespace(), req.Msg.GetRequestId(), submitted, inputs)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
 	// A random id unless the caller named a business key, in which case the run
 	// is addressable by what it *is* rather than by an id nobody wrote down —
 	// see [RunRequest.entity_key]'s doc comment for the grammar and the
@@ -1349,7 +1360,16 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// already applies a few lines down, and for the identical reason — a
 	// workload must not be able to name the tenant it is addressed under, or
 	// the first thing anyone writes is another tenant's key.
+	//
+	// A request id is the least specific of the three addresses and so is
+	// applied first: an entity key or a `concurrency:` block names *which run is
+	// live*, and the request id then decides only whether a submission colliding
+	// with it is a retry — see [RunRequest.request_id]'s composition rule and the
+	// already-started arm below.
 	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
+	if submission != nil {
+		workflowID = submission.workflowID
+	}
 	if key := req.Msg.GetEntityKey(); key != "" {
 		entityID, err := v1.EntityWorkflowID(identity.GetNamespace(), key)
 		if err != nil {
@@ -1445,6 +1465,30 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		options.WorkflowExecutionErrorWhenAlreadyStarted = true
 	}
 
+	if submission != nil {
+		// The fourth pair, the webhook receiver's, and for its reason: a request
+		// id names one submission forever, so a retry arriving after the run
+		// finished must find that run rather than start a second one. Only when
+		// the request id is the address — under an entity key or a permit, the
+		// address's own pair above stays in force and the request id decides
+		// nothing about the id's lifetime.
+		if workflowID == submission.workflowID {
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+			options.WorkflowIDReusePolicy = enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
+		}
+
+		// Asked for the error under every address, for the reason
+		// [v1.Concurrency_ON_CONFLICT_JOIN] gives against `USE_EXISTING`: the
+		// error is what carries the incumbent's run id, so "this was a retry" is
+		// a fact this code establishes from the cluster's answer rather than
+		// infers from a run id it cannot otherwise recognize.
+		options.WorkflowExecutionErrorWhenAlreadyStarted = true
+
+		// The two digests a later request under this id is checked against —
+		// never the request id itself. See [requestMemoKey].
+		maps.Copy(memo, submission.memo())
+	}
+
 	// Provenance, in the same memo the tenant and the starter are recorded in and
 	// for the same reason: it is read afterwards, by whoever asks how this run
 	// came to happen. The reason is recorded only when there is one, because an
@@ -1498,11 +1542,60 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 	})
 	if err != nil {
-		// A conflict on the permit, which is the one failure here that is not this
-		// server failing. Both arms that can produce it are answered from the
-		// error itself, which carries the incumbent's run id, so neither costs a
-		// second Temporal call.
+		// A conflict on the id, which is the one failure here that is not this
+		// server failing. Every arm that can produce it is answered from the
+		// error itself, which carries the incumbent's run id.
 		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if submission != nil && errors.As(err, &already) {
+			// A retry of this very submission, under whichever address it took:
+			// answered with the run the earlier attempt started, and the reuse
+			// stated — see [v1.RunResponse.reused]. Refused, naming the run, when
+			// the key was reused for a different submission; and not a retry at
+			// all when the run recorded a different request, in which case the
+			// address's own rule below decides, exactly as it would have with no
+			// request id on this call.
+			resp, retry, err := s.reusedSubmission(ctx, workflowID, already.RunId, submission)
+			if err != nil {
+				return nil, err
+			}
+			if retry {
+				// A second record for a second decision: the first, above, was
+				// "may start work in this namespace", and this one is "this
+				// request is answered with run X", which names a resource the
+				// first could not. The record is what lets an operator see that
+				// a workload the audit trail shows started once was submitted
+				// twice, and by whom.
+				if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+					return nil, err
+				}
+
+				// SpecificationAsSubmitted is false for the join arm's reason: the
+				// specification that ran is the one the earlier attempt sent. The
+				// digest says this attempt sent the same bytes, but the answer
+				// was made about the deployment's trusted set at *that* start,
+				// and a fact this server did not establish now is one it does
+				// not state now.
+				return connect.NewResponse(&v1.RunResponse{
+					WorkflowId:               workflowID,
+					RunId:                    resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+					Status:                   getWorkflowExecutionStatus(resp),
+					Reused:                   true,
+					SpecificationAsSubmitted: proto.Bool(false),
+				}), nil
+			}
+
+			if workflow.GetConcurrency() == nil {
+				// Reachable only under an entity key: a request-addressed id
+				// holds nothing but its own submission, and the concurrency
+				// arms below own the permit's answer. The entity is live and
+				// this is not the submission that started it, which the
+				// entity's own address cannot express as anything but a
+				// refusal — see [RunRequest.request_id]'s composition rule.
+				return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
+					"%w: run %s of workflow %s", errNotARetry, already.RunId, workflowID))
+			}
+		}
+
 		if workflow.GetConcurrency() != nil && errors.As(err, &already) {
 			if onConflict == v1.Concurrency_ON_CONFLICT_JOIN {
 				// The incumbent, returned as this request's answer, with the join

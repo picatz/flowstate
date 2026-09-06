@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -948,6 +949,16 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	reason, _ := cmd.Flags().GetString("reason")
 
+	// What makes this submission idempotent: minted once per invocation, before
+	// the request is built, so that any retry this process makes carries the
+	// same key and converges on the one run rather than starting a second. The
+	// caller's own value when they gave one — a CI job's run id, typically — so
+	// a re-run of the job converges too. See [v1.RunRequest.request_id].
+	requestID, _ := cmd.Flags().GetString("request-id")
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+
 	server := serverFlagsOf(cmd)
 
 	// Built once and used for both the request that starts the run and every
@@ -962,7 +973,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	}
 
 	started, err := client.Run(cmd.Context(),
-		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason}))
+		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason, RequestId: &requestID}))
 	if err != nil {
 		arguments, redacted := runArgumentFlags(cmd, workflow)
 		return refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
@@ -989,8 +1000,15 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// was identifier. Once, in the `flow watch` hint, is where it earns its width —
 	// that is the one place a reader does something with it rather than reads it.
 	if format == FormatText {
-		fmt.Fprintf(surface.Err, "started workflow %s; come back to it with `flow watch %s`\n",
-			subject, workflowID)
+		// A reuse says so: the run being followed is the one an earlier attempt
+		// under this request id started, not one this invocation began, which
+		// is the fact a person retrying after a timeout came back to learn.
+		verb := "started"
+		if started.Msg.GetReused() {
+			verb = "already started"
+		}
+		fmt.Fprintf(surface.Err, "%s workflow %s; come back to it with `flow watch %s`\n",
+			verb, subject, workflowID)
 	}
 
 	// Deliberately not pinned to the run just started. A workload that continues as
@@ -2452,6 +2470,16 @@ flow validate examples/hello-world/workflow.yaml`,
 	runCmd.Flags().String("reason", "",
 		"why this run is being started, recorded on it; required by a workflow whose "+
 			"`manual:` block asks for one")
+
+	// The idempotency key. Generated when absent, so every `flow run` is
+	// already safe to retry; offered as a flag so a CI job can hand over its
+	// own run id and a re-run of the job finds the run the first attempt
+	// started instead of starting another. Not offered on `flow run local`: a
+	// rehearsal has no server to be retried against.
+	runCmd.Flags().String("request-id", "",
+		"idempotency key for this submission, a UUID or a caller-chosen string; a second "+
+			"`flow run` carrying the same value is answered with the run the first started "+
+			"rather than starting another. Generated per invocation when unset")
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{

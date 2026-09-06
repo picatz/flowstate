@@ -465,7 +465,9 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 		"the run a person just started has to be named by the name they gave it")
 	assert.Contains(t, report, "COMPLETED workflow "+name,
 		"the two drivers have to describe a finished run the same way")
-	assert.Equal(t, 1, strings.Count(report, "flowstate-workflow-"),
+	// `flow run` sends a request id on every invocation, so the id it is
+	// handed back is request-addressed ([v1.RunRequest.request_id]).
+	assert.Equal(t, 1, strings.Count(report, "flowstate-request-"),
 		"the workflow id belongs in the `flow watch` hint and nowhere else in the prose:\n%s", report)
 
 	// And the run id is said once — not zero times. `flow get --run-id` and
