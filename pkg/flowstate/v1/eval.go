@@ -20,6 +20,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/common/types/traits"
 	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -233,12 +234,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 	// contain one, and a worker evaluates the stored AST rather than re-parsing it.
 	if len(e.Prev.GetStepValues()) == 0 {
 		if name == StepsRoot {
-			root, err := e.stepsMap()
-			if err != nil {
-				return nil, false
-			}
-
-			return root, true
+			return e.stepsMap(), true
 		}
 
 		return e.ambientRoot(name)
@@ -257,11 +253,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 		// run started on an older build keeps resolving the way it always did —
 		// invariant 10, which is why this arm exists at all.
 		if name == StepsRoot {
-			root, err := e.stepsMap()
-			if err != nil {
-				return nil, false
-			}
-			return root, true
+			return e.stepsMap(), true
 		}
 		return e.ambientRoot(name)
 	}
@@ -456,15 +448,148 @@ const ResponseRoot = "response"
 // last one and letting CEL apply `.a.result` itself means this needs no idea how
 // deep a reference goes — which is exactly the bug the bare form has to guard
 // against by refusing any name with a second dot in it.
-func (e *StepsOutputActivation) stepsMap() (ref.Val, error) {
-	values := e.Prev.GetStepValues()
-	entries := make(map[ref.Val]ref.Val, len(values))
-	for id, outputs := range values {
-		vals, err := e.outputsToMap(outputs)
-		if err != nil {
+//
+// The map converts a step's outputs when that step is read, not when the root
+// is handed back. CEL asks for the root on every rooted reference — `steps.a.b`
+// arrives as `steps` plus two qualifiers — so a root that converted every
+// finished step up front cost every expression a walk over the whole run so
+// far: a straight chain of N `value:` steps paid N² conversions, and 4,000 of
+// them took thirteen seconds locally where the same work as a loop took a
+// third of one (#1758). A reference now costs the step it reads.
+//
+// What the map says does not change. Its size, its keys, its iteration, and
+// what each entry holds are exactly what the converted map held; only the
+// moment of conversion moved. A step whose outputs cannot be converted — a
+// secret reference stored under an output — used to make the whole root
+// unresolvable, so that reading any other step's outputs failed as an
+// unresolved reference; it now fails only the read that reaches it, with the
+// reason, and the other steps still resolve.
+func (e *StepsOutputActivation) stepsMap() ref.Val {
+	return &lazyStepsMap{activation: e, values: e.Prev.GetStepValues()}
+}
+
+// lazyStepsMap is the `steps` root: one CEL map keyed by step id whose entries
+// are converted on the read that reaches them, and never before. See
+// [StepsOutputActivation.stepsMap] for why.
+//
+// It is every map trait CEL's own maps carry — indexing, presence, size,
+// iteration, equality, conversion — so that an expression treating the root as
+// a whole map (`size(steps)`, `steps.map(id, …)`, `has(steps.a)`) reads it the
+// way it always did, through the same qualifiers CEL applies to any map.
+type lazyStepsMap struct {
+	activation *StepsOutputActivation
+	values     map[string]*Node_Outputs
+
+	// converted holds every step read so far, so an expression naming the same
+	// step twice converts it once. Allocated on the first read.
+	converted map[string]ref.Val
+}
+
+var _ traits.Mapper = (*lazyStepsMap)(nil)
+
+// Find converts the named step's outputs, or reports that no such step has run.
+// A step whose outputs cannot be converted is found, as an error value carrying
+// the reason, which is what CEL raises for the read.
+func (m *lazyStepsMap) Find(key ref.Val) (ref.Val, bool) {
+	id, ok := key.(types.String)
+	if !ok {
+		return nil, false
+	}
+	if v, done := m.converted[string(id)]; done {
+		return v, true
+	}
+	outputs, ran := m.values[string(id)]
+	if !ran {
+		return nil, false
+	}
+	v, err := m.activation.outputsToMap(outputs)
+	if err != nil {
+		v = types.NewErr("step %q: %v", string(id), err)
+	}
+	if m.converted == nil {
+		m.converted = map[string]ref.Val{}
+	}
+	m.converted[string(id)] = v
+
+	return v, true
+}
+
+func (m *lazyStepsMap) Get(key ref.Val) ref.Val {
+	v, found := m.Find(key)
+	if !found {
+		return types.ValOrErr(key, "no such key: %v", key)
+	}
+	return v
+}
+
+func (m *lazyStepsMap) Contains(key ref.Val) ref.Val {
+	_, found := m.Find(key)
+	return types.Bool(found)
+}
+
+func (m *lazyStepsMap) Size() ref.Val { return types.Int(len(m.values)) }
+
+func (m *lazyStepsMap) IsZeroValue() bool { return len(m.values) == 0 }
+
+func (m *lazyStepsMap) Iterator() traits.Iterator {
+	return types.NewStringList(TypeAdapter, slices.Collect(maps.Keys(m.values))).Iterator()
+}
+
+func (m *lazyStepsMap) Type() ref.Type { return types.MapType }
+
+func (m *lazyStepsMap) Value() any {
+	whole, err := m.whole()
+	if err != nil {
+		return err.Value()
+	}
+	return whole.Value()
+}
+
+func (m *lazyStepsMap) Equal(other ref.Val) ref.Val {
+	whole, err := m.whole()
+	if err != nil {
+		return err
+	}
+	return whole.Equal(other)
+}
+
+func (m *lazyStepsMap) ConvertToNative(typeDesc reflect.Type) (any, error) {
+	whole, err := m.whole()
+	if err != nil {
+		return nil, err
+	}
+	return whole.ConvertToNative(typeDesc)
+}
+
+func (m *lazyStepsMap) ConvertToType(typeVal ref.Type) ref.Val {
+	switch typeVal {
+	case types.MapType:
+		return m
+	case types.TypeType:
+		return types.MapType
+	}
+	return types.NewErr("type conversion error from '%s' to '%s'", types.MapType, typeVal)
+}
+
+// whole is the root converted in full, for the operations that have to see
+// every entry at once: equality, and conversion to a Go value. They are the
+// uses the eager map served, at the cost it charged — and with the answer it
+// gave, which is that a step whose outputs cannot be converted makes the whole
+// an error rather than a map with a hole in it.
+//
+// Converted in id order, so that when more than one step cannot be converted
+// the error names the same step every time. Go's map order would pick one at
+// random, and an error that changes between evaluations of the same run is a
+// nondeterminism the workflow side must not have (invariant 4).
+func (m *lazyStepsMap) whole() (traits.Mapper, *types.Err) {
+	entries := make(map[ref.Val]ref.Val, len(m.values))
+	for _, id := range slices.Sorted(maps.Keys(m.values)) {
+		key := types.String(id)
+		v := m.Get(key)
+		if err, failed := v.(*types.Err); failed {
 			return nil, err
 		}
-		entries[types.String(id)] = vals
+		entries[key] = v
 	}
 	return types.NewRefValMap(TypeAdapter, entries), nil
 }

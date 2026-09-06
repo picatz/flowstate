@@ -298,8 +298,12 @@ func TestAReplayedScriptReproducesTheSession(t *testing.T) {
 // [v1.Value_SecretRef] outright — resolving one "would produce a value in
 // workflow code, and anything a workflow computes can end up in history"
 // (eval.go, StepsOutputActivation.resolveValue) — so an inspection that names
-// the reference does not get a refusal message from the debugger, it gets an
-// attribute that does not resolve at all. There is nothing there to read.
+// the reference does not get a refusal from the debugger, it gets the
+// activation's own: the read fails, naming the step and saying why, and there
+// is nothing there to read. It used to fail as an attribute that did not
+// resolve at all, because the whole `steps` root was converted up front and
+// one unreadable output made all of it unresolvable (#1758); the root is lazy
+// now, so the refusal is the one read's and says what it refused.
 //
 // The value is really in the environment where the env provider would find
 // it, so the negative assertion has something it could catch.
@@ -332,8 +336,8 @@ func TestASecretReferenceIsNotResolvedByAnInspection(t *testing.T) {
 
 	out := console.String()
 	assert.NotContains(t, out, "super-secret-value", "no surface of a debug session may print a resolved secret")
-	assert.Contains(t, out, "steps.held.token",
-		"the inspection is answered by the attribute not resolving, which names it")
+	assert.Contains(t, out, `step "held": a secret reference cannot be read in an expression`,
+		"the inspection is answered by the read refusing, naming the step and the reason")
 	assert.Contains(t, out, "secret(env://API_KEY)",
 		"and the account renders the reference as the reference it is")
 }
