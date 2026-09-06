@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -32,7 +33,7 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		if !slices.Contains(manifest.GetSecretInputs(), required) {
 			return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf(
 				"task %q requires input %q to be a secret reference but does not declare it in secret_inputs",
-				truncate(name, 64), truncate(required, 64)))
+				textbound.Truncate(name, 64), textbound.Truncate(required, 64)))
 		}
 	}
 
@@ -45,12 +46,12 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 
 	inputs, err := messageDescriptor(manifest.GetInputDescriptor(), manifest.GetInputMessage(), cfg)
 	if err != nil {
-		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q inputs: %w", truncate(name, 64), err))
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q inputs: %w", textbound.Truncate(name, 64), err))
 	}
 
 	outputs, err := messageDescriptor(manifest.GetOutputDescriptor(), manifest.GetOutputMessage(), cfg)
 	if err != nil {
-		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q outputs: %w", truncate(name, 64), err))
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q outputs: %w", textbound.Truncate(name, 64), err))
 	}
 
 	if err := checkManifestInputNames(inputs, manifest, name, p); err != nil {
@@ -114,7 +115,7 @@ func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pl
 			if inputs == nil || inputs.Fields().ByName(protoreflect.Name(entry)) == nil {
 				return pluginError(p.name, p.path, fmt.Errorf(
 					"task %q %s names %q which is not a field of its input message",
-					truncate(name, 64), label, truncate(entry, 64)))
+					textbound.Truncate(name, 64), label, textbound.Truncate(entry, 64)))
 			}
 		}
 		return nil

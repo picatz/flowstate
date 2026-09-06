@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwk"
@@ -184,7 +185,7 @@ func (ks *keySet) publicKey(ctx context.Context, keyID string, alg jwa.Algorithm
 				ErrIssuerUnavailable, ks.issuer, (ks.minRefresh - elapsed).Round(time.Millisecond))
 		default:
 			return nil, fmt.Errorf("%w: %q, and the issuer's keys were refreshed %s ago",
-				ErrUnknownKey, truncate(keyID, maxClaimValueLength), elapsed.Round(time.Millisecond))
+				ErrUnknownKey, textbound.Truncate(keyID, maxClaimValueLength), elapsed.Round(time.Millisecond))
 		}
 	}
 
@@ -232,9 +233,9 @@ func (ks *keySet) lookupLocked(keyID string, alg jwa.Algorithm) (crypto.PublicKe
 		}
 		if known {
 			return nil, fmt.Errorf("%w: issuer key %q cannot verify a %q signature",
-				ErrDisallowedAlgorithm, truncate(keyID, maxClaimValueLength), alg)
+				ErrDisallowedAlgorithm, textbound.Truncate(keyID, maxClaimValueLength), alg)
 		}
-		return nil, fmt.Errorf("%w: %q", ErrUnknownKey, truncate(keyID, maxClaimValueLength))
+		return nil, fmt.Errorf("%w: %q", ErrUnknownKey, textbound.Truncate(keyID, maxClaimValueLength))
 	}
 
 	// A token without a "kid" is only unambiguous when exactly one published
@@ -373,7 +374,7 @@ func discoverJWKSURL(ctx context.Context, client *http.Client, issuer string) (s
 
 	if document.Issuer != issuer {
 		return "", fmt.Errorf("discovery document at %q declares issuer %q, want %q",
-			discoveryURL, truncate(document.Issuer, maxClaimValueLength), issuer)
+			discoveryURL, textbound.Truncate(document.Issuer, maxClaimValueLength), issuer)
 	}
 
 	if document.JWKSURI == "" {
@@ -468,7 +469,7 @@ func parseJWK(value jwk.Value) (crypto.PublicKey, error) {
 		}
 		return key, nil
 	default:
-		return nil, fmt.Errorf("unsupported key type %q", truncate(keyType, 32))
+		return nil, fmt.Errorf("unsupported key type %q", textbound.Truncate(keyType, 32))
 	}
 }
 

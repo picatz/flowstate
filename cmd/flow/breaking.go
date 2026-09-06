@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -276,19 +277,9 @@ func printBreak(out io.Writer, theme ui.Theme, path string, d flowfile.Diagnosti
 // both the working-tree and the ref side report (a name duplicated on both) is
 // printed once, in a stable order.
 func dedupeStrings(a, b []string) []string {
-	seen := make(map[string]struct{}, len(a)+len(b))
-	for _, s := range a {
-		seen[s] = struct{}{}
-	}
-	for _, s := range b {
-		seen[s] = struct{}{}
-	}
-	out := make([]string, 0, len(seen))
-	for s := range seen {
-		out = append(out, s)
-	}
-	sort.Strings(out)
-	return out
+	out := slices.Concat(a, b)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // sortedNames is the union of the two maps' keys, in a stable order so a run's

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
@@ -201,7 +202,7 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 	}
 	if tokenType != tokenTypeAccessToken {
 		return nil, fmt.Errorf("%w: %s exchanger requested token type %q is outside the supported RFC 8693 profile",
-			ErrInvalidPolicy, name, truncate(tokenType, 96))
+			ErrInvalidPolicy, name, textbound.Truncate(tokenType, 96))
 	}
 	if err := validateExchangeRequest(cfg); err != nil {
 		return nil, fmt.Errorf("%w: %s exchanger: %v", ErrInvalidPolicy, name, err)
@@ -347,10 +348,10 @@ func decodeTokenExchangeResponse(provider string, raw []byte, requestedType stri
 		return tokenResponse{}, fmt.Errorf("%w: %s RFC 8693 response omitted access_token, token_type, or issued_token_type", ErrExchangeFailed, provider)
 	}
 	if response.IssuedTokenType != requestedType || response.IssuedTokenType != tokenTypeAccessToken {
-		return tokenResponse{}, fmt.Errorf("%w: %s issued token type %q does not match requested type %q", ErrExchangeFailed, provider, truncate(response.IssuedTokenType, 96), requestedType)
+		return tokenResponse{}, fmt.Errorf("%w: %s issued token type %q does not match requested type %q", ErrExchangeFailed, provider, textbound.Truncate(response.IssuedTokenType, 96), requestedType)
 	}
 	if !strings.EqualFold(response.TokenType, "Bearer") {
-		return tokenResponse{}, fmt.Errorf("%w: %s issued a %q or sender-constrained token, which cannot be represented as CredentialBearer", ErrExchangeFailed, provider, truncate(response.TokenType, 32))
+		return tokenResponse{}, fmt.Errorf("%w: %s issued a %q or sender-constrained token, which cannot be represented as CredentialBearer", ErrExchangeFailed, provider, textbound.Truncate(response.TokenType, 32))
 	}
 	// expires_in is deliberately not bounded here. The bound belongs to the
 	// target's configured ceiling, which credentialLifetimeCeiling resolves at
@@ -475,7 +476,7 @@ func canonicalScopeList(scopes []string) ([]string, error) {
 			}
 		}
 		if _, ok := seen[scope]; ok {
-			return nil, fmt.Errorf("duplicate scope %q", truncate(scope, 32))
+			return nil, fmt.Errorf("duplicate scope %q", textbound.Truncate(scope, 32))
 		}
 		seen[scope] = struct{}{}
 	}
@@ -563,7 +564,7 @@ func (e *tokenExchanger) delegate(ctx context.Context, form url.Values, assertio
 	}
 	if tokenType != tokenTypeJWT {
 		return fmt.Errorf("%w: %s: delegator token type %q is outside the supported RFC 8693 profile",
-			ErrExchangeFailed, e.name, truncate(tokenType, 96))
+			ErrExchangeFailed, e.name, textbound.Truncate(tokenType, 96))
 	}
 
 	// The declared type is a claim; this checks the value keeps it. A blob that

@@ -78,7 +78,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel"
@@ -89,6 +88,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -749,7 +749,7 @@ func readToken() (string, error) {
 	if err != nil || fd < 3 {
 		return "", fmt.Errorf(
 			"sdk: %s does not name an inherited descriptor: %q",
-			protocol.TokenFDEnv, truncate(raw, 32),
+			protocol.TokenFDEnv, textbound.Truncate(raw, 32),
 		)
 	}
 
@@ -1112,7 +1112,7 @@ func (s *pluginService) Health(ctx context.Context, _ *connect.Request[pluginv1.
 		// their backend puts in an error.
 		return connect.NewResponse(&pluginv1.HealthResponse{
 			Status:  pluginv1.HealthResponse_STATUS_NOT_SERVING,
-			Message: truncate(err.Error(), 1024),
+			Message: textbound.Truncate(err.Error(), 1024),
 		}), nil
 	}
 
@@ -1141,7 +1141,7 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[plugin
 	// claimed.
 	if !slices.Contains(s.schemes, ref.GetScheme()) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
-			"this plugin does not resolve %q", truncate(ref.GetScheme(), 32)))
+			"this plugin does not resolve %q", textbound.Truncate(ref.GetScheme(), 32)))
 	}
 
 	// The same install the task handlers make, for the same reason: a
@@ -1312,7 +1312,7 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 	task, ok := s.tasks[req.Msg.GetTask().GetName()]
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
-			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
+			"this plugin does not provide task %q", textbound.Truncate(req.Msg.GetTask().GetName(), 64)))
 	}
 
 	// Installed on every call, whether or not the request named an identity:
@@ -1350,7 +1350,7 @@ func (s *taskService) ExecuteStream(
 	task, ok := s.tasks[req.Msg.GetTask().GetName()]
 	if !ok {
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
-			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
+			"this plugin does not provide task %q", textbound.Truncate(req.Msg.GetTask().GetName(), 64)))
 	}
 
 	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
@@ -1431,17 +1431,4 @@ func phaseToWire(phase flowstatev1.Phase) (pluginv1.TaskPhase, bool) {
 	default:
 		return pluginv1.TaskPhase_TASK_PHASE_UNSPECIFIED, false
 	}
-}
-
-// truncate bounds text on its way into a response or an error.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// Cut on a rune boundary, since this bounds text that came from a workflow
-	// or from a backend rather than from here.
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "..."
 }

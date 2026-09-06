@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // Tenancy maps Flowstate namespaces onto the Temporal namespaces their runs
@@ -76,7 +78,7 @@ func (t *Tenancy) TemporalNamespace(namespace string) (string, bool, error) {
 	}
 
 	return "", false, fmt.Errorf("%w: namespace %q has no temporal mapping and no default is set",
-		ErrNoTemporalNamespace, truncate(namespace, 128))
+		ErrNoTemporalNamespace, textbound.Truncate(namespace, 128))
 }
 
 // TemporalNamespaces returns every Temporal namespace this mapping can select,

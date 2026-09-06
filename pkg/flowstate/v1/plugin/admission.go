@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -141,14 +142,14 @@ func validateDigestPin(name, digest string) error {
 			"%w: PinnedDigests has an entry under %q, which is not a valid plugin name; "+
 				"a plugin name is lower-case letters, digits and interior hyphens, at most %d characters, "+
 				"so no discovered plugin could ever match this key",
-			ErrDigestPin, truncate(name, MaxNameLen+16), MaxNameLen,
+			ErrDigestPin, textbound.Truncate(name, MaxNameLen+16), MaxNameLen,
 		)
 	}
 
 	if err := flowstatev1.ValidateContentDigest(digest); err != nil {
 		return fmt.Errorf(
 			"%w: the pin for %q is %q: %v; a pin is the algorithm, a colon, and the hash, exactly as this package prints a digest",
-			ErrDigestPin, name, truncate(digest, 96), err,
+			ErrDigestPin, name, textbound.Truncate(digest, 96), err,
 		)
 	}
 

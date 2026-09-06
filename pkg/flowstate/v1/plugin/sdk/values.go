@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -75,7 +76,7 @@ func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, valu
 		return fmt.Errorf(
 			"is a secret reference, which this field's type cannot hold; declare the field as flowstate.v1.Value to receive one")
 	case *flowstatev1.Value_Error_:
-		return fmt.Errorf("is an error value: %s", truncate(kind.Error.GetMessage(), 256))
+		return fmt.Errorf("is an error value: %s", textbound.Truncate(kind.Error.GetMessage(), 256))
 	default:
 		return fmt.Errorf("has no value")
 	}
@@ -111,7 +112,7 @@ func setLiteral(msg protoreflect.Message, field protoreflect.FieldDescriptor, li
 
 			converted, err := scalar(field.MapValue(), entry.GetValue())
 			if err != nil {
-				return fmt.Errorf("map value for %q: %w", truncate(key.StringValue, 64), err)
+				return fmt.Errorf("map value for %q: %w", textbound.Truncate(key.StringValue, 64), err)
 			}
 
 			mapValue.Set(protoreflect.ValueOfString(key.StringValue).MapKey(), converted)
@@ -197,7 +198,7 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 			if enum := field.Enum().Values().ByName(protoreflect.Name(v.StringValue)); enum != nil {
 				return protoreflect.ValueOfEnum(enum.Number()), nil
 			}
-			return protoreflect.Value{}, fmt.Errorf("%q is not a value of %s", truncate(v.StringValue, 64), field.Enum().FullName())
+			return protoreflect.Value{}, fmt.Errorf("%q is not a value of %s", textbound.Truncate(v.StringValue, 64), field.Enum().FullName())
 		}
 	case protoreflect.MessageKind:
 		// A field, element, or map value whose declared type does not constrain

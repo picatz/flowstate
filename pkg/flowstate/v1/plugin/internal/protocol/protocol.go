@@ -57,7 +57,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // Environment variable names the host sets when it launches a plugin.
@@ -566,7 +567,7 @@ func ParseHandshake(line string) (Handshake, error) {
 	if fields[0] != Sentinel {
 		return Handshake{}, fmt.Errorf(
 			"handshake line starts with %q, want %q — is this a Flowstate plugin?",
-			truncate(fields[0], 64), Sentinel,
+			textbound.Truncate(fields[0], 64), Sentinel,
 		)
 	}
 
@@ -597,7 +598,7 @@ func ParseHandshake(line string) (Handshake, error) {
 		// A relative socket path would be resolved against whatever working
 		// directory each side happens to have, which is exactly the ambiguity
 		// this protocol should not contain.
-		return Handshake{}, fmt.Errorf("socket address %q is not absolute", truncate(address, 128))
+		return Handshake{}, fmt.Errorf("socket address %q is not absolute", textbound.Truncate(address, 128))
 	}
 
 	return Handshake{
@@ -613,13 +614,13 @@ func ParseHandshake(line string) (Handshake, error) {
 func parsePositive(s string) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("%q is not a number", truncate(s, 32))
+		return 0, fmt.Errorf("%q is not a number", textbound.Truncate(s, 32))
 	}
 	if n <= 0 {
 		return 0, fmt.Errorf("%d is not a positive version", n)
 	}
 	if strconv.Itoa(n) != s {
-		return 0, fmt.Errorf("%q is not a canonical number", truncate(s, 32))
+		return 0, fmt.Errorf("%q is not a canonical number", textbound.Truncate(s, 32))
 	}
 	return n, nil
 }
@@ -657,7 +658,7 @@ func ParseVersions(s string) ([]int, error) {
 	for _, part := range parts {
 		v, err := parsePositive(strings.TrimSpace(part))
 		if err != nil {
-			return nil, fmt.Errorf("protocol version list %q: %w", truncate(s, 128), err)
+			return nil, fmt.Errorf("protocol version list %q: %w", textbound.Truncate(s, 128), err)
 		}
 		versions = append(versions, v)
 	}
@@ -681,19 +682,4 @@ func Negotiate(offered, supported []int) (int, bool) {
 		}
 	}
 	return best, found
-}
-
-// truncate bounds text before it goes into an error message. Everything this
-// package parses came from another process, and an error naming what was wrong
-// with it must not be able to carry a megabyte of that process's choosing.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// Cut on a rune boundary: this bounds text another process chose, and a
-	// broken rune in a log line is a line some consumer will refuse to parse.
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "..."
 }

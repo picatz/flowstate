@@ -19,6 +19,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
@@ -360,7 +361,7 @@ func (i *instance) handshake(cfg Config, stdout io.Reader, log *slog.Logger) (pr
 				// worth saying so — the text is usually the reason.
 				return protocol.Handshake{}, fmt.Errorf(
 					"%w: stdout ended mid-line after %q; %w",
-					ErrHandshake, truncate(res.line, 128), i.exitReason(cfg.ShutdownGrace),
+					ErrHandshake, textbound.Truncate(res.line, 128), i.exitReason(cfg.ShutdownGrace),
 				)
 			}
 			return protocol.Handshake{}, fmt.Errorf("%w: %w", ErrHandshake, i.exitReason(cfg.ShutdownGrace))
@@ -435,14 +436,14 @@ func verifyHandshake(h protocol.Handshake, cfg Config, socketPath string) error 
 	if h.Network != protocol.NetworkUnix {
 		return fmt.Errorf(
 			"%w: serving on network %q; only %q is permitted",
-			ErrHandshake, truncate(h.Network, 32), protocol.NetworkUnix,
+			ErrHandshake, textbound.Truncate(h.Network, 32), protocol.NetworkUnix,
 		)
 	}
 
 	if h.Address != socketPath {
 		return fmt.Errorf(
 			"%w: serving on %q rather than the socket it was assigned, %q",
-			ErrHandshake, truncate(h.Address, 128), socketPath,
+			ErrHandshake, textbound.Truncate(h.Address, 128), socketPath,
 		)
 	}
 
