@@ -342,6 +342,47 @@ func TestDistinctErrorsAreBoundedPerInterval(t *testing.T) {
 	require.Len(t, recorder.all(), telemetryErrorHandlerMaxDistinct+2)
 }
 
+// TestAnErrorWithEmptyTextCannotTakeTheOverflowSlot is the collision the
+// empty-string key had: an error whose text is empty classes to "", and with
+// "" as the shared slot's key one such error inside the bound took the slot
+// and every overflow after it was suppressed as a repeat of it.
+func TestAnErrorWithEmptyTextCannotTakeTheOverflowSlot(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "empty text", err: errors.New("")},
+		{name: "empty text tagged", err: tagExportFailure("traces", "", errors.New(""))},
+		{name: "text spelling the sentinel", err: errors.New(telemetryOverflowKey)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &recordedLogs{}
+			handler := newTelemetryErrorHandler(slog.New(recorder), time.Minute, time.Now)
+
+			handler.Handle(test.err)
+			require.Len(t, recorder.all(), 1)
+			require.NotContains(t, attrs(recorder.all()[0]), "overflow", "an error inside the bound is not the overflow")
+
+			// The key-less error holds one of the bound's slots like any other
+			// distinct failure, so this many more fill it exactly.
+			for i := range telemetryErrorHandlerMaxDistinct - 1 {
+				handler.Handle(fmt.Errorf("failure %d", i))
+			}
+			require.Len(t, recorder.all(), telemetryErrorHandlerMaxDistinct, "every failure within the bound is said")
+
+			// The bound is now full; the next new failure is the overflow, and
+			// it must be said even though a key-less error came first.
+			handler.Handle(errors.New("one past the bound"))
+			records := recorder.all()
+			require.Len(t, records, telemetryErrorHandlerMaxDistinct+1,
+				"the overflow was suppressed as a repeat of the error with empty text")
+			require.Equal(t, "true", attrs(records[len(records)-1])["overflow"])
+		})
+	}
+}
+
 // TestInitTelemetryInstallsTheErrorHandler pins the installation point. One
 // place, reached by every entry point through [startTelemetry], is what makes
 // "the same handler serves run local, server and worker" true rather than

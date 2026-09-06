@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -658,6 +659,18 @@ const telemetryErrorHandlerMaxDistinct = 64
 // telemetryErrorClassMaxText bounds the text fallback of [telemetryErrorClass].
 const telemetryErrorClassMaxText = 128
 
+// telemetryOverflowKey is the shared slot's key, and no real key can be it.
+//
+// A real key is either a tagged failure's `signal\x00endpoint\x00class`, which
+// begins with a signal name, or a bare class, which begins with "url.",
+// "http ", a Go type name, or error text [telemetryErrorClass] has stripped of
+// NUL. Nothing the handler is given can therefore begin with NUL, which is
+// what makes this reserved rather than merely unlikely — the empty string was
+// the previous choice, and an error whose text is empty keys to exactly that,
+// so one such error inside the bound would have taken the slot and silenced
+// every overflow after it.
+const telemetryOverflowKey = "\x00overflow"
+
 // httpStatusInExportError finds the status an OTLP exporter puts in its
 // "failed to send to <url>: <status> (...)" error, which is text and nothing
 // else: the exporters' typed retry errors live in their internal packages.
@@ -700,7 +713,9 @@ func telemetryErrorClass(err error) string {
 	}
 	switch kind := fmt.Sprintf("%T", root); kind {
 	case "*errors.errorString", "*errors.joinError", "*fmt.wrapError", "*fmt.wrapErrors":
-		text := root.Error()
+		// NUL is the handler's separator and the overflow key's first byte;
+		// text a peer wrote must not be able to spell either.
+		text := strings.ReplaceAll(root.Error(), "\x00", "�")
 		if len(text) > telemetryErrorClassMaxText {
 			text = text[:telemetryErrorClassMaxText]
 		}
@@ -823,7 +838,7 @@ func (h *telemetryErrorHandler) first(key string) (report, overflow bool) {
 		return false, false
 	}
 	if len(h.seen) >= telemetryErrorHandlerMaxDistinct {
-		key = ""
+		key = telemetryOverflowKey
 		overflow = true
 		if _, seen := h.seen[key]; seen {
 			return false, true
@@ -900,12 +915,21 @@ func (e taggedLogExporter) Export(ctx context.Context, records []sdklog.Record) 
 // second spelling of that rule that drifts from it — so the attribute is left
 // out rather than misstated. For the warning only: the exporters resolve their
 // own configuration, and nothing here feeds back into them.
+//
+// Each variable is named in full rather than composed from the signal, so the
+// reference's own check can see that every one of them is documented.
 func telemetryEndpoint(signal string) string {
-	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_" + strings.ToUpper(signal) + "_ENDPOINT"); endpoint != "" {
-		return endpoint
+	var own string
+	switch signal {
+	case "traces":
+		own = os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+	case "metrics":
+		own = os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+	case "logs":
+		own = os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
 	}
 
-	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	return cmp.Or(own, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 }
 
 // The third signal, and the two honest limits on it.
