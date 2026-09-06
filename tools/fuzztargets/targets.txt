@@ -1,17 +1,18 @@
 # Every fuzz target in this module, and the tiers that run it. This file is the
 # one written source of that list: the Makefile's fuzz-smoke target loops over
 # it, .github/workflows/deep.yml's fuzz-deep job loops over it, and tools/gate
-# derives from it the set of packages whose affectedness decides whether the PR
-# lane's fuzz-smoke job runs. CI's fuzz-smoke job runs `make fuzz-smoke`, so it
-# reads this file too, at one remove. A new target therefore lands here, in one
+# derives from it which smoke targets a PR's diff reaches — the list the PR
+# lane's fuzz-smoke job runs, and whether it runs at all (#1726). CI's
+# fuzz-smoke job runs `make fuzz-smoke`, so it reads this file too, at one
+# remove. A new target therefore lands here, in one
 # place, and tools/fuzztargets' own test fails if it lands anywhere else — it
 # walks the tree for `func Fuzz…(f *testing.F)` and compares the set.
 #
 # Columns, whitespace-separated: target, package directory (module-relative),
 # tiers (comma-separated, no spaces).
 #
-#   smoke  30s per target, on every push and every PR whose diff can reach a
-#          package holding a target. The bound that makes it safe to run that
+#   smoke  30s per target, on every push and, on a PR, for each target whose
+#          package the diff reaches. The bound that makes it safe to run that
 #          often is what keeps the list here short of every target: the job's
 #          budget is ten minutes and ten targets already spend most of it.
 #   deep   10m per target, weekly, on a schedule. Every target belongs to this

@@ -113,8 +113,21 @@ check:
 # report success on a run that fuzzed nothing at all if the list could not be
 # read — a check passing by not running, which is the failure this file
 # legislates against elsewhere. list.sh itself refuses to print an empty tier.
+#
+# FUZZ_SMOKE_TARGETS, when set, is a space-separated list of target names that
+# narrows the run to those (#1726):
+#
+#     make fuzz-smoke FUZZ_SMOKE_TARGETS="FuzzRoundTrip FuzzCELCompile"
+#
+# Unset, every smoke target runs, which is what `make check` and a local
+# rehearsal want. CI's fuzz-smoke job sets it from the plan job's fuzz_targets
+# output — the smoke targets whose package the diff reaches, computed by
+# `tools/gate -ci` from the same targets.txt — so a flowfile change fuzzes the
+# seven targets it can move rather than all thirteen. The narrowing is list.sh's
+# and not a second filter here: a name that is not in the smoke tier is a
+# refusal from the one reader, not a silently shorter run.
 fuzz-smoke:
-	@targets="$$(tools/fuzztargets/list.sh smoke)" || exit 1; \
+	@targets="$$(tools/fuzztargets/list.sh smoke $(FUZZ_SMOKE_TARGETS))" || exit 1; \
 	echo "$$targets" | while read -r target dir; do \
 		echo "==> $$target ($$dir)"; \
 		GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz "$$target" -fuzztime 30s "./$$dir/" || exit 1; \
