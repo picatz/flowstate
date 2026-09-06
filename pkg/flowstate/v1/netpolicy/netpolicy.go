@@ -23,7 +23,13 @@
 // to, rather than against the host in the URL. A name that resolves to a public
 // address when the policy is evaluated and to an internal one when the connection
 // is made therefore gains nothing: both resolutions are checked, because the check
-// happens after resolution. IPv6 forms that name an IPv4 target are resolved to
+// happens after resolution. A host that is an IP literal is also classified on
+// sight, before the resolver or a socket is touched, with the verdict the dialer
+// would reach: a loopback literal is refused the same way, and as quickly, on a
+// host that cannot open that address family as on one that can. A host spelled
+// as a non-canonical IPv4 address (127.1, 2130706433, 0x7f.0.0.1, 0177.0.0.1) is
+// refused rather than handed to a resolver that may or may not read it as one.
+// IPv6 forms that name an IPv4 target are resolved to
 // the address they reach before being classified, including IPv4-mapped
 // (::ffff:127.0.0.1), IPv4-compatible (::7f00:1), IPv4-translated
 // (::ffff:0:7f00:1), NAT64 (64:ff9b::7f00:1), and 6to4 (2002:7f00:1::). Ranges
@@ -115,6 +121,12 @@
 //     its category must be allowed. A cloud metadata address is denied either way
 //     unless [WithAllowCloudMetadata] is given.
 //
+// Steps 5 and 6 are decided in the dialer, and once more before it for a host
+// that is already an address: an IP literal needs no resolution, so it is
+// judged by the same checks before anything is dialed. Everything the dialer
+// would refuse, it refuses; the dialer remains the check for what a name
+// resolves to.
+//
 // Deny always beats allow, and a rule that errors while evaluating denies the
 // request. Rules within one scope combine with OR; because allow rules are
 // enforced at each scope that defines them, request-scoped and connection-scoped
@@ -180,6 +192,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"path"
 	"slices"
 	"strconv"
@@ -297,7 +310,7 @@ func (p *Policy) newClient() *http.Client {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = p.cfg.proxy
-	transport.DialContext = p.dialWithVerdict(dialer)
+	transport.DialContext = p.dialWithVerdict(dialer.DialContext)
 	transport.TLSHandshakeTimeout = p.cfg.tlsHandshakeTimeout
 	transport.ResponseHeaderTimeout = p.cfg.responseHeaderTimeout
 	transport.ExpectContinueTimeout = 1 * time.Second
@@ -340,13 +353,24 @@ func (p *Policy) newClient() *http.Client {
 	}
 }
 
-// dialAnswered records whether [Policy.controlDial] ran for one dial.
+// dialAnswered records whether [Policy.controlDial] ran for one dial, and the
+// first denial it made if it made one.
 //
 // It is a pointer in the context rather than a return value because the hook
 // is called by [net.Dialer], which reports only whether the dial succeeded —
 // and the distinction this exists for is invisible from that: a dial can fail
 // before the hook is reached at all.
-type dialAnswered struct{ answered atomic.Bool }
+//
+// The denial is kept because one dial can be several attempts. A name that
+// resolves to more than one address, or an unspecified literal the dialer
+// tries in both families, calls the hook once per attempt, and the error the
+// dialer hands back is whichever attempt it chose to report — so a denial on
+// one leg was reported as the other leg's socket error, and the audit trail
+// never saw the decision that was actually made (picatz/flowstate#1768).
+type dialAnswered struct {
+	answered atomic.Bool
+	denied   atomic.Pointer[DenyError]
+}
 
 // dialAnsweredKey is the context key for it. Unexported empty struct, so
 // nothing outside this package can collide with it or forge one.
@@ -372,13 +396,38 @@ type dialAnsweredKey struct{}
 // errors.Is and errors.As against it answers exactly as before — and a failure
 // after the hook allowed stays the plain transport error it is, because the
 // policy did decide.
-func (p *Policy) dialWithVerdict(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+//
+// A denial wins over every other failure of the same dial. The dialer may try
+// several addresses and reports one error of its choosing; if this policy
+// refused any of them, that refusal is the verdict, not a socket error from a
+// leg that never reached the hook (picatz/flowstate#1768).
+//
+// dial is [net.Dialer.DialContext] in the client, and a stand-in for it in
+// the test that poses a dial with one leg refused and another that could not
+// open its socket — something the real dialer only does on a host missing an
+// address family.
+func (p *Policy) dialWithVerdict(dial func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		answered := &dialAnswered{}
 
-		conn, err := dialer.DialContext(context.WithValue(ctx, dialAnsweredKey{}, answered), network, address)
-		if err == nil || answered.answered.Load() {
-			return conn, err
+		conn, err := dial(context.WithValue(ctx, dialAnsweredKey{}, answered), network, address)
+		if err == nil {
+			return conn, nil
+		}
+
+		if denied := answered.denied.Load(); denied != nil {
+			var reported *DenyError
+			if errors.As(err, &reported) {
+				// The dialer reported the denial itself, wrapped in its own
+				// error; that is the shape every caller has always seen.
+				return nil, err
+			}
+
+			return nil, denied
+		}
+
+		if answered.answered.Load() {
+			return nil, err
 		}
 
 		// Nothing was presented to the policy. Marked as a hop the way the
@@ -386,8 +435,26 @@ func (p *Policy) dialWithVerdict(dialer *net.Dialer) func(context.Context, strin
 		// fact about the chain rather than about this dial.
 		a, _ := attrsFromContext(ctx)
 
-		return nil, &UndecidedError{Target: address, Err: err, AfterRedirect: a.afterRedirect}
+		return nil, &UndecidedError{Target: address, Err: err, Cause: undecidedCause(err), AfterRedirect: a.afterRedirect}
 	}
+}
+
+// undecidedCause reads the class of a dial failure that arrived without a
+// verdict: the resolver's own error, or a socket that could not be created,
+// which is what [net.Dialer] reports for an address family the host lacks.
+// Anything else is left unclassified rather than guessed at.
+func undecidedCause(err error) UndecidedCause {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return UndecidedByResolver
+	}
+
+	var sysErr *os.SyscallError
+	if errors.As(err, &sysErr) && sysErr.Syscall == "socket" {
+		return UndecidedBySocket
+	}
+
+	return ""
 }
 
 // attrs carries the request attributes a connection-scoped rule needs, from the
@@ -522,6 +589,28 @@ func (p *Policy) checkRequest(req *http.Request) error {
 
 	if err := p.checkPort(port, target); err != nil {
 		return err
+	}
+
+	// A host that is an IPv4 address in a spelling netip refuses — "127.1",
+	// "2130706433", "0x7f.0.0.1", "0177.0.0.1" — is refused here rather than
+	// handed to a resolver. Whether a resolver reads those as an address is
+	// the resolver's business, and this policy's refusal must not depend on
+	// it: the address they name is the one the author should write, and once
+	// written it is judged like any other (picatz/flowstate#1768).
+	//
+	// Here rather than in the validator, because a URL an expression builds
+	// at run time never passes a validator, and a redirect hop never does
+	// either. This is the one check every request meets.
+	if host := req.URL.Hostname(); host != "" {
+		if _, err := netip.ParseAddr(host); err != nil {
+			if canonical, ok := legacyIPv4(host); ok {
+				return &DenyError{
+					Reason: ReasonRequest,
+					Target: target,
+					Detail: fmt.Sprintf("host %q is not a canonical IPv4 address; write %s", host, canonical),
+				}
+			}
+		}
 	}
 
 	// With a proxy configured, the dialer only ever sees the proxy's address, so
@@ -696,13 +785,31 @@ func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string,
 // resolved and the socket created, but before the connection is made, for every
 // address the dialer tries. Returning an error prevents the connection.
 func (p *Policy) controlDial(ctx context.Context, network, address string, _ syscall.RawConn) error {
+	answered, tracked := ctx.Value(dialAnsweredKey{}).(*dialAnswered)
+
 	// This policy is about to answer for this dial, allow or deny, which is
 	// what [Policy.dialWithVerdict] needs to know: everything below is a
 	// verdict, and a dial that never got here has none.
-	if answered, ok := ctx.Value(dialAnsweredKey{}).(*dialAnswered); ok {
+	if tracked {
 		answered.answered.Store(true)
 	}
 
+	err := p.decideDial(ctx, network, address)
+
+	// A denial is kept as well as returned, so that the dialer choosing to
+	// report another attempt's error cannot lose it.
+	var denied *DenyError
+	if tracked && errors.As(err, &denied) {
+		answered.denied.CompareAndSwap(nil, denied)
+	}
+
+	return err
+}
+
+// decideDial is [Policy.controlDial]'s verdict about one resolved address: the
+// control-plane reservation, the address policy, and the connection-scoped
+// rules.
+func (p *Policy) decideDial(ctx context.Context, network, address string) error {
 	a, hasAttrs := attrsFromContext(ctx)
 
 	// Every denial here is about the hop those attributes describe, and the
@@ -877,9 +984,14 @@ func (p *Policy) refuseRedirect(req *http.Request, via []*http.Request) error {
 //
 // [Policy.CheckURL] deliberately does not go through this. Its request is one
 // this package built for a check, so it has no response behind it and there is
-// no chain to be after.
+// no chain to be after — and it is why the literal-host check lives here and
+// not in [Policy.checkRequest]: CheckURL answers the questions that need no
+// address, and a hop is about to be dialed.
 func (p *Policy) checkRequestHop(req *http.Request) error {
 	err := p.checkRequest(req)
+	if err == nil {
+		err = p.checkLiteralHost(req)
+	}
 	if err == nil {
 		return nil
 	}
@@ -902,6 +1014,38 @@ func (p *Policy) checkRequestHop(req *http.Request) error {
 	return err
 }
 
+// checkLiteralHost applies the address policy to a hop whose host is already an
+// address, before the resolver or a socket is touched.
+//
+// The dialer's hook runs only once a socket exists, so an IP literal the policy
+// could judge by inspection was judged by whether the host could open that
+// socket: on a host without IPv6, "[::1]" burned the whole dial timeout and
+// came back undecided, while on a host with it the hook denied in
+// milliseconds — the same file, two audit trails (picatz/flowstate#1768). The
+// verdict here is [Policy.checkResolvedAddr], the hook's own, so nothing the
+// dialer would refuse passes; the hook remains, because a name has to resolve
+// before it can be judged, and a literal that passes here still meets it and
+// the connection-scoped rules there.
+//
+// A host that is not a literal is left for the dialer: this makes no lookup.
+func (p *Policy) checkLiteralHost(req *http.Request) error {
+	addr, err := netip.ParseAddr(req.URL.Hostname())
+	if err != nil {
+		return nil
+	}
+
+	scheme := strings.ToLower(req.URL.Scheme)
+
+	port, err := requestPort(req.URL, scheme)
+	if err != nil {
+		// Already refused by [Policy.checkRequest]; refused again rather than
+		// passed, so this never depends on being called second.
+		return &DenyError{Reason: ReasonPort, Target: req.URL.Redacted(), Detail: err.Error()}
+	}
+
+	return p.checkResolvedAddr(req.Context(), netip.AddrPortFrom(addr, port))
+}
+
 // CheckURL reports whether p permits a request with the given method to the given
 // URL, applying every check that does not need a resolved address: the scheme, the
 // port, and the request-scoped rules. It is meant for validating a workflow
@@ -917,8 +1061,8 @@ func (p *Policy) checkRequestHop(req *http.Request) error {
 // strength of something the machine they are typing on may not share.
 //
 // A URL that passes may still be denied when it is requested, because the address
-// it resolves to is only checked then. Use [Policy.CheckAddr] to check a resolved
-// address.
+// it resolves to — or, for a host that is an IP literal, names — is only checked
+// then. Use [Policy.CheckAddr] to check a resolved address.
 //
 // The returned error wraps [ErrDenied] and is a [*DenyError], with one
 // exception: a rule the caller's context interrupted returns an

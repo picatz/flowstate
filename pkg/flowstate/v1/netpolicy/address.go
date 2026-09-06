@@ -3,6 +3,8 @@ package netpolicy
 import (
 	"net/netip"
 	"slices"
+	"strconv"
+	"strings"
 )
 
 // Networks that classification needs to recognise by prefix rather than by one of
@@ -173,6 +175,82 @@ func containsAny(prefixes []netip.Prefix, addr netip.Addr) bool {
 	return slices.ContainsFunc(prefixes, func(prefix netip.Prefix) bool {
 		return prefix.Contains(addr)
 	})
+}
+
+// legacyIPv4 reports whether host is an IPv4 address in one of the spellings
+// inet_aton accepts and [netip.ParseAddr] refuses — fewer than four parts
+// ("127.1"), a single number ("2130706433"), or octal and hexadecimal parts
+// ("0177.0.0.1", "0x7f.0.0.1", "127.0.0.01") — and returns the canonical
+// dotted-decimal address it names.
+//
+// These are the classic filter-evasion spellings. Left alone they are treated as
+// hostnames and handed to a resolver, and what happens next depends on the
+// resolver: one built on inet_aton answers with the loopback address the policy
+// would have refused on sight, and one that is not answers "no such host" after
+// its whole timeout. Naming the canonical form lets the refusal say what to
+// write instead.
+//
+// Only called for a host netip has already refused, so a canonical address never
+// reaches it. A host it does not recognise is left to be what it was, a name.
+func legacyIPv4(host string) (netip.Addr, bool) {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return netip.Addr{}, false
+	}
+
+	var value uint64
+	for i, part := range parts {
+		n, ok := legacyIPv4Part(part)
+		if !ok {
+			return netip.Addr{}, false
+		}
+
+		// Every part but the last is one byte; the last fills whatever bytes
+		// remain, which is how "127.1" reaches 127.0.0.1 and "2130706433" fills
+		// all four.
+		bits := uint(8)
+		if i == len(parts)-1 {
+			bits = uint(8 * (5 - len(parts)))
+		}
+		if n >= 1<<bits {
+			return netip.Addr{}, false
+		}
+		value = value<<bits | n
+	}
+
+	var b [4]byte
+	for i := range b {
+		b[i] = byte(value >> (8 * (3 - i)))
+	}
+
+	return netip.AddrFrom4(b), true
+}
+
+// legacyIPv4Part parses one dot-separated part of an inet_aton spelling: "0x"
+// or "0X" prefixes hexadecimal, a leading zero prefixes octal, and anything
+// else is decimal. A part that is not a number in one of those forms is not
+// part of an address.
+func legacyIPv4Part(part string) (uint64, bool) {
+	base, digits := 10, part
+
+	switch {
+	case len(part) > 2 && (strings.HasPrefix(part, "0x") || strings.HasPrefix(part, "0X")):
+		base, digits = 16, part[2:]
+	case len(part) > 1 && part[0] == '0':
+		base, digits = 8, part[1:]
+	}
+
+	if digits == "" {
+		return 0, false
+	}
+
+	// 32 bits bounds the parse: no part of a 32-bit address is wider.
+	n, err := strconv.ParseUint(digits, base, 32)
+	if err != nil {
+		return 0, false
+	}
+
+	return n, true
 }
 
 // CheckAddr reports whether p permits a connection to the given resolved address.
