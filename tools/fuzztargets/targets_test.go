@@ -98,6 +98,62 @@ func TestTheShellReaderAgreesWithTheGoReader(t *testing.T) {
 	}
 }
 
+// TestTheShellReaderSelectsTheNamedTargets is the narrowing CI's fuzz-smoke
+// job relies on since #1726: handed the targets the plan selected, list.sh
+// prints those and only those, in the file's order rather than the caller's,
+// and a name that is not in the tier is a refusal rather than a shorter list.
+// The last is the property that matters: `make fuzz-smoke` runs whatever this
+// prints, so an empty answer for a misspelled name would be a fuzz job that
+// passed by running nothing.
+func TestTheShellReaderSelectsTheNamedTargets(t *testing.T) {
+	smoke := InTier(TierSmoke)
+	if len(smoke) < 3 {
+		t.Fatalf("the smoke tier holds %d target(s); this test needs three to reorder", len(smoke))
+	}
+	first, second, last := smoke[0], smoke[1], smoke[len(smoke)-1]
+
+	// Named out of file order, and printed in it.
+	cmd := exec.Command("./list.sh", TierSmoke, last.Name, first.Name)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("list.sh %s %s %s: %v\n%s", TierSmoke, last.Name, first.Name, err, stderr.String())
+	}
+	want := first.Name + " " + first.Dir + "\n" + last.Name + " " + last.Dir + "\n"
+	if got := string(out); got != want {
+		t.Errorf("list.sh selected:\n%s\nwant:\n%s", got, want)
+	}
+	if strings.Contains(string(out), second.Name) {
+		t.Errorf("list.sh printed %s, which was not asked for", second.Name)
+	}
+
+	// A name the tier does not hold, beside one it does: refused, naming it.
+	cmd = exec.Command("./list.sh", TierSmoke, first.Name, "FuzzNoSuchTarget")
+	stderr.Reset()
+	cmd.Stderr = &stderr
+	out, err = cmd.Output()
+	if err == nil {
+		t.Fatalf("list.sh accepted a target the tier does not hold and printed:\n%s", out)
+	}
+	if !strings.Contains(stderr.String(), "FuzzNoSuchTarget") {
+		t.Errorf("the refusal does not name the unknown target:\n%s", stderr.String())
+	}
+
+	// A deep-only target asked of the smoke tier is the same refusal: the
+	// tier decides, not the file as a whole.
+	for _, target := range All() {
+		if target.InTier(TierSmoke) {
+			continue
+		}
+		cmd = exec.Command("./list.sh", TierSmoke, target.Name)
+		if out, err := cmd.Output(); err == nil {
+			t.Errorf("list.sh smoke %s printed %q; the target is deep-only", target.Name, out)
+		}
+		break
+	}
+}
+
 // TestNoRunnerHoldsItsOwnCopyOfTheList. The fix is only a fix while the copies
 // stay gone: a target name spelled into the Makefile or into either workflow is
 // a fifth list starting over. Every runner reaches the targets through

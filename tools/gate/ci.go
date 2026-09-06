@@ -14,14 +14,14 @@ import (
 // Go code changed". cmdFlowPkg and flowtestPkg live in plan.go beside the legs
 // they already decide.
 //
-// The packages holding fuzz targets are not among them any more: fuzzPkgs below
-// derives them from tools/fuzztargets/targets.txt, because that file is where
-// the targets themselves are written and "which packages hold one" is a fact
-// about that list rather than a second thing to remember (#857). They used to be
-// hand-kept here — flowfilePkg, pluginPkg, v1Pkg, lspPkg, each with a comment
-// naming the target it existed for — while the same list was hand-kept in three
-// other places, which is how the weekly deep tier came to run four of the ten
-// targets the smoke tier ran.
+// The packages holding fuzz targets are not among them any more:
+// affectedSmokeTargets below reads them from tools/fuzztargets/targets.txt,
+// because that file is where the targets themselves are written and "which
+// packages hold one" is a fact about that list rather than a second thing to
+// remember (#857). They used to be hand-kept here — flowfilePkg, pluginPkg,
+// v1Pkg, lspPkg, each with a comment naming the target it existed for — while
+// the same list was hand-kept in three other places, which is how the weekly
+// deep tier came to run four of the ten targets the smoke tier ran.
 const (
 	// v1Pkg is the root v1 package: home of FuzzWebhookEventBinding (#799)
 	// and FuzzCELEvaluate (#403), alongside every non-fuzz test already
@@ -31,22 +31,51 @@ const (
 	v1Pkg = modulePath + "/pkg/flowstate/v1"
 )
 
-// fuzzPkgs is the set of packages holding a fuzz target, as import paths, read
-// from the one written source of the target list.
+// fuzzTargetsOutput is the plan output naming the smoke targets the fuzz-smoke
+// job runs, space-separated in targets.txt order. The job hands it to
+// `make fuzz-smoke` as FUZZ_SMOKE_TARGETS; ci_test.go pins that wiring.
+const fuzzTargetsOutput = "fuzz_targets"
+
+// affectedSmokeTargets is the smoke-tier targets whose package the diff
+// reaches, in targets.txt order. It is the *target* list rather than a package
+// set because that is what the job spends: thirteen targets at 30s each is the
+// better part of the job's budget, and a flowfile change can move seven of them
+// while an engine change moves none in this tier (#1726). A target's behaviour
+// is its package's behaviour, so the affected set decides it the same way it
+// decides the ordering leg.
 //
-// The subtlety the hand-kept list had to state and this one gets for free is why
-// the language server is an entry of its own despite sitting underneath
-// flowfile: the affected set is computed over the import graph and not over the
-// directory tree. lsp imports flowfile, so a flowfile change reaches lsp, and a
-// change to lsp reaches nothing above it — a diff touching only the language
-// server would skip the job that fuzzes it if this were a prefix match.
-func fuzzPkgs() []string {
-	dirs := fuzztargets.Dirs()
-	pkgs := make([]string, 0, len(dirs))
-	for _, dir := range dirs {
-		pkgs = append(pkgs, modulePath+"/"+dir)
+// The subtlety the hand-kept package list had to state and this one gets for
+// free is why the language server's targets are selected on their own despite
+// sitting underneath flowfile: the affected set is computed over the import
+// graph and not over the directory tree. lsp imports flowfile, so a flowfile
+// change reaches lsp, and a change to lsp reaches nothing above it — a diff
+// touching only the language server would skip the targets that fuzz it if
+// this were a prefix match.
+//
+// It is the smoke tier's targets and not every tier's, which is a change from
+// the package set this replaced. A deep-only target's package used to reach the
+// job so that promoting the target to smoke did not silently alter which diffs
+// reach it; with the job running only the targets it was handed, the same diff
+// would run a job with nothing in it, and the promotion itself is an edit to
+// targets.txt, which buildPlan already forces wide.
+func affectedSmokeTargets(affected []string) []string {
+	var out []string
+	for _, t := range fuzztargets.InTier(fuzztargets.TierSmoke) {
+		if contains(affected, t.ImportPath(modulePath)) {
+			out = append(out, t.Name)
+		}
 	}
-	return pkgs
+	return out
+}
+
+// allSmokeTargets is every smoke-tier target's name, in targets.txt order: what
+// a forced run fuzzes, and what `make fuzz-smoke` runs when handed no list.
+func allSmokeTargets() []string {
+	var out []string
+	for _, t := range fuzztargets.InTier(fuzztargets.TierSmoke) {
+		out = append(out, t.Name)
+	}
+	return out
 }
 
 // decision is one job in .github/workflows/ci.yml and whether this diff can
@@ -66,6 +95,13 @@ type decision struct {
 
 	Run bool
 	Why string
+
+	// Outputs are the further `name=value` pairs this job reads beside its
+	// boolean, published to $GITHUB_OUTPUT under the same rules as Output:
+	// the name must be a legal identifier in a workflow expression, and the
+	// plan job's `outputs:` block must forward it. fuzz-smoke's target list
+	// is the one today.
+	Outputs map[string]string
 }
 
 // ciDecisions maps a diff to the CI jobs it can reach.
@@ -85,29 +121,25 @@ type decision struct {
 func ciDecisions(p plan, affected []string, force string) []decision {
 	goAffected := len(affected) > 0
 
-	// test: the widest job. It builds, vets, tests, walks the plugin
-	// modules, regenerates the reference docs, and runs the three example
-	// checks and the compose parse — so anything Go, anything under
+	// test: the widest job, and the critical path. It builds, vets and tests
+	// the root module, regenerates the reference docs, and runs the three
+	// example checks and the compose parse — so anything Go, anything under
 	// examples/ (which is where the compose file lives), the schema, and
 	// the derived-docs sources all reach it.
 	//
-	// p.plugins is in this OR for the reason a path filter could not express:
-	// a plugin module is a separate Go module, so a diff touching only
-	// plugins/<name>/ never lands in affected (go list ./... from the root
-	// cannot see it) and touches none of examples/, proto/ or the derived-docs
-	// sources either. Without this arm testRun was false for exactly that
-	// diff, the test job — the only job that runs `make test-plugins`, since
-	// nothing else in this workflow walks a plugin module at all — was
-	// skipped, and verdict accepted the skip: a plugin that does not compile
-	// could merge on a PR whose only change was to that plugin.
 	// p.repoTestData is in the OR for the same #589 shape p.examples already
 	// covers, one file further out: README.md and docs/ARCHITECTURE.md are
 	// read directly by cmd/flow/commands_test.go and
 	// pkg/flowstate/v1/flowfile/readme_test.go with os.ReadFile rather than
 	// imported, so a change to either can make one of those tests fail or go
 	// stale without moving a Go file, examples/, or proto/.
-	testRun := goAffected || p.examples || p.docs || p.proto || len(p.plugins) > 0 || p.repoTestData
-	testWhy := "no Go package is affected, and nothing under examples/ or proto/, none of the derived-docs sources or repository-level test data, and no plugin module changed"
+	//
+	// A plugin-only diff is not in this OR any more. It used to be, because
+	// this job was the only one that ran `make test-plugins`; that step has
+	// a job of its own below, and this one — the five-minute root suite — is
+	// what a plugin change should not have to wait for (#1726).
+	testRun := goAffected || p.examples || p.docs || p.proto || p.repoTestData
+	testWhy := "no Go package is affected, and nothing under examples/ or proto/, and none of the derived-docs sources or repository-level test data changed"
 	switch {
 	case goAffected:
 		testWhy = fmt.Sprintf("%d affected package(s)", len(affected))
@@ -117,14 +149,76 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 		testWhy = p.reasons["proto"] + " changed"
 	case p.docs:
 		testWhy = p.reasons["docs"] + " changed"
-	case len(p.plugins) > 0:
-		testWhy = strings.Join(p.plugins, ", ") + " changed, and make test-plugins is the only thing that builds/vets/tests it"
 	case p.repoTestData:
 		testWhy = p.reasons["test"] + " changed, and it is read directly by tests rather than imported"
 	}
 
+	// test-plugins: `make test-plugins` and `make plugin-examples`, off the
+	// critical path since #1726 but on every trigger the root suite has bar
+	// the docs and repository-data ones, plus the one only it has.
+	//
+	// p.plugins is here for the reason a path filter could not express: a
+	// plugin module is a separate Go module, so a diff touching only
+	// plugins/<name>/ never lands in affected (go list ./... from the root
+	// cannot see it) and touches none of examples/ or proto/ either. Before
+	// this arm existed on the test job, exactly that diff reached no job at
+	// all, and verdict accepted the skip: a plugin that does not compile could
+	// merge on a PR whose only change was to that plugin.
+	//
+	// goAffected is here because the boundary runs the other way too: every
+	// plugin module replaces github.com/picatz/flowstate with ../.., so a
+	// root package that moved is a package a plugin may be compiled against,
+	// and the root module's import graph cannot say which. p.examples and
+	// p.proto for what plugin-examples reads: the reviewed catalog and the
+	// examples it validates live under examples/plugins/, and the schema is
+	// the contract the plugins' descriptors are compiled from. examples/ as a
+	// whole rather than examples/plugins/ alone is a deliberate over-run — the
+	// job is two minutes off the critical path, and the narrower rule is a
+	// second path spelling for a directory the plan already names.
+	pluginsRun := goAffected || len(p.plugins) > 0 || p.examples || p.proto
+	pluginsWhy := "no Go package is affected, no plugin module changed, and nothing under examples/ or proto/ changed"
+	switch {
+	case len(p.plugins) > 0:
+		pluginsWhy = strings.Join(p.plugins, ", ") + " changed, and make test-plugins is the only thing that builds/vets/tests it"
+	case goAffected:
+		pluginsWhy = fmt.Sprintf("%d affected package(s), which the plugin modules compile against through their replace directives", len(affected))
+	case p.examples:
+		pluginsWhy = p.reasons["examples"] + " changed, and plugin-examples validates examples/plugins/ against the reviewed catalog"
+	case p.proto:
+		pluginsWhy = p.reasons["proto"] + " changed, and the schema is the contract the plugins compile against"
+	}
+
+	// test-ordering: the flowtest package under -cpu=1, on the same trigger
+	// the local tier's ordering leg has. p.examples is the #589 data
+	// dependency the import graph cannot see — the package's fuzz seeds walk
+	// examples/ off disk — which the local tier reaches by seeding the affected
+	// set and CI, which does not seed, reaches by naming it here.
+	orderingRun := needsOrdering(affected) || p.examples
+	orderingWhy := "the flowtest package is not affected and nothing under examples/ changed"
+	switch {
+	case needsOrdering(affected):
+		orderingWhy = "the flowtest package is affected, and its every claim is an ordering claim"
+	case p.examples:
+		orderingWhy = p.reasons["examples"] + " changed, and the flowtest package reads examples/ off disk"
+	}
+
+	// fuzz-smoke: the smoke targets whose package the diff reaches, published
+	// as their own output beside the boolean so the job runs those and not
+	// the tier. A forced run fuzzes the whole tier, which is what the local
+	// `make fuzz-smoke` does when handed no list.
+	smokeTargets := affectedSmokeTargets(affected)
+	if force != "" {
+		smokeTargets = allSmokeTargets()
+	}
+	fuzzWhy := "no package holding a smoke-tier fuzz target is affected"
+	if len(smokeTargets) > 0 {
+		fuzzWhy = fmt.Sprintf("%d smoke target(s) live in affected packages: %s", len(smokeTargets), strings.Join(smokeTargets, ", "))
+	}
+
 	decisions := []decision{
 		{Job: "test", Output: "test", Run: testRun, Why: testWhy},
+		{Job: "test-plugins", Output: "test_plugins", Run: pluginsRun, Why: pluginsWhy},
+		{Job: "test-ordering", Output: "test_ordering", Run: orderingRun, Why: orderingWhy},
 
 		{Job: "proto", Output: "proto",
 			Run: p.proto,
@@ -151,17 +245,12 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 			Why: pick(goAffected || len(p.plugins) > 0, staticcheckWhy(affected, p),
 				"no Go package is affected and no plugin module changed")},
 
-		// A target's behaviour is its package's behaviour, so the
-		// affected set decides this the same way it decides the ordering
-		// leg. Which packages those are comes from the target list, so
-		// the reason printed for a skip names the packages holding a
-		// target today rather than the ones that held one when this line
-		// was written.
+		// See affectedSmokeTargets: the job runs exactly the targets the
+		// output names, and it runs at all only when there is one.
 		{Job: "fuzz-smoke", Output: "fuzz_smoke",
-			Run: needsFuzz(affected),
-			Why: pick(needsFuzz(affected),
-				"a package holding a fuzz target is affected",
-				"no package holding a fuzz target ("+strings.Join(fuzztargets.Dirs(), ", ")+") is affected")},
+			Run:     len(smokeTargets) > 0,
+			Why:     fuzzWhy,
+			Outputs: map[string]string{fuzzTargetsOutput: strings.Join(smokeTargets, " ")}},
 
 		{Job: "appearance", Output: "appearance",
 			Run: needsAppearance(p, affected),
@@ -177,16 +266,6 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 		}
 	}
 	return decisions
-}
-
-// needsFuzz reports whether any package holding a fuzz target is affected.
-func needsFuzz(affected []string) bool {
-	for _, pkg := range fuzzPkgs() {
-		if contains(affected, pkg) {
-			return true
-		}
-	}
-	return false
 }
 
 // needsAppearance reports whether this diff can move a recorded golden.
@@ -273,9 +352,9 @@ func ciForceReason(event, base string, p plan) string {
 
 // writeCIDecisions publishes the decisions three ways: one line per job on
 // stdout (the same "say why" shape the local tier prints), a `name=value` pair
-// per job plus a `decisions` JSON object in $GITHUB_OUTPUT, and a table in
-// $GITHUB_STEP_SUMMARY so the answer is readable from the run page without
-// opening a log.
+// per job — and per further output a job carries — plus a `decisions` JSON
+// object in $GITHUB_OUTPUT, and a table in $GITHUB_STEP_SUMMARY so the answer
+// is readable from the run page without opening a log.
 //
 // The JSON object is what the verdict job reads. It is deliberately the *same*
 // object the `if:` expressions are driven from, so the two cannot disagree about
@@ -299,6 +378,9 @@ func writeCIDecisions(decisions []decision) error {
 		var b strings.Builder
 		for _, d := range decisions {
 			fmt.Fprintf(&b, "%s=%t\n", d.Output, d.Run)
+			for _, name := range sortedKeys(d.Outputs) {
+				fmt.Fprintf(&b, "%s=%s\n", name, d.Outputs[name])
+			}
 		}
 		fmt.Fprintf(&b, "decisions=%s\n", encoded)
 		if err := appendFile(path, b.String()); err != nil {
@@ -321,11 +403,25 @@ func writeCIDecisions(decisions []decision) error {
 		}
 		b.WriteString("\nA skipped job here is not a check that passed: the `verdict` job re-reads this " +
 			"same plan and fails unless every job it selected actually succeeded.\n")
+		for _, d := range sorted {
+			for _, name := range sortedKeys(d.Outputs) {
+				fmt.Fprintf(&b, "\n`%s` reads `%s`: %s\n", d.Job, name, pick(d.Outputs[name] != "", d.Outputs[name], "(empty)"))
+			}
+		}
 		if err := appendFile(path, b.String()); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func appendFile(path, content string) error {
