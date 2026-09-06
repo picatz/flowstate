@@ -268,6 +268,42 @@ forwards every output the plan publishes, and that the `fuzz-smoke` step reads
 `fuzz_targets` — because the Makefile's default is the whole tier, and a step
 that dropped the variable would stay green at the old cost.
 
+### A failing test is an annotation, not a line in a log
+
+Until #1727, `ci.yml` emitted `::error` annotations for gofmt drift, generated
+docs, generated code and plan disagreements, and none for a failing Go test:
+the `Test` step was `make test` as plain text, five to six minutes of it, and
+a reviewer read the log for `--- FAIL`. Now `make test`, `make test-ordering`
+and `make test-plugins` run `go test -json` through `tools/testsum`, and the
+local gate's test legs do the same, so the local loop and CI print one shape:
+a count of what passed, then one block per failing test — package, test, the
+assertion lines with their `dir/file.go:NN`, and the shuffle seed to rerun
+that order. Under Actions it also writes one `::error file=…,line=…` per
+failing test, which the Files tab renders inline, and a table to the job
+summary. A panic is attributed to its test with the frame inside it; a timeout,
+which the stream never attributes, is inferred as the test that was started and
+never finished when its package failed, with the goroutine that was blocked in
+it. The raw stream is uploaded as an artifact from the `test` job so the full
+record is there when the summary is not enough.
+
+The recipes are pipelines, so those three targets select `bash` with
+`pipefail` for their shells: `/bin/sh` is `dash` 0.5.12 on Ubuntu 24.04, here
+and on the runners, and it rejects `set -o pipefail`; a `go test` that died
+before printing a failure must still be red.
+
+`make test TEST_SHUFFLE=on` passes the value to `go test -shuffle`, and the
+seed each package prints is what testsum's rerun lines carry. It defaults to
+`off`, because turning it on found the thing it exists to find before it could
+be the default: three `cmd/flow` tests (`TestGeneratedDocsAreCommitted`,
+`TestPluginDirWiresPluginTasksIntoTheMCPSurface`,
+`TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy`) share the
+process-wide `DefaultRegistry`, which has no unregister, and fail under seed
+`1788698486191639409` whenever a plugin or egress-policy test runs first —
+reproducibly, from the seed, which is the mechanism working. Their own
+comments record the coupling. A default that is red on a coin flip teaches
+people to rerun rather than read, so the default waits on that isolation
+being fixed.
+
 ### Caching
 
 `actions/setup-go` derives its cache key from a hash of `cache-dependency-path`,

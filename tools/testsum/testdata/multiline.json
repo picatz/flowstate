@@ -1,0 +1,17 @@
+{"Time":"2026-09-06T12:49:23.940538265Z","Action":"start","Package":"example.com/fixture/multi"}
+{"Time":"2026-09-06T12:49:23.944257514Z","Action":"output","Package":"example.com/fixture/multi","Output":"-test.shuffle 1788698963944211373\n"}
+{"Time":"2026-09-06T12:49:23.944491249Z","Action":"run","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage"}
+{"Time":"2026-09-06T12:49:23.944497318Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"=== RUN   TestMultiLineMessage\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:49:23.944573984Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"    multi_test.go:6: the document differs:\n","OutputType":"error"}
+{"Time":"2026-09-06T12:49:23.944720495Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"        --- want\n","OutputType":"error-continue"}
+{"Time":"2026-09-06T12:49:23.944724837Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"        +++ got\n","OutputType":"error-continue"}
+{"Time":"2026-09-06T12:49:23.944727293Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"        -alpha\n","OutputType":"error-continue"}
+{"Time":"2026-09-06T12:49:23.944729177Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"        +beta\n","OutputType":"error-continue"}
+{"Time":"2026-09-06T12:49:23.944731365Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"    multi_test.go:7: a log line\n"}
+{"Time":"2026-09-06T12:49:23.944734015Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"        with a continuation\n"}
+{"Time":"2026-09-06T12:49:23.944736204Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"    multi_test.go:8: and one more\n","OutputType":"error"}
+{"Time":"2026-09-06T12:49:23.944742806Z","Action":"output","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Output":"--- FAIL: TestMultiLineMessage (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:49:23.944745506Z","Action":"fail","Package":"example.com/fixture/multi","Test":"TestMultiLineMessage","Elapsed":0}
+{"Time":"2026-09-06T12:49:23.944752499Z","Action":"output","Package":"example.com/fixture/multi","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:49:23.945115015Z","Action":"output","Package":"example.com/fixture/multi","Output":"FAIL\texample.com/fixture/multi\t0.004s\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:49:23.945181971Z","Action":"fail","Package":"example.com/fixture/multi","Elapsed":0.005}

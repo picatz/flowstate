@@ -58,6 +58,12 @@ out, unavailable, or not run. Name the first actionable failure. Do not translat
 a skipped leg or silent tool absence into green. Check for stray processes and
 the final diff before declaring completion.
 
+`make test` and the gate's test legs pipe `go test -json` through
+`tools/testsum`, which prints the failing tests with their `file.go:NN`, the
+shuffle seed to rerun them when `-shuffle` is on, and a count of what passed.
+Quote that block rather than the log; for one package,
+`go test -json ./path/ | go run ./tools/testsum` prints the same shape.
+
 ## Historical field notes
 
 Read the archived [full CI](../../../.agent-history/commands/ci-check.md) or [fast test](../../../.agent-history/commands/test-fast.md) command only when a prior rationale is relevant. They are evidence and history, not a second current procedure.
