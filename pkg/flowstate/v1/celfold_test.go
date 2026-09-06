@@ -137,16 +137,21 @@ func TestFoldsSpendAgainstTheCostBudget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(499500), out.Value())
 
+	// The budget admits the range (charged one unit per element since #1769,
+	// so 10,000 of the 15,000) and not the fold over it, which is what makes
+	// the refusal below the fold's rather than the range's. The list is at the
+	// element bound rather than past it for the same reason: past it, the
+	// range would be refused before any fold ran (cellistbound.go).
 	small := NewEvaluator(WithLimits(Limits{
-		Cost:                    5_000,
+		Cost:                    15_000,
 		InterruptCheckFrequency: DefaultInterruptCheckFrequency,
 	}))
 	libs, err := ProfileLibraries(CurrentProfile)
 	require.NoError(t, err)
 
 	for _, expr := range []string{
-		`lists.range(100000).sum()`,
-		`lists.range(100000).reduce(a, v, 0, a + v)`,
+		`lists.range(10000).sum()`,
+		`lists.range(10000).reduce(a, v, 0, a + v)`,
 	} {
 		_, err := small.EvalString(t.Context(), expr, libs, map[string]any{})
 		require.Error(t, err, "a fold past the budget must be refused mid-fold: %s", expr)

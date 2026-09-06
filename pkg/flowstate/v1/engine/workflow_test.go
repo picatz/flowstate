@@ -1527,6 +1527,50 @@ func TestRunWorkflowZeroValues(t *testing.T) {
 // `runStepAttempt`, so the same cases have to fail (and succeed) the same way
 // here.
 func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
+	runTaskOutputElementBoundCases(t)
+}
+
+// TestRunWorkflowExpressionElementBound covers the durable driver's half of
+// #1769, pairing the local run of the identical
+// [conformance.ExpressionElementBoundCases]. The issue's file is the one that
+// wedged this driver: `value:` steps evaluate on the workflow side, and two
+// evaluations of its expression in one workflow task exceeded the deadlock
+// budget. The elapsed-time bound is what proves the refusal now lands before
+// that work rather than after it; the real-worker half — that no task panics
+// and nothing is retried — is TestTheIssuesFileFailsDurablyWithoutAPanic.
+func TestRunWorkflowExpressionElementBound(t *testing.T) {
+	for _, test := range conformance.ExpressionElementBoundCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			started := time.Now()
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			elapsed := time.Since(started)
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "a list built past the element bound must be refused")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+				require.Less(t, elapsed, 3*time.Second,
+					"the refusal landed only after the work it exists to prevent")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
+func runTaskOutputElementBoundCases(t *testing.T) {
 	baseURL := conformance.NewHTTPServer(t)
 	for _, test := range conformance.TaskOutputElementBoundCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {

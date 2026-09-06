@@ -92,8 +92,9 @@ func TestEvaluatorCostLimit(t *testing.T) {
 			// asserting explicitly, because the old check could not tell this
 			// case apart from the one below and would have stayed green if the
 			// pre-allocation guard were removed and the expression allowed to
-			// allocate its way into the cost limit instead.
-			wantErr: "exceeds maximum allowed",
+			// allocate its way into the cost limit instead. The guard is this
+			// system's own since #1769 (cellistbound.go), worded like #204's.
+			wantErr: "would build a list of 50000000 elements",
 		},
 		{
 			name: "nested comprehension blowup",
