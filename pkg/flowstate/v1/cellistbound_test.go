@@ -29,8 +29,9 @@ func TestListsRangeIsBoundedAtTheElementBound(t *testing.T) {
 		"the refusal is the author's to fix and must classify as an expression failure, not Internal")
 }
 
-// The lists extension's own `lists.range` is still the one refusing a negative
-// size, so replacing its binding must not have lost that edge.
+// The binding this system installs over the extension's (listRangeLibrary)
+// refuses a negative size in the extension's own words, so replacing the
+// binding did not lose that edge.
 func TestListsRangeStillRefusesANegativeSize(t *testing.T) {
 	t.Parallel()
 
