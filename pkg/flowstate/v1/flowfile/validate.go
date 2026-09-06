@@ -2162,10 +2162,12 @@ func ValidateSourceFile(path string) (Diagnostics, error) {
 // workflow already in hand is not.
 //
 // A file that does not compile is reported exactly as [ValidateSourceFile]
-// reports it, edition rewrite included: the error is the [Diagnostics], and
-// there is no workflow. That path compiles the bytes again, which is the cost
-// of agreeing with `flow validate` on a file that failed, paid only by a file
-// that failed.
+// reports it: the error is the [Diagnostics], with the step-id checks run
+// against whatever partial workflow the compiler built, and there is no
+// workflow. The one failure that compiles the bytes again is the edition
+// gate, whose rewrite path needs the source rather than the tree — the cost
+// of agreeing with `flow validate` about an old file, paid only by an old
+// file.
 func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
 	data, err := readBoundedSource(path)
 	if err != nil {
@@ -2174,13 +2176,15 @@ func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
 
 	wf, positions, err := parse(data, path, nil, new(int))
 	if err != nil {
-		if _, verr := validateThroughEdition(data, path); verr != nil {
-			return nil, nil, verr
+		var gate Diagnostics
+		if errors.As(err, &gate) && isEditionGate(gate) {
+			if _, verr := validateThroughEdition(data, path); verr != nil {
+				return nil, nil, verr
+			}
 		}
-		return nil, nil, err
 	}
 
-	ds, err := validateParsed(wf, positions, nil)
+	ds, err := validateParsed(wf, positions, err)
 	if err != nil {
 		return nil, nil, err
 	}

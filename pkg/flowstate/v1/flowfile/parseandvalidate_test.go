@@ -15,9 +15,9 @@ import (
 // TestParseAndValidateFileAgreesWithItsTwoHalves: the one-pass entry (#1795)
 // hands back exactly the workflow ParseFile compiles and exactly the
 // diagnostics ValidateSourceFile reports, on every shipped example and on the
-// three ways a file can fail — a diagnostic the compiler accepts but the
-// validator refuses, a file that does not compile, and an old edition the
-// rewrite path reports beyond the gate.
+// four ways a file can fail — a diagnostic the compiler accepts but the
+// validator refuses, a file that does not compile, an old edition the rewrite
+// path reports beyond the gate, and a document that is not YAML at all.
 func TestParseAndValidateFileAgreesWithItsTwoHalves(t *testing.T) {
 	t.Parallel()
 
