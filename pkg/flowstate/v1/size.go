@@ -469,3 +469,35 @@ const WorkerDeadlockDetectionTimeout = 5 * time.Second
 // default stop grace is 10s) has to raise it or the container's SIGKILL will
 // still land before the drain finishes — see docs/DEPLOYMENT.md.
 const DefaultWorkerStopTimeout = 2 * time.Minute
+
+// What a schedule may ask of a cluster, before the cluster is asked.
+//
+// A schedule is the one shape where Flowstate itself chooses a run's volume: a
+// tenant admitted by the trust policy writes a cadence once, and every firing
+// after that starts a run under their fairness key with nobody present and no
+// request for admission control to see. docs/DEPLOYMENT.md's "Noisy neighbor"
+// leaves run volume to Temporal's namespace rate limits, which bound what a
+// tenant can submit; these two bound what a tenant can *arrange*, which is the
+// dimension a rate limit on requests never sees.
+const (
+	// MinScheduleInterval is the shortest cadence a schedule may fire at.
+	//
+	// A minute, because it is the resolution ordinary cron has and the
+	// resolution at which a schedule is still a schedule rather than a polling
+	// loop: a workload that needs to run every second wants a `loop:` inside
+	// one run, where it is bounded by that run's own budget, not a durable
+	// Temporal schedule starting a fresh run each second for as long as
+	// nobody deletes it. Checked by `flow validate`, by `flow schedule create`
+	// and by the server, with one sentence — see [CheckScheduleTrigger].
+	MinScheduleInterval = time.Minute
+
+	// MaxSchedulesPerNamespace is how many schedules one tenant may hold.
+	//
+	// Counted at CreateSchedule through the same listing a tenant's own `flow
+	// schedule list` reads, so what is refused is exactly what the tenant can
+	// see. A hundred is chosen to be past any real tenant rather than to be a
+	// budget: schedules are created one at a time by people, and a tenant
+	// arranging its hundred-and-first standing instruction has either
+	// forgotten the first hundred or is not arranging work at all.
+	MaxSchedulesPerNamespace = 100
+)

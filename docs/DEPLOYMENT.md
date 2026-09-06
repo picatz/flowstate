@@ -1141,6 +1141,27 @@ correctly under load; this repo's own design bias (`CLAUDE.md`, "proto-first",
 "leaning into Temporal") is to surface what Temporal does rather than
 reimplement it, and this is exactly that call.
 
+Schedules are the one exception, because they are the one shape where Flowstate
+itself chooses the volume: a tenant writes a cadence once, and every firing after
+that starts a run under their fairness key with nobody present and no request for
+a rate limit to see. Two bounds close that, both constants in the root package
+beside the other bounds (`pkg/flowstate/v1/size.go`). `MinScheduleInterval` (one
+minute) is the fastest cadence a schedule may declare, refused by `flow validate`,
+by `flow schedule create` and by `CreateSchedule` with one sentence naming the
+value written and the floor; the check reads a cadence's seconds — `every:`, a
+seven-field expression's first field, `@every`, a calendar's `second:` — and,
+because a block's cadences are unioned, refuses two cadences on different
+seconds of the minute together, since it cannot evaluate whether they ever share
+one. `MaxSchedulesPerNamespace` (100) is how many schedules one tenant may hold,
+counted at `CreateSchedule` through the same listing `flow schedule list` reads
+and refused past it with `ResourceExhausted` naming the count. Neither is a
+flag: a deployment that needs a faster cadence for one workload should say so in
+an issue with the workload, since the floor exists precisely for the cadence
+nobody reviews. The count is read from Temporal's visibility store, which
+follows a create by a moment, so a burst of creates racing at the limit can
+each pass it; that is a few schedules over in a burst, not a way around the
+bound.
+
 That refusal is about *inbound* admission — runs arriving at `flow server` —
 and is unchanged. It is not in tension with the outbound bound described under
 [Per-host egress rate limits](#per-host-egress-rate-limits) below: no substrate

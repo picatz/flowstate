@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -770,4 +771,132 @@ func TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne(t *testing.T) {
 	assert.Equal(t, "trusted",
 		out.GetStepValues()["report"].GetNamedValues()[v1.ValueOutput].GetLiteral().GetStringValue(),
 		"CreateSchedule executed the caller's submitted copy instead of the deployment's trusted one")
+}
+
+// TestCreateRefusesACadenceUnderTheFloor is the cadence floor asserted at the
+// server, over the wire, with the code that says the request was wrong.
+//
+// `flow validate` refuses the same file with the same sentence, and that is
+// the message an author reads; it is not the bound. The RPC is public, a
+// caller that is not the CLI is the caller a floor exists for, and a schedule
+// admitted here fires under nobody's supervision for as long as it exists.
+func TestCreateRefusesACadenceUnderTheFloor(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	t.Run("an interval under the floor", func(t *testing.T) {
+		workflow := scheduledWorkflow("every-second")
+		workflow.Triggers.Schedule = &v1.ScheduleTrigger{Every: durationpb.New(time.Second)}
+
+		_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: workflow,
+			Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+		}))
+		require.Error(t, err)
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		require.ErrorContains(t, err, "`every:` is 1s")
+		require.ErrorContains(t, err, v1.MinScheduleInterval.String(), "the refusal names the floor")
+	})
+
+	t.Run("an expression that fires within the minute", func(t *testing.T) {
+		workflow := scheduledWorkflow("every-second-by-cron")
+		workflow.Triggers.Schedule.Cron = []string{"* * * * * * *"}
+
+		_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: workflow,
+			Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+		}))
+		require.Error(t, err)
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		require.ErrorContains(t, err, "can fire every 1s")
+	})
+
+	t.Run("an expression that can never fire", func(t *testing.T) {
+		workflow := scheduledWorkflow("february-thirty-first")
+		workflow.Triggers.Schedule.Cron = []string{"0 0 31 2 *"}
+
+		_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: workflow,
+			Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+		}))
+		require.Error(t, err)
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		require.ErrorContains(t, err, "can never fire")
+	})
+
+	t.Run("the floor itself is accepted", func(t *testing.T) {
+		workflow := scheduledWorkflow("every-minute")
+		workflow.Triggers.Schedule = &v1.ScheduleTrigger{Every: durationpb.New(v1.MinScheduleInterval)}
+
+		_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: workflow,
+			Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+			Paused:   true,
+		}))
+		require.NoError(t, err)
+	})
+}
+
+// TestTheScheduleCountIsPerTenantAndReachedBeforeItIsExceeded fills one
+// tenant to its limit and asks for one more.
+//
+// Per tenant rather than per Temporal namespace is the direction that
+// distinguishes the implementations: both tenants here share one Temporal
+// namespace, so a count taken over the raw listing would refuse team B for
+// what team A arranged. The limit is asserted reached as well as not exceeded,
+// which is the rule for a bound — a counter that refused at ninety-nine would
+// pass a test that only asked about the hundred-and-first.
+func TestTheScheduleCountIsPerTenantAndReachedBeforeItIsExceeded(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	request := func(name string) *connect.Request[v1.CreateScheduleRequest] {
+		return connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: scheduledWorkflow(name),
+			Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+			Paused:   true,
+		})
+	}
+
+	// The count is read from the listing, and the listing is Temporal's
+	// visibility store, which follows a create or a delete by a moment. The
+	// test waits for it to catch up before asking the question that depends on
+	// it; the server does not, which is the lag [server.FlowstateServer.CreateSchedule]'s
+	// count documents alongside its race.
+	teamAHolds := func(n int) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			listed, err := fixture.teamA.ListSchedules(t.Context(), connect.NewRequest(&v1.ListSchedulesRequest{}))
+
+			return err == nil && len(listed.Msg.GetSchedules()) == n
+		}, 30*time.Second, 200*time.Millisecond, "the listing never showed %d schedules", n)
+	}
+
+	for i := range v1.MaxSchedulesPerNamespace {
+		_, err := fixture.teamA.CreateSchedule(t.Context(), request(fmt.Sprintf("standing-%03d", i)))
+		require.NoError(t, err, "schedule %d of %d is within the limit", i+1, v1.MaxSchedulesPerNamespace)
+	}
+	teamAHolds(v1.MaxSchedulesPerNamespace)
+
+	_, err := fixture.teamA.CreateSchedule(t.Context(), request("one-too-many"))
+	require.Error(t, err)
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	require.ErrorContains(t, err, fmt.Sprintf("%d schedules", v1.MaxSchedulesPerNamespace), "the refusal names the count")
+
+	listed, err := fixture.teamA.ListSchedules(t.Context(), connect.NewRequest(&v1.ListSchedulesRequest{}))
+	require.NoError(t, err)
+	require.Len(t, listed.Msg.GetSchedules(), v1.MaxSchedulesPerNamespace, "the refused schedule was not created")
+
+	_, err = fixture.teamB.CreateSchedule(t.Context(), request("team-b-is-not-full"))
+	require.NoError(t, err, "another tenant's schedules do not count against this one")
+
+	// Deleting one makes room for one, which is what ResourceExhausted promised.
+	_, err = fixture.teamA.DeleteSchedule(t.Context(), connect.NewRequest(&v1.DeleteScheduleRequest{Name: "standing-000"}))
+	require.NoError(t, err)
+	teamAHolds(v1.MaxSchedulesPerNamespace - 1)
+
+	_, err = fixture.teamA.CreateSchedule(t.Context(), request("one-too-many"))
+	require.NoError(t, err)
 }

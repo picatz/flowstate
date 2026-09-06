@@ -909,9 +909,11 @@ func TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges(t *testing.T) {
 
 	// What the checker must not refuse: every field at both edges of its range, a
 	// stepped range, and an `end` of zero, which the schema cannot tell from an end
-	// nobody wrote and Temporal reads as the start alone.
+	// nobody wrote and Temporal reads as the start alone. Second holds one value
+	// at its top edge rather than a range, because two seconds of one minute are
+	// a cadence under the floor — TestScheduleCadenceFloorHoldsAtItsEdge's case.
 	assert.NoError(t, v1.CheckScheduleTrigger(calendar(&v1.ScheduleTrigger_Calendar{
-		Second:     []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59, Step: 15}},
+		Second:     []*v1.ScheduleTrigger_Calendar_Range{{Start: 59}},
 		Minute:     []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}},
 		Hour:       []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 23, Step: 2}},
 		DayOfMonth: []*v1.ScheduleTrigger_Calendar_Range{{Start: 1, End: 31}},
@@ -954,6 +956,11 @@ func TestCronExpressionsThatCannotBeRight(t *testing.T) {
 		{name: "seconds out of range in the seven-field form", cron: "60 0 9 * * * *", want: "seconds is 60"},
 		{name: "a word where a number belongs", cron: "abc 9 * * *", want: `minutes is "abc"`},
 		{name: "a word where an hour belongs", cron: "0 noon * * *", want: `hours is "noon"`},
+		// A date no year has: a schedule Temporal creates and never fires.
+		{name: "the thirty-first of February", cron: "0 0 31 2 *", want: "can never fire"},
+		{name: "the thirtieth of February", cron: "0 0 30 2 *", want: "can never fire"},
+		{name: "the thirty-first of every short month", cron: "0 0 31 4,6,9,11 *", want: "can never fire"},
+		{name: "the thirty-first of February by name, with seconds and a year", cron: "0 0 0 31 FEB * 2030", want: "can never fire"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -995,6 +1002,13 @@ func TestCronExpressionsThatMustBeAccepted(t *testing.T) {
 		"0 9 * * 5#3",
 		"0 9 ? * MON",
 		"0 9 15W * *",
+		// Dates some year has, and dates a weekday might rescue under the
+		// dialects that OR the two day fields.
+		"0 0 29 2 *",
+		"0 0 31 1,2 *",
+		"0 0 30-31 * *",
+		"0 0 31 2 MON",
+		"0 0 L 2 *",
 	} {
 		t.Run(cron, func(t *testing.T) {
 			t.Parallel()
@@ -1016,7 +1030,164 @@ func TestAScheduleNeedsACadence(t *testing.T) {
 		"a schedule needs a cadence")
 
 	assert.NoError(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: []string{"0 9 * * *"}}))
-	assert.NoError(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Every: durationpb.New(900)}))
+	assert.NoError(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Every: durationpb.New(15 * time.Minute)}))
+}
+
+// TestScheduleCadenceFloorHoldsAtItsEdge is the cadence floor at the value
+// where it changes its answer, for each way a cadence is spelled and for the
+// union of them — since a trigger's cadences are unioned, two that each pass
+// the floor can together be faster than it, and a checker that read only one
+// at a time would be a floor with a hole the width of a second key.
+func TestScheduleCadenceFloorHoldsAtItsEdge(t *testing.T) {
+	t.Parallel()
+
+	floor := v1.MinScheduleInterval.String()
+
+	t.Run("every", func(t *testing.T) {
+		t.Parallel()
+
+		err := v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Every: durationpb.New(time.Second)})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "`every:` is 1s", "the refusal names the value given")
+		assert.Contains(t, err.Error(), floor, "the refusal names the floor")
+
+		assert.ErrorContains(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{
+			Every: durationpb.New(v1.MinScheduleInterval - time.Nanosecond),
+		}), "shortest cadence")
+		assert.NoError(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Every: durationpb.New(v1.MinScheduleInterval)}),
+			"the floor itself is a cadence the floor allows")
+		assert.NoError(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Every: durationpb.New(90 * time.Second)}),
+			"an interval that does not divide into minutes is slow enough on its own")
+	})
+
+	t.Run("cron", func(t *testing.T) {
+		t.Parallel()
+
+		for _, tt := range []struct {
+			cron string
+			gap  string
+		}{
+			{cron: "* * * * * * *", gap: "1s"},
+			{cron: "0,30 * * * * * *", gap: "30s"},
+			{cron: "*/20 * * * * * *", gap: "20s"},
+			{cron: "0,59 * * * * * *", gap: "1s"},
+			{cron: "10-12 * * * * * *", gap: "1s"},
+			{cron: "@every 30s", gap: "30s"},
+			{cron: "@every 59s", gap: "59s"},
+			{cron: "CRON_TZ=UTC 0,30 * * * * * *", gap: "30s"},
+			{cron: "0,30 * * * * * * # twice a minute", gap: "30s"},
+		} {
+			t.Run(tt.cron, func(t *testing.T) {
+				t.Parallel()
+
+				err := v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: []string{tt.cron}})
+				require.Error(t, err, "%q must be refused", tt.cron)
+				assert.Contains(t, err.Error(), "can fire every "+tt.gap, "the refusal names the gap")
+				assert.Contains(t, err.Error(), floor, "the refusal names the floor")
+			})
+		}
+
+		for _, cron := range []string{
+			"* * * * *",
+			"*/15 * * * *",
+			"0 * * * * * *",
+			"30 * * * * * *",
+			"0 * * * * * 2030",
+			"@every 1m",
+			"@every 1h/10m",
+			"@every 1d",
+			"@hourly",
+			"CRON_TZ=America/New_York * * * * *",
+		} {
+			t.Run(cron, func(t *testing.T) {
+				t.Parallel()
+
+				assert.NoError(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: []string{cron}}),
+					"%q fires no faster than once a minute and must be accepted", cron)
+			})
+		}
+
+		// An `@every` this cannot read cannot be held to the floor, and the
+		// checker says so rather than guessing either way.
+		assert.ErrorContains(t, v1.CheckScheduleTrigger(&v1.ScheduleTrigger{Cron: []string{"@every fortnightly"}}),
+			"cannot read")
+	})
+
+	t.Run("calendars", func(t *testing.T) {
+		t.Parallel()
+
+		second := func(ranges ...*v1.ScheduleTrigger_Calendar_Range) *v1.ScheduleTrigger {
+			return &v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{{
+				Hour:   []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}},
+				Second: ranges,
+			}}}
+		}
+
+		err := v1.CheckScheduleTrigger(second(&v1.ScheduleTrigger_Calendar_Range{Start: 0}, &v1.ScheduleTrigger_Calendar_Range{Start: 30}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "calendar 1 can fire every 30s")
+
+		assert.ErrorContains(t, v1.CheckScheduleTrigger(second(&v1.ScheduleTrigger_Calendar_Range{Start: 0, End: 59, Step: 15})),
+			"can fire every 15s")
+		assert.NoError(t, v1.CheckScheduleTrigger(second(&v1.ScheduleTrigger_Calendar_Range{Start: 30})),
+			"one second of the minute is once a minute at most")
+		assert.NoError(t, v1.CheckScheduleTrigger(second()),
+			"an unwritten second is zero, which is once a minute at most")
+	})
+
+	t.Run("the union of cadences", func(t *testing.T) {
+		t.Parallel()
+
+		// Each of these is slow enough alone and refused together.
+		for name, trigger := range map[string]*v1.ScheduleTrigger{
+			"two expressions on different seconds": {Cron: []string{"0 9 * * *", "30 0 9 * * * *"}},
+			"an interval off the minute beside an expression": {
+				Every: durationpb.New(90 * time.Second), Cron: []string{"@daily"},
+			},
+			"two intervals off the minute": {
+				Every: durationpb.New(90 * time.Second), Cron: []string{"@every 100s"},
+			},
+			"a calendar on a second beside an expression": {
+				Cron: []string{"0 9 * * *"},
+				Calendars: []*v1.ScheduleTrigger_Calendar{{
+					Hour:   []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}},
+					Second: []*v1.ScheduleTrigger_Calendar_Range{{Start: 15}},
+				}},
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				err := v1.CheckScheduleTrigger(trigger)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "together can fire")
+				assert.Contains(t, err.Error(), floor)
+			})
+		}
+
+		// And each of these is a union whose members all fire on the same
+		// second of the minute, which keeps them whole minutes apart.
+		for name, trigger := range map[string]*v1.ScheduleTrigger{
+			"an interval on the minute beside an expression": {
+				Every: durationpb.New(time.Hour), Cron: []string{"0 9 * * *"},
+			},
+			"two expressions on the minute":             {Cron: []string{"0 9 * * *", "1 9 * * *"}},
+			"two seven-field expressions on one second": {Cron: []string{"30 0 9 * * * *", "30 0 17 * * * *"}},
+			"an expression beside a calendar": {
+				Cron: []string{"0 9 * * *"},
+				Calendars: []*v1.ScheduleTrigger_Calendar{{
+					Hour:   []*v1.ScheduleTrigger_Calendar_Range{{Start: 9, End: 17, Step: 2}},
+					Minute: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0}},
+				}},
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				assert.NoError(t, v1.CheckScheduleTrigger(trigger))
+			})
+		}
+	})
 }
 
 // TestOverlapNamesComeFromTheSchema asserts the spelling is derived rather than

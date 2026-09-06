@@ -87,7 +87,10 @@ func CheckScheduleTrigger(trigger *ScheduleTrigger) error {
 		}
 	}
 
-	return nil
+	// The floor, last, once every cadence is known to be readable: a schedule
+	// that can fire faster than [MinScheduleInterval] is refused with the same
+	// sentence here, at `flow schedule create` and at the server.
+	return checkScheduleCadenceFloor(trigger)
 }
 
 // The catch-up window's bounds, and what an unset one takes.
@@ -778,22 +781,31 @@ func CheckCronExpression(expression string) error {
 	}
 
 	fields := strings.Fields(expression)
+	var positions []cronField
 	switch len(fields) {
 	case 5:
 		// Minute, hour, day of month, month, day of week.
-		return checkCronFields(original, fields, cronFieldsFrom(1))
+		positions = cronFieldsFrom(1)
 	case 6:
 		// The five above, plus a year.
-		return checkCronFields(original, fields, append(cronFieldsFrom(1), cronYear))
+		positions = append(cronFieldsFrom(1), cronYear)
 	case 7:
 		// Seconds first, then the six above.
-		return checkCronFields(original, fields, append(cronFieldsFrom(0), cronYear))
+		positions = append(cronFieldsFrom(0), cronYear)
 	default:
 		return fmt.Errorf("cron expression %q has %d fields; a cron expression has 5 "+
 			"(minute hour day-of-month month day-of-week), 6 with a year, or 7 with seconds first — "+
 			"or one of the shorthands @hourly, @daily, @weekly, @monthly, @yearly and @every",
 			original, len(fields))
 	}
+
+	if err := checkCronFields(original, fields, positions); err != nil {
+		return err
+	}
+
+	// Every field is in range; whether the fields can ever agree on a date is
+	// the remaining thing wrong on every cluster in the world.
+	return checkCronCanFire(original, fields, positions)
 }
 
 // cronField is one position in a cron expression: what it is called and what
