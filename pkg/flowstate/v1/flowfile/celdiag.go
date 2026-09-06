@@ -96,10 +96,13 @@ const celSplitHelp = "split it across `value:` steps or `vars:` and combine thos
 // author's eye is already on when the parser ran out of input: "the expression
 // ends" is true but does not say where to type, and "ends after +" does.
 //
-// line and column are cel-go's 1-based position within src, or zero when it is
-// not known. Both are needed, not just the column: an expression may be several
-// lines (a block scalar is the common case), and cel-go's column is relative to
-// its line rather than to the start of the source.
+// line and column are cel-go's 1-based position within src; a line or column
+// below 1 means the position is not known, which is zero for a caller with
+// nothing to say and -1 for a parser limit, which cel-go reports about the
+// whole expression rather than a character in it. Both are needed, not just
+// the column: an expression may be several lines (a block scalar is the common
+// case), and cel-go's column is relative to its line rather than to the start
+// of the source.
 func TranslateCELMessage(msg, src string, line, column int) string {
 	if m := celRecursionLimit.FindStringSubmatch(msg); m != nil {
 		return fmt.Sprintf("nests more than %s levels of parentheses or calls, which is deeper "+
