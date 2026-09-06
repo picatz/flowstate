@@ -106,6 +106,17 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		return nil, err
 	}
 
+	// The depth bound on every value the specification carries, here because
+	// this is the one function every submit path calls: the server checks it
+	// once more before pinning plugins, and the local driver reaches it only
+	// here, so a hand-built specification with a `vars:` literal nested past
+	// [MaxStructureDepth] is refused by both drivers in the same words (#1765).
+	// After the declared outputs above, so an output past the bound is still
+	// refused as the output it is, naming its declaration.
+	if err := CheckStructureDepth(wf); err != nil {
+		return nil, err
+	}
+
 	// Beside it, at the same boundary and for the same reason. A gate's
 	// `prompt:` is rendered to whoever is being asked to approve - somebody who
 	// was handed a run id rather than this file - so a prompt reaching a

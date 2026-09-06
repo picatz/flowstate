@@ -103,6 +103,7 @@ func corpusSizes() map[string]int {
 		"UndoLoopCases":                   len(UndoLoopCases(standIn)),
 		"UndoPlacementCases":              len(UndoPlacementCases(standIn)),
 		"ValueCases":                      len(ValueCases()),
+		"ValueDepthRefusalCases":          len(ValueDepthRefusalCases()),
 		"VarsCases":                       len(VarsCases(standIn)),
 		"VarsSecretRefusalCases":          len(VarsSecretRefusalCases()),
 		"WaitCases":                       len(WaitCases()),
