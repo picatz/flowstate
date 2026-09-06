@@ -104,6 +104,27 @@ const (
 	// listTokenKeySize is the HMAC-SHA256 key length, which is also the length
 	// of the authentication code a token carries after its cursor.
 	listTokenKeySize = sha256.Size
+
+	// maxListPositionBytes bounds the visibility store's own page token, which
+	// is the one part of a cursor whose size another party chooses.
+	//
+	// ListRequest.page_token is bounded at 4096 characters by the schema, and
+	// a token this server issues has to come back through that bound: a token
+	// too long to validate is a listing the caller can start but never
+	// continue, refused on the second page by the server's own validator. The
+	// SDK documents no bound on the position, so one is set here, and
+	// [issuePageToken] refuses to issue rather than issue something oversize.
+	// The rest of a cursor is bounded already — a namespace at
+	// [auth.MaxNamespaceLen], a digest at [sha256.Size], a timestamp — so with
+	// this the whole token is, and TestAWorstCaseTokenFitsTheSchema pins that
+	// the sum fits the schema's limit rather than assuming it.
+	//
+	// Two kilobytes is more than an order of magnitude above what either of
+	// Temporal's visibility stores emits (a SQL store's token is three fields
+	// of JSON, ~140 bytes; the dev server's measured under 200), which leaves
+	// room for a store this server has not met without leaving the bound
+	// decorative.
+	maxListPositionBytes = 2048
 )
 
 // List returns a page of the runs belonging to the caller's tenant.
@@ -558,6 +579,14 @@ func listQueryDigest(filter string, pageSize int) []byte {
 func (s *FlowstateServer) issuePageToken(position []byte, namespace string, query []byte, now time.Time) (string, error) {
 	if len(position) == 0 {
 		return "", nil
+	}
+
+	// Refused here, where the listing can still say so, rather than issued and
+	// refused by the validator on the page after — which would read to a caller
+	// as a listing that works exactly once. See [maxListPositionBytes].
+	if len(position) > maxListPositionBytes {
+		return "", fmt.Errorf("the visibility store's page token is %d bytes, more than the %d a page token can carry",
+			len(position), maxListPositionBytes)
 	}
 
 	cursor, err := proto.Marshal(&v1.ListCursor{

@@ -1,12 +1,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -317,6 +321,66 @@ func TestARejectedPositionIsTheCallersToRestart(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, connect.CodeInternal, connect.CodeOf(err),
 		"a first-page failure, which no token could have caused, was blamed on the caller: %v", err)
+}
+
+// TestAWorstCaseTokenFitsTheSchema pins that every token this server can issue
+// comes back through ListRequest.page_token's own bound.
+//
+// A token is issued by this server and validated by this server, and the two
+// bounds are written in two places: the position bound here, the token bound
+// in the schema. If the sum of the largest position, the longest namespace, a
+// digest, a timestamp and the code, base64-encoded, ever exceeded the schema's
+// limit, the failure would be a listing that works exactly once — the first
+// page issued, the second refused by the validator as too long. So the limit
+// is read from the descriptor rather than restated, and the token built here is
+// the largest one the server can produce.
+func TestAWorstCaseTokenFitsTheSchema(t *testing.T) {
+	t.Parallel()
+
+	field := (&v1types.ListRequest{}).ProtoReflect().Descriptor().Fields().ByName("page_token")
+	require.NotNil(t, field, "page_token is gone from the schema")
+
+	rules, _ := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
+	require.NotNil(t, rules, "page_token carries no validation rules")
+	require.NotZero(t, rules.GetString().GetMaxLen(), "page_token carries no length bound, so nothing bounds what a caller may send")
+
+	server := mustNew(t, endlessNamespace())
+
+	// Every field at its largest: the position at its bound, a namespace at the
+	// grammar's longest, a real digest, and a timestamp whose varints are as
+	// wide as a timestamp's get.
+	position := bytes.Repeat([]byte{0xff}, maxListPositionBytes)
+	namespace := strings.Repeat("n", auth.MaxNamespaceLen)
+	farFuture := time.Date(9999, time.December, 31, 23, 59, 59, 999_999_999, time.UTC)
+
+	token, err := server.issuePageToken(position, namespace, listQueryDigest("", defaultListPageSize), farFuture)
+	require.NoError(t, err, "a position at the bound was refused, so the bound is not the one that applies")
+	require.LessOrEqual(t, uint64(len(token)), rules.GetString().GetMaxLen(),
+		"the largest token this server can issue is longer than the schema lets a caller send back")
+
+	require.NoError(t, v1types.Validate(&v1types.ListRequest{PageToken: token}),
+		"the largest token this server can issue does not pass the request validator")
+}
+
+// TestAnOversizePositionIsRefusedAtIssue is the other side of the bound: a
+// position the server cannot carry is refused where the listing can still say
+// so, naming the size, rather than issued and refused on the page after.
+func TestAnOversizePositionIsRefusedAtIssue(t *testing.T) {
+	t.Parallel()
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{
+			Executions:    []*workflow.WorkflowExecutionInfo{{Execution: &common.WorkflowExecution{WorkflowId: "mine"}}},
+			NextPageToken: bytes.Repeat([]byte{0xff}, maxListPositionBytes+1),
+		}, nil)
+
+	_, err := mustNew(t, temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 1}))
+	require.Error(t, err, "a position over the bound was issued as a token")
+	require.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+		"a visibility store's oversize position is not the caller's mistake: %v", err)
+	require.ErrorContains(t, err, fmt.Sprintf("%d bytes", maxListPositionBytes+1))
+	require.ErrorContains(t, err, fmt.Sprintf("more than the %d", maxListPositionBytes))
 }
 
 // TestTheEndOfAListingIsAnEmptyToken pins that exhaustion is still reported

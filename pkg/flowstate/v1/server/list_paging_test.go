@@ -45,6 +45,7 @@ func TestListPagesThroughEveryRunExactlyOnce(t *testing.T) {
 	// than asserts because it runs under Eventually, for the reason listRunIDs
 	// gives: visibility is written asynchronously, so a walk taken too early is
 	// legitimately short, and the walk is repeated until it is not.
+	longest := 0
 	walk := func() (seen map[string]int, pages int, err error) {
 		seen = map[string]int{}
 		token := ""
@@ -71,6 +72,15 @@ func TestListPagesThroughEveryRunExactlyOnce(t *testing.T) {
 			if token == "" {
 				return seen, pages, nil
 			}
+
+			// Every token issued over a real position has to come back through
+			// the request's own validator, or the listing works exactly once.
+			// Checked here, with Temporal's actual page token inside, where the
+			// mock-backed TestAWorstCaseTokenFitsTheSchema cannot reach.
+			if err := v1.Validate(&v1.ListRequest{PageSize: pageSize, PageToken: token}); err != nil {
+				return nil, pages, fmt.Errorf("the server issued a %d-character token its own validator refuses: %w", len(token), err)
+			}
+			longest = max(longest, len(token))
 		}
 	}
 
@@ -84,6 +94,7 @@ func TestListPagesThroughEveryRunExactlyOnce(t *testing.T) {
 		"the listing never reached all %d runs; last walk saw %d over %d pages (%v)", total, len(seen), pages, walkErr)
 
 	require.Greater(t, pages, 1, "one page held every run, so no token was ever exchanged")
+	t.Logf("longest token issued over the dev server's own position: %d characters", longest)
 
 	for id := range started {
 		require.Equal(t, 1, seen[id], "run %q was skipped or returned twice", id)
