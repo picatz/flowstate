@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 
@@ -442,7 +443,39 @@ func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration
 			kind, name, DeclaredTypeName(declared), verb, DeclaredTypeName(got))
 	}
 
+	// A float is a finite number. NaN and the infinities are values a double
+	// can hold and JSON cannot spell, so a declared float that carried one
+	// would reach the run document — every `-o json`, `flow get` and MCP
+	// reader — as something no consumer can read back as a number, and a
+	// non-finite number in a durable record is almost always an upstream
+	// defect (a division by zero, an overflow) rather than an answer. Refused
+	// where the declaration is, on both drivers, so `--input f=NaN` and a
+	// computed `1.0 / 0.0` are told which promise they broke (#1764). An
+	// undeclared value is not refused here; the run document spells it as
+	// the string "NaN" or "Infinity" instead — see jsonRepresentable.
+	if declared == InputDeclaration_TYPE_FLOAT {
+		if spelling, nonFinite := nonFiniteSpelling(literal.GetDoubleValue()); nonFinite {
+			return fmt.Errorf("%s %q is declared float but %s %s, which is not a finite number",
+				kind, name, verb, spelling)
+		}
+	}
+
 	return nil
+}
+
+// nonFiniteSpelling reports whether f is NaN or an infinity, and how it is
+// spelled: protojson's own "NaN", "Infinity" and "-Infinity", which is the one
+// spelling every surface that meets such a value agrees on.
+func nonFiniteSpelling(f float64) (string, bool) {
+	switch {
+	case math.IsNaN(f):
+		return "NaN", true
+	case math.IsInf(f, 1):
+		return "Infinity", true
+	case math.IsInf(f, -1):
+		return "-Infinity", true
+	}
+	return "", false
 }
 
 // declaresWhat lists the inputs a workflow declares, for a caller who named one it

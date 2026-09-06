@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -220,8 +219,8 @@ func projectValue(message protoreflect.Message, raw any) any {
 
 		// The whole [Value] on the way out rather than the literal's own
 		// subtree, because a value this cannot spell has to stay recognizable as a
-		// value: `{"literal":{"doubleValue":"NaN"}}` says what it is, where the
-		// inner `{"doubleValue":"NaN"}` alone is indistinguishable from a map some
+		// value: `{"literal":{"typeValue":"int"}}` says what it is, where the
+		// inner `{"typeValue":"int"}` alone is indistinguishable from a map some
 		// workflow computed.
 		projected, ok := projectLiteral(literal.Literal.ProtoReflect())
 		if !ok {
@@ -337,11 +336,11 @@ func projectElement(field protoreflect.FieldDescriptor, value protoreflect.Value
 // over the same union — a value with one meaning written down twice is the defect
 // CLAUDE.md names first, and this one is already written down once.
 //
-// Anything that conversion refuses, and anything JSON cannot hold, is reported as
-// not spellable and the caller keeps protojson's subtree. A type value, an enum, a
-// NaN: each is rare, each is nothing a `jq` reader has a better spelling for, and
-// each is honestly reported by leaving the schema's own encoding in place rather
-// than by guessing.
+// Anything that conversion refuses is reported as not spellable and the caller
+// keeps protojson's subtree. A type value, an enum: each is rare, each is nothing
+// a `jq` reader has a better spelling for, and each is honestly reported by
+// leaving the schema's own encoding in place rather than by guessing. A NaN is
+// not among them any more — see [jsonRepresentable] for the one spelling it has.
 func projectLiteral(message protoreflect.Message) (any, bool) {
 	literal, ok := message.Interface().(*expr.Value)
 	if !ok {
@@ -366,8 +365,16 @@ func projectLiteral(message protoreflect.Message) (any, bool) {
 // *schema field* as a string — a value a workflow computed is a number, and
 // `.outputs.hosts_placed == 3` is the expression somebody writes.
 //
-// NaN and the infinities have no JSON spelling at all, so they are refused here and
-// the caller keeps protojson's `"NaN"`.
+// NaN and the infinities have no JSON number spelling, so they are written as the
+// strings "NaN", "Infinity" and "-Infinity" — protojson's own spelling for a bare
+// double, and what the tagged fallback was already saying one level down. They
+// used to be reported as unspellable, which put `{"literal":{"doubleValue":"NaN"}}`
+// beside plain numbers in a run document whose whole point is to hide that
+// encoding (#1764). A reader that expects a number gets a string it can name
+// rather than an object it has to know the schema to read; a *declared* float is
+// refused before it gets here, at the input boundary and at the output's own
+// declaration — see checkDeclaredLiteralType — so the string is only ever the
+// spelling of an undeclared value.
 func jsonRepresentable(native any) (any, bool) {
 	switch value := native.(type) {
 	case nil, bool, string, []byte:
@@ -380,8 +387,8 @@ func jsonRepresentable(native any) (any, bool) {
 		return json.Number(strconv.FormatUint(value, 10)), true
 
 	case float64:
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return nil, false
+		if spelling, nonFinite := nonFiniteSpelling(value); nonFinite {
+			return spelling, true
 		}
 
 		return native, true

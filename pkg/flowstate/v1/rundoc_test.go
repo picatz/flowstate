@@ -260,8 +260,9 @@ func TestTheRunDocumentSpeaksTheLanguageOfTheFile(t *testing.T) {
 // A [Value] is a oneof and only one arm of it is a value. An error is *about* a
 // value, and flattening it would make a failure indistinguishable from a map
 // somebody computed — so it keeps the schema's own spelling, where the arm names
-// itself. The same applies to anything JSON cannot hold: a NaN has no spelling, and
-// protojson's `"NaN"` is a better answer than a guess.
+// itself. The same applies to a literal that is not data: a type value has no
+// JSON spelling, and protojson's `{"typeValue": …}` is a better answer than a
+// guess.
 func TestTheRunDocumentKeepsAValueItCannotSpellPlainly(t *testing.T) {
 	t.Parallel()
 
@@ -273,7 +274,7 @@ func TestTheRunDocumentKeepsAValueItCannotSpellPlainly(t *testing.T) {
 					Code:    Value_Error_CODE_INTERNAL,
 				}}},
 				"unspellable": {Kind: &Value_Literal{Literal: &expr.Value{
-					Kind: &expr.Value_DoubleValue{DoubleValue: math.NaN()},
+					Kind: &expr.Value_TypeValue{TypeValue: "int"},
 				}}},
 			}},
 		},
@@ -291,9 +292,51 @@ func TestTheRunDocumentKeepsAValueItCannotSpellPlainly(t *testing.T) {
 	assert.Contains(t, failure, "error", "the arm no longer names itself")
 
 	unspellable, ok := values["unspellable"].(map[string]any)
-	require.True(t, ok, "a NaN was written as a JSON number, which no parser accepts: %s", rendered)
+	require.True(t, ok, "a type value was written as data: %s", rendered)
 	assert.Contains(t, unspellable, "literal",
 		"a value JSON cannot hold must keep protojson's spelling rather than be guessed at")
+}
+
+// TestANonFiniteNumberIsSpelledNotTagged (#1764): NaN and the infinities have no
+// JSON number spelling, and the document used to fall back to the schema's
+// tagged encoding for them — `{"literal":{"doubleValue":"NaN"}}` beside plain
+// numbers, in the one document that exists to hide that encoding. They are the
+// strings protojson spells them as now, at the top of a value and inside a list
+// or a map alike, and nothing in the document says `doubleValue`.
+func TestANonFiniteNumberIsSpelledNotTagged(t *testing.T) {
+	t.Parallel()
+
+	double := func(f float64) *expr.Value {
+		return &expr.Value{Kind: &expr.Value_DoubleValue{DoubleValue: f}}
+	}
+	outputs := &Workflow_StepOutputs{
+		StepValues: map[string]*Node_Outputs{
+			"step": {NamedValues: map[string]*Value{
+				"nan":     {Kind: &Value_Literal{Literal: double(math.NaN())}},
+				"inf":     {Kind: &Value_Literal{Literal: double(math.Inf(1))}},
+				"neg":     {Kind: &Value_Literal{Literal: double(math.Inf(-1))}},
+				"negzero": {Kind: &Value_Literal{Literal: double(math.Copysign(0, -1))}},
+				"finite":  {Kind: &Value_Literal{Literal: double(1.5)}},
+				"listed":  {Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{double(1), double(math.NaN())}}}}}},
+				"mapped":  {Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: []*expr.MapValue_Entry{{Key: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "ratio"}}, Value: double(math.Inf(1))}}}}}}},
+			}},
+		},
+	}
+
+	rendered, err := MarshalRunDocument(outputs, false, false)
+	require.NoError(t, err)
+	assert.NotContains(t, string(rendered), "doubleValue", "the tagged encoding leaked: %s", rendered)
+	assert.NotContains(t, string(rendered), "literal", "the tagged encoding leaked: %s", rendered)
+
+	document := decodeDocument(t, rendered)
+	values := document["steps"].(map[string]any)["step"].(map[string]any)
+	assert.Equal(t, "NaN", values["nan"])
+	assert.Equal(t, "Infinity", values["inf"])
+	assert.Equal(t, "-Infinity", values["neg"])
+	assert.Equal(t, json.Number("1.5"), values["finite"])
+	assert.Equal(t, []any{json.Number("1"), "NaN"}, values["listed"])
+	assert.Equal(t, map[string]any{"ratio": "Infinity"}, values["mapped"])
+	assert.Contains(t, string(rendered), `"negzero":-0`, "negative zero is a number and stays one")
 }
 
 // TestRawWritesTheSchemasOwnDocument is the escape hatch, and the promise that the

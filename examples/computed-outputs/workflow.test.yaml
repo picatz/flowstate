@@ -57,9 +57,8 @@ tests:
 
   # The boundary `coverage:`'s zero guard exists for. `targets: []` is a legal
   # `type: list` argument, and the unguarded ratio divides 0.0 by 0.0 into NaN —
-  # which `type: float` accepts, because a declared type bounds the shape of an
-  # answer rather than its arithmetic, so `-o json` would report the string "NaN"
-  # to a caller reading `.runOutputs.coverage` as a number.
+  # which a declared `float` refuses at completion, because a float is a finite
+  # number, so without the guard this run would fail rather than report a number.
   #
   # 1.0 rather than 0.0 because `complete` answers true for this same run: nothing
   # was requested, so nothing was missed. The assertion is the whole outputs map,
