@@ -329,6 +329,40 @@ message AuditRecord {
   // that predates this field.
   string correlation_id = 16 [(buf.validate.field).string.max_bytes = 64];
 
+  // The delivery a webhook record is about, as provenance names it: the
+  // digest WebhookDeliveryID computes over tenant, workflow, trigger and the
+  // evaluated idempotency key, never the key itself. An accepted delivery's
+  // record carries it beside the run it started or joined, so the trail
+  // answers "which delivery started this run" with the same value RunState's
+  // trigger context carries. Empty on every record that is not about a
+  // delivery, and on a delivery refused before its key was evaluated — a
+  // refusal has no key to digest, and evaluating one for a delivery nobody
+  // verified would spend an author's expression on an attacker's payload.
+  string delivery_id = 17 [(buf.validate.field).string.max_bytes = 128];
+
+  // Whether an accepted delivery joined a run an earlier delivery of the same
+  // event had already started, rather than starting one. False on the first
+  // delivery of an event and on every record that is not a webhook
+  // acceptance. What a provider's retry storm looks like in the trail is one
+  // record with this false and the rest with it true, all naming one run.
+  bool joined = 18;
+
+  // How many refusals this record stands for: this one, and every refusal of
+  // the same class on the same route since the previous record for that
+  // pair, which wrote nothing of their own. Zero and one both mean the record
+  // is about one decision, which is every record that is not a bounded
+  // refusal.
+  //
+  // The webhook receiver is the one writer. Its route is the one entry path
+  // that is unauthenticated by design, so a refusal there costs the sender
+  // nothing, and a trail that wrote one record per refusal would let a
+  // signature-guessing flood use the audit sink as its amplifier. So the
+  // receiver writes the first refusal of a class on a route as it happens,
+  // counts the rest for an interval, and the next refusal after the interval
+  // carries the count. Nothing is lost; the trail's granularity for a flood
+  // is the interval rather than the request.
+  uint32 count = 19;
+
   // There is deliberately no MCP session id or JSON-RPC request id. The
   // session id is a process-local bearer-like routing capability, and the
   // request id is caller-chosen, variably typed, and not exposed at the SDK's
@@ -408,6 +442,20 @@ enum AuditEnforcementPoint {
   // seam can see it, rather than evaluating the policy a second time to move
   // the record earlier.
   AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION = 4;
+
+  // Whether this webhook delivery is admitted, from the trigger's `verify:`
+  // declaration and the deployment's signing keys, and then whether what it
+  // carries may start or answer a run. WebhookReceiver.ServeHTTP and the two
+  // paths it forks to, start and answer.
+  //
+  // The server's seam, not a worker's, and still an enforcement point rather
+  // than an AuthorizationAction, for the reason "The worker's half" gives: a
+  // sender holds no scope. It proves possession of a signing key, and what
+  // the receiver decides about that proof is not something a client could be
+  // granted. A delivery record names the route it addressed as its resource
+  // when it was refused before anything was proven, and the run it started
+  // or answered once something was.
+  AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY = 5;
 }
 
 // AuditResourceKind names what resource_key addresses.
@@ -452,6 +500,13 @@ enum AuditResourceKind {
   // A credential target, addressed by the operator-configured target name a
   // workload asked to assume. Never the credential.
   AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET = 7;
+
+  // A webhook route, addressed as "<workflow>/<trigger>" — the two names the
+  // file declares and the receiver serves, never the request path the sender
+  // wrote. Empty when the delivery addressed no route this receiver serves:
+  // the path it addressed is peer-chosen text, and a record of it would be a
+  // record of whatever a prober typed.
+  AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE = 8;
 }
 
 // AuditDenyCode is the closed set of reasons a decision was a denial.
@@ -517,4 +572,38 @@ enum AuditDenyCode {
   // the same: the record names the destination, and the policy's own bounds
   // are configuration they already hold.
   AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED = 9;
+
+  // The six codes below are the webhook receiver's, one per class of refusal
+  // an incident responder counts separately: a wrong key and a missing header
+  // are different attacks, and a replayed capture is a third. They are finer
+  // than one "did not verify" for the reason the worker's four are finer than
+  // POLICY_DENIED — the sender is told one sentence for all of them, and the
+  // operator reading the trail is not the sender.
+
+  // A signature was presented and none of its candidates matched the body
+  // under this deployment's key, or the signature header was not in the form
+  // its scheme defines.
+  AUDIT_DENY_CODE_SIGNATURE_INVALID = 10;
+
+  // The delivery carried no signature header for a scheme the trigger
+  // declares.
+  AUDIT_DENY_CODE_SIGNATURE_MISSING = 11;
+
+  // The signed timestamp is outside WebhookReplayWindow of the server's
+  // clock, in either direction.
+  AUDIT_DENY_CODE_REPLAY_WINDOW = 12;
+
+  // The signature header carried more candidates than the scheme's bound
+  // admits.
+  AUDIT_DENY_CODE_TOO_MANY_SIGNATURES = 13;
+
+  // The body exceeded MaxWebhookPayloadBytes and was refused before it was
+  // read into memory.
+  AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE = 14;
+
+  // The delivery verified and then did not map onto the workflow: its body
+  // did not decode, a `with:` expression reached a field it does not carry,
+  // or an input would not bind. The one refusal a key holder is told about
+  // precisely, and recorded under their trigger's identity for that reason.
+  AUDIT_DENY_CODE_BINDING_FAILED = 15;
 }

@@ -205,7 +205,12 @@ delivery is known genuine — unknown workflow, unknown trigger, bad signature �
 status and one sentence, with an HMAC spent on the unrouted path so the timings
 match. A run's id is a digest over tenant, workflow, trigger and idempotency key, so
 a redelivery joins rather than duplicating and a key cannot address another tenant's
-run or be read back out of the id.
+run or be read back out of the id. Every decision on this path is written to the
+audit trail as a `WEBHOOK_DELIVERY` enforcement record — an acceptance against the
+run it started or answered, a refusal against the route by class, bounded to one
+record per class per route per minute with a count so the unauthenticated path
+cannot amplify into the sink (`docs/DEPLOYMENT.md` "Audit trail",
+`pkg/flowstate/v1/server/webhookaudit.go`).
 
 A trigger declaring `signal:` answers a gate instead of starting a run, over the
 same route and past the same verification. What that adds is one authorization and

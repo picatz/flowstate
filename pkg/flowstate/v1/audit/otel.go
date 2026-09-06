@@ -45,6 +45,14 @@ const (
 	attrAttempt          = "flowstate.audit.attempt"
 	attrDispatchID       = "flowstate.audit.dispatch_id"
 
+	// A webhook delivery's three: the delivery the record is about, whether
+	// an acceptance joined an existing run, and how many refusals a bounded
+	// refusal record stands for. See AuditRecord.delivery_id, joined and
+	// count.
+	attrDeliveryID = "flowstate.audit.delivery_id"
+	attrJoined     = "flowstate.audit.joined"
+	attrCount      = "flowstate.audit.count"
+
 	// The server-minted request id a control-plane record carries, flat for
 	// the same reason: it is a field of the record.
 	attrCorrelationID = "flowstate.audit.correlation_id"
@@ -137,6 +145,20 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	}
 	if record.GetDispatchId() != "" {
 		attrs = append(attrs, attribute.String(attrDispatchID, record.GetDispatchId()))
+	}
+
+	// Present only on a webhook delivery's records, for the reason the
+	// attempt is: a consumer counting refusals per route should read the
+	// count where one was written and one where none was, not select on a
+	// zero that every other record carries too.
+	if record.GetDeliveryId() != "" {
+		attrs = append(attrs, attribute.String(attrDeliveryID, record.GetDeliveryId()))
+	}
+	if record.GetJoined() {
+		attrs = append(attrs, attribute.Bool(attrJoined, true))
+	}
+	if record.GetCount() > 1 {
+		attrs = append(attrs, attribute.Int64(attrCount, int64(record.GetCount())))
 	}
 
 	// Present when the request had one, which is every control-plane record a

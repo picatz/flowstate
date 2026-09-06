@@ -62,11 +62,19 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	// identifier the server's recover interceptor mints before the handler
 	// runs, bounded on the way in, and never a caller's request id — see the
 	// field's own comment for the join it exists for.
+	//
+	// delivery_id, joined and count (picatz/flowstate#1774) are the first
+	// kind: a digest Flowstate computes over names the file declares and the
+	// evaluated idempotency key — never the key, which is the sender's text —
+	// bounded on the way in; a bool the receiver decided; and an integer the
+	// receiver counted. A sender can make the count large and cannot choose
+	// any of the three.
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
 		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
 		"attempt", "dispatch_id", "correlation_id",
+		"delivery_id", "joined", "count",
 	}
 
 	got := make([]string, 0, fields.Len())

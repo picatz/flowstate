@@ -1441,10 +1441,21 @@ func TestEveryEnforcementPointIsRecordedBySomeSeam(t *testing.T) {
 		},
 	}
 
+	// The seams that live above this package, which its tests cannot reach
+	// without an import cycle: each names the test, in the package that owns
+	// the seam, that emits the point and asserts it. A point listed here with
+	// no such test is the same unread spelling the check below refuses.
+	elsewhere := map[v1.AuditEnforcementPoint]string{
+		v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY: "pkg/flowstate/v1/server: TestARefusedDeliveryIsRecordedByClass",
+	}
+
 	points := v1.AuditEnforcementPoint(0).Descriptor().Values()
 	for i := range points.Len() {
 		point := v1.AuditEnforcementPoint(points.Get(i).Number())
 		if point == v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED {
+			continue
+		}
+		if _, owned := elsewhere[point]; owned {
 			continue
 		}
 
