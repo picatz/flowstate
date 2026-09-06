@@ -324,3 +324,63 @@ func Test_Policy_CheckAddr_invalid(t *testing.T) {
 
 	requireDenied(t, policy.CheckAddr(netip.AddrPort{}), ReasonRequest, "not a valid IP address")
 }
+
+// Test_legacyIPv4 pins which spellings are read as an IPv4 address netip refused
+// and which are left to be names. The recognised ones are the inet_aton forms a
+// permissive resolver would quietly turn into the loopback or private address
+// the policy denies on sight (picatz/flowstate#1768).
+func Test_legacyIPv4(t *testing.T) {
+	tests := []struct {
+		host string
+		want string
+	}{
+		{host: "127.1", want: "127.0.0.1"},
+		{host: "127.0.1", want: "127.0.0.1"},
+		{host: "2130706433", want: "127.0.0.1"},
+		{host: "0x7f.0.0.1", want: "127.0.0.1"},
+		{host: "0X7F.0.0.1", want: "127.0.0.1"},
+		{host: "0x7f000001", want: "127.0.0.1"},
+		{host: "0177.0.0.1", want: "127.0.0.1"},
+		{host: "017700000001", want: "127.0.0.1"},
+		{host: "127.0.0.01", want: "127.0.0.1"},
+		{host: "10.1", want: "10.0.0.1"},
+		{host: "127.65536", want: "127.1.0.0"},
+		{host: "169.254.43518", want: "169.254.169.254"},
+		{host: "4294967295", want: "255.255.255.255"},
+
+		// Not addresses: a part out of range, too many parts, a non-numeric
+		// part, a hex or octal prefix with nothing after it, and a number too
+		// wide for the bytes it has to fill.
+		{host: "127.0.0.256"},
+		{host: "1.2.3.4.5"},
+		{host: "example.com"},
+		{host: "127.1.example.com"},
+		{host: "0x"},
+		{host: "0x.1"},
+		{host: "4294967296"},
+		{host: "127.0.65536"},
+		{host: "256.1"},
+		{host: ""},
+		{host: "."},
+		{host: "1e3"},
+		{host: "-1.2.3.4"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.host, func(t *testing.T) {
+			// The check is asked only about hosts netip refused, and every host
+			// here is one, so the test asks it the same question.
+			_, err := netip.ParseAddr(test.host)
+			require.Error(t, err, "%q is a canonical address and never reaches legacyIPv4", test.host)
+
+			got, ok := legacyIPv4(test.host)
+			if test.want == "" {
+				require.False(t, ok, "%q was read as %s", test.host, got)
+				return
+			}
+
+			require.True(t, ok)
+			require.Equal(t, test.want, got.String())
+		})
+	}
+}
