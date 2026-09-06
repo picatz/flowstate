@@ -50,6 +50,12 @@ const MaxRuleBytes = 256
 // external component gets to choose audit record size without a bound.
 const MaxDispatchIDBytes = 256
 
+// MaxCorrelationIDBytes bounds the server-minted request identifier a
+// control-plane record carries. The schema says the same number. A UUID is 36
+// bytes; the bound is held here anyway, because the value crosses a context
+// on its way in and a bound is spent where the value is.
+const MaxCorrelationIDBytes = 64
+
 // Emitter writes one record to one sink.
 //
 // The error is the reason this interface exists rather than an
@@ -88,6 +94,35 @@ type Subject struct {
 	// the TrustedIssuer entry that admitted the caller, never token claims.
 	IssuerName string
 	Role       string
+
+	// CorrelationID is the server's own name for the request, minted before
+	// the handler ran and read back through [CorrelationIDFromContext]. Empty
+	// when no interceptor minted one — a handler driven directly in a test —
+	// which the record then reports as absent rather than inventing.
+	CorrelationID string
+}
+
+// correlationIDKey carries a request's correlation id through the context
+// from the interceptor that mints it to every seam that records under it.
+type correlationIDKey struct{}
+
+// ContextWithCorrelationID returns ctx carrying id as the request's
+// correlation id, for every record the request goes on to write.
+//
+// Server-minted only. The value is what joins a request's allow record to a
+// later INTERNAL_ERROR record for the same request, and what the caller is
+// told on that error; a caller-chosen value here would be peer text reaching
+// a durable sink, which is the thing this record has no field for.
+func ContextWithCorrelationID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, correlationIDKey{}, id)
+}
+
+// CorrelationIDFromContext reads the id [ContextWithCorrelationID] stored, or
+// "" when none was.
+func CorrelationIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(correlationIDKey{}).(string)
+
+	return id
 }
 
 // Recorder is the process's audit sink, and the policy about it.
@@ -204,6 +239,21 @@ func (r *Recorder) Allow(ctx context.Context, subject Subject) error {
 // the error the caller receives, which is not durable.
 func (r *Recorder) Deny(ctx context.Context, subject Subject, code v1.AuditDenyCode) error {
 	return r.record(ctx, subject, v1.AuditDecision_AUDIT_DECISION_DENY, code)
+}
+
+// InternalError records that the server failed inside the handler after
+// whatever it had already decided: the request was answered with an internal
+// error, by the recover interceptor rather than by the handler.
+//
+// The one record that is not a decision, and the one case a request writes
+// two. The allow before it stands — see AUDIT_DECISION_INTERNAL_ERROR in
+// proto/flowstate/v1/audit.proto — and subject.CorrelationID is what joins the
+// two. No deny code, because nothing was decided; no panic value, because a
+// panic can quote the request that caused it and the process log is where
+// that goes.
+func (r *Recorder) InternalError(ctx context.Context, subject Subject) error {
+	return r.record(ctx, subject, v1.AuditDecision_AUDIT_DECISION_INTERNAL_ERROR,
+		v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED)
 }
 
 // EnforcementAllow records that a worker-side policy permitted a workload.
@@ -336,17 +386,18 @@ func (r *Recorder) newRecord(subject Subject, decision v1.AuditDecision, code v1
 	}
 
 	return &v1.AuditRecord{
-		Action:       action,
-		Decision:     decision,
-		Rpc:          subject.RPC,
-		McpTool:      subject.MCPTool,
-		Identity:     auditIdentity(subject.Identity),
-		ResourceKind: subject.ResourceKind,
-		ResourceKey:  boundResourceKey(subject.ResourceKey),
-		DecidedAt:    timestamppb.New(r.now()),
-		DenyCode:     code,
-		IssuerName:   boundString(subject.IssuerName, MaxProvenanceBytes),
-		Role:         boundString(subject.Role, MaxProvenanceBytes),
+		Action:        action,
+		Decision:      decision,
+		Rpc:           subject.RPC,
+		McpTool:       subject.MCPTool,
+		Identity:      auditIdentity(subject.Identity),
+		ResourceKind:  subject.ResourceKind,
+		ResourceKey:   boundResourceKey(subject.ResourceKey),
+		DecidedAt:     timestamppb.New(r.now()),
+		DenyCode:      code,
+		IssuerName:    boundString(subject.IssuerName, MaxProvenanceBytes),
+		Role:          boundString(subject.Role, MaxProvenanceBytes),
+		CorrelationId: boundString(subject.CorrelationID, MaxCorrelationIDBytes),
 	}, nil
 }
 

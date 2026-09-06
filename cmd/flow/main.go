@@ -35,8 +35,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
-	"connectrpc.com/validate"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -1397,16 +1395,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// asking for it as "not installed".
 	serverOpts = append(serverOpts, server.WithPluginCatalog(pluginCatalog))
 
-	// No error to handle since connectrpc.com/validate v0.6.0: the interceptor
-	// builds its validator lazily on first use, so construction cannot fail.
-	interceptor := validate.NewInterceptor()
-
-	otelInterceptor, err := otelconnect.NewInterceptor()
+	flowServer, err := server.New(c, serverOpts...)
 	if err != nil {
-		return fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
+		return err
 	}
 
-	flowServer, err := server.New(c, serverOpts...)
+	// The interceptor chain and the read bound, shared with `flow server dev`;
+	// see [rpcHandlerOptions] for the order and why it is built here, after
+	// telemetry started.
+	rpcOpts, err := rpcHandlerOptions(flowServer, logger)
 	if err != nil {
 		return err
 	}
@@ -1424,20 +1421,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	rpcMux := http.NewServeMux()
-	rpcMux.Handle(
-		flowstatev1connect.NewWorkflowServiceHandler(
-			flowServer,
-			connect.WithInterceptors(
-				interceptor,
-				otelInterceptor,
-			),
-			// Bound how much an unauthenticated caller can make the server
-			// allocate. connect-go defaults to unlimited, so without this a
-			// single request — or a compressed one that inflates enormously —
-			// can exhaust memory.
-			connect.WithReadMaxBytes(maxRequestBytes),
-		),
-	)
+	rpcMux.Handle(flowstatev1connect.NewWorkflowServiceHandler(flowServer, rpcOpts...))
 
 	httpServer := &http.Server{
 		// Where this server *listens* (--listen / $FLOWSTATE_ADDRESS), which used

@@ -45,6 +45,10 @@ const (
 	attrAttempt          = "flowstate.audit.attempt"
 	attrDispatchID       = "flowstate.audit.dispatch_id"
 
+	// The server-minted request id a control-plane record carries, flat for
+	// the same reason: it is a field of the record.
+	attrCorrelationID = "flowstate.audit.correlation_id"
+
 	attrSubject    = "flowstate.audit.identity.subject"
 	attrIssuer     = "flowstate.audit.identity.issuer"
 	attrNamespace  = "flowstate.audit.identity.namespace"
@@ -87,10 +91,17 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	// proto/flowstate/v1/audit.proto.
 	out.SetBody(attribute.StringValue(EventName))
 
-	if record.GetDecision() == v1.AuditDecision_AUDIT_DECISION_DENY {
+	switch record.GetDecision() {
+	case v1.AuditDecision_AUDIT_DECISION_DENY:
 		out.SetSeverity(otellog.SeverityWarn)
 		out.SetSeverityText("WARN")
-	} else {
+	case v1.AuditDecision_AUDIT_DECISION_INTERNAL_ERROR:
+		// The server's failure, not the caller's refusal: the severity a
+		// collector pages on, for the same reason the process log line is
+		// ERROR.
+		out.SetSeverity(otellog.SeverityError)
+		out.SetSeverityText("ERROR")
+	default:
 		out.SetSeverity(otellog.SeverityInfo)
 		out.SetSeverityText("INFO")
 	}
@@ -126,6 +137,13 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	}
 	if record.GetDispatchId() != "" {
 		attrs = append(attrs, attribute.String(attrDispatchID, record.GetDispatchId()))
+	}
+
+	// Present when the request had one, which is every control-plane record a
+	// server with the recover interceptor writes; absent on enforcement
+	// records and on a handler driven with no interceptor in front of it.
+	if record.GetCorrelationId() != "" {
+		attrs = append(attrs, attribute.String(attrCorrelationID, record.GetCorrelationId()))
 	}
 
 	// Verbatim, because it is the operator's own rule and the seam that set it

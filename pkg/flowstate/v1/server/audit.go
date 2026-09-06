@@ -85,6 +85,11 @@ func (s *FlowstateServer) auditSubject(ctx context.Context, rpc string, kind v1.
 		Identity:     s.identityFor(ctx),
 		ResourceKind: kind,
 		ResourceKey:  key,
+		// Minted by the recover interceptor before the handler ran, so that
+		// an INTERNAL_ERROR record written after a panic can be joined to the
+		// allow this handler is about to write. Empty when nothing minted
+		// one, which the record reports as absent. See server/recover.go.
+		CorrelationID: audit.CorrelationIDFromContext(ctx),
 	}
 	if principal, ok := auth.PrincipalFromContext(ctx); ok {
 		subject.IssuerName = principal.IssuerName

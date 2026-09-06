@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -56,11 +57,16 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 	// integer the substrate counts, from Temporal's activity info or a retry
 	// loop's own counter, and an identity Temporal supplies or Flowstate
 	// generates. A workload cannot choose either.
+	//
+	// correlation_id (picatz/flowstate#1761) is the first kind too: a random
+	// identifier the server's recover interceptor mints before the handler
+	// runs, bounded on the way in, and never a caller's request id — see the
+	// field's own comment for the join it exists for.
 	want := []string{
 		"action", "decision", "rpc", "identity",
 		"resource_kind", "resource_key", "decided_at", "deny_code",
 		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
-		"attempt", "dispatch_id",
+		"attempt", "dispatch_id", "correlation_id",
 	}
 
 	got := make([]string, 0, fields.Len())
@@ -848,6 +854,52 @@ func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
 	require.NotContains(t, controlPlane, "flowstate.audit.dispatch_id")
 	require.NotContains(t, controlPlane, "flowstate.audit.attempt")
 	require.Equal(t, "Get", controlPlane["flowstate.audit.rpc"])
+}
+
+// TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity is the
+// sink-side half of picatz/flowstate#1761: the record a handler panic writes
+// reaches a collector at ERROR — the severity to page on, above a denial's
+// WARN — carrying the server-minted correlation id and no deny code, and the
+// id is absent rather than empty on a record nothing minted one for.
+func TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity(t *testing.T) {
+	t.Parallel()
+
+	exporter := &stubExporter{}
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(audit.NewSyncProcessor(exporter)))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(),
+		audit.WithEmitter(audit.NewLogEmitter(provider)), audit.Required())
+	require.NoError(t, err)
+
+	ctx := audit.ContextWithCorrelationID(t.Context(), "9b2c1c2e-0a5e-4a44-9b3e-1f0f5f2f0a1c")
+	require.NoError(t, recorder.InternalError(ctx, audit.Subject{
+		RPC:           "Get",
+		CorrelationID: audit.CorrelationIDFromContext(ctx),
+		Identity:      &v1.WorkloadIdentity{Subject: "agent-1", Namespace: "acme"},
+	}))
+	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get"}))
+
+	require.Len(t, exporter.exported, 2)
+
+	failure := exporter.exported[0]
+	require.Equal(t, otellog.SeverityError, failure.Severity())
+	attrs := exportedAttributes(failure)
+	require.Equal(t, "AUDIT_DECISION_INTERNAL_ERROR", attrs["flowstate.audit.decision"])
+	require.Equal(t, "AUDIT_DENY_CODE_UNSPECIFIED", attrs["flowstate.audit.deny_code"], "nothing was decided")
+	require.Equal(t, "9b2c1c2e-0a5e-4a44-9b3e-1f0f5f2f0a1c", attrs["flowstate.audit.correlation_id"])
+	require.Equal(t, "Get", attrs["flowstate.audit.rpc"])
+	require.Equal(t, "AUTHORIZATION_ACTION_WORKLOAD_READ", attrs["flowstate.audit.action"],
+		"the action is derived from the rpc, as it is for a decision")
+
+	require.NotContains(t, exportedAttributes(exporter.exported[1]), "flowstate.audit.correlation_id",
+		"a record nothing minted an id for reports none rather than an empty one")
+
+	// The bound, held here as the schema holds it.
+	require.Empty(t, audit.CorrelationIDFromContext(t.Context()))
+	overlong := audit.Subject{RPC: "Get", CorrelationID: strings.Repeat("x", audit.MaxCorrelationIDBytes+1)}
+	require.NoError(t, recorder.InternalError(t.Context(), overlong))
+	require.Len(t, exportedAttributes(exporter.exported[2])["flowstate.audit.correlation_id"], audit.MaxCorrelationIDBytes)
 }
 
 // exportedAttributes flattens one exported record's attributes, the way the

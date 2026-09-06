@@ -262,6 +262,15 @@ const (
 	// repository's error classification (`v1.ErrorKind`) plus
 	// [ErrorTypePanic]; never an error *message*, which quotes its input.
 	ErrorType = string(semconv.ErrorTypeKey)
+
+	// RPCMethod is OpenTelemetry's own `rpc.method`, semconv v1.41.0, chosen
+	// over a `flowstate.` spelling for the reason [ErrorType] was: otelconnect
+	// already labels this server's RPC metrics with it, so a dashboard that
+	// joins a panic count to a request rate joins on one key. Its values are
+	// the flowstate.v1.WorkflowService method names — "Get", "Run", "Signal"
+	// — which the schema fixes; connect routes only a registered procedure to
+	// a handler, so a caller cannot mint one.
+	RPCMethod = string(semconv.RPCMethodKey)
 )
 
 // The fixed enumerations behind the [ClassConstruction] keys above, so that a
@@ -349,6 +358,7 @@ var Table = []Attribute{
 	{Key: Driver, Class: ClassConstruction, Chooser: "this repository: local, durable"},
 	{Key: PolicySurface, Class: ClassConstruction, Chooser: "this repository's deny-by-default surfaces"},
 	{Key: ErrorType, Class: ClassConstruction, Chooser: "this repository's error classification (v1.ErrorKind)", Convention: "OpenTelemetry semconv v1.41.0"},
+	{Key: RPCMethod, Class: ClassConstruction, Chooser: "this repository's schema, by the WorkflowService methods it declares", Convention: "OpenTelemetry semconv v1.41.0"},
 
 	{Key: DeliveryID, Class: ClassPeerControlled, Chooser: "the external sender, one per webhook delivery"},
 	{Key: "flowstate.run.id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
@@ -466,6 +476,14 @@ const (
 	// would make one submission look like several runs.
 	InstrumentRunExecutions = "flowstate.run.executions"
 
+	// InstrumentServerPanics counts RPC handler panics the server's recover
+	// interceptor caught, by method (picatz/flowstate#1761). Before it, a
+	// handler panic was a reset connection and a stdlib log line, and the
+	// only way to learn a deployment was crashing on one verb was to read
+	// stderr. Recorded in server/recover.go, beside the log line and the
+	// audit record the same recovery writes.
+	InstrumentServerPanics = "flowstate.server.panics"
+
 	// The plugin surface, which predates this table and now reads its names
 	// from it. Recorded in plugin/telemetry.go.
 	InstrumentPluginOperationDuration = "flowstate.plugin.operation.duration"
@@ -543,6 +561,11 @@ var Instruments = []Instrument{
 		Name:        InstrumentRunExecutions,
 		Description: "run completions, by outcome",
 		Keys:        []string{WorkflowName, Driver, RunOutcome, ErrorType},
+	},
+	{
+		Name:        InstrumentServerPanics,
+		Description: "RPC handler panics recovered by the server, by method",
+		Keys:        []string{RPCMethod},
 	},
 	{
 		Name:        InstrumentPluginOperationDuration,
