@@ -489,8 +489,9 @@ type TriggerDelivery struct {
 	// *.test.yaml lives in — the same rule [Test.Workflow] follows.
 	//
 	// The file is one JSON document with `headers` and `body`, because a
-	// delivery is both: an idempotency key is usually a signature header, so a
-	// fixture holding only a body could not exercise the key at all. It is read
+	// delivery is both: verification reads a signature header and a key may
+	// read a header of its own, so a fixture holding only a body could not
+	// exercise either. It is read
 	// under [v1.MaxWebhookPayloadBytes], the bound a live receiver will apply to
 	// a request body.
 	Payload string `yaml:"payload"`

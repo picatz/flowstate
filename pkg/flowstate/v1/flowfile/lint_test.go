@@ -956,3 +956,140 @@ steps:
 	require.Len(t, repeats, 1)
 	assert.Contains(t, repeats[0].Message, "`size(inputs.items)` is stated 3 times")
 }
+
+// webhookKeyedOn is a Flowfile whose one webhook is deduped by the given key
+// expression, which is the whole of what R10 reads.
+func webhookKeyedOn(key string) string {
+	return `edition: v2026.3
+name: keyed
+inputs:
+  order_id:
+    type: string
+    default: ord_local
+triggers:
+  - webhook: stripe
+    verify:
+      stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
+    idempotency_key: '` + key + `'
+    with:
+      order_id: ${event.body.data.object.metadata.order_id}
+steps:
+  - id: record
+    log:
+      message: ${inputs.order_id}
+`
+}
+
+// TestLintReportsAKeyOverASignatureHeader is R10, positive: the shape #1775
+// measured three runs for one event on, reported at the key's own position
+// with the value to key on instead.
+//
+// The header is spelled in the sender's case rather than lower-cased, because
+// the lookup finds it either way at run time and a check that only knew the
+// lower-cased spelling would miss the one an author pastes from the provider's
+// documentation.
+func TestLintReportsAKeyOverASignatureHeader(t *testing.T) {
+	found := lintOf(t, webhookKeyedOn(`${event.headers["Stripe-Signature"]}`))
+
+	keyed := findingsFor(found, StyleSignatureHeaderKey)
+	require.Len(t, keyed, 1)
+
+	assert.Equal(t, 11, keyed[0].Line, "the finding should point at the key, not at the trigger")
+	assert.Equal(t, "triggers[stripe].idempotency_key", keyed[0].Field)
+	assert.Contains(t, keyed[0].Message, "`stripe-signature` header")
+	assert.Contains(t, keyed[0].Message, "`${event.body.id}`",
+		"the remedy is the name to key on for this provider, which is what tier 4 owes")
+	assert.Contains(t, keyed[0].String(), "docs/STYLE.md R10/signature-header-key")
+}
+
+// TestLintReportsEverySpellingOfASignatureHeaderRead covers the other index
+// spelling, a read buried inside a larger expression, and the headers other
+// providers sign under — each with its own remedy, because "an id from the
+// body" is wrong advice for a provider whose stable name is a different header.
+func TestLintReportsEverySpellingOfASignatureHeaderRead(t *testing.T) {
+	for name, test := range map[string]struct {
+		key    string
+		header string
+		remedy string
+	}{
+		"indexed root": {
+			key:    `${event["headers"]["stripe-signature"]}`,
+			header: "stripe-signature",
+			remedy: "`${event.body.id}`",
+		},
+		"inside a larger expression": {
+			key:    `${event.body.type + ":" + event.headers["stripe-signature"]}`,
+			header: "stripe-signature",
+			remedy: "`${event.body.id}`",
+		},
+		"the generic scheme's header": {
+			key:    `${event.headers["x-flowstate-signature"]}`,
+			header: "x-flowstate-signature",
+			remedy: "`${event.body.id}`",
+		},
+		"github": {
+			key:    `${event.headers["X-Hub-Signature-256"]}`,
+			header: "x-hub-signature-256",
+			remedy: `x-github-delivery`,
+		},
+		"shopify": {
+			key:    `${event.headers["x-shopify-hmac-sha256"]}`,
+			header: "x-shopify-hmac-sha256",
+			remedy: `x-shopify-webhook-id`,
+		},
+		"slack": {
+			key:    `${event.headers["x-slack-signature"]}`,
+			header: "x-slack-signature",
+			remedy: "`${event.body.event_id}`",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			found := lintOf(t, webhookKeyedOn(test.key))
+
+			keyed := findingsFor(found, StyleSignatureHeaderKey)
+			require.Len(t, keyed, 1, "expected one finding for %s", test.key)
+			assert.Contains(t, keyed[0].Message, "`"+test.header+"` header")
+			assert.Contains(t, keyed[0].Message, test.remedy)
+		})
+	}
+}
+
+// TestLintStaysSilentOnAKeyTheSenderRepeats is R10's negative direction, which
+// is the one that keeps the check from becoming "never read a header": a
+// provider that repeats a delivery id in a header is keyed on that header, the
+// body's id is the canonical key, and a signature header read anywhere *but*
+// the key — verification's own business, or an argument — is not this rule's.
+func TestLintStaysSilentOnAKeyTheSenderRepeats(t *testing.T) {
+	for name, key := range map[string]string{
+		"the body's id":               `${event.body.id}`,
+		"a header the sender repeats": `${event.headers["x-shopify-webhook-id"]}`,
+		"a header not a signature":    `${event.headers["x-request-id"] + "-" + event.body.type}`,
+		"the body indexed by name":    `${event["body"]["id"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			requireNoFindings(t, findingsFor(lintOf(t, webhookKeyedOn(key)), StyleSignatureHeaderKey))
+		})
+	}
+
+	// A signature header read into an argument is the mapping's business, not
+	// the key's; the rule is about what names the event.
+	found := lintOf(t, `edition: v2026.3
+name: argued
+inputs:
+  signed_as:
+    type: string
+    default: none
+triggers:
+  - webhook: stripe
+    verify:
+      stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
+    idempotency_key: ${event.body.id}
+    with:
+      signed_as: ${event.headers["stripe-signature"]}
+steps:
+  - id: record
+    log:
+      message: ${inputs.signed_as}
+`)
+	requireNoFindings(t, findingsFor(found, StyleSignatureHeaderKey))
+}

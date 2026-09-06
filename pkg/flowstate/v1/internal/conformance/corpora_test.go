@@ -105,6 +105,7 @@ func corpusSizes() map[string]int {
 		"VarsSecretRefusalCases":          len(VarsSecretRefusalCases()),
 		"WaitCases":                       len(WaitCases()),
 		"WebhookDeliveryCases":            len(WebhookDeliveryCases()),
+		"WebhookRedeliveryCases":          len(WebhookRedeliveryCases()),
 		"WebhookSignalDeliveryCases":      len(WebhookSignalDeliveryCases()),
 		"SignalDedupeCases":               len(SignalDedupeCases()),
 		"WebhookTriggerCases":             len(WebhookTriggerCases()),

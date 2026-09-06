@@ -50,7 +50,10 @@ triggers:
   - webhook: payments
     verify:
       stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
-    idempotency_key: ${event.headers["stripe-signature"]}
+    # The event's id, never the signature header: Stripe signs each retry afresh,
+    # so a key over `Stripe-Signature` would start a run per retry. See
+    # examples/webhook-trigger for the full account.
+    idempotency_key: ${event.body.id}
     with:
       order_id: ${event.body.data.object.metadata.order_id}
 
@@ -85,8 +88,9 @@ steps:
   # `trigger.delivery_id` names the one arrival, so a run can be matched against
   # the provider's own record of what it sent.
   #
-  # It is a digest rather than the idempotency key itself: the usual key is a
-  # signature header, and this value is written to durable history.
+  # It is a digest rather than the idempotency key itself: a key is whatever the
+  # trigger's expression read from a sender-shaped delivery, and this value is
+  # written to durable history.
   - id: correlate
     log:
       level: info

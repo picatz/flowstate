@@ -30,6 +30,7 @@ charter.
 | Somebody wants a formatter option | R7. Canonical form has no options |
 | Is this snippet fit to be shown? | R8. Shown is a subset of canonical, and the subset is enforced |
 | This rule has no enforcement path | R9. The charter enforces itself or shrinks |
+| What should a webhook's `idempotency_key:` read? | R10. A dedupe key names the event, never the attempt |
 
 Anti-goals are Part IV of the same file. A proposal that hits one is refused with
 that reference rather than a new parallel argument.

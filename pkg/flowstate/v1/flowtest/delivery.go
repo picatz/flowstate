@@ -32,9 +32,10 @@ import (
 // loadDelivery reads a stored delivery: one JSON document with `headers` and
 // `body`.
 //
-// Both halves, because a delivery is both. An idempotency key is usually a
-// signature header — `${event.headers["stripe-signature"]}` — so a fixture holding
-// only a body could not exercise the required field at all, and a case would be
+// Both halves, because a delivery is both. Verification reads a signature header,
+// and an idempotency key may read one too (`${event.headers["x-shopify-webhook-id"]}`
+// is a sound key for that provider), so a fixture holding only a body could not
+// rehearse the arithmetic or the required field at all, and a case would be
 // asserting the easy half of the mapping.
 //
 // The raw bytes of the body come back beside the decoded delivery, because

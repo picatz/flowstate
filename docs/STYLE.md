@@ -55,6 +55,7 @@ descend from are in Part I.
 | Printing a line | `log:` | the retired `echo:` / `printf:` | the capability already existed under another name |
 | Reading a step's scalar output | `${steps.<id>.value}` | a bare `${steps.<id>}` | the six characters buy uniformity in every tool that reads outputs, and this is permanent (anti-goal 7) |
 | Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`parse_wait.go:397`) |
+| Naming a webhook delivery for dedupe | the event's own id, `${event.body.id}`, or a delivery id the sender repeats in a header | a signature header, `${event.headers["stripe-signature"]}` | a signature is computed per attempt — a retry carries a new timestamp and a new MAC over the same event — so a key over it names the attempt and every real retry starts a second run (R10) |
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
 
 The last row is the one place where the canonical spelling is not yet the only legal
@@ -382,6 +383,30 @@ rules by nature. Even those name the artifact review checks against, which is th
 file, so the argument is "does the proposal pass the test" and never "what do we
 think good looks like".
 
+### R10. A dedupe key names the event, never the attempt
+
+A webhook's `idempotency_key:` is what a redelivery is recognized by: the run's id is
+derived from it, so two deliveries with one key are one run. The key therefore has
+to be a value the sender *repeats* when it retries — the event's own id in the body,
+or a delivery id a provider carries in a header for exactly this purpose — and never
+a signature header. A signature is computed per attempt: Stripe signs
+`<timestamp>.<body>` afresh for every retry of one event, and every provider that
+signs a timestamp does the same, so a key over `Stripe-Signature` dedupes only a
+byte-identical resend and starts a run for every real retry. Measured on the
+corpus example before it was corrected: one event delivered four times produced
+three runs (#1775), which for a payment capture is a double capture.
+
+The validator cannot refuse it, and does not try. A key over a header genuinely
+varies with the delivery, which is all a file can prove, and reading a header is the
+right key for a provider that repeats one (`x-shopify-webhook-id`). What a checker
+*can* know is the header's name, and the names a signature travels under are few
+and fixed.
+
+Enforcement: tier 4, as `R10/signature-header-key` in `flow lint`, which names the
+header it found and the value to key on for that provider. Reachable from
+`flow validate`'s own guidance too: the diagnostic for a missing key suggests
+`${event.body.id}` and says why a signature header is not a key.
+
 ## Part II: the tiers
 
 Four tiers over one idea: severity is decided by *whose problem it is*.
@@ -392,7 +417,7 @@ Four tiers over one idea: severity is decided by *whose problem it is*.
 | 1. Refuse | `flow validate` and the parser | position, problem, remedy; wrong everywhere rather than merely ugly; properties of the file only, never of a deployment | R4's fence rules, R6's no dead keys |
 | 2. Normalize | `flow fmt` | one form per construct, no options, idempotent, comments preserved | R7, and the byte-level half of R8 |
 | 3. Migrate | `flow fix` plus editions | byte-safe, exact-match, refuses rather than guesses, tested by bytes or by compiling the result and never by "still validates" | R3's retirements, R4's sweep, R5's guarded-read rewrite (shipped) |
-| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; the tooling half of R8 |
+| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; R10's signature-header check; the tooling half of R8 |
 
 Wrong-everywhere is tier 1. Same-meaning-two-spellings is tier 2 or tier 3.
 Legal-but-there-is-a-better-idiom is tier 4 and only tier 4, because promoting a
@@ -405,7 +430,7 @@ could have made is not a review comment. It is a missing check, and the review a
 is to file it.**
 
 `flow lint` is that tool, landed by [#646](https://github.com/picatz/flowstate/issues/646).
-It carries R5's three mechanical checks and nothing else, because those are what this
+It carries R5's three mechanical checks and R10's one, because those are what this
 table says tier 4 carries; each check's doc comment in
 `pkg/flowstate/v1/flowfile/lint.go` names the rule it descends from, and every finding
 names it too, so `R5/nested-conditional` is a heading to read here rather than a number

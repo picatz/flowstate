@@ -1549,7 +1549,7 @@ inputs:
 triggers:
   - webhook: stripe
     verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
-    idempotency_key: ${event.headers["stripe-signature"]}
+    idempotency_key: ${event.body.id}     # the event id, never the signature: see below
     with:
       order_id: ${event.body.data.object.metadata.order_id}
       amount:   ${event.body.data.object.amount}
@@ -1615,9 +1615,15 @@ and evaluating one against sample deliveries proves nothing — the same evidenc
 condemns `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`, which
 varies exactly where its author intends, and this check also runs where a live
 delivery is bound, not only in an editor. Write a key over a value the sender
-repeats on a retry and the question does not arise. What the validator does *not* do is resolve
-anything: whether the secret exists and whether this deployment has that scheme
-configured are a deployment's answers.
+repeats on a retry and the question does not arise. That value is the event's own
+id — `${event.body.id}` for Stripe — or a delivery id a provider repeats in a header
+for the purpose (`x-shopify-webhook-id`), and never a signature header: a provider
+signs every retry afresh, with a new timestamp and a new MAC over the same body, so
+`${event.headers["stripe-signature"]}` names the attempt rather than the event, dedupes
+only a byte-identical resend, and starts a run for every real retry. `flow lint`
+reports that shape (`R10/signature-header-key`, docs/STYLE.md). What the validator
+does *not* do is resolve anything: whether the secret exists and whether this
+deployment has that scheme configured are a deployment's answers.
 
 **Declaring is not serving.** A file declares a webhook; a deployment decides whether
 *this* installation serves it, because staging must not fire the production webhook.
@@ -1654,7 +1660,7 @@ tests:
       payload: ./testdata/stripe-charge.json   # one JSON document: headers and body
     expect:
       inputs: { order_id: ord_H1x9, amount: 4200 }
-      idempotency_key: t=1577836800,v1=922e…
+      idempotency_key: evt_3PqLd2X1
 
   - name: an unverifiable delivery is refused, and no run happens
     workflow: ./workflow.yaml
@@ -1837,8 +1843,8 @@ start that already works:
 triggers:
   - webhook: payments
     verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
-    idempotency_key: ${event.headers["stripe-signature"]}
-    with: { order_id: ${event.body.id} }
+    idempotency_key: ${event.body.id}
+    with: { order_id: ${event.body.data.object.metadata.order_id} }
 
   - manual:
       require_reason: true                    # a start must say why, recorded on the run

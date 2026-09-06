@@ -129,6 +129,10 @@ const (
 	// StyleEqualityDispatch is R5's fourth: sibling `if:` steps that all test
 	// one value for equality, which is a `switch:`.
 	StyleEqualityDispatch StyleRule = "R5/equality-dispatch"
+
+	// StyleSignatureHeaderKey is R10: a webhook's `idempotency_key:` reads a
+	// signature header, which names the attempt rather than the event.
+	StyleSignatureHeaderKey StyleRule = "R10/signature-header-key"
 )
 
 // A StyleFinding is one tier-4 suggestion about one file.
@@ -216,6 +220,7 @@ func Lint(wf *v1.Workflow, pos *Positions) []StyleFinding {
 	findings = append(findings, nestedConditionals(wf, pos)...)
 	findings = append(findings, repeatedExpressions(wf, pos)...)
 	findings = append(findings, equalityDispatch(wf, pos)...)
+	findings = append(findings, signatureHeaderKeys(wf, pos)...)
 
 	slices.SortStableFunc(findings, func(a, b StyleFinding) int {
 		if a.Line != b.Line {
@@ -862,5 +867,136 @@ func equalityAgainstLiteral(e *expr.Expr) (subject *expr.Expr, literal *expr.Con
 		return args[0], right.ConstExpr, true
 	default:
 		return nil, nil, false
+	}
+}
+
+// signatureHeaderKeys reports a webhook `idempotency_key:` that reads a
+// signature header.
+//
+// R10: "A dedupe key names the event, never the attempt." A signature is
+// computed per attempt — Stripe signs `<timestamp>.<body>` afresh for every
+// retry of one event, and every provider that signs a timestamp does the same —
+// so a key over the header dedupes only a byte-identical resend and starts a
+// run for each real retry, which for the corpus example's own story was a
+// double capture (#1775). The validator cannot refuse it: the key genuinely
+// varies with the delivery, which is all a file can prove, and reading a header
+// is a sound key for a provider that repeats one (`x-shopify-webhook-id`). What
+// a checker *can* know is the header's name, and the names a signature travels
+// under are few and fixed.
+//
+// One finding per key, naming the header it found and the value to key on for
+// that provider. The remedy is name-shaped, which is what tier 4 owes: for a
+// provider whose payload carries the event's id, that id; for one whose stable
+// name is a different header, that header.
+func signatureHeaderKeys(wf *v1.Workflow, pos *Positions) []StyleFinding {
+	var findings []StyleFinding
+	budget := maxLintNodes
+
+	exprSites(wf, pos, func(written writtenExpr) {
+		if written.Slot != v1.SlotWebhookIdempotencyKey {
+			return
+		}
+
+		parsed := written.Value.GetExpr()
+		if parsed.GetExpr() == nil {
+			return
+		}
+
+		header, ok := signatureHeaderRead(parsed.GetExpr(), &budget)
+		if !ok {
+			return
+		}
+
+		at := exprPosition(pos, written.Step, written.Path, parsed)
+		findings = append(findings, StyleFinding{
+			Rule:   StyleSignatureHeaderKey,
+			Line:   at.Line,
+			Column: at.Column,
+			Field:  written.Field,
+			Message: fmt.Sprintf(
+				"this key reads the `%s` header, which the sender computes afresh for every attempt, "+
+					"so a retry of one event is named as a new event and starts a second run; "+
+					"key instead on %s",
+				header, signatureHeaders[header]),
+		})
+	})
+
+	return findings
+}
+
+// signatureHeaders are the headers a signature travels under, each with what a
+// key should read instead for that provider.
+//
+// The two the receiver verifies are derived from its own constants, so the
+// receiver cannot gain a scheme this list does not know. The rest are the
+// headers an author copying from another provider's documentation writes into
+// a generic `hmac_sha256` deployment; the receiver reads none of them, and the
+// point is the same for all of them. Lower-cased, because that is what
+// [v1.NewWebhookEvent] leaves in `event.headers` and what an author has to
+// spell to read one.
+var signatureHeaders = map[string]string{
+	strings.ToLower(v1.StripeSignatureHeader): "the event's id, `${event.body.id}`, which Stripe repeats " +
+		"on every retry",
+	strings.ToLower(v1.WebhookSignatureHeader): "an id the sender repeats on a retry, such as " +
+		"`${event.body.id}`",
+	"x-hub-signature-256": "the delivery id GitHub repeats on a redelivery, " +
+		"`${event.headers[\"x-github-delivery\"]}`",
+	"x-hub-signature": "the delivery id GitHub repeats on a redelivery, " +
+		"`${event.headers[\"x-github-delivery\"]}`",
+	"x-shopify-hmac-sha256": "the id Shopify repeats on a retry, `${event.headers[\"x-shopify-webhook-id\"]}`",
+	"x-slack-signature":     "the event id Slack repeats on a retry, `${event.body.event_id}`",
+}
+
+// signatureHeaderRead reports the first signature header an expression reads
+// out of `event.headers`, by either spelling an index takes:
+// `event.headers["stripe-signature"]` or `event["headers"]["stripe-signature"]`.
+//
+// The name is compared lower-cased, so `event.headers["Stripe-Signature"]` is
+// found too: the lookup would find the header at run time (the mapping
+// lower-cases names), so the check has to find it here. A header named through
+// anything but a string literal is not read: a key computed from a variable
+// name is not a shape this repository teaches, and guessing at it would be a
+// finding about an expression the author did not write.
+func signatureHeaderRead(e *expr.Expr, budget *int) (string, bool) {
+	if e == nil || *budget <= 0 {
+		return "", false
+	}
+	*budget--
+
+	if call := e.GetCallExpr(); call != nil && call.GetFunction() == operators.Index && len(call.GetArgs()) == 2 {
+		if isEventHeaders(call.GetArgs()[0]) {
+			if name, ok := call.GetArgs()[1].GetExprKind().(*expr.Expr_ConstExpr); ok {
+				header := strings.ToLower(name.ConstExpr.GetStringValue())
+				if _, signature := signatureHeaders[header]; signature {
+					return header, true
+				}
+			}
+		}
+	}
+
+	for _, child := range children(e) {
+		if header, ok := signatureHeaderRead(child, budget); ok {
+			return header, true
+		}
+	}
+
+	return "", false
+}
+
+// isEventHeaders reports whether an expression is exactly `event.headers`,
+// selected or indexed.
+func isEventHeaders(e *expr.Expr) bool {
+	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_SelectExpr:
+		return !kind.SelectExpr.GetTestOnly() &&
+			kind.SelectExpr.GetField() == v1.EventHeadersField &&
+			kind.SelectExpr.GetOperand().GetIdentExpr().GetName() == v1.EventRoot
+	case *expr.Expr_CallExpr:
+		call := kind.CallExpr
+		return call.GetFunction() == operators.Index && len(call.GetArgs()) == 2 &&
+			call.GetArgs()[0].GetIdentExpr().GetName() == v1.EventRoot &&
+			call.GetArgs()[1].GetConstExpr().GetStringValue() == v1.EventHeadersField
+	default:
+		return false
 	}
 }

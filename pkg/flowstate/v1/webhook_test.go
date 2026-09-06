@@ -2,14 +2,18 @@ package flowstatev1_test
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -27,12 +31,22 @@ func stripeTrigger() *v1.WebhookTrigger {
 				SecretRef: &v1.SecretRef{Scheme: "env", Name: "STRIPE_WEBHOOK_SECRET"},
 			}},
 		},
-		IdempotencyKey: v1.NewExpr(`event.headers["stripe-signature"]`),
+		IdempotencyKey: v1.NewExpr(`event.body.id`),
 		Arguments: map[string]*v1.Value{
 			"order_id": v1.NewExpr(`event.body.data.object.metadata.order_id`),
 			"amount":   v1.NewExpr(`event.body.data.object.amount`),
 		},
 	}
+}
+
+// headerKeyedTrigger is the same declaration keyed on a header the sender
+// repeats on a retry, which is the shape a provider without an id in the body
+// calls for. Not a signature header: see [conformance.WebhookRedeliveryCases].
+func headerKeyedTrigger() *v1.WebhookTrigger {
+	trigger := stripeTrigger()
+	trigger.IdempotencyKey = v1.NewExpr(`event.headers["x-shopify-webhook-id"]`)
+
+	return trigger
 }
 
 func TestCheckWebhookIdempotencyKeyRejectsConstantExpression(t *testing.T) {
@@ -80,7 +94,7 @@ func TestAnIdempotencyKeyMentioningTheDeliveryIsAcceptedInEverySyntacticPosition
 		`string(event)`,
 		`event.body.id`,
 		`event.body.data.id`,
-		`event.headers["stripe-signature"]`,
+		`event.headers["x-shopify-webhook-id"]`,
 		`event.headers["x-request-id"] + "-" + event.body.type`,
 		`event.body.items.map(item, item + event.body.id)[0]`,
 		`has(event.body.id) ? event.body.id : event.headers["x-request-id"]`,
@@ -126,7 +140,7 @@ func TestAnIdempotencyKeyMayMentionTheDeliveryAndStillNameEveryDeliveryAlike(t *
 		`true ? "all-events" : event.body.id`,
 		`1 == 1 ? "all-events" : event.body.id`,
 		`has(event.body.id) ? "all-events" : "all-events"`,
-		`size([1, 2, 3]) > 0 ? "all-events" : event.headers["stripe-signature"]`,
+		`size([1, 2, 3]) > 0 ? "all-events" : event.headers["x-shopify-webhook-id"]`,
 		`"all-events" + string(size(event.headers) * 0)`,
 	} {
 		t.Run(expression, func(t *testing.T) {
@@ -162,6 +176,7 @@ func stripeDelivery(verified bool) v1.WebhookDelivery {
 	return v1.WebhookDelivery{
 		Headers: map[string]string{"Stripe-Signature": "t=1,v1=abc"},
 		Body: map[string]any{
+			"id": "evt_3PqLd2X1",
 			"data": map[string]any{
 				"object": map[string]any{
 					"amount":   int64(4200),
@@ -184,7 +199,7 @@ func TestADeliveryBecomesTheRunsInputs(t *testing.T) {
 		t.Context(), orderWorkflow(), stripeTrigger(), stripeDelivery(true))
 	require.NoError(t, err)
 
-	assert.Equal(t, "t=1,v1=abc", key)
+	assert.Equal(t, "evt_3PqLd2X1", key)
 	assert.Equal(t, "ord_H1x9", inputs["order_id"].GetLiteral().GetStringValue())
 	assert.Equal(t, int64(4200), inputs["amount"].GetLiteral().GetInt64Value())
 	assert.Equal(t, "usd", inputs["currency"].GetLiteral().GetStringValue(),
@@ -248,7 +263,7 @@ func TestAnIdempotencyKeyMustNameSomething(t *testing.T) {
 	t.Parallel()
 
 	delivery := stripeDelivery(true)
-	delivery.Headers = map[string]string{"Stripe-Signature": "   "}
+	delivery.Body.(map[string]any)["id"] = "   "
 
 	_, _, err := v1.BindWebhookTriggerInputs(t.Context(), orderWorkflow(), stripeTrigger(), delivery)
 	require.Error(t, err)
@@ -257,16 +272,73 @@ func TestAnIdempotencyKeyMustNameSomething(t *testing.T) {
 
 // TestHeadersAreMatchedWithoutRegardToCase, which is the one normalization the
 // mapping performs: HTTP header names are case-insensitive, so a stored delivery
-// and a live one must agree about what `event.headers["stripe-signature"]` finds.
+// and a live one must agree about what `event.headers["x-shopify-webhook-id"]`
+// finds.
 func TestHeadersAreMatchedWithoutRegardToCase(t *testing.T) {
 	t.Parallel()
 
 	delivery := stripeDelivery(true)
-	delivery.Headers = map[string]string{"STRIPE-SIGNATURE": "t=2,v1=def"}
+	delivery.Headers = map[string]string{"X-SHOPIFY-WEBHOOK-ID": "b54557e4"}
 
-	_, key, err := v1.BindWebhookTriggerInputs(t.Context(), orderWorkflow(), stripeTrigger(), delivery)
+	_, key, err := v1.BindWebhookTriggerInputs(t.Context(), orderWorkflow(), headerKeyedTrigger(), delivery)
 	require.NoError(t, err)
-	assert.Equal(t, "t=2,v1=def", key)
+	assert.Equal(t, "b54557e4", key)
+}
+
+// TestARetrySignedAfreshIsNamedTheSameEvent is the mapping half of
+// [conformance.WebhookRedeliveryCases], on the local side of the seam: every
+// attempt verifies under the same key — the arithmetic accepts each fresh
+// signature — and every attempt evaluates the idempotency key to the one value
+// the sender repeats. The served receiver asserts the other half, that the
+// same key is the same run.
+//
+// The negative direction is asserted too: the attempts' signature headers
+// genuinely differ, so a key over the header would have named them apart. A
+// case whose retries were byte-identical would prove nothing about retries.
+func TestARetrySignedAfreshIsNamedTheSameEvent(t *testing.T) {
+	t.Parallel()
+
+	key := secrets.NewSecret(secrets.NewRef("env", "STRIPE_WEBHOOK_SECRET"), "whsec_conformance")
+	now := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, test := range conformance.WebhookRedeliveryCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			t.Parallel()
+
+			trigger := test.Trigger()
+			keys := map[string]secrets.Secret{v1.WebhookSchemeStripe: key}
+
+			var (
+				signatures []string
+				named      []string
+			)
+			for attempt := range test.SignedAt {
+				headers := test.Headers(key, now, attempt)
+				signatures = append(signatures, headers[v1.StripeSignatureHeader])
+
+				require.NoError(t, v1.VerifyWebhookDelivery(trigger, keys, headers, test.Body, now),
+					"attempt %d did not verify, so the case is about a refusal rather than a retry", attempt)
+
+				var body any
+				require.NoError(t, json.Unmarshal(test.Body, &body))
+
+				_, got, err := v1.BindWebhookTriggerInputs(t.Context(), test.Workflow, trigger, v1.WebhookDelivery{
+					Headers:  headers,
+					Body:     v1.NormalizeDeliveryNumbers(body),
+					Verified: true,
+				})
+				require.NoError(t, err)
+				named = append(named, got)
+
+				assert.Equal(t, test.ExpectedKey, got, "attempt %d: %s", attempt, test.Why)
+			}
+
+			assert.Greater(t, len(slices.Compact(slices.Sorted(slices.Values(signatures)))), 1,
+				"every attempt carried the same signature, so the case never exercised a retry")
+			assert.Len(t, slices.Compact(slices.Sorted(slices.Values(named))), 1,
+				"the attempts were named apart: %s", test.Why)
+		})
+	}
 }
 
 // TestATriggerExpressionSeesOnlyTheEvent: `event` is the whole scope. A trigger is

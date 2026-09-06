@@ -1,14 +1,19 @@
 package flowtest_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // Replaying a stored delivery is what makes a trigger's argument mapping
@@ -32,7 +37,7 @@ triggers:
   - webhook: stripe
     verify:
       stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
-    idempotency_key: ${event.headers["stripe-signature"]}
+    idempotency_key: ${event.body.id}
     with:
       order_id: ${event.body.order.id}
       amount: ${event.body.order.total}
@@ -45,7 +50,7 @@ steps:
 // storedDelivery is one arrival: headers and body, the way a delivery arrives.
 const storedDelivery = `{
   "headers": {"Stripe-Signature": "t=1,v1=abc"},
-  "body": {"order": {"id": "ord_9", "total": 4200}}
+  "body": {"id": "evt_9", "order": {"id": "ord_9", "total": 4200}}
 }`
 
 // writeDeliveryFixture lays down the workflow and the stored delivery a case
@@ -83,7 +88,7 @@ tests:
       inputs:
         order_id: ord_9
         amount: 4200
-      idempotency_key: t=1,v1=abc
+      idempotency_key: evt_9
       ran: [record]
 `)
 	report := flowtest.RunFile(dir + "/x.test.yaml")
@@ -202,7 +207,7 @@ tests:
 }
 
 // TestAnIdempotencyKeyThatDisagreesFailsTheCase: the key decides whether a
-// redelivery starts a second run, and an expression reaching the wrong header is
+// redelivery starts a second run, and an expression reaching the wrong field is
 // wrong in the direction nothing else notices.
 func TestAnIdempotencyKeyThatDisagreesFailsTheCase(t *testing.T) {
 	t.Parallel()
@@ -216,12 +221,88 @@ tests:
       webhook: stripe
       payload: ./delivery.json
     expect:
-      idempotency_key: t=2,v1=def
+      idempotency_key: evt_other
 `)
 	report := flowtest.RunFile(dir + "/x.test.yaml")
 	require.Len(t, report.GetCases(), 1)
 	assert.False(t, report.GetCases()[0].GetPassed())
 	assert.Contains(t, failureText(report.GetCases()[0].GetFailures()), "expected the delivery to be named")
+}
+
+// TestARetrySignedAfreshReplaysAsTheSameEvent is the rehearsal's side of
+// [conformance.WebhookRedeliveryCases]: every attempt, signed afresh against
+// the harness's own epoch, verifies under the bound key and is named by the
+// value the sender repeats. The served receiver asserts that the same name is
+// the same run; what this pins is that `flow test` does not name a retry
+// differently from production, which is the one way a rehearsal could pass a
+// file whose deployment starts a run per retry.
+func TestARetrySignedAfreshReplaysAsTheSameEvent(t *testing.T) {
+	t.Parallel()
+
+	// The harness's clock epoch, which is what its computed verification
+	// measures a signed timestamp against — public in docs/DSL.md rather than
+	// exported, so it is spelled here rather than read.
+	epoch := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	key := secrets.NewSecret(secrets.NewRef("env", "STRIPE_WEBHOOK_SECRET"), "whsec_conformance")
+
+	for _, test := range conformance.WebhookRedeliveryCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: `+test.Workflow.GetName()+`
+inputs:
+  order_id:
+    type: string
+    required: true
+triggers:
+  - webhook: `+test.Trigger().GetName()+`
+    verify:
+      stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
+    idempotency_key: ${event.body.id}
+    with:
+      order_id: ${event.body.data.object.metadata.order_id}
+steps:
+  - id: record
+    value: ${"order " + inputs.order_id}
+`)
+
+			var cases strings.Builder
+			for attempt := range test.SignedAt {
+				headers, err := json.Marshal(test.Headers(key, epoch, attempt))
+				require.NoError(t, err)
+
+				// The body is the case's exact bytes, because the signature
+				// is over them and a re-rendering would be a different body.
+				fixture := fmt.Sprintf(`{"headers": %s, "body": %s}`, headers, test.Body)
+				writeFile(t, fmt.Sprintf("%s/attempt-%d.json", dir, attempt), fixture)
+
+				fmt.Fprintf(&cases, `
+  - name: attempt %d is named the same event
+    workflow: ./workflow.yaml
+    secrets:
+      "env:STRIPE_WEBHOOK_SECRET": whsec_conformance
+    trigger:
+      webhook: %s
+      payload: ./attempt-%d.json
+    expect:
+      idempotency_key: %s
+      ran: [record]
+`, attempt, test.Trigger().GetName(), attempt, test.ExpectedKey)
+			}
+			writeFile(t, dir+"/x.test.yaml", "tests:"+cases.String())
+
+			report := flowtest.RunFile(dir + "/x.test.yaml")
+			require.Empty(t, report.GetRefused())
+			require.Len(t, report.GetCases(), len(test.SignedAt))
+			for _, c := range report.GetCases() {
+				assert.True(t, c.GetPassed(), "%s: %v — %s", c.GetName(), c.GetFailures(), test.Why)
+				assert.Empty(t, c.GetError())
+			}
+		})
+	}
 }
 
 // TestAnUnknownWebhookIsRefused: a case addressing a source the workflow does not
