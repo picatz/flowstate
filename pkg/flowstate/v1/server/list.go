@@ -2,17 +2,23 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Listing a tenant's runs is a scan, and the scan is what has to be bounded.
@@ -77,6 +83,20 @@ const (
 	// and the listing says there is more rather than pretending it finished — so
 	// the work still gets done, across calls the caller asked for.
 	maxListRequests = 100
+
+	// listTokenLifetime is how long a page token stays usable after it was
+	// issued.
+	//
+	// A day is plenty for a listing and short enough that a cursor somebody
+	// stored cannot resume a listing whose visibility has since changed: runs
+	// retained past their retention are gone, tenants may have been remapped,
+	// and a position from before either is not a position in the listing the
+	// caller would get by starting over.
+	listTokenLifetime = 24 * time.Hour
+
+	// listTokenKeySize is the HMAC-SHA256 key length, which is also the length
+	// of the authentication code a token carries after its cursor.
+	listTokenKeySize = sha256.Size
 )
 
 // List returns a page of the runs belonging to the caller's tenant.
@@ -112,11 +132,20 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 		pageSize = maxListPageSize
 	}
 
-	// A page token is something a caller sends, so it is parsed rather than
-	// trusted. It cannot widen what the caller sees regardless of its contents:
-	// it is a position in a listing the namespace above already narrowed, and
-	// every execution it reaches is still checked against the caller's tenant.
-	cursor, err := decodePageToken(req.Msg.GetPageToken())
+	// The token binds the query as well as the position, so a cursor issued
+	// for one question is refused for another rather than quietly naming a
+	// page that need not exist under it. The effective page size is what is
+	// digested, so a caller who let the default apply and one who spelled it
+	// out are asking the same question and may exchange tokens.
+	query := listQueryDigest(req.Msg.GetFilter(), pageSize)
+
+	// A page token is something a caller sends, so it is authenticated rather
+	// than trusted: only a token this process issued, to this tenant, for this
+	// query, and recently, is a position at all. Even one that passes cannot
+	// widen what the caller sees — it is a position in a listing the namespace
+	// above already narrowed, and every execution it reaches is still checked
+	// against the caller's tenant.
+	cursor, err := s.openPageToken(req.Msg.GetPageToken(), caller, query, time.Now())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -176,16 +205,11 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			Query: listQuery,
 		})
 		if err != nil {
-			// A page token comes from the caller, and Temporal reports one it
-			// cannot deserialize as an ordinary error. Reported as InvalidArgument
-			// rather than Internal, because a caller's malformed input is not a
-			// server fault — and relaying the message would hand back Temporal's
-			// own text, which names namespaces this deployment does not otherwise
-			// disclose.
-			if len(cursor) > 0 {
-				return nil, connect.NewError(connect.CodeInvalidArgument,
-					errors.New("page token is not a token this server issued"))
-			}
+			// Not the caller's fault, whichever page this is. The position handed
+			// to Temporal is either its own previous answer, unchanged, or the
+			// one a token carried — and a token only gets this far once its
+			// authentication code proves the position came from this server, so
+			// there is no malformed cursor left for Temporal to be refusing.
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing runs: %w", err))
 		}
 
@@ -243,12 +267,17 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 		}
 	}
 
+	// Set whenever Temporal has more to give, including when this page came
+	// back short because the scan budget ran out first. A caller that stops on
+	// a short page would silently miss runs it owns.
+	next, err := s.issuePageToken(cursor, caller, query, time.Now())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("issuing the next page token: %w", err))
+	}
+
 	return connect.NewResponse(&v1.ListResponse{
-		Runs: runs,
-		// Set whenever Temporal has more to give, including when this page came
-		// back short because the scan budget ran out first. A caller that stops on
-		// a short page would silently miss runs it owns.
-		NextPageToken: encodePageToken(cursor),
+		Runs:          runs,
+		NextPageToken: next,
 	}), nil
 }
 
@@ -435,24 +464,157 @@ func runTimes(execution *workflow.WorkflowExecutionInfo) (start, close *timestam
 	return execution.GetStartTime(), execution.GetCloseTime()
 }
 
-// decodePageToken parses the opaque cursor a caller returns.
-func decodePageToken(token string) ([]byte, error) {
+// A page token is opaque, and the opacity is enforced rather than requested.
+//
+// What a caller hands back is a [v1.ListCursor] serialized, followed by an
+// HMAC-SHA256 over those bytes, base64url-encoded. The cursor names where the
+// scan stopped — Temporal's own page token, carried intact — together with the
+// tenant it was issued to, a digest of the query it was issued for, and when.
+// The code at the end is what makes the rest trustworthy: a token that does not
+// carry one this server produced is refused as not a token this server issued,
+// which is now a sentence the server can stand behind. Before the code was
+// there, the same sentence was said of anything that failed to parse, while
+// anything that did parse was accepted whatever it named.
+//
+// What a forged cursor could buy was always limited, because the namespace a
+// listing reads is decided by the authenticated caller rather than by anything
+// in the token, and Temporal's position is an ordering key rather than an
+// authority. What it cost was that the cursor's contract was open: a client
+// could build one, so its layout was something a client could come to depend
+// on, and a cursor issued for one filter was accepted under another, where the
+// page it named need not exist. Signing closes both.
+//
+// # Refusals
+//
+// Each check has its own sentence, because they are the caller's different
+// mistakes: a token from another process or a hand-built one, a token from
+// another tenant, a token from another query, a token kept too long. All are
+// InvalidArgument, and all fail closed — a token that cannot be authenticated
+// is not a position, whatever it claims to be.
+
+// newListTokenKey derives the key one server process signs page tokens with.
+//
+// From the system's random source, at startup, and shared with nothing. That
+// makes a token valid for exactly one process: a replica behind the same
+// address does not hold this key, so a token issued by one is refused by the
+// other as not a token it issued, and a caller paging across a load balancer
+// starts over. Sharing the key — through configuration, or by deriving it from
+// the payload codec's key so that replicas that already agree on one agree on
+// this — is the same question multi-replica MCP sessions raise, and is settled
+// in #1654 rather than separately here.
+func newListTokenKey() ([]byte, error) {
+	key := make([]byte, listTokenKeySize)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("deriving the page token key: %w", err)
+	}
+
+	return key, nil
+}
+
+// listQueryDigest names the question a listing asks, so a token can be bound
+// to it.
+//
+// The filter's text and the effective page size, each length-prefixed so that
+// no filter can be mistaken for another by where its bytes fall. A digest
+// rather than the text itself, because a filter may be long and a token is
+// bounded at 4096 characters by the schema: the token has to fit whatever the
+// filter was.
+func listQueryDigest(filter string, pageSize int) []byte {
+	h := sha256.New()
+
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(filter)))
+	h.Write(length[:])
+	h.Write([]byte(filter))
+
+	binary.BigEndian.PutUint64(length[:], uint64(pageSize))
+	h.Write(length[:])
+
+	return h.Sum(nil)
+}
+
+// issuePageToken renders a position for a caller to hand back, bound to the
+// tenant and query it was issued for and to the moment it was issued.
+//
+// An empty position is the end of the listing, and is reported as an empty
+// token rather than a signed cursor naming nothing: an absent token is the one
+// signal a caller has that a listing is done.
+func (s *FlowstateServer) issuePageToken(position []byte, namespace string, query []byte, now time.Time) (string, error) {
+	if len(position) == 0 {
+		return "", nil
+	}
+
+	cursor, err := proto.Marshal(&v1.ListCursor{
+		Position:    position,
+		Namespace:   namespace,
+		QueryDigest: query,
+		IssuedAt:    timestamppb.New(now),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return base64.RawURLEncoding.EncodeToString(s.sealListCursor(cursor)), nil
+}
+
+// sealListCursor appends the authentication code a serialized cursor is
+// accepted by.
+func (s *FlowstateServer) sealListCursor(cursor []byte) []byte {
+	mac := hmac.New(sha256.New, s.listTokenKey)
+	mac.Write(cursor)
+
+	return mac.Sum(cursor)
+}
+
+// openPageToken authenticates the token a caller returns and yields the
+// position it carries, or refuses it with the sentence for what was wrong.
+//
+// The authentication code is checked before anything inside the token is
+// read, so the tenant and query comparisons below are between values this
+// server wrote and values it holds — never between a caller's claim and the
+// truth. An empty token is the start of the listing and carries nothing to
+// check.
+func (s *FlowstateServer) openPageToken(token, namespace string, query []byte, now time.Time) ([]byte, error) {
 	if token == "" {
 		return nil, nil
 	}
 
-	cursor, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		return nil, fmt.Errorf("page token is not a token this server issued")
+	sealed, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(sealed) < listTokenKeySize {
+		return nil, errors.New("page token is not a token this server issued")
 	}
 
-	return cursor, nil
-}
+	cursor, code := sealed[:len(sealed)-listTokenKeySize], sealed[len(sealed)-listTokenKeySize:]
 
-// encodePageToken renders a cursor for a caller to hand back.
-func encodePageToken(cursor []byte) string {
-	if len(cursor) == 0 {
-		return ""
+	mac := hmac.New(sha256.New, s.listTokenKey)
+	mac.Write(cursor)
+	if !hmac.Equal(mac.Sum(nil), code) {
+		return nil, errors.New("page token is not a token this server issued")
 	}
-	return base64.RawURLEncoding.EncodeToString(cursor)
+
+	var parsed v1.ListCursor
+	if err := proto.Unmarshal(cursor, &parsed); err != nil {
+		// Unreachable for a token whose code this server produced, since it
+		// only ever signs what it marshaled. Refused with the same sentence
+		// rather than trusted, because a code that verifies over bytes the
+		// server cannot read is exactly the case a fail-closed check is for.
+		return nil, errors.New("page token is not a token this server issued")
+	}
+
+	if parsed.GetNamespace() != namespace {
+		return nil, errors.New("page token was issued to a different namespace")
+	}
+
+	if !hmac.Equal(parsed.GetQueryDigest(), query) {
+		return nil, errors.New("page token was issued for a different filter or page size; " +
+			"continue with the filter and page size the listing started with, or start again without a token")
+	}
+
+	// Absent reads as the zero time, which is long expired: fail closed rather
+	// than treat a token with no issue time as fresh.
+	if now.Sub(parsed.GetIssuedAt().AsTime()) > listTokenLifetime {
+		return nil, errors.New("page token has expired; start the listing again without one")
+	}
+
+	return parsed.GetPosition(), nil
 }
