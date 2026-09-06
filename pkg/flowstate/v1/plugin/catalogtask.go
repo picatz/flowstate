@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -150,7 +151,7 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 
 			def, err := TaskDefFromDescription(task, cfg)
 			if err != nil {
-				return nil, fmt.Errorf("plugin %q: %w", truncate(described.GetName(), 64), err)
+				return nil, fmt.Errorf("plugin %q: %w", textbound.Truncate(described.GetName(), 64), err)
 			}
 			defs = append(defs, def)
 		}
@@ -192,7 +193,7 @@ func checkQualified(plugin, task string) error {
 			"%w: plugin %q lists a task named %q, and a host names every one of a plugin's tasks "+
 				"%s<task>; a catalog naming a task any other way would register that name over "+
 				"whatever already holds it",
-			ErrCatalogTaskName, truncate(plugin, 64), truncate(task, 64), prefix)
+			ErrCatalogTaskName, textbound.Truncate(plugin, 64), textbound.Truncate(task, 64), prefix)
 	}
 
 	if err := flowstatev1.Validate(&pluginv1.PluginManifest{
@@ -203,7 +204,7 @@ func checkQualified(plugin, task string) error {
 		return fmt.Errorf(
 			"%w: plugin %q lists a task named %q, and no plugin could have declared that — the "+
 				"host builds a task's name from a manifest whose own rules refuse it: %w",
-			ErrCatalogTaskName, truncate(plugin, 64), truncate(task, 64), err)
+			ErrCatalogTaskName, textbound.Truncate(plugin, 64), textbound.Truncate(task, 64), err)
 	}
 
 	return nil
@@ -245,8 +246,8 @@ func checkOneDefinitionPer(catalog *flowstatev1.PluginCatalog) error {
 					"%w: task %q is defined twice — by plugin entry %d (%q) and again by entry %d (%q); "+
 						"a registry keeps one definition per name, so which of them a file were checked "+
 						"against would depend on the order they appear in",
-					ErrCatalogDuplicateTask, truncate(name, 64),
-					first.index, truncate(first.plugin, 64), i, truncate(described.GetName(), 64))
+					ErrCatalogDuplicateTask, textbound.Truncate(name, 64),
+					first.index, textbound.Truncate(first.plugin, 64), i, textbound.Truncate(described.GetName(), 64))
 			}
 			seen[name] = source{plugin: described.GetName(), index: i}
 		}
@@ -330,12 +331,12 @@ func TaskDefFromDescription(described *flowstatev1.TaskDescription, cfg Config) 
 
 	inputs, err := messageDescriptor(described.GetInputDescriptor(), described.GetInputMessage(), cfg)
 	if err != nil {
-		return flowstatev1.TaskDef{}, fmt.Errorf("task %q inputs: %w", truncate(name, 64), err)
+		return flowstatev1.TaskDef{}, fmt.Errorf("task %q inputs: %w", textbound.Truncate(name, 64), err)
 	}
 
 	outputs, err := messageDescriptor(described.GetOutputDescriptor(), described.GetOutputMessage(), cfg)
 	if err != nil {
-		return flowstatev1.TaskDef{}, fmt.Errorf("task %q outputs: %w", truncate(name, 64), err)
+		return flowstatev1.TaskDef{}, fmt.Errorf("task %q outputs: %w", textbound.Truncate(name, 64), err)
 	}
 
 	return flowstatev1.TaskDef{

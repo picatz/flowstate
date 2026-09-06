@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
@@ -503,7 +504,7 @@ func (r tokenResponse) credential(provider, target string, assertion Assertion, 
 	// is not usable as a bearer token, and presenting it as one would be wrong.
 	if r.TokenType != "" && !strings.EqualFold(r.TokenType, "bearer") && !strings.EqualFold(r.TokenType, "n_a") {
 		return Credential{}, fmt.Errorf("%w: %s issued a %q token, which cannot be used as a bearer token",
-			ErrExchangeFailed, provider, truncate(r.TokenType, 32))
+			ErrExchangeFailed, provider, textbound.Truncate(r.TokenType, 32))
 	}
 
 	// A ceiling below a second can admit nothing, because expires_in is counted
@@ -732,16 +733,16 @@ func describeError(raw []byte) string {
 	if err := json.Unmarshal(raw, &oauth); err == nil {
 		switch {
 		case oauth.Error != "" && oauth.ErrorDescription != "":
-			return fmt.Sprintf(" (%s: %s)", truncate(oauth.Error, 64), truncate(oauth.ErrorDescription, 256))
+			return fmt.Sprintf(" (%s: %s)", textbound.Truncate(oauth.Error, 64), textbound.Truncate(oauth.ErrorDescription, 256))
 		case oauth.Error != "":
-			return fmt.Sprintf(" (%s)", truncate(oauth.Error, 64))
+			return fmt.Sprintf(" (%s)", textbound.Truncate(oauth.Error, 64))
 		case oauth.Message != "":
-			return fmt.Sprintf(" (%s)", truncate(oauth.Message, 256))
+			return fmt.Sprintf(" (%s)", textbound.Truncate(oauth.Message, 256))
 		}
 	}
 
 	if code, message := xmlError(raw); code != "" {
-		return fmt.Sprintf(" (%s: %s)", truncate(code, 64), truncate(message, 256))
+		return fmt.Sprintf(" (%s: %s)", textbound.Truncate(code, 64), textbound.Truncate(message, 256))
 	}
 
 	return ""

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"google.golang.org/protobuf/proto"
@@ -225,7 +226,7 @@ func (h *Host) bind(launched []*Plugin) []error {
 			if other, taken := h.taskDefs[name]; taken && other.plugin == p {
 				problems = append(problems, pluginError(p.Name(), p.Path(), fmt.Errorf(
 					"%w: declares task %q twice",
-					ErrManifest, truncate(manifest.GetName(), 64),
+					ErrManifest, textbound.Truncate(manifest.GetName(), 64),
 				)))
 				continue
 			}

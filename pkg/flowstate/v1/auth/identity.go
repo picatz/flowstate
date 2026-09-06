@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // WorkloadIdentity is who a running workload is, and on whose behalf it acts.
@@ -282,11 +284,11 @@ func validateCarriedClaims(claims map[string]string) error {
 			return fmt.Errorf("%w: identity carries a claim with no name", ErrInvalidIdentity)
 		case len(name) > MaxCarriedClaimNameBytes:
 			return fmt.Errorf("%w: carried claim name %q is %d bytes, and at most %d are allowed",
-				ErrInvalidIdentity, truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
+				ErrInvalidIdentity, textbound.Truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
 		case len(value) > MaxCarriedClaimValueBytes:
 			// The value's length, never the value.
 			return fmt.Errorf("%w: carried claim %q has a %d byte value, and at most %d are allowed",
-				ErrInvalidIdentity, truncate(name, 64), len(value), MaxCarriedClaimValueBytes)
+				ErrInvalidIdentity, textbound.Truncate(name, 64), len(value), MaxCarriedClaimValueBytes)
 		}
 
 		total += len(name) + len(value)
@@ -417,7 +419,7 @@ func (w WorkloadIdentity) SubjectFor(ref StepRef) (string, error) {
 			// Otherwise one component could spell out several, and a subject
 			// could be made to look like a different workload's.
 			return "", fmt.Errorf("%w: %s %q must not contain %q or %q",
-				ErrInvalidIdentity, names[i], truncate(component, 64), subjectSeparator, ":")
+				ErrInvalidIdentity, names[i], textbound.Truncate(component, 64), subjectSeparator, ":")
 		}
 	}
 

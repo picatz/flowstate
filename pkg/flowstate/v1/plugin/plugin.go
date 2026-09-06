@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
@@ -411,7 +412,7 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 		health = Health{
 			Status:          HealthNotServing,
 			CheckedAt:       time.Now(),
-			Message:         truncate(message, 1024),
+			Message:         textbound.Truncate(message, 1024),
 			messageScrubbed: scrubbed,
 		}
 	}
@@ -550,7 +551,7 @@ func (p *Plugin) checkManifest(inst *instance, manifest *pluginv1.PluginManifest
 		// saying, because the mismatch will confuse whoever reads the logs.
 		manifestName, scrubbed := inst.stderrSecrets.scrub(manifest.GetName())
 		p.log.Warn("plugin manifest name does not match its binary",
-			"manifest_name", truncate(manifestName, 64), "binary_name", p.name, "scrubbed", scrubbed)
+			"manifest_name", textbound.Truncate(manifestName, 64), "binary_name", p.name, "scrubbed", scrubbed)
 	}
 
 	// A capability the host does not know is ignored rather than refused, which
@@ -610,7 +611,7 @@ func (p *Plugin) checkManifest(inst *instance, manifest *pluginv1.PluginManifest
 			if !p.cfg.schemePermitted(scheme) {
 				return fmt.Errorf(
 					"%w: claims scheme %q, which this deployment does not permit (permitted: %s)",
-					ErrSchemeNotPermitted, truncate(scheme, 32), strings.Join(p.cfg.PermittedSchemes, ", "),
+					ErrSchemeNotPermitted, textbound.Truncate(scheme, 32), strings.Join(p.cfg.PermittedSchemes, ", "),
 				)
 			}
 		}
@@ -620,7 +621,7 @@ func (p *Plugin) checkManifest(inst *instance, manifest *pluginv1.PluginManifest
 		seen := make(map[string]struct{}, len(manifest.GetTasks()))
 		for _, task := range manifest.GetTasks() {
 			if _, dup := seen[task.GetName()]; dup {
-				return fmt.Errorf("%w: provides task %q twice", ErrManifest, truncate(task.GetName(), 64))
+				return fmt.Errorf("%w: provides task %q twice", ErrManifest, textbound.Truncate(task.GetName(), 64))
 			}
 			seen[task.GetName()] = struct{}{}
 		}
@@ -987,13 +988,13 @@ func manifestUnchanged(before, after *pluginv1.PluginManifest) error {
 	for _, task := range afterTasks {
 		previous, ok := byName[task.GetName()]
 		if !ok {
-			return fmt.Errorf("came back providing task %q, which it did not provide before", truncate(task.GetName(), 64))
+			return fmt.Errorf("came back providing task %q, which it did not provide before", textbound.Truncate(task.GetName(), 64))
 		}
 		if !proto.Equal(previous, task) {
 			// The engine validates workflows against the descriptors from the
 			// first manifest, so a task whose schema changed would be validated
 			// against one shape and executed against another.
-			return fmt.Errorf("came back defining task %q differently", truncate(task.GetName(), 64))
+			return fmt.Errorf("came back defining task %q differently", textbound.Truncate(task.GetName(), 64))
 		}
 	}
 
@@ -1037,7 +1038,7 @@ func capabilityNames(caps []pluginv1.Capability) []string {
 func taskNames(tasks []*pluginv1.TaskManifest) []string {
 	names := make([]string, 0, len(tasks))
 	for _, t := range tasks {
-		names = append(names, truncate(t.GetName(), 64))
+		names = append(names, textbound.Truncate(t.GetName(), 64))
 	}
 	slices.Sort(names)
 	return names

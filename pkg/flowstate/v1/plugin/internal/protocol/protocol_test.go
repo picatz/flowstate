@@ -3,6 +3,8 @@ package protocol
 import (
 	"strings"
 	"testing"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // TestHandshakeRoundTrip checks that what a plugin writes is what the host
@@ -113,7 +115,7 @@ func TestParseHandshake(t *testing.T) {
 
 			_, err := ParseHandshake(test.line)
 			if err == nil {
-				t.Fatalf("ParseHandshake(%q) succeeded, want a refusal", truncate(test.line, 64))
+				t.Fatalf("ParseHandshake(%q) succeeded, want a refusal", textbound.Truncate(test.line, 64))
 			}
 			if !strings.Contains(err.Error(), test.wantMessage) {
 				t.Errorf("error = %q, want it to mention %q", err.Error(), test.wantMessage)
@@ -157,7 +159,7 @@ func TestVersions(t *testing.T) {
 
 		for _, input := range []string{"", "   ", "one", "1,", "1,,2", "0", "-1", strings.Repeat("1,", MaxOfferedVersions+1) + "1"} {
 			if _, err := ParseVersions(input); err == nil {
-				t.Errorf("ParseVersions(%q) succeeded, want a refusal", truncate(input, 32))
+				t.Errorf("ParseVersions(%q) succeeded, want a refusal", textbound.Truncate(input, 32))
 			}
 		}
 	})
