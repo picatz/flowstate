@@ -235,10 +235,14 @@ type RunRequest struct {
 	//
 	// # Grammar
 	//
-	// A UUID or a caller-chosen string: printable ASCII, bounded. It is digested,
-	// never interpolated, so nothing about its content can reach a workflow id —
-	// the same discipline `webhookWorkflowID` applies to an idempotency key — and
-	// it is recorded on the run only as that digest, never as the value itself.
+	// A UUID or a caller-chosen string of 1 to 128 ASCII letters, digits and
+	// `.`, `_`, `:`, `/` or `-`, the first a letter or digit: the alphabet a
+	// UUID, a CI job's run id, a ULID or a `<system>:<id>` key is already written
+	// in, and nothing wider, so a value copied from a log line or a URL reads as
+	// itself. It is digested, never interpolated, so nothing about its content
+	// can reach a workflow id — the same discipline `webhookWorkflowID` applies
+	// to an idempotency key — and it is recorded on the run only as that digest,
+	// never as the value itself.
 	RequestId     *string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3,oneof" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -312,7 +316,8 @@ func (x *RunRequest) GetRequestId() string {
 // RunResponse is the response message for a workflow run.
 type RunResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run and
+	// WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run,
+	// `flowstate-request-<hex>` for one started with [RunRequest.request_id] and
 	// `flowstate-entity-<namespace>_<entity_key>` for one started with
 	// [RunRequest.entity_key], no longer a bare UUID, so the format constraint
 	// is a length bound rather than [buf.validate.field.string.uuid], which the
