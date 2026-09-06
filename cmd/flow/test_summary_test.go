@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,22 @@ func TestSummaryNamesARefusedFile(t *testing.T) {
 	out, err := runFlowTest(t, dir)
 	require.Error(t, err)
 	assert.Contains(t, out, "1 file refused · 1 file · 0 cases · 0 passed")
+}
+
+// TestARefusedFileSaysWhyInTextMode: the reason a file was refused is the one
+// line a reader must have, printed position-first the way `-v` and an editor's
+// problem matcher read it, and the file named once rather than twice (#1759).
+func TestARefusedFileSaysWhyInTextMode(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "big.test.yaml"), []byte("tests:\n  - name: chain\n"), 0o600))
+
+	out, err := runFlowTest(t, dir)
+	require.Error(t, err)
+	assert.Contains(t, out, `big.test.yaml:2:5: test "chain" names no workflow`,
+		"the refusal's reason and position are missing from the default text output")
+	assert.NotContains(t, out, "big.test.yaml: "+filepath.Join(dir, "big.test.yaml"),
+		"the file is named twice on the refusal line")
+	assert.Equal(t, 1, strings.Count(out, "names no workflow"), "the reason is printed more than once")
 }
 
 // TestSummaryCountsCoverageGapsOnlyWhenOptedIn: the gap joins the line

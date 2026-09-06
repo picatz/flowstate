@@ -663,6 +663,14 @@ func indentRendering(text string) string {
 // `go test -v` reading of the flag.
 func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, transcripts [][]flowtest.TranscriptLine, failOnWarning, verbose bool) {
 	if refused := report.GetRefused(); refused != "" {
+		// Position-first when the loader already wrote the file into the
+		// reason (`file.test.yaml:2:5: test "chain" names no workflow`), so
+		// the line an editor's problem matcher reads is not the file named
+		// twice; the file is prefixed only for a reason that lacks one.
+		if strings.HasPrefix(refused, report.GetFile()+":") {
+			fmt.Fprintln(out, theme.Danger.Render(refused))
+			return
+		}
 		fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(report.GetFile()), theme.Danger.Render(refused))
 		return
 	}

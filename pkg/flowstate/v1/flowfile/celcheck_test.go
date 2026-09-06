@@ -127,6 +127,25 @@ func TestAnExpressionThatCannotEvaluateIsReported(t *testing.T) {
 			expr: `string(size(1))`,
 			says: "no matching overload for 'size'",
 		},
+		{
+			// #1759: the function whose unqualified name the author typed is
+			// named, rather than a list of a hundred to search.
+			name: "a namespaced function called by its last segment",
+			expr: `range(3)`,
+			says: `no function called "range"; did you mean lists.range?`,
+		},
+		{
+			// cel-go reports `lists.rnge` as `rnge`, so the near miss is
+			// found among last segments and named in full.
+			name: "a namespaced function misspelled",
+			expr: `lists.rnge(3)`,
+			says: `no function called "rnge"; did you mean lists.range?`,
+		},
+		{
+			name: "the referral names the listing that prints functions",
+			expr: `nosuchfunc(1)`,
+			says: "listed by `flow tasks --expressions`",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -537,4 +556,15 @@ func TestTheDiagnosticIsWrittenForAnAuthor(t *testing.T) {
 		assert.NotContains(t, reported, "json.encode",
 			"advice for one case was offered for another, which is how advice stops being read")
 	})
+}
+
+// TestAnUnknownFunctionWithNoNearMissGetsNoSuggestion is the negative
+// direction of #1759's suggestion: a name nothing in the profile resembles
+// gets the listing referral and no invented "did you mean".
+func TestAnUnknownFunctionWithNoNearMissGetsNoSuggestion(t *testing.T) {
+	t.Parallel()
+
+	reported := strings.Join(diagnosticsFor(t, sayingInStep(`nosuchfunc(1)`)), "\n")
+	assert.Contains(t, reported, `no function called "nosuchfunc"`)
+	assert.NotContains(t, reported, "did you mean")
 }

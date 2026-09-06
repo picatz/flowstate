@@ -12,6 +12,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // Expressions in a Flowfile were parsed and never checked.
@@ -465,9 +466,21 @@ func forAnAuthor(message string) string {
 		// `flow tasks` prints — so naming it serves the reader in the terminal
 		// and the reader over the wire with one sentence rather than a
 		// venue-aware rewrite of it.
+		//
+		// The near miss first, because the list is about a hundred names and
+		// the one the author wanted is usually the one whose last segment
+		// they typed: `range` is `lists.range` (#1759). A lookup over the
+		// profile's own table, not a search the author does.
+		if suggestion, ok := suggestFunction(match[1]); ok {
+			return fmt.Sprintf(
+				"no function called %q; did you mean %s? The functions this profile provides are "+
+					"listed by `flow tasks --expressions`, and by the GetCatalog RPC "+
+					"(`flowstate_get_catalog` over MCP)",
+				match[1], suggestion)
+		}
 		return fmt.Sprintf(
 			"no function called %q; the functions this profile provides are listed by "+
-				"`flow tasks`, and by the GetCatalog RPC (`flowstate_get_catalog` over MCP)",
+				"`flow tasks --expressions`, and by the GetCatalog RPC (`flowstate_get_catalog` over MCP)",
 			match[1])
 	}
 
@@ -480,4 +493,58 @@ func forAnAuthor(message string) string {
 	}
 
 	return message
+}
+
+// profileFunctionNames is every function the current profile provides, as it
+// is called, read once from the profile's own environment. Macros are left
+// out: cel-go names a macro by the segment after the dot, so `greatest` is
+// how `math.greatest` is listed, and suggesting that spelling would send an
+// author to a call that does not parse.
+var profileFunctionNames = sync.OnceValue(func() []string {
+	var names []string
+	for _, function := range v1.ProfileFunctions(v1.CurrentProfile) {
+		if function.Macro {
+			continue
+		}
+		names = append(names, function.Name)
+	}
+
+	return names
+})
+
+// suggestFunction names the profile function an unknown call most likely
+// meant: the one whose last segment is exactly what was typed (`range` for
+// `lists.range`), when there is exactly one, and otherwise the nearest full
+// spelling by [nearest.Name]'s rule. Nothing when neither applies, since an
+// invented suggestion sends an author the wrong way.
+func suggestFunction(called string) (string, bool) {
+	names := profileFunctionNames()
+
+	last := called[strings.LastIndex(called, ".")+1:]
+	var exact []string
+	for _, name := range names {
+		if name != called && name[strings.LastIndex(name, ".")+1:] == last {
+			exact = append(exact, name)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], true
+	}
+	if suggestion, ok := nearest.Name(called, names); ok {
+		return suggestion, true
+	}
+
+	// cel-go reports a namespaced call by its last segment alone (`lists.rnge`
+	// arrives as `rnge`), so the near miss is also sought among last segments,
+	// and named in full only when one function has that segment.
+	bySegment := map[string][]string{}
+	for _, name := range names {
+		segment := name[strings.LastIndex(name, ".")+1:]
+		bySegment[segment] = append(bySegment[segment], name)
+	}
+	if segment, ok := nearest.Name(last, slices.Sorted(maps.Keys(bySegment))); ok && len(bySegment[segment]) == 1 {
+		return bySegment[segment][0], true
+	}
+
+	return "", false
 }

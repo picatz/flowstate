@@ -136,6 +136,12 @@ flow fmt --stdout old.yaml > new.yaml`,
 // errFmtIncomplete reports that some file could not be formatted, or that
 // --check found work to do. It carries no message because the detail has
 // already been printed.
+//
+// Under --check with nothing refused it is returned quiet ([newQuietError]):
+// the count of files that would change is the report, and the exit code is
+// the answer a CI step reads. "did not finish" is reserved for a file that
+// could not be read or parsed, which is a command that broke rather than one
+// that found what it was asked to look for (#1759).
 var errFmtIncomplete = errors.New("fmt did not finish")
 
 // runFmt formats each path given.
@@ -199,7 +205,7 @@ func runFmt(cmd *cobra.Command, paths []string, opts fmtOptions) error {
 
 	var (
 		refused    bool
-		pending    bool
+		pending    int
 		machine    = format.Machine()
 		fmtReports []*v1.FmtReport
 	)
@@ -209,10 +215,19 @@ func runFmt(cmd *cobra.Command, paths []string, opts fmtOptions) error {
 			return err
 		}
 		refused = refused || result.refused
-		pending = pending || (result.changed && opts.check)
+		if result.changed && opts.check {
+			pending++
+		}
 		if machine {
 			fmtReports = append(fmtReports, result.report)
 		}
+	}
+
+	// The check's own answer, in one sentence a CI log ends on: how many files
+	// would change. Text mode only; the machine formats carry `changed` per
+	// file.
+	if pending > 0 && !machine {
+		fmt.Fprintln(reports, reportTheme.Warning.Render(count(pending, "file would be reformatted", "files would be reformatted")))
 	}
 
 	if machine {
@@ -228,8 +243,14 @@ func runFmt(cmd *cobra.Command, paths []string, opts fmtOptions) error {
 		}
 	}
 
-	if refused || pending {
+	if refused {
 		return errFmtIncomplete
+	}
+	if pending > 0 {
+		// Reported above, in the command's own words; the exit code is what
+		// remains, so the error is not rendered a second time as a failure to
+		// run.
+		return newQuietError(errFmtIncomplete)
 	}
 	return nil
 }
@@ -336,12 +357,18 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		return outcome, nil
 	}
 
-	if !machine {
-		fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Warning.Render("reformatted"))
+	if opts.check {
+		// The conditional, because nothing was written: a line reading
+		// "reformatted" beside a file --check left untouched is the one thing
+		// a check must never say.
+		if !machine {
+			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Warning.Render("would be reformatted"))
+		}
+		return outcome, nil
 	}
 
-	if opts.check {
-		return outcome, nil
+	if !machine {
+		fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Warning.Render("reformatted"))
 	}
 
 	// Written through the file's own mode, so formatting a file does not

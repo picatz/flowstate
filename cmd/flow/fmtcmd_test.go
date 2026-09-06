@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -380,6 +381,40 @@ steps:
 	}
 	if !strings.Contains(out, path) {
 		t.Errorf("the report does not name the file that needs formatting:\n%s", out)
+	}
+
+	// The expected outcome of a check is a count and a non-zero exit, not a
+	// command that broke (#1759): the file's line says what would happen
+	// rather than claiming it happened, the last line counts, and the error
+	// is marked quiet so the top level prints no "fmt did not finish" after
+	// a report that already said everything.
+	if !strings.Contains(out, path+": would be reformatted") {
+		t.Errorf("--check reported the file as already rewritten:\n%s", out)
+	}
+	if !strings.Contains(out, "1 file would be reformatted") {
+		t.Errorf("--check did not end on the count of files that would change:\n%s", out)
+	}
+	if !errors.Is(err, errFmtIncomplete) {
+		t.Errorf("--check's exit is not the fmt sentinel: %v", err)
+	}
+	if !isQuietError(err) {
+		t.Errorf("--check's expected outcome would be rendered as a failure to run: %v", err)
+	}
+}
+
+// TestFmtCheckStaysLoudForAFileItCannotRead: the quiet exit is for the outcome
+// a check exists to find; a file that does not parse is a command that could
+// not finish, and that report has to survive to the top level.
+func TestFmtCheckStaysLoudForAFileItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", "edition: v2026.3\nname: [\n")
+
+	_, _, err := runFmtCommand(t, "--check", path)
+	if !errors.Is(err, errFmtIncomplete) {
+		t.Fatalf("a file that does not parse was not refused: %v", err)
+	}
+	if isQuietError(err) {
+		t.Error("a refusal was marked quiet, so the top level would print nothing about it")
 	}
 }
 
