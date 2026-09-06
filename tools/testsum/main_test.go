@@ -354,7 +354,7 @@ func TestAFailuresLinesAreBounded(t *testing.T) {
 	mustContain(t, out.String(),
 		"wide/wide_test.go:9: not equal",
 		fmt.Sprintf(" …(%d more bytes)", len("        expected: "+long)-len("        ")+4-maxLineLen),
-		fmt.Sprintf("…(%d more line(s); the raw go test -json stream has them)", 2+100-maxFailureLines),
+		fmt.Sprintf("…(%d more line(s); the raw go test -json stream has them)", 2+100-(maxFailureLines-1)),
 	)
 	if lines := strings.Count(out.String(), "\n"); lines > maxFailureLines+6 {
 		t.Errorf("one failure printed %d lines", lines)

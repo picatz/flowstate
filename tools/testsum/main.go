@@ -53,7 +53,14 @@ func main() {
 	dir := flag.String("dir", ".", "the tested module's directory relative to the repository root, prefixed to file paths in annotations (a plugin module is not the repository root)")
 	flag.Parse()
 
-	cwd, _ := os.Getwd()
+	// The working directory is what every file:line is made relative to,
+	// and an annotation on the wrong path is worse than none: refused
+	// rather than left empty.
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "testsum: reading the working directory:", err)
+		os.Exit(2)
+	}
 	opts := options{
 		moduleDir: *dir,
 		cwd:       cwd,
@@ -185,9 +192,12 @@ func bound(lines []string) []string {
 		}
 		out = append(out, l)
 	}
+	// The marker takes the last slot, so a bounded failure prints exactly
+	// maxFailureLines lines, the marker included, rather than one more.
 	if len(out) > maxFailureLines {
-		more := len(out) - maxFailureLines
-		out = append(out[:maxFailureLines], fmt.Sprintf("…(%d more line(s); the raw go test -json stream has them)", more))
+		kept := maxFailureLines - 1
+		more := len(out) - kept
+		out = append(out[:kept], fmt.Sprintf("…(%d more line(s); the raw go test -json stream has them)", more))
 	}
 	return out
 }
