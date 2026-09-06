@@ -274,6 +274,91 @@ func TestADeeplyNestedExpressionSaysWhatToDoAboutIt(t *testing.T) {
 		"the diagnostic does not say what to do instead: %s", message)
 }
 
+// TestCELParserLimitsAreTranslatedVerbatim is #1766's table: cel-go's limit
+// messages exactly as its parser writes them, which arrive with no syntax-error
+// prefix and at line -1, translated into a sentence that keeps the number and
+// names the limit. The depth guard from #1291 is here too, because it is the
+// same shape and now takes the same door.
+func TestCELParserLimitsAreTranslatedVerbatim(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{
+			name: "recursion limit",
+			msg:  "expression recursion limit exceeded: 250",
+			want: "nests more than 250 levels of parentheses or calls, which is deeper than an expression is meant to go; split it across `value:` steps or `vars:` and combine those instead",
+		},
+		{
+			name: "code point size limit",
+			msg:  "expression code point size exceeds limit: size: 200001, limit 100000",
+			want: "is 200001 characters, over the 100000 an expression may be; split it across `value:` steps or `vars:` and combine those instead",
+		},
+		{
+			name: "parser depth guard",
+			msg:  "max recursion depth exceeded",
+			want: "nests deeper than the parser will descend; split it across `value:` steps or `vars:` and combine those instead",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, flowfile.TranslateCELMessage(tc.msg, "", -1, 0))
+		})
+	}
+}
+
+// TestAnExpressionPastAParserLimitNamesTheLimit re-runs #1766's two transcripts
+// end to end. Before, the diagnostic read "is not a valid expression: 250" and
+// "is not a valid expression: 200002, limit 100000": the tail after the last
+// colon of a message whose noun phrase sat before it.
+func TestAnExpressionPastAParserLimitNamesTheLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		expr string
+		want string
+	}{
+		{
+			name: "a thousand parentheses",
+			expr: strings.Repeat("(", 1000) + "1" + strings.Repeat(")", 1000),
+			want: "nests more than 250 levels",
+		},
+		{
+			name: "two hundred thousand characters",
+			expr: "'" + strings.Repeat("a", 200000) + "'",
+			want: "is 200002 characters, over the 100000 an expression may be",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := fmt.Sprintf("edition: %s\nname: limit\nsteps:\n  - id: s\n    value: ${%s}\n",
+				flowfile.CurrentEdition, tc.expr)
+
+			diagnostics, err := flowfile.ValidateSource([]byte(source))
+
+			var message string
+			switch {
+			case err != nil:
+				message = err.Error()
+			case len(diagnostics) > 0:
+				message = diagnostics[0].Error()
+			}
+			require.NotEmpty(t, message, "an expression past the parser's limit was accepted")
+
+			assert.Contains(t, message, "is not a valid expression: "+tc.want, message)
+			assert.Contains(t, message, "`vars:`",
+				"the diagnostic does not say what to do instead: %s", message)
+			assert.NotContains(t, message, "<input>",
+				"cel-go's positionless location reached the author: %s", message)
+		})
+	}
+}
+
 // TestUnknownTaskNamesTheNearMiss is the adjacent half of #383: the one
 // diagnostic family that still enumerated a registry where every sibling names
 // the near miss instead.

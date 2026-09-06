@@ -821,7 +821,14 @@ func quoteCELString(s string) string {
 // The location is dropped: the diagnostic carries a position in the Flowfile,
 // which is where the author is looking, and "<input>:1:7" alongside it reads like
 // a second, contradictory answer.
-var celErrorPattern = regexp.MustCompile(`ERROR: <input>:(\d+):(\d+): (.*)`)
+//
+// The line may be -1: that is where cel-go reports a parser limit (recursion,
+// code-point size), which is a fact about the whole expression rather than a
+// character in it. Matched rather than left to fall through, because the message
+// after that position is a sentence with its own colon ("expression recursion
+// limit exceeded: 250"), and reading the last cause out of it kept only the
+// number (#1766).
+var celErrorPattern = regexp.MustCompile(`ERROR: <input>:(-?\d+):(\d+): (.*)`)
 
 // celFailure narrows an expression's compile failure to the character at fault
 // and strips the wrapping that says only that a CEL expression failed to parse.
@@ -843,7 +850,7 @@ func celFailure(val *v1.Value, span Span, src string) (Span, string) {
 
 	match := celErrorPattern.FindStringSubmatch(text)
 	if match == nil {
-		return span, positionlessCause(text)
+		return span, lastCause(text)
 	}
 
 	msg := strings.TrimSpace(match[3])
@@ -865,26 +872,6 @@ func celFailure(val *v1.Value, span Span, src string) (Span, string) {
 	at := span.Start
 	at.Column += column - 1
 	return Span{Start: at, End: span.End}, msg
-}
-
-// celDepthLimit is cel-go's own words for an expression that nests deeper than
-// its parser will descend. It arrives with no usable position — the parser
-// reports line -1, which is why [celErrorPattern] does not match it and why
-// this is the one failure [positionlessCause] has to name itself.
-const celDepthLimit = "max recursion depth exceeded"
-
-// positionlessCause is [lastCause] for the failures cel-go reports without a
-// position, with the one an author can act on translated into what to do about
-// it. Everything else keeps cel-go's own words: a message this file cannot
-// improve on is better passed through than paraphrased.
-func positionlessCause(text string) string {
-	cause := lastCause(text)
-	if cause == celDepthLimit {
-		return "this expression nests deeper than the parser will descend; " +
-			"name its parts in `vars:` or in `value:` steps and combine those instead"
-	}
-
-	return cause
 }
 
 // lastCause returns the innermost message of a wrapped error, so that a reader
