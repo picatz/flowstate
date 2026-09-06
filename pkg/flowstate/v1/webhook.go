@@ -706,6 +706,39 @@ func WebhookTriggerNames(wf *Workflow) []string {
 // are case-insensitive, so `${event.headers["stripe-signature"]}` has to find a
 // header a sender spelled `Stripe-Signature`. A stored delivery replayed by
 // `flow test` and a live one therefore agree about what an expression sees.
+// checkWebhookBodyDepth refuses a delivery whose body nests deeper than
+// [MaxStructureDepth], before `idempotency_key:`, `with:` or `signal.correlate:`
+// evaluates a single expression over it.
+//
+// The receiver bounds the body in bytes ([MaxWebhookPayloadBytes]) and
+// verifies its signature, and neither bounds depth: a correctly signed
+// megabyte is room for thousands of levels beside the fields `with:` binds,
+// and every expression here walks `event.body` at exactly the cost the submit
+// door refuses an input for (#1770). Measured on the body alone — the `event`
+// wrapper is this system's own level, not the sender's — through
+// [CheckValueDepth], so a body that would be refused as a run input is refused
+// as a delivery in the same words. A run with `with:` mapping a deep value
+// into an input would have been refused by [BindRunInputs] one step later; this
+// is the refusal for the value nothing maps, which is what an attacker sends.
+//
+// In the binders rather than the receiver, because the binders are what `flow
+// test` replays offline: a delivery a rehearsal accepts and production refuses
+// is the divergence invariant 3 forbids.
+func checkWebhookBodyDepth(webhook string, event *Value) error {
+	for _, entry := range event.GetLiteral().GetMapValue().GetEntries() {
+		if entry.GetKey().GetStringValue() != EventBodyField {
+			continue
+		}
+
+		// The body's own object is the first level, exactly as a run input's
+		// is: the walk starts where the sender's value starts.
+		return CheckValueDepth("the body delivered to webhook", webhook,
+			&Value{Kind: &Value_Literal{Literal: entry.GetValue()}})
+	}
+
+	return nil
+}
+
 func NewWebhookEvent(headers map[string]string, body any) *Value {
 	lowered := make(map[string]any, len(headers))
 	for name, value := range headers {
@@ -831,6 +864,9 @@ func BindWebhookTriggerInputs(ctx context.Context, wf *Workflow, trigger *Webhoo
 	event := NewWebhookEvent(delivery.Headers, delivery.Body)
 	if err := event.Error(); err != nil {
 		return nil, "", fmt.Errorf("webhook %q: reading the delivery: %w", trigger.GetName(), err)
+	}
+	if err := checkWebhookBodyDepth(trigger.GetName(), event); err != nil {
+		return nil, "", err
 	}
 
 	// The scope a trigger evaluates in holds `event` and nothing else — no steps,

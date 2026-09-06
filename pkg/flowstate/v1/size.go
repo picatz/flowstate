@@ -2,6 +2,8 @@ package flowstatev1
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -260,6 +262,35 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 			"a payload becomes the waiting step's outputs and is carried with the run, "+
 			"so send a reference to something large rather than the thing itself",
 		size, MaxSignalPayloadBytes)
+}
+
+// CheckSignalPayloadDepth reports whether a signal's payload nests within
+// [MaxStructureDepth], field by field, in the sentence the submit door
+// refuses an input with.
+//
+// [CheckSignalPayloadSize]'s sibling, called wherever it is and for the
+// other dimension of the same choice: a payload's depth is the sender's, and
+// 64 KiB is room for a few thousand levels. A payload that passed the byte
+// bound alone became the waiting step's outputs — evaluated by that step's
+// `outputs:` and by every later `${steps.<id>.<output>}` — and so entered
+// the run's history through the one door a run input could not use (#1770).
+// The refusal lands synchronously, on the party who chose the shape, before
+// any round trip.
+//
+// Both drivers call this — the server's Signal and SignalWithStart doors, the
+// webhook bridge, and [LocalSignals.DeliverFrom] for `flow run local` and
+// `flow test` — so a rehearsal refuses exactly what production refuses
+// (invariant 3). Fields are walked in name order so the refusal names the
+// same field every time.
+func CheckSignalPayloadDepth(payload *Node_Outputs) error {
+	values := payload.GetNamedValues()
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if err := CheckValueDepth("signal payload field", name, values[name]); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // encodedPayloadSize reports a ProtoJSON byte length for m — deliberately not

@@ -1217,6 +1217,13 @@ type constraintBoundViolation struct {
 // target, a task's own result, or an http task's parsed JSON response body —
 // the cost is identical at every one of those origins, so this is the one
 // walker all of them share.
+//
+// A nil total walks for depth alone. That is what [CheckValueDepth] asks for
+// on behalf of a signal payload or a webhook body: the depth resource is the
+// identical one, counted by the identical accounting, and a second walker
+// that agreed with this one only by construction is what the one-walker rule
+// exists to refuse. The element bound is deliberately *not* applied through
+// that door — see [CheckValueDepth] for why.
 func walkConstraintValue(v *expr.Value, depth int, total *int) *constraintBoundViolation {
 	if v == nil {
 		return nil
@@ -1229,9 +1236,11 @@ func walkConstraintValue(v *expr.Value, depth int, total *int) *constraintBoundV
 	switch k := v.GetKind().(type) {
 	case *expr.Value_ListValue:
 		for _, el := range k.ListValue.GetValues() {
-			*total++
-			if *total > maxListElements {
-				return &constraintBoundViolation{TooManyElements: true, ElementCount: *total}
+			if total != nil {
+				*total++
+				if *total > maxListElements {
+					return &constraintBoundViolation{TooManyElements: true, ElementCount: *total}
+				}
 			}
 			if violation := walkConstraintValue(el, depth+1, total); violation != nil {
 				return violation
@@ -1243,6 +1252,62 @@ func walkConstraintValue(v *expr.Value, depth int, total *int) *constraintBoundV
 				return violation
 			}
 			if violation := walkConstraintValue(entry.GetValue(), depth+1, total); violation != nil {
+				return violation
+			}
+		}
+	}
+
+	return nil
+}
+
+// CheckValueDepth refuses a [Value] nested deeper than [MaxStructureDepth],
+// through its literal's lists and maps and through a structure's entries
+// alike, in the sentence the submit door refuses an input with.
+//
+// This is the depth half of [checkInputListElementBound], reachable for a
+// value that is not a run input: a signal payload's field
+// ([CheckSignalPayloadDepth]) or a webhook delivery's body. Both are values
+// an outside party chose the shape of and both are evaluated by exactly the
+// expressions the input refusal names — a waiting step's `outputs:`, a later
+// step's `${steps.<id>.<output>}`, a trigger's `with:` — so the resource is
+// the input door's resource and the accounting is the input door's walker
+// ([walkConstraintValue]), not a second measure that happened to agree with
+// it. Before this existed the signal doors and the webhook receiver bounded
+// bytes alone, and 64 KiB is room for a few thousand levels (#1770).
+//
+// Depth only, deliberately. The submit door also bounds list elements, and a
+// signal payload or a webhook body can carry more of those than
+// [maxListElements] inside the bytes it is allowed — but a delivery under the
+// byte bound with a long flat list is one every deployment accepts today, and
+// refusing it is a compatibility decision this check does not make on its
+// own. What it closes is the resource nothing bounded at all.
+//
+// kind and name word the refusal the way [inputSideConstraintBoundError]
+// words an input's: `<kind> "<name>" nests N levels deep, ...`.
+func CheckValueDepth(kind, name string, v *Value) error {
+	if violation := valueDepthViolation(v, 0); violation != nil {
+		return inputSideConstraintBoundError(kind, name, violation)
+	}
+
+	return nil
+}
+
+// valueDepthViolation is [CheckValueDepth]'s walk: a structure's entries are
+// one level each, and a literal is handed to [walkConstraintValue] at the
+// depth it was reached — so a literal map nested inside a structure is
+// counted from the structure's own depth, not from zero — with no element
+// count, which is that walker's depth-only mode.
+func valueDepthViolation(v *Value, depth int) *constraintBoundViolation {
+	if depth > maxConstraintValueDepth {
+		return &constraintBoundViolation{Depth: true, DepthReached: depth}
+	}
+
+	switch kind := v.GetKind().(type) {
+	case *Value_Literal:
+		return walkConstraintValue(kind.Literal, depth, nil)
+	case *Value_Structure_:
+		for _, entry := range StructureValues(kind.Structure) {
+			if violation := valueDepthViolation(entry, depth+1); violation != nil {
 				return violation
 			}
 		}
