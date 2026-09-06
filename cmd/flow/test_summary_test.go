@@ -85,9 +85,13 @@ func TestARefusedFileSaysWhyInTextMode(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, out, `big.test.yaml:2:5: test "chain" names no workflow`,
 		"the refusal's reason and position are missing from the default text output")
-	assert.NotContains(t, out, "big.test.yaml: "+filepath.Join(dir, "big.test.yaml"),
-		"the file is named twice on the refusal line")
 	assert.Equal(t, 1, strings.Count(out, "names no workflow"), "the reason is printed more than once")
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, "names no workflow") {
+			assert.Equal(t, 1, strings.Count(line, "big.test.yaml"),
+				"the file is named more than once on the refusal line: %s", line)
+		}
+	}
 }
 
 // TestSummaryCountsCoverageGapsOnlyWhenOptedIn: the gap joins the line
