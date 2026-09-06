@@ -268,6 +268,8 @@ product claims. They are tracked in [Vision](docs/VISION.md).
 
 ## Development
 
+Contributors start with [CONTRIBUTING.md](CONTRIBUTING.md); coding agents start with [AGENTS.md](AGENTS.md). Both apply the same gate.
+
 The repository checks complete documentation Flowfiles against the compiler,
 tests the examples, verifies the docs index, and regenerates CLI, task, CEL,
 diagnostic, environment, and MCP references from their owning code and schemas.

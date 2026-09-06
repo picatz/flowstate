@@ -16,9 +16,6 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
-	"connectrpc.com/validate"
 	"github.com/spf13/cobra"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/log"
@@ -862,27 +859,22 @@ func devStartError(err error, flags devFlags) error {
 // the banner prints is one already accepting connections, and so that a port of
 // 0 resolves to a real port this command can report.
 func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client) (*http.Server, net.Listener, error) {
-	otelInterceptor, err := otelconnect.NewInterceptor()
-	if err != nil {
-		return nil, nil, fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
-	}
-
 	flowServer, err := server.New(temporal, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// The same chain and the same read bound `flow server` sets, from the
+	// same function, so a dev stack does not answer a request the real
+	// server would refuse — or reset a connection the real server would
+	// answer.
+	rpcOpts, err := rpcHandlerOptions(flowServer, infraLogger())
+	if err != nil {
+		return nil, nil, err
+	}
+
 	rpcMux := http.NewServeMux()
-	rpcMux.Handle(
-		flowstatev1connect.NewWorkflowServiceHandler(
-			flowServer,
-			connect.WithInterceptors(validate.NewInterceptor(), otelInterceptor),
-			// The same bound `flow server` sets: connect-go defaults to
-			// unlimited, and an anonymous caller must not choose how much this
-			// process allocates.
-			connect.WithReadMaxBytes(maxRequestBytes),
-		),
-	)
+	rpcMux.Handle(flowstatev1connect.NewWorkflowServiceHandler(flowServer, rpcOpts...))
 
 	listener, err := net.Listen("tcp", flags.listen)
 	if err != nil {

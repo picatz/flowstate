@@ -7,7 +7,8 @@ any workload that must finish correctly despite crashes, network failures, and
 long waits.
 
 This is the small, shared, always-loaded contract for Amp, Codex, Claude Code,
-and other agents. `CLAUDE.md` imports it for Claude Code. Keep durable facts and
+and other agents. `CLAUDE.md` imports it for Claude Code. A person contributing
+starts with [CONTRIBUTING.md](CONTRIBUTING.md), which points back here. Keep durable facts and
 repository-wide constraints here; put task procedures in skills, detailed
 knowledge in references, computation in tools, and hard controls in hooks or CI.
 See [docs/agents/README.md](docs/agents/README.md) for the configuration map.

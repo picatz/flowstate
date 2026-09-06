@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/picatz/flowstate/blob/main/SECURITY.md
+    about: Never a public issue. SECURITY.md says how to report privately.
+  - name: Documentation and examples
+    url: https://github.com/picatz/flowstate/blob/main/docs/README.md
+    about: The document map, and the example journeys, before asking whether something exists.

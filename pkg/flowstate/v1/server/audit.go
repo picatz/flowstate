@@ -20,7 +20,10 @@ import (
 //     the emit is write-ahead and why there is no second record afterwards
 //     saying what happened: #993 wrote "accepted" before the acceptance
 //     existed, and an audit log is the one artifact here that must not be
-//     wrong.
+//     wrong. The one exception is a handler that panics after its allow:
+//     the recover interceptor (recover.go, picatz/flowstate#1761) writes an
+//     INTERNAL_ERROR record under the same correlation id, which is not a
+//     revision of the decision but the statement that nobody acted on it.
 //
 //   - Exactly one record per decision. Where a verb resolves a run twice —
 //     Signal, walking from a Continue-As-New chain's first run id to the
