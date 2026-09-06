@@ -148,16 +148,18 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	}
 
 	// Present only on a webhook delivery's records, for the reason the
-	// attempt is: a consumer counting refusals per route should read the
-	// count where one was written and one where none was, not select on a
-	// zero that every other record carries too.
+	// attempt is: a consumer selecting the receiver's decisions should select
+	// on the attribute existing rather than on a zero every other record
+	// carries too. The count is emitted whenever the seam set one, including
+	// a count of one, so that "refusals per route per hour" is a plain sum
+	// over the attribute with no record left out of it.
 	if record.GetDeliveryId() != "" {
 		attrs = append(attrs, attribute.String(attrDeliveryID, record.GetDeliveryId()))
 	}
 	if record.GetJoined() {
 		attrs = append(attrs, attribute.Bool(attrJoined, true))
 	}
-	if record.GetCount() > 1 {
+	if record.GetCount() > 0 {
 		attrs = append(attrs, attribute.Int64(attrCount, int64(record.GetCount())))
 	}
 
