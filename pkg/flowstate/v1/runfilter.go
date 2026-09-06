@@ -189,6 +189,30 @@ func NewRunFilter(expression string) (*RunFilter, error) {
 	return &RunFilter{source: expression, program: program}, nil
 }
 
+// Diagnostic words an evaluation error the way a caller can act on it: the
+// error, and — for the one mistake with a better spelling — the spelling.
+//
+// `labels["team"]` is a correct expression that errors on exactly the runs a
+// caller wants excluded, and the server answers those runs with "not matched"
+// rather than failing the listing. When it errors on every run the caller has,
+// the listing says why once, through this, and names the optional traversal
+// the language has for a key that may be absent, so the spelling is learned
+// from the answer rather than from a search.
+func (f *RunFilter) Diagnostic(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	text := err.Error()
+	if _, key, missing := strings.Cut(text, "no such key: "); missing {
+		key = strings.TrimSpace(key)
+		text += fmt.Sprintf("; a key that may be absent is read with `labels.?%s.orValue(\"\")`, "+
+			"or guarded with `%q in labels`", key, key)
+	}
+
+	return text
+}
+
 // String returns the expression as written, for a diagnostic that has to quote it.
 func (f *RunFilter) String() string {
 	if f == nil {
@@ -276,7 +300,24 @@ func (f *RunFilter) activation(run *RunSummary) map[string]any {
 // present here — and a package-level cache would be a mutable global for a saving
 // nobody can measure.
 func runFilterEnv() (*cel.Env, error) {
-	return cel.NewEnv(
+	// The profile's own environment, extended with the listing's names, rather
+	// than a bare one: a filter is written in the language the rest of the
+	// system speaks, and that language has had optional traversal since edition
+	// v2026.3 — `labels.?team.orValue("")` is how every gate example reads a
+	// key that may be absent. Parsed against a library-less base environment,
+	// the filter refused the spelling the language teaches (#1689; #1512 fixed
+	// the same refusal for `flow test`'s `check:` claims), so one table decides
+	// what both compile.
+	libs, err := ProfileLibraries(CurrentProfile)
+	if err != nil {
+		return nil, err
+	}
+	base, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil, err
+	}
+
+	return base.Extend(
 		cel.Variable(filterWorkflowID, cel.StringType),
 		cel.Variable(filterRunID, cel.StringType),
 
