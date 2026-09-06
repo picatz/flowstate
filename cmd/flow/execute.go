@@ -73,7 +73,9 @@ func execute(ctx context.Context, root *cobra.Command) error {
 		}
 
 		surface := newSurface(root)
-		renderError(surface, err)
+		if !isQuietError(err) {
+			renderError(surface, err)
+		}
 
 		return err
 	}
@@ -272,6 +274,42 @@ func newUsageError(err error) error {
 
 func (e *usageError) Error() string { return e.err.Error() }
 func (e *usageError) Unwrap() error { return e.err }
+
+// quietError marks an error whose report has already been printed in the
+// command's own words, so the exit code is the whole of what remains to say.
+//
+// `flow fmt --check` on a file that needs formatting is the case: the expected
+// outcome of a check is a list of files and a non-zero exit, which is what
+// `gofmt -l` and every formatter's check mode do, and a trailing "error: fmt
+// did not finish" reports a command that broke about one that did exactly
+// what it was asked (#1759). The boundary is narrow: a command marks an error
+// quiet only when the reader has already been told, on the output the command
+// owns, what the exit code is about. A refusal the command could not explain
+// in place stays loud.
+//
+// Marking, not replacing, on [usageError]'s pattern: Error and Unwrap forward
+// unchanged, so errors.Is against the wrapped sentinel still answers.
+type quietError struct {
+	err error
+}
+
+// newQuietError marks err as already reported, or returns nil unchanged.
+func newQuietError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &quietError{err: err}
+}
+
+func (e *quietError) Error() string { return e.err.Error() }
+func (e *quietError) Unwrap() error { return e.err }
+
+// isQuietError reports whether err's report was already printed by the
+// command, so [renderError] must not print it again.
+func isQuietError(err error) bool {
+	var marked *quietError
+	return errors.As(err, &marked)
+}
 
 // isUsageError reports whether the command line itself was wrong — cobra
 // refused it, or a command's own flag validation did — rather than the command
