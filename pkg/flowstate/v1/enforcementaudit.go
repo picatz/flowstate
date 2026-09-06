@@ -95,6 +95,24 @@ type EnforcementSubject struct {
 	// policy's denial carries — a target, a detail, a message — is admitted
 	// here either.
 	Rule string
+
+	// DeliveryID names the webhook delivery a record is about, as
+	// [WebhookDeliveryID] digests it — never the idempotency key it digests.
+	// Set by the webhook receiver's seam once a delivery has been verified
+	// and its key evaluated, and empty everywhere else. See
+	// AuditRecord.delivery_id.
+	DeliveryID string
+
+	// Joined says an accepted delivery joined a run an earlier delivery of
+	// the same event started. Only the webhook receiver's acceptance sets it.
+	// See AuditRecord.joined.
+	Joined bool
+
+	// Count is how many refusals a bounded refusal record stands for, this
+	// one included. Zero on every record about one decision. Only the webhook
+	// receiver's refusal seam sets it; see AuditRecord.count for the bound it
+	// implements.
+	Count uint32
 }
 
 // EnforcementAuditor records one worker-side enforcement decision.

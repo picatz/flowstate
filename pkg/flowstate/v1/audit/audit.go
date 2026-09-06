@@ -50,6 +50,12 @@ const MaxRuleBytes = 256
 // external component gets to choose audit record size without a bound.
 const MaxDispatchIDBytes = 256
 
+// MaxDeliveryIDBytes bounds the webhook delivery id an acceptance record
+// carries. It is a digest this system computes, so it has a fixed width; the
+// bound is the schema's, enforced here so the recorder never trusts a caller
+// to have kept to it.
+const MaxDeliveryIDBytes = 128
+
 // MaxCorrelationIDBytes bounds the server-minted request identifier a
 // control-plane record carries. The schema says the same number. A UUID is 36
 // bytes; the bound is held here anyway, because the value crosses a context
@@ -339,6 +345,9 @@ func (r *Recorder) recordEnforcement(ctx context.Context, subject v1.Enforcement
 		Rule:             boundString(subject.Rule, MaxRuleBytes),
 		Attempt:          subject.Attempt,
 		DispatchId:       boundString(subject.DispatchID, MaxDispatchIDBytes),
+		DeliveryId:       boundString(subject.DeliveryID, MaxDeliveryIDBytes),
+		Joined:           subject.Joined,
+		Count:            subject.Count,
 	}
 
 	return r.emit(ctx, record, decision, subject.Point.String())

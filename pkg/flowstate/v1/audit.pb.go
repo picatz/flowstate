@@ -129,6 +129,19 @@ const (
 	// seam can see it, rather than evaluating the policy a second time to move
 	// the record earlier.
 	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION AuditEnforcementPoint = 4
+	// Whether this webhook delivery is admitted, from the trigger's `verify:`
+	// declaration and the deployment's signing keys, and then whether what it
+	// carries may start or answer a run. WebhookReceiver.ServeHTTP and the two
+	// paths it forks to, start and answer.
+	//
+	// The server's seam, not a worker's, and still an enforcement point rather
+	// than an AuthorizationAction, for the reason "The worker's half" gives: a
+	// sender holds no scope. It proves possession of a signing key, and what
+	// the receiver decides about that proof is not something a client could be
+	// granted. A delivery record names the route it addressed as its resource
+	// when it was refused before anything was proven, and the run it started
+	// or answered once something was.
+	AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY AuditEnforcementPoint = 5
 )
 
 // Enum value maps for AuditEnforcementPoint.
@@ -139,6 +152,7 @@ var (
 		2: "AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS",
 		3: "AUDIT_ENFORCEMENT_POINT_EGRESS",
 		4: "AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION",
+		5: "AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY",
 	}
 	AuditEnforcementPoint_value = map[string]int32{
 		"AUDIT_ENFORCEMENT_POINT_UNSPECIFIED":           0,
@@ -146,6 +160,7 @@ var (
 		"AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS":         2,
 		"AUDIT_ENFORCEMENT_POINT_EGRESS":                3,
 		"AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION": 4,
+		"AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY":      5,
 	}
 )
 
@@ -213,6 +228,12 @@ const (
 	// A credential target, addressed by the operator-configured target name a
 	// workload asked to assume. Never the credential.
 	AuditResourceKind_AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET AuditResourceKind = 7
+	// A webhook route, addressed as "<workflow>/<trigger>" — the two names the
+	// file declares and the receiver serves, never the request path the sender
+	// wrote. Empty when the delivery addressed no route this receiver serves:
+	// the path it addressed is peer-chosen text, and a record of it would be a
+	// record of whatever a prober typed.
+	AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE AuditResourceKind = 8
 )
 
 // Enum value maps for AuditResourceKind.
@@ -226,6 +247,7 @@ var (
 		5: "AUDIT_RESOURCE_KIND_SECRET",
 		6: "AUDIT_RESOURCE_KIND_ENDPOINT",
 		7: "AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET",
+		8: "AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE",
 	}
 	AuditResourceKind_value = map[string]int32{
 		"AUDIT_RESOURCE_KIND_UNSPECIFIED":       0,
@@ -236,6 +258,7 @@ var (
 		"AUDIT_RESOURCE_KIND_SECRET":            5,
 		"AUDIT_RESOURCE_KIND_ENDPOINT":          6,
 		"AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET": 7,
+		"AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE":     8,
 	}
 )
 
@@ -322,21 +345,48 @@ const (
 	// the same: the record names the destination, and the policy's own bounds
 	// are configuration they already hold.
 	AuditDenyCode_AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED AuditDenyCode = 9
+	// A signature was presented and none of its candidates matched the body
+	// under this deployment's key, or the signature header was not in the form
+	// its scheme defines.
+	AuditDenyCode_AUDIT_DENY_CODE_SIGNATURE_INVALID AuditDenyCode = 10
+	// The delivery carried no signature header for a scheme the trigger
+	// declares.
+	AuditDenyCode_AUDIT_DENY_CODE_SIGNATURE_MISSING AuditDenyCode = 11
+	// The signed timestamp is outside WebhookReplayWindow of the server's
+	// clock, in either direction.
+	AuditDenyCode_AUDIT_DENY_CODE_REPLAY_WINDOW AuditDenyCode = 12
+	// The signature header carried more candidates than the scheme's bound
+	// admits.
+	AuditDenyCode_AUDIT_DENY_CODE_TOO_MANY_SIGNATURES AuditDenyCode = 13
+	// The body exceeded MaxWebhookPayloadBytes and was refused before it was
+	// read into memory.
+	AuditDenyCode_AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE AuditDenyCode = 14
+	// The delivery verified and then did not map onto the workflow: its body
+	// did not decode, a `with:` expression reached a field it does not carry,
+	// or an input would not bind. The one refusal a key holder is told about
+	// precisely, and recorded under their trigger's identity for that reason.
+	AuditDenyCode_AUDIT_DENY_CODE_BINDING_FAILED AuditDenyCode = 15
 )
 
 // Enum value maps for AuditDenyCode.
 var (
 	AuditDenyCode_name = map[int32]string{
-		0: "AUDIT_DENY_CODE_UNSPECIFIED",
-		1: "AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE",
-		2: "AUDIT_DENY_CODE_RESOURCE_NOT_FOUND",
-		3: "AUDIT_DENY_CODE_TENANT_MISMATCH",
-		4: "AUDIT_DENY_CODE_POLICY_DENIED",
-		5: "AUDIT_DENY_CODE_DENY_RULE",
-		6: "AUDIT_DENY_CODE_NO_ALLOW_RULE",
-		7: "AUDIT_DENY_CODE_RULE_ERROR",
-		8: "AUDIT_DENY_CODE_NOT_CONFIGURED",
-		9: "AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED",
+		0:  "AUDIT_DENY_CODE_UNSPECIFIED",
+		1:  "AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE",
+		2:  "AUDIT_DENY_CODE_RESOURCE_NOT_FOUND",
+		3:  "AUDIT_DENY_CODE_TENANT_MISMATCH",
+		4:  "AUDIT_DENY_CODE_POLICY_DENIED",
+		5:  "AUDIT_DENY_CODE_DENY_RULE",
+		6:  "AUDIT_DENY_CODE_NO_ALLOW_RULE",
+		7:  "AUDIT_DENY_CODE_RULE_ERROR",
+		8:  "AUDIT_DENY_CODE_NOT_CONFIGURED",
+		9:  "AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED",
+		10: "AUDIT_DENY_CODE_SIGNATURE_INVALID",
+		11: "AUDIT_DENY_CODE_SIGNATURE_MISSING",
+		12: "AUDIT_DENY_CODE_REPLAY_WINDOW",
+		13: "AUDIT_DENY_CODE_TOO_MANY_SIGNATURES",
+		14: "AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE",
+		15: "AUDIT_DENY_CODE_BINDING_FAILED",
 	}
 	AuditDenyCode_value = map[string]int32{
 		"AUDIT_DENY_CODE_UNSPECIFIED":               0,
@@ -349,6 +399,12 @@ var (
 		"AUDIT_DENY_CODE_RULE_ERROR":                7,
 		"AUDIT_DENY_CODE_NOT_CONFIGURED":            8,
 		"AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED": 9,
+		"AUDIT_DENY_CODE_SIGNATURE_INVALID":         10,
+		"AUDIT_DENY_CODE_SIGNATURE_MISSING":         11,
+		"AUDIT_DENY_CODE_REPLAY_WINDOW":             12,
+		"AUDIT_DENY_CODE_TOO_MANY_SIGNATURES":       13,
+		"AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE":         14,
+		"AUDIT_DENY_CODE_BINDING_FAILED":            15,
 	}
 )
 
@@ -551,6 +607,37 @@ type AuditRecord struct {
 	// workload rather than about a request, and on records written by a server
 	// that predates this field.
 	CorrelationId string `protobuf:"bytes,16,opt,name=correlation_id,json=correlationId,proto3" json:"correlation_id,omitempty"`
+	// The delivery a webhook record is about, as provenance names it: the
+	// digest WebhookDeliveryID computes over tenant, workflow, trigger and the
+	// evaluated idempotency key, never the key itself. An accepted delivery's
+	// record carries it beside the run it started or joined, so the trail
+	// answers "which delivery started this run" with the same value RunState's
+	// trigger context carries. Empty on every record that is not about a
+	// delivery, and on a delivery refused before its key was evaluated — a
+	// refusal has no key to digest, and evaluating one for a delivery nobody
+	// verified would spend an author's expression on an attacker's payload.
+	DeliveryId string `protobuf:"bytes,17,opt,name=delivery_id,json=deliveryId,proto3" json:"delivery_id,omitempty"`
+	// Whether an accepted delivery joined a run an earlier delivery of the same
+	// event had already started, rather than starting one. False on the first
+	// delivery of an event and on every record that is not a webhook
+	// acceptance. What a provider's retry storm looks like in the trail is one
+	// record with this false and the rest with it true, all naming one run.
+	Joined bool `protobuf:"varint,18,opt,name=joined,proto3" json:"joined,omitempty"`
+	// How many refusals this record stands for: this one, and every refusal of
+	// the same class on the same route since the previous record for that
+	// pair, which wrote nothing of their own. Zero and one both mean the record
+	// is about one decision, which is every record that is not a bounded
+	// refusal.
+	//
+	// The webhook receiver is the one writer. Its route is the one entry path
+	// that is unauthenticated by design, so a refusal there costs the sender
+	// nothing, and a trail that wrote one record per refusal would let a
+	// signature-guessing flood use the audit sink as its amplifier. So the
+	// receiver writes the first refusal of a class on a route as it happens,
+	// counts the rest for an interval, and the next refusal after the interval
+	// carries the count. Nothing is lost; the trail's granularity for a flood
+	// is the interval rather than the request.
+	Count         uint32 `protobuf:"varint,19,opt,name=count,proto3" json:"count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -697,11 +784,32 @@ func (x *AuditRecord) GetCorrelationId() string {
 	return ""
 }
 
+func (x *AuditRecord) GetDeliveryId() string {
+	if x != nil {
+		return x.DeliveryId
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetJoined() bool {
+	if x != nil {
+		return x.Joined
+	}
+	return false
+}
+
+func (x *AuditRecord) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
 var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd5\r\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xae\x0e\n" +
 	"\vAuditRecord\x12C\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
@@ -725,7 +833,11 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	" \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\n" +
 	"issuerName\x12\x1c\n" +
 	"\x04role\x18\v \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\x04role\x12.\n" +
-	"\x0ecorrelation_id\x18\x10 \x01(\tB\a\xbaH\x04r\x02(@R\rcorrelationId:\xcf\x04\xbaH\xcb\x04\x1a\xd0\x01\n" +
+	"\x0ecorrelation_id\x18\x10 \x01(\tB\a\xbaH\x04r\x02(@R\rcorrelationId\x12)\n" +
+	"\vdelivery_id\x18\x11 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\n" +
+	"deliveryId\x12\x16\n" +
+	"\x06joined\x18\x12 \x01(\bR\x06joined\x12\x14\n" +
+	"\x05count\x18\x13 \x01(\rR\x05count:\xcf\x04\xbaH\xcb\x04\x1a\xd0\x01\n" +
 	"\x16audit_record.operation\x12Uexactly one of rpc, mcp_tool or enforcement_point must identify the audited operation\x1a_[this.rpc != '', this.mcp_tool != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xca\x01\n" +
 	"\x13audit_record.action\x12taction names the authorization vocabulary and is set for an rpc or mcp_tool decision, never for an enforcement point\x1a=(this.action != 0) == (this.rpc != '' || this.mcp_tool != '')\x1a\xa8\x01\n" +
 	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)*\x85\x01\n" +
@@ -733,13 +845,14 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x1aAUDIT_DECISION_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14AUDIT_DECISION_ALLOW\x10\x01\x12\x17\n" +
 	"\x13AUDIT_DECISION_DENY\x10\x02\x12!\n" +
-	"\x1dAUDIT_DECISION_INTERNAL_ERROR\x10\x03*\xed\x01\n" +
+	"\x1dAUDIT_DECISION_INTERNAL_ERROR\x10\x03*\x9b\x02\n" +
 	"\x15AuditEnforcementPoint\x12'\n" +
 	"#AUDIT_ENFORCEMENT_POINT_UNSPECIFIED\x10\x00\x12)\n" +
 	"%AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH\x10\x01\x12)\n" +
 	"%AUDIT_ENFORCEMENT_POINT_SECRET_ACCESS\x10\x02\x12\"\n" +
 	"\x1eAUDIT_ENFORCEMENT_POINT_EGRESS\x10\x03\x121\n" +
-	"-AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION\x10\x04*\xa5\x02\n" +
+	"-AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION\x10\x04\x12,\n" +
+	"(AUDIT_ENFORCEMENT_POINT_WEBHOOK_DELIVERY\x10\x05*\xcc\x02\n" +
 	"\x11AuditResourceKind\x12#\n" +
 	"\x1fAUDIT_RESOURCE_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17AUDIT_RESOURCE_KIND_RUN\x10\x01\x12 \n" +
@@ -748,7 +861,8 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x18AUDIT_RESOURCE_KIND_TASK\x10\x04\x12\x1e\n" +
 	"\x1aAUDIT_RESOURCE_KIND_SECRET\x10\x05\x12 \n" +
 	"\x1cAUDIT_RESOURCE_KIND_ENDPOINT\x10\x06\x12)\n" +
-	"%AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET\x10\a*\xff\x02\n" +
+	"%AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET\x10\a\x12%\n" +
+	"!AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE\x10\b*\xe4\x04\n" +
 	"\rAuditDenyCode\x12\x1f\n" +
 	"\x1bAUDIT_DENY_CODE_UNSPECIFIED\x10\x00\x12(\n" +
 	"$AUDIT_DENY_CODE_NAMESPACE_UNROUTABLE\x10\x01\x12&\n" +
@@ -759,7 +873,14 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\x1dAUDIT_DENY_CODE_NO_ALLOW_RULE\x10\x06\x12\x1e\n" +
 	"\x1aAUDIT_DENY_CODE_RULE_ERROR\x10\a\x12\"\n" +
 	"\x1eAUDIT_DENY_CODE_NOT_CONFIGURED\x10\b\x12-\n" +
-	")AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED\x10\tB\xa9\x01\n" +
+	")AUDIT_DENY_CODE_DESTINATION_NOT_PERMITTED\x10\t\x12%\n" +
+	"!AUDIT_DENY_CODE_SIGNATURE_INVALID\x10\n" +
+	"\x12%\n" +
+	"!AUDIT_DENY_CODE_SIGNATURE_MISSING\x10\v\x12!\n" +
+	"\x1dAUDIT_DENY_CODE_REPLAY_WINDOW\x10\f\x12'\n" +
+	"#AUDIT_DENY_CODE_TOO_MANY_SIGNATURES\x10\r\x12%\n" +
+	"!AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE\x10\x0e\x12\"\n" +
+	"\x1eAUDIT_DENY_CODE_BINDING_FAILED\x10\x0fB\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"AuditProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

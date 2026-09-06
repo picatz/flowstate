@@ -1424,7 +1424,7 @@ issuer name and role that admitted the caller, the kind and id of the resource
 addressed (a workflow id, a schedule name, or a namespace), the server's own
 clock, and — on a denial — a code from a small closed set
 (`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`,
-`POLICY_DENIED`). There is no free-text field: no error message, request
+`POLICY_DENIED`; the worker's and the webhook receiver's codes are below). There is no free-text field: no error message, request
 payload, specification, token, claims, MCP arguments or results, prompt,
 session id, or JSON-RPC request id. One record is the correlation unit for one
 resolved operation decision. That is deliberate, not an oversight — see
@@ -1471,6 +1471,36 @@ worker's recorder, so its allows and denials are not recorded and
 `--audit-required` does not gate them. The traffic is still governed; only the
 record is missing. Tracked as
 [#1399](https://github.com/picatz/flowstate/issues/1399).
+
+**What the webhook receiver records.** A deployment started with `--webhook`
+serves the one entry path that is unauthenticated by design — a sender proves
+itself with a signature — and every decision the receiver makes about a
+delivery is written to the same trail, as an enforcement record with
+`enforcement_point` `WEBHOOK_DELIVERY` (picatz/flowstate#1774; the bridge to a
+parked gate used to write under an RPC verb no action binds, which a
+deployment with a recorder could not record, picatz/flowstate#1797). An
+accepted delivery is one allow record naming the run it started or answered
+(`resource_kind` `RUN`), the trigger as its principal
+(`flowstate://webhook#<workflow>/<trigger>`), the `delivery_id` the run's own
+trigger context carries, and `joined` when the run already existed; it is
+written before the start or the signal it permits, and a redelivery adds a
+second record with `joined` true beside its admission. A refused delivery is
+one deny record against the route it addressed (`resource_kind`
+`WEBHOOK_ROUTE`, key `<workflow>/<trigger>`, empty for a route this receiver
+does not serve — never the path the sender wrote), coded by class:
+`SIGNATURE_INVALID`, `SIGNATURE_MISSING`, `REPLAY_WINDOW`,
+`TOO_MANY_SIGNATURES`, `PAYLOAD_TOO_LARGE`, `BINDING_FAILED` (verified, and the
+payload did not map — the one refusal recorded under the trigger's identity,
+because the sender proved the key), `RESOURCE_NOT_FOUND` for an unknown route
+or a bridged delivery naming no run, `NOT_CONFIGURED` for a declared scheme
+with no resolved key, and `POLICY_DENIED` for a gate whose `signals:` refuse
+the trigger. Refusals are bounded: one record per class per route per minute,
+carrying `count` — how many refusals it stands for, this one and every one the
+previous minute swallowed — so a signature-guessing flood cannot use the audit
+sink as its amplifier and "refusals per route per hour" is still a sum over
+the trail. No record carries the body, a header, the signature, the
+idempotency key or the request path; `pkg/flowstate/v1/server/webhookaudit.go`
+is the seam and `TestARefusedDeliveryIsRecordedByClass` is the proof.
 
 Still no free text. A rule that *matched* is configuration and is recorded; a
 rule that failed to evaluate is recorded by its code alone, because its detail
