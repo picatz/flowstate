@@ -57,6 +57,13 @@ func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error)
 			return nil, fmt.Errorf("configuring the Flowstate server: %w", err)
 		}
 	}
+
+	key, err := newListTokenKey()
+	if err != nil {
+		return nil, fmt.Errorf("configuring the Flowstate server: %w", err)
+	}
+	s.listTokenKey = key
+
 	return s, nil
 }
 
@@ -495,6 +502,12 @@ type FlowstateServer struct {
 	// client: memos, a schedule's stored arguments, an activity's heartbeat
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
+
+	// listTokenKey authenticates the page tokens List issues, so that a token
+	// coming back is one this process handed out rather than one a caller
+	// built. Derived in [New] from the system's random source and held nowhere
+	// else; see [newListTokenKey] for what that means across replicas.
+	listTokenKey []byte
 
 	// audit records authorization decisions. Nil records nothing and is not an
 	// error: whether this deployment keeps an audit trail, and whether an

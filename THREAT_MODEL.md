@@ -162,7 +162,7 @@ admitted to a default tenant (`:119-142`, `:345`). Unauthenticated error text ne
 describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). Submitted
 specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`),
 and `List` is bounded by executions read and by requests made
-(`pkg/flowstate/v1/server/list.go:51`, `:63`).
+(`pkg/flowstate/v1/server/list.go:56`, `:68`).
 
 **Limits.** `flow server` serves plain HTTP when it is given no certificate, and it
 refuses to do that on any address but loopback unless `--tls-terminated-upstream`
