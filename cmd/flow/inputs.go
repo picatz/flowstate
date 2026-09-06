@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -252,12 +253,46 @@ func exampleJSONFor(t v1.InputDeclaration_Type) string {
 
 // inputsFromFile reads a JSON object of arguments.
 func inputsFromFile(path string, declared map[string]*v1.InputDeclaration) (map[string]*v1.Value, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading --input-file: %w", err)
 	}
+	defer f.Close()
+
+	data, err := readInputsFile(path, f)
+	if err != nil {
+		return nil, err
+	}
 
 	return inputsFromJSON(path, data, declared)
+}
+
+// maxInputFileBytes bounds an inputs file at the size [v1.CheckSubmissionSize]
+// weighs the arguments against. The JSON text is not the encoded size the check
+// measures, but a document over the whole submission budget cannot come under it
+// once decoded, so the read is refused before the parse and the [v1.Value]
+// conversion are built for a document the check would only refuse later
+// (invariant 5: the bound is spent where the memory is).
+const maxInputFileBytes = v1.MaxSpecBytes
+
+// readInputsFile reads an inputs document through the bound, the same shape as
+// every other file the CLI reads: maxInputFileBytes+1, so a file of exactly the
+// limit is accepted and one byte more is visibly too large rather than quietly
+// cut short. Split from [inputsFromFile] so a test can hand it a counting reader.
+func readInputsFile(path string, r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxInputFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading --input-file: %w", err)
+	}
+	if len(data) > maxInputFileBytes {
+		return nil, fmt.Errorf(
+			"--input-file %s is over the %d byte limit the workflow and the inputs it is run with "+
+				"share; nothing was read. A run carries both across every suspension, so a large "+
+				"value belongs somewhere a step can fetch it rather than in the arguments",
+			path, maxInputFileBytes)
+	}
+
+	return data, nil
 }
 
 // inputsFromJSON turns a JSON object into the map a run is started with.

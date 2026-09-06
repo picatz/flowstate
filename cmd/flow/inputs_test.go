@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -294,6 +296,50 @@ func TestAMissingInputFileNamesTheFlag(t *testing.T) {
 	_, stderr, err := runLocal(t, takesInputs, "--input-file", filepath.Join(t.TempDir(), "nope.json"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error()+stderr, "--input-file")
+}
+
+// TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsRead: the bound is
+// spent at the read, not after the parse and the Value conversion have been
+// built for a document the submission check would only refuse later.
+func TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inputs.json")
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte(" "), maxInputFileBytes+1), 0o600))
+
+	_, err := inputsFromFile(path, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--input-file")
+	assert.Contains(t, err.Error(), "nothing was read",
+		"the refusal has to be the size check's, not the parser's opinion of a megabyte of spaces")
+
+	// The same document, one byte shorter, reaches the parser: it is the parser
+	// that refuses blank text, so the bound is the boundary and not one byte less.
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte(" "), maxInputFileBytes), 0o600))
+	_, err = inputsFromFile(path, nil)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "nothing was read")
+}
+
+// TestAnInputFileReadStopsAtTheBound asserts the reader is what stops, so a file
+// of any size costs the bound plus one byte and no more.
+func TestAnInputFileReadStopsAtTheBound(t *testing.T) {
+	counter := &countingReader{Reader: bytes.NewReader(bytes.Repeat([]byte("{"), 4*maxInputFileBytes))}
+
+	_, err := readInputsFile("inputs.json", counter)
+	require.Error(t, err)
+	assert.Equal(t, maxInputFileBytes+1, counter.n,
+		"the read went past the bound before refusing, which is the cost the bound exists to cap")
+}
+
+// countingReader counts what was actually read from it.
+type countingReader struct {
+	io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	c.n += n
+	return n, err
 }
 
 // TestDeclaredOutputsAreReportedToAPerson is the other end of the contract. The
