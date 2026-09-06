@@ -356,12 +356,12 @@ func run(suppliedBase string) error {
 	switch {
 	case p.moduleWide:
 		g.leg("test", fmt.Sprintf("%s changed, every package is affected", p.reasons["module"]),
-			commandEnv([]string{"GOMEMLIMIT=2GiB"}, "go", "test", "-race", "-timeout", "900s", "./..."))
+			goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-timeout", "900s", "./..."))
 	case len(affected) == 0:
 		g.skip("test", withTestResidual(p, "no Go packages affected by this diff"))
 	default:
 		g.leg("test", withTestResidual(p, narrowWhy),
-			commandEnv([]string{"GOMEMLIMIT=1GiB"}, "go", append([]string{"test", "-race", "-timeout", "300s"}, affected...)...))
+			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, append([]string{"-race", "-timeout", "300s"}, affected...)...))
 	}
 
 	// Affected packages: staticcheck, on the same trigger and with the same
@@ -414,7 +414,7 @@ func run(suppliedBase string) error {
 	// claim is an ordering claim; see CLAUDE.md on -cpu=1) is affected.
 	if needsOrdering(affected) {
 		g.leg("ordering", "flowtest package affected",
-			commandEnv([]string{"GOMEMLIMIT=1GiB"}, "go", "test", "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/"))
+			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/"))
 	} else {
 		g.skip("ordering", "flowtest package not affected")
 	}
@@ -866,6 +866,59 @@ func (c cmdSpec) display() string {
 
 func commandEnv(env []string, name string, args ...string) cmdSpec {
 	return cmdSpec{argv: append([]string{name}, args...), env: env}
+}
+
+// testsumArgv is the summarizer the test legs pipe through: the same program
+// `make test` runs, so the local loop and CI print one shape (#1727).
+var testsumArgv = []string{"go", "run", "./tools/testsum"}
+
+// goTestSummarized is `go test -json <args> | go run ./tools/testsum` as a
+// leg step, without a shell: the two processes are started here with the
+// first's stdout as the second's stdin, and the step fails when either does —
+// pipefail, written out. A `go test` that died before printing a failure
+// would otherwise be a summary of a clean partial run.
+//
+// The label is the shell spelling, because that is what the leg prints and
+// what a reader would paste to reproduce it.
+func goTestSummarized(env []string, args ...string) cmdSpec {
+	test := append([]string{"go", "test", "-json"}, args...)
+	label := strings.Join(test, " ") + " | " + strings.Join(testsumArgv, " ")
+	if len(env) > 0 {
+		label = strings.Join(env, " ") + " " + label
+	}
+	return cmdSpec{
+		label: label,
+		verify: func() error {
+			run := exec.Command(test[0], test[1:]...)
+			run.Env = append(os.Environ(), env...)
+			run.Stderr = os.Stderr
+			stream, err := run.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			sum := exec.Command(testsumArgv[0], testsumArgv[1:]...)
+			sum.Stdin = stream
+			sum.Stdout = os.Stdout
+			sum.Stderr = os.Stderr
+			if err := run.Start(); err != nil {
+				return err
+			}
+			if err := sum.Start(); err != nil {
+				_ = run.Process.Kill()
+				_ = run.Wait()
+				return err
+			}
+			// The summarizer ends when the stream does, which is
+			// when go test exits; wait for it first so the summary
+			// is complete before the test's status is read.
+			sumErr := sum.Wait()
+			testErr := run.Wait()
+			if testErr != nil {
+				return fmt.Errorf("go test: %w", testErr)
+			}
+			return sumErr
+		},
+	}
 }
 
 func buf(args ...string) cmdSpec {

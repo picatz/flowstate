@@ -1,0 +1,43 @@
+{"Time":"2026-09-06T12:28:02.903774479Z","Action":"start","Package":"example.com/fixture/timeout"}
+{"Time":"2026-09-06T12:28:02.909561269Z","Action":"output","Package":"example.com/fixture/timeout","Output":"-test.shuffle 1788697682909305391\n"}
+{"Time":"2026-09-06T12:28:02.909664002Z","Action":"run","Package":"example.com/fixture/timeout","Test":"TestQuick"}
+{"Time":"2026-09-06T12:28:02.909668078Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestQuick","Output":"=== RUN   TestQuick\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.909673496Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestQuick","Output":"--- PASS: TestQuick (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.909676423Z","Action":"pass","Package":"example.com/fixture/timeout","Test":"TestQuick","Elapsed":0}
+{"Time":"2026-09-06T12:28:02.909682303Z","Action":"run","Package":"example.com/fixture/timeout","Test":"TestHangs"}
+{"Time":"2026-09-06T12:28:02.909683838Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"=== RUN   TestHangs\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:03.912505563Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-09-06T12:28:03.912695337Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\trunning tests:\n"}
+{"Time":"2026-09-06T12:28:03.912699938Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t\tTestHangs (1s)\n"}
+{"Time":"2026-09-06T12:28:03.912702322Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\n"}
+{"Time":"2026-09-06T12:28:03.912704878Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"goroutine 33 [running]:\n"}
+{"Time":"2026-09-06T12:28:03.912707034Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-09-06T12:28:03.912709028Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2959 +0x34a\n"}
+{"Time":"2026-09-06T12:28:03.912713442Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"created by time.goFunc\n"}
+{"Time":"2026-09-06T12:28:03.912715211Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/time/sleep.go:182 +0x2d\n"}
+{"Time":"2026-09-06T12:28:03.912716878Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\n"}
+{"Time":"2026-09-06T12:28:03.912718718Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-09-06T12:28:03.912720446Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"testing.(*T).Run(0x156bdfa10008, {0x554f13?, 0x156bdf9fcaa0?}, 0x6da548)\n"}
+{"Time":"2026-09-06T12:28:03.912723452Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2266 +0x4f2\n"}
+{"Time":"2026-09-06T12:28:03.912725227Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"testing.runTests.func1(0x156bdfa10008)\n"}
+{"Time":"2026-09-06T12:28:03.912728534Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2742 +0x37\n"}
+{"Time":"2026-09-06T12:28:03.912730078Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"testing.tRunner(0x156bdfa10008, 0x156bdf9fcbc8)\n"}
+{"Time":"2026-09-06T12:28:03.912733082Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2193 +0xea\n"}
+{"Time":"2026-09-06T12:28:03.912750648Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"testing.runTests({0x55800d, 0x13}, {0x55a5df, 0x1b}, 0x156bdf998018, {0x6f5930, 0x2, 0x2}, {0xc29f74f4f633e791, 0x3b9e1250, ...})\n"}
+{"Time":"2026-09-06T12:28:03.913204115Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2740 +0x510\n"}
+{"Time":"2026-09-06T12:28:03.913216729Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"testing.(*M).Run(0x156bdfb0c140)\n"}
+{"Time":"2026-09-06T12:28:03.913218876Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2600 +0x6af\n"}
+{"Time":"2026-09-06T12:28:03.913220452Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"main.main()\n"}
+{"Time":"2026-09-06T12:28:03.913222429Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t_testmain.go:48 +0x9b\n"}
+{"Time":"2026-09-06T12:28:03.913224204Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\n"}
+{"Time":"2026-09-06T12:28:03.913226956Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"goroutine 6 [sleep]:\n"}
+{"Time":"2026-09-06T12:28:03.913228911Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"time.Sleep(0x2540be400)\n"}
+{"Time":"2026-09-06T12:28:03.913230591Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/runtime/time.go:368 +0x165\n"}
+{"Time":"2026-09-06T12:28:03.913232239Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"example.com/fixture/timeout.TestHangs(0x156bdfa10488?)\n"}
+{"Time":"2026-09-06T12:28:03.913234971Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/home/dev/fixture/timeout/timeout_test.go:11 +0x1d\n"}
+{"Time":"2026-09-06T12:28:03.913236788Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"testing.tRunner(0x156bdfa10488, 0x6da548)\n"}
+{"Time":"2026-09-06T12:28:03.913238673Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2193 +0xea\n"}
+{"Time":"2026-09-06T12:28:03.9132403Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-09-06T12:28:03.913243168Z","Action":"output","Package":"example.com/fixture/timeout","Test":"TestHangs","Output":"\t/usr/local/go/src/testing/testing.go:2258 +0x4d4\n"}
+{"Time":"2026-09-06T12:28:03.913370008Z","Action":"output","Package":"example.com/fixture/timeout","Output":"FAIL\texample.com/fixture/timeout\t1.009s\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:03.913408289Z","Action":"fail","Package":"example.com/fixture/timeout","Elapsed":1.01}

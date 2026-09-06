@@ -244,8 +244,28 @@ jobs:
       # `make test`, not a second copy of the command, so the memory and time
       # bounds cannot drift between here and the loop a contributor runs
       # locally. CLAUDE.md's rule is that the Makefile *is* what CI runs.
+      #
+      # The target pipes `go test -json` through tools/testsum (#1727), which
+      # is what turns a failing test into an inline annotation on the Files
+      # tab and a row in this job's summary — before it, this step was five
+      # minutes of plain text and a failure was a `--- FAIL` line somewhere in
+      # it. TEST_JSON keeps the raw stream for the artifact step below, so
+      # the summary is the short answer and the record is still there.
       - name: Test
-        run: make test
+        run: make test TEST_JSON=go-test.json
+
+      # The raw stream, whatever the outcome (`if: always()`): a reader who
+      # needs more than the summary — the log of a test that passed, the
+      # order a package ran in — has the full record without a rerun. It
+      # is the same JSON testsum read, so the two cannot disagree.
+      - name: Upload the raw go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-json
+          path: go-test.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       # The same mechanism as the proto job's generated-code check, on the four
       # reference documents that are derived rather than written: the task
@@ -450,7 +470,16 @@ jobs:
         run: go version
 
       - name: Ordering claims hold under a different schedule
-        run: make test-ordering
+        run: make test-ordering TEST_JSON=go-test-ordering.json
+
+      - name: Upload the raw ordering go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-ordering-json
+          path: go-test-ordering.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every

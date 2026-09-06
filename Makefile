@@ -142,8 +142,44 @@ fuzz-smoke:
 # Go can emit. `check` sets it; the PR lane does not, because it costs a couple
 # of minutes on a cold cache to guard a thing that changes when Go adds a port.
 # The tracked-file gate that check exists for runs either way, in milliseconds.
+#
+# The output is `go test -json`, read by tools/testsum (#1727), which prints a
+# failures-only summary — package, test, the assertion lines and the file:line
+# they name, and a count of what passed — and, under GitHub Actions, one
+# annotation per failing test plus a table in the job summary. The local loop
+# and CI therefore print the same shape, and a failure is a block at the end
+# rather than a line somewhere in five minutes of log. TEST_JSON, when set,
+# is a path the raw stream is also written to; CI uploads it as an artifact
+# so a later reader has the full record.
+#
+# TEST_SHUFFLE is passed to `go test -shuffle`: `on` runs each package's
+# tests in a random order and prints the seed, which testsum carries into
+# every failure it reports with a rerun line, so an order-dependent failure
+# is reproducible from the annotation. It defaults to off because turning it
+# on found three: TestGeneratedDocsAreCommitted, TestPluginDirWiresPlugin-
+# TasksIntoTheMCPSurface and TestLoopbackDenialUnderTheDefaultPolicyNames-
+# ItsOwnRemedy in cmd/flow share the process-wide DefaultRegistry, which has
+# no unregister, and fail under seed 1788698486191639409 whenever a plugin
+# or egress-policy test runs before them — a coupling their own comments
+# record. Until that isolation is fixed, `on` here is a red `make test` on a
+# coin flip, which teaches people to rerun rather than read. Set it on a
+# branch that fixes them, or for one package:
+#
+#     make test TEST_SHUFFLE=on
+#     go test -json -shuffle=on ./pkg/... | go run ./tools/testsum
+#
+# The recipe is a pipeline, and a pipeline's status is its last command's, so
+# the test targets select bash with pipefail for their recipes: a `go test`
+# that died before testsum saw a failure — a crash, a kill — must still be
+# red. /bin/sh is dash (0.5.12 on Ubuntu 24.04, here and on the runners),
+# which rejects `set -o pipefail`, and that is why this is a per-target shell
+# rather than a line in the recipe.
+TEST_SHUFFLE ?= off
+
+test: SHELL := /bin/bash
+test: .SHELLFLAGS := -o pipefail -c
 test:
-	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -race -timeout 900s ./...
+	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -timeout 900s ./... | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # The plugins are separate modules, which is the point of them: `./...` above
 # does not reach them, and a plugin that does not compile would leave every
@@ -151,13 +187,26 @@ test:
 # or runaway plugin test should fail with a diagnosable timeout naming its
 # package, not consume the job's whole budget and leave an operator guessing
 # which module hung.
+#
+# Each module's `go test` pipes through tools/testsum like `test` above, so a
+# plugin failure has the same shape and the same annotation. The tool is built
+# once here rather than `go run` from inside each module: a module directory
+# is outside the root module, and `go run ./tools/testsum` from there is a
+# path Go refuses. `-dir` tells testsum where the module sits in the
+# repository, so the annotation names plugins/<name>/... rather than a path
+# relative to the module.
+test-plugins: SHELL := /bin/bash
+test-plugins: .SHELLFLAGS := -o pipefail -c
 test-plugins:
 	$(require-gofmt)
-	@for module in plugins/*/; do \
+	@testsum="$$(mktemp -d "$${TMPDIR:-/tmp}/flowstate-testsum.XXXXXX")/testsum"; \
+	trap 'rm -rf "$$(dirname "$$testsum")"' EXIT HUP INT TERM; \
+	go build -o "$$testsum" ./tools/testsum || exit 1; \
+	for module in plugins/*/; do \
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> $$module"; \
 		( cd "$$module" && go build ./... && go vet ./... && \
-			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
+			GOMEMLIMIT=2GiB go test -json -shuffle=$(TEST_SHUFFLE) -race -timeout 300s ./... | "$$testsum" -dir "$${module%/}" ) || \
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
 		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
@@ -240,8 +289,15 @@ tidy-plugins:
 # Sized to be cheap enough to keep: seconds, not minutes. It exists because
 # `-race -count=3` at the default GOMAXPROCS ran clean against a defect that
 # `-cpu=1` reproduced three times in ten (#278).
+#
+# Piped through tools/testsum like `test`, with the same TEST_JSON hook, so a
+# failure under this schedule is reported in the same shape as one under the
+# default. No TEST_SHUFFLE here: this target's whole point is the schedule,
+# and -count=20 already varies what the interleaving reaches.
+test-ordering: SHELL := /bin/bash
+test-ordering: .SHELLFLAGS := -o pipefail -c
 test-ordering:
-	GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
+	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # Bounded fast tier for the inner loop.
 test-fast:

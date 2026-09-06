@@ -1,0 +1,25 @@
+{"Time":"2026-09-06T12:28:02.295891366Z","Action":"start","Package":"example.com/fixture/fail"}
+{"Time":"2026-09-06T12:28:02.299238882Z","Action":"output","Package":"example.com/fixture/fail","Output":"-test.shuffle 1788697682299198473\n"}
+{"Time":"2026-09-06T12:28:02.299509596Z","Action":"run","Package":"example.com/fixture/fail","Test":"TestParent"}
+{"Time":"2026-09-06T12:28:02.299515191Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestParent","Output":"=== RUN   TestParent\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.299592121Z","Action":"run","Package":"example.com/fixture/fail","Test":"TestParent/child"}
+{"Time":"2026-09-06T12:28:02.299595324Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestParent/child","Output":"=== RUN   TestParent/child\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.299669489Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestParent/child","Output":"    fail_test.go:15: child broke\n","OutputType":"error"}
+{"Time":"2026-09-06T12:28:02.299696212Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestParent/child","Output":"--- FAIL: TestParent/child (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.29972358Z","Action":"fail","Package":"example.com/fixture/fail","Test":"TestParent/child","Elapsed":0}
+{"Time":"2026-09-06T12:28:02.299743513Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestParent","Output":"--- FAIL: TestParent (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.299800237Z","Action":"fail","Package":"example.com/fixture/fail","Test":"TestParent","Elapsed":0}
+{"Time":"2026-09-06T12:28:02.299819005Z","Action":"run","Package":"example.com/fixture/fail","Test":"TestFails"}
+{"Time":"2026-09-06T12:28:02.299824645Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestFails","Output":"=== RUN   TestFails\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.299878986Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestFails","Output":"    fail_test.go:8: about to check\n"}
+{"Time":"2026-09-06T12:28:02.299896758Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestFails","Output":"    fail_test.go:9: want 1, got 2\n","OutputType":"error"}
+{"Time":"2026-09-06T12:28:02.299906796Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestFails","Output":"    fail_test.go:10: second problem\n","OutputType":"error"}
+{"Time":"2026-09-06T12:28:02.299916023Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestFails","Output":"--- FAIL: TestFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.299968355Z","Action":"fail","Package":"example.com/fixture/fail","Test":"TestFails","Elapsed":0}
+{"Time":"2026-09-06T12:28:02.299979371Z","Action":"run","Package":"example.com/fixture/fail","Test":"TestPasses"}
+{"Time":"2026-09-06T12:28:02.299983144Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestPasses","Output":"=== RUN   TestPasses\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.300009749Z","Action":"output","Package":"example.com/fixture/fail","Test":"TestPasses","Output":"--- PASS: TestPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.300052875Z","Action":"pass","Package":"example.com/fixture/fail","Test":"TestPasses","Elapsed":0}
+{"Time":"2026-09-06T12:28:02.300071908Z","Action":"output","Package":"example.com/fixture/fail","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.301195269Z","Action":"output","Package":"example.com/fixture/fail","Output":"FAIL\texample.com/fixture/fail\t0.005s\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:02.301220059Z","Action":"fail","Package":"example.com/fixture/fail","Elapsed":0.005}
