@@ -2151,6 +2151,46 @@ func ValidateSourceFile(path string) (Diagnostics, error) {
 	return validateThroughEdition(data, path)
 }
 
+// ParseAndValidateFile compiles a Flowfile read from disk and validates what it
+// compiled to, in one pass: the workflow [ParseFile] would return, beside the
+// diagnostics [ValidateSourceFile] would report about it.
+//
+// One entry for the callers that need both, because they used to call the two
+// and the second compiled the file again from its bytes — every expression
+// parsed twice before a step ran, which on a 4,000-step file was 0.9 s of a
+// 1.6 s `flow run local` (#1795). The parse is the cost; the validation of a
+// workflow already in hand is not.
+//
+// A file that does not compile is reported exactly as [ValidateSourceFile]
+// reports it: the error is the [Diagnostics], with the step-id checks run
+// against whatever partial workflow the compiler built, and there is no
+// workflow. The one failure that compiles the bytes again is the edition
+// gate, whose rewrite path needs the source rather than the tree — the cost
+// of agreeing with `flow validate` about an old file, paid only by an old
+// file.
+func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
+	data, err := readBoundedSource(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	wf, positions, err := parse(data, path, nil, new(int))
+	if err != nil {
+		var gate Diagnostics
+		if errors.As(err, &gate) && isEditionGate(gate) {
+			if _, verr := validateThroughEdition(data, path); verr != nil {
+				return nil, nil, verr
+			}
+		}
+	}
+
+	ds, err := validateParsed(wf, positions, err)
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, ds, nil
+}
+
 // ValidateSourceAt is [ValidateSource] for data that is not necessarily what
 // path holds on disk yet — an editor's unsaved buffer — resolving a `call:`
 // step relative to path's directory all the same. See [ParseAt].
