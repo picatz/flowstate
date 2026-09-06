@@ -57,6 +57,17 @@ func TestAListBuiltInsideAnExpressionIsBoundedWhereItIsBuilt(t *testing.T) {
 		oversized[i] = int64(i)
 	}
 
+	// What one fold to the bound costs on this machine, under whatever load
+	// and instrumentation (the race detector makes cel-go an order of
+	// magnitude slower) it is running with. The refused cases below are held
+	// to a small multiple of it rather than to a clock: the claim is that a
+	// refusal costs no more than the work up to the bound, and a wall-clock
+	// figure would restate that claim only for one machine.
+	started := time.Now()
+	_, err := evalInProfile(t, "items.map(i, i).size()", map[string]any{"items": oversized[:maxListElements]})
+	require.NoError(t, err)
+	reference := time.Since(started)
+
 	tests := []struct {
 		name string
 		expr string
@@ -96,12 +107,15 @@ func TestAListBuiltInsideAnExpressionIsBoundedWhereItIsBuilt(t *testing.T) {
 			assert.ErrorContains(t, err, tt.want)
 			assert.ErrorContains(t, err, "over the 10000 one expression may hold in a list")
 
-			// Generous against a loaded machine and still an order of magnitude
-			// under the 3.3 s the issue measured for its expression: the point
-			// of refusing where the list is built is that the quadratic work
-			// past the bound never runs.
-			assert.Less(t, elapsed, 2*time.Second,
-				"the refusal landed only after the work it exists to prevent")
+			// The point of refusing where the list is built is that the
+			// quadratic work past the bound never runs: a refusal costs at most
+			// the fold up to the bound, so a case that took several times the
+			// reference fold went on working after it refused. (The first
+			// revision returned the refusal as an error value, and cel-go then
+			// carried the errored accumulator through the rest of the source
+			// at a quadratic cost — ten times the reference here.)
+			assert.Less(t, elapsed, 3*reference+200*time.Millisecond,
+				"the refusal landed only after the work it exists to prevent (reference fold: %v)", reference)
 		})
 	}
 }

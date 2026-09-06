@@ -133,8 +133,22 @@ func (c *boundedListCall) check(out ref.Val) ref.Val {
 	if !ok || int64(size) <= maxListElements {
 		return out
 	}
-	return types.WrapErr(expressionListBoundError(
-		fmt.Sprintf("%s built", spelledFunction(c.Function())), int(size)))
+
+	// The evaluation ends here, the way the cost budget ends one: cel-go's
+	// Eval recovers this error and returns it. Returned as an error *value*
+	// instead, the refusal would not stop a comprehension — the fold carries
+	// an errored accumulator through every element left in its source, and
+	// the cost tracker's stack scan for each of those steps misses (the
+	// short-circuited `+` never evaluates its right side), so a source of n
+	// elements costs O(n²) after the refusal. A source is bounded where it
+	// enters an expression, but a webhook body is bounded in bytes rather
+	// than elements, and a megabyte of `[1,1,1,…]` mapped over would have
+	// turned this bound into the very stall it exists to prevent.
+	panic(interpreter.EvalCancelledError{
+		Cause: interpreter.CostLimitExceeded,
+		Message: expressionListBoundError(
+			fmt.Sprintf("%s built", spelledFunction(c.Function())), int(size)).Error(),
+	})
 }
 
 // spelledFunction names a call the way its author wrote it: an operator by
