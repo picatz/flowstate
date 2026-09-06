@@ -90,10 +90,11 @@ func TestTheAuditSeamIsNotBypassed(t *testing.T) {
 
 	allowed := map[string]map[string]string{
 		"authorizeRunDecision": {
-			"authorizeRun":    "the audited wrapper: this is where the record is written",
-			"Signal":          "walks a Continue-As-New chain from its first run id to the current one, which is one decision reached in two lookups; it audits once itself",
-			"SignalWithStart": "audits when the request is admitted, before anything is created; the already-running branch re-resolves that same decision",
-			"answer":          "the webhook-to-signal bridge: it reaches one decision — is there a run here, and will its `signals:` take an answer from this trigger — and audits that decision itself, denial and acceptance both, under the WebhookSignal verb",
+			"authorizeRun":     "the audited wrapper: this is where the record is written",
+			"Signal":           "walks a Continue-As-New chain from its first run id to the current one, which is one decision reached in two lookups; it audits once itself",
+			"SignalWithStart":  "audits when the request is admitted, before anything is created; the already-running branch re-resolves that same decision",
+			"answer":           "the webhook-to-signal bridge: it reaches one decision — is there a run here, and will its `signals:` take an answer from this trigger — and audits that decision itself, denial and acceptance both, under the WebhookSignal verb",
+			"reusedSubmission": "Run's already-started arm under a request_id: the admission was audited before the start was attempted, and a retry recognized here is audited by Run itself as a second decision naming the run it was answered with",
 		},
 		"authorizeScheduleDecision": {
 			"authorizeSchedule": "the audited wrapper: this is where the record is written",

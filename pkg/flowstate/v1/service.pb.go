@@ -179,7 +179,67 @@ type RunRequest struct {
 	//
 	// Free text, because the question it answers is one a person asks another
 	// person. Bounded like everything else a caller chooses the size of.
-	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	// RequestId makes this submission idempotent: two Run calls carrying the same
+	// value in the same namespace produce one run, and the second is answered
+	// with the run the first started, [RunResponse.reused] set.
+	//
+	// # What it is for
+	//
+	// A caller whose request times out after the server has already started the
+	// run — a client deadline, a load balancer reset, a laptop lid — has no way to
+	// tell "never started" from "started and the answer was lost", and a retry
+	// without this field starts the workload a second time. For the workloads
+	// this engine exists for, the second run is the incident. `flow run` sends a
+	// fresh value on every invocation and reuses it across its own retries, and
+	// `--request-id` lets a CI job supply its own, typically the job's run id, so
+	// a re-run of the job converges on the run the first attempt started.
+	//
+	// # What it addresses
+	//
+	// Unset is byte-identical to today: a `flowstate-workflow-<uuid>` id, minted
+	// per request. Set, the run's workflow id is derived from the authenticated
+	// namespace and this value by digest — `flowstate-request-<hex>`, a prefix of
+	// its own so a request can never address, join or block a run created by an
+	// entity key, a `concurrency:` block or a webhook delivery — and Temporal's
+	// own uniqueness on that id is the dedupe: two retries arriving
+	// simultaneously both reach the cluster, one is admitted and the other is
+	// answered with the run it started. There is no window, no local table and
+	// nothing to expire. A retry that arrives after the run *finished* is answered
+	// with the finished run too: a request id names one submission forever, which
+	// is what makes it a key rather than a lock.
+	//
+	// The namespace half comes only from the authenticated caller, exactly as
+	// [RunRequest.entity_key]'s does and for the identical reason: two tenants
+	// choosing the same value are two submissions, and a request cannot name the
+	// tenant it is deduplicated under.
+	//
+	// # Composition with the other addressing schemes
+	//
+	// When the request also names an entity key, or the workflow declares a
+	// `concurrency:` block, that address decides the run's id and which run is
+	// live; this field then decides only whether a submission colliding with a
+	// live run is a *retry* of the submission that started it — answered with the
+	// run, reused — or a second submission, which the address's own rule then
+	// handles (an entity refuses it; `on_conflict:` decides for a permit).
+	//
+	// # A reused key with a different submission is refused
+	//
+	// The run records a digest of the submission it was started with — the
+	// specification as sent and the inputs as bound. A later request under the
+	// same key whose digest differs is refused with `AlreadyExists`, naming the
+	// run, rather than silently attached to a run that will do something other
+	// than what this request asked: an idempotency key that answered a different
+	// payload with "done" would be worse than no key at all. Choose a new value
+	// for a new submission.
+	//
+	// # Grammar
+	//
+	// A UUID or a caller-chosen string: printable ASCII, bounded. It is digested,
+	// never interpolated, so nothing about its content can reach a workflow id —
+	// the same discipline `webhookWorkflowID` applies to an idempotency key — and
+	// it is recorded on the run only as that digest, never as the value itself.
+	RequestId     *string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3,oneof" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -238,6 +298,13 @@ func (x *RunRequest) GetEntityKey() string {
 func (x *RunRequest) GetReason() string {
 	if x != nil {
 		return x.Reason
+	}
+	return ""
+}
+
+func (x *RunRequest) GetRequestId() string {
+	if x != nil && x.RequestId != nil {
+		return *x.RequestId
 	}
 	return ""
 }
@@ -328,7 +395,29 @@ type RunResponse struct {
 	// one: a server too old to have this field cannot have honoured a
 	// `concurrency:` block either, so it never joined anything, and "unset" and
 	// "did not join" are the same fact rather than two.
-	Joined        bool `protobuf:"varint,7,opt,name=joined,proto3" json:"joined,omitempty"`
+	Joined bool `protobuf:"varint,7,opt,name=joined,proto3" json:"joined,omitempty"`
+	// Reused is true when this response describes the run an earlier request
+	// carrying the same [RunRequest.request_id] already started, rather than one
+	// this request started.
+	//
+	// Output only, and the server's statement rather than a caller's inference:
+	// a retry that gets back a run id cannot tell "mine, started now" from "mine,
+	// started by the attempt whose answer I lost" by looking, and the two differ
+	// in what the caller may conclude — [RunResponse.status] on a reused run is
+	// the run's *current* status, which may already be terminal, and
+	// [RunResponse.specification_as_submitted] is answered false because the
+	// specification that ran is the one the earlier attempt sent, not
+	// necessarily this one's. Established the way [RunResponse.joined] is: from
+	// the cluster's own already-started answer, never from a run id the server
+	// happens not to recognize.
+	//
+	// Distinct from `joined`, which names a run *somebody else* holds under a
+	// `concurrency:` key. A reused run is this caller's own submission, checked
+	// to be the same one by digest; a joined run may have been started by anyone
+	// in the tenant with any inputs. A plain `bool` for `joined`'s reason: a
+	// server too old to have this field never deduplicated anything, so "unset"
+	// and "did not reuse" are one fact.
+	Reused        bool `protobuf:"varint,8,opt,name=reused,proto3" json:"reused,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -419,6 +508,13 @@ func (x *RunResponse) GetSpecificationAsSubmitted() bool {
 func (x *RunResponse) GetJoined() bool {
 	if x != nil {
 		return x.Joined
+	}
+	return false
+}
+
+func (x *RunResponse) GetReused() bool {
+	if x != nil {
+		return x.Reused
 	}
 	return false
 }
@@ -2492,7 +2588,7 @@ var File_flowstate_v1_service_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe9\x02\n" +
+	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
 	"\n" +
 	"RunRequest\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
@@ -2500,11 +2596,14 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x06inputs\x18\x02 \x03(\v2$.flowstate.v1.RunRequest.InputsEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x06inputs\x12D\n" +
 	"\n" +
 	"entity_key\x18\x03 \x01(\tB \xbaH\x1dr\x1b\x10\x01\x18\x80\x012\x14^[a-z0-9][a-z0-9-]*$H\x00R\tentityKey\x88\x01\x01\x12$\n" +
-	"\x06reason\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x04R\x06reason\x1aN\n" +
+	"\x06reason\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x04R\x06reason\x12R\n" +
+	"\n" +
+	"request_id\x18\x05 \x01(\tB.\xe2A\x01\x01\xbaH'r%\x10\x01\x18\x80\x012\x1e^[A-Za-z0-9][A-Za-z0-9._:/-]*$H\x01R\trequestId\x88\x01\x01\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\r\n" +
-	"\v_entity_key\"\x8d\x05\n" +
+	"\v_entity_keyB\r\n" +
+	"\v_request_id\"\xab\x05\n" +
 	"\vRunResponse\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\n" +
@@ -2515,7 +2614,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x05error\x18\x04 \x01(\v2\x1f.flowstate.v1.RunResponse.ErrorH\x00R\x05error\x12>\n" +
 	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x12A\n" +
 	"\x1aspecification_as_submitted\x18\x06 \x01(\bH\x01R\x18specificationAsSubmitted\x88\x01\x01\x12\x16\n" +
-	"\x06joined\x18\a \x01(\bR\x06joined\x1a=\n" +
+	"\x06joined\x18\a \x01(\bR\x06joined\x12\x1c\n" +
+	"\x06reused\x18\b \x01(\bB\x04\xe2A\x01\x03R\x06reused\x1a=\n" +
 	"\x05Error\x12 \n" +
 	"\amessage\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x9f\x01\n" +

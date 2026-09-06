@@ -3,8 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1078,18 +1076,18 @@ func (r *WebhookReceiver) audited(returned, refusal error) error {
 // is frequently a *signature header*, which is credential-shaped material that
 // must not become a durable, broadly readable identifier. A digest is neither: it
 // is fixed-length, alphabet-safe, and reveals nothing about the key it names.
+// [digestWorkflowID] is that digest, shared with [RunRequest.request_id]'s
+// derivation, which has the same two reasons.
 //
 // The tenant, the workflow and the trigger are inside the digest, so the same
 // event delivered to two triggers, or to two tenants, is two runs — a dedupe key
 // dedupes within the source that issued it, never across sources.
 //
 // The `flowstate-webhook-` prefix keeps this namespace distinct from
-// [v1.EntityWorkflowID]'s, so a delivery can never address, join or block a run
-// created by an entity key.
+// [v1.EntityWorkflowID]'s and [requestWorkflowIDPrefix]'s, so a delivery can
+// never address, join or block a run created by an entity key or a request id.
 func webhookWorkflowID(namespace, workflow, trigger, key string) string {
-	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%s\x00%s", namespace, workflow, trigger, key))
-
-	return "flowstate-webhook-" + hex.EncodeToString(digest[:])
+	return digestWorkflowID("flowstate-webhook-", namespace, workflow, trigger, key)
 }
 
 // decodeDeliveryBody reads the payload the way `flow test` reads a stored one.
