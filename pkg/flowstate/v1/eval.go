@@ -576,9 +576,14 @@ func (m *lazyStepsMap) ConvertToType(typeVal ref.Type) ref.Val {
 // uses the eager map served, at the cost it charged — and with the answer it
 // gave, which is that a step whose outputs cannot be converted makes the whole
 // an error rather than a map with a hole in it.
+//
+// Converted in id order, so that when more than one step cannot be converted
+// the error names the same step every time. Go's map order would pick one at
+// random, and an error that changes between evaluations of the same run is a
+// nondeterminism the workflow side must not have (invariant 4).
 func (m *lazyStepsMap) whole() (traits.Mapper, *types.Err) {
 	entries := make(map[ref.Val]ref.Val, len(m.values))
-	for id := range m.values {
+	for _, id := range slices.Sorted(maps.Keys(m.values)) {
 		key := types.String(id)
 		v := m.Get(key)
 		if err, failed := v.(*types.Err); failed {

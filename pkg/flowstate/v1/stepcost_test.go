@@ -15,8 +15,9 @@ import (
 // every finished step, every value converted — so that CEL could select one step
 // out of it, and a straight chain of N `value:` steps cost N² conversions. 4,000
 // steps took 13.7 s locally where the same work written as a loop took 0.34 s.
-// [StepsOutputActivation.ResolveName] now answers the rooted spelling of one step
-// directly, which is the same value at the cost of that one step.
+// The root is now a [lazyStepsMap], which converts a step's outputs on the read
+// that reaches it: the same value, at the cost of that one step, through the
+// same qualifiers CEL applies to any map.
 
 // chainWorkflow is n `value:` steps in a straight line, each one more than the
 // step before it, the shape that pays the per-step cost and nothing else.
@@ -173,4 +174,25 @@ func TestAStepThatCannotBeReadFailsOnlyTheReadThatReachesIt(t *testing.T) {
 	_, err = eval("steps == {}")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret reference")
+}
+
+// TestTheWholeRootNamesTheSameUnreadableStepEveryTime: with two steps that
+// cannot be converted, the whole root's refusal names the first by id, not
+// whichever Go's map order reached first, so the same run says the same thing
+// every time it is evaluated.
+func TestTheWholeRootNamesTheSameUnreadableStepEveryTime(t *testing.T) {
+	ctx := context.Background()
+	prev := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
+	for _, id := range []string{"b", "a", "c"} {
+		prev.StepValues[id] = &Node_Outputs{NamedValues: map[string]*Value{
+			"token": {Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "TOKEN"}}},
+		}}
+	}
+	activation := Activation(ctx, CurrentProfile, prev, nil, nil, nil, nil, true, nil, nil)
+
+	for range 20 {
+		_, err := DefaultEvaluator().EvalParsedBase(ctx, CurrentProfile, NewExpr("steps == {}").GetExpr(), activation)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `step "a"`, "the whole root's refusal should name the first step by id")
+	}
 }
