@@ -100,10 +100,16 @@ func readFile(name string, stdin io.Reader) ([]byte, error) {
 }
 
 // report writes the findings, as workflow annotations under Actions.
+//
+// A finding repeats part of the author's line, so what reaches the runner
+// log is escaped the way workflow commands require: a newline or a `::` in
+// a title or body must not become a second command, or a spoofed one.
 func report(out io.Writer, findings []commitcheck.Finding, actions bool) {
 	for _, f := range findings {
 		if actions {
-			fmt.Fprintf(out, "::warning title=commitcheck %s::%s (see %s)\n", f.Rule, f.Message, f.Skill)
+			fmt.Fprintf(out, "::warning title=%s::%s\n",
+				escapeProperty("commitcheck/"+string(f.Rule)),
+				escapeData(f.Message+" (see "+f.Skill+")"))
 			continue
 		}
 		fmt.Fprintf(out, "commitcheck: %s\n", f)
@@ -111,4 +117,16 @@ func report(out io.Writer, findings []commitcheck.Finding, actions bool) {
 	if len(findings) == 0 {
 		fmt.Fprintln(out, "commitcheck: the message follows the conventions")
 	}
+}
+
+// escapeData escapes a workflow command's data section, per the runner's
+// rules: percent first, then the line breaks that would end the command.
+func escapeData(s string) string {
+	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)
+}
+
+// escapeProperty escapes a workflow command's property value, which also
+// cannot hold the separators the command's grammar uses.
+func escapeProperty(s string) string {
+	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C").Replace(s)
 }

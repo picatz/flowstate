@@ -1,9 +1,11 @@
 package commitcheck
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func rules(findings []Finding) []Rule {
@@ -60,6 +62,20 @@ func TestAnAbsoluteNeedsEvidenceOnItsLine(t *testing.T) {
 	assert.Empty(t, Check("a: b", base+"Retrying is safe because the request carries an idempotency key (#1751).\n"),
 		"a clause that says why is evidence")
 	assert.Empty(t, Check("a: b", base+"`Safe` is the method's name.\n"), "a code span on the line is evidence")
+	assert.Empty(t, Check("a: b", base+"Rolling back is safe as the migration only adds a column.\n"),
+		"an \"as\" clause is evidence")
+	assert.Equal(t, []Rule{RuleAbsolute}, rules(Check("a: b", base+"This is safe assuming nothing.\n")),
+		"\"as\" has to be the word, not a prefix of one")
+}
+
+func TestAFindingRepeatsOnlyABoundedExcerptOfTheLine(t *testing.T) {
+	t.Parallel()
+
+	long := "This change is fully tested " + strings.Repeat("x", 500)
+	findings := Check("a: b", "Refs #1\n\nVerification: ran.\n\n"+long+"\n")
+	require.Len(t, findings, 1)
+	assert.Less(t, len(findings[0].Message), 300, "an author's long line was repeated whole into the finding")
+	assert.True(t, strings.HasSuffix(findings[0].Message, "…"), "a cut excerpt says it was cut")
 }
 
 func TestAnEmptyMessageFailsThreeRules(t *testing.T) {

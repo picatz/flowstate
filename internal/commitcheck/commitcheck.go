@@ -79,7 +79,7 @@ var (
 
 	// evidence is what a line offering an absolute has to carry beside it: a
 	// code span, an issue, a parenthetical, or a clause that says why.
-	evidence = regexp.MustCompile("`|#[0-9]+|\\(|\\b(because|since|so that|which|as )\\b")
+	evidence = regexp.MustCompile("`|#[0-9]+|\\(|\\b(because|since|so that|which|as)\\b")
 )
 
 // Check holds subject and body to the conventions and returns every finding.
@@ -121,10 +121,23 @@ func Check(subject, body string) []Finding {
 		}
 		out = append(out, Finding{
 			Rule:    RuleAbsolute,
-			Message: "\"" + line[loc[0]:loc[1]] + "\" stands without evidence on its line: " + strings.TrimSpace(line),
+			Message: "\"" + line[loc[0]:loc[1]] + "\" stands without evidence on its line: " + excerpt(strings.TrimSpace(line)),
 			Skill:   prSkill,
 		})
 	}
 
 	return out
+}
+
+// maxExcerpt bounds how much of an author's line a finding repeats: enough
+// to find it, not enough for one long line to make a warning unreadable.
+const maxExcerpt = 120
+
+// excerpt is the line cut to [maxExcerpt] runes, marked when it was cut.
+func excerpt(line string) string {
+	runes := []rune(line)
+	if len(runes) <= maxExcerpt {
+		return line
+	}
+	return string(runes[:maxExcerpt]) + "…"
 }
