@@ -398,7 +398,9 @@ type ciWorkflow struct {
 		If      string            `yaml:"if"`
 		Outputs map[string]string `yaml:"outputs"`
 		Steps   []struct {
+			ID   string            `yaml:"id"`
 			Name string            `yaml:"name"`
+			If   string            `yaml:"if"`
 			Run  string            `yaml:"run"`
 			Env  map[string]string `yaml:"env"`
 		} `yaml:"steps"`
@@ -439,6 +441,40 @@ func TestGo127LeakCheckDoesNotRequestTheDeletedExperiment(t *testing.T) {
 		}
 	}
 	t.Fatal("deep CI has no goroutine leak-check step")
+}
+
+// TestLeakCheckJobIsGreenOnlyWhenTheTestExecuted pins #1650: the weekly leak
+// job runs exactly one test, and a skipped test is a passing `go test`, so
+// the job was green having checked nothing. The step after the check holds
+// the log to the test's own PASS line and fails on its SKIP line, and both
+// the issue-filing step and the job's own failure step read that outcome, so
+// a run that proved nothing is filed and red rather than green.
+func TestLeakCheckJobIsGreenOnlyWhenTheTestExecuted(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/deep.yml")
+	job := wf.Jobs["goroutineleak"]
+
+	var executed bool
+	for _, step := range job.Steps {
+		switch step.ID {
+		case "executed":
+			executed = true
+			if step.If != "steps.leakcheck.outcome == 'success'" {
+				t.Errorf("the executed guard must run only after a green check; if is %q", step.If)
+			}
+			if !strings.Contains(step.Run, "--- SKIP: TestAsyncCoroutinesDoNotLeak") ||
+				!strings.Contains(step.Run, "--- PASS: TestAsyncCoroutinesDoNotLeak") {
+				t.Errorf("the executed guard must fail on the test's SKIP line and require its PASS line; run is:\n%s", step.Run)
+			}
+		}
+		if step.Name == "File an issue for a leak or harness failure" || step.Name == "A failed leak check fails the job" {
+			if !strings.Contains(step.If, "steps.executed.outcome == 'failure'") {
+				t.Errorf("%q must fire when the leak test did not execute; if is %q", step.Name, step.If)
+			}
+		}
+	}
+	if !executed {
+		t.Fatal("deep CI's goroutineleak job has no step holding the log to the test having executed")
+	}
 }
 
 // TestFuzzCrasherIssueDescribesArtifactVisibility pins the disclosure boundary
