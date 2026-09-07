@@ -17,6 +17,9 @@ jobs:
   review:
     name: Review dependency changes
     runs-on: ubuntu-latest
+    # Bounded like every other job here: the dependency-graph API stalling
+    # must not hold a runner until the platform's own multi-hour default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,4 +32,7 @@ jobs:
           # already carries Apache-2.0 (Temporal), BSD (Go) and MPL-2.0
           # dependencies, so the list is what the tree has, not MIT alone.
           allow-licenses: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, 0BSD, Unlicense, CC0-1.0
-          comment-summary-in-pr: on-failure
+          # No comment on the pull request: posting one needs a token that
+          # can write pull requests, and the check's own log and the
+          # step summary already say what was refused and why.
+          comment-summary-in-pr: never

@@ -24,6 +24,9 @@ jobs:
   scorecard:
     name: Scorecard
     runs-on: ubuntu-latest
+    # Bounded like every other job here: the Scorecard API or the SARIF
+    # upload stalling must not hold a runner until the platform default.
+    timeout-minutes: 20
     permissions:
       # The action reads the repository, its branch protection and its
       # workflows; publishing to the Scorecard API signs the result with an
