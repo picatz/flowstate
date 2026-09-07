@@ -76,7 +76,7 @@ tests:
   - name: a case replaces one key and inherits the rest
     workflow: ./workflow.yaml
     inputs: {amount: 500}
-    expect: {}
+    expect: {failed: false}
 `)
 
 	got := file.Tests[0].Inputs
@@ -148,7 +148,7 @@ tests:
         returns: {}
       - task: http
         returns: {tag: small}
-    expect: {}
+    expect: {failed: false}
 `)
 	require.Len(t, file.Tests[0].Stubs, 2, "a case stub targeting the same task replaces the default, not appends")
 }
@@ -171,7 +171,7 @@ tests:
       - name: a
       - name: b
         sender: {subject: explicit@example.com, issuer: https://sso.example.com}
-    expect: {}
+    expect: {failed: false}
 `)
 
 	signals := file.Tests[0].Signals
@@ -226,7 +226,7 @@ defaults:
 tests:
   - name: a case
     workflow: ./workflow.yaml
-    expect: {}
+    expect: {failed: false}
 `, tc.defaults))
 
 			_, err := flowtest.Load(path)
@@ -250,7 +250,7 @@ func TestDefaultsStubBound(t *testing.T) {
 	for i := 0; i < flowtest.MaxDefaultStubs+1; i++ {
 		b.WriteString("    - task: log\n      returns: {}\n")
 	}
-	b.WriteString("tests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {}\n")
+	b.WriteString("tests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {failed: false}\n")
 	path := dir + "/x.test.yaml"
 	writeFile(t, path, b.String())
 

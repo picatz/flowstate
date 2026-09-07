@@ -685,11 +685,11 @@ func TestQuotedKeyUsesTheLoadersPosition(t *testing.T) {
 	t.Parallel()
 	c := newClient(t)
 	c.initialize()
-	text := "defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: x\n    stubs:\n      - \"task\":\n        returns: {}\n"
+	text := "defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: x\n    expect: {failed: false}\n    stubs:\n      - \"task\":\n        returns: {}\n"
 	params := c.open("file:///quoted-unknown.test.yaml", text)
 	require.NotEmpty(t, params.Diagnostics)
 	d := params.Diagnostics[0]
-	assert.Equal(t, 5, d.Range.Start.Line)
+	assert.Equal(t, 6, d.Range.Start.Line)
 	assert.Contains(t, d.Message, "names neither a task nor a step")
 	assert.NotContains(t, d.Message, "API_KEY")
 }

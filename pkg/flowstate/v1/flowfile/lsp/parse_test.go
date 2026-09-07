@@ -467,6 +467,7 @@ func TestQuotedKeySemanticsMatchTheStrictTestLoader(t *testing.T) {
 
 	const src = `"t\u0065sts":
   - "na\u006de": smoke
+    expect: {failed: false}
 `
 	loaded, err := flowtest.LoadSource([]byte(src))
 	require.NoError(t, err)

@@ -717,6 +717,23 @@ one was expected is the "green by not running" failure this repository
 legislates against everywhere else. `examples/parameterized-deploy` is the
 worked example, and it runs in CI like the rest.
 
+### A case claims something, or says that finishing is the claim
+
+An `expect:` with no field in it is refused when the file loads (#1669). A
+case that asserts nothing is green whatever the run produced beyond finishing,
+and nothing downstream notices: `--fail-on-warning` has no warning to promote,
+and the closed claim `others: skipped` makes does not reach a case that names
+no step at all. A case that means only "the run completes" says so with
+`failed: false`, which is the claim the refusal names; `outputs: {}` and
+`ran: []` are claims too — no outputs, nothing ran — and are not refused.
+
+Two smaller courtesies of the same loader: a key it does not know is answered
+with the nearest one legal where it was written (`unknown field "expct"; did
+you mean "expect"?`), or with that list when nothing is near; and a mismatch
+prints each side's type in the spelling a Flowfile declares one with, so
+`expected string "1", got int 1` reads as the type mismatch it is rather than
+as a quoting difference.
+
 ### What a directory shares: `testdefaults.yaml`
 
 A directory holding several suites states their shared fixture once, in a file beside them (#1072). It holds `vars:` and `defaults:` and nothing else — a `tests:` key is refused with the field named, because that is almost certainly a suite saved under the wrong name — and its name deliberately does not match the `*.test.yaml` discovery glob, so it can never be run as one:

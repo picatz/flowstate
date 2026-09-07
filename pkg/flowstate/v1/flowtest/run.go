@@ -2073,7 +2073,7 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value, sensitive sen
 				Field: "expect.outputs",
 				Value: name,
 				Message: fmt.Sprintf("output %q: expected %s, got %s",
-					name, redactedScalarText(wantVal, sensitive), redactedScalarText(gotNative, sensitive)),
+					name, typedText(wantVal, sensitive), typedText(gotNative, sensitive)),
 			})
 		}
 	}

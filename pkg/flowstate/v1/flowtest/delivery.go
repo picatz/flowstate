@@ -358,9 +358,13 @@ func compareInputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnost
 		}
 		if !looseEqual(want[name], native) {
 			failures = append(failures, &v1.Diagnostic{
-				Field:   "expect.inputs",
-				Value:   name,
-				Message: fmt.Sprintf("input %q: expected %v, got %v", name, want[name], native),
+				Field: "expect.inputs",
+				Value: name,
+				// Nothing here is a secret: a replayed delivery is fixture
+				// text the file itself holds, so the rendering redacts nothing
+				// and the type leads for the reason [typedText] gives.
+				Message: fmt.Sprintf("input %q: expected %s, got %s", name,
+					typedText(want[name], sensitiveInputs{}), typedText(native, sensitiveInputs{})),
 			})
 		}
 	}

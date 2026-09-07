@@ -1093,6 +1093,17 @@ type Expectation struct {
 	Check []CheckClaim `yaml:"check"`
 }
 
+// claimsNothing reports whether no field of the expectation was written: not
+// the empty `expect: {}`, and not an `expect:` block that was left out. A
+// written-empty collection — `outputs: {}`, `ran: []` — is a claim (no outputs,
+// nothing ran) and counts, which is why the tests are for nil rather than for
+// length.
+func (e *Expectation) claimsNothing() bool {
+	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
+		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && e.Ran == nil &&
+		e.Skipped == nil && e.Others == "" && len(e.Check) == 0
+}
+
 // expectationProvenance is the writer of each field in an effective table
 // row. Kept per field because a row may override one entry expectation while
 // inheriting the rest; a mark on the whole expectation would either repeat the
@@ -1266,7 +1277,13 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 
 	var file File
 	if err := decodeStrict(data, &file); err != nil {
-		return nil, yamlProblem(err)
+		refused := yamlProblem(err)
+		// The decoder says which key it did not know and nothing about which
+		// it would have; the tree it was decoding says where the key was
+		// written, and the file's own shape says what is legal there (#1669).
+		refused.Problems[0].Message += unknownKeyRemedy(err, parsed)
+
+		return nil, refused
 	}
 
 	// One document, read by both kinds of finding: the loader's own problems
@@ -1504,6 +1521,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			twins.note(p, r.in(where), label, stub)
 		}
 		checkOthers(p, r, test)
+		checkClaims(p, r, test)
 		checkTrigger(p, r, test, requireWorkflow)
 	}
 
@@ -1749,6 +1767,25 @@ func checkOthers(p *problems, r site, test *Test) {
 				"which asserts every step not named in `ran:` was skipped",
 			test.Name, test.Expect.Others, OthersSkipped)
 	}
+}
+
+// checkClaims refuses a case whose `expect:` claims nothing (#1669). Such a
+// case is green whatever the run produced beyond finishing, and nothing else
+// notices: `--fail-on-warning` has no warning to promote, and the closed-claim
+// principle behind `others: skipped` — adding a step fails loudly — does not
+// reach a case that asserts no step at all. A case that means only "the run
+// completes" says so with `failed: false`, which is a claim the format already
+// has and the refusal names.
+func checkClaims(p *problems, r site, test *Test) {
+	if !test.Expect.claimsNothing() {
+		return
+	}
+	// At the key: an empty flow mapping has no value token to point at, and
+	// the key is the thing the author has to add to anyway.
+	p.reportKey(r.in(r.at.field("expect")),
+		"test %q expect: claims nothing, so the case passes whatever the run produces; "+
+			"name a claim (ran:, outputs:, check:, ...) or, for a case that only proves the run completes, write `failed: false`",
+		test.Name)
 }
 
 // checkTrigger refuses a trigger case that cannot mean what it says, when the

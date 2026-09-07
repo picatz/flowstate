@@ -50,6 +50,7 @@ steps:
 tests:
   - name: a case
     workflow: ./workflow.yaml
+    expect: {failed: false}
     stubs:
       - task: log
         returns: {}
