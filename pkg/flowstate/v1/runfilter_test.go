@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -346,4 +347,55 @@ func TestAShadowedStatusIsNotTheRunsStatus(t *testing.T) {
 	require.Error(t, err,
 		"shadowing inside one comprehension stopped the check seeing a real mistake beside it")
 	require.Contains(t, err.Error(), `"FAILD"`)
+}
+
+// TestOptionalTraversalIsAFilterSpelling (#1689): the language's own answer to
+// a key that may be absent works in a filter, because the filter is compiled
+// against the profile's environment rather than a library-less base. Both
+// spellings — the optional read and the guard — keep the labelled run and say
+// no, without error, about the unlabelled one.
+func TestOptionalTraversalIsAFilterSpelling(t *testing.T) {
+	t.Parallel()
+
+	labelled := run("labelled", v1.RunResponse_STATUS_RUNNING, time.Now(), nil)
+	labelled.Labels = map[string]string{"team": "fulfillment"}
+	unlabelled := run("unlabelled", v1.RunResponse_STATUS_RUNNING, time.Now(), nil)
+
+	for _, spelling := range []string{
+		`labels.?team.orValue("") == "fulfillment"`,
+		`"team" in labels && labels["team"] == "fulfillment"`,
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			t.Parallel()
+
+			filter, err := v1.NewRunFilter(spelling)
+			require.NoError(t, err, "the filter environment refuses a spelling the language teaches")
+
+			matched, err := filter.Match(t.Context(), labelled)
+			require.NoError(t, err)
+			assert.True(t, matched)
+
+			matched, err = filter.Match(t.Context(), unlabelled)
+			require.NoError(t, err, "a guarded read errored on the run it guards against")
+			assert.False(t, matched)
+		})
+	}
+}
+
+// TestABareIndexOnAnAbsentKeyIsExplained: the unguarded spelling still errors
+// on the run without the key — the server turns that into "not matched" — and
+// the diagnostic for it names the optional spelling.
+func TestABareIndexOnAnAbsentKeyIsExplained(t *testing.T) {
+	t.Parallel()
+
+	filter, err := v1.NewRunFilter(`labels["team"] == "fulfillment"`)
+	require.NoError(t, err)
+
+	_, err = filter.Match(t.Context(), run("unlabelled", v1.RunResponse_STATUS_RUNNING, time.Now(), nil))
+	require.Error(t, err)
+
+	diagnostic := filter.Diagnostic(err)
+	assert.Contains(t, diagnostic, "no such key: team")
+	assert.Contains(t, diagnostic, `labels.?team.orValue("")`)
+	assert.Contains(t, diagnostic, `"team" in labels`)
 }

@@ -1753,8 +1753,25 @@ type ListResponse struct {
 	// Opaque, and constructed by nobody but the server: see ListRequest.page_token
 	// for what is checked when it comes back, and ListCursor for its contents.
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// How many of the caller's runs this page's scan reached and left out because
+	// the filter could not be evaluated over them — an index into a label the run
+	// does not carry, a comparison against a close time the run does not have yet.
+	//
+	// A run the filter cannot answer for is a run it did not say yes about, which
+	// is the fail-closed reading and the one `labels["team"] == "x"` means when
+	// most runs carry no `team` at all (picatz/flowstate#1689). The count is here
+	// so that a caller can tell "nothing matched" from "nothing could be asked",
+	// and so that `flow list -o json` can carry it without a sentence. Zero when
+	// no filter was given.
+	ExcludedByError uint32 `protobuf:"varint,3,opt,name=excluded_by_error,json=excludedByError,proto3" json:"excluded_by_error,omitempty"`
+	// Why the filter could not be evaluated, set only when it could not be
+	// evaluated over any of the runs this page reached — the shape a typo takes,
+	// as opposed to a filter that is right about the runs it is right about. The
+	// first error the scan met, with the spelling that would have avoided it when
+	// there is one. Empty otherwise.
+	FilterDiagnostic string `protobuf:"bytes,4,opt,name=filter_diagnostic,json=filterDiagnostic,proto3" json:"filter_diagnostic,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ListResponse) Reset() {
@@ -1797,6 +1814,20 @@ func (x *ListResponse) GetRuns() []*RunSummary {
 func (x *ListResponse) GetNextPageToken() string {
 	if x != nil {
 		return x.NextPageToken
+	}
+	return ""
+}
+
+func (x *ListResponse) GetExcludedByError() uint32 {
+	if x != nil {
+		return x.ExcludedByError
+	}
+	return 0
+}
+
+func (x *ListResponse) GetFilterDiagnostic() string {
+	if x != nil {
+		return x.FilterDiagnostic
 	}
 	return ""
 }
@@ -2824,10 +2855,12 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x0eworker_version\x18\t \x01(\tR\rworkerVersion\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"d\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbd\x01\n" +
 	"\fListResponse\x12,\n" +
 	"\x04runs\x18\x01 \x03(\v2\x18.flowstate.v1.RunSummaryR\x04runs\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xa2\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12*\n" +
+	"\x11excluded_by_error\x18\x03 \x01(\rR\x0fexcludedByError\x12+\n" +
+	"\x11filter_diagnostic\x18\x04 \x01(\tR\x10filterDiagnostic\"\xa2\x01\n" +
 	"\n" +
 	"ListCursor\x12\x1a\n" +
 	"\bposition\x18\x01 \x01(\fR\bposition\x12\x1c\n" +

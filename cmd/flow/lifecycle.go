@@ -170,6 +170,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			if err := rendering.add(response.Msg.GetRuns()); err != nil {
 				return err
 			}
+			rendering.note(response.Msg)
 
 			previous := token
 			token = response.Msg.GetNextPageToken()
@@ -211,6 +212,19 @@ func runList(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(surface.Err, "no runs")
 		}
 
+		// The runs the filter could not be evaluated over are not on the table,
+		// and a person reading it should know they were asked about. The
+		// diagnostic is the one case the count alone would hide: a filter that
+		// answered for none of the runs it met is almost always a typo, and the
+		// server says why once, with the spelling that would have worked.
+		if rendering.excluded > 0 {
+			fmt.Fprintf(surface.Err, "%d run(s) left out because the filter could not be evaluated over them\n",
+				rendering.excluded)
+		}
+		if rendering.diagnostic != "" {
+			fmt.Fprintln(surface.Err, rendering.diagnostic)
+		}
+
 		// Said plainly, because the alternative is a caller concluding from a
 		// short page that they have seen everything.
 		if token != "" {
@@ -247,6 +261,11 @@ type listRendering struct {
 
 	// rows is what was rendered, for the messages that count it.
 	rows int
+
+	// excluded and diagnostic are the filter's account of the listing, summed
+	// and kept across pages by [listRendering.note].
+	excluded   uint32
+	diagnostic string
 }
 
 func newListRendering(surface *ui.UI, format OutputFormat) *listRendering {
@@ -292,18 +311,34 @@ func (r *listRendering) add(runs []*v1.RunSummary) error {
 	return nil
 }
 
+// note keeps what a page said about its filter: the runs it left out because
+// the filter could not be evaluated over them, summed across pages under
+// `--all`, and the diagnostic a page carries when the filter answered for none
+// of its runs — kept from the first page that says so, since every page's
+// reason is the same expression's.
+func (r *listRendering) note(page *v1.ListResponse) {
+	r.excluded += page.GetExcludedByError()
+	if r.diagnostic == "" {
+		r.diagnostic = page.GetFilterDiagnostic()
+	}
+}
+
 // flush writes whatever the shape could not write as it went.
 //
 // The page token is carried into the single-document form rather than only into
 // the prose on stderr, because a program reading JSON has no way to act on a
 // sentence — and a listing that stopped early without saying so is how a caller
-// silently misses their own runs.
+// silently misses their own runs. The filter's exclusion count and diagnostic
+// ride in the same document for the same reason (#1689); in text mode they are
+// said on stderr, after the table, by [runList].
 func (r *listRendering) flush(token string) error {
 	switch r.format {
 	case FormatJSON:
 		return writeJSON(r.surface, r.format, &v1.ListResponse{
-			Runs:          r.runs,
-			NextPageToken: token,
+			Runs:             r.runs,
+			NextPageToken:    token,
+			ExcludedByError:  r.excluded,
+			FilterDiagnostic: r.diagnostic,
 		})
 
 	case FormatJSONL:
@@ -378,9 +413,14 @@ flow list --all --filter 'finished && close_time - start_time > duration("1h")'
 # name instead, and it is empty for a run older than this field.
 flow list --all --filter 'name == "nightly-etl"'
 
-# One team's runs, by the labels the Flowfile declares. Guard the index: a run
-# carrying no labels has no such key, and indexing one that is absent is an
-# error, exactly as close_time is null above.
+# One team's runs, by the labels the Flowfile declares. A run carrying no labels
+# has no such key, so read it as a key that may be absent: .? yields an optional
+# and orValue fills in the answer for a run without one.
+flow list --all --filter 'labels.?team.orValue("") == "payments"'
+
+# The same question with a guard instead, which still works. A bare
+# labels["team"] errors on every unlabelled run; such a run is then left out
+# rather than failing the listing, and the count of runs left out is reported.
 flow list --all --filter '"team" in labels && labels["team"] == "payments"'
 
 # Which runs nobody labelled with an owner. This is why labels binds to an empty
@@ -403,8 +443,8 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 		"keep only the runs a CEL expression answers yes about, over `workflow_id`, "+
 			"`run_id`, `status`, `start_time`, `close_time`, `finished`, `name` "+
 			"(the workflow's own declared name, empty for a run older than this field), "+
-			"`labels` (the workflow's declared labels, a map: guard an index with "+
-			`"team" in labels), `+"`starter` (the qualified issuer#subject who submitted "+
+			"`labels` (the workflow's declared labels, a map), where a key that may be absent "+
+			`is read with labels.?team.orValue(""); `+"`starter` (the qualified issuer#subject who submitted "+
 			"it), and `worker_version` (the Worker Deployment version the run is pinned "+
 			"to, empty where versioning is off); "+
 			`for example status == "FAILED"`)

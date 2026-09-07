@@ -192,6 +192,13 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	scanned := 0
 	requests := 0
 
+	// The filter's account of this page: how many of the caller's runs it was
+	// asked about, how many it could not answer for, and the first reason.
+	var (
+		evaluated, excluded int
+		firstErr            error
+	)
+
 	for len(runs) < pageSize && scanned < maxListScan && requests < maxListRequests {
 		requests++
 
@@ -277,14 +284,32 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// filter that errors on another tenant's data fail this caller's
 			// listing.
 			//
-			// An error stops the listing rather than skipping the run. Nearly every
-			// error a filter can raise is a property of the expression rather than
-			// of the run — an unguarded `close_time` comparison errors on exactly
-			// the runs still going — so skipping would answer "nothing matched" to a
-			// question that was never asked correctly.
+			// An error is that run not matching, never a failed request. This used
+			// to stop the listing, on the argument that an error is a property of
+			// the expression rather than of the run — true of a type error, which
+			// compilation refuses above, and false of a map index: `labels["team"]
+			// == "x"` is a correct expression that errors on exactly the runs the
+			// caller wants excluded, and failing the whole listing over the first
+			// unlabelled run answered a correct question with an error (#1689).
+			// Excluding is the fail-closed reading — a run the filter cannot answer
+			// for is not one it said yes about — and the count says how many were
+			// left out. A filter wrong about *every* run it met is still told so,
+			// once, through the diagnostic below.
+			evaluated++
 			matched, err := filter.Match(ctx, run)
 			if err != nil {
-				return nil, connect.NewError(connect.CodeInvalidArgument, err)
+				// A request that was cancelled or timed out is not a run the
+				// filter could not answer for: the evaluation was interrupted,
+				// and a page reporting that as runs left out would hide the
+				// client's own deadline behind a successful answer.
+				if ctx.Err() != nil {
+					return nil, connect.NewError(contextCode(ctx.Err()), ctx.Err())
+				}
+				excluded++
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
 			}
 			if !matched {
 				continue
@@ -312,10 +337,28 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("issuing the next page token: %w", err))
 	}
 
-	return connect.NewResponse(&v1.ListResponse{
-		Runs:          runs,
-		NextPageToken: next,
-	}), nil
+	response := &v1.ListResponse{
+		Runs:            runs,
+		NextPageToken:   next,
+		ExcludedByError: uint32(excluded),
+	}
+	// Said once, and only when the filter answered for none of the runs it
+	// met: that is what a typo looks like, where a filter wrong about some runs
+	// is the ordinary case the exclusion count already reports.
+	if excluded > 0 && excluded == evaluated {
+		response.FilterDiagnostic = filter.Diagnostic(firstErr)
+	}
+
+	return connect.NewResponse(response), nil
+}
+
+// contextCode is the Connect code for a request that ended before the server
+// did: the caller's deadline, or the caller going away.
+func contextCode(err error) connect.Code {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return connect.CodeDeadlineExceeded
+	}
+	return connect.CodeCanceled
 }
 
 // summarize reduces an execution to what a listing reports.
