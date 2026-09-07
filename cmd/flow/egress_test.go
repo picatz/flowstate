@@ -34,12 +34,22 @@ steps:
 // leaves the author to rediscover it.
 func TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy(t *testing.T) {
 	// Not t.Parallel(): `applyEgressPolicy` registers into the process-wide
-	// [v1.DefaultRegistry] with no lock of its own (only flowtest's cases take
-	// [v1.LockDefaultRegistry]), so running this beside another test that
-	// exercises --egress-policy can observe that other test's policy instead
-	// of the default one this test means to check. A pre-existing gap in this
-	// package's test isolation, outside #387's scope; staying serial here
-	// avoids inheriting its flakiness rather than fixing it.
+	// [v1.DefaultRegistry], so running this beside another test that
+	// exercises --egress-policy could observe that other test's policy instead
+	// of the default one this test means to check.
+	//
+	// "Under the default policy" is the claim, so the default is installed
+	// first rather than assumed: the MCP posture's deny-everything and an
+	// operator's --egress-policy both replace the http task and outlive the
+	// test that applied them, and under -shuffle=on one of them may have run
+	// before this (#1727). Put back afterwards, so this test is not the next
+	// one's surprise either.
+	restoreDefaultRegistryAfter(t)
+	unlock := v1.LockDefaultRegistry()
+	err := v1.DefaultRegistry().Replace(v1.HTTPTaskDef(v1.DefaultEgressPolicy()))
+	unlock()
+	require.NoError(t, err)
+
 	_, stderr, err := runLocal(t, loopbackWorkflow)
 	require.Error(t, err)
 
@@ -66,6 +76,8 @@ func TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy(t *testing.T) {
 }
 
 func TestSQLPluginReceivesThePolicySnapshotTheHostParsed(t *testing.T) {
+	restoreDefaultRegistryAfter(t) // applyEgressPolicy replaces the process-wide http task.
+
 	cmd := &cobra.Command{Use: "snapshot"}
 	addEgressPolicyFlag(cmd)
 	addPluginFlags(cmd)

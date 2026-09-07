@@ -1,0 +1,38 @@
+name: Dependency review
+
+# A pull request that adds a dependency with a known advisory, or one under a
+# licence this MIT-licensed tree cannot carry, is refused here before it
+# merges, which is the ordering .github/dependabot.yml's own header describes
+# wanting after GO-2026-6061: vulncheck sees the merged tree, and by then the
+# finding lands on somebody else's unrelated pull request (#1750). The action
+# diffs the dependency graph of the pull request against its base, so it only
+# ever speaks about what the pull request itself changed.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: Review dependency changes
+    runs-on: ubuntu-latest
+    # Bounded like every other job here: the dependency-graph API stalling
+    # must not hold a runner until the platform's own multi-hour default.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          # The permissive family the MIT LICENSE composes with; the graph
+          # already carries Apache-2.0 (Temporal), BSD (Go) and MPL-2.0
+          # dependencies, so the list is what the tree has, not MIT alone.
+          allow-licenses: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, 0BSD, Unlicense, CC0-1.0
+          # No comment on the pull request: posting one needs a token that
+          # can write pull requests, and the check's own log and the
+          # step summary already say what was refused and why.
+          comment-summary-in-pr: never

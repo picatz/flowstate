@@ -155,18 +155,16 @@ fuzz-smoke:
 # TEST_SHUFFLE is passed to `go test -shuffle`: `on` runs each package's
 # tests in a random order and prints the seed, which testsum carries into
 # every failure it reports with a rerun line, so an order-dependent failure
-# is reproducible from the annotation. It defaults to off because turning it
-# on found three: TestGeneratedDocsAreCommitted, TestPluginDirWiresPlugin-
-# TasksIntoTheMCPSurface and TestLoopbackDenialUnderTheDefaultPolicyNames-
-# ItsOwnRemedy in cmd/flow share the process-wide DefaultRegistry, which has
-# no unregister, and fail under seed 1788698486191639409 whenever a plugin
-# or egress-policy test runs before them — a coupling their own comments
-# record. Until that isolation is fixed, `on` here is a red `make test` on a
-# coin flip, which teaches people to rerun rather than read. Set it on a
-# branch that fixes them, or for one package:
+# is reproducible from the annotation. It defaults to on. Turning it on first
+# found three tests in cmd/flow that read the process-wide DefaultRegistry as
+# the build shipped it and failed under seed 1788698486191639409 whenever a
+# plugin or egress-policy test had run before them; the tests that register
+# into that registry now put it back when they end
+# (cmd/flow/registryrestore_test.go), which is what made the default safe.
+# To pin an order, or to reproduce a reported seed:
 #
-#     make test TEST_SHUFFLE=on
-#     go test -json -shuffle=on ./pkg/... | go run ./tools/testsum
+#     make test TEST_SHUFFLE=off
+#     go test -json -shuffle=1788698486191639409 ./cmd/flow | go run ./tools/testsum
 #
 # The recipe is a pipeline, and a pipeline's status is its last command's, so
 # the test targets select bash with pipefail for their recipes: a `go test`
@@ -174,7 +172,7 @@ fuzz-smoke:
 # red. /bin/sh is dash (0.5.12 on Ubuntu 24.04, here and on the runners),
 # which rejects `set -o pipefail`, and that is why this is a per-target shell
 # rather than a line in the recipe.
-TEST_SHUFFLE ?= off
+TEST_SHUFFLE ?= on
 
 test: SHELL := /bin/bash
 test: .SHELLFLAGS := -o pipefail -c

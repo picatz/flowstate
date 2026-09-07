@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -144,6 +145,20 @@ type flowRun struct {
 // run executes the invocation and reports what it left behind.
 func (r flowRun) run(t *testing.T) flowResult {
 	t.Helper()
+
+	// A run given a plugin directory registers the plugin's tasks in the
+	// process-wide registry, and they outlive the run. Take them back out
+	// when the test ends, so the next test in the binary reads the registry
+	// as this build shipped it whatever order the tests run in (#1727). Only
+	// names are removed, never definitions restored: this helper runs under
+	// parallel tests too, and putting the default `http` task back beneath a
+	// sibling relying on the policy it installed would be the same coupling
+	// on a shorter fuse. A run given `--egress-policy` replaces `http`, and
+	// the one test whose claim is about the default installs it itself
+	// (TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy).
+	if slices.Contains(r.Args, "--plugin-dir") {
+		unregisterTasksAddedAfter(t)
+	}
 
 	ctx := r.Ctx
 	if ctx == nil {

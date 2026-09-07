@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
 	"net/netip"
 	"net/url"
@@ -135,7 +136,7 @@ type NamespaceMap map[string]string
 // matters here.
 func (m *NamespaceMap) UnmarshalYAML(data []byte) error {
 	var decoded map[string]string
-	if err := yaml.Unmarshal(data, &decoded); err != nil {
+	if err := strictyaml.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	if decoded == nil {
@@ -530,7 +531,7 @@ func isNone(alg jwa.Algorithm) bool {
 func ParsePolicy(data []byte) (Policy, error) {
 	var policy Policy
 
-	if err := yaml.UnmarshalWithOptions(data, &policy, yaml.Strict()); err != nil {
+	if err := strictyaml.UnmarshalStrict(data, &policy); err != nil {
 		// Both sentinels: every caller that asked "is the policy usable" keeps
 		// its answer, and the one that must not echo the decoder can tell this
 		// failure from a validation one — see [ErrPolicySyntax].
@@ -568,7 +569,7 @@ func rejectNullNamespaceMap(data []byte, policy Policy) error {
 	// failure here would mean this loose, non-strict decode disagrees with it
 	// in some way that does not bear on namespace_map presence. Nothing to
 	// enforce without a raw document to compare against.
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	if err := strictyaml.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
 

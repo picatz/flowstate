@@ -145,7 +145,10 @@ steps:
 `
 
 	t.Run("not installed", func(t *testing.T) {
-		t.Parallel()
+		// Not t.Parallel(): --plugin-dir launches the example plugin, which
+		// registers into the process-wide registry, and [buildExamplePluginDir]
+		// puts that back when the test ends; a sibling running beside it would
+		// see the undo mid-run (#1727).
 
 		_, stderr, err := runLocal(t, strings.Replace(requiresExample, "v%s", "v0.1.0", 1))
 		require.Error(t, err)

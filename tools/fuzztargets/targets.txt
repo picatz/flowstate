@@ -58,3 +58,23 @@ FuzzSignalDeliveryDecode     pkg/flowstate/v1/engine        deep
 # re-argued in this change; moving them to smoke is a one-word edit here.
 FuzzScanAgreesWithSplitFence pkg/flowstate/v1/flowfile      deep
 FuzzEscapeFencesRoundTrips   pkg/flowstate/v1/flowfile      deep
+
+# The boundary parsers (#1721): what an operator, an identity provider, a
+# plugin process or a submitter feeds, where a panic is a denial of service
+# against a shared server. tools/fuzztargets/boundaries.txt names the parser
+# each covers, and its test refuses a new exported parser in those packages
+# with no target. All of them are deep-only, for the budget reason the header
+# gives: three of them joined the smoke tier in the first cut, and the PR that
+# added them reached every package holding a target, which put sixteen
+# targets at 30s each plus their builds past the job's ten minutes and had it
+# cancelled. The token verifier's target stands up an httptest issuer besides,
+# which is a deep-tier cost by nature. Promoting one is a one-word edit here,
+# paid for by demoting another.
+FuzzParsePolicy              pkg/flowstate/v1/auth                       deep
+FuzzNamespaceMap             pkg/flowstate/v1/auth                       deep
+FuzzVerifyRefusesAMutatedToken pkg/flowstate/v1/auth                     deep
+FuzzPluginHandshake          pkg/flowstate/v1/plugin/internal/protocol   deep
+FuzzParseConfig              pkg/flowstate/v1/netpolicy                  deep
+FuzzParsePinsConfig          pkg/flowstate/v1/plugin                     deep
+FuzzBindRunInputs            pkg/flowstate/v1                            deep
+FuzzRootParsers              pkg/flowstate/v1                            deep

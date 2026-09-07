@@ -1,0 +1,34 @@
+# The parsers that take bytes across a boundary THREAT_MODEL.md names, and the
+# fuzz target that covers each (#1721). The parsers with a target used to be
+# the ones an author feeds; the ones without were the ones an operator, an
+# identity provider, a plugin process or a submitter feeds, where a panic is a
+# denial of service against a shared worker or server. This file is the list
+# of those, and the package's test holds it to the tree in both directions: a
+# listed parser must exist and its target must be in targets.txt, and an
+# exported `Parse*` function or `Unmarshal*` method added to one of the
+# directories below must be listed here.
+#
+# Columns, whitespace-separated: package directory (module-relative), parser
+# (a method as Type.Method), target.
+
+pkg/flowstate/v1/auth                      ParsePolicy                  FuzzParsePolicy
+pkg/flowstate/v1/auth                      ParseFederationPolicy        FuzzParsePolicy
+pkg/flowstate/v1/auth                      NamespaceMap.UnmarshalYAML   FuzzNamespaceMap
+pkg/flowstate/v1/auth                      NamespaceMap.UnmarshalJSON   FuzzNamespaceMap
+pkg/flowstate/v1/auth                      Material.UnmarshalJSON       FuzzNamespaceMap
+pkg/flowstate/v1/auth                      OIDCVerifier.Verify          FuzzVerifyRefusesAMutatedToken
+pkg/flowstate/v1/plugin/internal/protocol  ParseHandshake               FuzzPluginHandshake
+pkg/flowstate/v1/plugin/internal/protocol  ParseVersions                FuzzPluginHandshake
+pkg/flowstate/v1/plugin/internal/protocol  ReadToken                    FuzzPluginHandshake
+pkg/flowstate/v1/netpolicy                 ParseConfig                  FuzzParseConfig
+pkg/flowstate/v1/netpolicy                 ParseByteSize                FuzzParseConfig
+pkg/flowstate/v1/netpolicy                 ByteSize.UnmarshalText       FuzzParseConfig
+pkg/flowstate/v1/plugin                    ParsePinsConfig              FuzzParsePinsConfig
+pkg/flowstate/v1                           BindRunInputs                FuzzBindRunInputs
+pkg/flowstate/v1                           ParseTaskPolicyConfig        FuzzRootParsers
+pkg/flowstate/v1                           ParseDescriptorProse         FuzzRootParsers
+pkg/flowstate/v1                           ParseDuration                FuzzRootParsers
+pkg/flowstate/v1                           ParseErrorKind               FuzzRootParsers
+pkg/flowstate/v1                           ParseDeclaredType            FuzzRootParsers
+pkg/flowstate/v1                           ParseOverlap                 FuzzRootParsers
+pkg/flowstate/v1                           ParseConcurrencyOnConflict   FuzzRootParsers

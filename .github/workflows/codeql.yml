@@ -1,0 +1,73 @@
+name: CodeQL
+
+# CodeQL is a different analysis family from staticcheck: data-flow rather
+# than pattern matching. Taint tracking from an http.Request to exec.Command,
+# from a plugin's bytes to a file path, from a YAML field to a CEL string, is
+# exactly the shape this repository's trust boundaries have (#1750, #1721),
+# and staticcheck cannot see across a call. It runs on pull requests, on main
+# and weekly, and it crosses the plugin module boundary through a go.work
+# generated for the job the same way `make coverage` generates one: the
+# plugin modules are separate on purpose (see the Makefile's .coverage/go.work
+# recipe) and a committed workspace would undo that separation for every
+# ordinary build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # The alerts CodeQL raises are written to the repository's code
+      # scanning surface; nothing else here writes.
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # The cache is not saved here: this job's build is CodeQL's traced
+          # one, and its objects are not the ones the test jobs want to reuse
+          # (see .github/cache-scope/README.md).
+          cache: false
+
+      - name: Generate a workspace over the root and plugin modules
+        # The Makefile's recipe, so this job and `make coverage` agree on what
+        # the workspace holds. The file is copied to the root because CodeQL's
+        # Go autobuild reads go.work from the checkout, not GOWORK.
+        run: |
+          make .coverage/go.work
+          cp .coverage/go.work go.work
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@a35ac6e6798d72df5475948b28efb89edc2e19ca # v4.37.9
+        with:
+          languages: go
+          build-mode: autobuild
+          # The default suite plus the security-extended queries: the
+          # boundaries this repository cares about are the ones the extended
+          # taint queries model.
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@a35ac6e6798d72df5475948b28efb89edc2e19ca # v4.37.9
+        with:
+          category: /language:go

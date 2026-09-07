@@ -59,6 +59,12 @@ func buildExamplePluginDir(t *testing.T) string {
 		t.Skip("building the example plugin is slow; the flag wiring is covered without it")
 	}
 
+	// Every test that builds this directory goes on to launch the plugin,
+	// which registers `example.greet` into the process-wide registry with
+	// no undo of its own. The undo is here, so the registration ends with
+	// the test rather than with the binary (#1727).
+	restoreDefaultRegistryAfter(t)
+
 	dir, err := builtExamplePluginDir()
 	require.NoError(t, err, "building the example plugin")
 
@@ -179,13 +185,11 @@ func mcpValidateDiagnostics(t *testing.T, posture *cobra.Command, source string)
 // through the same [startPlugins] — a flag with nothing behind it would still
 // pass [TestTheMCPServerTakesThePluginFlags] above.
 //
-// Registering into [v1.DefaultRegistry] is a one-way door (see
-// [plugin.Host.Register]'s own doc), so the absence is asserted *first*: once
-// this test registers the example plugin, "example.greet" is in this test
-// binary's catalog for good. That is the same tradeoff
-// server.TestGetCatalogAnswersWithTheCatalog already accepts by asserting
-// Contains against the live registry rather than an exact set — there is no
-// Unregister for a test to restore either.
+// Registering into [v1.DefaultRegistry] is a one-way door for the host (see
+// [plugin.Host.Register]'s own doc), so the absence is asserted *first*, and
+// [buildExamplePluginDir] puts the registry back when this test ends, so a
+// test that ran before it and launched the plugin has already been undone
+// and "example.greet" is absent whatever the order (#1727).
 func TestPluginDirWiresPluginTasksIntoTheMCPSurface(t *testing.T) {
 	dir := buildExamplePluginDir(t)
 

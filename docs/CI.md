@@ -291,18 +291,19 @@ The recipes are pipelines, so those three targets select `bash` with
 and on the runners, and it rejects `set -o pipefail`; a `go test` that died
 before printing a failure must still be red.
 
-`make test TEST_SHUFFLE=on` passes the value to `go test -shuffle`, and the
-seed each package prints is what testsum's rerun lines carry. It defaults to
-`off`, because turning it on found the thing it exists to find before it could
-be the default: three `cmd/flow` tests (`TestGeneratedDocsAreCommitted`,
-`TestPluginDirWiresPluginTasksIntoTheMCPSurface`,
-`TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy`) share the
-process-wide `DefaultRegistry`, which has no unregister, and fail under seed
-`1788698486191639409` whenever a plugin or egress-policy test runs first —
-reproducibly, from the seed, which is the mechanism working. Their own
-comments record the coupling. A default that is red on a coin flip teaches
-people to rerun rather than read, so the default waits on that isolation
-being fixed.
+`make test` passes `TEST_SHUFFLE` to `go test -shuffle`, `on` by default, and
+the seed each package prints is what testsum's rerun lines carry. Turning it
+on first found the thing it exists to find: three `cmd/flow` tests
+(`TestGeneratedDocsAreCommitted`, `TestPluginDirWiresPluginTasksIntoTheMCPSurface`,
+`TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy`) read the
+process-wide `DefaultRegistry` as this build shipped it and failed under seed
+`1788698486191639409` whenever a plugin or egress-policy test ran first,
+because registering into that registry has no undo of its own. The tests that
+launch a plugin now take its tasks back out when they end
+(`cmd/flow/registryrestore_test.go`), and the one whose claim is about the
+default policy installs it rather than assuming it, which is what made the
+default safe. To pin an order, `make test TEST_SHUFFLE=off`; to reproduce a
+reported seed, `go test -shuffle=<seed> ./cmd/flow`.
 
 ### Caching
 
@@ -582,6 +583,28 @@ the same category of mistake as a gate that passes without looking.
   queue run here. In particular, that required checks are evaluated against the
   `merge_group` ref, and that batching follows `max_entries_to_build`, should be
   confirmed on the first busy evening.
+
+## The analysis workflows beside CI
+
+Three workflows run beside `ci.yml` and decide nothing about merging a pull
+request's code; they report on the tree's security posture (#1750), and
+`SECURITY.md`'s "What runs" section is the one place the whole program is
+listed.
+
+- `codeql.yml` analyses Go with the security-extended queries on every pull
+  request, on `main` and weekly. It crosses the plugin module boundary through
+  a `go.work` generated for the job by the Makefile's `.coverage/go.work`
+  recipe and copied to the root of the checkout, since CodeQL's Go autobuild
+  reads the workspace from the checkout rather than from `GOWORK`; the
+  workspace is never committed, for the reason that recipe gives.
+- `scorecard.yml` runs the OpenSSF Scorecard on `main` and weekly and
+  publishes the result, which is what the README badge reads.
+- `dependency-review.yml` diffs a pull request's dependency graph against its
+  base and fails on a high-severity advisory or a licence outside the
+  permissive family the MIT `LICENSE` composes with. It needs the repository's
+  dependency graph, which GitHub enables for a public repository by default;
+  the owner's-settings section above is where that would be switched on
+  otherwise.
 
 ## Considered and excluded
 

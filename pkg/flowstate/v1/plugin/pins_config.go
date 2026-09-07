@@ -2,8 +2,7 @@ package plugin
 
 import (
 	"fmt"
-
-	"github.com/goccy/go-yaml"
+	"github.com/picatz/flowstate/internal/strictyaml"
 )
 
 // PinsConfig is the file form of [Config.PinnedDigests]: what an operator
@@ -37,7 +36,7 @@ type PinsConfig struct {
 func ParsePinsConfig(data []byte) (PinsConfig, error) {
 	var cfg PinsConfig
 
-	if err := yaml.UnmarshalWithOptions(data, &cfg, yaml.Strict()); err != nil {
+	if err := strictyaml.UnmarshalStrict(data, &cfg); err != nil {
 		return PinsConfig{}, fmt.Errorf("%w: %w", ErrDigestPin, err)
 	}
 

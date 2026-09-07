@@ -3,14 +3,13 @@ package netpolicy
 import (
 	"crypto/tls"
 	"fmt"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
 	"math"
 	"net/netip"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/goccy/go-yaml"
 )
 
 // Config is the file form of a policy: what an operator writes in YAML and hands
@@ -165,7 +164,7 @@ type EgressConfig struct {
 func ParseConfig(data []byte) (Config, error) {
 	var cfg Config
 
-	if err := yaml.UnmarshalWithOptions(data, &cfg, yaml.Strict()); err != nil {
+	if err := strictyaml.UnmarshalStrict(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 	if err := rejectNullAllowlists(data, cfg); err != nil {
@@ -184,7 +183,7 @@ func rejectNullAllowlists(data []byte, cfg Config) error {
 	var raw struct {
 		Egress map[string]any `yaml:"egress" json:"egress"`
 	}
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	if err := strictyaml.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
