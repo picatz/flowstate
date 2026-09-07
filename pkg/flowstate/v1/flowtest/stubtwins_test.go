@@ -109,7 +109,8 @@ func TestACaseStubBesideAFilteredDefaultIsWarnedAndTheTranscriptSaysWhoAnswered(
 	}
 	joined := strings.Join(warnings, "\n")
 	assert.Contains(t, joined, `stub 1 (task "log") does not replace the default stub for the same task "log"`)
-	assert.Contains(t, joined, `its where: (inputs.message == "hello") is not the default's (inputs.message == "goodbye")`)
+	assert.Contains(t, joined, `their where: clauses differ`)
+	assert.NotContains(t, joined, `inputs.message ==`, "the warning must not copy source-sized expressions")
 	assert.Contains(t, joined, "write the default's where: byte for byte")
 	assert.Equal(t, 1, strings.Count(joined, "does not replace"), "one warning per case stub, not one per default:\n%s", joined)
 

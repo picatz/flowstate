@@ -1174,7 +1174,9 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 // different one is the shadow: an author who wrote the case stub to override
 // the default has two live matchers, and which one answers a given call is
 // decided by filters that were never meant to be read together. The warning
-// names the byte-identical filter that would replace the default instead.
+// says how to replace the default without repeating either expression: a
+// where clause can occupy most of [MaxTestFileBytes], and copying it into every
+// case warning would turn a bounded source document into an unbounded report.
 func shadowedDefaultWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
 	type shadow struct {
 		ordinal int
@@ -1198,10 +1200,10 @@ func shadowedDefaultWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
 					target = fmt.Sprintf("step %q", m.step)
 				}
 				found = append(found, shadow{ordinal: m.ordinal, message: fmt.Sprintf(
-					"stub %d (%s) does not replace the default stub for the same %s: its where: (%s) is not the "+
-						"default's (%s), so both are live and the default still answers every call this one does not match; "+
+					"stub %d (%s) does not replace the default stub for the same %s: their where: clauses differ, "+
+						"so both are live and the default still answers every call this one does not match; "+
 						"to replace it, write the default's where: byte for byte, or delete this stub",
-					m.ordinal, target, target, m.whereSource, d.whereSource)})
+					m.ordinal, target, target)})
 				break
 			}
 		}
