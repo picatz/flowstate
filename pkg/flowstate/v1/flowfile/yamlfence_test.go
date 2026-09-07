@@ -97,16 +97,17 @@ func TestTheQuotingEditKeepsACommentOutsideAndDoublesAQuoteInside(t *testing.T) 
 	require.NoError(t, err, "%s", fixed)
 
 	// A `#` with no space before it is not a comment to YAML, so it is part
-	// of the scalar and the quotes go around it (Copilot, #1812).
+	// of the scalar (Copilot, #1812) — and then the scalar does not end at
+	// the fence, which is not the shape the quoting repairs: goccy's own
+	// sentence stands and no edit is offered, rather than an edit that would
+	// have moved `#tail` outside the quotes.
 	src = "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: ${true ? 'a' : 'b'}#tail\n"
 	_, _, err = flowfile.Parse([]byte(src))
 	require.Error(t, err)
 	require.True(t, asDiagnostics(err, &ds))
 	require.Len(t, ds, 1)
-	fixed = applySuggestedEdit(t, src, ds[0])
-	assert.Contains(t, fixed, "    value: '${true ? ''a'' : ''b''}#tail'\n")
-	_, _, err = flowfile.Parse([]byte(fixed))
-	require.NoError(t, err, "%s", fixed)
+	assert.Contains(t, ds[0].Message, "mapping value is not allowed")
+	assert.Empty(t, ds[0].Edits)
 }
 
 // TestOtherMappingValueErrorsKeepTheParsersSentence is the negative direction:
