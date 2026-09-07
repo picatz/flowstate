@@ -40,6 +40,11 @@ const (
 	// "backward-compatible", "no impact" — on a line that offers no evidence
 	// for it.
 	RuleAbsolute Rule = "absolute"
+
+	// RuleBounded is a body longer than this check reads. What was not read
+	// cannot be reported as conforming, so a body past the bound is a
+	// finding of its own rather than a silent pass.
+	RuleBounded Rule = "bounded"
 )
 
 // Finding is one convention a message does not follow.
@@ -113,14 +118,23 @@ func Check(subject, body string) []Finding {
 	}
 
 	// Bounded where the work is spent: an author's body decides how many
-	// lines there are, so the walk stops at maxLines and the report at
-	// maxAbsolutes, with the rest counted rather than listed.
-	lines := strings.Split(body, "\n")
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-	}
+	// lines there are, so the walk stops at maxLines without splitting the
+	// rest, and the report stops at maxAbsolutes with the rest counted. A
+	// body that runs past the bound is a finding, since what was not read
+	// cannot be called conforming (Codex, #1848).
 	omitted := 0
-	for _, line := range lines {
+	rest := body
+	for n := 0; rest != ""; n++ {
+		if n == maxLines {
+			out = append(out, Finding{
+				Rule:    RuleBounded,
+				Message: fmt.Sprintf("the body runs past %d lines and the rest was not inspected; a message this long is not one a reader can review either", maxLines),
+				Skill:   prSkill,
+			})
+			break
+		}
+		var line string
+		line, rest, _ = strings.Cut(rest, "\n")
 		loc := absolutes.FindStringIndex(line)
 		if loc == nil {
 			continue

@@ -97,8 +97,12 @@ func TestAbsoluteFindingsAreCappedAndTheRestCounted(t *testing.T) {
 	require.Len(t, findings, maxAbsolutes+1, "one finding per line with no bound")
 	assert.Contains(t, findings[maxAbsolutes].Message, "30 more line(s)", "the omitted lines are counted rather than listed")
 
-	// Past maxLines nothing is read at all, so a body that is one absolute
-	// per line for longer than that stops costing anything.
+	// Past maxLines nothing is read, and the body is reported as one that
+	// was not read whole rather than as one that conforms.
 	huge := "Refs #1\n\nVerification: ran.\n\n" + strings.Repeat("x\n", maxLines) + "It is safe.\n"
-	assert.Empty(t, Check("a: b", huge), "a line past the bound was inspected")
+	assert.Equal(t, []Rule{RuleBounded}, rules(Check("a: b", huge)),
+		"a body past the bound was either inspected past it or passed as conforming")
+
+	exact := "Refs #1\n\nVerification: ran.\n" + strings.Repeat("x\n", maxLines-3)
+	assert.Empty(t, Check("a: b", exact), "a body at the bound is read whole")
 }
