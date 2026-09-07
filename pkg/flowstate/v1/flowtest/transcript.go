@@ -703,10 +703,14 @@ func redactedScalarText(native any, sensitive sensitiveInputs) string {
 // Flowfile declares one with — `string "1"` against `int 1` — so a mismatch
 // that is only a type mismatch reads as one rather than as a quoting
 // difference (#1669). A withheld value stays the marker alone: its type is
-// one more fact about it than the withholding meant to give.
+// one more fact about it than the withholding meant to give. A null is the
+// one value whose type is the whole of it, so it is spelled once.
 func typedText(native any, sensitive sensitiveInputs) string {
 	if sensitive.WithholdAll() {
 		return redactedScalarText(native, sensitive)
+	}
+	if native == nil {
+		return "null"
 	}
 	return typeSpelling(native) + " " + redactedScalarText(native, sensitive)
 }

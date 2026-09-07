@@ -722,8 +722,9 @@ worked example, and it runs in CI like the rest.
 An `expect:` with no field in it is refused when the file loads (#1669). A
 case that asserts nothing is green whatever the run produced beyond finishing,
 and nothing downstream notices: `--fail-on-warning` has no warning to promote,
-and the closed claim `others: skipped` makes does not reach a case that names
-no step at all. A case that means only "the run completes" says so with
+and the closed claim that `others: skipped` makes over `ran:` does not reach a
+case that names no step at all. A case that means only "the run completes"
+says so with
 `failed: false`, which is the claim the refusal names; `outputs: {}` and
 `ran: []` are claims too — no outputs, nothing ran — and are not refused.
 

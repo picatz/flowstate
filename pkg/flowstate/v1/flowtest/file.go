@@ -1095,8 +1095,10 @@ type Expectation struct {
 
 // claimsNothing reports whether no field of the expectation was written: not
 // the empty `expect: {}`, and not an `expect:` block that was left out. A
-// written-empty collection — `outputs: {}`, `ran: []` — is a claim (no outputs,
-// nothing ran) and counts, which is why the tests are for nil rather than for
+// written-empty collection whose emptiness asserts something — `outputs: {}`
+// is "no outputs", `ran: []` is "nothing ran" — is a claim and counts, which
+// is why those are tested for nil rather than for length. `check: []` asserts
+// nothing, an empty list of predicates being no predicate, and is tested for
 // length.
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
