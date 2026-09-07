@@ -74,7 +74,7 @@ func (f Finding) String() string {
 const symbolReach = 80
 
 var (
-	// citationPattern is a backticked `path.go:NNN` or `path.go:NNN-MMN`.
+	// citationPattern is a backticked `path.go:NNN` or `path.go:NNN-MMM`.
 	// Go files only: those are the citations the house style asks for, and a
 	// `Makefile:12` or a `workflow.yaml:7` names a line in a file whose
 	// shape no symbol check applies to.
@@ -129,8 +129,10 @@ func Documents(root string) ([]string, error) {
 	return docs, nil
 }
 
-// Extract reads every citation out of one document's bytes.
-func Extract(doc string, data []byte) []Citation {
+// Extract reads every citation out of one document's bytes. A line the
+// scanner cannot hold is an error rather than a silent stop, since a document
+// half-read is a document half-checked.
+func Extract(doc string, data []byte) ([]Citation, error) {
 	var citations []Citation
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -154,7 +156,10 @@ func Extract(doc string, data []byte) []Citation {
 			citations = append(citations, c)
 		}
 	}
-	return citations
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("%s: after line %d: %w", doc, line, err)
+	}
+	return citations, nil
 }
 
 // symbolsNear is every backticked identifier on the line within
@@ -210,7 +215,11 @@ func Check(root string, docs []string) ([]Finding, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
-		for _, c := range Extract(doc, data) {
+		citations, err := Extract(doc, data)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, c := range citations {
 			total++
 			if problem := check(root, c, files); problem != "" {
 				findings = append(findings, Finding{Citation: c, Problem: problem})

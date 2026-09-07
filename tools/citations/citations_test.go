@@ -128,6 +128,19 @@ func TestADependencyCitationIsSpelledWithItsModuleAndCheckedNowhere(t *testing.T
 	require.False(t, isModulePath("main.go"), "a bare file name has a dot and no module")
 }
 
+func TestAnUnscannableLineIsAnErrorNotASilentStop(t *testing.T) {
+	t.Parallel()
+
+	doc := "`pkg/a.go:4`\n" + strings.Repeat("x", 2<<20) + "\n`pkg/a.go:40`\n"
+	_, err := Extract("docs/guide.md", []byte(doc))
+	require.Error(t, err, "a line past the scanner's buffer stopped the scan before the citation past it")
+	require.Contains(t, err.Error(), "docs/guide.md: after line 1")
+
+	root := fixtureTree(t, doc)
+	_, _, err = Check(root, []string{"docs/guide.md"})
+	require.Error(t, err, "Check reports the scan error rather than a clean document")
+}
+
 func TestDocumentsAreTheHandWrittenSet(t *testing.T) {
 	t.Parallel()
 
