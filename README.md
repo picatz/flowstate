@@ -6,8 +6,11 @@
 **Author, validate, and rehearse reliable workflows on your machine—then submit
 the same workflow for governed, durable execution on Temporal.**
 
-Flowstate is for developers whose automation has outgrown a script, and for the
-teams responsible for running that automation safely. Model data pipelines,
+Flowstate is a durable, policy-governed workload engine. It is not a CI system.
+The target is any workload that must finish correctly despite crashes, network
+failures, and long waits. It is for developers whose automation has outgrown a
+script, and for the teams responsible for running that automation safely. Model
+data pipelines,
 infrastructure changes, operational runbooks, approval gates, and long-running
 integrations with retries, timers, signals, and compensation. Authors get a fast
 local loop; platform, operations, and security teams get typed contracts,
@@ -28,6 +31,11 @@ durable waits, and signals.
 **Start here:** [try the local quickstart](#quickstart), browse
 [validated examples](examples/README.md), or read the [architecture](docs/ARCHITECTURE.md)
 and [deployment guide](docs/DEPLOYMENT.md) before operating a shared service.
+
+**Deciding whether to start at all?** [Why Flowstate, and when not](docs/COMPARISON.md)
+puts it beside the Temporal SDK, Argo, Step Functions, CI systems, and durable
+functions in code, says what each is better at, and names the workloads that are
+not a fit.
 
 > [!WARNING]
 > Flowstate is super-alpha software. Expect breaking changes and evaluate it
