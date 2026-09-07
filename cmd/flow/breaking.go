@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -43,18 +43,26 @@ import (
 //
 // This checks interface compatibility, not behavior. A callee that keeps its
 // shape and changes its meaning passes, as in every schema-compatibility system.
-// Behavior is what `*.test.yaml` and the `digest:` pin govern. Cross-repo
-// identity (a registry, #172) is deferred: within one repo a workflow's `name:`
-// is its identity, which is per-directory-unique and, across this corpus,
-// globally unique.
+// Behavior is what `*.test.yaml` and the `digest:` pin govern.
+//
+// # Identity
+//
+// A workflow is matched to its previous self by its repository-relative path,
+// never by `name:`. `call:` addresses a callee by path and nothing in the
+// language requires names to be unique beyond one file, so in a tree with more
+// than one team `notify`, `deploy` and `cleanup` are each declared several times
+// and are each several workflows (#1712). Path is the one identity that exists
+// until #106 and #1447 decide a namespace, and it is unambiguous: two files at
+// one path across revisions cannot occur. A file that moved is the one case a
+// path cannot follow, and `--moved old=new` says where it went.
 
 // newBreakingCommand builds the `flow breaking` command.
 func newBreakingCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "breaking [path...]",
 		Short: "Report workflows whose declared inputs or outputs broke a contract",
-		Long: "Compile every Flowfile at the working tree and at a git ref, match workflows by " +
-			"`name:`, and report interface breaks: a declared input that a caller must now supply, " +
+		Long: "Compile every Flowfile at the working tree and at a git ref, match each workflow to " +
+			"its previous self by path, and report interface breaks: a declared input that a caller must now supply, " +
 			"an input whose type narrowed, an input removed, a declared output removed or renamed, " +
 			"a declared output whose type or guarantee weakened, or a constraint tightened. " +
 			"Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not " +
@@ -65,7 +73,11 @@ func newBreakingCommand() *cobra.Command {
 			"`validate`.\n\n" +
 			"A named file is taken as given; a directory is walked for Flowfiles, the same walk " +
 			"`validate` and `test` use. The `--against` ref must be present in the local git " +
-			"history: fetch the base branch first, exactly as the `buf breaking` check does.",
+			"history: fetch the base branch first, exactly as the `buf breaking` check does.\n\n" +
+			"A workflow is its path: two files declaring one `name:` in different directories are " +
+			"two workflows, each compared against the file at its own path at the ref. A file that " +
+			"moved since the ref is matched with `--moved old=new`; without it the old path reads " +
+			"as removed and the new one as brand new.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -77,12 +89,17 @@ func newBreakingCommand() *cobra.Command {
 flow breaking --against origin/main examples/
 
 # Check one workflow against the last commit:
-flow breaking --against HEAD~1 examples/hello-world/workflow.yaml`,
+flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
+
+# A file that moved is compared against its old path, not reported as removed:
+flow breaking --against origin/main --moved shared/notify.yaml=workflows/notify.yaml .`,
 	}
 
 	cmd.Flags().String("against", "",
 		"git ref holding the old contract to compare the working tree against, such as origin/main")
 	_ = cmd.MarkFlagRequired("against")
+	cmd.Flags().StringArray("moved", nil,
+		"a Flowfile that moved since the ref, as old=new paths, so it is compared against its old self (repeatable)")
 
 	return cmd
 }
@@ -98,12 +115,20 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 	if err != nil {
 		return err
 	}
+	movedArgs, err := cmd.Flags().GetStringArray("moved")
+	if err != nil {
+		return err
+	}
 
 	root, err := gitToplevel()
 	if err != nil {
 		return err
 	}
 	if err := gitHasRef(root, ref); err != nil {
+		return err
+	}
+	moves, err := parseMoves(root, movedArgs)
+	if err != nil {
 		return err
 	}
 
@@ -113,27 +138,19 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 		return err
 	}
 
-	newByName, newDuplicates := compileHead(files)
-	oldByName, oldDuplicates := compileRef(root, ref, paths, files)
+	newByPath := compileHead(root, files)
+	oldByPath := compileRef(root, ref, paths, files, moveSources(moves))
+	if err := applyMoves(ref, moves, oldByPath, newByPath); err != nil {
+		return err
+	}
 
 	surface := newSurface(cmd)
 	out, theme := surface.Out, surface.Theme
 
-	var (
-		names  = sortedNames(newByName, oldByName)
-		failed bool
-	)
-
-	// A name two files share is refused before any comparison: matching is by
-	// name, so the collision would otherwise silently compare one file and miss
-	// the other. Reported once per collision, deduped across the two sides.
-	for _, msg := range dedupeStrings(newDuplicates, oldDuplicates) {
-		failed = true
-		fmt.Fprintln(out, theme.Danger.Render(msg))
-	}
-	for _, name := range names {
-		old, oldOK := oldByName[name]
-		neu, newOK := newByName[name]
+	var failed bool
+	for _, path := range sortedPaths(newByPath, oldByPath) {
+		old, oldOK := oldByPath[path]
+		neu, newOK := newByPath[path]
 
 		switch {
 		case oldOK && newOK:
@@ -147,13 +164,14 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 			// is also caught by `validate` at the caller, but it is reported here
 			// too, at the callee, which is the author this command exists to reach.
 			// There is no working-tree file to position it in, so it names the ref
-			// path instead.
+			// path instead. A file that moved looks exactly like this from the old
+			// path, so the sentence says how to say so.
 			failed = true
 			printBreak(out, theme, old.path, flowfile.Diagnostic{
 				Field: "name",
 				Message: fmt.Sprintf(
-					"workflow %q was removed; callers that `call:` it break at their next compile. Keep it, or rename callers off it in the same change",
-					name),
+					"workflow %q was removed; callers that `call:` it break at their next compile. Keep it, or rename callers off it in the same change; if it moved, compare it against its old self with `--moved %s=<new path>`",
+					old.wf.GetName(), path),
 			})
 		}
 		// newOK && !oldOK is a brand-new workflow: no contract to break.
@@ -165,6 +183,98 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 	return nil
 }
 
+// move is one `--moved old=new`. Each side carries the spellings it could mean,
+// resolved by [applyMoves] against what is actually there.
+type move struct {
+	arg      string
+	old, neu []string
+}
+
+// parseMoves reads each `--moved old=new`. A side may be given relative to the
+// working directory, the way every other path argument is, or already
+// repository-relative, the way `git` prints a path; run from the repository root
+// the two are the same, and from a subdirectory they are not, so both spellings
+// are kept and [applyMoves] takes whichever names a file that exists. A spelling
+// that escapes the repository is dropped.
+func parseMoves(root string, args []string) ([]move, error) {
+	moves := make([]move, 0, len(args))
+	for _, arg := range args {
+		oldPath, newPath, ok := strings.Cut(arg, "=")
+		if !ok || oldPath == "" || newPath == "" {
+			return nil, fmt.Errorf("--moved %q: want old=new, the path at the ref and the path in the working tree", arg)
+		}
+		m := move{arg: arg, old: moveSpellings(root, oldPath), neu: moveSpellings(root, newPath)}
+		if len(m.old) == 0 {
+			return nil, fmt.Errorf("--moved %q: %s is outside the repository", arg, oldPath)
+		}
+		if len(m.neu) == 0 {
+			return nil, fmt.Errorf("--moved %q: %s is outside the repository", arg, newPath)
+		}
+		moves = append(moves, m)
+	}
+	return moves, nil
+}
+
+// moveSpellings is the repository-relative paths one `--moved` side could name:
+// read relative to the working directory first, then as already
+// repository-relative, deduplicated.
+func moveSpellings(root, path string) []string {
+	var out []string
+	if rel, ok := repoRel(root, path); ok {
+		out = append(out, rel)
+	}
+	if rel, ok := repoRel(root, filepath.Join(root, filepath.FromSlash(path))); ok && !slices.Contains(out, rel) {
+		out = append(out, rel)
+	}
+	return out
+}
+
+// moveSources is every path a `--moved` old side could name, so the ref-side
+// compile can read them whether or not the path arguments reach them: a caller
+// checking only the destination directory has still named the source.
+func moveSources(moves []move) []string {
+	var out []string
+	for _, m := range moves {
+		out = append(out, m.old...)
+	}
+	return out
+}
+
+// applyMoves rekeys each moved workflow's ref-side entry under its new path, so
+// it is compared against the working-tree file there. A move whose old side is
+// not at the ref, whose new side is not in the working tree, or whose new path
+// already exists at the ref (so the move would silently replace a workflow that
+// is still there) is refused rather than guessed.
+func applyMoves(ref string, moves []move, oldByPath, newByPath map[string]compiled) error {
+	for _, m := range moves {
+		oldRel, ok := firstPresent(m.old, oldByPath)
+		if !ok {
+			return fmt.Errorf("--moved %s: %s is not a Flowfile at %s", m.arg, m.old[0], ref)
+		}
+		newRel, ok := firstPresent(m.neu, newByPath)
+		if !ok {
+			return fmt.Errorf("--moved %s: %s is not a Flowfile in the working tree under the paths given", m.arg, m.neu[0])
+		}
+		if _, ok := oldByPath[newRel]; ok {
+			return fmt.Errorf("--moved %s: %s is also a Flowfile at %s, so the move would replace the workflow still there", m.arg, newRel, ref)
+		}
+		old := oldByPath[oldRel]
+		delete(oldByPath, oldRel)
+		oldByPath[newRel] = old
+	}
+	return nil
+}
+
+// firstPresent is the first spelling that keys the map.
+func firstPresent(spellings []string, m map[string]compiled) (string, bool) {
+	for _, rel := range spellings {
+		if _, ok := m[rel]; ok {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
 // compiled is one workflow compiled from one file, with the positions its
 // diagnostics point into.
 type compiled struct {
@@ -173,49 +283,31 @@ type compiled struct {
 	path string
 }
 
-// compileHead compiles every working-tree file, keyed by workflow name, and
-// reports any name two files share.
+// compileHead compiles every working-tree file, keyed by repository-relative
+// path.
 //
 // A file that does not compile is skipped rather than reported: `validate` owns
 // that diagnostic, and a file that will not compile has no contract to compare.
-//
-// Two files declaring one name cannot both be keyed by it, and this command
-// matches a workflow to its old self by name, so a silent overwrite would
-// compare one file and miss the other. The collision is refused instead, per
-// the second return value, rather than guessed. Cross-repo identity (a registry,
-// #172) is the deferred answer to telling same-named workflows apart; within one
-// tree, distinct names are the requirement.
-func compileHead(files []string) (map[string]compiled, []string) {
-	byName := make(map[string]compiled, len(files))
-	var duplicates []string
+// A file outside the repository has no path at the ref to compare against and is
+// skipped for the same reason.
+func compileHead(root string, files []string) map[string]compiled {
+	byPath := make(map[string]compiled, len(files))
 	for _, path := range files {
+		rel, ok := repoRel(root, path)
+		if !ok {
+			continue
+		}
 		wf, pos, err := flowfile.ParseFile(path)
-		if err != nil || wf.GetName() == "" {
+		if err != nil {
 			continue
 		}
-		name := wf.GetName()
-		if prev, ok := byName[name]; ok {
-			duplicates = append(duplicates, duplicateNameMessage(name, prev.path, path))
-			continue
-		}
-		byName[name] = compiled{wf: wf, pos: pos, path: path}
+		byPath[rel] = compiled{wf: wf, pos: pos, path: path}
 	}
-	return byName, duplicates
-}
-
-// duplicateNameMessage reports two files that declare one workflow name, in a
-// stable order so the finding does not depend on which was discovered first.
-func duplicateNameMessage(name, a, b string) string {
-	if a > b {
-		a, b = b, a
-	}
-	return fmt.Sprintf(
-		"workflow name %q is declared by both %s and %s; `flow breaking` matches by name and cannot tell them apart, so it compares neither. Give them distinct names",
-		name, a, b)
+	return byPath
 }
 
 // compileRef compiles the ref-side version of every Flowfile under the paths,
-// keyed by workflow name.
+// keyed by repository-relative path.
 //
 // It reads the ref's bytes through `git show` and compiles them as if they sat
 // at the same path, so a `call:` resolves against the working tree's callees.
@@ -223,10 +315,17 @@ func duplicateNameMessage(name, a, b string) string {
 // own declared inputs and outputs shrank, and a callee's contract is a separate
 // question the callee's own row answers.
 //
-// The file set is the union of the working-tree files and every Flowfile tracked
+// The file set is the union of the working-tree files, every Flowfile tracked
 // at the ref under the same paths, so a workflow deleted between the ref and the
-// working tree is still seen on the ref side.
-func compileRef(root, ref string, paths, headFiles []string) (map[string]compiled, []string) {
+// working tree is still seen on the ref side, and every path a `--moved` names
+// as a source, which the path arguments need not reach.
+//
+// A callee a ref-side file calls is read from the working tree, not the ref: the
+// parser resolves `call:` from disk, so a callee directory that no longer exists
+// there fails the old side's compile and the file is skipped. Reading callees
+// from the ref as well needs a parser that takes its files from somewhere other
+// than disk, which is a separate slice.
+func compileRef(root, ref string, paths, headFiles, extraRels []string) map[string]compiled {
 	relSet := make(map[string]struct{})
 	for _, path := range headFiles {
 		if rel, ok := repoRel(root, path); ok {
@@ -236,35 +335,24 @@ func compileRef(root, ref string, paths, headFiles []string) (map[string]compile
 	for _, rel := range gitListYAML(root, ref, repoRelPaths(root, paths)) {
 		relSet[rel] = struct{}{}
 	}
-
-	rels := make([]string, 0, len(relSet))
-	for rel := range relSet {
-		rels = append(rels, rel)
+	for _, rel := range extraRels {
+		relSet[rel] = struct{}{}
 	}
-	// Sorted so which of two same-named files is kept, and which is reported as
-	// the duplicate, does not depend on map iteration order.
-	sort.Strings(rels)
 
-	byName := make(map[string]compiled, len(rels))
-	var duplicates []string
-	for _, rel := range rels {
+	byPath := make(map[string]compiled, len(relSet))
+	for rel := range relSet {
 		data, err := gitShow(root, ref, rel)
 		if err != nil {
 			continue // Absent at the ref: a new file, nothing to compare.
 		}
 		abs := filepath.Join(root, rel)
 		wf, pos, err := flowfile.ParseAt(data, abs)
-		if err != nil || wf.GetName() == "" {
+		if err != nil {
 			continue
 		}
-		name := wf.GetName()
-		if prev, ok := byName[name]; ok {
-			duplicates = append(duplicates, duplicateNameMessage(name, prev.path, rel))
-			continue
-		}
-		byName[name] = compiled{wf: wf, pos: pos, path: rel}
+		byPath[rel] = compiled{wf: wf, pos: pos, path: rel}
 	}
-	return byName, duplicates
+	return byPath
 }
 
 // printBreak renders one finding in the same shape `validate` renders a
@@ -273,31 +361,17 @@ func printBreak(out io.Writer, theme ui.Theme, path string, d flowfile.Diagnosti
 	fmt.Fprintln(out, diagnosticLine(theme.Muted.Render(path), d))
 }
 
-// dedupeStrings is the sorted union of two string slices, so a message that
-// both the working-tree and the ref side report (a name duplicated on both) is
-// printed once, in a stable order.
-func dedupeStrings(a, b []string) []string {
-	out := slices.Concat(a, b)
-	slices.Sort(out)
-	return slices.Compact(out)
-}
-
-// sortedNames is the union of the two maps' keys, in a stable order so a run's
+// sortedPaths is the union of the two maps' keys, in a stable order so a run's
 // output does not depend on map iteration.
-func sortedNames(a, b map[string]compiled) []string {
+func sortedPaths(a, b map[string]compiled) []string {
 	seen := make(map[string]struct{}, len(a)+len(b))
-	for name := range a {
-		seen[name] = struct{}{}
+	for path := range a {
+		seen[path] = struct{}{}
 	}
-	for name := range b {
-		seen[name] = struct{}{}
+	for path := range b {
+		seen[path] = struct{}{}
 	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // --- comparison: the old (ref) contract against the new (working-tree) one ---

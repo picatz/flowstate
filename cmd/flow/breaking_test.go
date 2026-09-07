@@ -451,22 +451,106 @@ func TestBreakingFromSubdirectory(t *testing.T) {
 		"a workflow outside the checked subdirectory must not be listed")
 }
 
-// TestBreakingRefusesDuplicateNames checks that two files declaring one workflow
-// name are refused rather than silently collapsed. Matching is by name, so a
-// collision would compare one file and miss the other; the command names both
-// files and fails instead.
-func TestBreakingRefusesDuplicateNames(t *testing.T) {
-	same := "edition: v2026.3\nname: shared\n" + fixtureStep
+// TestBreakingSameNameInTwoDirectoriesIsTwoWorkflows pins the identity rule
+// (#1712): a workflow is its path, so two files declaring one `name:` in
+// different directories are two workflows, each compared against the file at its
+// own path at the ref. Unchanged, neither reports; with an input renamed in one
+// of them, the break is reported at that file and at that file only.
+func TestBreakingSameNameInTwoDirectoriesIsTwoWorkflows(t *testing.T) {
+	same := "edition: v2026.3\nname: notify\ninputs:\n  text:\n    type: string\n" + fixtureStep
 	dir := gitInitRepoFiles(t, map[string]string{
-		"svc/a/workflow.yaml": same,
-		"svc/b/workflow.yaml": same,
+		"teams/payments/shared/notify.yaml":           same,
+		"teams/payments/workflows/shared/notify.yaml": same,
 	})
 
 	out, err := runBreakingCLI(t, dir, "--against", "HEAD", ".")
-	require.Error(t, err, "duplicate names must fail the command, got:\n%s", out)
-	require.Contains(t, out, `workflow name "shared" is declared by both`)
-	require.Contains(t, out, "svc/a/workflow.yaml")
-	require.Contains(t, out, "svc/b/workflow.yaml")
+	require.NoError(t, err, "two unchanged workflows sharing a name must report no break, got:\n%s", out)
+
+	renamed := "edition: v2026.3\nname: notify\ninputs:\n  message:\n    type: string\n" + fixtureStep
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "teams", "payments", "workflows", "shared", "notify.yaml"), []byte(renamed), 0o644))
+	out, err = runBreakingCLI(t, dir, "--against", "HEAD", ".")
+	require.Error(t, err, "an input rename is a break, got:\n%s", out)
+	require.Contains(t, out, `input "text" was removed`)
+	require.Contains(t, out, "teams/payments/workflows/shared/notify.yaml")
+	require.NotContains(t, out, "teams/payments/shared/notify.yaml",
+		"the unchanged file with the same name must not be reported")
+}
+
+// TestBreakingMovedFile pins how a moved file is matched. Without `--moved` the
+// old path reads as removed, with a sentence naming the flag; with it the file is
+// compared against its old self, so an unchanged move is clean and a move that
+// also shrinks the contract reports the break at the new path.
+func TestBreakingMovedFile(t *testing.T) {
+	src := fixtureHeader() + "outputs:\n  where:\n    value: ${'here'}\n" + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{"shared/notify.yaml": src})
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "workflows"), 0o755))
+	require.NoError(t, os.Rename(
+		filepath.Join(dir, "shared", "notify.yaml"), filepath.Join(dir, "workflows", "notify.yaml")))
+
+	out, err := runBreakingCLI(t, dir, "--against", "HEAD", ".")
+	require.Error(t, err, "without --moved the old path is a removed workflow, got:\n%s", out)
+	require.Contains(t, out, `workflow "demo" was removed`)
+	require.Contains(t, out, "--moved shared/notify.yaml=<new path>")
+
+	out, err = runBreakingCLI(t, dir, "--against", "HEAD", "--moved", "shared/notify.yaml=workflows/notify.yaml", ".")
+	require.NoError(t, err, "an unchanged move compared against its old self is clean, got:\n%s", out)
+
+	shrunk := fixtureHeader() + fixtureStep
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflows", "notify.yaml"), []byte(shrunk), 0o644))
+	out, err = runBreakingCLI(t, dir, "--against", "HEAD", "--moved", "shared/notify.yaml=workflows/notify.yaml", ".")
+	require.Error(t, err, "a move that also removes an output is a break, got:\n%s", out)
+	require.Contains(t, out, `output "where" was removed or renamed`)
+	require.Contains(t, out, "workflows/notify.yaml", "the break is reported at the new path")
+}
+
+// TestBreakingMovedFileFromSubdirectory pins the two spellings a `--moved` side
+// may use, from below the repository root and with the path arguments reaching
+// only the destination: relative to the working directory the way every other
+// path argument is, and repository-relative the way `git` prints a path. The
+// source is read at the ref whether or not the path arguments name it.
+func TestBreakingMovedFileFromSubdirectory(t *testing.T) {
+	src := fixtureHeader() + "outputs:\n  where:\n    value: ${'here'}\n" + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{"shared/notify.yaml": src})
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "workflows"), 0o755))
+	require.NoError(t, os.Rename(
+		filepath.Join(dir, "shared", "notify.yaml"), filepath.Join(dir, "workflows", "notify.yaml")))
+	sub := filepath.Join(dir, "workflows")
+
+	out, err := runBreakingCLI(t, sub, "--against", "HEAD", "--moved", "../shared/notify.yaml=notify.yaml", "notify.yaml")
+	require.NoError(t, err, "a working-directory-relative move from a subdirectory, got:\n%s", out)
+
+	out, err = runBreakingCLI(t, sub, "--against", "HEAD", "--moved", "shared/notify.yaml=workflows/notify.yaml", ".")
+	require.NoError(t, err, "a repository-relative move from a subdirectory, got:\n%s", out)
+
+	shrunk := fixtureHeader() + fixtureStep
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "notify.yaml"), []byte(shrunk), 0o644))
+	out, err = runBreakingCLI(t, sub, "--against", "HEAD", "--moved", "shared/notify.yaml=workflows/notify.yaml", "notify.yaml")
+	require.Error(t, err, "the source is compared even though only the destination was named, got:\n%s", out)
+	require.Contains(t, out, `output "where" was removed or renamed`)
+}
+
+// TestBreakingMovedFileRefusals pins the three moves that are refused rather
+// than guessed: a malformed pair, an old side not at the ref, and a new side that
+// is also at the ref, which the move would silently replace.
+func TestBreakingMovedFileRefusals(t *testing.T) {
+	src := fixtureHeader() + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{
+		"a/workflow.yaml": src,
+		"b/workflow.yaml": src,
+	})
+
+	_, err := runBreakingCLI(t, dir, "--against", "HEAD", "--moved", "a/workflow.yaml", ".")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "want old=new")
+
+	_, err = runBreakingCLI(t, dir, "--against", "HEAD", "--moved", "nonesuch/workflow.yaml=a/workflow.yaml", ".")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "nonesuch/workflow.yaml is not a Flowfile at HEAD")
+
+	_, err = runBreakingCLI(t, dir, "--against", "HEAD", "--moved", "a/workflow.yaml=b/workflow.yaml", ".")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "b/workflow.yaml is also a Flowfile at HEAD")
 }
 
 // TestBreakingCommandMissingRef reports the ref that is not in local history with

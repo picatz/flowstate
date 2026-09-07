@@ -120,11 +120,13 @@ Report workflows whose declared inputs or outputs broke a contract
 flow breaking [path...] [flags]
 ```
 
-Compile every Flowfile at the working tree and at a git ref, match workflows by `name:`, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, a declared output whose type or guarantee weakened, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
+Compile every Flowfile at the working tree and at a git ref, match each workflow to its previous self by path, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, a declared output whose type or guarantee weakened, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
 
 The comparison is over the compiled protos, not the YAML text, so it is immune to formatting and comment churn. Each finding names the position in the working-tree file, what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as `validate`.
 
 A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `test` use. The `--against` ref must be present in the local git history: fetch the base branch first, exactly as the `buf breaking` check does.
+
+A workflow is its path: two files declaring one `name:` in different directories are two workflows, each compared against the file at its own path at the ref. A file that moved since the ref is matched with `--moved old=new`; without it the old path reads as removed and the new one as brand new.
 
 Examples:
 
@@ -135,11 +137,15 @@ flow breaking --against origin/main examples/
 
 # Check one workflow against the last commit:
 flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
+
+# A file that moved is compared against its old path, not reported as removed:
+flow breaking --against origin/main --moved shared/notify.yaml=workflows/notify.yaml .
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--against <string>` | `string` | — | — | git ref holding the old contract to compare the working tree against, such as origin/main |
+| `--moved <string,...>` | `stringArray` | — | — | a Flowfile that moved since the ref, as old=new paths, so it is compared against its old self (repeatable) |
 
 ## `flow cancel`
 
