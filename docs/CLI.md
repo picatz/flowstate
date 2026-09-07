@@ -700,7 +700,10 @@ file loads, at both positions, since the second can never be reached; a stub
 with `times:` ahead of its twin is the drain shape and is not. And a case stub
 whose `where:` differs from a *filtered* default's for the same target does not
 replace it — both stay live, the case's tried first — so the case is warned,
-naming the byte-identical `where:` that would; an unfiltered default is the
+and told to write the default's `where:` byte for byte or delete the stub. The
+warning states that the two clauses differ rather than quoting either: a
+`where:` may fill most of a test file, and reproducing one per case is how a
+bounded document becomes an unbounded report. An unfiltered default is the
 fallthrough the rule promises and draws no warning. A failing case's transcript
 names which stub answered each invocation, marking an inherited one
 `from defaults`.

@@ -214,6 +214,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	filtered := 0
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
+	warningBudget := newSuiteWarningBudget()
 	for i, test := range file.Tests {
 		// Where every failure this case produces is placed in the file that
 		// claimed it, whatever path inside the case built it. One call here
@@ -227,6 +228,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			// Budgeted before placing, so the omission marker the budget
+			// substitutes is placed in the file by the same call as the
+			// warnings it stands in for.
+			stopped.Warnings = warningBudget.take(stopped.GetWarnings())
 			anchor.place(stopped.GetFailures())
 			anchor.place(stopped.GetWarnings())
 			report.Cases = append(report.Cases, stopped)
@@ -261,6 +266,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
 		cancel()
+		result.Warnings = warningBudget.take(result.GetWarnings())
 		anchor.place(result.GetFailures())
 		anchor.place(result.GetWarnings())
 		report.Cases = append(report.Cases, result)
