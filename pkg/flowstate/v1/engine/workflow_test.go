@@ -1561,7 +1561,7 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 // that says something about the code. The allowed cases run first so the
 // reference exists before a refusal is judged against it.
 func TestRunWorkflowExpressionElementBound(t *testing.T) {
-	run := func(t *testing.T, workflow *v1.Workflow) (time.Duration, error, *v1.Workflow_StepOutputs) {
+	run := func(t *testing.T, workflow *v1.Workflow) (time.Duration, *v1.Workflow_StepOutputs, error) {
 		t.Helper()
 
 		testSuite := &testsuite.WorkflowTestSuite{}
@@ -1582,12 +1582,12 @@ func TestRunWorkflowExpressionElementBound(t *testing.T) {
 		require.True(t, env.IsWorkflowCompleted())
 
 		if err := env.GetWorkflowError(); err != nil {
-			return elapsed, err, nil
+			return elapsed, nil, err
 		}
 		var out v1.Workflow_StepOutputs
 		require.NoError(t, env.GetWorkflowResult(&out))
 
-		return elapsed, nil, &out
+		return elapsed, &out, nil
 	}
 
 	cases := conformance.ExpressionElementBoundCases()
@@ -1598,7 +1598,7 @@ func TestRunWorkflowExpressionElementBound(t *testing.T) {
 			continue
 		}
 		t.Run(test.Name, func(t *testing.T) {
-			elapsed, err, out := run(t, test.Workflow)
+			elapsed, out, err := run(t, test.Workflow)
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 			reference = max(reference, elapsed)
@@ -1611,7 +1611,7 @@ func TestRunWorkflowExpressionElementBound(t *testing.T) {
 			continue
 		}
 		t.Run(test.Name, func(t *testing.T) {
-			elapsed, err, _ := run(t, test.Workflow)
+			elapsed, _, err := run(t, test.Workflow)
 			require.Error(t, err, "a list built past the element bound must be refused")
 			require.Contains(t, err.Error(), test.ExpectedErrorContains)
 			// A refusal costs at most the fold up to the bound; several times
