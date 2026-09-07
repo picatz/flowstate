@@ -133,6 +133,15 @@ type Diagnostic struct {
 	// omission: see the schema's own doc on [v1.Diagnostic.Edits] for why a
 	// checker that cannot name the exact replacement leaves this empty.
 	Edits []*v1.SuggestedEdit
+
+	// bareWord is the identifier an expression consists of entirely, when that
+	// identifier resolves to nothing — set by [validateInputRefs], read by
+	// [positionDiagnostics], and never rendered. It is the hand-off between the
+	// checker, which knows the expression is one unbound name, and the
+	// positioning pass, which alone can tell whether the author wrote that name
+	// unfenced (`value: dhl`) and so almost certainly meant the word; only then
+	// is the string spelling offered, with an edit that writes it (#1682).
+	bareWord string
 }
 
 // Error renders the diagnostic in the conventional line:column: message form so it
@@ -1785,11 +1794,19 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if suggestion, ok := nearest.Name(ref, slices.Sorted(maps.Keys(scope.steps))); ok {
 			message += fmt.Sprintf("; did you mean `%s.%s`?", v1.StepsRoot, suggestion)
 		}
-		ds = append(ds, Diagnostic{
+		d := Diagnostic{
 			Step: stepID, Field: inputName,
 			Message: message,
 			Code:    v1.DiagnosticCodeUnresolvedReference,
-		})
+		}
+		// An expression that is nothing but this one name is the shape of a word
+		// an author meant as a string: `value: dhl` beside a `case: express` that
+		// takes its word bare. Whether that is what happened is for the pass
+		// with the source in hand to decide — see [Diagnostic.bareWord].
+		if parsed.GetExpr().GetIdentExpr().GetName() == ref {
+			d.bareWord = ref
+		}
+		ds = append(ds, d)
 	}
 	return ds
 }
@@ -2389,6 +2406,47 @@ func positionDiagnostics(ds Diagnostics, positions *Positions) {
 			ds[i].Line = span.Start.Line
 			ds[i].Column = span.Start.Column
 		}
+		if ds[i].bareWord != "" {
+			offerStringSpelling(&ds[i], positions)
+		}
+	}
+}
+
+// offerStringSpelling adds the string reading to a diagnostic about an
+// expression that is one unbound name, when the author wrote that name
+// without a fence.
+//
+// `value:` reads its scalar as CEL whether or not it is fenced, so `value: dhl`
+// is the identifier dhl — and the diagnostic listed the three things a bare
+// name can be and not the fourth thing this one almost certainly is, the word
+// (#1682). A `case: express` two lines up takes its word bare, which is what
+// makes the mistake look right.
+//
+// Unfenced is a fact the compiler recorded as it read the scalar
+// ([Positions.Unfenced]) rather than a guess from the compiled expression,
+// which has no fence left to look at, and rather than a comparison of spans,
+// which a quoted `value: "dhl"` — unfenced, and the likeliest way to reach for
+// a string — would fail. A fenced `${dhl}` keeps the diagnostic it had: an
+// author who wrote the fence was reaching for a reference, and the string
+// reading would be a guess about a different mistake.
+//
+// The edit replaces the scalar the author wrote with the fenced string, which
+// is safe for the reason every edit in this package is offered: the region is
+// the one the checker was looking at, and what goes in its place is the
+// expression the diagnostic names.
+func offerStringSpelling(d *Diagnostic, positions *Positions) {
+	if !positions.Unfenced(d.Step, d.Field) {
+		return
+	}
+	scalar, ok := positions.Locate(d.Step, d.Field)
+	if !ok {
+		return
+	}
+
+	spelling := fmt.Sprintf("${%q}", d.bareWord)
+	d.Message += fmt.Sprintf("; this value is read as an expression, so a bare word is a name, and a string is written %s", spelling)
+	if edit := replaceSpan("write the string "+spelling, scalar, spelling); edit != nil {
+		d.Edits = append(d.Edits, edit)
 	}
 }
 

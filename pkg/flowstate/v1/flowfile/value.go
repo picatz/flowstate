@@ -350,6 +350,11 @@ func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bo
 		// The raw text rather than the scan's, because `$${` is the escape a
 		// *value* spells a literal fence with, and this is not a value — it is
 		// CEL source, where those characters are already CEL's to interpret.
+		//
+		// Noted as unfenced before it is compiled, because the compiled value
+		// cannot say so afterwards and a diagnostic about a bare word in it
+		// needs to — see [Positions.Unfenced].
+		c.pos.recordUnfenced(path)
 		return c.expression(n, text, path, r, placement)
 	}
 

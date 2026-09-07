@@ -96,6 +96,13 @@ type Positions struct {
 	exprs    map[string]Span
 	steps    map[string]string
 	triggers map[string]string
+
+	// unfenced holds the paths whose scalar was read as CEL without the author
+	// writing a fence — `value: dhl`, or `value: "dhl"` — which is a fact the
+	// compiled expression cannot carry (the fence, if any, is gone) and one a
+	// diagnostic needs: a bare word an author left unfenced was probably meant
+	// as a string, and one they fenced was a reference (#1682).
+	unfenced map[string]bool
 }
 
 func newPositions() *Positions {
@@ -104,6 +111,7 @@ func newPositions() *Positions {
 		exprs:    make(map[string]Span),
 		steps:    make(map[string]string),
 		triggers: make(map[string]string),
+		unfenced: make(map[string]bool),
 	}
 }
 
@@ -328,6 +336,35 @@ func (p *Positions) recordExpr(path string, span Span) {
 	if span.IsValid() {
 		p.exprs[path] = span
 	}
+}
+
+// recordUnfenced notes that the expression at path was written with no fence.
+func (p *Positions) recordUnfenced(path string) {
+	p.unfenced[path] = true
+}
+
+// Unfenced reports whether the expression at a step's named field was written
+// without a fence: read as CEL because the field is expression-typed, not
+// because the author asked for an expression. Found by the same candidate
+// search [Positions.Locate] uses, so the two agree about which value a
+// diagnostic is about.
+func (p *Positions) Unfenced(step, field string) bool {
+	if p == nil {
+		return false
+	}
+	if step == "" {
+		return p.unfenced[field]
+	}
+	base, ok := p.StepPath(step)
+	if !ok {
+		return false
+	}
+	for _, candidate := range fieldCandidates(base, field) {
+		if p.unfenced[candidate] {
+			return true
+		}
+	}
+	return false
 }
 
 // recordStep associates a step id with its path, keeping the first declaration so
