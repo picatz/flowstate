@@ -334,7 +334,7 @@ func (p *Policy) newClient() *http.Client {
 	// Without self-administration the control-plane answer is a flat refusal that
 	// does not read the request at all, so no connection to one can exist to be
 	// reused, and reuse stays safe.
-	transport.DisableKeepAlives = !p.connRules.empty() || p.cfg.selfAdministration
+	transport.DisableKeepAlives = !p.connRules.Empty() || p.cfg.selfAdministration
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: p.cfg.minTLSVersion,
 		RootCAs:    p.cfg.rootCAs,
@@ -620,7 +620,7 @@ func (p *Policy) checkRequest(req *http.Request) error {
 		return err
 	}
 
-	if p.requestRules.empty() {
+	if p.requestRules.Empty() {
 		return nil
 	}
 
@@ -719,7 +719,7 @@ func (p *Policy) checkProxiedTarget(req *http.Request, target string) error {
 	}
 
 	scheme, host := strings.ToLower(req.URL.Scheme), ruleHost(req.URL)
-	rules := !p.connRules.empty()
+	rules := !p.connRules.Empty()
 
 	for _, addr := range addrs {
 		addrPort := netip.AddrPortFrom(addr, port)
@@ -841,7 +841,7 @@ func (p *Policy) decideDial(ctx context.Context, network, address string) error 
 		return markHop(err)
 	}
 
-	if p.connRules.empty() {
+	if p.connRules.Empty() {
 		return nil
 	}
 
@@ -1110,7 +1110,7 @@ func (p *Policy) CheckConnection(ctx context.Context, scheme, host string, addr 
 	if err := p.checkResolvedAddr(ctx, addr); err != nil {
 		return err
 	}
-	if p.connRules.empty() {
+	if p.connRules.Empty() {
 		return nil
 	}
 

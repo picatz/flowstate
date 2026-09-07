@@ -2,11 +2,14 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
 	"github.com/google/cel-go/cel"
+
 	"github.com/google/cel-go/ext"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
 
 // DefaultAssumeRuleCostLimit bounds the CEL evaluation cost of a single
@@ -144,19 +147,10 @@ type workload struct {
 
 // assumeRule is a compiled CEL assumption rule. The program is built once, when
 // the broker is constructed, and is safe to evaluate concurrently.
-type assumeRule struct {
-	// src is the original expression text, reported in denials so an operator can
-	// find the rule that fired.
-	src string
-
-	// prg is the compiled program.
-	prg cel.Program
-}
-
-// assumeRules holds the allow and deny rules governing credential assumption.
+// assumeRules holds the allow and deny rules governing credential assumption:
+// a [celrule.Set], deny first, permitting when only deny rules are configured.
 type assumeRules struct {
-	allow []assumeRule
-	deny  []assumeRule
+	celrule.Set
 }
 
 // evaluate applies the rules and returns an [*AssumeDeniedError] when the request
@@ -166,40 +160,28 @@ type assumeRules struct {
 // configured. A rule that fails to evaluate refuses the request: a policy that
 // cannot be evaluated is not a policy that permits everything.
 func (rs assumeRules) evaluate(ctx context.Context, target, subject string, vars map[string]any) error {
-	for _, rule := range rs.deny {
-		matched, err := rule.eval(ctx, vars)
-		if err != nil {
-			return assumeRuleFailure(ctx, "deny", rule.src, target, subject, err)
-		}
-		if matched {
-			return &AssumeDeniedError{
-				Target:  target,
-				Subject: subject,
-				Reason:  ReasonAssumeDenyRule,
-				Detail:  rule.src,
-			}
-		}
+	decision, err := rs.Decide(ctx, vars)
+	if err != nil {
+		return assumeRuleFailure(ctx, target, subject, err)
 	}
 
-	if len(rs.allow) == 0 {
+	switch decision.Verdict {
+	case celrule.DeniedByRule:
+		return &AssumeDeniedError{
+			Target:  target,
+			Subject: subject,
+			Reason:  ReasonAssumeDenyRule,
+			Detail:  decision.Rule.Source(),
+		}
+	case celrule.NoAllowRuleMatched:
+		return &AssumeDeniedError{
+			Target:  target,
+			Subject: subject,
+			Reason:  ReasonAssumeNoAllowRule,
+			Detail:  "no allow rule matched",
+		}
+	default:
 		return nil
-	}
-
-	for _, rule := range rs.allow {
-		matched, err := rule.eval(ctx, vars)
-		if err != nil {
-			return assumeRuleFailure(ctx, "allow", rule.src, target, subject, err)
-		}
-		if matched {
-			return nil
-		}
-	}
-
-	return &AssumeDeniedError{
-		Target:  target,
-		Subject: subject,
-		Reason:  ReasonAssumeNoAllowRule,
-		Detail:  "no allow rule matched",
 	}
 }
 
@@ -209,7 +191,7 @@ func (rs assumeRules) evaluate(ctx context.Context, target, subject string, vars
 // A cancelled or expired context is returned as itself: running out of time is not
 // a policy decision, and reporting it as one would tell an operator their rules
 // refused a request that in fact never finished.
-func assumeRuleFailure(ctx context.Context, kind, src, target, subject string, err error) error {
+func assumeRuleFailure(ctx context.Context, target, subject string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
@@ -218,27 +200,9 @@ func assumeRuleFailure(ctx context.Context, kind, src, target, subject string, e
 		Target:  target,
 		Subject: subject,
 		Reason:  ReasonAssumeRuleError,
-		Detail:  fmt.Sprintf("%s rule %q could not be evaluated: %v", kind, src, err),
-		Err:     err,
+		Detail:  err.Error(),
+		Err:     errors.Unwrap(err),
 	}
-}
-
-// eval evaluates the rule. The context is threaded through, so an expensive rule
-// is interrupted when the request is cancelled.
-func (r assumeRule) eval(ctx context.Context, vars map[string]any) (bool, error) {
-	out, _, err := r.prg.ContextEval(ctx, vars)
-	if err != nil {
-		return false, err
-	}
-
-	matched, ok := out.Value().(bool)
-	if !ok {
-		// The output type is checked at compile time, so reaching here means CEL
-		// produced something other than the type it promised.
-		return false, fmt.Errorf("rule produced %s, want bool", out.Type().TypeName())
-	}
-
-	return matched, nil
 }
 
 // newAssumeEnv builds the CEL environment assumption rules are compiled against.
@@ -270,51 +234,21 @@ func compileAssumeRules(allow, deny []string, costLimit uint64) (assumeRules, er
 		return assumeRules{}, fmt.Errorf("%w: building assumption rule environment: %w", ErrInvalidPolicy, err)
 	}
 
-	options := []cel.ProgramOption{
-		cel.CostLimit(costLimit),
-		cel.EvalOptions(cel.OptTrackCost),
-		cel.InterruptCheckFrequency(100),
+	wrap := func(kind celrule.Kind, err error) error {
+		return fmt.Errorf("%w: %s %w", ErrInvalidPolicy, kind, err)
 	}
 
-	compile := func(kind string, sources []string) ([]assumeRule, error) {
-		rules := make([]assumeRule, 0, len(sources))
-
-		for _, src := range sources {
-			if src == "" {
-				return nil, fmt.Errorf("%w: %s rule must not be empty", ErrInvalidPolicy, kind)
-			}
-
-			ast, issues := env.Compile(src)
-			if issues.Err() != nil {
-				return nil, fmt.Errorf("%w: %s rule %q is invalid: %w", ErrInvalidPolicy, kind, src, issues.Err())
-			}
-			if out := ast.OutputType(); !out.IsExactType(cel.BoolType) {
-				return nil, fmt.Errorf("%w: %s rule %q evaluates to %s, want bool",
-					ErrInvalidPolicy, kind, src, out.TypeName())
-			}
-
-			prg, err := env.Program(ast, options...)
-			if err != nil {
-				return nil, fmt.Errorf("%w: %s rule %q could not be compiled: %w", ErrInvalidPolicy, kind, src, err)
-			}
-
-			rules = append(rules, assumeRule{src: src, prg: prg})
-		}
-
-		return rules, nil
-	}
-
-	denyRules, err := compile("deny", deny)
+	denyRules, err := celrule.CompileAll(env, celrule.Deny, deny, costLimit, wrap)
 	if err != nil {
 		return assumeRules{}, err
 	}
 
-	allowRules, err := compile("allow", allow)
+	allowRules, err := celrule.CompileAll(env, celrule.Allow, allow, costLimit, wrap)
 	if err != nil {
 		return assumeRules{}, err
 	}
 
-	return assumeRules{allow: allowRules, deny: denyRules}, nil
+	return assumeRules{Set: celrule.Set{Allow: allowRules, Deny: denyRules}}, nil
 }
 
 // assumeVars builds the attributes a rule is evaluated against.

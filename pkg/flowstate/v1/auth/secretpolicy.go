@@ -2,12 +2,14 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/google/cel-go/cel"
+
 	"github.com/google/cel-go/ext"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
 
 // SecretReference is a reference to a secret: the scheme that resolves it and the
@@ -198,10 +200,13 @@ func (p *SecretPolicy) Authorize(ctx context.Context, identity WorkloadIdentity,
 	return p.rules.evaluate(ctx, secret{Scheme: scheme, Name: name}, subject, identity, ref, denied)
 }
 
-// secretRules holds the compiled allow and deny rules.
+// secretRules holds the compiled allow and deny rules: a [celrule.Set], deny
+// first, refusing when only deny rules are configured — a secret must be
+// permitted by an allow rule, so deny rules alone would otherwise permit
+// everything they did not name, which is not what a default-deny policy can
+// mean.
 type secretRules struct {
-	allow []assumeRule
-	deny  []assumeRule
+	celrule.Set
 }
 
 // evaluate applies the rules, deny first.
@@ -218,40 +223,25 @@ func (rs secretRules) evaluate(
 	delete(vars, attrTarget)
 	delete(vars, attrAudience)
 
-	for _, rule := range rs.deny {
-		matched, err := rule.eval(ctx, vars)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			return denied(ReasonSecretRuleError, fmt.Sprintf("deny rule %q could not be evaluated: %v", rule.src, err), err)
+	decision, err := rs.Decide(ctx, vars)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
-		if matched {
-			return denied(ReasonSecretDenyRule, rule.src, nil)
-		}
+		return denied(ReasonSecretRuleError, err.Error(), errors.Unwrap(err))
 	}
 
-	for _, rule := range rs.allow {
-		matched, err := rule.eval(ctx, vars)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			return denied(ReasonSecretRuleError, fmt.Sprintf("allow rule %q could not be evaluated: %v", rule.src, err), err)
-		}
-		if matched {
-			return nil
-		}
-	}
-
-	if len(rs.allow) == 0 {
-		// Deny rules alone would otherwise permit everything they did not name,
-		// which is not what a default-deny policy can mean.
+	switch decision.Verdict {
+	case celrule.DeniedByRule:
+		return denied(ReasonSecretDenyRule, decision.Rule.Source(), nil)
+	case celrule.NoAllowRules:
 		return denied(ReasonSecretNoAllowRule,
 			"only deny rules are configured, and a secret must be permitted by an allow rule", nil)
+	case celrule.NoAllowRuleMatched:
+		return denied(ReasonSecretNoAllowRule, "no allow rule matched", nil)
+	default:
+		return nil
 	}
-
-	return denied(ReasonSecretNoAllowRule, "no allow rule matched", nil)
 }
 
 // newSecretEnv builds the CEL environment secret rules are compiled against.
@@ -277,49 +267,19 @@ func compileSecretRules(allow, deny []string, costLimit uint64) (secretRules, er
 		return secretRules{}, fmt.Errorf("%w: building secret rule environment: %w", ErrInvalidPolicy, err)
 	}
 
-	options := []cel.ProgramOption{
-		cel.CostLimit(costLimit),
-		cel.EvalOptions(cel.OptTrackCost),
-		cel.InterruptCheckFrequency(100),
+	wrap := func(kind celrule.Kind, err error) error {
+		return fmt.Errorf("%w: secret %s %w", ErrInvalidPolicy, kind, err)
 	}
 
-	compile := func(kind string, sources []string) ([]assumeRule, error) {
-		rules := make([]assumeRule, 0, len(sources))
-
-		for _, src := range sources {
-			if strings.TrimSpace(src) == "" {
-				return nil, fmt.Errorf("%w: %s rule must not be empty", ErrInvalidPolicy, kind)
-			}
-
-			ast, issues := env.Compile(src)
-			if issues.Err() != nil {
-				return nil, fmt.Errorf("%w: secret %s rule %q is invalid: %w", ErrInvalidPolicy, kind, src, issues.Err())
-			}
-			if out := ast.OutputType(); !out.IsExactType(cel.BoolType) {
-				return nil, fmt.Errorf("%w: secret %s rule %q evaluates to %s, want bool",
-					ErrInvalidPolicy, kind, src, out.TypeName())
-			}
-
-			program, err := env.Program(ast, options...)
-			if err != nil {
-				return nil, fmt.Errorf("%w: secret %s rule %q could not be compiled: %w", ErrInvalidPolicy, kind, src, err)
-			}
-
-			rules = append(rules, assumeRule{src: src, prg: program})
-		}
-
-		return rules, nil
-	}
-
-	denyRules, err := compile("deny", deny)
+	denyRules, err := celrule.CompileAll(env, celrule.Deny, deny, costLimit, wrap)
 	if err != nil {
 		return secretRules{}, err
 	}
 
-	allowRules, err := compile("allow", allow)
+	allowRules, err := celrule.CompileAll(env, celrule.Allow, allow, costLimit, wrap)
 	if err != nil {
 		return secretRules{}, err
 	}
 
-	return secretRules{allow: allowRules, deny: denyRules}, nil
+	return secretRules{Set: celrule.Set{Allow: allowRules, Deny: denyRules, WithoutAllow: celrule.NoAllowRules}}, nil
 }

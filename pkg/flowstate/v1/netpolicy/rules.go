@@ -2,72 +2,49 @@ package netpolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/google/cel-go/cel"
+
 	"github.com/google/cel-go/ext"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
 
 // rule is a compiled CEL policy rule. The program is built once, when the policy
 // is constructed, and is safe to evaluate concurrently.
-type rule struct {
-	// src is the original expression text, reported in denial messages so an
-	// operator can find the rule that fired.
-	src string
-
-	// prg is the compiled program.
-	prg cel.Program
-}
-
-// ruleSet holds the allow and deny rules that apply at one evaluation scope.
+// ruleSet holds the allow and deny rules that apply at one evaluation scope:
+// a [celrule.Set], deny first, permitting when only deny rules are configured.
 type ruleSet struct {
-	allow []rule
-	deny  []rule
-}
-
-// empty reports whether the set has no rules, letting callers skip evaluation
-// entirely.
-func (rs ruleSet) empty() bool {
-	return len(rs.allow) == 0 && len(rs.deny) == 0
+	celrule.Set
 }
 
 // evaluate applies the set to vars and returns a [*DenyError] if the request is
 // denied. Deny rules run first and take precedence, then allow rules gate the
 // request when any are configured. A rule that fails to evaluate fails closed.
 func (rs ruleSet) evaluate(ctx context.Context, target string, vars map[string]any) error {
-	for _, r := range rs.deny {
-		matched, err := r.eval(ctx, vars)
-		if err != nil {
-			return ruleFailure(ctx, "deny", r.src, target, err)
-		}
-		if matched {
-			return &DenyError{
-				Reason: ReasonDenyRule,
-				Target: target,
-				Detail: r.src,
-			}
-		}
+	decision, err := rs.Decide(ctx, vars)
+	if err != nil {
+		return ruleFailure(ctx, target, err)
 	}
 
-	if len(rs.allow) == 0 {
+	switch decision.Verdict {
+	case celrule.DeniedByRule:
+		return &DenyError{
+			Reason: ReasonDenyRule,
+			Target: target,
+			Detail: decision.Rule.Source(),
+		}
+	case celrule.NoAllowRuleMatched:
+		return &DenyError{
+			Reason: ReasonNoAllowRule,
+			Target: target,
+			Detail: "no allow rule matched",
+		}
+	default:
 		return nil
-	}
-
-	for _, r := range rs.allow {
-		matched, err := r.eval(ctx, vars)
-		if err != nil {
-			return ruleFailure(ctx, "allow", r.src, target, err)
-		}
-		if matched {
-			return nil
-		}
-	}
-
-	return &DenyError{
-		Reason: ReasonNoAllowRule,
-		Target: target,
-		Detail: "no allow rule matched",
 	}
 }
 
@@ -83,36 +60,19 @@ func (rs ruleSet) evaluate(ctx context.Context, target string, vars map[string]a
 // errors too. It unwraps to the context's own error, so every errors.Is check
 // against [context.Canceled] and [context.DeadlineExceeded] answers exactly as
 // it did for the bare value this replaced.
-func ruleFailure(ctx context.Context, kind, src, target string, err error) error {
+func ruleFailure(ctx context.Context, target string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return &UndecidedError{Target: target, Err: ctxErr}
 	}
 
+	// The context did not end, so this is the evaluator's own failure, which
+	// [celrule.Set.Decide] reports with the rule and its kind.
 	return &DenyError{
 		Reason: ReasonRuleError,
 		Target: target,
-		Detail: fmt.Sprintf("%s rule %q could not be evaluated: %v", kind, src, err),
-		Err:    err,
+		Detail: err.Error(),
+		Err:    errors.Unwrap(err),
 	}
-}
-
-// eval evaluates the rule against vars. The context is threaded through, so an
-// expensive rule is interrupted when the request is cancelled; a cheap rule
-// finishes before the interrupt is next checked.
-func (r rule) eval(ctx context.Context, vars map[string]any) (bool, error) {
-	out, _, err := r.prg.ContextEval(ctx, vars)
-	if err != nil {
-		return false, err
-	}
-
-	matched, ok := out.Value().(bool)
-	if !ok {
-		// The output type is checked when the rule is compiled, so reaching here
-		// means CEL produced something other than the declared type.
-		return false, fmt.Errorf("rule produced %s, want bool", out.Type().TypeName())
-	}
-
-	return matched, nil
 }
 
 // ruleCompiler turns operator-supplied expressions into compiled programs. It
@@ -121,7 +81,7 @@ func (r rule) eval(ctx context.Context, vars map[string]any) (bool, error) {
 type ruleCompiler struct {
 	requestEnv *cel.Env
 	connEnv    *cel.Env
-	progOpts   []cel.ProgramOption
+	costLimit  uint64
 }
 
 // newRuleCompiler builds the rule environments. Evaluation is cost-limited so a
@@ -183,53 +143,47 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 	return &ruleCompiler{
 		requestEnv: requestEnv,
 		connEnv:    connEnv,
-		progOpts: []cel.ProgramOption{
-			cel.CostLimit(costLimit),
-			cel.EvalOptions(cel.OptTrackCost),
-			cel.InterruptCheckFrequency(100),
-		},
+		costLimit:  costLimit,
 	}, nil
 }
 
 // compile compiles src, returning the program and the scope it belongs to. A rule
 // is request-scoped unless it references an attribute that is only known once an
 // address has been resolved, in which case it is connection-scoped.
-func (rc *ruleCompiler) compile(kind, src string) (r rule, connScoped bool, err error) {
-	if src == "" {
-		return rule{}, false, fmt.Errorf("%s rule must not be empty", kind)
+func (rc *ruleCompiler) compile(kind, src string) (r celrule.Rule, connScoped bool, err error) {
+	if strings.TrimSpace(src) == "" {
+		return celrule.Rule{}, false, fmt.Errorf("%s rule must not be empty", kind)
 	}
 
 	if requestAST, issues := rc.requestEnv.Compile(src); issues.Err() == nil {
 		prg, err := rc.program(rc.requestEnv, requestAST, kind, src)
 		if err != nil {
-			return rule{}, false, err
+			return celrule.Rule{}, false, err
 		}
 		return prg, false, nil
 	} else {
 		connAST, connIssues := rc.connEnv.Compile(src)
 		if connIssues.Err() != nil {
-			return rule{}, false, compileError(kind, src, issues.Err(), connIssues.Err())
+			return celrule.Rule{}, false, compileError(kind, src, issues.Err(), connIssues.Err())
 		}
 		prg, err := rc.program(rc.connEnv, connAST, kind, src)
 		if err != nil {
-			return rule{}, false, err
+			return celrule.Rule{}, false, err
 		}
 		return prg, true, nil
 	}
 }
 
-// program type-checks the result and builds the reusable program.
-func (rc *ruleCompiler) program(env *cel.Env, ast *cel.Ast, kind, src string) (rule, error) {
-	if out := ast.OutputType(); !out.IsExactType(cel.BoolType) {
-		return rule{}, fmt.Errorf("%s rule %q evaluates to %s, want bool", kind, src, out.TypeName())
-	}
-
-	prg, err := env.Program(ast, rc.progOpts...)
+// program type-checks the result and builds the reusable program, through
+// the one builder every policy surface shares, with the kind prefixed to
+// whatever it refuses.
+func (rc *ruleCompiler) program(env *cel.Env, ast *cel.Ast, kind, src string) (celrule.Rule, error) {
+	r, err := celrule.Build(env, ast, src, rc.costLimit)
 	if err != nil {
-		return rule{}, fmt.Errorf("%s rule %q could not be compiled: %w", kind, src, err)
+		return celrule.Rule{}, fmt.Errorf("%s %w", kind, err)
 	}
 
-	return rule{src: src, prg: prg}, nil
+	return r, nil
 }
 
 // compileError reports a rule that compiles in neither scope. When the two scopes
@@ -265,9 +219,9 @@ func (p *Policy) compileRules() error {
 			return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 		}
 		if connScoped {
-			p.connRules.deny = append(p.connRules.deny, r)
+			p.connRules.Deny = append(p.connRules.Deny, r)
 		} else {
-			p.requestRules.deny = append(p.requestRules.deny, r)
+			p.requestRules.Deny = append(p.requestRules.Deny, r)
 		}
 	}
 
@@ -277,9 +231,9 @@ func (p *Policy) compileRules() error {
 			return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 		}
 		if connScoped {
-			p.connRules.allow = append(p.connRules.allow, r)
+			p.connRules.Allow = append(p.connRules.Allow, r)
 		} else {
-			p.requestRules.allow = append(p.requestRules.allow, r)
+			p.requestRules.Allow = append(p.requestRules.Allow, r)
 		}
 	}
 
