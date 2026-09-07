@@ -202,7 +202,7 @@ tests:
 	assert.False(t, report.GetCases()[0].GetPassed())
 
 	text := failureText(report.GetCases()[0].GetFailures())
-	assert.Contains(t, text, `input "order_id": expected ord_wrong, got ord_9`)
+	assert.Contains(t, text, `input "order_id": expected string "ord_wrong", got string "ord_9"`)
 	assert.Contains(t, text, `unexpected input "amount"`)
 }
 
@@ -316,6 +316,7 @@ func TestAnUnknownWebhookIsRefused(t *testing.T) {
 tests:
   - name: a source the workflow does not declare
     workflow: ./workflow.yaml
+    expect: {failed: false}
     trigger:
       webhook: shopify
       payload: ./delivery.json
@@ -387,6 +388,7 @@ func TestADeliveryTooLargeToReadIsRefused(t *testing.T) {
 tests:
   - name: an oversized delivery
     workflow: ./workflow.yaml
+    expect: {failed: false}
     trigger:
       webhook: stripe
       payload: ./huge.json

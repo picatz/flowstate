@@ -240,6 +240,7 @@ vars:
 tests:
   - name: loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{"id": "plain"}, file.Vars["order"])

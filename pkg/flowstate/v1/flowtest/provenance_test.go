@@ -136,6 +136,7 @@ tests:
 tests:
   - name: one
     workflow: ./workflow.yaml
+    expect: {failed: false}
     stubs:
       - task: log
         returns: {}
@@ -143,6 +144,7 @@ tests:
           message: nope
   - name: two
     workflow: ./workflow.yaml
+    expect: {failed: false}
     stubs:
       - task: log
         returns: {}
@@ -172,6 +174,7 @@ defaults:
   workflow: ./workflow.yaml
 tests:
   - name: table
+    expect: {failed: false}
     stubs:
       - task: fromEntry
         returns: {}
@@ -179,7 +182,9 @@ tests:
           message: nope
     cases:
       - name: one
+        expect: {failed: false}
       - name: two
+        expect: {failed: false}
 `
 	problems, _ := refuse(t, source)
 
@@ -211,6 +216,7 @@ defaults:
         message: nope
 tests:
   - name: table
+    expect: {failed: false}
     stubs:
       - task: shared
         returns: {}
@@ -218,7 +224,9 @@ tests:
           message: nope
     cases:
       - name: one
+        expect: {failed: false}
       - name: two
+        expect: {failed: false}
 `
 	problems, _ := refuse(t, source)
 	d := only(t, problems)

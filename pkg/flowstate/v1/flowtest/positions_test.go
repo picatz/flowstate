@@ -148,6 +148,7 @@ tests:
 tests:
   - name: the case
     workflow: ./workflow.yaml
+    expect: {failed: false}
     trigger:
       webhook: stripe
       payload: ./delivery.json
@@ -162,6 +163,7 @@ tests:
 tests:
   - name: the case
     workflow: ./workflow.yaml
+    expect: {failed: false}
     stubs:
       - returns: {}
       - task: log
@@ -386,6 +388,7 @@ defaults:
   workflow: ./workflow.yaml
 tests:
   - name: the case
+    expect: {failed: false}
     signals:
       - name: approve
       - name: reject
@@ -973,6 +976,7 @@ func TestAStubWithNoTargetIsJudgedOnce(t *testing.T) {
 tests:
   - name: the case
     workflow: ./workflow.yaml
+    expect: {failed: false}
     stubs:
       - returns: {}
         fails:

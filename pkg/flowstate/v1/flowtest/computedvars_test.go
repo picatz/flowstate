@@ -52,6 +52,7 @@ vars:
 tests:
   - name: loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{
@@ -223,6 +224,7 @@ func TestALongVarChainEvaluatesEachVarOnce(t *testing.T) {
 tests:
   - name: the chain resolves
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 	require.NoError(t, err)
 	require.Equal(t, true, file.Vars[fmt.Sprintf("v%d", flowtest.MaxVarsPerFile-1)])
@@ -300,6 +302,7 @@ func TestACycleSearchStopsAtWhatAReportCanHold(t *testing.T) {
 tests:
   - name: never loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 	require.Error(t, err)
 
@@ -525,6 +528,7 @@ vars:
 tests:
   - name: loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 		require.NoError(t, err)
 		require.Len(t, file.Vars["spread"], 20)
@@ -539,6 +543,7 @@ vars:
 tests:
   - name: never loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "vars.program")
@@ -824,6 +829,7 @@ vars:
 tests:
   - name: never loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
     secrets:
       env:TOKEN: "${vars.token}"
 `))
@@ -845,6 +851,7 @@ vars:
 tests:
   - name: loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 		require.NoError(t, err, "a size() over a var on no path to a secret is an ordinary fixture")
 		require.Equal(t, int64(3), file.Vars["count"])
@@ -898,6 +905,7 @@ vars:
 tests:
   - name: never loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
     secrets:
       env:TOKEN: "${vars.token}"
 `))
@@ -926,6 +934,7 @@ vars:
 tests:
   - name: loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 		require.NoError(t, err)
 		require.Equal(t, map[string]any{"id": "ord_1", "region": "eu-west-1"}, file.Vars["order"])
@@ -984,6 +993,7 @@ vars:
 tests:
   - name: loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
     secrets:
       env:TOKEN: "${vars.token}"
 `))
@@ -1014,6 +1024,7 @@ defaults:
         value: "${vars.header}"
 tests:
   - name: loads
+    expect: {failed: false}
     inputs:
       envelope:
         auth:
@@ -1586,6 +1597,7 @@ vars:
 tests:
   - name: the workflow is missing
     workflow: "${vars.path}"
+    expect: {failed: false}
     secrets:
       env:TOKEN: "${vars.token}"
 `,
@@ -1606,6 +1618,7 @@ vars:
 tests:
   - name: the delivery is missing
     workflow: ./workflow.yaml
+    expect: {failed: false}
     trigger:
       webhook: orders
       payload: "${vars.path}"
@@ -1657,6 +1670,7 @@ vars:
 tests:
   - name: the workflow is missing
     workflow: "${vars.path}"
+    expect: {failed: false}
 `)
 
 	report := flowtest.RunFile(path)
@@ -2007,6 +2021,7 @@ func TestAVarValueThatOnlyLooksLikeAFenceIsALiteral(t *testing.T) {
 tests:
   - name: loads
     workflow: ./workflow.yaml
+    expect: {failed: false}
 `))
 			require.NoError(t, err)
 			require.Equal(t, value, file.Vars["who"])

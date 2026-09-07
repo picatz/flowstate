@@ -213,7 +213,7 @@ func TestLoadSourceAtWithDefaultsUsesTheProvidedLiveBytes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "suite.test.yaml")
-	suite := []byte("defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: x\n")
+	suite := []byte("defaults:\n  workflow: ./workflow.yaml\ntests:\n  - name: x\n    expect: {failed: false}\n")
 
 	_, err := flowtest.LoadSourceAtWithDefaults(suite, path, []byte("defaults:\n  stubs:\n    - returns: {}\n"))
 	require.Error(t, err)

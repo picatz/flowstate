@@ -28,7 +28,7 @@ func TestLoadAcceptsAnEditionMarker(t *testing.T) {
 tests:
   - name: a case
     workflow: ./workflow.yaml
-    expect: {}
+    expect: {failed: false}
 `)
 
 	file, err := flowtest.Load(path)

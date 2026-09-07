@@ -699,6 +699,52 @@ func redactedScalarText(native any, sensitive sensitiveInputs) string {
 	return capRunes(sensitive.RedactSubstrings(text), 48)
 }
 
+// typedText is [redactedScalarText] led by the value's type in the spelling a
+// Flowfile declares one with — `string "1"` against `int 1` — so a mismatch
+// that is only a type mismatch reads as one rather than as a quoting
+// difference (#1669). A withheld value stays the marker alone: its type is
+// one more fact about it than the withholding meant to give. A null is the
+// one value whose type is the whole of it, so it is spelled once.
+func typedText(native any, sensitive sensitiveInputs) string {
+	if sensitive.WithholdAll() {
+		return redactedScalarText(native, sensitive)
+	}
+	if native == nil {
+		return "null"
+	}
+	return typeSpelling(native) + " " + redactedScalarText(native, sensitive)
+}
+
+// typeSpelling names a decoded value's type the way `inputs:` and `outputs:`
+// declarations spell one, which is the vocabulary an author of a test file
+// already reads in the Flowfile beside it.
+func typeSpelling(native any) string {
+	switch native.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return "int"
+	case float32, float64:
+		return "double"
+	case []byte:
+		return "bytes"
+	case time.Time:
+		return "timestamp"
+	case time.Duration:
+		return "duration"
+	case []any:
+		return "list"
+	case map[string]any:
+		return "map"
+	default:
+		return fmt.Sprintf("%T", native)
+	}
+}
+
 // redactedBareText is [redactedScalarText] for a string rendered into the
 // line without quoting — a sender's subject, a refusal's reason — through the
 // same two passes, so no string reaches the account un-redacted by virtue of

@@ -114,7 +114,7 @@ tests:
     stubs:
       - step: smal
         returns: {tag: x}
-    expect: {}
+    expect: {failed: false}
 `))
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]
@@ -148,7 +148,7 @@ tests:
     stubs:
       - step: gate
         returns: {}
-    expect: {}
+    expect: {failed: false}
 `))
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]
@@ -276,7 +276,7 @@ tests:
     stubs:
       - step: checks
         returns: {}
-    expect: {}
+    expect: {failed: false}
 `))
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]
@@ -331,7 +331,7 @@ tests:
     stubs:
       - step: fetch
         returns: {}
-    expect: {}
+    expect: {failed: false}
 `))
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]

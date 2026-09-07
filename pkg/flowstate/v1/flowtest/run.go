@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -166,7 +168,7 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 			load: func() (*v1.Workflow, error) {
 				workflow, parsed, err := flowfile.ParseFile(identity)
 				if err != nil {
-					return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
+					return nil, fmt.Errorf("loading workflow %q: %w%s", test.Workflow, err, missingWorkflowRemedy(identity))
 				}
 				positions = parsed
 				return workflow, nil
@@ -331,6 +333,47 @@ func pathlessRefusal(test *Test) error {
 			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Trigger.Payload)
 	}
 	return nil
+}
+
+// maxSiblingCandidates bounds how much of a directory the remedy below reads:
+// the directory is the author's, and a suggestion is worth a page of names,
+// not a tree.
+const maxSiblingCandidates = 256
+
+// missingWorkflowRemedy is the did-you-mean for a `workflow:` that names no
+// file (#1669): every other name in the format gets one, and a path was the
+// one an author types by hand most. The candidates are the Flowfiles beside
+// the one that was named — `.yaml` and `.yml`, not the `*.test.yaml` suites,
+// which are never what `workflow:` means — so the suggestion is a file that
+// exists rather than a spelling that is merely near. Empty when the file
+// exists (the failure was something else), when the directory cannot be
+// read, or when nothing is near.
+func missingWorkflowRemedy(identity string) string {
+	if _, err := os.Stat(identity); !errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	entries, err := os.ReadDir(filepath.Dir(identity))
+	if err != nil {
+		return ""
+	}
+
+	var candidates []string
+	for _, entry := range entries {
+		if len(candidates) >= maxSiblingCandidates {
+			break
+		}
+		name := entry.Name()
+		if entry.IsDir() || strings.HasSuffix(name, ".test.yaml") ||
+			(!strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml")) {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+
+	if suggestion, ok := nearest.Name(filepath.Base(identity), candidates); ok {
+		return fmt.Sprintf("; did you mean %q?", suggestion)
+	}
+	return ""
 }
 
 // workflowPathIn and deliveryPathIn are [WorkflowPath] and [DeliveryPath] for
@@ -2073,7 +2116,7 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value, sensitive sen
 				Field: "expect.outputs",
 				Value: name,
 				Message: fmt.Sprintf("output %q: expected %s, got %s",
-					name, redactedScalarText(wantVal, sensitive), redactedScalarText(gotNative, sensitive)),
+					name, typedText(wantVal, sensitive), typedText(gotNative, sensitive)),
 			})
 		}
 	}
