@@ -47,9 +47,16 @@ func finishedSteps(n int) *Workflow_StepOutputs {
 // TestReadingOneStepCostsOneStepHoweverManyRanBefore pins the mechanism where
 // it lives: resolving `steps.<id>.<output>` against a scope holding 4,000
 // finished steps allocates what resolving it against 10 does. Allocations
-// rather than time, because they are deterministic under `-race` and on a
-// loaded runner, and the regression this guards is not a slow path but a walk
-// over every step — thousands of allocations where a handful are due.
+// rather than time, because they do not depend on how loaded the runner is,
+// and the regression this guards is not a slow path but a walk over every
+// step — thousands of allocations where a handful are due.
+//
+// Not exactly what it does, though. [testing.AllocsPerRun] counts every
+// malloc in the process while the function runs, and the package's parallel
+// tests share that process, so a stray allocation from another goroutine
+// lands in whichever measurement it overlaps: CI saw 29 against 28 once. The
+// bound is therefore twice the small count, which no walk over 4,000 steps
+// could fit under, rather than the count itself.
 func TestReadingOneStepCostsOneStepHoweverManyRanBefore(t *testing.T) {
 	ctx := context.Background()
 	read := NewExpr("steps.s9.value + 1").GetExpr()
@@ -70,7 +77,7 @@ func TestReadingOneStepCostsOneStepHoweverManyRanBefore(t *testing.T) {
 	}
 
 	few, many := allocsAgainst(10), allocsAgainst(4000)
-	assert.LessOrEqual(t, many, few,
+	assert.LessOrEqual(t, many, 2*few,
 		"reading one step out of 4,000 finished steps allocates %.0f times where reading it out of 10 allocates %.0f; the resolution is walking every step", many, few)
 }
 
