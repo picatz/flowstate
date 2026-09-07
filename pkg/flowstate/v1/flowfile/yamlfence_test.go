@@ -95,6 +95,18 @@ func TestTheQuotingEditKeepsACommentOutsideAndDoublesAQuoteInside(t *testing.T) 
 	assert.Contains(t, fixed, "    value: '${true ? ''yes'' : ''no''}' # decided\n")
 	_, _, err = flowfile.Parse([]byte(fixed))
 	require.NoError(t, err, "%s", fixed)
+
+	// A `#` with no space before it is not a comment to YAML, so it is part
+	// of the scalar and the quotes go around it (Copilot, #1812).
+	src = "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    value: ${true ? 'a' : 'b'}#tail\n"
+	_, _, err = flowfile.Parse([]byte(src))
+	require.Error(t, err)
+	require.True(t, asDiagnostics(err, &ds))
+	require.Len(t, ds, 1)
+	fixed = applySuggestedEdit(t, src, ds[0])
+	assert.Contains(t, fixed, "    value: '${true ? ''a'' : ''b''}#tail'\n")
+	_, _, err = flowfile.Parse([]byte(fixed))
+	require.NoError(t, err, "%s", fixed)
 }
 
 // TestOtherMappingValueErrorsKeepTheParsersSentence is the negative direction:

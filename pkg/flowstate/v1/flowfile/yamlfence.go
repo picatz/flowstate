@@ -86,10 +86,14 @@ func sourceLine(data []byte, n int) (string, bool) {
 // opening with a fence covers: through the last closing brace when only a
 // comment or nothing follows it, and otherwise the whole remainder with the
 // trailing space removed.
+//
+// A comment starts at a `#` YAML would read as one, which is a `#` after
+// whitespace; `}#tail` is part of the scalar and stays inside the quotes.
 func plainScalarText(rest string) string {
 	if brace := strings.LastIndexByte(rest, '}'); brace >= 0 {
-		after := strings.TrimSpace(rest[brace+1:])
-		if after == "" || strings.HasPrefix(after, "#") {
+		after := rest[brace+1:]
+		trimmed := strings.TrimLeft(after, " \t")
+		if trimmed == "" || (len(trimmed) < len(after) && strings.HasPrefix(trimmed, "#")) {
 			return rest[:brace+1]
 		}
 	}
