@@ -268,7 +268,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 func pluginPinsOf(pinsFile string, pinFlags []string) (map[string]string, error) {
 	var base map[string]string
 	if pinsFile != "" {
-		data, err := os.ReadFile(pinsFile)
+		data, err := readBoundedFile(pinsFile, "a plugin pins file", maxPluginPinsBytes)
 		if err != nil {
 			return nil, fmt.Errorf("reading plugin pins %s: %w", pinsFile, err)
 		}

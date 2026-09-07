@@ -58,7 +58,7 @@ func applyTaskPolicy(cmd *cobra.Command) error {
 		return nil
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "a task-shape policy", maxPolicyFileBytes)
 	if err != nil {
 		return fmt.Errorf("reading task-shape policy: %w", err)
 	}

@@ -276,7 +276,7 @@ type fmtOutcome struct {
 func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions, machine bool) (fmtOutcome, error) {
 	report := &v1.FmtReport{File: path}
 
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "a Flowfile", maxFlowfileSourceBytes)
 	if err != nil {
 		return fmtOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
 	}

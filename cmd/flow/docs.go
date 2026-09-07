@@ -116,7 +116,7 @@ func readRepositoryFile(name string) ([]byte, error) {
 func readRepositoryFileFrom(dir, name string) ([]byte, error) {
 	for {
 		path := filepath.Join(dir, filepath.FromSlash(name))
-		data, err := os.ReadFile(path)
+		data, err := readBoundedFile(path, "a documentation source", maxRepositoryDocBytes)
 		if err == nil {
 			return data, nil
 		}

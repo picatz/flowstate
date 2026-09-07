@@ -1724,7 +1724,7 @@ func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
 			"or --insecure-no-auth to allow anonymous access for local development")
 	}
 
-	data, err := os.ReadFile(flags.policyPath)
+	data, err := readBoundedFile(flags.policyPath, "a trust policy", maxPolicyFileBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading auth policy: %w", err)
 	}
@@ -1829,7 +1829,7 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 
 	signingPath, verifyOnlyPaths := flags.identityKeyPaths[0], flags.identityKeyPaths[1:]
 
-	pem, err := os.ReadFile(signingPath)
+	pem, err := readBoundedFile(signingPath, "a PEM private key", maxPEMFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading identity key: %w", err)
 	}
@@ -1840,7 +1840,7 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 
 	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
 	for _, path := range verifyOnlyPaths {
-		data, err := os.ReadFile(path)
+		data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
 		if err != nil {
 			return nil, fmt.Errorf("reading verify-only identity key: %w", err)
 		}

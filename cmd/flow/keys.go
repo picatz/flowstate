@@ -145,7 +145,7 @@ func keyIDFromPath(path string) string {
 // does for the server's --identity-key flag, so `flow keys`/`flow jwt` and the
 // server accept exactly the same files.
 func readPrivateKeyPEM(path string) (crypto.PrivateKey, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
