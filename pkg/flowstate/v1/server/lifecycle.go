@@ -978,9 +978,10 @@ func (s *FlowstateServer) Cancel(ctx context.Context, req *connect.Request[v1.Ca
 	// that has already closed — the request is recorded and nothing is left
 	// to act on it — so `flow cancel` on a run that finished minutes ago
 	// claimed success while terminate and signal on the same id refused, and
-	// a script waiting for CANCELED waited forever (#1299). The describe the
-	// authorization already made says which, so the answer costs no second
-	// round trip and is the same sentence the siblings give.
+	// a script waiting for CANCELED waited forever (#1299). The
+	// DescribeWorkflowExecution call authorizeRun already made says whether
+	// the run is still running, so the answer costs no second round trip and
+	// is the same sentence the siblings give.
 	if getWorkflowExecutionStatus(described) != v1.RunResponse_STATUS_RUNNING {
 		return nil, finishedRunError("cancelling", workflowID, runID)
 	}
