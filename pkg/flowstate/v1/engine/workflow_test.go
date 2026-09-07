@@ -1551,39 +1551,75 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 // budget. The elapsed-time bound is what proves the refusal now lands before
 // that work rather than after it; the real-worker half — that no task panics
 // and nothing is retried — is TestTheIssuesFileFailsDurablyWithoutAPanic.
+//
+// The bound on that elapsed time is relative, not a number of seconds: the
+// allowed case builds exactly the list the bound permits, so it is the work a
+// refusal is allowed to cost, measured on the same machine under the same
+// load. An absolute three seconds held on a laptop and failed on a loaded CI
+// runner, where the refusal took 3.6s beside an allowed run that took longer
+// still (#1831's first run) — a bound that moves with the machine is the one
+// that says something about the code. The allowed cases run first so the
+// reference exists before a refusal is judged against it.
 func TestRunWorkflowExpressionElementBound(t *testing.T) {
-	for _, test := range conformance.ExpressionElementBoundCases() {
+	run := func(t *testing.T, workflow *v1.Workflow) (time.Duration, error, *v1.Workflow_StepOutputs) {
+		t.Helper()
+
+		testSuite := &testsuite.WorkflowTestSuite{}
+		// A boundary test: the at-bound case evaluates ten thousand
+		// elements on the workflow side, which is what the bound permits
+		// and what a deployed worker gives its deadlock budget to, and
+		// under the race detector that costs more than the test
+		// environment's one-second default. See [atABound].
+		env := atABound(testSuite.NewTestWorkflowEnvironment())
+		env.RegisterWorkflow(engine.Run)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+		started := time.Now()
+		env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: workflow})
+		elapsed := time.Since(started)
+		require.True(t, env.IsWorkflowCompleted())
+
+		if err := env.GetWorkflowError(); err != nil {
+			return elapsed, err, nil
+		}
+		var out v1.Workflow_StepOutputs
+		require.NoError(t, env.GetWorkflowResult(&out))
+
+		return elapsed, nil, &out
+	}
+
+	cases := conformance.ExpressionElementBoundCases()
+
+	var reference time.Duration
+	for _, test := range cases {
+		if test.ExpectFailure {
+			continue
+		}
 		t.Run(test.Name, func(t *testing.T) {
-			testSuite := &testsuite.WorkflowTestSuite{}
-			// A boundary test: the at-bound case evaluates ten thousand
-			// elements on the workflow side, which is what the bound permits
-			// and what a deployed worker gives its deadlock budget to, and
-			// under the race detector that costs more than the test
-			// environment's one-second default. See [atABound].
-			env := atABound(testSuite.NewTestWorkflowEnvironment())
-			env.RegisterWorkflow(engine.Run)
-			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
-			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
-			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
-
-			started := time.Now()
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
-			elapsed := time.Since(started)
-			require.True(t, env.IsWorkflowCompleted())
-
-			err := env.GetWorkflowError()
-			if test.ExpectFailure {
-				require.Error(t, err, "a list built past the element bound must be refused")
-				require.Contains(t, err.Error(), test.ExpectedErrorContains)
-				require.Less(t, elapsed, 3*time.Second,
-					"the refusal landed only after the work it exists to prevent")
-				return
-			}
+			elapsed, err, out := run(t, test.Workflow)
 			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+			reference = max(reference, elapsed)
+		})
+	}
+	require.Positive(t, reference, "no allowed case ran, so there is no work to measure a refusal against")
 
-			var out v1.Workflow_StepOutputs
-			require.NoError(t, env.GetWorkflowResult(&out))
-			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+	for _, test := range cases {
+		if !test.ExpectFailure {
+			continue
+		}
+		t.Run(test.Name, func(t *testing.T) {
+			elapsed, err, _ := run(t, test.Workflow)
+			require.Error(t, err, "a list built past the element bound must be refused")
+			require.Contains(t, err.Error(), test.ExpectedErrorContains)
+			// A refusal costs at most the fold up to the bound; several times
+			// the allowed run is a case that went on working after it refused.
+			// The same rule, and the same margin, as the evaluator's own test
+			// of this bound (cellistbound_test.go).
+			require.Less(t, elapsed, 3*reference+200*time.Millisecond,
+				"the refusal landed only after the work it exists to prevent (allowed run: %v)", reference)
 		})
 	}
 }

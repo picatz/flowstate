@@ -446,22 +446,49 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 // eb8172f the local driver *completed* the issue's file in fourteen seconds
 // while the durable one never completed it, so agreeing on failure is not
 // enough — both must refuse before the quadratic work runs.
+//
+// The bound on that elapsed time is relative: the allowed case builds exactly
+// the list the bound permits, so it is the work a refusal may cost, measured
+// on the same machine under the same load. The durable driver's twin failed an
+// absolute three seconds on a loaded CI runner (#1831's first run), and the
+// same number here is the same trap. The allowed cases run first so the
+// reference exists before a refusal is judged against it.
 func TestRunWorkflowExpressionElementBound(t *testing.T) {
-	for _, test := range conformance.ExpressionElementBoundCases() {
+	cases := conformance.ExpressionElementBoundCases()
+
+	var reference time.Duration
+	for _, test := range cases {
+		if test.ExpectFailure {
+			continue
+		}
 		t.Run(test.Name, func(t *testing.T) {
 			started := time.Now()
 			out, err := v1.Run(t.Context(), test.Workflow)
 			elapsed := time.Since(started)
 
-			if test.ExpectFailure {
-				require.Error(t, err, "a list built past the element bound must be refused")
-				require.Contains(t, err.Error(), test.ExpectedErrorContains)
-				require.Less(t, elapsed, 3*time.Second,
-					"the refusal landed only after the work it exists to prevent")
-				return
-			}
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+			reference = max(reference, elapsed)
+		})
+	}
+	require.Positive(t, reference, "no allowed case ran, so there is no work to measure a refusal against")
+
+	for _, test := range cases {
+		if !test.ExpectFailure {
+			continue
+		}
+		t.Run(test.Name, func(t *testing.T) {
+			started := time.Now()
+			_, err := v1.Run(t.Context(), test.Workflow)
+			elapsed := time.Since(started)
+
+			require.Error(t, err, "a list built past the element bound must be refused")
+			require.Contains(t, err.Error(), test.ExpectedErrorContains)
+			// A refusal costs at most the fold up to the bound; several times
+			// the allowed run is a case that went on working after it refused
+			// — the same rule and margin as cellistbound_test.go's.
+			require.Less(t, elapsed, 3*reference+200*time.Millisecond,
+				"the refusal landed only after the work it exists to prevent (allowed run: %v)", reference)
 		})
 	}
 }
