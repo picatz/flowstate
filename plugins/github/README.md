@@ -243,7 +243,7 @@ outputs:
     description: the full title of the oldest open issue among the listing above (github.issue_list's own sort/direction inputs, set to created/asc - see that step's comment), read in full via github.issue_get - the single-record detail a listing's own summary leaves out
   oldest_open_issue_is_actually_a_pull_request:
     value: ${steps.issue_detail.is_pull_request}
-    description: GitHub answers issues and pull requests through the same endpoint - always false here, since issue_detail's own number is chosen by filtering pull requests out first (see that step's comment); kept as an explicit sanity check on that filter rather than an assumption
+    description: always false here - GitHub serves issues and pull requests from one endpoint, and issue_detail's number is chosen by filtering pull requests out first (see that step's comment); kept as a sanity check on that filter rather than an assumption
 ```
 
 ## Why go-github, and not a hand-rolled client
