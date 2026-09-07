@@ -245,6 +245,19 @@ func TestSubmitRefusesAPromptTooDeepToWalk(t *testing.T) {
 	// to check is treated as holding a secret, whatever the file declared.
 	require.Error(t, v1.CheckWaitPromptsAreAskable(promptGate(nestedPrompt(reaching, v1.MaxStructureDepth+1))),
 		"a prompt too deep to check for a secret reference was accepted")
+
+	// The case only the reach walk decides (Codex, #1835): the too-deep
+	// structure is a step var, which the secret-reference walk over the
+	// prompt never sees, and the prompt is a bare name bound to it. The
+	// binding's reach is what the walk collects from under the bound, and
+	// before the cutoff was reported this was accepted — a sensitive input
+	// reached through a var, hidden by depth alone.
+	viaVar := promptGate(v1.NewExpr(`question`), salary)
+	viaVar.Steps[0].Vars = map[string]*v1.Value{
+		"question": nestedPrompt(reaching, v1.MaxStructureDepth+1),
+	}
+	require.Error(t, v1.CheckWaitPromptsAreAskable(viaVar),
+		"a step var too deep to walk hid a prompt's reach into a sensitive input")
 }
 
 // TestAPromptIsLeftAloneWhenNothingIsDeclaredSensitive is the control, and the
