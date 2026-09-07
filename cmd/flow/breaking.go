@@ -139,7 +139,7 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 	}
 
 	newByPath := compileHead(root, files)
-	oldByPath := compileRef(root, ref, paths, files)
+	oldByPath := compileRef(root, ref, paths, files, moveSources(moves))
 	if err := applyMoves(ref, moves, oldByPath, newByPath); err != nil {
 		return err
 	}
@@ -183,15 +183,19 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 	return nil
 }
 
-// move is one `--moved old=new`, both sides repository-relative.
+// move is one `--moved old=new`. Each side carries the spellings it could mean,
+// resolved by [applyMoves] against what is actually there.
 type move struct {
-	old, neu string
+	arg      string
+	old, neu []string
 }
 
-// parseMoves reads each `--moved old=new` into repository-relative paths. Either
-// side may be given relative to the working directory, the way every other path
-// argument is, or already repository-relative; both resolve through the same
-// rule the path arguments use.
+// parseMoves reads each `--moved old=new`. A side may be given relative to the
+// working directory, the way every other path argument is, or already
+// repository-relative, the way `git` prints a path; run from the repository root
+// the two are the same, and from a subdirectory they are not, so both spellings
+// are kept and [applyMoves] takes whichever names a file that exists. A spelling
+// that escapes the repository is dropped.
 func parseMoves(root string, args []string) ([]move, error) {
 	moves := make([]move, 0, len(args))
 	for _, arg := range args {
@@ -199,17 +203,41 @@ func parseMoves(root string, args []string) ([]move, error) {
 		if !ok || oldPath == "" || newPath == "" {
 			return nil, fmt.Errorf("--moved %q: want old=new, the path at the ref and the path in the working tree", arg)
 		}
-		oldRel, ok := repoRel(root, oldPath)
-		if !ok {
+		m := move{arg: arg, old: moveSpellings(root, oldPath), neu: moveSpellings(root, newPath)}
+		if len(m.old) == 0 {
 			return nil, fmt.Errorf("--moved %q: %s is outside the repository", arg, oldPath)
 		}
-		newRel, ok := repoRel(root, newPath)
-		if !ok {
+		if len(m.neu) == 0 {
 			return nil, fmt.Errorf("--moved %q: %s is outside the repository", arg, newPath)
 		}
-		moves = append(moves, move{old: oldRel, neu: newRel})
+		moves = append(moves, m)
 	}
 	return moves, nil
+}
+
+// moveSpellings is the repository-relative paths one `--moved` side could name:
+// read relative to the working directory first, then as already
+// repository-relative, deduplicated.
+func moveSpellings(root, path string) []string {
+	var out []string
+	if rel, ok := repoRel(root, path); ok {
+		out = append(out, rel)
+	}
+	if rel, ok := repoRel(root, filepath.Join(root, filepath.FromSlash(path))); ok && !slices.Contains(out, rel) {
+		out = append(out, rel)
+	}
+	return out
+}
+
+// moveSources is every path a `--moved` old side could name, so the ref-side
+// compile can read them whether or not the path arguments reach them: a caller
+// checking only the destination directory has still named the source.
+func moveSources(moves []move) []string {
+	var out []string
+	for _, m := range moves {
+		out = append(out, m.old...)
+	}
+	return out
 }
 
 // applyMoves rekeys each moved workflow's ref-side entry under its new path, so
@@ -219,20 +247,32 @@ func parseMoves(root string, args []string) ([]move, error) {
 // is still there) is refused rather than guessed.
 func applyMoves(ref string, moves []move, oldByPath, newByPath map[string]compiled) error {
 	for _, m := range moves {
-		old, ok := oldByPath[m.old]
+		oldRel, ok := firstPresent(m.old, oldByPath)
 		if !ok {
-			return fmt.Errorf("--moved %s=%s: %s is not a Flowfile at %s under the paths given", m.old, m.neu, m.old, ref)
+			return fmt.Errorf("--moved %s: %s is not a Flowfile at %s", m.arg, m.old[0], ref)
 		}
-		if _, ok := newByPath[m.neu]; !ok {
-			return fmt.Errorf("--moved %s=%s: %s is not a Flowfile in the working tree under the paths given", m.old, m.neu, m.neu)
+		newRel, ok := firstPresent(m.neu, newByPath)
+		if !ok {
+			return fmt.Errorf("--moved %s: %s is not a Flowfile in the working tree under the paths given", m.arg, m.neu[0])
 		}
-		if _, ok := oldByPath[m.neu]; ok {
-			return fmt.Errorf("--moved %s=%s: %s is also a Flowfile at %s, so the move would replace the workflow still there", m.old, m.neu, m.neu, ref)
+		if _, ok := oldByPath[newRel]; ok {
+			return fmt.Errorf("--moved %s: %s is also a Flowfile at %s, so the move would replace the workflow still there", m.arg, newRel, ref)
 		}
-		delete(oldByPath, m.old)
-		oldByPath[m.neu] = old
+		old := oldByPath[oldRel]
+		delete(oldByPath, oldRel)
+		oldByPath[newRel] = old
 	}
 	return nil
+}
+
+// firstPresent is the first spelling that keys the map.
+func firstPresent(spellings []string, m map[string]compiled) (string, bool) {
+	for _, rel := range spellings {
+		if _, ok := m[rel]; ok {
+			return rel, true
+		}
+	}
+	return "", false
 }
 
 // compiled is one workflow compiled from one file, with the positions its
@@ -275,10 +315,17 @@ func compileHead(root string, files []string) map[string]compiled {
 // own declared inputs and outputs shrank, and a callee's contract is a separate
 // question the callee's own row answers.
 //
-// The file set is the union of the working-tree files and every Flowfile tracked
+// The file set is the union of the working-tree files, every Flowfile tracked
 // at the ref under the same paths, so a workflow deleted between the ref and the
-// working tree is still seen on the ref side.
-func compileRef(root, ref string, paths, headFiles []string) map[string]compiled {
+// working tree is still seen on the ref side, and every path a `--moved` names
+// as a source, which the path arguments need not reach.
+//
+// A callee a ref-side file calls is read from the working tree, not the ref: the
+// parser resolves `call:` from disk, so a callee directory that no longer exists
+// there fails the old side's compile and the file is skipped. Reading callees
+// from the ref as well needs a parser that takes its files from somewhere other
+// than disk, which is a separate slice.
+func compileRef(root, ref string, paths, headFiles, extraRels []string) map[string]compiled {
 	relSet := make(map[string]struct{})
 	for _, path := range headFiles {
 		if rel, ok := repoRel(root, path); ok {
@@ -286,6 +333,9 @@ func compileRef(root, ref string, paths, headFiles []string) map[string]compiled
 		}
 	}
 	for _, rel := range gitListYAML(root, ref, repoRelPaths(root, paths)) {
+		relSet[rel] = struct{}{}
+	}
+	for _, rel := range extraRels {
 		relSet[rel] = struct{}{}
 	}
 

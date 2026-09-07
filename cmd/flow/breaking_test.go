@@ -504,6 +504,32 @@ func TestBreakingMovedFile(t *testing.T) {
 	require.Contains(t, out, "workflows/notify.yaml", "the break is reported at the new path")
 }
 
+// TestBreakingMovedFileFromSubdirectory pins the two spellings a `--moved` side
+// may use, from below the repository root and with the path arguments reaching
+// only the destination: relative to the working directory the way every other
+// path argument is, and repository-relative the way `git` prints a path. The
+// source is read at the ref whether or not the path arguments name it.
+func TestBreakingMovedFileFromSubdirectory(t *testing.T) {
+	src := fixtureHeader() + "outputs:\n  where:\n    value: ${'here'}\n" + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{"shared/notify.yaml": src})
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "workflows"), 0o755))
+	require.NoError(t, os.Rename(
+		filepath.Join(dir, "shared", "notify.yaml"), filepath.Join(dir, "workflows", "notify.yaml")))
+	sub := filepath.Join(dir, "workflows")
+
+	out, err := runBreakingCLI(t, sub, "--against", "HEAD", "--moved", "../shared/notify.yaml=notify.yaml", "notify.yaml")
+	require.NoError(t, err, "a working-directory-relative move from a subdirectory, got:\n%s", out)
+
+	out, err = runBreakingCLI(t, sub, "--against", "HEAD", "--moved", "shared/notify.yaml=workflows/notify.yaml", ".")
+	require.NoError(t, err, "a repository-relative move from a subdirectory, got:\n%s", out)
+
+	shrunk := fixtureHeader() + fixtureStep
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "notify.yaml"), []byte(shrunk), 0o644))
+	out, err = runBreakingCLI(t, sub, "--against", "HEAD", "--moved", "shared/notify.yaml=workflows/notify.yaml", "notify.yaml")
+	require.Error(t, err, "the source is compared even though only the destination was named, got:\n%s", out)
+	require.Contains(t, out, `output "where" was removed or renamed`)
+}
+
 // TestBreakingMovedFileRefusals pins the three moves that are refused rather
 // than guessed: a malformed pair, an old side not at the ref, and a new side that
 // is also at the ref, which the move would silently replace.
