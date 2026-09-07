@@ -679,9 +679,12 @@ jobs:
   # tests.AsyncCases scenario -- including the failing and
   # continue_on_error cases whose scope has to join on the way out -- against
   # the durable driver's TestWorkflowEnvironment, then asks the runtime
-  # whether it can prove any goroutine will never run again. It skips rather
-  # than fails when the profile is not registered, which is why this job's
-  # own presence is what makes it run at all.
+  # whether it can prove any goroutine will never run again. It fails rather
+  # than skips when the profile is not registered (#1650): this job runs
+  # exactly that one test, and a skip is a passing `go test`, so the job was
+  # green having checked nothing. The step after it holds the same line from
+  # the log, the way flowtest-seeded's "must have explored something" does,
+  # so the job is green only when the test's own PASS line was printed.
   goroutineleak:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -704,8 +707,27 @@ jobs:
           set -o pipefail
           GOMEMLIMIT=1GiB go test -timeout 900s -run TestAsyncCoroutinesDoNotLeak -v ./pkg/flowstate/v1/engine/ 2>&1 | tee goroutineleak.log
 
+      - name: The leak test must have executed
+        id: executed
+        continue-on-error: true
+        if: steps.leakcheck.outcome == 'success'
+        run: |
+          # A skipped test is a passing `go test`; the job is green only when
+          # the named test itself passed. Both halves are checked so that a
+          # log with neither line -- a `-run` pattern that matched nothing --
+          # fails the same way a skip does.
+          if grep -qF -- '--- SKIP: TestAsyncCoroutinesDoNotLeak' goroutineleak.log; then
+            echo "::error::TestAsyncCoroutinesDoNotLeak skipped, so the leak check proved nothing"
+            exit 1
+          fi
+          if ! grep -qF -- '--- PASS: TestAsyncCoroutinesDoNotLeak' goroutineleak.log; then
+            echo "::error::TestAsyncCoroutinesDoNotLeak did not report a pass, so the leak check proved nothing"
+            exit 1
+          fi
+          echo "the leak test executed and passed"
+
       - name: File an issue for a leak or harness failure
-        if: steps.leakcheck.outcome == 'failure'
+        if: steps.leakcheck.outcome == 'failure' || steps.executed.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -717,7 +739,7 @@ jobs:
             finding="The weekly deep tier's goroutine leak check found a coroutine started by \`engine.startAsync\` (pkg/flowstate/v1/engine/async.go) that the runtime can prove will never run again."
           else
             title="deep-tier: the goroutine leak harness failed"
-            finding="The weekly deep tier's goroutine leak job failed without reporting a coroutine leak. This is a harness, toolchain, setup, timeout, or dependency failure; it is not evidence that the runtime found a leak."
+            finding="The weekly deep tier's goroutine leak job failed without reporting a coroutine leak. This is a harness, toolchain, setup, timeout, or dependency failure -- or the leak test did not execute (a skip, or no PASS line in the log) -- and it is not evidence that the runtime found a leak."
           fi
           if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
             echo "an open issue already covers '${title}'; not filing another"
@@ -744,9 +766,9 @@ jobs:
           gh issue create --title "$title" --label deep-tier --body-file "$body"
 
       - name: A failed leak check fails the job
-        if: steps.leakcheck.outcome == 'failure'
+        if: steps.leakcheck.outcome == 'failure' || steps.executed.outcome == 'failure'
         run: |
-          echo "::error::the goroutine leak check failed; its issue distinguishes a reported leak from a harness or toolchain failure"
+          echo "::error::the goroutine leak check failed or did not execute; its issue distinguishes a reported leak from a harness or toolchain failure"
           exit 1
 
   # The same scan the PR lane runs, on a clock instead of a diff: advisories

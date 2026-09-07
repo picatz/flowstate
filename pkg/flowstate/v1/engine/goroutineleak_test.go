@@ -28,12 +28,15 @@ import (
 // one of them existing forever. A leaked coroutine does no work, trips no
 // assertion on the workflow's result, and the test that started it passes.
 //
-// The [runtime/pprof] "goroutineleak" profile is GA in Go 1.26, gated behind
-// GOEXPERIMENT=goroutineleakprofile at build time — the deep tier sets it; an
-// ordinary `go test` does not, and every other suite already runs these same
-// scenarios (TestRunWorkflowAsync) without paying for the detection GC cycle
-// this triggers. So this test skips rather than fails when the profile is not
-// registered, and stays this repo's only place that turns it on.
+// The [runtime/pprof] "goroutineleak" profile is generally available in the
+// Go 1.27 toolchain this repository pins, with no experiment to ask for: Go
+// 1.27 deleted the GOEXPERIMENT=goroutineleakprofile gate that Go 1.26 had.
+// So the profile's absence is a toolchain regression, and this test fails on
+// it rather than skipping (#1650): the weekly deep tier runs exactly this one
+// test, and a skip is a passing `go test`, which left the job green having
+// checked nothing. Every other suite already runs these same scenarios
+// (TestRunWorkflowAsync) without paying for the detection GC cycle this
+// triggers, which is why this stays the one place that asks for it.
 //
 // The profile can name a goroutine blocked forever anywhere in the process —
 // Temporal's own SDK runs background goroutines this binary did not write.
@@ -46,10 +49,9 @@ import (
 // attention, but not evidence against the coroutine drain this test targets.
 func TestAsyncCoroutinesDoNotLeak(t *testing.T) {
 	p := pprof.Lookup("goroutineleak")
-	if p == nil {
-		t.Skip("binary was not built with GOEXPERIMENT=goroutineleakprofile; " +
-			"see the goroutineleak job in .github/workflows/deep.yml")
-	}
+	require.NotNil(t, p, "the goroutineleak profile is not registered: it is generally available "+
+		"on the Go 1.27 toolchain go.mod pins, so this is a toolchain regression, not a build option; "+
+		"see the goroutineleak job in .github/workflows/deep.yml")
 
 	baseURL := conformance.NewHTTPServer(t)
 	for _, test := range conformance.AsyncCases(baseURL) {
