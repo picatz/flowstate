@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +101,7 @@ func TestListRendersRunsAndSaysWhenMoreRemain(t *testing.T) {
 				},
 				{
 					WorkflowId: "run-done",
+					Name:       "hello-world",
 					Status:     v1.RunResponse_STATUS_COMPLETED,
 					StartTime:  timestamppb.New(mustTime(t, "2026-07-01T08:00:00Z")),
 					CloseTime:  timestamppb.New(mustTime(t, "2026-07-01T08:30:00Z")),
@@ -114,26 +116,32 @@ func TestListRendersRunsAndSaysWhenMoreRemain(t *testing.T) {
 	require.NoError(t, runList(cmd, nil))
 
 	// The header first, because everything below asserts a position in a row and
-	// a position means nothing without the column it belongs to.
+	// a position means nothing without the column it belongs to. NAME leads and
+	// WORKFLOW_ID trails (#1660): a person scans for the workflow, and every id
+	// has the same shape.
 	require.Equal(t,
-		[]string{"WORKFLOW_ID", "SYM", "STATUS", "STARTED", "FINISHED"},
-		tableRow(t, out.String(), "WORKFLOW_ID"),
+		[]string{"NAME", "STATUS", "STARTED", "FINISHED", "WORKFLOW_ID"},
+		tableRow(t, out.String(), "NAME"),
 		"the columns are not the ones the rows are checked against")
 
 	// A finished run: every field, in order, on its own line. The close time is
 	// the field most easily rendered in the wrong column, and the status is the
-	// one nothing used to check at all. SYM carries the same outcome as STATUS,
-	// per section 2's rule that colour is never the only carrier of meaning — a
-	// plain-text listing still shows the outcome as a mark beside the word.
+	// one nothing used to check at all. This stream carries no colour, so the
+	// outcome mark sits beside the word, per section 2's rule that colour is
+	// never the only carrier of meaning — a plain-text listing still shows the
+	// outcome as a mark, and it shares the STATUS cell rather than a column of
+	// its own.
 	require.Equal(t,
-		[]string{"run-done", "+", "COMPLETED", "2026-07-01T08:00:00Z", "2026-07-01T08:30:00Z"},
-		tableRow(t, out.String(), "run-done"))
+		[]string{"hello-world", "+ COMPLETED", "2026-07-01T08:00:00Z", "2026-07-01T08:30:00Z", "run-done"},
+		tableRow(t, out.String(), "hello-world"))
 
 	// A run still going has no close time, so it renders a placeholder. Rendering
-	// the zero instant instead would report it as having finished in 1970.
+	// the zero instant instead would report it as having finished in 1970. This
+	// run was recorded before the name reached the memo, so its NAME cell is
+	// empty rather than a placeholder that could pass for a name.
 	require.Equal(t,
-		[]string{"run-running", ">", "RUNNING", "2026-07-01T09:00:00Z", "-"},
-		tableRow(t, out.String(), "run-running"))
+		[]string{"", "> RUNNING", "2026-07-01T09:00:00Z", "-", "run-running"},
+		tableRow(t, out.String(), ""))
 
 	// The listing is a bounded scan, so a page that came back with a token still
 	// set means runs remain. A caller that stops here misses their own runs, so
@@ -189,8 +197,11 @@ func TestListRefusalsExplainThemselves(t *testing.T) {
 	require.NotContains(t, err.Error(), "check the id")
 }
 
-// tableRow returns the whitespace-separated fields of the row that starts with
-// the given first column.
+// tableRow returns the cells of the row whose first cell is the given one.
+//
+// Cells are what tabwriter separates with two or more spaces (its padding), so
+// a cell that holds a space of its own, `+ COMPLETED`, stays one cell, and an
+// empty leading cell is an empty first element rather than a shifted row.
 //
 // A row is a record, so it is checked as one. Asserting substrings against the
 // whole buffer is what let three separate rendering bugs through here: `Contains`
@@ -198,15 +209,17 @@ func TestListRefusalsExplainThemselves(t *testing.T) {
 // FINISHED columns passed, giving an unfinished run a close time passed as long as
 // some other row had one, and the STATUS column was never asserted at all —
 // `statusLabel` returning "" for every status passed every `TestList*`.
-//
-// Fields rather than the raw line because the separator is a tabwriter's padding,
-// which is a rendering detail and not the contract; the order and the content are.
 func tableRow(t *testing.T, rendered, first string) []string {
 	t.Helper()
 
 	for _, line := range strings.Split(rendered, "\n") {
-		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == first {
-			return fields
+		line = strings.TrimRight(line, " ")
+		if line == "" {
+			continue
+		}
+		cells := tableCellSeparator.Split(line, -1)
+		if cells[0] == first {
+			return cells
 		}
 	}
 
@@ -214,6 +227,9 @@ func tableRow(t *testing.T, rendered, first string) []string {
 
 	return nil
 }
+
+// tableCellSeparator is tabwriter's padding between two cells.
+var tableCellSeparator = regexp.MustCompile(`  +`)
 
 // mustTime parses a fixed instant for a fixture.
 func mustTime(t *testing.T, value string) time.Time {
@@ -326,6 +342,7 @@ func TestListJSONIsOneDocumentAConsumerCanIndex(t *testing.T) {
 				},
 				{
 					WorkflowId: "run-done",
+					Name:       "hello-world",
 					Status:     v1.RunResponse_STATUS_COMPLETED,
 					StartTime:  timestamppb.New(mustTime(t, "2026-07-01T08:00:00Z")),
 					CloseTime:  timestamppb.New(mustTime(t, "2026-07-01T08:30:00Z")),
