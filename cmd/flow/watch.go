@@ -590,13 +590,18 @@ func interrupted(surface *ui.UI, rendering runRendering, state *watchState) erro
 //
 // The text shape has already said everything it owes on stderr, so it writes
 // nothing more; stdout stays empty, as it does for a followed run that produced
-// no outputs yet. The document shapes write the run as it was started — the
-// same conversion a follow begins from — so `flow run --detach -o json | jq
-// .workflow_id` is the whole of a detached caller's handover, and a jsonl
-// reader receives one event, the start, on the stream it would have followed.
+// no outputs yet. The document shapes write the start's own answer, the
+// [v1.RunResponse], rather than the [v1.GetResponse] a follow begins from: the
+// two share the ids and the status, and only the start's says whether this
+// invocation started anything — `reused` for a retried --request-id, `joined`
+// for a `concurrency.on_conflict: JOIN` — which is exactly what a detached job
+// needs before it associates its inputs with the run (Codex, #1843). So
+// `flow run --detach -o json | jq -r .workflowId` is the whole of a detached
+// caller's handover, and a jsonl reader receives one event, the start, on the
+// stream it would have followed.
 func detachedStart(surface *ui.UI, rendering runRendering, started *v1.RunResponse) error {
 	if rendering.format == FormatJSONL || rendering.WantsDocument() {
-		return writeRunJSON(surface, rendering, startedRun(started))
+		return writeRunJSON(surface, rendering, started)
 	}
 
 	return nil

@@ -78,6 +78,23 @@ func TestADetachedRunInJSONWritesTheRunAsStarted(t *testing.T) {
 	}
 }
 
+func TestADetachedRunSaysWhetherItStartedAnything(t *testing.T) {
+	fake := neverFollowed(t)
+	fake.runResponse.Reused = true
+	cmd, out, _ := runCommandForTest(t, fake)
+	cmd.Flags().Bool("detach", false, "")
+	require.NoError(t, cmd.Flags().Set("detach", "true"))
+	require.NoError(t, cmd.Flags().Set("output", "json"))
+
+	require.NoError(t, runWorkflow(cmd, []string{"../../examples/hello-world/workflow.yaml"}))
+
+	// The start's own answer, not a follow's: a job retrying under one
+	// request id has to be able to tell that this invocation started nothing.
+	var document map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &document), "stdout is not one JSON document: %s", out.String())
+	assert.Equal(t, true, document["reused"], "the detached document dropped the fact that the run was an earlier attempt's")
+}
+
 func TestADetachedRunStillReportsARefusedStart(t *testing.T) {
 	fake := startedThenFinished()
 	fake.runErr = assert.AnError
