@@ -234,7 +234,7 @@ jobs:
       # harder to review than it needed to be.
       - name: Format
         run: |
-          unformatted=$(gofmt -l ./cmd ./pkg)
+          unformatted=$(gofmt -l ./cmd ./pkg ./internal ./tools ./examples ./plugins)
           if [ -n "$unformatted" ]; then
             echo "::error::not gofmt'd; run 'gofmt -w' on:"
             echo "$unformatted"
