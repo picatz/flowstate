@@ -54,6 +54,10 @@ type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
 	dirs []string
 
+	// quiet moves the per-plugin "loaded plugin" line from the account
+	// stream to the debug one; see [startPluginsQuietly].
+	quiet bool
+
 	// only, when non-empty, pins exactly which plugins may launch. A name here
 	// with no binary behind it is an error rather than a silent omission, because
 	// a deployment that pinned a set expects that set.
@@ -696,6 +700,21 @@ func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.Pl
 	return startPluginsWithFlags(cmd, secretProviders, flags)
 }
 
+// startPluginsQuietly is [startPlugins] for a verb that reads plugins and runs
+// nothing — `validate`, `compile`, `fix` — where the "loaded plugin" line
+// belongs to the debug stream rather than the account one: nothing those
+// verbs print is a run a reader has to tell apart from a worker that found no
+// plugins, and a line on stderr that no transcript shows is the thing a
+// person diffing against the documentation trips over (#1673).
+func startPluginsQuietly(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.PluginCatalog, func(), error) {
+	flags, err := pluginFlagsOf(cmd)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	flags.quiet = true
+	return startPluginsWithFlags(cmd, secretProviders, flags)
+}
+
 func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry, flags pluginFlags) (*v1.PluginCatalog, func(), error) {
 	noop := func() {}
 
@@ -755,8 +774,12 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 		// On the account stream, at startup, naming what each plugin added.
 		// A step failing with `unknown task` and a worker that quietly found no
 		// plugins look identical from a Flowfile, and this is what tells them
-		// apart without a debugger.
-		infraLogger().Info("loaded plugin",
+		// apart without a debugger. A verb that runs nothing says it at debug.
+		level := slog.LevelInfo
+		if flags.quiet {
+			level = slog.LevelDebug
+		}
+		infraLogger().Log(cmd.Context(), level, "loaded plugin",
 			"plugin", p.GetName(),
 			"version", p.GetVersion(),
 			"path", p.GetPath(),

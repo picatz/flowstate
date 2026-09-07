@@ -370,8 +370,36 @@ func (e *IssuerBlockedError) Error() string {
 		hop = e.Deny.Target
 	}
 	return fmt.Sprintf("%v: issuer %q fetch of %s blocked by identity egress policy: %v; "+
-		"configure the trust policy's egress: section to allow this fetch",
-		ErrIssuerUnavailable, e.Issuer, hop, e.Deny)
+		"configure the trust policy's egress: section to allow this fetch: %s",
+		ErrIssuerUnavailable, e.Issuer, hop, e.Deny, egressRemedy(e.Deny))
+}
+
+// egressRemedy names the `egress:` option that would have admitted the denied
+// fetch, so the refusal is one sentence that, followed literally, makes the
+// next attempt succeed (#1694): a loopback rehearsal needs `schemes:` before
+// anything else, since the scheme is the first check and `allow_loopback:`
+// on its own is refused the same way; an in-cluster issuer needs
+// `allow_private_networks:`. A link-local or metadata address has no option,
+// on purpose.
+func egressRemedy(deny *netpolicy.DenyError) string {
+	switch deny.Reason {
+	case netpolicy.ReasonScheme:
+		return "add `schemes: [http, https]` to admit a plain-http fetch (what a loopback rehearsal needs; " +
+			"a loopback address also needs `allow_loopback: true`)"
+	case netpolicy.ReasonAddress:
+		switch deny.Detail {
+		case "loopback":
+			return "set `allow_loopback: true` to admit an issuer on this machine"
+		case "private", "unique-local", "carrier-grade NAT":
+			return "set `allow_private_networks: true` to admit an in-cluster issuer, or name its network in `allow_networks:`"
+		case "link-local", "cloud metadata":
+			return "no option admits a link-local or cloud metadata address; point the issuer at a routable one"
+		}
+	case netpolicy.ReasonPort:
+		return "add the port to `allow_ports:`"
+	}
+	return "the section's `schemes:`, `allow_loopback:`, `allow_private_networks:` and `allow_networks:` " +
+		"are the options that widen it"
 }
 
 func (e *IssuerBlockedError) Unwrap() []error {

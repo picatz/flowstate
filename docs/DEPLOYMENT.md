@@ -496,6 +496,46 @@ $ flow worker --tenant= --task-queue-prefix flowstate-run ...
 convenient way to keep them equal — a worker that spelled it differently would
 poll a queue nothing submits to, do nothing forever, and report nothing.
 
+### Identity egress: where the trust policy may fetch keys from
+
+Every OIDC discovery document and key set the trust policy names is fetched
+through an egress policy of its own, `auth.DefaultEgressPolicy`: https only,
+to public addresses only, because an issuer URL is operator-supplied and a
+discovery document's `jwks_uri` is *issuer*-supplied, so both are addresses an
+outside party gets a say in. A self-hosted identity provider is usually not a
+public address, and the refusal says which option admits it:
+
+```console
+$ flow auth check --auth-policy trust.yaml --token-file alice.jwt
+ERROR
+auth: issuer metadata or keys are unavailable: issuer "https://idp.local" fetch of
+http://127.0.0.1:8555/jwks.json blocked by identity egress policy: denied by
+egress policy: http://127.0.0.1:8555/jwks.json (scheme: "http" is not one of
+https); configure the trust policy's egress: section to allow this fetch: add
+`schemes: [http, https]` to admit a plain-http fetch (what a loopback rehearsal
+needs; a loopback address also needs `allow_loopback: true`)
+```
+
+The section is the trust policy's own `egress:` block, and its fields are the
+ones the worker's `--egress-policy` file takes:
+
+```yaml
+# An in-cluster identity provider (Keycloak, Dex, the Kubernetes API server):
+# private addresses admitted, https kept.
+egress:
+  allow_private_networks: true
+
+# A loopback rehearsal on a laptop: plain http on this machine only.
+egress:
+  schemes: [http, https]
+  allow_loopback: true
+```
+
+`allow_networks:` names one CIDR rather than a whole class, which is the
+narrower form for production. Link-local and cloud metadata addresses have no
+option, on purpose. The boundary stays default-deny; what the section changes
+is what this deployment's own identity provider is allowed to be.
+
 ### Bearer-token audiences are per surface
 
 A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical

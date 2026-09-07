@@ -183,7 +183,7 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 	// Before a single file is read, let alone written: a rewriter that had
 	// already changed half a directory when its plugin failed to come up would
 	// have rewritten those files against a task set the author did not ask for.
-	_, closePlugins, err := startPlugins(cmd, nil)
+	_, closePlugins, err := startPluginsQuietly(cmd, nil)
 	if err != nil {
 		// See [runValidate]: a refusal made before anything launched is a wrong
 		// command line, not a plugin that would not start. Nothing has been

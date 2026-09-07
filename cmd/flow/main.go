@@ -2099,7 +2099,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// agree with the two drivers rather than pass a file both of them refuse —
 	// see [validatePluginRequirements] (#835 review). It is nil when nothing was
 	// launched, which is the same fact said the other way.
-	catalog, closePlugins, err := startPlugins(cmd, nil)
+	catalog, closePlugins, err := startPluginsQuietly(cmd, nil)
 	if err != nil {
 		// A wrong command line is passed through as it is. The sentence below
 		// says a plugin would not start, and for a refusal made before anything
