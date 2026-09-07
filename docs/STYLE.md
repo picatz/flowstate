@@ -44,7 +44,7 @@ descend from are in Part I.
 | Construct | Write this | Not this | Why this one |
 | --- | --- | --- | --- |
 | Dispatch on one value with three or more outcomes | `switch:` with a `default:` that means something | a ternary tree, or sibling `if:` steps each testing the same value for equality | only the keyword lets the validator check the branches against the value's domain, which it does: an unreachable `default:` is refused by name |
-| Reading a field that may be absent | `x.?y.orValue(d)` | `has(x.y) ? x.y : d` | one traversal instead of a presence test and a separate read that can drift apart; `flow fix` already performs this rewrite (`fixoptional.go:22`) |
+| Reading a field that may be absent | `x.?y.orValue(d)` | `has(x.y) ? x.y : d` | one traversal instead of a presence test and a separate read that can drift apart; `flow fix` already performs this rewrite (`pkg/flowstate/v1/flowfile/fixoptional.go:22`) |
 | Asking whether a field was sent at all | `x.?y.hasValue()`, or `has(x.y)` | `x.?y.orValue(false)` | a default cannot tell "absent" from "present and false", so it collapses two answers into one |
 | A fact read more than once | a `value:` step, read as `${steps.<id>.value}` | the same subexpression written out at each site | the sites drift; one of them gets edited and the file still validates |
 | A constant used across steps | workflow `vars:` | repeating the literal | one place to change, and the name says what it is |
@@ -54,13 +54,13 @@ descend from are in Part I.
 | Naming a computed value | a `value:` step | the retired `cel:` step | a value is not an effect, and the key named the evaluator instead of the role |
 | Printing a line | `log:` | the retired `echo:` / `printf:` | the capability already existed under another name |
 | Reading a step's scalar output | `${steps.<id>.value}` | a bare `${steps.<id>}` | the six characters buy uniformity in every tool that reads outputs, and this is permanent (anti-goal 7) |
-| Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`parse_wait.go:397`) |
+| Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`pkg/flowstate/v1/flowfile/parse_wait.go:397`) |
 | Naming a webhook delivery for dedupe | the event's own id, `${event.body.id}`, or a delivery id the sender repeats in a header | a signature header, `${event.headers["stripe-signature"]}` | a signature is computed per attempt — a retry carries a new timestamp and a new MAC over the same event — so a key over it names the attempt and every real retry starts a second run (R10) |
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
 | A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
 
 The last row is the one place where the canonical spelling is not yet the only legal
-one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:128`) documents the
+one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:151`) documents the
 fence as optional for expression-typed fields, and it is: a step written
 `if: inputs.amount > 1`, with no fence anywhere, validates. Every `if:` in
 `examples/` that holds an expression writes the fence anyway, which is the corpus
@@ -166,7 +166,7 @@ inputs.amount.must: cannot be an expression; it is read when the workflow is
 compiled, so write the value out
 ```
 
-while `if:` accepts the fenced and the bare form alike (`value.go:128`). Whatever
+while `if:` accepts the fenced and the bare form alike (`pkg/flowstate/v1/flowfile/value.go:151`). Whatever
 #545 decides, this rule constrains the resolution:
 
 - It applies to **every** expression-typed field, at **one** edition boundary, with a
@@ -190,7 +190,7 @@ migration.
   question, which is a different question.
 - **A structurally repeated subexpression appearing three or more times** is a
   `value:` step waiting for a name. Structural identity is already implemented, as
-  `exprEqual` (`pkg/flowstate/v1/flowfile/negation.go:268`), and `flow audit` already
+  `exprEqual` (`pkg/flowstate/v1/flowfile/negation.go:270`), and `flow audit` already
   counts occurrences with it. Tier 4 *suggests* and never rewrites, because the
   rewrite would have to invent a name, and a rewriter that guesses names is the bug
   class `flow fix` exists never to be.

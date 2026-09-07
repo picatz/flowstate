@@ -13,8 +13,10 @@ protocol rather than the Go SDK, skip to
 [Writing one in another language](#writing-one-in-another-language).
 
 Every transcript below is what the command actually printed, run from a module
-outside this repository against `c4ead7c`; the `file:line` references are against
-`5ab0309`, which changes nothing on this path.
+outside this repository against `c4ead7c`. The `file:line` references are
+against the current tree: `go test ./tools/citations` fails when a cited file
+or line is gone, or when the cited lines no longer hold the symbol the
+sentence names, so a reference here is one the tree still agrees with.
 
 ## Contents
 
@@ -52,7 +54,7 @@ signal handling and the shutdown are
 [`pkg/flowstate/v1/plugin/sdk`](../pkg/flowstate/v1/plugin/sdk)'s, and the host
 half is documented end to end in
 [`pkg/flowstate/v1/plugin`'s package doc](../pkg/flowstate/v1/plugin/doc.go)
-(`doc.go:70-98` is the handshake, field by field).
+(`pkg/flowstate/v1/plugin/doc.go:70-98` is the handshake, field by field).
 
 ## Chapter one: a plugin that runs
 
@@ -100,12 +102,12 @@ func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstate
 }
 ```
 
-`sdk.Main` is the whole of `func main` (`sdk/sdk.go:314-327`). The manifest the
+`sdk.Main` is the whole of `func main` (`pkg/flowstate/v1/plugin/sdk/sdk.go:366-379`). The manifest the
 engine sees is derived from that struct rather than written beside it, so a
 plugin built this way cannot advertise a capability it did not implement:
 `Secrets` being set
 is what advertises secret resolution, and a non-empty `Tasks` is what advertises
-tasks (`sdk/sdk.go:690-732`).
+tasks (`pkg/flowstate/v1/plugin/sdk/sdk.go:690-732`).
 
 Resolve the dependency, build under the name discovery looks for, and ask what a
 worker would find:
@@ -130,14 +132,14 @@ hello 0.1.0
 
 The name is not a convention you may vary. Discovery reads the plugin's name off
 the binary's suffix and ignores everything without the prefix
-(`plugin/discover.go:19`, `:140-144`), so `bin/hello` is not a plugin and
+(`pkg/flowstate/v1/plugin/discover.go:19`, `:140-144`), so `bin/hello` is not a plugin and
 `flow plugins` will tell you the directory is empty. The suffix is also the
 qualifier a Flowfile writes — `hello.greet:` — and a plugin cannot choose or
 forge it, which is why two plugins may each provide `post` without colliding
-(`sdk/sdk.go:203-212`).
+(`pkg/flowstate/v1/plugin/sdk/sdk.go:203-212`).
 
 Run the binary from a shell and it explains itself rather than speaking a binary
-protocol at your terminal (`sdk/sdk.go:335-369`):
+protocol at your terminal (`pkg/flowstate/v1/plugin/sdk/sdk.go:335-369`):
 
 ```console
 $ ./bin/flowstate-plugin-hello
@@ -159,7 +161,7 @@ task's `Input` and `Output` are zero values of protobuf messages whose
 descriptors travel to the engine in the manifest, which is what lets the engine
 validate a workflow using your task, complete its fields in an editor, and
 document it — without compiling a line of your code
-(`sdk/sdk.go:218-226`, `plugin/descriptor.go:25-29`).
+(`pkg/flowstate/v1/plugin/sdk/sdk.go:218-226`, `pkg/flowstate/v1/plugin/descriptor.go:25-29`).
 
 So: a schema of your own. Three files beside the `main.go` you already have.
 
@@ -264,7 +266,7 @@ $ flow plugins --plugin-dir ./bin
 
 Output field names are the names a later step reads — a step with `id: hi` gives
 a later step `${steps.hi.message}` — because `EncodeOutputs` turns one message
-field into one named output (`sdk/values.go:269-298`). The `steps.` prefix is not
+field into one named output (`pkg/flowstate/v1/plugin/sdk/values.go:269-298`). The `steps.` prefix is not
 optional — a bare `${hi.message}` is refused, and the diagnostic says so:
 
 ```console
@@ -387,9 +389,9 @@ your build time and visible later, at a host, to somebody who cannot fix it.
 
 ### 1. Declaring no schema is a silent opt-out of the whole contract
 
-`Task.Input` and `Task.Output` may be nil (`sdk/sdk.go:225-226`), the host
+`Task.Input` and `Task.Output` may be nil (`pkg/flowstate/v1/plugin/sdk/sdk.go:267-268`), the host
 accepts a manifest that names no message for a side
-(`plugin/descriptor.go:34-36`), and `flow plugins` renders it as `inputs none`
+(`pkg/flowstate/v1/plugin/descriptor.go:34-36`), and `flow plugins` renders it as `inputs none`
 (`cmd/flow/tasks.go:592-596`, rendered from `cmd/flow/plugins.go:298-301`). Every
 part of that is deliberate, and the sum of it is a task with no contract at all,
 described in the same word a task with genuinely no inputs uses.
@@ -397,7 +399,7 @@ described in the same word a task with genuinely no inputs uses.
 Nothing checks the inputs going in: the host has no descriptor to check against,
 and inside the plugin `DecodeInputs` ignores an input the message has no field
 for, on purpose, so a workflow written against a newer version of a task does not
-fail against an older plugin (`sdk/values.go:42-46`). The two are individually
+fail against an older plugin (`pkg/flowstate/v1/plugin/sdk/values.go:42-46`). The two are individually
 right and jointly silent.
 
 Measured on the two plugins this page builds — chapter one's kept aside as
@@ -439,11 +441,11 @@ Two things follow that are worth knowing before you build on it:
   `pkg/flowstate/v1/plugin/sdk` pulls the module: 368 packages across 126 modules
   in the graph for the chapter-one plugin, and a 24 MB binary. That is a
   consequence of `TaskFunc` speaking in `flowstatev1.Value` and
-  `flowstatev1.Scope` (`sdk/sdk.go:303`), which is also what makes a plugin task
+  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:355`), which is also what makes a plugin task
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`sdk/sdk.go:649-667`, `protocol.go:361` for the current
+  which side to upgrade (`pkg/flowstate/v1/plugin/sdk/sdk.go:649-667`, `pkg/flowstate/v1/plugin/internal/protocol/protocol.go:361` for the current
   version, 5, which the egress grant moved it to). Nothing equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
@@ -456,11 +458,11 @@ not a line to copy.
 
 `DeferredInputs`, `ExpressionInputs`, `SecretInputs` and
 `RequiredSecretInputs` name inputs by string.
-The SDK copies them into the manifest as given (`sdk/sdk.go:736-764`), and the
+The SDK copies them into the manifest as given (`pkg/flowstate/v1/plugin/sdk/sdk.go:736-764`), and the
 host's `checkManifest` validates the manifest's shape, its capabilities, its
 schemes and its task-name uniqueness — and never intersects those four lists
 with the descriptors sitting beside them in the same message
-(`plugin/plugin.go:504-594`). A typo in one is therefore accepted at launch and
+(`pkg/flowstate/v1/plugin/plugin.go:504-594`). A typo in one is therefore accepted at launch and
 discovered at execution.
 
 The full path, measured, on a build of the plugin above with
@@ -480,13 +482,13 @@ accepts one in tokn
 ```
 
 The refusal is a good one — it is deny-by-default and it names what the task
-*does* accept (`plugin/task.go:392-395`, `:410-418`) — and it arrives at
+*does* accept (`pkg/flowstate/v1/plugin/task.go:392-395`, `:410-418`) — and it arrives at
 execution, to whoever is running the workflow rather than to whoever wrote the
 plugin. `flow validate` does not catch it, even told about the plugin: the
 manifest's `secret_inputs` reaches
-the registry as `TaskDef.SecretInputs` (`registry.go:155-172`), but the
+the registry as `TaskDef.SecretInputs` (`pkg/flowstate/v1/registry.go:155-172`), but the
 validator's secret checking consults only `NestedSecretInputs`, for structures
-that hold a reference inside them (`flowfile/secret.go:259-262`, `registry.go:378`).
+that hold a reference inside them (`pkg/flowstate/v1/flowfile/secret.go:259-262`, `pkg/flowstate/v1/registry.go:378`).
 
 (`--secret-env` is what makes `env:GREET_TOKEN` resolvable, and `--auth-policy`
 is what authorizes reading it: a process holding a secret provider with no access
@@ -508,7 +510,7 @@ see [known limitations](#known-limitations).
 
 **A stray write to stdout before serving corrupts the handshake.** The SDK
 points `os.Stdout` at stderr, but only *after* announcing, because the
-announcement is the one thing stdout is for (`sdk/sdk.go:488-499`). Anything
+announcement is the one thing stdout is for (`pkg/flowstate/v1/plugin/sdk/sdk.go:488-499`). Anything
 printed before that — a debug line, a dependency's `init`, a library's banner —
 lands where the host is reading a protocol:
 
@@ -520,26 +522,26 @@ handshake line starts with "debug: starting", want "FLOWSTATE-PLUGIN" — is thi
 a Flowstate plugin?
 ```
 
-That message is as good as it can be (`internal/protocol/protocol.go:522`), and
+That message is as good as it can be (`pkg/flowstate/v1/plugin/internal/protocol/protocol.go:522`), and
 it still names your first debug line as a protocol failure. Log through
 `sdk.WithLogger` or to stderr; after `sdk.Main` is serving, `fmt.Println` is
 harmless, since stdout has been redirected — but Go code writing to file
 descriptor 1 directly, such as linked C, gets through regardless
-(`sdk/sdk.go:496-499`).
+(`pkg/flowstate/v1/plugin/sdk/sdk.go:496-499`).
 
 **`ShapesOutputs` is a claim about your executor, and three host surfaces believe
 it.** Setting it says this task reads an input named `outputs` as a mapping of
 name to expression and returns *those* names instead of its declared ones. The
 compiler, the validator and the language server all describe the step in those
 terms, so a task that sets it and returns its declared outputs anyway gets all
-three describing a step that produces something else (`sdk/sdk.go:275-294`).
+three describing a step that produces something else (`pkg/flowstate/v1/plugin/sdk/sdk.go:324-343`).
 False is the right answer for every ordinary task, including one that happens to
 have an input called `outputs`.
 
 **A relaunched plugin must describe itself the same way.** The host restarts a
 plugin that exits, with backoff, and refuses one that comes back claiming
 different schemes or different tasks, because adapters already handed to the
-engine are bound to the first answer (`plugin/doc.go:117-123`). A manifest built
+engine are bound to the first answer (`pkg/flowstate/v1/plugin/doc.go:117-123`). A manifest built
 from anything that varies per launch — an environment lookup, a feature flag, a
 directory listing — is a plugin that works until it restarts.
 
@@ -558,12 +560,12 @@ The fields not covered above, each a claim the engine acts on:
 
 | Field | What it says | Reference |
 | --- | --- | --- |
-| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `sdk/sdk.go:257-261` |
-| `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `sdk/sdk.go:228-236` |
-| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `sdk/sdk.go:238-255` |
-| `SecretInputs` | A Flowfile may write `${secret(...)}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference. | `sdk/sdk.go:263-273` |
-| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `sdk/sdk.go:275-294` |
-| `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `sdk/sdk.go:138-148` |
+| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `pkg/flowstate/v1/plugin/sdk/sdk.go:299-303` |
+| `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `pkg/flowstate/v1/plugin/sdk/sdk.go:270-278` |
+| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `pkg/flowstate/v1/plugin/sdk/sdk.go:280-297` |
+| `SecretInputs` | A Flowfile may write `${secret(...)}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference. | `pkg/flowstate/v1/plugin/sdk/sdk.go:305-315` |
+| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `pkg/flowstate/v1/plugin/sdk/sdk.go:324-343` |
+| `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `pkg/flowstate/v1/plugin/sdk/sdk.go:180-190` |
 
 `ExpressionInputs` is enforced by `flow validate` when the validator has been
 told about your plugin. Against the chapter-two plugin declaring `greeting` as
@@ -577,7 +579,7 @@ value in ${...}
 ```
 
 The mechanism is `MustBeExpression` over the registry
-(`registry.go:426-428`, read at `flowfile/schema.go:128`), and what makes it
+(`pkg/flowstate/v1/registry.go:426-428`, read at `pkg/flowstate/v1/flowfile/schema.go:128`), and what makes it
 reach a plugin's task is `--plugin-dir` registering the host into that registry
 (`cmd/flow/plugins.go:383`). Without `--plugin-dir` the validator has not been
 told the task exists, so the declaration is inert — not because it is
@@ -788,7 +790,7 @@ that declines to ask.
 
 Whether a step is retried is decided by the error your task returns, and only
 your plugin knows whether its backend's failure was transient. Return through the
-constructors rather than as a bare error (`sdk/errors.go:22-30`):
+constructors rather than as a bare error (`pkg/flowstate/v1/plugin/sdk/errors.go:22-30`):
 
 | Constructor | Meaning | Retried |
 | --- | --- | --- |
@@ -802,13 +804,13 @@ constructors rather than as a bare error (`sdk/errors.go:22-30`):
 
 `UnavailableAfter` is `Unavailable` carrying a delay a backend named — a 429 or a
 503 with `Retry-After` — which the host maps onto the step's retry hint
-(`sdk/errors.go:121-136`).
+(`pkg/flowstate/v1/plugin/sdk/errors.go:121-136`).
 
 > [!WARNING]
 > An error from a plugin is surfaced to users and written to workflow history,
 > which is durable and broadly readable. Never interpolate a secret, a token, or
 > a credential-bearing backend message into one. The same applies to stderr and
-> what a `Health` check returns, which the engine logs (`sdk/sdk.go:979-989`). As
+> what a `Health` check returns, which the engine logs (`pkg/flowstate/v1/plugin/sdk/sdk.go:1099-1109`). As
 > accidental containment, the host scrubs known resolved values and their common
 > encodings from plugin stderr, reserved post-handshake stdout, health text, and
 > manifest text. It retains at most 256 delivered values per plugin process while

@@ -79,7 +79,7 @@ consume budget: a legal Flowfile may `sleep: 24h`, loop to its declared
 
 **A co-tenant.** Cannot address another tenant's runs through the API: one `ownedBy`
 check covers every addressed verb and answers `NotFound` rather than
-`PermissionDenied`, so a probe learns nothing (`pkg/flowstate/v1/server/lifecycle.go:46`,
+`PermissionDenied`, so a probe learns nothing (`pkg/flowstate/v1/server/lifecycle.go:657`,
 `:85`, `:104`). Can read another tenant's history if both execute in the same
 Temporal namespace and they have substrate access, because the Flowstate API's
 tenancy governs the Flowstate API and nothing downstream of it.
@@ -182,7 +182,7 @@ refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read at `cmd/flow/main.go:148`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:767`;
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1691`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, `docs/DEPLOYMENT.md:306-311`).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
@@ -486,7 +486,7 @@ Compose the pieces rather than treating this as a separate topic.
 **What exists today.** `flow mcp` projects every WorkflowService RPC as a tool by
 walking the service descriptor (`cmd/flow/mcp.go:32-48`), serves three embedded docs
 resources whose content is the repository's own, compiled in through
-`cmd/flow/internal/reference` (`cmd/flow/mcpresources.go:40-48`,
+`cmd/flow/internal/reference` (`cmd/flow/internal/mcp/resources.go:39-49`,
 `cmd/flow/internal/reference/reference.go:38`), and offers `flowstate_run_local`,
 which executes a model-composed Flowfile in this process.
 
