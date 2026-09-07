@@ -105,7 +105,9 @@ func relative(root, path string) string {
 		return path
 	}
 	if shorter, err := filepath.Rel(absolute, path); err == nil && !strings.HasPrefix(shorter, "..") {
-		return shorter
+		// Slashes whatever the host writes, since the ratchet's keys are
+		// spelled with them.
+		return filepath.ToSlash(shorter)
 	}
 
 	return path

@@ -229,6 +229,50 @@ func TestNotTime(t *testing.T) {
 	assert.Equal(t, []int{9}, lines(sleeps), "an aliased time import was missed, or a local named time was mistaken for it")
 }
 
+func TestADotImportedTimeAndSynctestAreFollowed(t *testing.T) {
+	t.Parallel()
+
+	sleeps := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	. "testing/synctest"
+	. "time"
+)
+
+func TestBubbled(t *testing.T) {
+	Test(t, func(t *testing.T) {
+		Sleep(Second)
+	})
+}
+
+func TestReal(t *testing.T) {
+	Sleep(Second)
+}
+`})
+
+	assert.Equal(t, []int{16}, lines(sleeps), "a dot-imported Sleep was missed, or a dot-imported Test was not seen as a bubble")
+}
+
+func TestABlankImportOfTimeCountsNothing(t *testing.T) {
+	t.Parallel()
+
+	sleeps := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	_ "time"
+)
+
+func TestNotTime(t *testing.T) {
+	var time struct{ Sleep func(int) }
+	time.Sleep(1)
+}
+`})
+
+	assert.Empty(t, sleeps, "a file that blank-imports time has no time.Sleep to count")
+}
+
 func TestOnlyTestFilesAreRead(t *testing.T) {
 	t.Parallel()
 

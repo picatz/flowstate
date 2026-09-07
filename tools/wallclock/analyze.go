@@ -131,8 +131,8 @@ func sleepsIn(file *ast.File) []token.Pos {
 }
 
 // localName returns the name a file refers to an import by: the package's own
-// name ordinarily, an alias where the file wrote one, and "" where the file
-// does not import it or dot-imports it.
+// name ordinarily, an alias where the file wrote one, "." where the file
+// dot-imports it, and "" where the file does not import it.
 func localName(file *ast.File, path string) string {
 	for _, imp := range file.Imports {
 		got, err := strconv.Unquote(imp.Path.Value)
@@ -142,7 +142,7 @@ func localName(file *ast.File, path string) string {
 		if imp.Name == nil {
 			return path[strings.LastIndex(path, "/")+1:]
 		}
-		if imp.Name.Name == "." || imp.Name.Name == "_" {
+		if imp.Name.Name == "_" {
 			return ""
 		}
 		return imp.Name.Name
@@ -151,8 +151,14 @@ func localName(file *ast.File, path string) string {
 	return ""
 }
 
-// isSelector reports whether expr is `pkg.name` for one of the names.
+// isSelector reports whether expr names one of the names in the package: as
+// `pkg.name`, or as the bare `name` when the package is dot-imported.
 func isSelector(expr ast.Expr, pkg string, names ...string) bool {
+	if pkg == "." {
+		ident, ok := expr.(*ast.Ident)
+		return ok && slices.Contains(names, ident.Name)
+	}
+
 	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
 		return false
