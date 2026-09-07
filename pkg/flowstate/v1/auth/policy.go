@@ -531,7 +531,10 @@ func ParsePolicy(data []byte) (Policy, error) {
 	var policy Policy
 
 	if err := yaml.UnmarshalWithOptions(data, &policy, yaml.Strict()); err != nil {
-		return Policy{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+		// Both sentinels: every caller that asked "is the policy usable" keeps
+		// its answer, and the one that must not echo the decoder can tell this
+		// failure from a validation one — see [ErrPolicySyntax].
+		return Policy{}, fmt.Errorf("%w: %w: %w", ErrInvalidPolicy, ErrPolicySyntax, err)
 	}
 
 	if err := rejectNullNamespaceMap(data, policy); err != nil {

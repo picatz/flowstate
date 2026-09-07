@@ -71,6 +71,18 @@ var (
 	// by an [Authenticator] with no verifier at all.
 	ErrInvalidPolicy = errors.New("auth: invalid authentication configuration")
 
+	// ErrPolicySyntax is returned by [ParsePolicy], wrapped beside
+	// [ErrInvalidPolicy], when the document could not be decoded as a policy
+	// at all — as opposed to decoding and then failing [Policy.Validate].
+	//
+	// The distinction exists for a reader that must not repeat what the
+	// decoder says. A decoder's error quotes the malformed source, and the
+	// source may be a credential a caller handed over in the policy's place;
+	// a validation failure names a field and a rule and quotes at most a value
+	// the policy declared. `flow auth check` redacts the first and reports the
+	// second (picatz/flowstate#1693).
+	ErrPolicySyntax = errors.New("auth: policy could not be decoded")
+
 	// ErrDelegatedToken is returned when a token carries an RFC 8693 delegation
 	// claim — "act" or "may_act" — that this deployment has nowhere to map and
 	// therefore refuses rather than ignores. See [DelegationClaimError] for the
