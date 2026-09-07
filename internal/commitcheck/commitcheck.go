@@ -73,7 +73,7 @@ var (
 
 	// verification is the line or heading that records what ran, or the
 	// trailer that says nothing did.
-	verification = regexp.MustCompile(`(?mi)^(#+ *)?verification\b|^Unverified: \S|^Verification: \S`)
+	verification = regexp.MustCompile(`(?m)^(#+ *[Vv]erification *$|Verification: *\S|Unverified: *\S)`)
 
 	// absolutes are the phrases comms-pr forbids without evidence.
 	absolutes = regexp.MustCompile(`(?i)\b(fully tested|backward[- ]compatible|no impact|safe)\b`)

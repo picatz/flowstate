@@ -50,6 +50,10 @@ func TestVerificationIsALineAHeadingOrADeclaredAbsence(t *testing.T) {
 	assert.Empty(t, Check("a: b", "Refs #1\n\nVerification: `go test ./...` ok\n"))
 	assert.Empty(t, Check("a: b", "Refs #1\n\n## Verification\n\n- ok\n"))
 	assert.Empty(t, Check("a: b", "Refs #1\n\nUnverified: docs only, no command applies\n"))
+	assert.Equal(t, []Rule{RuleVerification}, rules(Check("a: b", "Refs #1\n\nVerification will be added later.\n")),
+		"prose that opens with the word is not the marker")
+	assert.Equal(t, []Rule{RuleVerification}, rules(Check("a: b", "Refs #1\n\n## Verification plan\n")),
+		"a heading that says more than the word is not the marker")
 }
 
 func TestAnAbsoluteNeedsEvidenceOnItsLine(t *testing.T) {

@@ -64,7 +64,7 @@ func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body 
 		return title, body, nil
 
 	case eventPath != "":
-		data, err := os.ReadFile(eventPath)
+		data, err := readBounded(eventPath, nil)
 		if err != nil {
 			return "", "", fmt.Errorf("reading the event payload: %w", err)
 		}
@@ -83,7 +83,7 @@ func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body 
 		return event.PullRequest.Title, event.PullRequest.Body, nil
 
 	default:
-		data, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
+		data, err := readBounded("-", stdin)
 		if err != nil {
 			return "", "", fmt.Errorf("reading the message from stdin: %w", err)
 		}
@@ -92,11 +92,35 @@ func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body 
 	}
 }
 
+// maxInput bounds what this reads from a file, the event payload, or stdin: a
+// message is kilobytes, an event payload is under a megabyte, and a file that
+// is larger is the wrong file, refused rather than loaded (Codex, #1848).
+const maxInput = 4 << 20
+
 func readFile(name string, stdin io.Reader) ([]byte, error) {
-	if name == "-" {
-		return io.ReadAll(io.LimitReader(stdin, 1<<20))
+	return readBounded(name, stdin)
+}
+
+// readBounded reads name, or stdin for "-", refusing anything over maxInput.
+func readBounded(name string, stdin io.Reader) ([]byte, error) {
+	var r io.Reader = stdin
+	if name != "-" {
+		f, err := os.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		r = f
 	}
-	return os.ReadFile(name)
+
+	data, err := io.ReadAll(io.LimitReader(r, maxInput+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxInput {
+		return nil, fmt.Errorf("%s is over %d bytes, which no message or event payload is; check the path", name, maxInput)
+	}
+	return data, nil
 }
 
 // report writes the findings, as workflow annotations under Actions.

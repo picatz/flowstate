@@ -39,3 +39,15 @@ func TestOutsideActionsAFindingIsAPlainLine(t *testing.T) {
 	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, false)
 	assert.Equal(t, "commitcheck: issue: no issue (see s)\n", out.String())
 }
+
+func TestAnOversizedInputIsRefusedRatherThanRead(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := message("", "", "", strings.NewReader(strings.Repeat("x", maxInput+1)))
+	assert.ErrorContains(t, err, "over", "a message past the bound was read whole")
+
+	subject, body, err := message("", "", "", strings.NewReader("a: b\n\nbody\n"))
+	assert.NoError(t, err)
+	assert.Equal(t, "a: b", subject)
+	assert.Equal(t, "\nbody", body)
+}

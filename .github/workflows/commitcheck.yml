@@ -1,0 +1,34 @@
+# Does the pull request say what it is: a `scope:` subject, an issue or a
+# `No-Issue:` trailer, a `Verification:` line or heading or an `Unverified:`
+# trailer, and no absolute without evidence beside it (#1728). Its own
+# workflow rather than a step of ci.yml's plan job because it has to re-run
+# when the title or body is *edited*, which ci.yml's default pull_request
+# activity types do not cover, and running the whole matrix on every edit
+# would be the wrong price for a check that takes seconds (Codex, #1848).
+#
+# Warning-only until 2026-09-21, so the ratchet is visible before it bites;
+# add -strict then. Reads the title and body from the event payload the
+# runner already holds, so it needs no token.
+name: Commit conventions
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  commitcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+      - name: Does the pull request say what it is
+        run: go run ./tools/commitcheck
