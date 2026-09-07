@@ -45,8 +45,8 @@ var errorTextMatchAllowed = map[string]string{
 // decided "the run is over" by `strings.Contains` on a sentinel's sentence, so
 // an unrelated error quoting it ended the walk as a success. A sentinel is a
 // value, and `errors.Is` is the exact test; every non-test file under the
-// repository's Go trees is held to it, with an allowlist for the one site
-// that has text and no value.
+// repository's Go trees is held to it, with an allowlist for the sites that
+// have text and no value, each with its reason written beside it.
 func TestNoDecisionIsMadeOnAnErrorsText(t *testing.T) {
 	t.Parallel()
 
@@ -70,7 +70,8 @@ func TestNoDecisionIsMadeOnAnErrorsText(t *testing.T) {
 			}
 			rel, err := filepath.Rel(root, path)
 			require.NoError(t, err)
-			if _, allowed := errorTextMatchAllowed[filepath.ToSlash(rel)]; allowed {
+			rel = filepath.ToSlash(rel)
+			if _, allowed := errorTextMatchAllowed[rel]; allowed {
 				return nil
 			}
 			offenders = append(offenders, rel)
