@@ -19,9 +19,16 @@ func validateEngine(e sqlv1.Engine) error {
 	switch e {
 	case sqlv1.Engine_ENGINE_SQLITE, sqlv1.Engine_ENGINE_POSTGRES:
 		return nil
-	default:
+	case sqlv1.Engine_ENGINE_UNSPECIFIED:
 		return sdk.InvalidInput(
 			"engine is required; this build supports: %s", supportedEngines())
+	default:
+		// A number the enum does not name, which a protojson payload can
+		// carry: not missing, so not "required", and the refusal says which
+		// it is (Copilot, #1832).
+		return sdk.InvalidInput(
+			"engine %q is not one this build supports; this build was compiled with: %s",
+			e.String(), supportedEngines())
 	}
 }
 
