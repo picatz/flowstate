@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
 
 func Test_Policy_rules(t *testing.T) {
@@ -304,7 +306,7 @@ func Test_Policy_rules_contextErrorIsNotADenial(t *testing.T) {
 	// Running out of time is not a policy decision, so it must not be reported as
 	// one: a caller distinguishing the two would otherwise blame the operator's
 	// rules for a cancelled request.
-	err = ruleSet{deny: []rule{r}}.evaluate(ctx, "https://example.com/", map[string]any{
+	err = ruleSet{Set: celrule.Set{Deny: []celrule.Rule{r}}}.evaluate(ctx, "https://example.com/", map[string]any{
 		"url": "https://example.com/", "scheme": "https", "host": "example.com",
 		"port": int64(443), "method": "GET", "path": "/",
 	})
@@ -447,7 +449,7 @@ func Test_Policy_checkRedirect_marksEveryRefusalAsPostOrigin(t *testing.T) {
 func Test_Policy_controlDial_marksAnInterruptedRedirectHop(t *testing.T) {
 	policy, err := New(WithAllowLoopback(), WithDenyRules(`int(ip) > 0`))
 	require.NoError(t, err)
-	require.False(t, policy.connRules.empty(),
+	require.False(t, policy.connRules.Empty(),
 		"the rule must be connection-scoped, or this exercises the request path instead")
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -570,7 +572,7 @@ func Test_ruleCompiler_scopes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			r, connScoped, err := compiler.compile("deny", test.src)
 			require.NoError(t, err)
-			require.Equal(t, test.src, r.src)
+			require.Equal(t, test.src, r.Source())
 			require.Equal(t, test.wantConnScoped, connScoped)
 		})
 	}
@@ -580,10 +582,10 @@ func Test_ruleSet_evaluate(t *testing.T) {
 	compiler, err := newRuleCompiler(DefaultRuleCostLimit)
 	require.NoError(t, err)
 
-	compile := func(t *testing.T, kind string, srcs ...string) []rule {
+	compile := func(t *testing.T, kind string, srcs ...string) []celrule.Rule {
 		t.Helper()
 
-		rules := make([]rule, 0, len(srcs))
+		rules := make([]celrule.Rule, 0, len(srcs))
 		for _, src := range srcs {
 			r, _, err := compiler.compile(kind, src)
 			require.NoError(t, err)
@@ -653,10 +655,10 @@ func Test_ruleSet_evaluate(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			rs := ruleSet{
-				allow: compile(t, "allow", test.allow...),
-				deny:  compile(t, "deny", test.deny...),
-			}
+			rs := ruleSet{Set: celrule.Set{
+				Allow: compile(t, "allow", test.allow...),
+				Deny:  compile(t, "deny", test.deny...),
+			}}
 
 			test.check(t, rs.evaluate(t.Context(), "https://api.example.com/v1/things", vars))
 		})

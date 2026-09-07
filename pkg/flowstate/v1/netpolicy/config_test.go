@@ -217,9 +217,9 @@ egress:
 	if _, ok := c.denyPorts[8443]; !ok {
 		t.Fatalf("deny_ports: got %v", c.denyPorts)
 	}
-	if len(p.requestRules.allow) != 1 || len(p.requestRules.deny) != 1 {
+	if len(p.requestRules.Allow) != 1 || len(p.requestRules.Deny) != 1 {
 		t.Fatalf("rules: got %d allow, %d deny in the request scope",
-			len(p.requestRules.allow), len(p.requestRules.deny))
+			len(p.requestRules.Allow), len(p.requestRules.Deny))
 	}
 	if c.maxRedirects != 2 {
 		t.Fatalf("max_redirects: got %d", c.maxRedirects)

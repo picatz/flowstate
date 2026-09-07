@@ -9,7 +9,9 @@ import (
 	"slices"
 
 	"github.com/google/cel-go/cel"
+
 	"github.com/google/cel-go/ext"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 )
 
 // Task-shape policy: deployment-side CEL rules over which identities may
@@ -349,7 +351,7 @@ func (p *TaskPolicy) Check(ctx context.Context, task string, identity *WorkloadI
 // not by its text. See proto/flowstate/v1/audit.proto's comment on
 // AuditRecord.rule.
 func (p *TaskPolicy) check(ctx context.Context, task string, identity *WorkloadIdentity) (string, error) {
-	if p == nil || p.rules.empty() {
+	if p == nil || p.rules.Empty() {
 		return "", nil
 	}
 
@@ -420,46 +422,11 @@ func newTaskPolicyEnv() (*cel.Env, error) {
 	)
 }
 
-// taskPolicyRule is a compiled CEL task-shape rule. The program is built once,
-// when the policy is constructed, and is safe to evaluate concurrently.
-type taskPolicyRule struct {
-	// src is the original expression text, reported in denial messages so an
-	// operator can find the rule that fired.
-	src string
-
-	// prg is the compiled program.
-	prg cel.Program
-}
-
-// eval evaluates the rule against vars. The context is threaded through, so
-// an expensive rule is interrupted when the dispatch is cancelled.
-func (r taskPolicyRule) eval(ctx context.Context, vars map[string]any) (bool, error) {
-	out, _, err := r.prg.ContextEval(ctx, vars)
-	if err != nil {
-		return false, err
-	}
-
-	matched, ok := out.Value().(bool)
-	if !ok {
-		// The output type is checked at compile time, so reaching here means
-		// CEL produced something other than the type it promised.
-		return false, fmt.Errorf("rule produced %s, want bool", out.Type().TypeName())
-	}
-
-	return matched, nil
-}
-
 // taskPolicyRuleSet holds the allow and deny rules that govern task
-// dispatch.
+// dispatch: a [celrule.Set], deny first, permitting when only deny rules are
+// configured.
 type taskPolicyRuleSet struct {
-	allow []taskPolicyRule
-	deny  []taskPolicyRule
-}
-
-// empty reports whether the set has no rules, letting [TaskPolicy.Check]
-// skip evaluation entirely.
-func (rs taskPolicyRuleSet) empty() bool {
-	return len(rs.allow) == 0 && len(rs.deny) == 0
+	celrule.Set
 }
 
 // evaluate applies the set to vars and returns a [*TaskPolicyDeniedError] if
@@ -473,38 +440,26 @@ func (rs taskPolicyRuleSet) empty() bool {
 // matched, a set with no allow rules where nothing denied, or a rule that
 // could not be evaluated.
 func (rs taskPolicyRuleSet) evaluate(ctx context.Context, task string, vars map[string]any) (string, error) {
-	for _, r := range rs.deny {
-		matched, err := r.eval(ctx, vars)
-		if err != nil {
-			return "", taskPolicyRuleFailure(ctx, "deny", r.src, task, err)
-		}
-		if matched {
-			return r.src, &TaskPolicyDeniedError{
-				Task:   task,
-				Reason: TaskPolicyReasonDenyRule,
-				Detail: r.src,
-			}
-		}
+	decision, err := rs.Decide(ctx, vars)
+	if err != nil {
+		return "", taskPolicyRuleFailure(ctx, task, err)
 	}
 
-	if len(rs.allow) == 0 {
-		return "", nil
-	}
-
-	for _, r := range rs.allow {
-		matched, err := r.eval(ctx, vars)
-		if err != nil {
-			return "", taskPolicyRuleFailure(ctx, "allow", r.src, task, err)
+	switch decision.Verdict {
+	case celrule.DeniedByRule:
+		return decision.Rule.Source(), &TaskPolicyDeniedError{
+			Task:   task,
+			Reason: TaskPolicyReasonDenyRule,
+			Detail: decision.Rule.Source(),
 		}
-		if matched {
-			return r.src, nil
+	case celrule.NoAllowRuleMatched:
+		return "", &TaskPolicyDeniedError{
+			Task:   task,
+			Reason: TaskPolicyReasonNoAllowRule,
+			Detail: "no allow rule matched",
 		}
-	}
-
-	return "", &TaskPolicyDeniedError{
-		Task:   task,
-		Reason: TaskPolicyReasonNoAllowRule,
-		Detail: "no allow rule matched",
+	default:
+		return decision.Rule.Source(), nil
 	}
 }
 
@@ -516,7 +471,7 @@ func (rs taskPolicyRuleSet) evaluate(ctx context.Context, task string, vars map[
 // one would tell an operator their rules refused a dispatch that in fact
 // never finished — the identical rule [netpolicy]'s own `ruleFailure` and
 // auth's `assumeRuleFailure` state.
-func taskPolicyRuleFailure(ctx context.Context, kind, src, task string, err error) error {
+func taskPolicyRuleFailure(ctx context.Context, task string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
@@ -524,8 +479,8 @@ func taskPolicyRuleFailure(ctx context.Context, kind, src, task string, err erro
 	return &TaskPolicyDeniedError{
 		Task:   task,
 		Reason: TaskPolicyReasonRuleError,
-		Detail: fmt.Sprintf("%s rule %q could not be evaluated: %v", kind, src, err),
-		Err:    err,
+		Detail: err.Error(),
+		Err:    errors.Unwrap(err),
 	}
 }
 
@@ -542,49 +497,19 @@ func compileTaskPolicyRules(allow, deny []string, costLimit uint64) (taskPolicyR
 		return taskPolicyRuleSet{}, fmt.Errorf("%w: building task-shape rule environment: %w", ErrInvalidTaskPolicy, err)
 	}
 
-	options := []cel.ProgramOption{
-		cel.CostLimit(costLimit),
-		cel.EvalOptions(cel.OptTrackCost),
-		cel.InterruptCheckFrequency(100),
+	wrap := func(kind celrule.Kind, err error) error {
+		return fmt.Errorf("%w: %s %w", ErrInvalidTaskPolicy, kind, err)
 	}
 
-	compile := func(kind string, sources []string) ([]taskPolicyRule, error) {
-		rules := make([]taskPolicyRule, 0, len(sources))
-
-		for _, src := range sources {
-			if src == "" {
-				return nil, fmt.Errorf("%w: %s rule must not be empty", ErrInvalidTaskPolicy, kind)
-			}
-
-			ast, issues := env.Compile(src)
-			if issues.Err() != nil {
-				return nil, fmt.Errorf("%w: %s rule %q is invalid: %w", ErrInvalidTaskPolicy, kind, src, issues.Err())
-			}
-			if out := ast.OutputType(); !out.IsExactType(cel.BoolType) {
-				return nil, fmt.Errorf("%w: %s rule %q evaluates to %s, want bool",
-					ErrInvalidTaskPolicy, kind, src, out.TypeName())
-			}
-
-			prg, err := env.Program(ast, options...)
-			if err != nil {
-				return nil, fmt.Errorf("%w: %s rule %q could not be compiled: %w", ErrInvalidTaskPolicy, kind, src, err)
-			}
-
-			rules = append(rules, taskPolicyRule{src: src, prg: prg})
-		}
-
-		return rules, nil
-	}
-
-	denyRules, err := compile("deny", deny)
+	denyRules, err := celrule.CompileAll(env, celrule.Deny, deny, costLimit, wrap)
 	if err != nil {
 		return taskPolicyRuleSet{}, err
 	}
 
-	allowRules, err := compile("allow", allow)
+	allowRules, err := celrule.CompileAll(env, celrule.Allow, allow, costLimit, wrap)
 	if err != nil {
 		return taskPolicyRuleSet{}, err
 	}
 
-	return taskPolicyRuleSet{allow: allowRules, deny: denyRules}, nil
+	return taskPolicyRuleSet{Set: celrule.Set{Allow: allowRules, Deny: denyRules}}, nil
 }
