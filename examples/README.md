@@ -40,6 +40,10 @@ before using `flow run` without `local`.
 
 ## Choose a journey
 
+Still deciding whether to start one? [Why Flowstate, and when
+not](../docs/COMPARISON.md) puts it beside the alternatives and names the
+workloads that are not a fit.
+
 The role labels classify the representative portfolio. Focused demonstrations
 teach one mechanism; production-shaped compositions show mechanisms interacting;
 regression fixtures exist primarily to keep an edge from returning. The complete

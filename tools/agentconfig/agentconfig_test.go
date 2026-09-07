@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -327,4 +329,36 @@ func frontmatter(t *testing.T, source []byte) map[string]string {
 	}
 	t.Fatal("SKILL.md frontmatter is not closed")
 	return nil
+}
+
+// TestThePullRequestTemplateCarriesTheSkillsHeadings keeps the template a
+// web-opened PR starts from and the comms-pr skill's default shape one list:
+// the skill's numbered sections are the template's `##` headings, in order,
+// so neither drifts from the other unnoticed (#1728). It lives here rather
+// than beside tools/commitcheck because this package is the one the gate runs
+// for a diff to the agent configuration, which the template now counts as.
+func TestThePullRequestTemplateCarriesTheSkillsHeadings(t *testing.T) {
+	root := repoRoot(t)
+
+	skill := read(t, filepath.Join(root, ".agents", "skills", "comms-pr", "SKILL.md"))
+	item := regexp.MustCompile(`(?m)^\d+\. \*\*([^*]+)\*\*`)
+	var want []string
+	for _, m := range item.FindAllStringSubmatch(string(skill), -1) {
+		want = append(want, m[1])
+	}
+	if len(want) == 0 {
+		t.Fatal("the comms-pr skill lists no numbered sections; the shape this test pins has moved")
+	}
+
+	template := read(t, filepath.Join(root, ".github", "PULL_REQUEST_TEMPLATE.md"))
+	var got []string
+	for _, line := range strings.Split(string(template), "\n") {
+		if strings.HasPrefix(line, "## ") {
+			got = append(got, strings.TrimPrefix(line, "## "))
+		}
+	}
+
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("the PR template's headings and the comms-pr skill's sections differ; change both or neither\n skill:    %q\n template: %q", want, got)
+	}
 }

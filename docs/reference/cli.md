@@ -1010,7 +1010,7 @@ Start a workload on a Flowstate server and follow the run until it finishes.
 
 This verb always means the server, and it never falls back to running the workload here when no server answers: a network failure must not turn a deploy into a laptop run. `flow run local` is the other venue, and each run says which one it is on before it starts, so the address a shell happens to carry is never something to find out afterwards.
 
-Following works exactly as `flow watch` does, because it is the same code: a live view where there is a terminal, one line per change where there is not, and the outputs on stdout when the run produced them. The exit code is the run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.
+Following works exactly as `flow watch` does, because it is the same code: a live view where there is a terminal, one line per change where there is not, and the outputs on stdout when the run produced them. The exit code is the run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects. With --detach the command returns as soon as the run has started, and the exit code is the start's: `flow run --detach x && flow watch <id>` is the two-step form of the default, for a CI job, a cron entry, or a script that must not hold a process open while a run waits hours on an approval.
 
 Stopping watching does not stop the run. The workflow id is printed as soon as the run starts, so `flow watch` can pick it up again afterwards.
 
@@ -1040,6 +1040,9 @@ flow run examples/hello-world/workflow.yaml | jq .steps
 # In CI: one line per change, exit code reports the outcome.
 flow run examples/hello-world/workflow.yaml >/dev/null
 
+# Start a run and come back to it later, from a job that cannot wait:
+flow run --detach examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json -o json
+
 # Check a workflow without running it:
 flow validate examples/hello-world/workflow.yaml
 ```
@@ -1049,6 +1052,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `--detach` | `bool` | `false` | — | start the run and return once it has started, without following it; the exit code is then the start's rather than the run's, the ids are printed as they are when following, and `flow watch <id>` is the way back to the run |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |

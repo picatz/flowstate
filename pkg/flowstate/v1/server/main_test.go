@@ -17,7 +17,6 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/log"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -58,7 +57,7 @@ import (
 // written to.
 
 // devServer is the package's Temporal server, started once by TestMain.
-var devServer *testsuite.DevServer
+var devServer temporaltest.Server
 
 func TestMain(m *testing.M) {
 	if handled, err := temporaltest.RunLauncher(); handled {

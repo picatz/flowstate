@@ -42,6 +42,7 @@ it.
 
 | Document | What it covers |
 | --- | --- |
+| [COMPARISON.md](COMPARISON.md) | Why Flowstate and when not: one row per alternative (the Temporal SDK, Argo, Step Functions, CI, durable functions in code, script runners), what each is better at, and the workloads that are not a fit. Read it first if you are deciding whether to start. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The six layers, the invariants a change is checked against, and the tenancy, secret and plugin models. Read the invariants before a structural change. |
 | [VISION.md](VISION.md) | Intent that is *not built yet*, recorded so it survives the sessions that had it. |
 | [CI.md](CI.md) | What the three verification tiers run, what decides it, and the repository settings the design depends on. |

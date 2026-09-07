@@ -1012,6 +1012,15 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 			verb, subject, workflowID)
 	}
 
+	// A caller that asked not to follow is done once the run has started: the
+	// text shape has said the id and the way back above, and the document
+	// shapes are owed the run as it was started — the same first document a
+	// follow interrupted before its first poll writes — so that a program
+	// detaching in `-o json` holds a machine-readable name for the run.
+	if detach, _ := cmd.Flags().GetBool("detach"); detach {
+		return detachedStart(surface, rendering, started.Msg)
+	}
+
 	// Deliberately not pinned to the run just started. A workload that continues as
 	// new gets a fresh run id, and a watch pinned to the first one would report the
 	// state of a run that has already handed over — or stop finding it at all.
@@ -2425,7 +2434,11 @@ flow lsp`,
 			"Following works exactly as `flow watch` does, because it is the same code: a " +
 			"live view where there is a terminal, one line per change where there is not, " +
 			"and the outputs on stdout when the run produced them. The exit code is the " +
-			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.\n\n" +
+			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects. " +
+			"With --detach the command returns as soon as the run has started, and the exit " +
+			"code is the start's: `flow run --detach x && flow watch <id>` is the two-step " +
+			"form of the default, for a CI job, a cron entry, or a script that must not hold " +
+			"a process open while a run waits hours on an approval.\n\n" +
 			"Stopping watching does not stop the run. The workflow id is printed as soon as " +
 			"the run starts, so `flow watch` can pick it up again afterwards.\n\n" +
 			"A workflow that declares `inputs:` is given them with --input name=value or " +
@@ -2448,6 +2461,9 @@ flow run examples/hello-world/workflow.yaml | jq .steps
 
 # In CI: one line per change, exit code reports the outcome.
 flow run examples/hello-world/workflow.yaml >/dev/null
+
+# Start a run and come back to it later, from a job that cannot wait:
+flow run --detach examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json -o json
 
 # Check a workflow without running it:
 flow validate examples/hello-world/workflow.yaml`,
@@ -2480,6 +2496,19 @@ flow validate examples/hello-world/workflow.yaml`,
 		"idempotency key for this submission, a UUID or a caller-chosen string; a second "+
 			"`flow run` carrying the same value is answered with the run the first started "+
 			"rather than starting another. Generated per invocation when unset")
+
+	// Submit and exit. Following is the right default for a person at a
+	// terminal and the wrong shape for every caller that is not one: a CI job
+	// starting a deploy gated on an approval, a cron entry, a webhook handler
+	// answering 202, an agent starting many runs (#1771). What such a caller
+	// needs is already printed before the follow begins — the start line with
+	// the `flow watch` hint, or the first document with the ids — so the flag
+	// changes only the exit. It composes with --request-id the way the MCP
+	// `flowstate_run` tool, which has always returned at start, already does.
+	runCmd.Flags().Bool("detach", false,
+		"start the run and return once it has started, without following it; the exit "+
+			"code is then the start's rather than the run's, the ids are printed as they "+
+			"are when following, and `flow watch <id>` is the way back to the run")
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{
