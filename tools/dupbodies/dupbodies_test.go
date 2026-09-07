@@ -19,20 +19,21 @@ import (
 // recorded here; removing one fails it until the entry goes, so the table is
 // the tree's state rather than an allowlist. What the current entries are:
 //
-//   - plugins/git beside plugins/vcs — the vcs plugin is the git plugin's
-//     successor and carries its code until git retires; a fix lands in both
-//     until then.
+//   - plugins/git beside plugins/vcs — two plugin modules over the same
+//     go-git backend, one per task vocabulary, and a module cannot import
+//     the other's helpers; a fix lands in both until one retires.
 //   - plugins/*/readme_test.go — each plugin module's README example walker
-//     and repo-root finder, written per module because a plugin module
-//     imports nothing of the root's test helpers.
-//   - tokenFromValue, parseSince — the same across git, github and vcs, for
-//     the same module reason.
+//     and repo-root finder, written per module for the same reason.
+//   - tokenFromValue, parseSince — the same across git, github and vcs,
+//     for the same reason.
 //   - engine/*_test.go beside eval_test.go — the two drivers' conformance
 //     entry points, identical by design (invariant 3).
-//   - secrets.validScheme beside vault.validScheme, isLoopbackHost beside
-//     vault.isLoopback — vault is a leaf that must not import the store.
-//   - lsp/schema.go fieldNames beside flowfile/schema.go — the LSP's
-//     schema walk, kept beside the compiler's until one owns it.
+//   - secrets.validScheme and isLoopbackHost beside vault's copies — the
+//     store's helpers are unexported, so vault wrote its own; exporting one
+//     is the fix, and a candidate.
+//   - fieldNames in lsp/schema.go, flowfile/schema.go and
+//     plugin/catalogtask_test.go — the schema field walk, kept beside each
+//     reader until one owns it.
 //   - github/validate.go — the issue and pull-request direction validators,
 //     one per resource, sharing a body until the resource is a parameter.
 //   - git/cursor.go and log_test.go ForEach — go-git's iterator contract,
