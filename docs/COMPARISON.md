@@ -48,8 +48,9 @@ choice with a cost, and the cost is named.
   [threat model](../THREAT_MODEL.md); the operator's side is in the
   [deployment guide](DEPLOYMENT.md).
 - **Self-hosted is the baseline.** Everything works against a Temporal you run,
-  including the [dev server one command starts](CLI.md); a cloud dependency
-  is an optional integration, never the only path
+  including the one [`flow server dev`](reference/cli.md#flow-server-dev)
+  starts in one process with a server and a worker; a cloud dependency is an
+  optional integration, never the only path
   ([invariant 10](ARCHITECTURE.md)).
 
 ## The alternatives
