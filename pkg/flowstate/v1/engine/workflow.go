@@ -9,6 +9,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type ErrRunFailed struct {
@@ -492,6 +493,16 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		return nil, fmt.Errorf("register state query: %w", err)
 	}
 
+	// A continued segment says where the workload began and how many segments
+	// it has run as, in its memo, so that a listing — which sees one execution
+	// per workload and reads nothing but visibility — reports the workload's
+	// start rather than the segment's (#1690). A first segment writes nothing:
+	// its own start is the workload's and its count is one, which is what a
+	// reader assumes of a run with no such memo. See [WorkloadStartedMemoKey].
+	if err := recordChain(ctx, st); err != nil {
+		return nil, fmt.Errorf("record the workload's chain: %w", err)
+	}
+
 	// Before anything this segment does, including the vars activity below: a
 	// worker that may not run this workload must not evaluate its `vars:` either.
 	// See engine/plugins.go for why the check is split the way it is, and why this
@@ -727,6 +738,13 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			// recorded. Weighed by [v1.CheckRunStateSize] along with everything
 			// else below, which is the bound that actually protects the run.
 			ConsumedDeliveryIds: exec.signals.consumed,
+
+			// Where the workload began and how many segments it has run as,
+			// carried so the next segment can write them to its memo — see
+			// [recordChain]. The first segment reads its own start off its
+			// history here, once, and every later one copies it.
+			WorkloadStartedAt: workloadStartedAt(ctx, st),
+			Segment:           st.GetSegment() + 1,
 
 			// Evaluated once for the whole run, not once per segment. A continued
 			// run takes whichever interpreter version is current (invariant 10), so
@@ -1242,4 +1260,66 @@ func RunAddressFrom(workflowID, firstRunID, currentRunID string) *v1.RunAddress 
 	}
 
 	return &v1.RunAddress{WorkflowId: workflowID, RunId: runID}
+}
+
+// WorkloadStartedMemoKey and SegmentsMemoKey are the memo fields a continued
+// segment writes about the chain it belongs to: when the workload's first
+// segment started, as RFC 3339 with nanoseconds, and how many segments the
+// workload has run as, this one included.
+//
+// In the memo rather than only in [v1.RunState], because a listing reads
+// visibility and nothing else — it sees the current segment's execution and
+// its memo, and would otherwise report the segment's own start as the
+// workload's (#1690). Written through [workflow.UpsertMemo], which the server
+// carries across Continue-As-New along with the rest of the memo, so the
+// values a segment writes are also what the next segment starts with.
+//
+// Declared here, where they are written, and read by the server's listing and
+// Get; the server imports this package, not the other way round.
+const (
+	WorkloadStartedMemoKey = "flowstate.workloadStartedAt"
+	SegmentsMemoKey        = "flowstate.segments"
+)
+
+// recordChain writes the chain's memo on a continued segment that knows where
+// its workload began, and nothing otherwise.
+//
+// Only a continued segment, so a workload that never continues pays no history
+// event for this at all. Only one handed a start, so a chain whose first segment
+// predates [v1.RunState.workload_started_at] writes neither value: a count
+// that began partway through the chain would be wrong by however many segments
+// came before, and a reader told nothing knows to fall back to the segment's own
+// start, which is what it did before this existed.
+func recordChain(ctx workflow.Context, st *v1.RunState) error {
+	started := st.GetWorkloadStartedAt()
+	if st.GetSegment() == 0 || started == nil {
+		return nil
+	}
+
+	return workflow.UpsertMemo(ctx, map[string]any{
+		WorkloadStartedMemoKey: started.AsTime().UTC().Format(time.RFC3339Nano),
+		SegmentsMemoKey:        st.GetSegment() + 1,
+	})
+}
+
+// workloadStartedAt is when the workload began, for the next segment to carry:
+// what this segment was handed, or — on a first segment, which was handed
+// nothing — its own start as the history records it.
+//
+// A first segment is one that continued from nothing, read off the history
+// rather than off [v1.RunState.segment], because a segment continued into by an
+// interpreter that predates that field carries zero there too. Such a segment
+// hands on nothing rather than its own start, which would be a lie about the
+// workload; its chain stays unrecorded, as [recordChain] says.
+func workloadStartedAt(ctx workflow.Context, st *v1.RunState) *timestamppb.Timestamp {
+	if started := st.GetWorkloadStartedAt(); started != nil {
+		return started
+	}
+
+	info := workflow.GetInfo(ctx)
+	if info.ContinuedExecutionRunID != "" {
+		return nil
+	}
+
+	return timestamppb.New(info.WorkflowStartTime)
 }
