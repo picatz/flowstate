@@ -390,6 +390,14 @@ read before it writes. `flow mcp` serves both over stdin and stdout as a Model
 Context Protocol server, which an MCP client launches as a subprocess rather than
 something you run yourself.
 
+One line the host gets wrong fails that line and not the session. A line that
+is not JSON is answered with the JSON-RPC parse error (`-32700`), a JSON-RPC
+batch on a protocol version that forbids one, or an object that is not a
+JSON-RPC message, with an invalid request (`-32600`) naming the request id when
+there is one, and the next line is read as if nothing had happened. A host
+serialization slip therefore costs one message, not every tool call in flight.
+The session ends when stdin does.
+
 Nothing here is a second product. The tools are the Connect services projected,
 with input schemas derived from the same protobuf messages the API speaks, so a
 field added to a request reaches an agent the day the code is regenerated. There

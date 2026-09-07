@@ -349,7 +349,7 @@ func ServeTools(
 ) error {
 	AddCapabilities(srv, local, remote, deps, extra...)
 
-	return srv.Run(ctx, &mcp.StdioTransport{})
+	return srv.Run(ctx, Stdio())
 }
 
 // AddCapabilities is the one registration, shared with the tests so what they
