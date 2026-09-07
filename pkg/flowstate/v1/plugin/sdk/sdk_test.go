@@ -562,22 +562,21 @@ func TestDecodeInputsRefusals(t *testing.T) {
 	}
 }
 
-// decodeRefusal is the error DecodeInputs returns for an input a task cannot
-// be given: an unresolved expression in a field that wants a string.
+// decodeRefusal is the error DecodeInputs returns for a value that does not fit
+// its field: a number where the task wants a string.
 func decodeRefusal(t *testing.T) error {
 	t.Helper()
 
 	var decoded flowstatev1.Task_HTTP_Inputs
-	err := DecodeInputs(map[string]*flowstatev1.Value{"url": flowstatev1.NewExpr("1 + 1")}, &decoded)
-	require.Error(t, err, "DecodeInputs accepted an unresolved expression")
+	err := DecodeInputs(map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral(42)}, &decoded)
+	require.Error(t, err, "DecodeInputs accepted a number for a string field")
 	return err
 }
 
 // TestDecodeInputsRefusalIsClassified pins the shape of what DecodeInputs
-// returns: already an [InvalidInput], naming the input, with the cause reachable
-// through the classification rather than flattened into its text (#1675). The
-// nil-message case is the plugin's bug rather than the workflow's and stays
-// unclassified, so the host records it as the permanent failure it is.
+// returns for a value that does not fit: already an [InvalidInput], naming the
+// input, with the cause reachable through the classification rather than
+// flattened into its text (#1675).
 func TestDecodeInputsRefusalIsClassified(t *testing.T) {
 	t.Parallel()
 
@@ -590,10 +589,67 @@ func TestDecodeInputsRefusalIsClassified(t *testing.T) {
 	require.Contains(t, err.Error(), `input "url"`, "the refusal names the input")
 	require.NotNil(t, errors.Unwrap(errors.Unwrap(err)),
 		"the cause is wrapped with %%w, so errors.Is and errors.As reach it through the classification")
+}
 
-	nilErr := DecodeInputs(map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral("x")}, nil)
-	require.Error(t, nilErr)
-	require.False(t, errors.As(nilErr, &c), "a nil message is the plugin's own bug, not an invalid input")
+// TestDecodeInputsDeclarationRefusalsStayUnclassified pins the other class: a
+// refusal about what the task declared rather than what the workflow sent is
+// the plugin's own bug, and blaming the input would send a workflow's error
+// dispatch down the wrong branch. Each stays unclassified, which the host
+// records as a task failure, and each still names the input.
+func TestDecodeInputsDeclarationRefusalsStayUnclassified(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		inputs map[string]*flowstatev1.Value
+		msg    proto.Message
+	}{
+		{
+			// The task declared the input deferred, so the engine forwarded the
+			// expression, and then asked to decode it into a string.
+			name:   "an unresolved expression in a typed field",
+			inputs: map[string]*flowstatev1.Value{"url": flowstatev1.NewExpr("1 + 1")},
+			msg:    &flowstatev1.Task_HTTP_Inputs{},
+		},
+		{
+			name: "a secret reference in a typed field",
+			inputs: map[string]*flowstatev1.Value{
+				"url": {Kind: &flowstatev1.Value_SecretRef{
+					SecretRef: &flowstatev1.SecretRef{Scheme: "env", Name: "URL"},
+				}},
+			},
+			msg: &flowstatev1.Task_HTTP_Inputs{},
+		},
+		{
+			// A field of a kind DecodeInputs does not convert; the value is
+			// irrelevant, since no value could fill it.
+			name:   "a field kind DecodeInputs does not convert",
+			inputs: map[string]*flowstatev1.Value{"retry_after": flowstatev1.NewLiteral("1s")},
+			msg:    &pluginv1.ExecuteResponse{},
+		},
+		{
+			name:   "a nil message",
+			inputs: map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral("x")},
+			msg:    nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := DecodeInputs(test.inputs, test.msg)
+			require.Error(t, err)
+
+			var c *classified
+			require.False(t, errors.As(err, &c),
+				"%v is the task's declaration disagreeing with itself, not an invalid input", err)
+
+			var connectErr *connect.Error
+			require.True(t, errors.As(asConnectError(err), &connectErr))
+			require.Equal(t, connect.CodeUnknown, connectErr.Code(), "the host records a task failure")
+		})
+	}
 }
 
 // TestDecodeIntegerPrecision checks that a fractional number is refused rather
