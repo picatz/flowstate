@@ -13,10 +13,16 @@ import (
 // instead of importing v1 directly.
 type Workflow = v1.Workflow
 
-// Diagnostics is one or more problems found compiling a Flowfile — a
-// misspelled task name, a step referencing another that does not exist, a
-// malformed expression — each naming the line and column it was found on. It
-// is [flowfile.Diagnostics] under this package's own name.
+// Diagnostics is one or more problems found in a Flowfile, each naming the
+// line and column it was found on. It is [flowfile.Diagnostics] under this
+// package's own name.
+//
+// Which problems [Compile] reports through it is the parser's set: a document
+// that is not a Flowfile, a misspelled key, a malformed expression, a `call:`
+// with no file to resolve against. A step referencing another that does not
+// exist, an expression that does not type-check against the steps around it,
+// and a task nobody registered are [flowfile.Validate]'s set, which Compile
+// does not run; see its doc for why, and for how to get them.
 type Diagnostics = flowfile.Diagnostics
 
 // Compile parses a Flowfile from bytes into the workflow [RunLocal] and
@@ -32,15 +38,18 @@ type Diagnostics = flowfile.Diagnostics
 // documents. An embedding program that wants `call:` support reads the file
 // itself and uses [flowfile.ParseFile] directly.
 //
-// Compile does not check whether a step's task is one this build actually
-// knows — [flowfile.Parse] decides a step's task purely from its shape,
-// leaving "is this task registered at all" to [flowfile.Validate], which
-// Compile deliberately does not call (see that package's doc on `Parse` vs
-// `Validate`). A Flowfile naming a task nobody registered compiles cleanly
-// here and fails only once [RunLocal] or a durable run actually reaches that
-// step — "unknown task %q", from the engine itself. An embedder that wants
-// the earlier, richer diagnostic — the one `flow validate` gives, naming the
-// task's line and column — calls [flowfile.Validate] on the result, or
+// Compile is the parse, not the validation. [flowfile.Parse] decides a
+// step's task purely from its shape and checks nothing across steps, leaving
+// "is this task registered at all" and "does `${steps.nope.x}` name a step
+// that exists" to [flowfile.Validate], which Compile deliberately does not
+// call (see that package's doc on `Parse` vs `Validate`). So a Flowfile
+// naming a task nobody registered, or reading a step that is not there,
+// compiles cleanly here: the unknown task is refused before [RunLocal] runs
+// its first step, as `task "nosuchtask": unknown task: ...` naming what to
+// register, and the
+// ghost reference fails at the step that evaluates it. An embedder that
+// wants the earlier, richer diagnostic — the one `flow validate` gives,
+// naming the line and column — calls [flowfile.Validate] on the result, or
 // [flowfile.ValidateSource] directly on data. Either way, a workflow naming a
 // custom task needs that task [Tasks.Install]ed first for the check to see
 // it: validation asks what this *build* knows a task is, which is a question

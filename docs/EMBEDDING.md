@@ -61,12 +61,13 @@ defer uninstall()
 // however the embedding program obtained them — go:embed, os.ReadFile, ...
 workflow, diags, err := embed.Compile(data)
 
-// 3. Run it locally.
+// 3. Run it locally, and read a step's output back as a Go value.
 ctx := context.Background()
 outputs, err := embed.RunLocal(ctx, workflow, embed.RunOptions{
 	Inputs: map[string]any{"name": "world"},
 	Tasks:  tasks,
 })
+message, ok := embed.StepOutputString(outputs, "greet", "message")
 
 // 4. Or run it durably, against a Temporal worker the program owns.
 // temporalClient is a *client.Client the embedding program dialed itself.
@@ -75,7 +76,11 @@ err = embed.RunDurable(worker.New(temporalClient, engine.RunTaskQueueName, worke
 
 `data` and `temporalClient` are elided above — they are the two values an
 embedding program supplies from its own setup, not something this package
-provides. [examples/embedding](../examples/embedding) is the runnable version
+provides. `embed.StepOutput` and `embed.StepOutputString` are how a program
+reads what a run returned: the raw `*v1.Workflow_StepOutputs` is a protobuf
+message, and printing it gives `values:{key:"message" value:{literal:...}}`
+rather than the string. Both report `ok=false` for a step that did not run or
+an output it did not produce, rather than a zero value. [examples/embedding](../examples/embedding) is the runnable version
 with both filled in.
 
 ## Compile vs. validate
@@ -84,9 +89,12 @@ with both filled in.
 compile boundary `flow validate` starts from. It does **not** check whether a
 step's task is one this build knows: that question is
 [`flowfile.Validate`](../pkg/flowstate/v1/flowfile/validate.go)'s, which
-`Compile` deliberately does not call. A Flowfile naming a task nobody
-registered compiles cleanly and fails only once a run actually reaches that
-step, with the engine's own `unknown task %q` error. Call
+`Compile` deliberately does not call. The same goes for a step reading
+another that does not exist (`${steps.nope.x}`): `Compile` is the parse, and
+the checks across steps are `Validate`'s. A Flowfile naming a task nobody
+registered compiles cleanly and is refused before `RunLocal` runs its first
+step, with `task "nosuchtask": unknown task: ...` naming what to register; the
+ghost reference fails at the step that evaluates it. Call
 `flowfile.Validate(workflow)` (or `flowfile.ValidateSource`) directly for the
 richer, line-and-column diagnostic `flow validate` gives.
 
@@ -156,6 +164,19 @@ A zero `RunOptions` is the safest possible run, matching an unconfigured
 | `Signals` | A `wait_for_signal:` step fails immediately (`v1.ErrNoSignalWaiter`) rather than blocking forever. |
 | `EgressPolicy` | The same deny-by-default policy `flow run local` enforces with no flags: internal address ranges denied, loopback denied unless `FLOWSTATE_ALLOW_LOOPBACK_EGRESS=true` is set in the process environment, every redirect hop re-checked, the response body bounded. |
 | `Secrets` | Every `${secret(...)}` reference and every `credential:` target is refused — no worker-side authority is installed on the run's context at all. |
+
+What `RunLocal` returns is not redacted, whatever the options say. A
+`sensitive:` declaration bounds what Flowstate itself renders — a terminal, a
+test report, an agent's answer — and not what a run hands back to the program
+that ran it: the outputs are the run's history, in the clear. An embedder
+that prints or forwards them takes the same fail-closed line the CLI does
+(`decideCarriedValues` and `redactStepValues` in `cmd/flow/sensitive.go`):
+when the workflow declares anything sensitive, withhold every step's values
+rather than redact by value. `v1.SensitiveInputValues` recognises the
+declared values and what they contain, and nothing computed from them, so a
+token upper-cased or embedded in a URL by a step passes value-based redaction
+untouched; that is why the CLI withholds the whole transcript, and why an
+embedder should.
 
 Nothing becomes more permissive by being left unset. Configuring `Secrets`
 at all still denies everything unless a `Policy` with an actual allow rule

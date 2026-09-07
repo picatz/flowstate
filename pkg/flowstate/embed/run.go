@@ -93,7 +93,16 @@ type RunOptions struct {
 }
 
 // RunLocal compiles [RunOptions] into a run and executes workflow in this
-// process, returning what [v1.RunWithInputs] returns.
+// process, returning what [v1.RunWithInputs] returns: every step's outputs,
+// read with [StepOutput] and [StepOutputString].
+//
+// What comes back is as recorded, in the clear. A `sensitive:` declaration
+// bounds what Flowstate itself renders — a terminal, a test report, an
+// agent's answer — and not what a run returns to the program that ran it;
+// the outputs are the run's history, which a program holding them reads the
+// same way. An embedder that prints them, or hands them on, applies the
+// declared set itself ([v1.SensitiveInputValues]) rather than assuming the
+// facade did.
 //
 // This is [v1.RunWithInputs] underneath, the same submit boundary `flow run
 // local` uses — argument binding, submission-size bounds, and everything
