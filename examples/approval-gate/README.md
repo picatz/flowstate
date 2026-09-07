@@ -34,6 +34,16 @@ $ flow run examples/approval-gate/workflow.yaml --input-file examples/approval-g
 $ flow signal <workflow-id> deploy-approved --data '{"approved":true}'
 ```
 
+From a CI job, a cron entry, or anything else that must not hold a process open
+while the gate waits on a person, start it detached and come back to it: the
+first command returns as soon as the run has started, with the ids, and the
+second is the follow the default would have done.
+
+```console
+$ flow run --detach examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json -o json | jq -r .workflowId
+$ flow watch <workflow-id>
+```
+
 The server evaluates `signals.deploy-approved.allow` against the authenticated
 sender before Temporal receives the signal. The fixed `team: release-managers`
 claim is the grant; `expected_approver` only narrows that grant for this run. The

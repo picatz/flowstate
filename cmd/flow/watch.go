@@ -585,6 +585,23 @@ func interrupted(surface *ui.UI, rendering runRendering, state *watchState) erro
 	return writeRunJSON(surface, rendering, state.Response())
 }
 
+// detachedStart is what `flow run --detach` writes once the run has started, and
+// the exit status it reports: the start's, which succeeded to reach here.
+//
+// The text shape has already said everything it owes on stderr, so it writes
+// nothing more; stdout stays empty, as it does for a followed run that produced
+// no outputs yet. The document shapes write the run as it was started — the
+// same conversion a follow begins from — so `flow run --detach -o json | jq
+// .workflow_id` is the whole of a detached caller's handover, and a jsonl
+// reader receives one event, the start, on the stream it would have followed.
+func detachedStart(surface *ui.UI, rendering runRendering, started *v1.RunResponse) error {
+	if rendering.format == FormatJSONL || rendering.WantsDocument() {
+		return writeRunJSON(surface, rendering, startedRun(started))
+	}
+
+	return nil
+}
+
 // reportChange writes one change, in the shape the format asks for.
 //
 // response is this poll's own answer, not state.Response(): the two agree after a
