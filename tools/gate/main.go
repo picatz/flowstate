@@ -300,8 +300,8 @@ func run(suppliedBase string) error {
 	// miss a caller two hops away, and the build is the cheapest leg here.
 	g.leg("build", "always", command("go", "build", "./..."))
 
-	// Always: gofmt on the changed files (CI fails on any drift under ./cmd
-	// and ./pkg; the gate holds every changed file to it).
+	// Always: gofmt on the changed files (CI fails on any drift under every
+	// directory holding Go; the gate holds every changed file to it).
 	g.gofmtLeg(p.goFiles)
 
 	// Affected packages: vet and bounded -race tests. When go.mod moved,
