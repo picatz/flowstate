@@ -583,6 +583,28 @@ the same category of mistake as a gate that passes without looking.
   `merge_group` ref, and that batching follows `max_entries_to_build`, should be
   confirmed on the first busy evening.
 
+## The analysis workflows beside CI
+
+Three workflows run beside `ci.yml` and decide nothing about merging a pull
+request's code; they report on the tree's security posture (#1750), and
+`SECURITY.md`'s "What runs" section is the one place the whole program is
+listed.
+
+- `codeql.yml` analyses Go with the security-extended queries on every pull
+  request, on `main` and weekly. It crosses the plugin module boundary through
+  a `go.work` generated for the job by the Makefile's `.coverage/go.work`
+  recipe and copied to the root of the checkout, since CodeQL's Go autobuild
+  reads the workspace from the checkout rather than from `GOWORK`; the
+  workspace is never committed, for the reason that recipe gives.
+- `scorecard.yml` runs the OpenSSF Scorecard on `main` and weekly and
+  publishes the result, which is what the README badge reads.
+- `dependency-review.yml` diffs a pull request's dependency graph against its
+  base and fails on a high-severity advisory or a licence outside the
+  permissive family the MIT `LICENSE` composes with. It needs the repository's
+  dependency graph, which GitHub enables for a public repository by default;
+  the owner's-settings section above is where that would be switched on
+  otherwise.
+
 ## Considered and excluded
 
 - **Test sharding, and `-count` tuning.** `test` is the long pole at 6m13s.
