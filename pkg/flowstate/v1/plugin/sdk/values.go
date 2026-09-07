@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -23,7 +24,7 @@ import (
 //	func greet(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 //		var in examplev1.GreetInputs
 //		if err := sdk.DecodeInputs(inputs, &in); err != nil {
-//			return nil, sdk.InvalidInput("%v", err)
+//			return nil, err
 //		}
 //		...
 //	}
@@ -33,6 +34,22 @@ import (
 // older plugin. An input whose expression the engine has not resolved is
 // refused, since the plugin has no way to evaluate one it did not declare as
 // deferred.
+//
+// A value that does not fit its field is the workflow's mistake and never a
+// transient one, so that error comes back already classified as [InvalidInput]
+// and is returned as it is: wrapping it in [InvalidInput] again is harmless but
+// redundant, and a task that returned it bare used to reach the host as an
+// unclassified failure, which named the task rather than its input as the
+// cause. The cause is wrapped, so [errors.Is] and [errors.As] reach through the
+// classification to it.
+//
+// Not every refusal is the workflow's. A field of a kind this cannot fill, a
+// map keyed by something other than strings, a typed field the task itself
+// declared deferred so the engine forwarded the expression, or a nil message,
+// is the task's own declaration disagreeing with what it asked to decode into;
+// blaming the input would send a workflow's error dispatch down the wrong
+// branch. Those stay unclassified, which the host records as the permanent
+// failure they are, and the message says what the plugin author changes.
 func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error {
 	if msg == nil {
 		return fmt.Errorf("sdk: DecodeInputs needs a message to fill")
@@ -48,12 +65,21 @@ func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error
 		}
 
 		if err := setField(reflectMsg, field, value); err != nil {
-			return fmt.Errorf("input %q: %w", name, err)
+			if errors.Is(err, errTaskDeclaration) {
+				return fmt.Errorf("input %q: %w", name, err)
+			}
+			return InvalidInput("input %q: %w", name, err)
 		}
 	}
 
 	return nil
 }
+
+// errTaskDeclaration marks a refusal that is about what the task declared
+// rather than what the workflow sent: the field cannot hold any value of this
+// input's kind, whatever value that is. [DecodeInputs] leaves such an error
+// unclassified so the host records a task failure, not an invalid input.
+var errTaskDeclaration = errors.New("the task's declaration, not the input, is what to change")
 
 // setField assigns one input to one field.
 func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, value *flowstatev1.Value) error {
@@ -71,10 +97,12 @@ func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, valu
 		return setLiteral(msg, field, kind.Literal)
 	case *flowstatev1.Value_Expr:
 		return fmt.Errorf(
-			"is an unresolved expression; the engine resolves inputs before sending them, so this one was declared in DeferredInputs and the task has to evaluate it itself")
+			"is an unresolved expression; the engine resolves inputs before sending them, so this one was declared in DeferredInputs and the task has to evaluate it itself (%w)",
+			errTaskDeclaration)
 	case *flowstatev1.Value_SecretRef:
 		return fmt.Errorf(
-			"is a secret reference, which this field's type cannot hold; declare the field as flowstate.v1.Value to receive one")
+			"is a secret reference, which this field's type cannot hold; declare the field as flowstate.v1.Value to receive one (%w)",
+			errTaskDeclaration)
 	case *flowstatev1.Value_Error_:
 		return fmt.Errorf("is an error value: %s", textbound.Truncate(kind.Error.GetMessage(), 256))
 	default:
@@ -93,8 +121,8 @@ func setLiteral(msg protoreflect.Message, field protoreflect.FieldDescriptor, li
 		// as a transient failure and gets retried into the same panic.
 		if kind := field.MapKey().Kind(); kind != protoreflect.StringKind {
 			return fmt.Errorf(
-				"has %s map keys, which DecodeInputs does not convert; read this input from the map directly",
-				kind,
+				"has %s map keys, which DecodeInputs does not convert; read this input from the map directly (%w)",
+				kind, errTaskDeclaration,
 			)
 		}
 
@@ -213,10 +241,16 @@ func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect
 			wrapped := &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: value}}
 			return protoreflect.ValueOfMessage(wrapped.ProtoReflect()), nil
 		}
+		// Any other message type is one no input value can fill, so this is
+		// about the declaration rather than the value it was handed.
+		return protoreflect.Value{}, fmt.Errorf(
+			"is a %s, which DecodeInputs does not convert; declare it as flowstate.v1.Value or read it from the input map directly (%w)",
+			field.Message().FullName(), errTaskDeclaration,
+		)
 	default:
 		return protoreflect.Value{}, fmt.Errorf(
-			"has type %s, which DecodeInputs does not convert; read it from the input map directly",
-			field.Kind(),
+			"has type %s, which DecodeInputs does not convert; read it from the input map directly (%w)",
+			field.Kind(), errTaskDeclaration,
 		)
 	}
 
