@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
@@ -347,6 +348,21 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		// of what ownership means.
 		Memo: scheduleMemo,
 
+		// The tenant again, on the schedule itself, as the attribute Temporal
+		// can filter on — so [FlowstateServer.tenantSchedules] asks for this
+		// tenant's schedules rather than walking every tenant's (#1785). The
+		// same attributes, through the same function and under the same guard,
+		// as the fired execution carries below: an unregistered attribute makes
+		// Temporal refuse the create outright, so a deployment that never
+		// confirmed registration must never attach one. A filter and never a
+		// proof — the id and the memo still decide what a tenant owns.
+		TypedSearchAttributes: func() sdk.SearchAttributes {
+			if s.searchAttributesRegistered {
+				return runSearchAttributes(namespace, workflow.GetName())
+			}
+			return sdk.SearchAttributes{}
+		}(),
+
 		Action: &client.ScheduleWorkflowAction{
 			// Use the schedule object's tenant-scoped id as the readable base for
 			// every firing. Temporal appends the scheduled time to keep firings
@@ -505,7 +521,9 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 // has no reason to read past it. truncated reports the scan bound being
 // reached, which a listing presents as a partial answer.
 func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.Client, namespace string, upTo int) ([]*v1.ScheduleSummary, bool, error) {
-	iterator, err := temporal.ScheduleClient().List(ctx, client.ScheduleListOptions{})
+	iterator, err := temporal.ScheduleClient().List(ctx, client.ScheduleListOptions{
+		Query: s.scheduleListQuery(namespace),
+	})
 	if err != nil {
 		return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
 	}
@@ -557,6 +575,45 @@ func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.C
 	}
 
 	return schedules, truncated, nil
+}
+
+// scheduleListQuery narrows a schedule listing to the entries that can be the
+// tenant's, where the deployment has search attributes registered, and to
+// nothing otherwise.
+//
+// Two halves. The tenant's own attribute finds every schedule this server
+// created since registration was confirmed. `IS NULL` finds the ones with no
+// attribute at all: schedules created before this deployment registered
+// attributes, or by a server that never did, which are still the tenant's and
+// would otherwise vanish from their listing on the upgrade that added the
+// attribute — a filter that hid a tenant's own schedules would be worse than
+// the walk it replaces. What the query leaves out is the one thing that costs
+// the walk its time: every other tenant's tagged schedules, which is what
+// makes a create by a tenant under the cap stop paying for a namespace full of
+// everyone else's (#1785).
+//
+// A filter, never a proof. Every entry the query returns still passes
+// [scheduleNameFrom] and [ownedBy], exactly as before: a search attribute is
+// visibility data anybody with cluster access can write, and the two checks
+// this file's header describes are what decide ownership.
+//
+// Empty where registration was never confirmed, which is the same in-process
+// walk every deployment had — a query naming an attribute Temporal does not
+// know is refused, and [WithSearchAttributesRegistered] documents why a server
+// that did not confirm registration must not depend on one.
+//
+// The namespace is spliced into a query literal, so it is checked against the
+// grammar [auth.ValidateNamespace] admits — lowercase letters, digits and
+// dashes, nothing a quoted literal could misread — rather than trusted to have
+// been; a namespace that fails it takes the walk.
+func (s *FlowstateServer) scheduleListQuery(namespace string) string {
+	if !s.searchAttributesRegistered || auth.ValidateNamespace(namespace) != nil {
+		return ""
+	}
+
+	key := namespaceSearchAttribute.GetName()
+
+	return fmt.Sprintf("%s = '%s' OR %s IS NULL", key, namespace, key)
 }
 
 // checkScheduleCount refuses a tenant's schedule past [v1.MaxSchedulesPerNamespace],
