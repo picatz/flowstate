@@ -300,6 +300,10 @@ func positionPath(progress *v1.RunProgress) string {
 // against a moment the caller supplies rather than one this reads, so a rendered
 // line is a fact about the answer rather than about when it happened to print.
 //
+// A gate that carries a `prompt:` is followed by a second line posing it, so
+// the person the gate is waiting on reads the question where they read the
+// signal that answers it.
+//
 // Nothing is printed for a run with no gates open, and nothing for a run whose
 // worker did not answer: both are the empty set here, and the difference between
 // them is one the position beside this already reports (an unset progress is
@@ -336,6 +340,17 @@ func pendingWaitLines(progress *v1.RunProgress, now time.Time) []string {
 		}
 
 		lines = append(lines, line)
+
+		// The question, under the gate that asks it. A `prompt:` exists so that
+		// every surface reporting the gate reports it, and this was the one
+		// surface that did not: the JSON carried the prompt while the person
+		// deciding whether to answer read a line that never posed the question
+		// (#1659). Through [v1.WaitPromptDescription], so a prompt that was cut
+		// says so here in the same words every other renderer uses; nothing
+		// for a gate that asks nothing, which prints exactly what it always did.
+		if prompt := v1.WaitPromptDescription(wait); prompt != "" {
+			lines = append(lines, "prompt: "+prompt)
+		}
 	}
 
 	if progress.GetPendingWaitsTruncated() {

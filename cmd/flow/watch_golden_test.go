@@ -278,6 +278,7 @@ func TestWatchViewGoldenPlainLine(t *testing.T) {
 					StepId:     "approve_gate",
 					SignalName: "go-ahead",
 					Policed:    true,
+					Prompt:     "Approve deploying v1.4.2 to production?",
 				}},
 			},
 		}}

@@ -90,3 +90,30 @@ func TestATruncatedAnswerSaysSo(t *testing.T) {
 	require.Len(t, lines, 2)
 	require.Equal(t, "and more gates than this run reports", lines[1])
 }
+
+// TestAGatesPromptIsPosedBeneathIt is #1659: the prompt exists so that every
+// surface reporting the gate reports it, and the text surfaces — the one place
+// a person is deciding whether to answer — were the ones leaving it out. It is
+// a line of its own under the gate, in the words every renderer uses for a cut
+// prompt, and absent for a gate that asks nothing.
+func TestAGatesPromptIsPosedBeneathIt(t *testing.T) {
+	t.Parallel()
+
+	lines := pendingWaitLines(&v1.RunProgress{
+		StepId: "approval",
+		PendingWaits: []*v1.PendingWait{
+			{StepId: "approval", SignalName: "deploy-approved", Prompt: "Approve deploying v1.4.2 to production, requested by anonymous?"},
+			{StepId: "silent", SignalName: "nudge"},
+			{StepId: "long", SignalName: "ok", Prompt: "Approve the release described in the attached ", PromptTruncated: true},
+		},
+	}, time.Now())
+
+	require.Equal(t, []string{
+		`waiting at approval for signal "deploy-approved"`,
+		"prompt: Approve deploying v1.4.2 to production, requested by anonymous?",
+		`waiting at silent for signal "nudge"`,
+		`waiting at long for signal "ok"`,
+		"prompt: " + v1.WaitPromptDescription(&v1.PendingWait{Prompt: "Approve the release described in the attached ", PromptTruncated: true}),
+	}, lines)
+	require.Contains(t, lines[4], "cut at", "a cut prompt does not say so")
+}
