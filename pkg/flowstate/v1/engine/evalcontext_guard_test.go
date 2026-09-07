@@ -220,7 +220,11 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 			return
 		}
 		visited[fn] = true
-		path += " -> " + fn.Name.Name
+		if path == "" {
+			path = fn.Name.Name
+		} else {
+			path += " -> " + fn.Name.Name
+		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -252,7 +256,7 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 		})
 	}
 	for _, name := range entryPoints {
-		walk(name, byName[name])
+		walk("", byName[name])
 	}
 }
 
