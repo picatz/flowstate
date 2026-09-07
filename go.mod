@@ -3,7 +3,7 @@ module github.com/picatz/flowstate
 go 1.27.0
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
 	buf.build/go/protovalidate v1.3.0
 	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.6
@@ -16,6 +16,7 @@ require (
 	github.com/charmbracelet/x/exp/golden v0.0.0-20251109135125-8916d276318f
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260727090823-41c9e6be3365
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/go-logr/logr v1.4.4
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/cel-go v0.31.0
 	github.com/google/go-cmp v0.7.0
@@ -80,7 +81,6 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
-	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
