@@ -677,7 +677,12 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, trans
 
 	for i, c := range report.GetCases() {
 		status := theme.Success.Render("PASS")
-		if !c.GetPassed() {
+		// A case that fails on a warning fails on its own line (#1668): under
+		// the flag the summary already counted it, and a reader who watches
+		// the lines saw green two lines above a red total. The same rule the
+		// exit code applies, [testFileResult.failed], said once more where
+		// the case is named.
+		if !c.GetPassed() || (failOnWarning && len(c.GetWarnings()) > 0) {
 			status = theme.Danger.Render("FAIL")
 		}
 		fmt.Fprintf(out, "%s  %s: %s\n", status, theme.Muted.Render(report.GetFile()), c.GetName())

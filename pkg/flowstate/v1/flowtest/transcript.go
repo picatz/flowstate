@@ -124,9 +124,10 @@ type transcriptEvent struct {
 	payload map[string]any
 	sender  string
 
-	task        string
-	stubOrdinal int
-	stubStep    string
+	task          string
+	stubOrdinal   int
+	stubStep      string
+	stubInherited bool
 }
 
 type transcriptEventKind int
@@ -327,8 +328,17 @@ func (r *runRecorder) WaitStarted(id, signal string, timeout time.Duration, boun
 // every stub diagnostic already numbers stubs by, the step the engine says
 // was being served ("" for a compensation, which runs off the run-level
 // context), and the task the stub replaced.
-func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingStep string) {
-	r.record(transcriptEvent{kind: eventStubAnswered, task: task, stubOrdinal: ordinal, step: servingStep, stubStep: stubStep})
+//
+// inherited says the stub reached the case through `defaults:`, which the
+// rendered identity carries (#1668): a case whose own filtered stub sits
+// beside an inherited catch-all for the same task reads, per invocation,
+// which of the two answered, instead of a bare number the author has to
+// count to across two lists.
+func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingStep string, inherited bool) {
+	r.record(transcriptEvent{
+		kind: eventStubAnswered, task: task, stubOrdinal: ordinal, step: servingStep, stubStep: stubStep,
+		stubInherited: inherited,
+	})
 }
 
 // stubUnmatched records that an invocation ended with no matcher answering —
@@ -519,6 +529,9 @@ func stubIdentity(e transcriptEvent) string {
 	target := fmt.Sprintf("task %q", e.task)
 	if e.stubStep != "" {
 		target = fmt.Sprintf("step %q", e.stubStep)
+	}
+	if e.stubInherited {
+		target += ", from defaults"
 	}
 	return fmt.Sprintf("stub %d (%s)", e.stubOrdinal, target)
 }

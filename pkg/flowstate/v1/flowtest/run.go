@@ -1021,6 +1021,11 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// before anything the case asserts means what it appears to.
 	result.Warnings = append(unstubbed.warnings(), result.Warnings...)
 
+	// Whatever the verdict too: a case stub shadowing a filtered default is
+	// a fact about the file, knowable without the run, and it stays true on
+	// a run that failed.
+	result.Warnings = append(shadowedDefaultWarnings(stubs), result.Warnings...)
+
 	return
 }
 
