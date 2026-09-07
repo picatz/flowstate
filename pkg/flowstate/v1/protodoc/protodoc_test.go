@@ -48,6 +48,7 @@ func TestEmbeddedDescriptorSetCarriesSourceInfo(t *testing.T) {
 		"flowstate/v1/reports.proto":       false,
 		"flowstate/v1/run.proto":           false,
 		"flowstate/v1/schedule.proto":      false,
+		"flowstate/v1/schema.proto":        false,
 		"flowstate/v1/service.proto":       false,
 		"flowstate/v1/signal.proto":        false,
 		"flowstate/v1/task.proto":          false,

@@ -511,6 +511,13 @@ func literalMismatch(field protoreflect.FieldDescriptor, literal *expr.Value) st
 			return fmt.Sprintf("expected one of %s, but this is %s", choices, literalKind(literal))
 		}
 		if _, known := v1.EnumValueNumber(field.Enum(), written.StringValue); !known {
+			if v1.EnumValueWithheld(field.Enum(), written.StringValue) {
+				// Spelled right and refused anyway: the schema marks it as a
+				// value released builds do not carry, so the choices are the
+				// remedy and a typo hunt is not (#1692).
+				return fmt.Sprintf("%q is compiled into test builds of this task only, and a released build refuses it; write one of %s",
+					written.StringValue, choices)
+			}
 			message := fmt.Sprintf("%q is not one of %s", written.StringValue, choices)
 			if suggestion, ok := nearestChoice(written.StringValue, v1.EnumValueNames(field.Enum())); ok {
 				message += fmt.Sprintf("; did you mean %q?", suggestion)

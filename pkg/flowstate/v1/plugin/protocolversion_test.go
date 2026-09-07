@@ -56,9 +56,9 @@ func TestProtocolVersionNamesItsRoutes(t *testing.T) {
 		}
 	}
 
-	// Version 6 is what that package is worth today. Asserted so the constant
+	// Version 7 is what that package is worth today. Asserted so the constant
 	// cannot be renumbered back to something already spent.
-	if got, want := protocol.HostVersions(), []int{protocol.Version6}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := protocol.HostVersions(), []int{protocol.Version7}; len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("HostVersions() = %v, want %v", got, want)
 	}
 }
@@ -80,6 +80,7 @@ func TestRetiredProtocolVersionIsNotOffered(t *testing.T) {
 		protocol.Version3: "it reads the per-launch token from FLOWSTATE_PLUGIN_TOKEN, which the host no longer sets",
 		protocol.Version4: "it predates FLOWSTATE_EGRESS_POLICY_B64, so a plugin speaking it reaches the network under no policy at all",
 		protocol.Version5: "its netpolicy refuses the deployment_default key the grant now carries, so the whole policy document fails to parse in the plugin",
+		protocol.Version6: "its descriptor exchange predates flowstate/v1/schema.proto being engine-provided, so a plugin importing the file ships no copy and a version 6 host cannot link its task descriptors",
 	}
 
 	for _, v := range protocol.HostVersions() {
@@ -110,6 +111,12 @@ func TestRetiredProtocolVersionIsNotOffered(t *testing.T) {
 		{protocol.Version3, protocol.Version6},
 		{protocol.Version4, protocol.Version6},
 		{protocol.Version5, protocol.Version6},
+		{protocol.Version1, protocol.Version7},
+		{protocol.Version2, protocol.Version7},
+		{protocol.Version3, protocol.Version7},
+		{protocol.Version4, protocol.Version7},
+		{protocol.Version5, protocol.Version7},
+		{protocol.Version6, protocol.Version7},
 	} {
 		if pair[0] == pair[1] {
 			t.Errorf("two protocol versions are both %d; a retired version number must not be reused", pair[0])
@@ -127,7 +134,7 @@ func TestNegotiationRefusesARetiredPluginClearly(t *testing.T) {
 	t.Parallel()
 
 	// What a plugin built before each retirement speaks.
-	for _, old := range []int{protocol.Version1, protocol.Version2, protocol.Version3, protocol.Version4, protocol.Version5} {
+	for _, old := range []int{protocol.Version1, protocol.Version2, protocol.Version3, protocol.Version4, protocol.Version5, protocol.Version6} {
 		if _, ok := protocol.Negotiate([]int{old}, protocol.HostVersions()); ok {
 			t.Fatalf("a plugin speaking only retired version %d negotiated successfully; "+
 				"it would then be sent requests it cannot answer", old)
@@ -140,14 +147,14 @@ func TestNegotiationRefusesARetiredPluginClearly(t *testing.T) {
 	if !ok {
 		t.Fatal("a current plugin failed to negotiate with the host")
 	}
-	if got != protocol.Version6 {
-		t.Errorf("negotiated version = %d, want %d", got, protocol.Version6)
+	if got != protocol.Version7 {
+		t.Errorf("negotiated version = %d, want %d", got, protocol.Version7)
 	}
 
 	// The refusal an operator reads names both sides. Checked because the value of
 	// failing here rather than on `Describe` is entirely in what it says.
 	rendered := protocol.FormatVersions(protocol.HostVersions())
-	if !strings.Contains(rendered, strconv.Itoa(protocol.Version6)) {
+	if !strings.Contains(rendered, strconv.Itoa(protocol.Version7)) {
 		t.Errorf("FormatVersions(%v) = %q, which does not name the version the host speaks",
 			protocol.HostVersions(), rendered)
 	}
@@ -263,24 +270,23 @@ func TestTheTokenDescriptorIsRefusedAtTheHandshakeInBothDirections(t *testing.T)
 }
 
 // TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake is what makes the
-// launch environment safe to extend.
+// contract safe to extend, on whichever half the extension lands.
 //
-// Version 6 carries what version 5 did not: a grant that is always present under
-// `flow` and may say `deployment_default` (#1332). It is not on the wire, so it
-// is invisible to a route-shaped compatibility argument — and the failure is the
-// quiet one, arriving as somebody else's configuration error: a version 5 binary
-// launched by a version 6 host reads a policy document whose new key its own
-// strict `netpolicy.ParseConfig` refuses, so it fails in its own startup with a
-// parse error while the handshake reported both sides compatible. Closed the
-// same way every launch-environment change before it was, by the version
-// refusing to negotiate.
+// Version 7 carries what version 6 did not: flowstate/v1/schema.proto among the
+// files the engine provides, so a plugin importing it ships no copy (#1692). It
+// is not on the wire, so it is invisible to a route-shaped compatibility
+// argument — and the failure is the quiet one, arriving one step after the
+// handshake: a version 6 host launching a version 7 plugin negotiates nothing,
+// but a version 6 host that *had* been offered 7 would have linked the
+// plugin's task descriptors against a file it does not have and reported a
+// broken plugin. Closed the same way every change before it was, by the
+// version refusing to negotiate.
 //
-// The fixture announces [protocol.Version5] rather than an invented number, and
-// that matters here more than usual: version 5 is not hypothetical. It shipped
-// on main in #1390, before the marker existed, so binaries speaking it are the
-// ones a staggered upgrade actually produces. The refusal has to name both
-// sides: "version mismatch" with no numbers leaves an operator unable to tell
-// which half is old.
+// The fixture announces [protocol.Version6] rather than an invented number, and
+// that matters here more than usual: version 6 is not hypothetical. It shipped,
+// so binaries speaking it are the ones a staggered upgrade actually produces.
+// The refusal has to name both sides: "version mismatch" with no numbers leaves
+// an operator unable to tell which half is old.
 func TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake(t *testing.T) {
 	t.Parallel()
 
@@ -318,8 +324,8 @@ func TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake(t *testing.T) 
 	}
 
 	for _, want := range []string{
-		strconv.Itoa(protocol.Version5),
 		strconv.Itoa(protocol.Version6),
+		strconv.Itoa(protocol.Version7),
 	} {
 		if !strings.Contains(openErr.Error(), want) {
 			t.Errorf("Open error = %q, want it to name version %s; a refusal naming one side does not say which build is old",
@@ -361,7 +367,8 @@ func TestTheEgressGrantIsRefusedAtTheHandshakeInBothDirections(t *testing.T) {
 
 	// Both sides are named rather than read from HostVersions, because the
 	// transition under test is 4 to 5 and the current version has moved past it
-	// (version 6 carries the deployment-default marker). A test that tracked
+	// (version 6 carries the deployment-default marker, version 7 the
+	// engine-provided schema options file). A test that tracked
 	// HostVersions would keep passing while quietly checking a later bump than
 	// the one it documents.
 	ungranted := []int{protocol.Version4}
@@ -441,5 +448,45 @@ func TestTheDeploymentDefaultMarkerIsRefusedAtTheHandshakeInBothDirections(t *te
 	// a protocol that refuses everything.
 	if _, ok := protocol.Negotiate(marked, marked); !ok {
 		t.Fatal("two builds carrying the marked grant failed to negotiate with each other")
+	}
+}
+
+// TestTheSchemaOptionsFileIsRefusedAtTheHandshake is the reason version 7
+// exists, in the shape version 3's test has above rather than the launch
+// environment tests', because the half that changed is the descriptor exchange.
+//
+// flowstate/v1/schema.proto joined the files the engine provides (#1692), so a
+// plugin importing it — every plugin marking an enum value test-only — ships
+// no copy. A version 6 host has no such path: it links the plugin's task
+// descriptors against the files it holds and fails on an import, one step
+// after a handshake that said both sides agree. Only one direction fails on
+// its own — a version 6 plugin imports nothing a version 7 host lacks — and a
+// pairing that fails in one direction is still one that cannot work, which is
+// what a version names.
+func TestTheSchemaOptionsFileIsRefusedAtTheHandshake(t *testing.T) {
+	t.Parallel()
+
+	unprovided := []int{protocol.Version6}
+	provided := []int{protocol.Version7}
+
+	// New plugin, old host: the direction that fails. A host built before the
+	// file was engine-provided offers only 6; a plugin built after it speaks
+	// only 7, so the plugin refuses at startup naming both numbers, using the
+	// old host's already-shipped negotiation.
+	if _, ok := protocol.Negotiate(unprovided, provided); ok {
+		t.Error("a plugin omitting flowstate/v1/schema.proto negotiated with a host that does not provide it\n" +
+			"  the host would fail to link the plugin's task descriptors rather than refusing over two version numbers")
+	}
+
+	// Old plugin, new host: refused too, since a retired version is not
+	// offered, so the two builds move together in both directions.
+	if _, ok := protocol.Negotiate(provided, unprovided); ok {
+		t.Error("a plugin predating the engine-provided schema options file negotiated with a host that offers only the current version")
+	}
+
+	// And matched builds still negotiate, or both checks above are satisfied by
+	// a protocol that refuses everything.
+	if _, ok := protocol.Negotiate(provided, provided); !ok {
+		t.Fatal("two builds providing the schema options file failed to negotiate with each other")
 	}
 }

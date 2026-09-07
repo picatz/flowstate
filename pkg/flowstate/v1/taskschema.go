@@ -8,6 +8,7 @@ import (
 	validate "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // Reading a task's shape out of its schema, in one place.
@@ -757,19 +758,40 @@ func taskFields(fields []InputField) []*TaskField {
 // The zero value is omitted. Every proto3 enum must have one and buf requires it be
 // named `_UNSPECIFIED`, which makes it the encoding of *absent* rather than a choice —
 // offering it would invite `level: unspecified`, a way of writing nothing that reads
-// like writing something.
+// like writing something. A value the schema marks test-only ([EnumValueTestOnly])
+// is omitted too: it is not a choice a released build carries, and listing it was
+// how the first thing a newcomer tried became the one thing the plugin refused
+// (#1692).
 func EnumValueNames(enum protoreflect.EnumDescriptor) []string {
 	values := enum.Values()
 	names := make([]string, 0, values.Len())
 	for i := range values.Len() {
 		value := values.Get(i)
-		if value.Number() == 0 {
+		if value.Number() == 0 || EnumValueTestOnly(value) {
 			continue
 		}
 		names = append(names, enumValueSpelling(enum, value))
 	}
 
 	return names
+}
+
+// EnumValueTestOnly reports whether the schema marks a value as compiled into test
+// builds only — `[(flowstate.v1.test_only) = true]` on the value — which is what
+// keeps it out of [EnumValueNames] and [EnumValueNumber]. Exported so a surface that
+// walks an enum's values itself, rather than through those two, leaves the same
+// value out.
+//
+// Read through the options message rather than the generated extension type, so a
+// descriptor reconstructed from bytes a plugin sent answers the same as one this
+// process compiled in.
+func EnumValueTestOnly(value protoreflect.EnumValueDescriptor) bool {
+	opts, ok := value.Options().(*descriptorpb.EnumValueOptions)
+	if !ok || opts == nil {
+		return false
+	}
+	testOnly, _ := proto.GetExtension(opts, E_TestOnly).(bool)
+	return testOnly
 }
 
 // EnumValueNumber resolves what an author wrote to an enum value, reporting whether it
@@ -783,8 +805,30 @@ func EnumValueNames(enum protoreflect.EnumDescriptor) []string {
 // nothing.
 //
 // The zero value is not resolvable by name, matching [EnumValueNames]: an input left
-// out is how a Flowfile says "unspecified".
+// out is how a Flowfile says "unspecified". Neither is a test-only value: what a
+// released build refuses at the point of use is refused here, where the author can
+// see it, and [EnumValueWithheld] is how a diagnostic tells that refusal apart from a
+// misspelling.
 func EnumValueNumber(enum protoreflect.EnumDescriptor, written string) (protoreflect.EnumNumber, bool) {
+	value := enumValueWritten(enum, written)
+	if value == nil || EnumValueTestOnly(value) {
+		return 0, false
+	}
+	return value.Number(), true
+}
+
+// EnumValueWithheld reports whether what an author wrote names a value the schema
+// marks test-only — spelled correctly, in either spelling [EnumValueNumber] takes,
+// and refused all the same. A diagnostic that says only "not one of the choices"
+// would send the author looking for a typo that is not there.
+func EnumValueWithheld(enum protoreflect.EnumDescriptor, written string) bool {
+	value := enumValueWritten(enum, written)
+	return value != nil && EnumValueTestOnly(value)
+}
+
+// enumValueWritten resolves what an author wrote to the value it names, in either
+// spelling, or nil. The zero value is never named; see [EnumValueNumber].
+func enumValueWritten(enum protoreflect.EnumDescriptor, written string) protoreflect.EnumValueDescriptor {
 	values := enum.Values()
 	for i := range values.Len() {
 		value := values.Get(i)
@@ -793,11 +837,11 @@ func EnumValueNumber(enum protoreflect.EnumDescriptor, written string) (protoref
 		}
 		if strings.EqualFold(written, enumValueSpelling(enum, value)) ||
 			strings.EqualFold(written, string(value.Name())) {
-			return value.Number(), true
+			return value
 		}
 	}
 
-	return 0, false
+	return nil
 }
 
 // enumValueSpelling strips the prefix proto requires from an enum value's name.

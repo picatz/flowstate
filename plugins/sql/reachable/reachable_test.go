@@ -156,8 +156,33 @@ func TestAFlowfileCanNameTheSQLPluginsTasks(t *testing.T) {
 		if len(wrongEngine) == 0 {
 			t.Error("\"ENGINE_ORACLE\" was accepted for engine, which this build does not support")
 		}
-		if !strings.Contains(diagnosticText(wrongEngine), "sqlite") || !strings.Contains(diagnosticText(wrongEngine), "postgres") {
-			t.Errorf("the diagnostic does not list what this build supports; diagnostics:\n%s", diagnosticText(wrongEngine))
+		if got := diagnosticText(wrongEngine); !strings.Contains(got, "postgres") {
+			t.Errorf("the diagnostic does not list what this build supports; diagnostics:\n%s", got)
+		} else if strings.Contains(got, "sqlite") {
+			t.Errorf("the diagnostic offers sqlite, which a released build refuses at dispatch (#1692); diagnostics:\n%s", got)
+		}
+	})
+
+	t.Run("sqlite is refused where it is written, not at dispatch", func(t *testing.T) {
+		// ENGINE_SQLITE carries `(flowstate.v1.test_only) = true` in
+		// sql.proto, and the mark rides in the descriptor to the host, which
+		// is the only way `flow validate` can know that a value spelled
+		// correctly is one this build will not run (#1692). Before the mark
+		// the first thing a person without Postgres tried was accepted here
+		// and refused by the plugin process.
+		for _, spelling := range []string{"ENGINE_SQLITE", "sqlite"} {
+			diags, err := flowfile.ValidateSource([]byte(strings.Replace(
+				string(querySource), "ENGINE_POSTGRES", spelling, 1)))
+			if err != nil {
+				t.Fatalf("ValidateSource: unexpected error: %v", err)
+			}
+			got := diagnosticText(diags)
+			if len(diags) == 0 {
+				t.Fatalf("%q was accepted for engine; the refusal would come at dispatch", spelling)
+			}
+			if !strings.Contains(got, "test builds") || !strings.Contains(got, "postgres") {
+				t.Errorf("the refusal of %q does not say the value is test-only and name the choices; diagnostics:\n%s", spelling, got)
+			}
 		}
 	})
 

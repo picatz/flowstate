@@ -1,5 +1,5 @@
-# managed mode's only job here is telling buf what flowstate/v1/value.proto's
-# go_package is, so it can resolve the import our own sql.proto makes - this
+# managed mode's only job here is telling buf what the go_package of the two
+# engine files our own sql.proto imports is, so it can resolve those imports - this
 # plugin never generates code for that file. Everything about our own package
 # is already spelled out by sql.proto's own go_package option. Copied from
 # plugins/codex/buf.gen.yaml, which explains the same choice at more length.
@@ -8,6 +8,7 @@ managed:
   enabled: true
   override:
     GO_PACKAGE:
+      flowstate/v1/schema.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
       flowstate/v1/value.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
 # Generated with the locally installed protoc-gen-go rather than a remote
 # plugin, so regenerating needs no network - the same choice plugins/git,

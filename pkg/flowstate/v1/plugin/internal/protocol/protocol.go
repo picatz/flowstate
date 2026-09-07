@@ -372,10 +372,10 @@ const Version4 = 4
 // Retired rather than deleted, for the reason [Version1] is.
 const Version5 = 5
 
-// Version6 is the current version of the plugin protocol: the same services and
+// Version6 was the sixth version of the plugin protocol: the same services and
 // routes as [Version5], with the egress grant always present under `flow` and
 // carrying `deployment_default` when the worker forwarded its own default policy
-// rather than one an operator wrote (#1332).
+// rather than one an operator wrote (#1332). It is no longer served.
 //
 // The number moves because the marker is not additive, which is the condition
 // under which #1393's design record let this change stay at 5. `deployment_default`
@@ -404,7 +404,39 @@ const Version5 = 5
 // the document may carry `deployment_default`, so a plugin can decide what to do
 // under a policy nobody wrote. See
 // [github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy.Config.DeploymentDefault].
+//
+// What ended version 6 is the descriptor exchange, the same half of the
+// agreement that ended [Version2]: flowstate/v1/schema.proto, the file a
+// schema's own options live in, joined the files the engine provides (#1692),
+// so a plugin that imports it ships no copy. Retired rather than deleted, for
+// the reason [Version1] is.
 const Version6 = 6
+
+// Version7 is the current version of the plugin protocol: the same services and
+// routes as [Version6], and the same launch environment, with
+// flowstate/v1/schema.proto among the files the engine provides and a plugin's
+// descriptors therefore omit (#1692).
+//
+// The file holds the options a task's schema may set on its declarations —
+// `(flowstate.v1.test_only)` on an enum value is the first — and it is the
+// engine's, so the engine provides it the way it provides value.proto: a plugin
+// that imports it sends the import as a name, not as bytes. That is the
+// arrangement [Version3] made for the twelve-file split, and it has the same
+// consequence in one direction: a plugin built after this change imports the
+// file and does not ship it, and a version 6 host has no such path to link the
+// plugin's task descriptors against. The handshake would succeed and the first
+// manifest would fail to reconstruct — the quiet failure every retired
+// version's doc describes, one step later than the version.
+//
+// The other direction is fine on its own — a version 6 plugin imports nothing a
+// version 7 host lacks — and a single failing direction is still a pairing that
+// cannot work, which is what a version names. Continuing to ship the file so a
+// version 6 host could link it was the alternative, and it was rejected for
+// what it would have meant: a `flowstate/v1` file the engine does not provide,
+// against the rule TestEveryFileOfTheSchemaIsProvided keeps, and a host reading
+// a plugin's mark through an extension it does not have, so the value the mark
+// withholds would be offered again on exactly the hosts that predate it.
+const Version7 = 7
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -497,7 +529,7 @@ const NetworkUnix = "unix"
 // highest preference last is not implied — [Negotiate] picks the highest common
 // version.
 //
-// [Version1] through [Version5] are absent because they are not served. A plugin
+// [Version1] through [Version6] are absent because they are not served. A plugin
 // built against any of them finds no version in common and refuses at startup
 // with a message naming both sides, which is the failure this list exists to
 // produce: one clear refusal before anything runs, rather than a request to a
@@ -509,9 +541,10 @@ const NetworkUnix = "unix"
 // deliberately. Offering it would let a plugin negotiate successfully and fail
 // later — at descriptor linking for version 2, at reading a secret that is not
 // where it looked for version 3, at reaching the network ungoverned for version
-// 4, at parsing the grant for version 5 — which is precisely the failure each
-// bump exists to prevent. A version that cannot work must not be offered.
-func HostVersions() []int { return []int{Version6} }
+// 4, at parsing the grant for version 5, at descriptor linking again for
+// version 6 — which is precisely the failure each bump exists to prevent. A
+// version that cannot work must not be offered.
+func HostVersions() []int { return []int{Version7} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {

@@ -35,6 +35,11 @@ const (
 	Engine_ENGINE_UNSPECIFIED Engine = 0
 	// Pure-Go, embedded, no server. Retained for package-test fixtures; released
 	// plugin binaries refuse it because it grants worker-filesystem authority.
+	//
+	// Marked test-only so the host neither lists it among the choices nor
+	// accepts it from a Flowfile: before the mark, every catalog surface
+	// advertised `sqlite | postgres` and `flow validate` accepted `sqlite`, and
+	// the refusal came at dispatch, from the released binary (#1692).
 	Engine_ENGINE_SQLITE Engine = 1
 	// Pure-Go over the network: github.com/jackc/pgx/v5, the enterprise
 	// target issue #181 names first for production use.
@@ -441,7 +446,7 @@ var File_sql_v1_sql_proto protoreflect.FileDescriptor
 
 const file_sql_v1_sql_proto_rawDesc = "" +
 	"\n" +
-	"\x10sql/v1/sql.proto\x12\x06sql.v1\x1a\x18flowstate/v1/value.proto\"\xba\x01\n" +
+	"\x10sql/v1/sql.proto\x12\x06sql.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xba\x01\n" +
 	"\vQueryInputs\x12&\n" +
 	"\x06engine\x18\x01 \x01(\x0e2\x0e.sql.v1.EngineR\x06engine\x12%\n" +
 	"\x03dsn\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x03dsn\x12\x14\n" +
@@ -462,10 +467,10 @@ const file_sql_v1_sql_proto_rawDesc = "" +
 	"\vExecOutputs\x12.\n" +
 	"\x13total_rows_affected\x18\x01 \x01(\x03R\x11totalRowsAffected\x12$\n" +
 	"\x0elast_insert_id\x18\x02 \x01(\x03R\flastInsertId\x12'\n" +
-	"\x0fstatement_count\x18\x03 \x01(\x05R\x0estatementCount*H\n" +
+	"\x0fstatement_count\x18\x03 \x01(\x05R\x0estatementCount*N\n" +
 	"\x06Engine\x12\x16\n" +
-	"\x12ENGINE_UNSPECIFIED\x10\x00\x12\x11\n" +
-	"\rENGINE_SQLITE\x10\x01\x12\x13\n" +
+	"\x12ENGINE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\rENGINE_SQLITE\x10\x01\x1a\x04\x80\xb5\x18\x01\x12\x13\n" +
 	"\x0fENGINE_POSTGRES\x10\x02B\x89\x01\n" +
 	"\n" +
 	"com.sql.v1B\bSqlProtoP\x01Z8github.com/picatz/flowstate/plugins/sql/gen/sql/v1;sqlv1\xa2\x02\x03SXX\xaa\x02\x06Sql.V1\xca\x02\x06Sql\\V1\xe2\x02\x12Sql\\V1\\GPBMetadata\xea\x02\aSql::V1b\x06proto3"
