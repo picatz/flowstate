@@ -74,9 +74,11 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		if doc.parseErr != nil {
 			code = codeYAMLSyntax
 		}
-		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{
-			yamlDiagnostic(doc, err, code),
-		}}}
+		// A test document publishes the sentence and not the validator's
+		// diagnostic behind it: code actions are refused on test documents
+		// (see [codeActions]), so nothing would read the edit.
+		d, _ := yamlDiagnostic(doc, err, code)
+		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{d}}}
 	}
 
 	path, hasPath := doc.filesystemPath()
@@ -142,7 +144,7 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		}
 		source := sourceForTestDiagnostic(doc, includedDefaults, uri, defaultsErr.Path)
 		owner := newDocument(uri, 0, source, doc.tasks)
-		d := yamlDiagnostic(owner, defaultsErr.Err, codeTestFile)
+		d, _ := yamlDiagnostic(owner, defaultsErr.Err, codeTestFile)
 		return []diagnosticPublication{
 			{uri: doc.uri, diagnostics: []lsp.Diagnostic{}},
 			{uri: uri, diagnostics: []lsp.Diagnostic{d}},
