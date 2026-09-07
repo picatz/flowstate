@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -676,7 +675,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// Failing the run when an output cannot be computed is deliberate: an output
 		// is the answer the caller asked for, and a run that cannot produce it has not
 		// succeeded.
-		runOutputs, outputsErr := v1.EvalRunOutputs(context.Background(), st.GetWorkflow(), exec.scope)
+		runOutputs, outputsErr := v1.EvalRunOutputs(evalContext(), st.GetWorkflow(), exec.scope)
 		if outputsErr == nil {
 			stepOutputs.RunOutputs = runOutputs
 			if sizeErr := v1.CheckRunResultSize(stepOutputs); sizeErr != nil {

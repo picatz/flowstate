@@ -1849,11 +1849,12 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 	// evaluates CEL, which a cancelled context refuses; a task that wins the
 	// cancellation race would then have its compensation fail to register, and the
 	// run would compensate everything except the effect that was just created.
-	// The durable driver has always registered on context.Background() (see
-	// engine/execute.go), so this is the two drivers agreeing rather than a new
-	// rule; WithoutCancel rather than Background because the values on ctx — the
-	// secret runtime, the rehearsal identity — are ones a compensation's inputs
-	// may legitimately read.
+	// The durable driver has always registered on the background context (its
+	// `evalContext`, engine/evalcontext.go, which states the invariant every
+	// workflow-side evaluation shares), so this is the two drivers agreeing
+	// rather than a new rule; WithoutCancel rather than Background because the
+	// values on ctx — the secret runtime, the rehearsal identity — are ones a
+	// compensation's inputs may legitimately read.
 	entry, err := UndoRegistrationFor(context.WithoutCancel(ctx), node, inner, outputs)
 	if err != nil {
 		return nil, err
