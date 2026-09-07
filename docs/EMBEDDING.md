@@ -93,8 +93,8 @@ step's task is one this build knows: that question is
 another that does not exist (`${steps.nope.x}`): `Compile` is the parse, and
 the checks across steps are `Validate`'s. A Flowfile naming a task nobody
 registered compiles cleanly and is refused before `RunLocal` runs its first
-step, with `unknown task "nosuchtask"` naming what to register; the ghost
-reference fails at the step that evaluates it. Call
+step, with `task "nosuchtask": unknown task: ...` naming what to register; the
+ghost reference fails at the step that evaluates it. Call
 `flowfile.Validate(workflow)` (or `flowfile.ValidateSource`) directly for the
 richer, line-and-column diagnostic `flow validate` gives.
 
@@ -168,10 +168,15 @@ A zero `RunOptions` is the safest possible run, matching an unconfigured
 What `RunLocal` returns is not redacted, whatever the options say. A
 `sensitive:` declaration bounds what Flowstate itself renders — a terminal, a
 test report, an agent's answer — and not what a run hands back to the program
-that ran it: the outputs are the run's history, in the clear, the same way
-`flow run local -o json` prints them. An embedder that prints or forwards
-them applies the declared set itself (`v1.SensitiveInputValues`, then `RedactTree` or `RedactSubstrings`) rather than
-assuming the facade did.
+that ran it: the outputs are the run's history, in the clear. An embedder
+that prints or forwards them takes the same fail-closed line the CLI does
+(`decideCarriedValues` and `redactStepValues` in `cmd/flow/sensitive.go`):
+when the workflow declares anything sensitive, withhold every step's values
+rather than redact by value. `v1.SensitiveInputValues` recognises the
+declared values and what they contain, and nothing computed from them, so a
+token upper-cased or embedded in a URL by a step passes value-based redaction
+untouched; that is why the CLI withholds the whole transcript, and why an
+embedder should.
 
 Nothing becomes more permissive by being left unset. Configuring `Secrets`
 at all still denies everything unless a `Policy` with an actual allow rule

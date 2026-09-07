@@ -45,7 +45,8 @@ type Diagnostics = flowfile.Diagnostics
 // call (see that package's doc on `Parse` vs `Validate`). So a Flowfile
 // naming a task nobody registered, or reading a step that is not there,
 // compiles cleanly here: the unknown task is refused before [RunLocal] runs
-// its first step, as "unknown task %q" naming what to register, and the
+// its first step, as `task "nosuchtask": unknown task: ...` naming what to
+// register, and the
 // ghost reference fails at the step that evaluates it. An embedder that
 // wants the earlier, richer diagnostic — the one `flow validate` gives,
 // naming the line and column — calls [flowfile.Validate] on the result, or

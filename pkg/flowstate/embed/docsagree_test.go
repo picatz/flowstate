@@ -31,7 +31,9 @@ steps:
 
 	_, runErr := RunLocal(context.Background(), workflow, RunOptions{})
 	require.Error(t, runErr)
-	require.Contains(t, runErr.Error(), `unknown task "nosuchtask"`)
+	require.Contains(t, runErr.Error(), `task "nosuchtask": unknown task:`,
+		"TaskError names the task once and the cause leads with the words every surface uses")
+	require.Equal(t, 1, strings.Count(runErr.Error(), `"nosuchtask"`), "the task is named once, not by the wrapper and the cause both")
 	require.Contains(t, runErr.Error(), "Tasks.Register", "the sentence says what an embedder does about it")
 }
 
@@ -60,10 +62,11 @@ steps:
 	require.Contains(t, strings.Join(messages, "\n"), `references unknown step "nope"`)
 }
 
-// TestRunLocal_OutputsAreNotRedacted pins the fail-closed table's last row:
+// TestRunLocal_OutputsAreNotRedacted pins what the fail-closed section says:
 // `sensitive:` bounds what Flowstate renders, not what a run returns, so a
-// sensitive input echoed by a step comes back in the clear and an embedder
-// that prints it applies the declared set itself.
+// sensitive input echoed by a step comes back in the clear; and a value a
+// step derived from it is not in the declared set, which is why an embedder
+// withholds a step's values rather than redacting by value, as the CLI does.
 func TestRunLocal_OutputsAreNotRedacted(t *testing.T) {
 	workflow, diags, err := Compile([]byte(`
 edition: v2026.3
@@ -75,6 +78,8 @@ inputs:
 steps:
   - id: echo
     value: ${inputs.token}
+  - id: derived
+    value: ${inputs.token.upperAscii()}
 `))
 	require.NoError(t, err, "diags=%v", diags)
 
@@ -83,10 +88,15 @@ steps:
 	})
 	require.NoError(t, runErr)
 
-	got, ok := StepOutputString(outputs, "echo", "value")
+	echoed, ok := StepOutputString(outputs, "echo", "value")
 	require.True(t, ok, "outputs: %v", outputs)
-	require.Equal(t, "hunter2", got, "a run returns its history as recorded; redaction is the renderer's")
+	require.Equal(t, "hunter2", echoed, "a run returns its history as recorded; redaction is the renderer's")
+	derived, ok := StepOutputString(outputs, "derived", "value")
+	require.True(t, ok, "outputs: %v", outputs)
+	require.Equal(t, "HUNTER2", derived)
 
 	set := v1.SensitiveInputValues(map[string]*v1.Value{"token": v1.NewLiteral("hunter2")}, map[string]bool{"token": true})
-	require.NotContains(t, set.RedactSubstrings(got), "hunter2", "the declared set is what an embedder applies before printing")
+	require.True(t, set.IsSensitive(echoed), "the declared value is recognised")
+	require.False(t, set.IsSensitive(derived),
+		"a value derived from the secret is not, which is why withholding the step's values is the fail-closed line")
 }
