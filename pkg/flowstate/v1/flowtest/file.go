@@ -1707,7 +1707,10 @@ func (t *stubTwins) note(p *problems, at site, label string, s *Stub) {
 	key := stubTargetKey(s)
 	earlier, seen := t.first[key]
 	if !seen {
-		if s.Times == nil || *s.Times == 0 {
+		// Only a stub with no times: at all: checkStubShape refused a
+		// times: at or below zero a moment ago, and a twin diagnostic on
+		// top of that refusal would be a second sentence about one mistake.
+		if s.Times == nil {
 			t.first[key] = stubTwin{at: at, label: label}
 		}
 		return
