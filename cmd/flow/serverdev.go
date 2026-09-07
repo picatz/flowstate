@@ -842,6 +842,12 @@ func devOTLPEndpoint() string {
 // attempted, since the SDK's own message is usually the honest one.
 func devStartError(err error, flags devFlags) error {
 	switch {
+	// Matched on the text, which is the exception this repository's rule
+	// against reading an error's text otherwise forbids (#1671), because there
+	// is no value to match: the port is taken in the child process the SDK
+	// starts, whose own report reaches this process as text, and the error
+	// the SDK returns wraps a dial failure, never a syscall.EADDRINUSE of
+	// this process's own. The words are the only carrier there is.
 	case flags.uiPort != 0 && strings.Contains(err.Error(), "address already in use"):
 		return fmt.Errorf("starting the Temporal dev server: port %d is already in use, which is "+
 			"usually another `temporal server start-dev` or another `flow server dev`; "+
