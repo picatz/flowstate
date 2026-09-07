@@ -226,9 +226,12 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			// Budgeted before placing, so the omission marker the budget
+			// substitutes is placed in the file by the same call as the
+			// warnings it stands in for.
+			stopped.Warnings = warningBudget.take(stopped.GetWarnings())
 			anchor.place(stopped.GetFailures())
 			anchor.place(stopped.GetWarnings())
-			stopped.Warnings = warningBudget.take(stopped.GetWarnings())
 			report.Cases = append(report.Cases, stopped)
 			transcripts = append(transcripts, nil)
 
@@ -261,9 +264,9 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
 		cancel()
+		result.Warnings = warningBudget.take(result.GetWarnings())
 		anchor.place(result.GetFailures())
 		anchor.place(result.GetWarnings())
-		result.Warnings = warningBudget.take(result.GetWarnings())
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
