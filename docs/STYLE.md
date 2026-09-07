@@ -57,6 +57,7 @@ descend from are in Part I.
 | Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`parse_wait.go:397`) |
 | Naming a webhook delivery for dedupe | the event's own id, `${event.body.id}`, or a delivery id the sender repeats in a header | a signature header, `${event.headers["stripe-signature"]}` | a signature is computed per attempt — a retry carries a new timestamp and a new MAC over the same event — so a key over it names the attempt and every real retry starts a second run (R10) |
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
+| A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
 
 The last row is the one place where the canonical spelling is not yet the only legal
 one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:128`) documents the
@@ -539,6 +540,19 @@ whose mapping spelling compiles to a *literal* rather than to the expression the
 value holds. A shaping task's `outputs:` keeps it too, and that one is a real
 distinction rather than a shortfall — a mapping there means a shaped set of names,
 so unfolding one would change what the file says.
+
+**Three YAML traps, named together.** YAML is the carrier, and three of its legal
+readings catch a newcomer and a generating agent before the language does. A block
+scalar written `|` on a whole-value expression keeps the newline YAML appends, so
+`if: |` over `${...}` is a string and not a bool (#1445); the canonical spelling is
+`|-`, or the plain scalar. A fence inside a flow mapping, `log: {message: ${x}}`,
+ends the mapping at the fence's own `}` (#1466); write the block form. And a plain
+scalar holding `: ` — every ternary, `${a ? b : c}` — is a mapping key to YAML
+(#1683); quote the whole value, `'${a ? b : c}'`, as the table above and every
+example that writes a ternary do. The third is the only one that stops the file from
+parsing at all, and the compiler answers it in this language's voice with the
+quoting as a suggested edit, so `flow lint` and `flow fmt` reach the rest of the file
+once it is applied.
 
 **A long expression may take a line of its own.** `value: |` or `value: >` followed
 by a single `${...}` is that expression, typed as it is written — the newline the

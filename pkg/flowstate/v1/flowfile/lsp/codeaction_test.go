@@ -371,3 +371,37 @@ func TestCodeActionEditIsFixsOutputRatherThanMarshals(t *testing.T) {
 	require.Len(t, edits, 1)
 	assert.Equal(t, string(formatted), edits[0].NewText)
 }
+
+// TestCodeActionQuotesAnUnquotedTernaryInADocumentThatDoesNotParse is the one
+// action an unparsable document offers (#1683): the syntax diagnostic for an
+// unquoted ternary carries the validator's quoting edit, and applying it
+// yields a buffer that parses. The document is refused for every other action
+// still, which TestCodeActionOnAnUnparsableDocumentOffersNothing holds.
+func TestCodeActionQuotesAnUnquotedTernaryInADocumentThatDoesNotParse(t *testing.T) {
+	t.Parallel()
+
+	const src = "name: tern\nsteps:\n  - id: a\n    value: ${true ? \"yes\" : \"no\"}\n" + editionSuffix
+
+	const uri = "file:///ternary.yaml"
+	c := newClient(t)
+	c.initialize()
+	published := c.open(uri, src)
+	require.Len(t, published.Diagnostics, 1)
+	assert.Equal(t, codeYAMLSyntax, published.Diagnostics[0].Code)
+	assert.Contains(t, published.Diagnostics[0].Message, "quote the whole value",
+		"the editor gets the validator's sentence, not goccy's")
+
+	only := []lsp.CodeActionKind{lsp.CAKQuickFix}
+	actions := c.codeAction(uri, wholeOf(src), only, nil)
+	require.Len(t, actions, 1, "the quoting, and nothing computed from a tree that does not exist")
+	assert.Equal(t, "quote the expression", actions[0].Title)
+	assert.Equal(t, published.Diagnostics, actions[0].Diagnostics)
+
+	fixed := applyEdit(t, uri, src, actions[0].Edit)
+	assert.Contains(t, fixed, "    value: '${true ? \"yes\" : \"no\"}'\n")
+	_, _, err := flowfile.Parse([]byte(fixed))
+	require.NoError(t, err, "%s", fixed)
+
+	assert.Empty(t, c.codeAction(uri, wholeOf(src), []lsp.CodeActionKind{lsp.CAKRefactor}, nil),
+		"asked for anything but a quickfix, an unparsable document offers nothing")
+}

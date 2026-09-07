@@ -117,7 +117,7 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		// Nothing downstream can be trusted once the document does not parse:
 		// the model is absent, and every other check would guess. One precise
 		// syntax error is the whole report.
-		set.add(yamlDiagnostic(doc, doc.parseErr, codeYAMLSyntax))
+		set.addFrom(yamlDiagnostic(doc, doc.parseErr, codeYAMLSyntax))
 		return set.sorted()
 	}
 
@@ -236,33 +236,36 @@ func (s *diagnosticSet) sorted() []carriedDiagnostic {
 	return out
 }
 
-// yamlDiagnostic converts a YAML error into a diagnostic at the token it names.
+// yamlDiagnostic converts a YAML error into a diagnostic at the token it names,
+// beside the validator's own reading of the same failure.
 //
 // The parser's errors carry the token they failed on, which is what lets a syntax
 // error land on the character at fault instead of on line 1 — where an editor
 // would show it if the position were simply dropped.
-func yamlDiagnostic(doc *document, err error, code string) lsp.Diagnostic {
+//
+// The sentence is the validator's ([flowfile.YAMLSyntaxDiagnostics]) rather than
+// goccy's, so that a buffer and `flow validate` on the same bytes say the same
+// thing, and so that the one syntax failure the validator can repair — an
+// unquoted ternary, whose `: ` YAML reads as a mapping key (#1683) — reaches the
+// editor with the edit the validator measured, as a quickfix. The range is
+// still this package's, from the token: the validator has only a point.
+func yamlDiagnostic(doc *document, err error, code string) (lsp.Diagnostic, flowfile.Diagnostic) {
+	source := flowfile.YAMLSyntaxDiagnostics([]byte(doc.text), err)[0]
 	d := lsp.Diagnostic{
 		Range:    documentStart,
 		Severity: lsp.Error,
 		Source:   diagnosticSource,
 		Code:     code,
-		Message:  err.Error(),
+		Message:  source.Message,
 	}
 
 	var yamlErr yaml.Error
 	if !errors.As(err, &yamlErr) {
-		return d
-	}
-
-	// The bare message, without the parser's rendered source excerpt: the editor
-	// already shows the source.
-	if msg := yamlErr.GetMessage(); msg != "" {
-		d.Message = msg
+		return d, source
 	}
 	tok := yamlErr.GetToken()
 	if tok == nil || tok.Position == nil {
-		return d
+		return d, source
 	}
 	start := doc.index.offsetOfYAML(tok.Position.Line, tok.Position.Column)
 	width := max(len(tok.Origin), len(tok.Value))
@@ -270,7 +273,7 @@ func yamlDiagnostic(doc *document, err error, code string) lsp.Diagnostic {
 		width = len(trimmed)
 	}
 	d.Range = doc.index.rangeOfOffsets(start, start+max(width, 1))
-	return d
+	return d, source
 }
 
 // addCompileFailure reports a failure to compile the document to a workflow.
@@ -282,7 +285,7 @@ func yamlDiagnostic(doc *document, err error, code string) lsp.Diagnostic {
 func addCompileFailure(doc *document, set *diagnosticSet, err error) {
 	var yamlErr yaml.Error
 	if errors.As(err, &yamlErr) {
-		set.add(yamlDiagnostic(doc, err, codeYAMLSyntax))
+		set.addFrom(yamlDiagnostic(doc, err, codeYAMLSyntax))
 		return
 	}
 	if set.empty() {

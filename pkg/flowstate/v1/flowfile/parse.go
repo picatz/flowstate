@@ -521,7 +521,7 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 
 	file, err := parser.ParseBytes(data, 0)
 	if err != nil {
-		return nil, nil, yamlSyntaxDiagnostics(err)
+		return nil, nil, YAMLSyntaxDiagnostics(data, err)
 	}
 
 	c := &compiler{
@@ -565,8 +565,14 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 // is the parser's own position rather than the author's text.
 var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
 
-// yamlSyntaxDiagnostics translates a failure from the YAML parser into the
+// YAMLSyntaxDiagnostics translates a failure from the YAML parser into the
 // [Diagnostic] grammar every other failure in this package speaks (#654).
+//
+// Exported for the language server, which parses a buffer itself to keep the
+// document tree and must give the same sentence — and the same suggested
+// edit, see [offerQuotedFence] — that `flow validate` gives for the same
+// bytes. data is the document the parser failed on; the one diagnostic
+// returned is positioned at the token it stopped on.
 //
 // Before this, a YAML-level failure — a duplicate key, a tab used for
 // indentation, an unterminated quote — bypassed the grammar entirely and
@@ -585,7 +591,7 @@ var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
 // version of goccy — still gets the standard shape, with the position left
 // unset the way [Diagnostic] already reports "a problem with the document as a
 // whole" everywhere else in this package.
-func yamlSyntaxDiagnostics(err error) Diagnostics {
+func YAMLSyntaxDiagnostics(data []byte, err error) Diagnostics {
 	d := Diagnostic{Message: err.Error()}
 
 	var yamlErr yaml.Error
@@ -600,6 +606,7 @@ func yamlSyntaxDiagnostics(err error) Diagnostics {
 	}
 
 	d.Message = yamlCoordinate.ReplaceAllString(d.Message, " at line $1, column $2")
+	offerQuotedFence(data, &d)
 
 	return Diagnostics{d}
 }
