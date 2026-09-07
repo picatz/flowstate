@@ -41,15 +41,31 @@ import (
 //   - walkers_guard_test.go sameScopeContainers — the guard each walker
 //     package keeps beside the walkers it guards.
 //   - constraints tests nestedStruct — one fixture, two test files.
+//   - `.funcN` members — function literals: t.Run bodies and setup closures
+//     repeated across a test file's cases, and the two signal-wait goroutines
+//     in wait_local.go. Each is a helper waiting to be written; recorded so
+//     the next copied closure is seen the day it arrives.
 var duplicateBodies = map[string]bool{
-	"pkg/flowstate/v1/constraints_task_output_test.go:taskOutputNestedStruct = pkg/flowstate/v1/constraints_test.go:nestedStruct":                                       true,
-	"pkg/flowstate/v1/engine/authority_test.go:TestAuthorityDenial = pkg/flowstate/v1/eval_test.go:TestAuthorityDenial":                                                 true,
-	"pkg/flowstate/v1/engine/authority_test.go:TestCleartextCredential = pkg/flowstate/v1/eval_test.go:TestCleartextCredential":                                         true,
-	"pkg/flowstate/v1/engine/walkers_guard_test.go:sameScopeContainers = pkg/flowstate/v1/flowfile/walkers_guard_test.go:sameScopeContainers":                           true,
-	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflow = pkg/flowstate/v1/eval_test.go:TestRunWorkflow":                                                          true,
-	"pkg/flowstate/v1/eval_task_http_run.go:isLoopbackHost = pkg/flowstate/v1/secrets/vault/vault.go:isLoopback":                                                        true,
-	"pkg/flowstate/v1/flowfile/lsp/schema.go:fieldNames = pkg/flowstate/v1/flowfile/schema.go:fieldNames = pkg/flowstate/v1/plugin/catalogtask_test.go:fieldNamesOf":    true,
-	"pkg/flowstate/v1/secrets/secrets.go:validScheme = pkg/flowstate/v1/secrets/vault/vault.go:validScheme":                                                             true,
+	"pkg/flowstate/v1/engine/authority_test.go:TestAuthorityDenial = pkg/flowstate/v1/eval_test.go:TestAuthorityDenial":                                                                                                                                                                                                              true,
+	"pkg/flowstate/v1/engine/authority_test.go:TestCleartextCredential = pkg/flowstate/v1/eval_test.go:TestCleartextCredential":                                                                                                                                                                                                      true,
+	"pkg/flowstate/v1/engine/walkers_guard_test.go:sameScopeContainers = pkg/flowstate/v1/flowfile/walkers_guard_test.go:sameScopeContainers":                                                                                                                                                                                        true,
+	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflow = pkg/flowstate/v1/eval_test.go:TestRunWorkflow":                                                                                                                                                                                                                       true,
+	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowAsync.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowSwitch.func1":                                                                                                                                                                                     true,
+	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowDebuggerNeutrality.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowInterpolation.func1":                                                                                                                                                                 true,
+	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowErrorText.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowLog.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowNestedErrorText.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowVars.func1":                               true,
+	"pkg/flowstate/v1/eval_task_http_run.go:isLoopbackHost = pkg/flowstate/v1/secrets/vault/vault.go:isLoopback":                                                                                                                                                                                                                     true,
+	"pkg/flowstate/v1/eval_test.go:TestRunWorkflowAsync.func1 = pkg/flowstate/v1/eval_test.go:TestRunWorkflowSwitch.func1":                                                                                                                                                                                                           true,
+	"pkg/flowstate/v1/flowfile/call_test.go:TestCallArgumentTypeChecked.func1 = pkg/flowstate/v1/flowfile/call_test.go:TestCallEnumArgumentType.func1":                                                                                                                                                                               true,
+	"pkg/flowstate/v1/flowfile/lsp/schema.go:fieldNames = pkg/flowstate/v1/flowfile/schema.go:fieldNames = pkg/flowstate/v1/plugin/catalogtask_test.go:fieldNamesOf":                                                                                                                                                                 true,
+	"pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestClosingDefaultsReturnsDependentSuitesToTheSavedFile.func1 = pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors.func5 = pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestSavedDefaultsRetainTheSuitesLocalhostURI.func1": true,
+	"pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestClosingDefaultsReturnsDependentSuitesToTheSavedFile.func2 = pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors.func4":                                                                                                     true,
+	"pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestIncludedDefaultsMatchMixedLocalURIForms.func1 = pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestIncludedDefaultsRetainTheEditorsLocalhostURI.func1":                                                                                                                       true,
+	"pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestLiveDefaultsRevalidationHasAnExplicitDependentBound.func2 = pkg/flowstate/v1/flowfile/lsp/testfile_test.go:TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors.func2":                                                                                                     true,
+	"pkg/flowstate/v1/netpolicy/credentials_test.go:Test_New_credentialsRules.func1 = pkg/flowstate/v1/netpolicy/identity_test.go:Test_New_identityRules.func1":                                                                                                                                                                      true,
+	"pkg/flowstate/v1/protodoc/presence_test.go:TestPluginProtocolProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestRunAndReportsProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestTaskProtocolProseIsPresent.func3":                                                                         true,
+	"pkg/flowstate/v1/secrets/secrets.go:validScheme = pkg/flowstate/v1/secrets/vault/vault.go:validScheme":                                                                                                                                                                                                                          true,
+	"pkg/flowstate/v1/server/list_scan_test.go:TestAFilterOnNameCannotEscapeTenancy.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryMatchingRun.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRun.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRunAmongOtherTenants.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRunMatchingByName.func1 = pkg/flowstate/v1/server/list_selection_internal_test.go:pagingNamespace.func1": true,
+	"pkg/flowstate/v1/wait_local.go:waitForSignalLocally.func3 = pkg/flowstate/v1/wait_local.go:waitForSignalsLocally.func3":                                            true,
 	"plugins/codex/readme_test.go:extractExampleBlocks = plugins/github/readme_test.go:extractExampleBlocks = plugins/sql/readme_test.go:extractExampleBlocks":          true,
 	"plugins/codex/readme_test.go:repoRootFromCodexPlugin = plugins/github/readme_test.go:repoRootFromGithubPlugin = plugins/sql/readme_test.go:repoRootFromSQLPlugin":  true,
 	"plugins/git/clone.go:installEgressPolicy = plugins/vcs/clone.go:installEgressPolicy":                                                                               true,
@@ -146,30 +162,41 @@ func analyzeSource(t *testing.T, sources map[string]string) []Group {
 	return groups
 }
 
-// body is a function body over the bound: nine statements and three blocks.
-const body = `{
+// sample is a function body holding exactly MinStatements statements inside
+// its braces: two nested blocks, each counted with what it holds.
+const sample = `{
 	x := 1
-	y := 2
-	if x < y {
-		x, y = y, x
+	if x > 0 {
+		x++
 	}
-	for i := 0; i < 3; i++ {
-		x += i
+	for x < 10 {
+		x++
 	}
-	return x + y
+	return x
 }`
 
 func TestTheSameBodyInTwoFunctionsIsAGroup(t *testing.T) {
 	t.Parallel()
 
 	groups := analyzeSource(t, map[string]string{
-		"a/a.go": "package a\n\nfunc First() int " + body + "\n",
-		"b/b.go": "package b\n\n// Documented, and laid out differently.\nfunc (s *Second) Same() int " + strings.ReplaceAll(body, "\n\t", "\n\t\t// noted\n\t") + "\n",
+		"a/a.go": "package a\n\nfunc First() int " + sample + "\n",
+		"b/b.go": "package b\n\n// Documented, and laid out differently.\nfunc (s *Second) Same() int " + strings.ReplaceAll(sample, "\n\t", "\n\t\t// noted\n\t") + "\n",
 	})
 
 	require.Len(t, groups, 1, "two identical bodies were not grouped, or a comment separated them")
 	assert.Equal(t, "a/a.go:First = b/b.go:Second.Same", groups[0].Key())
-	assert.GreaterOrEqual(t, groups[0].Statements, MinStatements)
+	assert.Equal(t, MinStatements, groups[0].Statements, "the body holds exactly the bound inside its braces; the braces themselves are not a statement")
+}
+
+func TestAFunctionLiteralsBodyIsCompared(t *testing.T) {
+	t.Parallel()
+
+	groups := analyzeSource(t, map[string]string{
+		"a.go": "package a\n\nfunc A() {\n\tgo func() " + sample + "()\n\tgo func() " + sample + "()\n}\n",
+	})
+
+	require.Len(t, groups, 1, "two identical goroutine bodies were not grouped")
+	assert.Equal(t, "a.go:A.func1 = a.go:A.func2", groups[0].Key(), "literals are named after their declaration and ordinal, not their line")
 }
 
 func TestABodyUnderTheBoundIsNotReported(t *testing.T) {
@@ -186,7 +213,7 @@ func TestARenamedCopyIsNotAMatch(t *testing.T) {
 	t.Parallel()
 
 	groups := analyzeSource(t, map[string]string{
-		"a.go": "package a\n\nfunc A() int " + body + "\n\nfunc B() int " + strings.ReplaceAll(body, "x", "z") + "\n",
+		"a.go": "package a\n\nfunc A() int " + sample + "\n\nfunc B() int " + strings.ReplaceAll(sample, "x", "z") + "\n",
 	})
 
 	assert.Empty(t, groups, "a body with renamed identifiers matched; only the same code is a copy here")
@@ -196,8 +223,8 @@ func TestAGeneratedFileIsSkipped(t *testing.T) {
 	t.Parallel()
 
 	groups := analyzeSource(t, map[string]string{
-		"a.go":    "package a\n\nfunc A() int " + body + "\n",
-		"a.pb.go": "// Code generated by protoc-gen-go. DO NOT EDIT.\n\npackage a\n\nfunc B() int " + body + "\n",
+		"a.go":    "package a\n\nfunc A() int " + sample + "\n",
+		"a.pb.go": "// Code generated by protoc-gen-go. DO NOT EDIT.\n\npackage a\n\nfunc B() int " + sample + "\n",
 	})
 
 	assert.Empty(t, groups, "a generated file's body was compared; the copy there is the generator's")

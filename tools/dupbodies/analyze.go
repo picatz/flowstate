@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
@@ -91,16 +92,18 @@ func Analyze(root string) ([]Group, int, error) {
 			}
 			functions++
 
-			statements := countStatements(fn.Body)
-			if statements < MinStatements {
-				continue
-			}
+			for _, body := range bodiesOf(fn, rel) {
+				statements := countStatements(body.block)
+				if statements < MinStatements {
+					continue
+				}
 
-			key, err := bodyKey(fn.Body)
-			if err != nil {
-				return err
+				key, err := bodyKey(body.block)
+				if err != nil {
+					return err
+				}
+				bodies[key] = append(bodies[key], member{name: body.name, statements: statements})
 			}
-			bodies[key] = append(bodies[key], member{name: rel + ":" + funcName(fn), statements: statements})
 		}
 
 		return nil
@@ -131,15 +134,49 @@ func Analyze(root string) ([]Group, int, error) {
 	return groups, functions, nil
 }
 
-// countStatements counts every statement in the body, nested ones included.
-func countStatements(body *ast.BlockStmt) int {
+// body is one function body under a name the table can hold.
+type body struct {
+	name  string
+	block *ast.BlockStmt
+}
+
+// bodiesOf returns the declaration's own body and the body of every function
+// literal inside it, in source order. A literal is named after the
+// declaration it sits in and its ordinal there — `file.go:Name.func2` — which
+// stays the same when lines above it move, where a line number would not,
+// and changes only when a literal is added before it or it is removed. A
+// copied goroutine body or callback is a copy like any other (Codex, #1839).
+func bodiesOf(fn *ast.FuncDecl, rel string) []body {
+	name := rel + ":" + funcName(fn)
+	out := []body{{name: name, block: fn.Body}}
+
 	n := 0
-	ast.Inspect(body, func(node ast.Node) bool {
-		if _, ok := node.(ast.Stmt); ok {
-			n++
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		lit, ok := node.(*ast.FuncLit)
+		if !ok {
+			return true
 		}
+		n++
+		out = append(out, body{name: fmt.Sprintf("%s.func%d", name, n), block: lit.Body})
 		return true
 	})
+
+	return out
+}
+
+// countStatements counts the statements inside the body's braces, nested
+// ones included; the body's own block is the container, not a statement of
+// it, so a one-line function counts one (Copilot, #1839).
+func countStatements(block *ast.BlockStmt) int {
+	n := 0
+	for _, stmt := range block.List {
+		ast.Inspect(stmt, func(node ast.Node) bool {
+			if _, ok := node.(ast.Stmt); ok {
+				n++
+			}
+			return true
+		})
+	}
 	return n
 }
 
