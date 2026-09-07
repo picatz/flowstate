@@ -1,9 +1,16 @@
 package engine
 
 import (
+	"errors"
+	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -29,10 +36,11 @@ import (
 // The second derives the evaluator entry points from those same files — every
 // function the durable driver calls with `evalContext()` as an argument — and
 // refuses, in the v1 package, a call to a `*FromContext` reader or to `.Value`
-// on a context reached from any of them, following calls to other functions in
-// that package. Deriving the set from the call sites rather than a name prefix
-// keeps activity-side functions such as `ResolveSecret`, which legitimately
-// reads the task runtime off the activity's context, out of the rule.
+// on anything typed context.Context reached from any of them, following the
+// calls to other functions and methods of that package that go/types resolves.
+// Deriving the set from the call sites rather than a name prefix keeps
+// activity-side functions such as `ResolveSecret`, which legitimately reads the
+// task runtime off the activity's context, out of the rule.
 
 // workflowSideFiles are the durable driver's files that evaluate
 // specification-owned expressions in workflow code.
@@ -81,13 +89,13 @@ func TestWorkflowSideEvaluationUsesEvalContext(t *testing.T) {
 				return true
 			}
 			t.Errorf("%s: a bare %s call; workflow-side evaluation runs on evalContext(), which states why",
-				fset.Position(call.Pos()), types(call))
+				fset.Position(call.Pos()), backgroundCallName(call))
 			return true
 		})
 	}
 }
 
-func types(call *ast.CallExpr) string {
+func backgroundCallName(call *ast.CallExpr) string {
 	if isCall(call, "context", "TODO") {
 		return "context.TODO()"
 	}
@@ -139,63 +147,188 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 	require.NotEmpty(t, entryPoints, "no v1 call passes evalContext(); the derivation is broken, not the tree")
 	require.Contains(t, entryPoints, "EvalLoopUntil", "the derivation missed a known entry point")
 
-	// Every package-level function in the v1 package, by name, so calls between
-	// them can be followed.
+	// The v1 package, type-checked, so a call resolves to the one function or
+	// method it names rather than to every method sharing the name: without
+	// types, `program.Eval(...)` on a CEL program would be followed into
+	// `(*Evaluator).Eval` and from there into the local driver's whole
+	// execution path, which is the durable driver's activity side and reads
+	// the registry off its context on purpose.
 	fset := token.NewFileSet()
 	paths, err := filepath.Glob("../*.go")
 	require.NoError(t, err)
-	funcs := map[string]*ast.FuncDecl{}
+	var files []*ast.File
 	for _, path := range paths {
-		if strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, ".pb.go") {
+		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		for _, decl := range parseGoFile(t, fset, path).Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Body != nil {
-				funcs[fn.Name.Name] = fn
+		files = append(files, parseGoFile(t, fset, path))
+	}
+	info := &types.Info{
+		Uses:       map[*ast.Ident]types.Object{},
+		Selections: map[*ast.SelectorExpr]*types.Selection{},
+		Types:      map[ast.Expr]types.TypeAndValue{},
+	}
+	conf := types.Config{Importer: importer.ForCompiler(fset, "gc", exportLookup(t))}
+	pkg, err := conf.Check("github.com/picatz/flowstate/pkg/flowstate/v1", fset, files, info)
+	require.NoError(t, err, "type-checking the v1 package")
+
+	// Every function and method with a body, by its object, so a resolved
+	// callee can be walked.
+	decls := map[types.Object]*ast.FuncDecl{}
+	byName := map[string]*ast.FuncDecl{}
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if obj := info.Uses[fn.Name]; obj != nil {
+				decls[obj] = fn
+			}
+			if obj := pkg.Scope().Lookup(fn.Name.Name); obj != nil && fn.Recv == nil {
+				decls[obj] = fn
+				byName[fn.Name.Name] = fn
+			}
+		}
+	}
+	// Methods are not in the package scope; find them through their receiver
+	// type's method set.
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Recv == nil {
+				continue
+			}
+			for _, obj := range methodObjects(pkg, fn) {
+				decls[obj] = fn
 			}
 		}
 	}
 	for _, name := range entryPoints {
-		require.Containsf(t, funcs, name, "entry point %s is not a package-level function of v1", name)
+		require.Containsf(t, byName, name, "entry point %s is not a function of v1", name)
 	}
 
-	// Walk from each entry point through the functions it calls, refusing a
-	// context read anywhere on the way. Methods are not followed: a call on a
-	// value cannot be resolved without types, and the readers are functions.
-	visited := map[string]bool{}
-	var walk func(from, name string)
-	walk = func(from, name string) {
-		if visited[name] {
+	// Walk from each entry point through every function and method it calls
+	// in this package, refusing a context read anywhere on the way: a
+	// `*FromContext` reader, or `.Value` on anything typed context.Context,
+	// whatever it is named. A call through an interface or a function value
+	// has no body here and is not followed.
+	visited := map[*ast.FuncDecl]bool{}
+	var walk func(path string, fn *ast.FuncDecl)
+	walk = func(path string, fn *ast.FuncDecl) {
+		if visited[fn] {
 			return
 		}
-		visited[name] = true
-		fn := funcs[name]
+		visited[fn] = true
+		path += " -> " + fn.Name.Name
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
+			var callee types.Object
 			switch fun := call.Fun.(type) {
 			case *ast.Ident:
+				callee = info.Uses[fun]
 				if strings.HasSuffix(fun.Name, "FromContext") {
-					t.Errorf("%s: %s reads %s, which the local driver's context carries and the durable driver's evalContext() never will (reached from %s)",
-						fset.Position(call.Pos()), name, fun.Name, from)
-				}
-				if _, ok := funcs[fun.Name]; ok {
-					walk(from, fun.Name)
+					t.Errorf("%s: %s reads %s, which the local driver's context carries and the durable driver's evalContext() never will (%s)",
+						fset.Position(call.Pos()), fn.Name.Name, fun.Name, path)
 				}
 			case *ast.SelectorExpr:
-				if fun.Sel.Name == "Value" && len(call.Args) == 1 {
-					if x, ok := fun.X.(*ast.Ident); ok && x.Name == "ctx" {
-						t.Errorf("%s: %s reads a value off its context, which the durable driver's evalContext() never carries (reached from %s)",
-							fset.Position(call.Pos()), name, from)
+				if sel, ok := info.Selections[fun]; ok {
+					callee = sel.Obj()
+					if fun.Sel.Name == "Value" && isContext(sel.Recv()) {
+						t.Errorf("%s: %s reads a value off its context, which the durable driver's evalContext() never carries (%s)",
+							fset.Position(call.Pos()), fn.Name.Name, path)
 					}
+				} else {
+					callee = info.Uses[fun.Sel]
 				}
+			}
+			if next, ok := decls[callee]; ok {
+				walk(path, next)
 			}
 			return true
 		})
 	}
 	for _, name := range entryPoints {
-		walk(name, name)
+		walk(name, byName[name])
 	}
+}
+
+// exportLookup resolves an import path to its compiler export data through
+// `go list -export`, which the gc importer needs for module dependencies: on
+// its own it looks only under GOROOT and GOPATH. One `go list` over the v1
+// package's dependency closure, from the build cache after the first run.
+func exportLookup(t *testing.T) func(path string) (io.ReadCloser, error) {
+	t.Helper()
+
+	cmd := exec.Command("go", "list", "-export", "-deps", "-f", "{{.ImportPath}}={{.Export}}", ".")
+	cmd.Dir = ".."
+	out, err := cmd.Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			err = fmt.Errorf("%w: %s", err, exit.Stderr)
+		}
+		require.NoError(t, err, "go list -export over the v1 package")
+	}
+	exports := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		path, export, ok := strings.Cut(line, "=")
+		if ok && export != "" {
+			exports[path] = export
+		}
+	}
+	return func(path string) (io.ReadCloser, error) {
+		export, ok := exports[path]
+		if !ok {
+			return nil, fmt.Errorf("no export data for %q", path)
+		}
+		return os.Open(export)
+	}
+}
+
+// methodObjects is the method objects a declaration defines: the one on its
+// receiver's named type, found through the type's method set so a pointer
+// receiver and a value receiver both resolve.
+func methodObjects(pkg *types.Package, fn *ast.FuncDecl) []types.Object {
+	recv := fn.Recv.List[0].Type
+	if star, ok := recv.(*ast.StarExpr); ok {
+		recv = star.X
+	}
+	if index, ok := recv.(*ast.IndexExpr); ok {
+		recv = index.X
+	}
+	if index, ok := recv.(*ast.IndexListExpr); ok {
+		recv = index.X
+	}
+	ident, ok := recv.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	named, ok := pkg.Scope().Lookup(ident.Name).(*types.TypeName)
+	if !ok {
+		return nil
+	}
+	var objs []types.Object
+	for _, typ := range []types.Type{named.Type(), types.NewPointer(named.Type())} {
+		set := types.NewMethodSet(typ)
+		for i := 0; i < set.Len(); i++ {
+			if m := set.At(i).Obj(); m.Name() == fn.Name.Name && m.Pos() == fn.Name.Pos() {
+				objs = append(objs, m)
+			}
+		}
+	}
+	return objs
+}
+
+// isContext reports whether a type is context.Context.
+func isContext(typ types.Type) bool {
+	named, ok := typ.(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Pkg() != nil && obj.Pkg().Path() == "context" && obj.Name() == "Context"
 }
