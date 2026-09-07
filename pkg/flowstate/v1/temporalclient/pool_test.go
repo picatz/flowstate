@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // errNoMapping stands in for auth.ErrNoTemporalNamespace, so this package's tests
@@ -210,7 +212,7 @@ func TestNewPoolRefusesAnUnregisteredNamespace(t *testing.T) {
 	// Never registered on this package's dev server, and named after the test so
 	// a namespace left behind by a crash (there should be none — NewPool never
 	// registers one) says which test it came from.
-	missing := "unregistered-" + namespaceNameFor(t)
+	missing := "unregistered-" + testkit.NamespaceNameFor(t)
 
 	pool, err := NewPool(t.Context(), Config{
 		Address: devServer.FrontendHostPort(),

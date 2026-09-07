@@ -21,6 +21,8 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // registerTestNamespace registers a Temporal namespace directly against the
@@ -39,7 +41,7 @@ func registerTestNamespace(t *testing.T) string {
 		t.Skip("skipping: needs the shared Temporal dev server, not started under -short; CI runs the full suite")
 	}
 
-	namespace := namespaceNameFor(t)
+	namespace := testkit.NamespaceNameFor(t)
 	_, err := devServer.Client().WorkflowService().RegisterNamespace(t.Context(),
 		&workflowservice.RegisterNamespaceRequest{
 			Namespace: namespace,

@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // What these tests are for.
@@ -43,82 +43,11 @@ const (
 	theUserinfoSecret = "s3cr3t-userinfo-password-that-must-never-be-exported"
 )
 
-// recordSpans installs a recording tracer provider for the duration of a test
-// and returns the recorder. Mirrors engine/tracing_test.go's helper of the same
-// name, and restores the previous provider for the same reason: this binary is
-// shared with every other test in the package.
-func recordSpans(t *testing.T) *tracetest.SpanRecorder {
-	t.Helper()
-
-	recorder := tracetest.NewSpanRecorder()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-
-	previous := otel.GetTracerProvider()
-	otel.SetTracerProvider(provider)
-
-	t.Cleanup(func() {
-		otel.SetTracerProvider(previous)
-		_ = provider.Shutdown(context.Background())
-	})
-
-	return recorder
-}
-
-// renderedSpans renders every recorded span through the %v family, over the
-// batch, over each span individually, and over a struct holding one — the
-// containment shapes CLAUDE.md names, since `fmt` reaching a value through an
-// unexported field prints the fields rather than calling any accessor.
-func renderedSpans(recorder *tracetest.SpanRecorder) []string {
-	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
-
-	type wrapper struct {
-		one   tracetest.SpanStub
-		batch []tracetest.SpanStub
-	}
-
-	rendered := []string{
-		fmt.Sprintf("%v", stubs),
-		fmt.Sprintf("%+v", stubs),
-		fmt.Sprintf("%#v", stubs),
-	}
-
-	if len(stubs) > 0 {
-		w := wrapper{one: stubs[0], batch: stubs}
-		rendered = append(rendered,
-			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w))
-	}
-
-	for _, stub := range stubs {
-		rendered = append(rendered,
-			fmt.Sprintf("%v", stub),
-			fmt.Sprintf("%+v", stub),
-			fmt.Sprintf("%#v", stub),
-			stub.Name,
-			stub.Status.Description,
-		)
-
-		for _, attr := range stub.Attributes {
-			rendered = append(rendered, string(attr.Key), attr.Value.String(),
-				fmt.Sprintf("%v", attr), fmt.Sprintf("%+v", attr), fmt.Sprintf("%#v", attr))
-		}
-
-		for _, event := range stub.Events {
-			rendered = append(rendered, event.Name, fmt.Sprintf("%+v", event), fmt.Sprintf("%#v", event))
-		}
-
-		for _, link := range stub.Links {
-			rendered = append(rendered, fmt.Sprintf("%+v", link), fmt.Sprintf("%#v", link))
-		}
-	}
-
-	return rendered
-}
-
 // requireNoMaterialInSpans is the assertion itself.
 func requireNoMaterialInSpans(t *testing.T, recorder *tracetest.SpanRecorder, material string) {
 	t.Helper()
 
-	for _, rendered := range renderedSpans(recorder) {
+	for _, rendered := range testkit.RenderedSpans(recorder) {
 		require.NotContains(t, rendered, material,
 			"credential material reached a span, which is exported to a collector")
 	}
@@ -202,7 +131,7 @@ func attributesOf(stub tracetest.SpanStub) map[string]string {
 // recognizable credential in each of the three places a URL can hide one, and
 // none of them may appear anywhere in the exported span.
 func TestClientSpanNamesTheCallAndNotItsContent(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	var capture headerCapture
 	server := capturingServer(t, &capture)
@@ -252,7 +181,7 @@ func TestClientSpanNamesTheCallAndNotItsContent(t *testing.T) {
 // span context to name the recorded span's trace and span ids is what makes it
 // a propagation test.
 func TestClientSpanPropagatesTraceContextToThePeer(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	var capture headerCapture
 	server := capturingServer(t, &capture)
@@ -294,7 +223,7 @@ func TestClientSpanPropagatesTraceContextToThePeer(t *testing.T) {
 // baggage down to two bounded members for a plugin the worker launched itself;
 // an arbitrary third party gets less than that, not more.
 func TestClientSpanDoesNotForwardBaggageToThePeer(t *testing.T) {
-	recordSpans(t)
+	testkit.RecordSpans(t)
 
 	var capture headerCapture
 	server := capturingServer(t, &capture)
@@ -331,7 +260,7 @@ func TestClientSpanDoesNotForwardBaggageToThePeer(t *testing.T) {
 // operator most wants to find and the one most likely to leak: a policy denial
 // names the target it refused, and that target is a URL.
 func TestDeniedRequestIsTracedWithoutSayingWhatItRefused(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	policy, err := New()
 	require.NoError(t, err)
@@ -360,7 +289,7 @@ func TestDeniedRequestIsTracedWithoutSayingWhatItRefused(t *testing.T) {
 // or 5xx is an error for a client span, and the description is the fact of
 // failure rather than anything the peer said.
 func TestErrorStatusOnAFailingPeer(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, theQuerySecret, http.StatusInternalServerError)
@@ -443,7 +372,7 @@ func Test_spanNameAndMethod(t *testing.T) {
 // still arriving, and the span that is finally exported is at least as long as
 // the part of the response that came after the headers.
 func TestSpanCoversTheWholeResponseAndNotJustItsHeaders(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	// Released exactly once, from a cleanup registered after the server's own so
 	// that it runs before it (cleanups are LIFO). Without that, a failed
@@ -496,7 +425,7 @@ func TestSpanCoversTheWholeResponseAndNotJustItsHeaders(t *testing.T) {
 // package can produce deterministically — and its error names the limit, which
 // keeps the containment claim under test on this path too.
 func TestBodyFailureIsRecordedAsAClassification(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -532,7 +461,7 @@ func TestBodyFailureIsRecordedAsAClassification(t *testing.T) {
 // precedence: a 404 explains the request better than the read error that follows
 // it, so the status's classification is the one that survives.
 func TestAFailingStatusKeepsItsClassificationWhenTheBodyAlsoFails(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

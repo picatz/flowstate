@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // TestEveryPhaseReportedIsOneOfTheDeclaredOnes is invariant 7 enforced across the
@@ -43,7 +45,7 @@ func TestEveryPhaseReportedIsOneOfTheDeclaredOnes(t *testing.T) {
 		"PhaseCallingPlugin":   true,
 	}
 
-	root := repoRoot(t)
+	root := testkit.RepoRoot(t)
 
 	// Which declared phases were seen at a call site, for the reverse check below.
 	reported := map[string]bool{}
@@ -146,27 +148,6 @@ func phaseIdent(arg ast.Expr) (string, bool) {
 	}
 
 	return "", false
-}
-
-// repoRoot walks up from this package to the directory holding go.mod.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-
-	dir, err := os.Getwd()
-	require.NoError(t, err)
-
-	for range 10 {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		require.NotEqual(t, parent, dir, "walked to the filesystem root without finding go.mod")
-		dir = parent
-	}
-
-	t.Fatal("go.mod not found within ten directories of the test")
-
-	return ""
 }
 
 // TestAPhaseSaysOnlyItsOwnName pins what a driver can put into history.

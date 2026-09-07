@@ -2,21 +2,20 @@ package conformance
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // Shared cases for #523's gap 2: the outbound span and W3C trace context the
@@ -111,27 +110,12 @@ func (s *TracedHTTPServer) ReceivedSpanContext(tb testing.TB) trace.SpanContext 
 }
 
 // RecordSpans installs a recording tracer provider for the duration of a test
-// and returns the recorder.
-//
-// The global provider, because that is where the round tripper's spans go — the
-// same place `engine`'s task span and otelconnect's spans go — and restored
-// afterwards, since these run in binaries shared with every other test in their
-// packages.
+// and returns the recorder. It is [testkit.RecordSpans], named here so the
+// drivers' shared cases read as one vocabulary.
 func RecordSpans(tb testing.TB) *tracetest.SpanRecorder {
 	tb.Helper()
 
-	recorder := tracetest.NewSpanRecorder()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-
-	previous := otel.GetTracerProvider()
-	otel.SetTracerProvider(provider)
-
-	tb.Cleanup(func() {
-		otel.SetTracerProvider(previous)
-		_ = provider.Shutdown(context.Background())
-	})
-
-	return recorder
+	return testkit.RecordSpans(tb)
 }
 
 // HTTPSpanWorkflow returns a one-step workflow whose request hides
@@ -251,101 +235,9 @@ func spanNames(recorder *tracetest.SpanRecorder) []string {
 }
 
 // RenderedSpans renders every recorded span through the containment shapes
-// CLAUDE.md names rather than through the containment value: the four verbs
-// `%v`, `%+v`, `%#v` and `%s`, over the batch, over each span, and over a
-// struct holding those through an *unexported* field — which is the whole
-// point, because `fmt` cannot call a method on a value it reaches that way and
-// prints the fields instead. A redacting String() protects a value printed
-// directly and does nothing one level down.
-//
-// The `%s` shapes are over [spanText] rather than over [tracetest.SpanStub],
-// which is not a decision about coverage: a SpanStub is mostly ints and
-// timestamps, so `go vet` rejects the verb against it and what it would print
-// is `%!s(int=0)` beside the strings the other three verbs already printed.
-// spanText is the string-shaped part of the same span, reached through
-// unexported fields, which is where `%s` means something.
+// CLAUDE.md names; it is [testkit.RenderedSpans], the one renderer every
+// containment test in the module reads through, named here for the same
+// reason [RecordSpans] is.
 func RenderedSpans(recorder *tracetest.SpanRecorder) []string {
-	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
-
-	type wrapper struct {
-		one   tracetest.SpanStub
-		batch []tracetest.SpanStub
-	}
-
-	rendered := []string{
-		fmt.Sprintf("%v", stubs),
-		fmt.Sprintf("%+v", stubs),
-		fmt.Sprintf("%#v", stubs),
-	}
-
-	if len(stubs) > 0 {
-		w := wrapper{one: stubs[0], batch: stubs}
-		rendered = append(rendered,
-			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w),
-			fmt.Sprintf("%v", []wrapper{w}), fmt.Sprintf("%+v", []wrapper{w}),
-			fmt.Sprintf("%#v", []wrapper{w}))
-	}
-
-	texts := spanTexts(stubs)
-	rendered = append(rendered,
-		fmt.Sprintf("%v", texts), fmt.Sprintf("%+v", texts),
-		fmt.Sprintf("%#v", texts), fmt.Sprintf("%s", texts))
-
-	for _, stub := range stubs {
-		rendered = append(rendered,
-			fmt.Sprintf("%v", stub),
-			fmt.Sprintf("%+v", stub),
-			fmt.Sprintf("%#v", stub),
-			stub.Name,
-			stub.Status.Description,
-		)
-
-		for _, attr := range stub.Attributes {
-			rendered = append(rendered, string(attr.Key), attr.Value.String(),
-				fmt.Sprintf("%v", attr), fmt.Sprintf("%+v", attr), fmt.Sprintf("%#v", attr))
-		}
-
-		for _, event := range stub.Events {
-			rendered = append(rendered, event.Name, fmt.Sprintf("%+v", event), fmt.Sprintf("%#v", event))
-		}
-	}
-
-	for _, text := range texts {
-		rendered = append(rendered,
-			fmt.Sprintf("%v", text), fmt.Sprintf("%+v", text),
-			fmt.Sprintf("%#v", text), fmt.Sprintf("%s", text))
-	}
-
-	return rendered
-}
-
-// spanText is everything a span says in words, held through unexported fields.
-//
-// Unexported deliberately: this is the arrangement a redacting formatter cannot
-// survive, so it is the arrangement the containment assertions have to check.
-type spanText struct {
-	name        string
-	description string
-	attributes  []string
-	events      []string
-}
-
-// spanTexts reduces recorded spans to their [spanText].
-func spanTexts(stubs []tracetest.SpanStub) []spanText {
-	texts := make([]spanText, 0, len(stubs))
-	for _, stub := range stubs {
-		text := spanText{name: stub.Name, description: stub.Status.Description}
-		for _, attr := range stub.Attributes {
-			text.attributes = append(text.attributes, string(attr.Key)+"="+attr.Value.String())
-		}
-		for _, event := range stub.Events {
-			text.events = append(text.events, event.Name)
-			for _, attr := range event.Attributes {
-				text.events = append(text.events, string(attr.Key)+"="+attr.Value.String())
-			}
-		}
-		texts = append(texts, text)
-	}
-
-	return texts
+	return testkit.RenderedSpans(recorder)
 }

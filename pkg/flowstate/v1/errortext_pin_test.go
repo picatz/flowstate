@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // errorTextMatch is the shape of deciding something by an error's text:
@@ -50,7 +52,7 @@ var errorTextMatchAllowed = map[string]string{
 func TestNoDecisionIsMadeOnAnErrorsText(t *testing.T) {
 	t.Parallel()
 
-	root := repoRootDir(t)
+	root := testkit.RepoRoot(t)
 
 	var offenders []string
 	for _, tree := range []string{"cmd", "pkg", "tools", "plugins"} {

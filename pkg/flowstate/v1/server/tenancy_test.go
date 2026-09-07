@@ -12,6 +12,8 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // A workflow id is not a capability.
@@ -217,7 +219,7 @@ func TestApprovalGateEndToEnd(t *testing.T) {
 	outputs := final.Msg.GetOutputs().GetStepValues()
 
 	require.NotNil(t, outputs["approval"], "the gate recorded no outputs")
-	require.True(t, payloadField(t, outputs["approval"], "approved").GetBoolValue(),
+	require.True(t, conformance.PayloadField(t, outputs["approval"], "approved").GetBoolValue(),
 		"what the approver sent did not reach the workload")
 
 	// The #194 fix: the server attests a sender, from what it actually
@@ -319,7 +321,7 @@ func TestSignalAttestsTheAuthenticatedCallerNotAnythingItClaims(t *testing.T) {
 	// is nothing more than a string a sender happened to send — never believed
 	// as an identity.
 	require.Equal(t, "forged-identity@attacker.example.com",
-		payloadField(t, approval, "sender").GetStringValue(),
+		conformance.PayloadField(t, approval, "sender").GetStringValue(),
 		"a sender may name a key \"sender\" inside its own payload; it must never be read as the attested one")
 }
 

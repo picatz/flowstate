@@ -3,7 +3,6 @@ package engine_test
 import (
 	"fmt"
 
-	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
 	"time"
 
@@ -295,7 +294,7 @@ func TestWaitForSignalAcceptsTheLegacyWireShape(t *testing.T) {
 
 	// The payload is intact — the whole point of falling back rather than
 	// dropping the signal.
-	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
+	require.True(t, conformance.PayloadField(t, approval, "approved").GetBoolValue(),
 		"the legacy signal's payload was lost")
 	require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue(),
 		"the wait timed out, meaning the legacy-shape signal was never delivered at all")
@@ -352,8 +351,8 @@ func TestWaitForSignal(t *testing.T) {
 	// The sender's data is under `payload`, which is what makes
 	// ${approval.payload.approved} the spelling and what keeps a sender from
 	// naming anything outside it.
-	require.True(t, payloadField(t, approval, "approved").GetBoolValue())
-	require.Equal(t, "someone-else@example.com", payloadField(t, approval, "by").GetStringValue())
+	require.True(t, conformance.PayloadField(t, approval, "approved").GetBoolValue())
+	require.Equal(t, "someone-else@example.com", conformance.PayloadField(t, approval, "by").GetStringValue())
 
 	// And not at the top level, which is the property being protected.
 	require.NotContains(t, approval.GetNamedValues(), "approved",
@@ -552,7 +551,7 @@ func TestWaitForSignalArrivingEarly(t *testing.T) {
 	var outputs v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&outputs))
 
-	require.True(t, payloadField(t, outputs.GetStepValues()["approval"], "approved").GetBoolValue())
+	require.True(t, conformance.PayloadField(t, outputs.GetStepValues()["approval"], "approved").GetBoolValue())
 	require.NotNil(t, outputs.GetStepValues()["deploy"])
 }
 
@@ -633,7 +632,7 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 
 	approval := outputs.GetStepValues()["approval"]
 	require.NotNil(t, approval, "the gate's outputs were not carried to the step that needed them")
-	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
+	require.True(t, conformance.PayloadField(t, approval, "approved").GetBoolValue(),
 		"the approval arrived but what the approver sent was lost")
 	require.Equal(t, "carried-approver@example.com", senderSubject(t, approval),
 		"the attested sender did not survive being carried across Continue-As-New")
@@ -827,7 +826,7 @@ func TestPendingSignalWithoutSenderResumesAsUnattested(t *testing.T) {
 
 	approval := outputs.GetStepValues()["approval"]
 	require.NotNil(t, approval, "the pending signal was never consumed")
-	require.True(t, payloadField(t, approval, "approved").GetBoolValue(),
+	require.True(t, conformance.PayloadField(t, approval, "approved").GetBoolValue(),
 		"the pending signal's payload was lost")
 
 	require.Empty(t, senderSubject(t, approval))
@@ -1030,27 +1029,6 @@ func TestSignalNames(t *testing.T) {
 	require.Equal(t,
 		[]string{"top-level", "per-item", "branch-signal", "callee-signal"},
 		v1.SignalNames(spec))
-}
-
-// payloadField reads one entry out of a wait's `payload` mapping.
-//
-// A signal sender's data is rooted under one key rather than spread across the
-// step's outputs, so reading it is a lookup inside a map — see v1.PayloadOutput
-// for why it is not spread.
-func payloadField(t *testing.T, outputs *v1.Node_Outputs, name string) *expr.Value {
-	t.Helper()
-
-	payload := outputs.GetNamedValues()[v1.PayloadOutput].GetLiteral().GetMapValue()
-	require.NotNil(t, payload, "the wait produced no payload mapping")
-
-	for _, entry := range payload.GetEntries() {
-		if entry.GetKey().GetStringValue() == name {
-			return entry.GetValue()
-		}
-	}
-
-	t.Fatalf("the payload has no %q; it holds %d entries", name, len(payload.GetEntries()))
-	return nil
 }
 
 // TestACarriedSignalReachesAWaitInsideALoop is the join of two features that were
