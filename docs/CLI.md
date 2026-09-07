@@ -685,6 +685,18 @@ because their halves are not independently meaningful. A row's stub replaces an
 inherited one for the same target rather than joining it, which is #416's
 identity rule unchanged.
 
+Two consequences of that identity rule are said out loud (#1668). Two stubs in
+one list that select the same call the same way — the same target and the same
+`where:`, byte for byte, behind a stub with no `times:` — are refused when the
+file loads, at both positions, since the second can never be reached; a stub
+with `times:` ahead of its twin is the drain shape and is not. And a case stub
+whose `where:` differs from a *filtered* default's for the same target does not
+replace it — both stay live, the case's tried first — so the case is warned,
+naming the byte-identical `where:` that would; an unfiltered default is the
+fallthrough the rule promises and draws no warning. A failing case's transcript
+names which stub answered each invocation, marking an inherited one
+`from defaults`.
+
 The cost of merging `expect:` field by field, stated plainly: a row cannot
 assert *less* than its entry. An entry that pins `outputs:` pins it for every
 row that does not overwrite it, so an entry should hold only what is true of

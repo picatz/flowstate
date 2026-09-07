@@ -1,0 +1,16 @@
+# Two stubs that select the same call the same way: refused at load (#1668).
+edition: v2026.3
+tests:
+  - name: a copy-paste leaves two identical stubs
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+      - task: log
+        returns: {}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+    expect:
+      ran: [greet, part]

@@ -1482,6 +1482,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 				signal.Sender,
 			)
 		}
+		twins := newStubTwins()
 		for j := range test.Stubs {
 			stub := &test.Stubs[j]
 			// A stub [mergeDefaults] copied in from the `defaults:` block was
@@ -1496,7 +1497,11 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			if judgedAtTheBlock {
 				continue
 			}
-			checkStubShape(p, r.in(where), fmt.Sprintf("test %q stub %d", test.Name, j+1), stub)
+			label := fmt.Sprintf("test %q stub %d", test.Name, j+1)
+			if !checkStubShape(p, r.in(where), label, stub) {
+				continue
+			}
+			twins.note(p, r.in(where), label, stub)
 		}
 		checkOthers(p, r, test)
 		checkTrigger(p, r, test, requireWorkflow)
@@ -1666,6 +1671,59 @@ func stubTargetKey(s *Stub) string {
 		target = "step:" + s.Step
 	}
 	return target + "\x00" + s.Where
+}
+
+// stubTwins refuses, within one list of stubs, a stub that selects the same
+// call the same way as an earlier *unbounded* one (#1668): the same target
+// and the same `where:`, byte for byte, behind a stub with no `times:`. Two
+// such stubs can never both be reached — the first to be tried answers every
+// call the second could — so the second is dead, and a dead stub is the
+// copy-paste mistake it looks like rather than something the run should
+// tolerate as "never answered" after the fact.
+//
+// A stub with `times:` is the one deliberate shape this must not refuse: it
+// drains, and the next stub for the same call is what answers afterwards —
+// `examples/conditional-and-retry` fails a step once and then lets it
+// succeed exactly so. Only an unbounded stub is recorded as the one that
+// shadows what follows.
+//
+// Both stubs are named at their own positions, each pointing at the other,
+// so a reader arriving from either line sees the pair. Only a stub whose
+// shape was found coherent is noted; a targetless one was refused already.
+type stubTwins struct {
+	first map[string]stubTwin
+}
+
+type stubTwin struct {
+	at    site
+	label string
+}
+
+func newStubTwins() *stubTwins { return &stubTwins{first: make(map[string]stubTwin)} }
+
+// note records one stub, and reports the pair when an earlier stub in the
+// same list selected the same call the same way.
+func (t *stubTwins) note(p *problems, at site, label string, s *Stub) {
+	key := stubTargetKey(s)
+	earlier, seen := t.first[key]
+	if !seen {
+		if s.Times == nil || *s.Times == 0 {
+			t.first[key] = stubTwin{at: at, label: label}
+		}
+		return
+	}
+	filter := "no where:"
+	if s.Where != "" {
+		filter = "where: " + s.Where
+	}
+	p.report(earlier.at,
+		"%s (%s, %s) is selected again, the same way, by %s below; two stubs the same call would match "+
+			"cannot both be reached, so one of them never answers — delete one, or give them different where: filters",
+		earlier.label, stubTarget(s), filter, label)
+	p.report(at,
+		"%s (%s, %s) selects the same call the same way as %s above; two stubs the same call would match "+
+			"cannot both be reached, so this one never answers — delete one, or give them different where: filters",
+		label, stubTarget(s), filter, earlier.label)
 }
 
 // checkOthers refuses an `expect.others:` value that is not the one thing the
@@ -1867,6 +1925,7 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 		checkNoExpressions(p, site{at: base.field("inputs").field(name)},
 			"defaults.inputs."+name, defaultsAreFixtures, d.Inputs[name], 0)
 	}
+	twins := newStubTwins()
 	for i := range d.Stubs {
 		s := &d.Stubs[i]
 		index, elsewhere := from.stubWrittenElsewhere(i)
@@ -1889,6 +1948,7 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 		if !checkStubShape(p, spot, where, s) {
 			continue
 		}
+		twins.note(p, spot, where, s)
 		checkNoExpressions(p, spot.in(spot.at.field("where")), where+".where", defaultsAreFixtures, s.Where, 0)
 		checkNoExpressions(p, spot.in(spot.at.field("returns")), where+".returns", defaultsAreFixtures, s.Returns, 0)
 	}

@@ -607,7 +607,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 		recordAnswer := func(m *compiledStub) {
 			if recorder := runRecorderFromContext(ctx); recorder != nil {
 				serving, _ := v1.TaskStepFromContext(ctx)
-				recorder.stubAnswered(name, m.ordinal, m.step, serving)
+				recorder.stubAnswered(name, m.ordinal, m.step, serving, m.fromDefaults)
 			}
 		}
 
@@ -1008,6 +1008,60 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 // The two messages tell the two situations apart, because the fix differs: a
 // task never invoked is a stub aimed at nothing, while a matcher tried and
 // never matched is a `where:` (or an earlier stub) that took the traffic.
+// shadowedDefaultWarnings reports, for one case, every case stub written
+// beside an inherited stub for the same target that it does not replace
+// (#1668). Replacing a default takes the same target and the same `where:`,
+// byte for byte ([stubTargetKey]); a case stub with a different filter is
+// prepended instead, and the default stays live behind it.
+//
+// Only a *filtered* default is reported. An unfiltered default is the
+// fallthrough the merge rules promise — a catch-all the case's more specific
+// stub is tried ahead of — and the corpus writes that shape on purpose. A
+// default that carries its own `where:` beside a case stub carrying a
+// different one is the shadow: an author who wrote the case stub to override
+// the default has two live matchers, and which one answers a given call is
+// decided by filters that were never meant to be read together. The warning
+// names the byte-identical filter that would replace the default instead.
+func shadowedDefaultWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
+	type shadow struct {
+		ordinal int
+		message string
+	}
+	var found []shadow
+
+	for task, stubs := range byTask {
+		for i := range stubs.matchers {
+			m := &stubs.matchers[i]
+			if m.fromDefaults || m.whereSource == "" {
+				continue
+			}
+			for j := range stubs.matchers {
+				d := &stubs.matchers[j]
+				if !d.fromDefaults || d.step != m.step || d.whereSource == "" || d.whereSource == m.whereSource {
+					continue
+				}
+				target := fmt.Sprintf("task %q", task)
+				if m.step != "" {
+					target = fmt.Sprintf("step %q", m.step)
+				}
+				found = append(found, shadow{ordinal: m.ordinal, message: fmt.Sprintf(
+					"stub %d (%s) does not replace the default stub for the same %s: its where: (%s) is not the "+
+						"default's (%s), so both are live and the default still answers every call this one does not match; "+
+						"to replace it, write the default's where: byte for byte, or delete this stub",
+					m.ordinal, target, target, m.whereSource, d.whereSource)})
+				break
+			}
+		}
+	}
+
+	sort.Slice(found, func(i, j int) bool { return found[i].ordinal < found[j].ordinal })
+	warnings := make([]*v1.Diagnostic, 0, len(found))
+	for _, f := range found {
+		warnings = append(warnings, &v1.Diagnostic{Field: "stubs", Message: f.message})
+	}
+	return warnings
+}
+
 func unusedStubWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
 	type idle struct {
 		ordinal int

@@ -1,0 +1,20 @@
+# A filtered default and a case stub with a different filter for the same
+# task: the case stub does not replace the default, and the case is warned
+# (#1668). The catch-all second default keeps the run green.
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      where: inputs.message == "goodbye"
+      returns: {}
+    - task: log
+      returns: {}
+tests:
+  - name: a narrower case stub shadows the filtered default
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+    expect:
+      ran: [greet, part]
