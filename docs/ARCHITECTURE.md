@@ -257,7 +257,12 @@ is what populates `v1.RunSummary.Name` (`proto/flowstate/v1/service.proto:735`,
 deployment that has registered search attributes additionally projects it as
 `FlowstateWorkflowName` (`server/server.go:889`), index-only, for tools querying the
 visibility store directly. The grouping exists — it is simply not Temporal's built-in type
-field.
+field. The one place the server does read an attribute back is a schedule listing: a
+deployment with registration confirmed tags each schedule with its tenant at create and asks
+Temporal for that tenant's entries plus the untagged ones (`server/schedules.go`,
+`scheduleListQuery`, #1785), so a tenant's create and listing stop paying for a namespace
+full of other tenants' schedules — as a filter only; the id derivation and the memo still
+decide ownership, and an unregistered deployment keeps the bounded walk.
 
 ### Versioning: pinned within a run, upgraded between runs
 
