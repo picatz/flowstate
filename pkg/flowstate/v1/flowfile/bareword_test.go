@@ -56,6 +56,30 @@ func TestABareWordIsOfferedItsStringSpelling(t *testing.T) {
 	assert.Empty(t, after, "the file the edit produced still has diagnostics:\n%s", after.Error())
 }
 
+// TestAQuotedBareWordIsOfferedItsStringSpelling is the likeliest way an author
+// reaches for a string, and it is still an expression: YAML's quotes are gone
+// by the time the scalar is read as CEL. The edit replaces the quoted scalar,
+// quotes included, with the fenced string.
+func TestAQuotedBareWordIsOfferedItsStringSpelling(t *testing.T) {
+	t.Parallel()
+
+	src := "edition: v2026.3\nname: quoted\nsteps:\n  - id: carrier\n    value: \"dhl\"\n"
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	require.Len(t, ds, 1, "one bare word is one diagnostic:\n%s", ds.Error())
+
+	d := ds[0]
+	assert.Contains(t, d.Message, `a string is written ${"dhl"}`)
+	require.Len(t, d.Edits, 1)
+
+	fixed := applyBlind(t, []byte(src), d.Edits[0])
+	assert.Contains(t, string(fixed), `value: ${"dhl"}`, "the edit left the quotes behind:\n%s", fixed)
+	after, err := flowfile.ValidateSource(fixed)
+	require.NoError(t, err)
+	assert.Empty(t, after, "the file the edit produced still has diagnostics:\n%s", after.Error())
+}
+
 // TestAFencedNameIsNotOfferedTheStringReading is the guard: an author who wrote
 // `${dhl}` reached for a reference, and the string reading would be a guess
 // about a different mistake. The diagnostic they had stays byte for byte.

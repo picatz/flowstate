@@ -2417,25 +2417,24 @@ func positionDiagnostics(ds Diagnostics, positions *Positions) {
 // (#1682). A `case: express` two lines up takes its word bare, which is what
 // makes the mistake look right.
 //
-// Unfenced is decided from the recorded spans rather than guessed from the
-// compiled expression, which has no fence left to look at: the compiler
-// records the expression's own span inside a fence and the whole scalar's
-// beside it, so the two coincide exactly when there was no fence. A fenced
-// `${dhl}` keeps the diagnostic it had — an author who wrote the fence was
-// reaching for a reference, and the string reading would be a guess about a
-// different mistake.
+// Unfenced is a fact the compiler recorded as it read the scalar
+// ([Positions.Unfenced]) rather than a guess from the compiled expression,
+// which has no fence left to look at, and rather than a comparison of spans,
+// which a quoted `value: "dhl"` — unfenced, and the likeliest way to reach for
+// a string — would fail. A fenced `${dhl}` keeps the diagnostic it had: an
+// author who wrote the fence was reaching for a reference, and the string
+// reading would be a guess about a different mistake.
 //
 // The edit replaces the scalar the author wrote with the fenced string, which
 // is safe for the reason every edit in this package is offered: the region is
 // the one the checker was looking at, and what goes in its place is the
 // expression the diagnostic names.
 func offerStringSpelling(d *Diagnostic, positions *Positions) {
-	scalar, ok := positions.Locate(d.Step, d.Field)
-	if !ok {
+	if !positions.Unfenced(d.Step, d.Field) {
 		return
 	}
-	expr, ok := positions.locateExpr(d.Step, d.Field)
-	if !ok || expr != scalar {
+	scalar, ok := positions.Locate(d.Step, d.Field)
+	if !ok {
 		return
 	}
 
