@@ -19,6 +19,6 @@ import (
 // is stricter than production, not equal to it, and CI failed a list built
 // exactly at the element bound on a loaded runner with "didn't yield for over
 // 5s" in code no diff had touched. The scaled budget compares like with like;
-// a workflow goroutine that spends fifteen seconds under the detector is still
-// far outside anything a bound admits.
+// a workflow goroutine that spends the whole scaled budget under the detector
+// is still far outside anything a bound admits.
 const BoundaryDeadlockDetectionTimeout time.Duration = v1.WorkerDeadlockDetectionTimeout * raceDetectorSlowdown
