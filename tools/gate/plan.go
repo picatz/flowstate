@@ -175,8 +175,14 @@ func buildPlan(changed []string) plan {
 		// fuzz job at all. Promoting a deep-only target to smoke changes
 		// nothing about any Go package, so without this the diff that
 		// reconfigures the fuzz job would skip it (#857).
+		//
+		// tools/external is in it for the same reason: its go.mod pins the
+		// buf, govulncheck and staticcheck the proto, vulncheck and
+		// staticcheck jobs run, so a bump there changes what every one of
+		// them would say about an unchanged tree.
 		if strings.HasPrefix(f, ".github/workflows/") || f == "Makefile" ||
-			strings.HasPrefix(f, "tools/gate/") || strings.HasPrefix(f, "tools/fuzztargets/") {
+			strings.HasPrefix(f, "tools/gate/") || strings.HasPrefix(f, "tools/fuzztargets/") ||
+			strings.HasPrefix(f, "tools/external/") {
 			p.ciWide = true
 			reason("ci", f)
 		}

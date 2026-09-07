@@ -51,7 +51,7 @@ var forcingCases = []forcingCase{
 	// The harness moved. Note the affected sets: a workflow and the Makefile
 	// are not Go files and reach nothing, which is precisely why a leg
 	// reading only `affected` skipped them.
-	{"a workflow-only change, e.g. bumping STATICCHECK_VERSION", []string{".github/workflows/ci.yml"}, nil, true},
+	{"a workflow-only change, e.g. a job's condition", []string{".github/workflows/ci.yml"}, nil, true},
 	{"a Makefile-only change", []string{"Makefile"}, nil, true},
 	{"a change to the gate itself", []string{"tools/gate/plan.go"}, []string{modulePath + "/tools/gate"}, true},
 	{"a change to the fuzz target list", []string{"tools/fuzztargets/targets.txt"}, nil, true},

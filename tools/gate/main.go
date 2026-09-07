@@ -45,35 +45,31 @@ import (
 	"strings"
 )
 
-// bufVersion pins buf to the same release the Makefile and CI run, so this
-// tier cannot pass a schema the required jobs reject.
-const bufVersion = "v1.72.0"
+// toolsModfile is the module the external tools are pinned in, as `tool`
+// directives: buf, govulncheck, staticcheck and pkgsite, each spelled once
+// there and bumped by Dependabot (#1729). The Makefile, ci.yml and this gate
+// all run them through `go tool -modfile`, so a leg here builds the exact
+// release the required job builds, and there is no second version to drift.
+const toolsModfile = "tools/external/go.mod"
 
-// staticcheckVersion and staticcheckToolchain pin the static analyser to what
-// ci.yml's required staticcheck job runs: the release its STATICCHECK_VERSION
-// names, under the GOTOOLCHAIN its run line sets.
+// staticcheckToolchain pins the GOTOOLCHAIN the analyser runs under, to what
+// ci.yml's required staticcheck job sets on its run line.
 //
-// Both are load-bearing. A different release is a different rule set, so a
-// finding here would be a finding about a tool CI is not running. And a
-// different toolchain is not a finding at all: staticcheck's own go.mod
-// selects one older than this module's, so without the pin it downgrades
-// underneath itself and then fails type-checking the standard library
-// vendored into the newer toolchain's module cache — the same failure
-// CLAUDE.md records for govulncheck, for the same reason.
+// It is load-bearing on its own: staticcheck's own go.mod selects a toolchain
+// older than this module's, so without the pin it downgrades underneath itself
+// and then fails type-checking the standard library vendored into the newer
+// toolchain's module cache — the same failure CLAUDE.md records for
+// govulncheck, for the same reason. It is also coupled to the release in
+// toolsModfile: staticcheck type-checks with its own go/types, so it can only
+// read export data at or below the format version its release understands. A
+// release older than the toolchain fails per standard-library package with
+// "export data version N is greater than maximum supported version M" rather
+// than reporting findings — so a toolchain bump moves the release with it. See
+// CLAUDE.md.
 //
-// The two are also coupled to each other, which is why they sit in one block:
-// staticcheck type-checks with its own go/types, so it can only read export
-// data at or below the format version its release understands. A release older
-// than the toolchain fails per standard-library package with "export data
-// version N is greater than maximum supported version M" rather than reporting
-// findings — so a toolchain bump moves the release with it. See CLAUDE.md.
-//
-// staticcheck_test.go reads both values back out of the workflow, so this
-// tier cannot drift into a second opinion about the tool.
-const (
-	staticcheckVersion   = "2026.2.1"
-	staticcheckToolchain = "go1.27.0"
-)
+// staticcheck_test.go reads the whole run line back out of the workflow, so
+// this tier cannot drift into a second opinion about the tool.
+const staticcheckToolchain = "go1.27.0"
 
 func main() {
 	// The first flag is the one thing to choose: who is asking. The local
@@ -389,7 +385,7 @@ func run(suppliedBase string) error {
 	// target list — and CI's staticcheck job then analyses ./... regardless
 	// of which Go packages the diff reached. Two shapes fall through a leg
 	// that consults only `affected`, and the first is the bad direction:
-	// a workflow-only diff (bumping STATICCHECK_VERSION, say) affects no Go
+	// a workflow-only diff (changing a job's condition, say) affects no Go
 	// package at all, so the leg would *skip* where the required job runs;
 	// and a change to this package would analyse only this package where the
 	// job analyses the module. So the leg takes ciForceReason's answer, and
@@ -922,7 +918,7 @@ func goTestSummarized(env []string, args ...string) cmdSpec {
 }
 
 func buf(args ...string) cmdSpec {
-	return command("go", append([]string{"run", "github.com/bufbuild/buf/cmd/buf@" + bufVersion}, args...)...)
+	return command("go", append([]string{"tool", "-modfile=" + toolsModfile, "buf"}, args...)...)
 }
 
 // forcedWide is why a leg whose scope follows CI's must run over the whole
@@ -994,10 +990,10 @@ func withTestResidual(p plan, why string) string {
 }
 
 // staticcheck runs the pinned analyser over the named packages, under the
-// pinned toolchain. See staticcheckVersion for why both pins are there.
+// pinned toolchain. See staticcheckToolchain for why both pins are there.
 func staticcheck(pkgs ...string) cmdSpec {
 	return commandEnv([]string{"GOTOOLCHAIN=" + staticcheckToolchain},
-		"go", append([]string{"run", "honnef.co/go/tools/cmd/staticcheck@" + staticcheckVersion}, pkgs...)...)
+		"go", append([]string{"tool", "-modfile=" + toolsModfile, "staticcheck"}, pkgs...)...)
 }
 
 // generatedClean is the pin that follows every generate step: after
