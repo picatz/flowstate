@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -351,4 +352,35 @@ func TestACancelledRunReportsWhatItTookBack(t *testing.T) {
 	require.Contains(t, final.GetError().GetMessage(), `undid "provision"`,
 		"a cancelled run that took a step back does not say so, so `flow get` answers "+
 			"the question with the question")
+}
+
+// TestCancelOnAFinishedRunRefusesLikeTerminate is #1299 at the door a script
+// uses: `flow cancel <id>` with no run id, on a workload that finished. Temporal
+// accepts the cancel request for a closed execution, so before this the server
+// answered success and `flow cancel && wait-for-canceled` waited forever; the
+// answer now comes from the run's state, in terminate's words.
+func TestCancelOnAFinishedRunRefusesLikeTerminate(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name:  "finishes",
+			Steps: []*v1.Node{bulky("only", 8)},
+		},
+	}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+
+	require.Eventually(t, func() bool {
+		resp, gerr := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+		return gerr == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
+	}, 60*time.Second, 200*time.Millisecond, "the run never finished")
+
+	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: workflowID}))
+	require.Error(t, err, "cancel on a finished run reported success")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), `cancelling run "`+workflowID+`": that workload has already finished`,
+		"the refusal is not the one terminate gives for the same run")
 }
