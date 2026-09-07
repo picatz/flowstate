@@ -575,6 +575,7 @@ func (p *Policy) checkRequest(req *http.Request) error {
 			Reason: ReasonScheme,
 			Target: target,
 			Detail: fmt.Sprintf("%q is not one of %s", scheme, p.allowedSchemes()),
+			Admits: "schemes",
 		}
 	}
 

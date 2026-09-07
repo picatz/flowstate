@@ -500,8 +500,9 @@ plugin on stderr, naming the plugin, its version, its path and its tasks, the
 same line `flow worker` prints at startup: a step failing with `unknown task`
 and a process that quietly found no plugins look identical from a Flowfile, and
 that line is what tells them apart. The verbs that run nothing — `validate`,
-`compile`, `fix`, `plugins` — say it at debug level, so the transcripts above
-are the whole of what they print.
+`compile`, `fix` — say it at debug level, shown under `--verbose`, so the
+transcripts above are the whole of what they print. `flow plugins` prints the
+catalog itself, which is that line's content in full, and no line beside it.
 
 (`--secret-env` is what makes `env:GREET_TOKEN` resolvable, and `--auth-policy`
 is what authorizes reading it: a process holding a secret provider with no access

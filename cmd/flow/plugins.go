@@ -774,12 +774,15 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 		// On the account stream, at startup, naming what each plugin added.
 		// A step failing with `unknown task` and a worker that quietly found no
 		// plugins look identical from a Flowfile, and this is what tells them
-		// apart without a debugger. A verb that runs nothing says it at debug.
-		level := slog.LevelInfo
+		// apart without a debugger. A verb that runs nothing says it at debug,
+		// through the plugin logger, which is the one that reads --verbose:
+		// the infrastructure logger's floor is Info, so a debug record sent
+		// there would be dropped for a reader who asked for it (#1831).
+		logger, level := infraLogger(), slog.LevelInfo
 		if flags.quiet {
-			level = slog.LevelDebug
+			logger, level = pluginLogger(cmd, surface), slog.LevelDebug
 		}
-		infraLogger().Log(cmd.Context(), level, "loaded plugin",
+		logger.Log(cmd.Context(), level, "loaded plugin",
 			"plugin", p.GetName(),
 			"version", p.GetVersion(),
 			"path", p.GetPath(),

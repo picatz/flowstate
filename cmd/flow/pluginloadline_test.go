@@ -23,6 +23,11 @@ func TestVerbsThatRunNothingLoadPluginsQuietly(t *testing.T) {
 	require.NotContains(t, output, "loaded plugin",
 		"validate runs nothing, so the load line belongs to the debug stream")
 
+	// Debug is a stream, not a bin: the reader who asks for it gets the line.
+	output, err = runFlowCapturing(t, bin, "validate", "--verbose", "--plugin-dir", dir, exampleGreetWorkflow)
+	require.NoError(t, err, output)
+	require.Contains(t, output, "loaded plugin", "--verbose asked for the debug stream")
+
 	// The example plugin claims a secret scheme, so a run needs the policy
 	// that authorizes reading it and the secret itself, the same way the
 	// run-local plugin tests do.

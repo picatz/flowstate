@@ -88,9 +88,25 @@ type DenyError struct {
 	Target string
 
 	// Detail names the specific rule, category, or constraint responsible for
-	// the denial, such as "loopback", "cloud metadata", or the source text of a
-	// CEL rule.
+	// the denial, such as "loopback addresses are not allowed", "cloud metadata
+	// addresses are not allowed, even inside an allowed network", or the source
+	// text of a CEL rule. It is prose for a person, not a key for a program:
+	// a caller that needs to know which setting was decisive reads Admits.
 	Detail string
+
+	// Admits names the `egress:` setting that would have admitted what was
+	// refused, as a configuration file spells it — "schemes", "allow_loopback",
+	// "allow_private_networks", "allow_networks", "allow_ports" — so a caller
+	// composing a remedy repeats the decision the policy made rather than
+	// re-deriving it from Detail's prose (#1694). It is set where the decision
+	// is made, by the check that knows which of its own inputs was decisive.
+	//
+	// Empty when no setting admits the target: a cloud metadata, link-local,
+	// multicast or unspecified address, which the file has no key for; an
+	// address inside deny_networks or a port inside deny_ports, which win over
+	// their allow lists; and every refusal that is not about the policy's
+	// shape, such as a rule that matched or could not be evaluated.
+	Admits string
 
 	// Err is the underlying cause, when the denial came from something failing
 	// rather than from a rule matching. A rule that could not be evaluated puts
