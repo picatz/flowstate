@@ -732,8 +732,12 @@ type GetResponse struct {
 	// walks the whole chain from (picatz/flowstate#1690).
 	FirstRunId string `protobuf:"bytes,14,opt,name=first_run_id,json=firstRunId,proto3" json:"first_run_id,omitempty"`
 	// Segments is how many Continue-As-New segments the workload has run as,
-	// this one included, with RunSummary.segments' meaning: zero for a run the
-	// interpreter wrote no count for.
+	// this one included, with RunSummary.segments' meaning: two or more when
+	// the interpreter recorded the chain, and zero when it recorded none —
+	// which is every run that never continued as new, since a first segment
+	// writes no count, as well as a chain whose first segment predates the
+	// count. A client must not assume it is at least one; first_run_id against
+	// run_id says whether a run with no count continued at all.
 	Segments      uint32 `protobuf:"varint,15,opt,name=segments,proto3" json:"segments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1669,14 +1673,18 @@ type RunSummary struct {
 	// workload that continued as new is later than start_time: start_time is
 	// the workload's start, read off the memo the interpreter writes at every
 	// continued segment (picatz/flowstate#1690), and this is the segment's own.
-	// Equal to start_time for a run that never continued, and for one whose
-	// first segment predates the memo, which then reports the segment's start
-	// as both — segments says which.
+	// Equal to start_time wherever no chain was recorded — a run that never
+	// continued, whose one segment is the workload, and a chain whose first
+	// segment predates the memo, which then reports the segment's start as
+	// both. segments is zero in both of those cases.
 	SegmentStartTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=segment_start_time,json=segmentStartTime,proto3" json:"segment_start_time,omitempty"`
 	// Segments is how many Continue-As-New segments the workload has run as,
-	// this one included: one for a run that never continued, and zero for a
-	// run the interpreter wrote no count for — an older run, whose start_time
-	// is then the listed segment's rather than the workload's.
+	// this one included: two or more when the interpreter recorded the chain,
+	// and zero when it recorded none. A first segment writes no count, so a run
+	// that never continued as new reports zero, not one; so does a chain whose
+	// first segment predates the count, whose start_time is then the listed
+	// segment's rather than the workload's. A listing cannot tell those two
+	// apart; a Get can, by first_run_id.
 	Segments      uint32 `protobuf:"varint,11,opt,name=segments,proto3" json:"segments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

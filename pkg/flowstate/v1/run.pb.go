@@ -1527,11 +1527,15 @@ type RunState struct {
 	// began rather than when it last continued (picatz/flowstate#1690). Absent
 	// on a run whose first segment predates this field, which then cannot say.
 	WorkloadStartedAt *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=workload_started_at,json=workloadStartedAt,proto3" json:"workload_started_at,omitempty"`
-	// Segment counts the Continue-As-New handovers before this segment: zero on
-	// the first, one on the segment it continued into, and so on. A continued
-	// segment writes segment + 1 into its memo as the workload's segment count,
-	// which is how a listing reads a chain's length off the one execution it
-	// lists for it. Absent on older runs reads as zero, the first segment.
+	// Segment counts the Continue-As-New handovers this interpreter has
+	// numbered before this segment: zero on the first, one on the segment it
+	// continued into, and so on. A continued segment that also carries
+	// workload_started_at writes segment + 1 into its memo as the workload's
+	// segment count, which is how a listing reads a chain's length off the one
+	// execution it lists for it. Zero or absent is not proof of a first segment:
+	// a segment continued into by an interpreter that predates this field
+	// carries zero too, which is why the interpreter reads whether it continued
+	// from anything off its own history rather than from here.
 	Segment       uint32 `protobuf:"varint,16,opt,name=segment,proto3" json:"segment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

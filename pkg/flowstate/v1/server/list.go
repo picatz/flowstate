@@ -410,29 +410,39 @@ type runChain struct {
 // chainOf reads the chain a continued segment recorded in its memo
 // ([engine.WorkloadStartedMemoKey], [engine.SegmentsMemoKey]) off what the
 // listing already has in hand, so a workload that continued as new is
-// reported from where it began (#1690). A memo that is absent or will not
-// decode reads as no chain, which is the segment's own start and a count of
-// zero — never a failed listing, for [labelsOf]'s reason.
+// reported from where it began (#1690).
+//
+// The two fields are written together and are read together: a memo that
+// carries one without the other, or one that will not decode, reads as no
+// chain — the segment's own start and a count of zero — rather than as half
+// of one, so a caller never sees a count beside a start it does not belong
+// to. Never a failed listing, for [labelsOf]'s reason.
 func (s *FlowstateServer) chainOf(execution *workflow.WorkflowExecutionInfo, segmentStart *timestamppb.Timestamp) runChain {
-	chain := runChain{started: segmentStart}
 	fields := execution.GetMemo().GetFields()
 
-	if payload, ok := fields[engine.SegmentsMemoKey]; ok {
-		var segments uint32
-		if err := s.dataConverter.FromPayload(payload, &segments); err == nil {
-			chain.segments = segments
-		}
+	countPayload, ok := fields[engine.SegmentsMemoKey]
+	if !ok {
+		return runChain{started: segmentStart}
 	}
-	if payload, ok := fields[engine.WorkloadStartedMemoKey]; ok {
-		var started string
-		if err := s.dataConverter.FromPayload(payload, &started); err == nil {
-			if at, err := time.Parse(time.RFC3339Nano, started); err == nil {
-				chain.started = timestamppb.New(at)
-			}
-		}
+	startPayload, ok := fields[engine.WorkloadStartedMemoKey]
+	if !ok {
+		return runChain{started: segmentStart}
 	}
 
-	return chain
+	var segments uint32
+	if err := s.dataConverter.FromPayload(countPayload, &segments); err != nil {
+		return runChain{started: segmentStart}
+	}
+	var started string
+	if err := s.dataConverter.FromPayload(startPayload, &started); err != nil {
+		return runChain{started: segmentStart}
+	}
+	at, err := time.Parse(time.RFC3339Nano, started)
+	if err != nil {
+		return runChain{started: segmentStart}
+	}
+
+	return runChain{started: timestamppb.New(at), segments: segments}
 }
 
 // labelsOf reads the workflow's declared labels off a run's memo, and reports
