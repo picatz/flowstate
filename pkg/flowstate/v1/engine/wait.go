@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -48,14 +47,14 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// [v1.EvalWaitDuration]. The clock is `workflow.Now`, which replays to the
 		// instant it first returned, which is what makes an expression naming
 		// `now` safe in workflow code.
-		d, err := v1.EvalWaitDuration(context.Background(), wait, e.scope, workflow.Now(e.ctx))
+		d, err := v1.EvalWaitDuration(evalContext(), wait, e.scope, workflow.Now(e.ctx))
 		if err != nil {
 			return nodeFailed(err)
 		}
 		return e.waitFor(node, d)
 
 	case *v1.Wait_Until:
-		deadline, err := v1.EvalWaitDeadline(context.Background(), kind.Until, e.scope, workflow.Now(e.ctx))
+		deadline, err := v1.EvalWaitDeadline(evalContext(), kind.Until, e.scope, workflow.Now(e.ctx))
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -65,7 +64,7 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		return e.waitFor(node, deadline.Sub(workflow.Now(e.ctx)))
 
 	case *v1.Wait_Signal:
-		timeout, bounded, err := v1.EvalWaitTimeout(context.Background(), wait, e.scope, workflow.Now(e.ctx))
+		timeout, bounded, err := v1.EvalWaitTimeout(evalContext(), wait, e.scope, workflow.Now(e.ctx))
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -87,7 +86,7 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// is the only reading of `now` that is true here. It replays to the same
 		// instant, so this is deterministic like every other read of it.
 		shaped, err := v1.ShapeSignalOutputs(
-			context.Background(), kind.Signal, outputs, e.scope, workflow.Now(e.ctx))
+			evalContext(), kind.Signal, outputs, e.scope, workflow.Now(e.ctx))
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -102,7 +101,7 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// about what a written-but-zero `timeout:` means. That equivalence is
 		// why `timeout` stayed on [v1.Wait] rather than being restated on the
 		// new message.
-		timeout, bounded, err := v1.EvalWaitTimeout(context.Background(), wait, e.scope, workflow.Now(e.ctx))
+		timeout, bounded, err := v1.EvalWaitTimeout(evalContext(), wait, e.scope, workflow.Now(e.ctx))
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -117,7 +116,7 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// evaluator, so a driver cannot shape a batch differently from a single
 		// wait.
 		shaped, err := v1.ShapeSignalBatchOutputs(
-			context.Background(), kind.SignalBatch, outputs, e.scope, workflow.Now(e.ctx))
+			evalContext(), kind.SignalBatch, outputs, e.scope, workflow.Now(e.ctx))
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -237,7 +236,7 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// that fails to evaluate does, and the local driver fails at the same point:
 	// a gate that parks with no question would leave an approver looking at a
 	// blank where the decision was meant to be.
-	prompt, promptCut, err := v1.EvalSignalPrompt(context.Background(), signal, e.scope, workflow.Now(e.ctx))
+	prompt, promptCut, err := v1.EvalSignalPrompt(evalContext(), signal, e.scope, workflow.Now(e.ctx))
 	if err != nil {
 		return nil, nodeFailed(err)
 	}
@@ -446,7 +445,7 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 	// wait announces itself. [v1.EvalSignalBatchPrompt] is [v1.EvalSignalPrompt]
 	// under another name for precisely this reason — the two must not be able
 	// to drift in what they refuse or how they bound.
-	prompt, promptCut, err := v1.EvalSignalBatchPrompt(context.Background(), batch, e.scope, workflow.Now(e.ctx))
+	prompt, promptCut, err := v1.EvalSignalBatchPrompt(evalContext(), batch, e.scope, workflow.Now(e.ctx))
 	if err != nil {
 		return nil, nodeFailed(err)
 	}

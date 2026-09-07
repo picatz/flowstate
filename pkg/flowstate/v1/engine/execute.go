@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -342,7 +341,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// saved position; everything after it starts fresh.
 		descend := resuming && i == start
 
-		run, err := v1.EvalConditionInScope(context.Background(), node.GetCondition(), e.scope)
+		run, err := v1.EvalConditionInScope(evalContext(), node.GetCondition(), e.scope)
 		if err != nil {
 			return stepFailed(err, "step %q", node.GetId())
 		}
@@ -500,7 +499,7 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 // Evaluated after the condition, matching the local driver and the validator: a var
 // whose expression fails must not fail a step that was going to be skipped.
 func (e *executor) runNodeWithVars(node *v1.Node, depth, susp int, descend bool) error {
-	inner, err := v1.EvalStepVars(context.Background(), node, e.scope)
+	inner, err := v1.EvalStepVars(evalContext(), node, e.scope)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -554,7 +553,7 @@ func (e *executor) registerUndo(node *v1.Node, scope *v1.Scope) error {
 	// buys is that *running* a compensation evaluates nothing at all — see
 	// [v1.PendingUndo].
 	entry, err := v1.UndoRegistrationFor(
-		context.Background(), node, scope, scope.GetOutputs().GetStepValues()[node.GetId()])
+		evalContext(), node, scope, scope.GetOutputs().GetStepValues()[node.GetId()])
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -598,7 +597,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 
 	callee := call.GetWorkflow()
 
-	arguments, err := v1.ResolveCallArguments(context.Background(), call.GetArguments(), e.scope)
+	arguments, err := v1.ResolveCallArguments(evalContext(), call.GetArguments(), e.scope)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -734,7 +733,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		return stepFailed(err, "workflow %q", callee.GetName())
 	}
 
-	outputs, err := v1.CallOutputs(context.Background(), callee, inner)
+	outputs, err := v1.CallOutputs(evalContext(), callee, inner)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -786,7 +785,7 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 // observable behaviour is the answer it computed, so the two drivers share the
 // one that computes it.
 func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
-	outputs, err := v1.EvalValueNode(context.Background(), value, e.scope)
+	outputs, err := v1.EvalValueNode(evalContext(), value, e.scope)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -814,7 +813,7 @@ func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
 // into the enclosing namespace the way parallel branches merge theirs; exactly
 // one body ran, so there is nothing to collide with.
 func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) error {
-	body, outputs, err := v1.SelectSwitchCase(context.Background(), sw, e.scope)
+	body, outputs, err := v1.SelectSwitchCase(evalContext(), sw, e.scope)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -851,7 +850,7 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 	// Resolve into a copy: the specification is reused across iterations and
 	// across Continue-As-New, so resolving in place would leak one iteration's
 	// values into the next.
-	resolved, err := v1.ResolveTaskInputs(context.Background(), task, e.scope)
+	resolved, err := v1.ResolveTaskInputs(evalContext(), task, e.scope)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -1262,7 +1261,7 @@ func isUndoActivityTimeout(err error) bool {
 // runForEach runs a loop body once per item, sequentially or with bounded
 // concurrency.
 func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, descend bool) error {
-	items, err := v1.ResolveItems(context.Background(), loop, e.scope)
+	items, err := v1.ResolveItems(evalContext(), loop, e.scope)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -1453,7 +1452,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		state = e.resume[inner].GetLoopState()
 	} else {
 		var err error
-		state, err = v1.LoopInitialState(context.Background(), loop, e.scope)
+		state, err = v1.LoopInitialState(evalContext(), loop, e.scope)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -1600,7 +1599,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 
 	// `until:` and `update:` see the body's outputs and the current state, so they
 	// are evaluated against the scope the body finished in.
-	stop, err := v1.EvalLoopUntil(context.Background(), loop, nested.scope)
+	stop, err := v1.EvalLoopUntil(evalContext(), loop, nested.scope)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -1621,7 +1620,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), true, nil, nil
 	}
 
-	next, err := v1.LoopNextState(context.Background(), loop, nested.scope)
+	next, err := v1.LoopNextState(evalContext(), loop, nested.scope)
 	if err != nil {
 		return nil, false, nil, err
 	}
