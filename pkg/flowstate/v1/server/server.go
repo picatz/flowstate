@@ -2180,6 +2180,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	switch respStatus := getWorkflowExecutionStatus(resp); respStatus {
 	case v1.RunResponse_STATUS_RUNNING:
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		chain := s.chainOf(resp.GetWorkflowExecutionInfo(), start)
 		pending, pendingTruncated := s.pendingActivities(resp)
 
 		return connect.NewResponse(
@@ -2187,8 +2188,10 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
-				StartTime:  start,
+				StartTime:  chain.started,
 				CloseTime:  closed,
+				FirstRunId: resp.GetWorkflowExecutionInfo().GetFirstRunId(),
+				Segments:   chain.segments,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
 				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
@@ -2218,14 +2221,17 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("error getting workflow result: %w", err))
 		}
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		chain := s.chainOf(resp.GetWorkflowExecutionInfo(), start)
 
 		return connect.NewResponse(
 			&v1.GetResponse{
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
-				StartTime:  start,
+				StartTime:  chain.started,
 				CloseTime:  closed,
+				FirstRunId: resp.GetWorkflowExecutionInfo().GetFirstRunId(),
+				Segments:   chain.segments,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
 				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
@@ -2245,14 +2251,17 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 		), nil
 	case v1.RunResponse_STATUS_FAILED, v1.RunResponse_STATUS_CANCELED, v1.RunResponse_STATUS_TERMINATED, v1.RunResponse_STATUS_TIMED_OUT:
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		chain := s.chainOf(resp.GetWorkflowExecutionInfo(), start)
 
 		return connect.NewResponse(
 			&v1.GetResponse{
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
-				StartTime:  start,
+				StartTime:  chain.started,
 				CloseTime:  closed,
+				FirstRunId: resp.GetWorkflowExecutionInfo().GetFirstRunId(),
+				Segments:   chain.segments,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
 				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real

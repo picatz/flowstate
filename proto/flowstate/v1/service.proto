@@ -515,6 +515,22 @@ message GetResponse {
   // when the answer is missing (see the server's authorizeSignal) - so an empty
   // value here weakens nothing.
   string starter = 12;
+
+  // FirstRunId is the segment the workload began at, read off the same
+  // Describe response everything else here comes from. Equal to run_id for a
+  // run that never continued as new; where it differs, run_id names the
+  // segment this response reports and first_run_id is where `flow timeline`
+  // walks the whole chain from (picatz/flowstate#1690).
+  string first_run_id = 14;
+
+  // Segments is how many Continue-As-New segments the workload has run as,
+  // this one included, with RunSummary.segments' meaning: two or more when
+  // the interpreter recorded the chain, and zero when it recorded none —
+  // which is every run that never continued as new, since a first segment
+  // writes no count, as well as a chain whose first segment predates the
+  // count. A client must not assume it is at least one; first_run_id against
+  // run_id says whether a run with no count continued at all.
+  uint32 segments = 15;
 }
 
 // SignalRequest delivers a signal to a waiting run.
@@ -859,6 +875,8 @@ message RunSummary {
   RunResponse.Status status = 3;
 
   // StartTime is when the workload began.
+  // For a workload that continued as new, the workload's start rather than the
+  // listed segment's — see segment_start_time.
   google.protobuf.Timestamp start_time = 4;
 
   // CloseTime is when it finished, unset while it is still running.
@@ -925,6 +943,25 @@ message RunSummary {
   // "recorded twice, drifting" this schema keeps out. It costs nothing extra:
   // the listing response already carries it.
   string worker_version = 9;
+
+  // SegmentStartTime is when the listed segment itself started, which for a
+  // workload that continued as new is later than start_time: start_time is
+  // the workload's start, read off the memo the interpreter writes at every
+  // continued segment (picatz/flowstate#1690), and this is the segment's own.
+  // Equal to start_time wherever no chain was recorded — a run that never
+  // continued, whose one segment is the workload, and a chain whose first
+  // segment predates the memo, which then reports the segment's start as
+  // both. segments is zero in both of those cases.
+  google.protobuf.Timestamp segment_start_time = 10;
+
+  // Segments is how many Continue-As-New segments the workload has run as,
+  // this one included: two or more when the interpreter recorded the chain,
+  // and zero when it recorded none. A first segment writes no count, so a run
+  // that never continued as new reports zero, not one; so does a chain whose
+  // first segment predates the count, whose start_time is then the listed
+  // segment's rather than the workload's. A listing cannot tell those two
+  // apart; a Get can, by first_run_id.
+  uint32 segments = 11;
 }
 
 // ListResponse returns a page of the caller's runs.

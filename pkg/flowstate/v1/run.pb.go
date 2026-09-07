@@ -1520,8 +1520,25 @@ type RunState struct {
 	// still be caught in, and unsays nothing. `CheckRunStateSize` weighs it at
 	// every suspension along with everything else the run carries.
 	ConsumedDeliveryIds []string `protobuf:"bytes,14,rep,name=consumed_delivery_ids,json=consumedDeliveryIds,proto3" json:"consumed_delivery_ids,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// WorkloadStartedAt is when the workload's first segment started, as the
+	// interpreter read it off its own history at that segment
+	// (workflow.GetInfo(ctx).WorkflowStartTime), and carried unchanged across
+	// every Continue-As-New so that a later segment can say when the workload
+	// began rather than when it last continued (picatz/flowstate#1690). Absent
+	// on a run whose first segment predates this field, which then cannot say.
+	WorkloadStartedAt *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=workload_started_at,json=workloadStartedAt,proto3" json:"workload_started_at,omitempty"`
+	// Segment counts the Continue-As-New handovers this interpreter has
+	// numbered before this segment: zero on the first, one on the segment it
+	// continued into, and so on. A continued segment that also carries
+	// workload_started_at writes segment + 1 into its memo as the workload's
+	// segment count, which is how a listing reads a chain's length off the one
+	// execution it lists for it. Zero or absent is not proof of a first segment:
+	// a segment continued into by an interpreter that predates this field
+	// carries zero too, which is why the interpreter reads whether it continued
+	// from anything off its own history rather than from here.
+	Segment       uint32 `protobuf:"varint,16,opt,name=segment,proto3" json:"segment,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunState) Reset() {
@@ -1650,6 +1667,20 @@ func (x *RunState) GetConsumedDeliveryIds() []string {
 		return x.ConsumedDeliveryIds
 	}
 	return nil
+}
+
+func (x *RunState) GetWorkloadStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.WorkloadStartedAt
+	}
+	return nil
+}
+
+func (x *RunState) GetSegment() uint32 {
+	if x != nil {
+		return x.Segment
+	}
+	return 0
 }
 
 // TimelineEntry is one thing a run did, read back from its own durable history.
@@ -1904,7 +1935,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"loop_state\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\tloopState\x1aP\n" +
 	"\rCallVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xcd\a\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xb3\b\n" +
 	"\bRunState\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bworkflow\x12\x1b\n" +
@@ -1922,7 +1953,9 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\fpending_undo\x18\v \x03(\v2\x19.flowstate.v1.PendingUndoR\vpendingUndo\x126\n" +
 	"\atrigger\x18\f \x01(\v2\x1c.flowstate.v1.TriggerContextR\atrigger\x120\n" +
 	"\x14metric_workflow_name\x18\r \x01(\tR\x12metricWorkflowName\x12C\n" +
-	"\x15consumed_delivery_ids\x18\x0e \x03(\tB\x0f\xbaH\f\x92\x01\t\x10\x80\x01\"\x04r\x02\x18@R\x13consumedDeliveryIds\x1aL\n" +
+	"\x15consumed_delivery_ids\x18\x0e \x03(\tB\x0f\xbaH\f\x92\x01\t\x10\x80\x01\"\x04r\x02\x18@R\x13consumedDeliveryIds\x12J\n" +
+	"\x13workload_started_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\x11workloadStartedAt\x12\x18\n" +
+	"\asegment\x18\x10 \x01(\rR\asegment\x1aL\n" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aN\n" +
@@ -2031,21 +2064,22 @@ var file_flowstate_v1_run_proto_depIdxs = []int32{
 	30, // 28: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
 	1,  // 29: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
 	26, // 30: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
-	27, // 31: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
-	0,  // 32: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
-	28, // 33: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 34: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 35: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
-	28, // 36: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 37: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
-	28, // 38: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 39: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 40: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
-	41, // [41:41] is the sub-list for method output_type
-	41, // [41:41] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	27, // 31: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
+	27, // 32: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
+	0,  // 33: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
+	28, // 34: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
+	28, // 35: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
+	28, // 36: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
+	28, // 37: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
+	28, // 38: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
+	28, // 39: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
+	28, // 40: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	28, // 41: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
+	42, // [42:42] is the sub-list for method output_type
+	42, // [42:42] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_run_proto_init() }
