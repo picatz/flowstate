@@ -756,14 +756,14 @@ substitute boundary the way a container's published-port binding is.
 `flow server` answers `GET`/`HEAD /healthz` with `200` and an empty body —
 nothing else, deliberately: an unauthenticated endpoint that describes the
 deployment (version, config, dependency state) is reconnaissance served on
-request (`healthzHandler`, `cmd/flow/routing.go:118-126`). It is mounted in
+request (`healthzHandler`, `cmd/flow/routing.go:148-156`). It is mounted in
 two places:
 
 - On the **public** listener, unauthenticated, always — `serverHandler`,
   `cmd/flow/routing.go:94`.
 - On the **internal** listener, if `--internal-listen`
   (`FLOWSTATE_INTERNAL_ADDRESS`) names a loopback address — `internalHandler`,
-  `cmd/flow/routing.go:160`. The internal listener also carries `/debug/pprof/*`
+  `cmd/flow/routing.go:187`. The internal listener also carries `/debug/pprof/*`
   (`cmd/flow/routing.go:167-171`), which is why it has no default and is
   refused off loopback (`checkInternalListenAddress`,
   `cmd/flow/internallistener.go:79-90`): pprof can read this process's memory
@@ -773,8 +773,8 @@ two places:
 There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
-the SDK's eager `client.DialContext` (`cmd/flow/main.go:809`, wired through
-`temporalclient.Dial`, `pkg/flowstate/v1/temporalclient/temporalclient.go:175-187`)
+the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:240`,
+reached from `cmd/flow/main.go:254` through `temporalclient.Dial`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies
@@ -921,7 +921,7 @@ are equally plaintext `httpGet` checks against the TLS-terminated port and
 fail the same way if left as they are. `exec` runs the command inside the
 container's own network namespace, which loopback is reachable from, and the
 internal listener never carries TLS or client-cert requirements of its own
-(`internalHandler`, `cmd/flow/routing.go:160`) regardless of what the public
+(`internalHandler`, `cmd/flow/routing.go:187`) regardless of what the public
 listener demands:
 
 ```yaml
@@ -1233,7 +1233,7 @@ that speaks Connect RPC — `flow server` (`cmd/flow/main.go:923`), `flow server
 dev` (`cmd/flow/serverdev.go:724`), and every CLI/MCP client call
 (`cmd/flow/client.go:270`). `otelconnect.NewInterceptor()` is called with no
 options, so both its default instruments are active
-(`instruments.go:44-49`, `connectrpc.com/otelconnect@v0.9.0`):
+(`connectrpc.com/otelconnect/instruments.go:44-49`, `connectrpc.com/otelconnect@v0.9.0`):
 
 | Metric | Type | Unit | Labels | Meaning |
 | --- | --- | --- | --- | --- |
@@ -1244,7 +1244,7 @@ options, so both its default instruments are active
 | `rpc.server.responses_per_rpc` / `rpc.client.responses_per_rpc` | histogram | 1 | same as above | Messages sent per RPC |
 
 (`rpc.service`/`rpc.method` come from the Connect procedure path;
-`net.peer.*` from the connection's remote address — `attributes.go:48-83`,
+`net.peer.*` from the connection's remote address — `connectrpc.com/otelconnect/attributes.go:48-83`,
 same module.)
 
 **Plugin metrics**, from every plugin process a worker launches

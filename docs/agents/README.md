@@ -19,6 +19,7 @@ software rather than prose for checks that can be deterministic.
 | `AGENT_FIELD_NOTES.md` | Small index of historical guidance | Never imported; used to locate one relevant archive |
 | `AGENT_FIELD_NOTES_LEGACY.md` and `.agent-history/` | Byte-preserved legacy guidance and skill bodies | Historical reference, loaded only for a concrete question |
 | `tools/agentconfig` | Structural tests for this configuration | Run by the full Go test suite and selected by the diff-scoped gate for repository-owned agent configuration |
+| `tools/citations` | Checks every `path.go:NNN` citation in the hand-written documentation against the tree: the file exists, the line is inside it, and the cited lines hold the symbol the sentence names | Run by the full Go test suite and selected by the diff-scoped gate for a change under `docs/`, `README.md` or `AGENTS.md` |
 
 This follows each host's current discovery contract:
 

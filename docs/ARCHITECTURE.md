@@ -211,13 +211,13 @@ Temporal's own answer to "one handler, many workloads" is dynamic workflow regis
 workflow type name the caller started and handed raw encoded payloads. Flowstate answers
 the same need from the other end — one *static* type that takes the workload as a typed
 argument — and the `RegisterDynamicWorkflow` method on the registry fake in
-`engine/versioning_test.go:382` is empty because that is the decision, not because nothing
+`pkg/flowstate/v1/engine/versioning_test.go:382` is empty because that is the decision, not because nothing
 was decided.
 
 `engine.RegisterWorkflows` installs exactly one workflow function, `Run`, with
-`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:191-199`). `Run` takes
-a `*v1.RunState` (`engine/workflow.go:313`), so the compiled specification travels as
-data, and the interpreter dispatches on node kind (`engine/execute.go:692-720`). Which
+`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:208`). `Run` takes
+a `*v1.RunState` (`pkg/flowstate/v1/engine/workflow.go:313`), so the compiled specification travels as
+data, and the interpreter dispatches on node kind (`pkg/flowstate/v1/engine/execute.go:692-720`). Which
 workload runs is a value; how any workload runs is the function.
 
 ```mermaid
@@ -244,18 +244,18 @@ places:
   would be that registration repeated once per Flowfile anyone has ever written, and a
   worker cannot register a type for a file it has never seen.
 - **The replay corpus has a stable name.** The gate replays recorded histories through
-  `engine.RegisterWorkflows` itself (`engine/replay_test.go:102`), which works only because
+  `engine.RegisterWorkflows` itself (`pkg/flowstate/v1/engine/replay_test.go:39`), which works only because
   the type name in every recorded history is the name a production worker registers.
 
 The cost is Temporal-side and worth stating plainly: every run's WorkflowType is `Run`, so
 anything grouping by workflow type — the Web UI's type filter, `temporal workflow list
 --query 'WorkflowType=...'`, per-type metrics — sees one name for the whole fleet. Run
 metadata carries the grouping instead. A workload's own declared name is written to every
-run's memo unconditionally at submit (`server/server.go:789`, `server/server.go:804`), which
+run's memo unconditionally at submit (`pkg/flowstate/v1/server/server.go:789`, `pkg/flowstate/v1/server/server.go:804`), which
 is what populates `v1.RunSummary.Name` (`proto/flowstate/v1/service.proto:735`,
-`server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
+`pkg/flowstate/v1/server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
 deployment that has registered search attributes additionally projects it as
-`FlowstateWorkflowName` (`server/server.go:889`), index-only, for tools querying the
+`FlowstateWorkflowName` (`pkg/flowstate/v1/server/server.go:1040`), index-only, for tools querying the
 visibility store directly. The grouping exists — it is simply not Temporal's built-in type
 field. The one place the server does read an attribute back is a schedule listing: a
 deployment with registration confirmed tags each schedule with its tenant at create and asks
@@ -459,11 +459,11 @@ flowchart LR
 Every edge is a rule with code behind it: `SecretRef` is a `Value` kind
 (`proto/flowstate/v1/value.proto:25`, `:155`), so a reference is what compilation produces;
 workflow-side evaluation refuses to resolve one (`pkg/flowstate/v1/eval.go:525-534`) and
-`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `varsecret.go:34`);
+`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `pkg/flowstate/v1/varsecret.go:34`);
 `v1.ResolveSecret` authorizes before the store is consulted, on every resolution
-(`taskruntime.go:90-103`); and the http task reveals through a closure registered with a
+(`pkg/flowstate/v1/taskruntime.go:90-103`); and the http task reveals through a closure registered with a
 scrubber rather than through a field something can print
-(`eval_task_http_run.go:171-181`).
+(`pkg/flowstate/v1/eval_task_http_run.go:171-181`).
 
 ### Plugins
 
