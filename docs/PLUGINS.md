@@ -353,8 +353,9 @@ in either spelling — is refused where it is written, with a diagnostic that
 says the value is test-only and lists what to write instead, so the author is
 not sent hunting for a typo that is not there. `flowstate/v1/schema.proto`
 imports only `descriptor.proto`, and the engine provides it, so importing it
-adds nothing to the bytes your plugin sends. Keep your own refusal at the point
-of use; the mark moves the refusal earlier, it does not replace it.
+adds nothing to the bytes your plugin sends (protocol version 7 and later; see
+below). Keep your own refusal at the point of use; the mark moves the refusal
+earlier, it does not replace it.
 
 ### Your field comments, in somebody else's editor
 
@@ -734,6 +735,13 @@ built against version 5 refuses the whole document over the unknown key. A host
 and its plugins are refused at the handshake when they disagree about this,
 which is the failure to prefer over a plugin reporting an operator's policy as
 malformed.
+
+Protocol version 7 exists for the reason version 3 did: the descriptor
+exchange. `flowstate/v1/schema.proto`, the file a schema's own options live in
+(`(flowstate.v1.test_only)` above), joined the files the engine provides, so a
+plugin that imports it ships no copy — and a version 6 host has no such file to
+link the plugin's task descriptors against. A host and its plugins built on
+either side of that change are refused at the handshake, naming both numbers.
 
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,
