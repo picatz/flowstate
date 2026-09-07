@@ -1,7 +1,6 @@
 package auth_test
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -129,7 +128,7 @@ func FuzzVerifyRefusesAMutatedToken(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, raw string) {
-		principal, err := verifier.Verify(context.Background(), raw)
+		principal, err := verifier.Verify(t.Context(), raw)
 		if raw == minted {
 			if err != nil {
 				t.Fatalf("the token the issuer minted was refused: %v", err)

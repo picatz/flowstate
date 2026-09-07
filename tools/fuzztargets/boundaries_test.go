@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +16,43 @@ import (
 // must be a target targets.txt runs, and every exported `Parse*` function or
 // `Unmarshal*` method in the directories boundaries.txt names must be listed,
 // so a new boundary parser cannot land without a target or a decision.
+
+// TestParsersUnderSeesGenericReceivers pins the receiver shapes the walk
+// resolves: a method on a generic type has an index expression for its
+// receiver, and a guard that missed it would let an exported Unmarshal on
+// such a type land unlisted.
+func TestParsersUnderSeesGenericReceivers(t *testing.T) {
+	dir := t.TempDir()
+	source := []byte(`package fixture
+
+type Box[T any] struct{ v T }
+
+func (b *Box[T]) UnmarshalText(data []byte) error { return nil }
+
+type Pair[K comparable, V any] struct{}
+
+func (p Pair[K, V]) UnmarshalJSON(data []byte) error { return nil }
+
+func ParseThing(data []byte) (Box[int], error) { return Box[int]{}, nil }
+
+type hidden struct{}
+
+func (h *hidden) UnmarshalYAML(data []byte) error { return nil }
+`)
+	if err := os.WriteFile(filepath.Join(dir, "fixture.go"), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	found := parsersUnder(t, dir)
+	for _, want := range []string{"Box.UnmarshalText", "Pair.UnmarshalJSON", "ParseThing"} {
+		if !found[want] {
+			t.Errorf("parsersUnder did not see %s; found %v", want, found)
+		}
+	}
+	if found["hidden.UnmarshalYAML"] {
+		t.Error("parsersUnder listed a method on an unexported type, which nothing outside the package can reach")
+	}
+}
 
 func TestEveryBoundaryParserHasATarget(t *testing.T) {
 	boundaries, err := Boundaries()
@@ -115,9 +153,17 @@ func parsersUnder(t *testing.T, dir string) map[string]bool {
 				names[fn.Name.Name] = true
 				continue
 			}
+			// The receiver's type name, through a pointer and through the
+			// type arguments of a generic receiver (`*Box[T]`, `Pair[K, V]`).
 			recv := fn.Recv.List[0].Type
 			if star, ok := recv.(*ast.StarExpr); ok {
 				recv = star.X
+			}
+			switch generic := recv.(type) {
+			case *ast.IndexExpr:
+				recv = generic.X
+			case *ast.IndexListExpr:
+				recv = generic.X
 			}
 			if ident, ok := recv.(*ast.Ident); ok && ident.IsExported() {
 				names[ident.Name+"."+fn.Name.Name] = true
