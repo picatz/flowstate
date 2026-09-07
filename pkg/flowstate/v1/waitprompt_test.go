@@ -201,6 +201,52 @@ func TestSubmitRefusesAPromptWhoseReachCannotBeDecided(t *testing.T) {
 			"sensitive input, so a rule that cannot decide allowed")
 }
 
+// nestedPrompt wraps a value in n list structures, so a walk that gives up at
+// a depth meets the expression under it only if it does not give up.
+func nestedPrompt(inner *v1.Value, n int) *v1.Value {
+	value := inner
+	for range n {
+		value = &v1.Value{Kind: &v1.Value_Structure_{Structure: &v1.Value_Structure{
+			Kind: &v1.Value_Structure_List_{List: &v1.Value_Structure_List{Values: []*v1.Value{value}}},
+		}}}
+	}
+
+	return value
+}
+
+// TestSubmitRefusesAPromptTooDeepToWalk is #1725's finding: the walk that
+// collects a prompt's expressions gave up past the depth bound by returning
+// nothing, so a prompt reaching a sensitive input from under the bound was the
+// one prompt the check could not see and therefore allowed. Too deep to walk is
+// "may reach a sensitive input", the answer every other walk over a value gives.
+func TestSubmitRefusesAPromptTooDeepToWalk(t *testing.T) {
+	t.Parallel()
+
+	salary := &v1.InputDeclaration{Name: "salary", Sensitive: true}
+	reaching := v1.NewExpr(`inputs.salary > 100000 ? "a large raise" : "a small raise"`)
+
+	// Nested exactly to the bound the walk still descends: the reach is seen
+	// and refused by name, which proves the fixture is one the check reads.
+	err := v1.CheckWaitPromptsAreAskable(promptGate(nestedPrompt(reaching, v1.MaxStructureDepth), salary))
+	require.Error(t, err, "a prompt reaching a sensitive input at the depth bound was accepted")
+	assert.Contains(t, err.Error(), "salary")
+
+	// One past it: the walk does not reach the expression, and must refuse
+	// anyway. The reach walk answered this with silence; what refused the
+	// file was the secret-reference walk over the same value, whose own
+	// fail-closed answer at the bound (holdsSecretRef) runs first. Both walks
+	// say the same thing now, so the check does not depend on the other one
+	// standing in front of it.
+	err = v1.CheckWaitPromptsAreAskable(promptGate(nestedPrompt(reaching, v1.MaxStructureDepth+1), salary))
+	require.Error(t, err, "a prompt too deep to walk was accepted, so the depth bound was a fail-open gate")
+
+	// With nothing declared sensitive the reach is never examined, and the
+	// depth is still refused, by the secret-reference walk: a value too deep
+	// to check is treated as holding a secret, whatever the file declared.
+	require.Error(t, v1.CheckWaitPromptsAreAskable(promptGate(nestedPrompt(reaching, v1.MaxStructureDepth+1))),
+		"a prompt too deep to check for a secret reference was accepted")
+}
+
 // TestAPromptIsLeftAloneWhenNothingIsDeclaredSensitive is the control, and the
 // reason the rule above can afford to be wide.
 //
