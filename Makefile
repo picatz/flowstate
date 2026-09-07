@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -356,6 +356,18 @@ modernize:
 # containment tests are where a vacuous claim costs the most.
 vacuity:
 	go run ./tools/vacuity $(if $(SITES),-sites,)
+
+# Report the sleeps in tests that spend real time.
+#
+#     make wallclock          # a count per file
+#     make wallclock SITES=1  # every site
+#
+# A `time.Sleep` inside `synctest.Test` is not counted: it returns the instant
+# the bubble is idle. The count is held by `tools/wallclock`'s own
+# TestTheRepositoryWallClockSleepsOnlyGoDown under `go test ./...`, a ratchet
+# in both directions, so this target is for reading the report (#1706).
+wallclock:
+	go run ./tools/wallclock $(if $(SITES),-sites,)
 
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result
