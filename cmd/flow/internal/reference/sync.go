@@ -11,6 +11,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,7 +39,7 @@ func run() error {
 
 	dslPath := filepath.Join(repo, "docs", "DSL.md")
 
-	dsl, err := os.ReadFile(dslPath)
+	dsl, err := readBounded(dslPath, maxSourceBytes)
 	if err != nil {
 		return err
 	}
@@ -78,7 +79,7 @@ func run() error {
 	for _, source := range sources {
 		name := filepath.Base(filepath.Dir(source))
 
-		data, err := os.ReadFile(source)
+		data, err := readBounded(source, maxSourceBytes)
 		if err != nil {
 			return err
 		}
@@ -90,4 +91,29 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "sync: mirrored docs/DSL.md and %d examples\n", len(sources))
 
 	return nil
+}
+
+// maxSourceBytes bounds a document this generator mirrors: the largest in
+// the tree is under a megabyte. The same house rule every read in cmd/flow
+// follows (readbounded.go there), kept local because this file is built on
+// its own under `go generate`.
+const maxSourceBytes = 16 << 20
+
+// readBounded reads a file up to max bytes and refuses one past it, rather
+// than mirroring a truncated document nobody wrote.
+func readBounded(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("%s is larger than the %d byte limit a mirrored document is read up to", path, max)
+	}
+	return data, nil
 }
