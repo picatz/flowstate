@@ -370,8 +370,42 @@ func (e *IssuerBlockedError) Error() string {
 		hop = e.Deny.Target
 	}
 	return fmt.Sprintf("%v: issuer %q fetch of %s blocked by identity egress policy: %v; "+
-		"configure the trust policy's egress: section to allow this fetch",
-		ErrIssuerUnavailable, e.Issuer, hop, e.Deny)
+		"configure the trust policy's egress: section to allow this fetch: %s",
+		ErrIssuerUnavailable, e.Issuer, hop, e.Deny, egressRemedy(e.Deny))
+}
+
+// egressRemedy names the `egress:` setting that would have admitted the denied
+// fetch, so the refusal is one sentence that, followed literally, makes the
+// next attempt succeed (#1694). The setting is the policy's own answer,
+// [netpolicy.DenyError.Admits], filled in by the check that made the
+// decision; this only phrases it for the trust policy's section. A loopback
+// rehearsal fails the scheme check first, so that case names `allow_loopback:`
+// too rather than refusing the same file twice. A refusal no setting admits —
+// a link-local or cloud metadata address, a port in `deny_ports:`, a network
+// in `deny_networks:` — says so, since widening the allow lists would not help.
+func egressRemedy(deny *netpolicy.DenyError) string {
+	switch deny.Admits {
+	case "schemes":
+		return "add `schemes: [http, https]` to admit a plain-http fetch (what a loopback rehearsal needs; " +
+			"a loopback address also needs `allow_loopback: true`)"
+	case "allow_loopback":
+		return "set `allow_loopback: true` to admit an issuer on this machine"
+	case "allow_private_networks":
+		return "set `allow_private_networks: true` to admit an in-cluster issuer, or name its network in `allow_networks:`"
+	case "allow_networks":
+		return "add the issuer's network to `allow_networks:`"
+	case "allow_ports":
+		return "add the port to `allow_ports:`"
+	}
+	switch deny.Reason {
+	case netpolicy.ReasonAddress:
+		return "no setting admits this address: a link-local or cloud metadata address never is, and a network in " +
+			"`deny_networks:` stays denied; point the issuer at a routable address"
+	case netpolicy.ReasonPort:
+		return "the port is in `deny_ports:`, which wins over `allow_ports:`"
+	}
+	return "the section's `schemes:`, `allow_loopback:`, `allow_private_networks:` and `allow_networks:` " +
+		"are the settings that widen it"
 }
 
 func (e *IssuerBlockedError) Unwrap() []error {

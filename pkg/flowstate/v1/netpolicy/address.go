@@ -90,6 +90,19 @@ func normalize(addr netip.Addr) netip.Addr {
 	return addr
 }
 
+// admittingSetting is the `egress:` key that admits each address category a
+// configuration file can admit at all, for [DenyError.Admits]. The categories
+// missing here — link-local, cloud metadata, multicast, broadcast, unspecified
+// — have options in Go ([WithAllowLinkLocal], [WithAllowCloudMetadata],
+// [WithAllowMulticast]) and no key in [EgressConfig], on purpose: a file is
+// the operator surface, and those are not admitted from it.
+var admittingSetting = map[category]string{
+	catLoopback:     "allow_loopback",
+	catPrivate:      "allow_private_networks",
+	catUniqueLocal:  "allow_private_networks",
+	catCarrierGrade: "allow_private_networks",
+}
+
 // classify returns the category of addr, resolving IPv4-mapped and IPv4-embedding
 // IPv6 forms first so that ::ffff:127.0.0.1 and ::7f00:1 are treated as the
 // loopback addresses they reach.
@@ -326,6 +339,7 @@ func (p *Policy) CheckAddr(addr netip.AddrPort) error {
 			Reason: ReasonAddress,
 			Target: target,
 			Detail: "outside every allowed network",
+			Admits: "allow_networks",
 		}
 	}
 
@@ -334,6 +348,7 @@ func (p *Policy) CheckAddr(addr netip.AddrPort) error {
 			Reason: ReasonAddress,
 			Target: target,
 			Detail: string(cat) + " addresses are not allowed",
+			Admits: admittingSetting[cat],
 		}
 	}
 
@@ -390,6 +405,7 @@ func (p *Policy) checkPort(port uint16, target string) error {
 				Reason: ReasonPort,
 				Target: target,
 				Detail: "port is not allowed",
+				Admits: "allow_ports",
 			}
 		}
 	}

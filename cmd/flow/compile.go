@@ -100,7 +100,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	_, closePlugins, err := startPlugins(cmd, nil)
+	_, closePlugins, err := startPluginsQuietly(cmd, nil)
 	if err != nil {
 		if isUsageError(err) {
 			return err

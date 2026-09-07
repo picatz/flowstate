@@ -421,7 +421,12 @@ task shipped a schema.
 > [!IMPORTANT]
 > Chapter one is a way to see a plugin run, not a way to ship one. A task
 > without descriptors cannot be validated, completed, or documented by anything,
-> and neither its author nor the operator installing it is told so.
+> and neither its author nor the operator installing it is told so. Its input
+> pattern, `inputs["name"].GetLiteral().GetStringValue()`, reads a literal and
+> nothing else: handed a secret reference, an unresolved expression or an error
+> value it answers `""`, so this plugin reports `name is required` for a
+> `${secret(...)}` it was never told to accept. Chapter two's `sdk.DecodeInputs`
+> refuses all three with a sentence naming the fix.
 
 Nothing today reports a descriptor-less task as a finding; see
 [known limitations](#known-limitations).
@@ -489,6 +494,15 @@ manifest's `secret_inputs` reaches
 the registry as `TaskDef.SecretInputs` (`pkg/flowstate/v1/registry.go:155-172`), but the
 validator's secret checking consults only `NestedSecretInputs`, for structures
 that hold a reference inside them (`pkg/flowstate/v1/flowfile/secret.go:259-262`, `pkg/flowstate/v1/registry.go:378`).
+
+`flow run local` also prints one `level=INFO msg="loaded plugin"` line per
+plugin on stderr, naming the plugin, its version, its path and its tasks, the
+same line `flow worker` prints at startup: a step failing with `unknown task`
+and a process that quietly found no plugins look identical from a Flowfile, and
+that line is what tells them apart. The verbs that run nothing — `validate`,
+`compile`, `fix` — say it at debug level, shown under `--verbose`, so the
+transcripts above are the whole of what they print. `flow plugins` prints the
+catalog itself, which is that line's content in full, and no line beside it.
 
 (`--secret-env` is what makes `env:GREET_TOKEN` resolvable, and `--auth-policy`
 is what authorizes reading it: a process holding a secret provider with no access
