@@ -2874,7 +2874,10 @@ flow server --verbose`,
 		Short: "Check workflows for problems without running them",
 		Long: "Check one or more Flowfiles for problems without executing them. " +
 			"Reports unknown tasks, duplicate or unusable step ids, and references to " +
-			"steps that do not exist or have not run yet, with the line each problem is on.\n\n" +
+			"steps that do not exist or have not run yet, with the line each problem is on. " +
+			"It also applies every rule the specification's schema declares — a step list " +
+			"over its bound, an id over its length — in the words the server refuses a " +
+			"submission with, so a file that says ok here is one flow run accepts.\n\n" +
 			"A file naming a plugin's task is checked against that plugin given " +
 			"--plugin-dir: the plugins there are launched here, through the same " +
 			"discovery, handshake and catalog a worker uses, and their tasks and input " +

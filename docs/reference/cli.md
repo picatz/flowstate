@@ -1935,7 +1935,7 @@ Check workflows for problems without running them
 flow validate [workflow-file...] [flags]
 ```
 
-Check one or more Flowfiles for problems without executing them. Reports unknown tasks, duplicate or unusable step ids, and references to steps that do not exist or have not run yet, with the line each problem is on.
+Check one or more Flowfiles for problems without executing them. Reports unknown tasks, duplicate or unusable step ids, and references to steps that do not exist or have not run yet, with the line each problem is on. It also applies every rule the specification's schema declares — a step list over its bound, an id over its length — in the words the server refuses a submission with, so a file that says ok here is one flow run accepts.
 
 A file naming a plugin's task is checked against that plugin given --plugin-dir: the plugins there are launched here, through the same discovery, handshake and catalog a worker uses, and their tasks and input schemas are then what this command checks against — so a misspelled input to a plugin task is a diagnostic at your terminal rather than a failure at the worker. It launches third-party binaries, which is why it takes this flag rather than looking anywhere by default, and a plugin that will not start fails this command outright: carrying on without it would report every one of its tasks as unknown, which is a false report about the file.
 

@@ -22,7 +22,9 @@ import (
 func TestLoadingAWorkflowCompilesItOnce(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("edition: v2026.3\nname: chain\nsteps:\n  - id: s0\n    value: 0\n")
-	for i := 1; i < 200; i++ {
+	// One hundred steps: the schema's bound on a step list, which validation
+	// now enforces (#1757), and as many as a file may hold.
+	for i := 1; i < 100; i++ {
 		fmt.Fprintf(&b, "  - id: s%d\n    value: ${steps.s%d.value + 1}\n", i, i-1)
 	}
 	path := filepath.Join(t.TempDir(), "chain.yaml")

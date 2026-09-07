@@ -2311,6 +2311,11 @@ type ForEach struct {
 	// Iterator names the variable bound to the current item inside the body.
 	// Defaults to "item". It must not collide with a step id, since both are
 	// resolved from the same namespace.
+	//
+	// Empty is the default, not a name, so the pattern is not applied to it:
+	// both drivers bind `item` for an empty iterator, and a rule that refused
+	// the empty string refused every `for_each:` written without `iterator:`
+	// at submit while the compiler accepted it (picatz/flowstate#1757).
 	Iterator string `protobuf:"bytes,2,opt,name=iterator,proto3" json:"iterator,omitempty"`
 	// Body is the steps to run per item.
 	Body []*Node `protobuf:"bytes,3,rep,name=body,proto3" json:"body,omitempty"`
@@ -3033,6 +3038,12 @@ type RetryPolicy struct {
 	InitialInterval *durationpb.Duration `protobuf:"bytes,2,opt,name=initial_interval,json=initialInterval,proto3" json:"initial_interval,omitempty"`
 	// BackoffCoefficient multiplies the delay after each attempt. Values below one
 	// are rejected, since a shrinking delay defeats the purpose of backing off.
+	//
+	// Zero is the default rather than a coefficient: both drivers substitute
+	// their default for a value below one, and the compiler writes zero for a
+	// `retry:` without `backoff:`. The rule therefore skips zero, or every such
+	// retry was refused at submit while the compiler accepted it
+	// (picatz/flowstate#1757).
 	BackoffCoefficient float64 `protobuf:"fixed64,3,opt,name=backoff_coefficient,json=backoffCoefficient,proto3" json:"backoff_coefficient,omitempty"`
 	// MaxInterval caps the delay between attempts, so exponential growth does not
 	// produce an unbounded wait.
@@ -3622,11 +3633,11 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\fsignal_batch\x18\a \x01(\v2\x19.flowstate.v1.SignalBatchH\x00R\vsignalBatch\x123\n" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x126\n" +
 	"\ftimeout_expr\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\vtimeoutExprB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xe6\x01\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xe9\x01\n" +
 	"\aForEach\x125\n" +
 	"\x05items\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\n" +
-	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x05items\x12>\n" +
-	"\biterator\x18\x02 \x01(\tB\"\xbaH\x1fr\x1d\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\biterator\x125\n" +
+	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x05items\x12A\n" +
+	"\biterator\x18\x02 \x01(\tB%\xbaH\"\xd8\x01\x01r\x1d\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\biterator\x125\n" +
 	"\x04body\x18\x03 \x03(\v2\x12.flowstate.v1.NodeB\r\xbaH\n" +
 	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x04body\x12-\n" +
 	"\fmax_parallel\x18\x04 \x01(\x05B\n" +
@@ -3671,11 +3682,11 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\atimeout\x18\x01 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\atimeout\x12/\n" +
 	"\x05retry\x18\x02 \x01(\v2\x19.flowstate.v1.RetryPolicyR\x05retry\x12*\n" +
 	"\x11continue_on_error\x18\x03 \x01(\bR\x0fcontinueOnError\x12H\n" +
-	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\"\x92\x02\n" +
+	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\"\x95\x02\n" +
 	"\vRetryPolicy\x12*\n" +
 	"\fmax_attempts\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\vmaxAttempts\x12N\n" +
-	"\x10initial_interval\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\x0finitialInterval\x12?\n" +
-	"\x13backoff_coefficient\x18\x03 \x01(\x01B\x0e\xbaH\v\x12\t)\x00\x00\x00\x00\x00\x00\xf0?R\x12backoffCoefficient\x12F\n" +
+	"\x10initial_interval\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\x0finitialInterval\x12B\n" +
+	"\x13backoff_coefficient\x18\x03 \x01(\x01B\x11\xbaH\x0e\xd8\x01\x01\x12\t)\x00\x00\x00\x00\x00\x00\xf0?R\x12backoffCoefficient\x12F\n" +
 	"\fmax_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\vmaxInterval\"\xa5\x01\n" +
 	"\x18ResolvedTaskCapabilities\x12.\n" +
 	"\x0eschema_version\x18\x01 \x01(\rB\a\xbaH\x04*\x02 \x00R\rschemaVersion\x12Y\n" +
