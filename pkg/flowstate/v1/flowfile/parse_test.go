@@ -1425,7 +1425,7 @@ steps:
 		{
 			name: "nested deeper than a Flowfile goes",
 			src:  taskInput("message: " + strings.Repeat("[", 200) + strings.Repeat("]", 200)),
-			want: "nests more than 64 levels deep",
+			want: "nests more than 64 levels of YAML deep",
 		},
 		{
 			// The billion-laughs shape. It is refused on the presence of the alias,

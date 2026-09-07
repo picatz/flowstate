@@ -1294,6 +1294,19 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowValueDepthRefused is the durable driver's half of the depth
+// bound on a literal the specification carries (#1765), through the same
+// [v1.BindRunInputs] the server's submission reaches.
+func TestRunWorkflowValueDepthRefused(t *testing.T) {
+	for _, test := range conformance.ValueDepthRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
 // TestRunWorkflowOutputValueRefused is the durable driver's half of the submit
 // boundary for a declared output whose value is already known to be wrong.
 //

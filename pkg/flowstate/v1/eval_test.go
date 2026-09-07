@@ -860,6 +860,20 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowValueDepthRefused is the local driver's half of the depth
+// bound on a literal the specification carries (#1765): a `vars:` or step
+// `value:` literal nested past [v1.MaxStructureDepth] is refused at submit,
+// in the sentence a submitted input past the same bound is refused in.
+func TestRunWorkflowValueDepthRefused(t *testing.T) {
+	for _, test := range conformance.ValueDepthRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
 // TestRunWorkflowOutputValueRefused is the local driver's half of the submit
 // boundary for a declared output whose value is already known to be wrong.
 //

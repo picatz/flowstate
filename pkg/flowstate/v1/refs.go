@@ -304,10 +304,11 @@ func CollectRefsFromParsedExpr(pe *expr.ParsedExpr, prev *Workflow_StepOutputs, 
 // output a live expression still needs fails a run after compaction, so the
 // walk that decides retention must answer conservatively at its own limit
 // the same way the authority walk already does. No Flowfile can express a
-// structure this deep — a shaped mapping's entries are values, not
-// structures, and the compiler bounds nesting far below this — so the shape
-// that reaches the bound is a specification submitted directly, where the
-// alternative is a stack depth the peer decides.
+// value this deep — the compiler refuses a structure and an authored literal
+// alike past [MaxStructureDepth], and [CheckStructureDepth] refuses the same
+// at the submit boundary — so the shape that reaches the bound is a
+// specification that bypassed both, where the alternative is a stack depth
+// the peer decides.
 func CollectValueRefs(value *Value, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
 	collectValueRefs(value, 0, prev, refs)
 }

@@ -526,7 +526,22 @@ func (c *compiler) composite(n ast.Node, path string, r ref) *v1.Value {
 	if lit == nil {
 		return nil
 	}
-	return &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
+	value := &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
+
+	// The one depth bound, applied where a mapping becomes a literal. A `vars:`
+	// entry or a step `value:` written as data compiles to a CEL map literal,
+	// which [compiler.structureValue]'s bound never saw, so the only thing
+	// stopping a 63-level literal was the document's own [maxDepth] — while an
+	// input's `default:` refused the same literal at 33 with a sentence naming
+	// the reason: expressions over the value walk it (#1765). Refused here with
+	// that sentence, so the three positions an author can write a mapping in
+	// answer alike, and the compiled specification carries nothing deeper than
+	// [v1.MaxStructureDepth] whichever way it was spelled.
+	if err := v1.CheckValueDepth("value", path, value); err != nil {
+		c.report(spanOfNode(n), r, "%s", err)
+		return nil
+	}
+	return value
 }
 
 // scalarHoldsFence reports whether one scalar holds an expression anywhere in

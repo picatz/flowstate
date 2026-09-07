@@ -649,7 +649,7 @@ func (c *compiler) enter(n ast.Node, r ref) bool {
 		c.overflowed = true
 		if c.depth >= maxDepth {
 			c.report(spanOfToken(nodeToken(n)), r,
-				"nests more than %d levels deep, which is deeper than a Flowfile is meant to go", maxDepth)
+				"nests more than %d levels of YAML deep, which is more than this parser reads", maxDepth)
 		} else {
 			c.report(spanOfToken(nodeToken(n)), r,
 				"holds more than %d values once aliases are expanded, which is more than a Flowfile is meant to hold", maxNodes)

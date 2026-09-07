@@ -29,7 +29,11 @@ import (
 //   - Only a task input the task *applies itself*, entry by entry, accepts one.
 //     See [TaskDef.NestedSecretInputs].
 
-// MaxStructureDepth bounds how deeply a [Value_Structure] may nest.
+// MaxStructureDepth bounds how deeply a [Value_Structure] may nest, and — since
+// #1765 — how deeply an authored literal may nest too: a `vars:` entry or a
+// step `value:` written as a mapping compiles to a CEL map literal rather than
+// a structure, and every walk that spends depth on a structure spends the same
+// depth on a literal, so the two positions are one bound.
 //
 // Exported, and the only definition of this number in the module, per the
 // one-constant rule: every walk below that descends into a structure reads
@@ -125,6 +129,7 @@ const maxStructureWalkNodes = 100_000
 func CheckStructureDepth(wf *Workflow) error {
 	var violation *ValueSite
 	var violationChain []string
+	var reached *constraintBoundViolation
 	nodesLeft := maxStructureWalkNodes
 	exhausted := false
 
@@ -146,10 +151,11 @@ func CheckStructureDepth(wf *Workflow) error {
 		// traversal this bounded validator must avoid.
 		if current.workflow != nil {
 			valueWalk := Walk{Value: func(site ValueSite) {
-				if structureDepth(site.Value, 0) > MaxStructureDepth {
+				if v := valueDepthViolation(site.Value, 0); v != nil && violation == nil {
 					s := site
 					violation = &s
 					violationChain = slices.Clone(current.chain)
+					reached = v
 				}
 			}}
 			walkWorkflowValuesBeforeSteps(current.workflow, valueWalk)
@@ -181,10 +187,11 @@ func CheckStructureDepth(wf *Workflow) error {
 			nodesLeft--
 
 			walkNodeValues(node, Walk{Value: func(site ValueSite) {
-				if violation == nil && structureDepth(site.Value, 0) > MaxStructureDepth {
+				if v := valueDepthViolation(site.Value, 0); v != nil && violation == nil {
 					s := site
 					violation = &s
 					violationChain = slices.Clone(nodeFrame.chain)
+					reached = v
 				}
 			}})
 			if violation != nil {
@@ -243,18 +250,18 @@ func CheckStructureDepth(wf *Workflow) error {
 		calledFrom = fmt.Sprintf(" (reached by calling %s)", callChainText(violationChain))
 	}
 
+	// The same sentence a submitted input past the bound gets, through the
+	// same function ([constraintBoundError]), because it is the same bound on
+	// the same resource: every walk over a value — an expression's, the secret
+	// authority's, compaction's — spends depth, and one sentence with the depth
+	// actually reached is what lets an author recognise the refusal wherever
+	// the value was written (#1765). Only the subject differs: which step and
+	// field, and the call chain it was reached through.
+	subject := where
 	if field != "" {
-		return fmt.Errorf(
-			"%s's %s nests a structure more than %d levels deep%s, which is deeper than this server can "+
-				"walk cheaply while deciding whether a step reads a secret; flatten it, or have a step "+
-				"read it from a reference instead of submitting it nested this deep",
-			where, field, MaxStructureDepth, calledFrom)
+		subject = fmt.Sprintf("%s's %s", where, field)
 	}
-	return fmt.Errorf(
-		"%s nests a structure more than %d levels deep%s, which is deeper than this server can walk "+
-			"cheaply while deciding whether a step reads a secret; flatten it, or have a step read it "+
-			"from a reference instead of submitting it nested this deep",
-		where, MaxStructureDepth, calledFrom)
+	return constraintBoundError(subject+calledFrom, reached)
 }
 
 // callChainText renders the steps a violation was reached through as
@@ -266,32 +273,6 @@ func callChainText(chain []string) string {
 		parts[i] = fmt.Sprintf("step %q", id)
 	}
 	return strings.Join(parts, " > ")
-}
-
-// structureDepth measures how many levels of [Value_Structure] nest inside v,
-// stopping early once it has already proven the answer is over the bound: the
-// caller only needs to know "too deep" versus a precise number, and stopping
-// early keeps this cheap against a value built to make it expensive.
-func structureDepth(v *Value, depth int) int {
-	if depth > MaxStructureDepth {
-		return depth
-	}
-
-	structure := v.GetStructure()
-	if structure == nil {
-		return depth
-	}
-
-	max := depth
-	for _, entry := range StructureValues(structure) {
-		if d := structureDepth(entry, depth+1); d > max {
-			max = d
-			if max > MaxStructureDepth {
-				return max
-			}
-		}
-	}
-	return max
 }
 
 // ValueHoldsSecretRef reports whether v is a secret reference or contains one at
