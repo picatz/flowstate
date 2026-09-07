@@ -469,23 +469,17 @@ func calleeSteps(spec *v1.Workflow) map[string]calleeStep {
 	return found
 }
 
-// stepTasks walks a compiled workflow and returns two maps: every task step's id
-// to the task it invokes, and every non-task step's id to a word naming its kind
-// (`wait`, `loop`, `for_each`, `call`, `value`). Together they cover every step a
-// step-form stub could name, so a stub aimed at a wait is told apart from one
-// aimed at nothing.
+// stepTaskNodes walks a compiled workflow and returns three maps: every task
+// step's id to the task it invokes, every non-task step's id to a word naming
+// its kind (`wait`, `loop`, `for_each`, `call`, `value`), and every task step's
+// id to the step itself — for a check that has to read what a step declares,
+// its `outputs:` shaping, and not only which task it runs. Together the first
+// two cover every step a step-form stub could name, so a stub aimed at a wait
+// is told apart from one aimed at nothing.
 //
 // It descends into loop and for_each bodies and parallel branches for the same
 // reason coverage does: those hold steps an author wrote and could name. It does
 // not descend into a `call:`, whose steps belong to the callee's own file.
-func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[string]string) {
-	taskOfStep, kindOfStep, _ = stepTaskNodes(spec)
-	return taskOfStep, kindOfStep
-}
-
-// stepTaskNodes is [stepTasks] with the task steps themselves beside their
-// names, for a check that has to read what a step declares — its `outputs:`
-// shaping — and not only which task it runs.
 func stepTaskNodes(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[string]string, nodeOfStep map[string]*v1.Node) {
 	taskOfStep = map[string]string{}
 	kindOfStep = map[string]string{}
