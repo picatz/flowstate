@@ -20,16 +20,17 @@ func TestSuiteWarningBudgetBoundsRetainedDiagnostics(t *testing.T) {
 	}
 
 	got := b.take(input)
-	require.LessOrEqual(t, len(got), maxSuiteWarnings)
+	require.LessOrEqual(t, len(got), maxSuiteWarnings+1, "the retained warnings, plus this case's one marker")
 	for _, warning := range got[:len(got)-1] {
 		assert.LessOrEqual(t, len(warning.GetMessage()), maxWarningMessageBytes)
 	}
-	assert.Contains(t, got[len(got)-1].GetMessage(), "additional warning(s) omitted")
+	assert.Contains(t, got[len(got)-1].GetMessage(), "warning(s) omitted")
 	retainedBytes := 0
-	for _, warning := range got {
+	for _, warning := range got[:len(got)-1] {
 		retainedBytes += len(warning.GetMessage())
 	}
 	assert.LessOrEqual(t, retainedBytes, maxSuiteWarningBytes)
+	assert.LessOrEqual(t, len(got[len(got)-1].GetMessage()), maxWarningMarkerBytes)
 }
 
 // TestSuiteWarningBudgetRetainsNothingSizedByWhatItDropped: the returned slice
@@ -46,23 +47,29 @@ func TestSuiteWarningBudgetRetainsNothingSizedByWhatItDropped(t *testing.T) {
 
 	got := b.take(flood)
 	require.NotEmpty(t, got)
-	assert.LessOrEqual(t, cap(got), maxSuiteWarnings,
+	assert.LessOrEqual(t, cap(got), maxSuiteWarnings+1,
 		"the retained backing array is sized by the omitted warnings, not by the budget")
 
-	// A later case arrives with the budget already spent: it retains nothing at
-	// all, and the marker keeps counting for the whole suite.
-	before := b.marker.GetMessage()
-	assert.Nil(t, b.take(flood), "a case that keeps no warning must retain no slice either")
-	assert.NotEqual(t, before, b.marker.GetMessage(), "the omitted count must keep rising")
-	assert.LessOrEqual(t, len(b.marker.GetMessage()), maxWarningMarkerBytes,
-		"the marker must stay inside the reservation newSuiteWarningBudget held back for it")
+	// A later case arrives with the budget already spent. It keeps no warning
+	// of its own, but it does keep the one diagnostic saying so — a case that
+	// warned must never come back empty.
+	spent := b.take(flood)
+	require.Len(t, spent, 1, "a case that warned must not be returned as a case that did not")
+	assert.Contains(t, spent[0].GetMessage(), "warning(s) omitted")
+	assert.LessOrEqual(t, cap(spent), maxSuiteWarnings+1)
 }
 
-// TestSuiteWarningBudgetMarkerIsPlacedInTheFile: the marker is a diagnostic
-// like any other, so an editor must be able to underline it. runSuite budgets
-// before it places, which is the only reason the marker has a code and a line;
-// placing first would leave the substitute unplaced at line 0.
-func TestSuiteWarningBudgetMarkerIsPlacedInTheFile(t *testing.T) {
+// TestSuiteWarningBudgetLeavesEveryWarnedCaseWarned is the verdict half of the
+// budget, and the reason the marker is per case rather than per suite. Both
+// `--fail-on-warning` and the per-case PASS/FAIL line read
+// `len(TestCase.Warnings)`, so a case whose warnings the budget dropped must
+// still hold one: a memory bound that silently turns a warned case green is a
+// wrong answer, not a smaller one (Codex, #1857).
+//
+// It also covers the placement fix: runSuite budgets before it places, which is
+// the only reason the marker carries a code and a line rather than sitting at
+// line 0 where no editor can show it.
+func TestSuiteWarningBudgetLeavesEveryWarnedCaseWarned(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -76,14 +83,15 @@ steps:
 outputs: {}
 `), 0o600))
 
-	// Each case earns one unbounded-source warning: a where: clause that
-	// matches nothing is quoted back, which is what the per-message bound cuts
-	// to 4 KiB. Enough cases to spend the 64 KiB suite budget several times
-	// over.
+	// Each case earns exactly one warning, and each is source-sized: a where:
+	// clause that matched nothing is quoted back, which is what the per-message
+	// bound cuts to 4 KiB. Enough cases to spend the 64 KiB suite budget twice
+	// over, so the later ones are all dropped.
+	const cases = 32
 	var source strings.Builder
 	source.WriteString("tests:\n")
 	filler := strings.Repeat("x", maxWarningMessageBytes)
-	for i := range 32 {
+	for i := range cases {
 		fmt.Fprintf(&source, `  - name: case %d
     workflow: ./workflow.yaml
     stubs:
@@ -101,24 +109,28 @@ outputs: {}
 
 	report := RunFile(path)
 	require.Empty(t, report.GetRefused(), "the file must load: %s", report.GetRefused())
+	require.Len(t, report.GetCases(), cases)
 
-	var marker *v1.Diagnostic
-	retainedBytes, retained := 0, 0
+	markers, retained, retainedBytes := 0, 0, 0
 	for _, c := range report.GetCases() {
+		require.NotEmpty(t, c.GetWarnings(),
+			"case %q warned and must still say so, whatever the budget kept", c.GetName())
+
 		for _, w := range c.GetWarnings() {
+			assert.LessOrEqual(t, len(w.GetMessage()), maxWarningMessageBytes)
+			assert.NotEmpty(t, w.GetCode(), "an unplaced warning carries no code")
+			assert.NotZero(t, w.GetLine(), "an unplaced warning sits at line 0 and no editor can show it")
+
+			if strings.Contains(w.GetMessage(), "warning(s) omitted") {
+				markers++
+				assert.LessOrEqual(t, len(w.GetMessage()), maxWarningMarkerBytes)
+				continue
+			}
 			retained++
 			retainedBytes += len(w.GetMessage())
-			assert.LessOrEqual(t, len(w.GetMessage()), maxWarningMessageBytes)
-			if strings.Contains(w.GetMessage(), "additional warning(s) omitted") {
-				marker = w
-			}
 		}
 	}
-	require.NotNil(t, marker, "32 source-sized warnings must outrun the suite budget")
+	require.NotZero(t, markers, "32 source-sized warnings must outrun the suite budget")
 	assert.LessOrEqual(t, retained, maxSuiteWarnings)
 	assert.LessOrEqual(t, retainedBytes, maxSuiteWarningBytes)
-
-	assert.Equal(t, "stubs", marker.GetField(), "the marker stands in for the warnings it replaced")
-	assert.NotEmpty(t, marker.GetCode(), "an unplaced marker carries no code")
-	assert.NotZero(t, marker.GetLine(), "an unplaced marker sits at line 0 and no editor can show it")
 }
