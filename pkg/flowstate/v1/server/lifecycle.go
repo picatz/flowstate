@@ -968,9 +968,22 @@ func (s *FlowstateServer) Cancel(ctx context.Context, req *connect.Request[v1.Ca
 
 	// Acted on through the client authorization used, so the run cancelled is the
 	// run that was checked.
-	temporal, _, err := s.authorizeRun(ctx, "Cancel", workflowID, runID)
+	temporal, described, err := s.authorizeRun(ctx, "Cancel", workflowID, runID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Decided from the run's own state rather than from whether the cancel
+	// happened to error. Temporal accepts a cancel request for an execution
+	// that has already closed — the request is recorded and nothing is left
+	// to act on it — so `flow cancel` on a run that finished minutes ago
+	// claimed success while terminate and signal on the same id refused, and
+	// a script waiting for CANCELED waited forever (#1299). The
+	// DescribeWorkflowExecution call authorizeRun already made says whether
+	// the run is still running, so the answer costs no second round trip and
+	// is the same sentence the siblings give.
+	if getWorkflowExecutionStatus(described) != v1.RunResponse_STATUS_RUNNING {
+		return nil, finishedRunError("cancelling", workflowID, runID)
 	}
 
 	if err := temporal.CancelWorkflow(ctx, workflowID, runID); err != nil {
@@ -1031,6 +1044,14 @@ func actOnRunError(verb, workflowID, runID string, err error) error {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("%s run %q: %w", verb, workflowID, err))
 	}
 
+	return finishedRunError(verb, workflowID, runID)
+}
+
+// finishedRunError is the refusal for acting on a run that has already
+// finished, whether Temporal said so by refusing the act ([actOnRunError]) or
+// the run's own state said so first ([FlowstateServer.Cancel]) — one sentence
+// for one situation, whichever way it was learned.
+func finishedRunError(verb, workflowID, runID string) error {
 	// What to say depends on whether the caller pinned an execution, and the
 	// classifier has to be told which — it cannot read the request.
 	//
