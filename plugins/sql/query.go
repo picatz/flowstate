@@ -23,7 +23,7 @@ func rowsValue(rows []any) *flowstatev1.Value {
 func sqlQuery(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	var in sqlv1.QueryInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 
 	if err := validateEngine(in.GetEngine()); err != nil {

@@ -67,7 +67,7 @@ func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 
 	var in slackv1.PostInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 	token, err := tokenFromValue(in.GetToken())
 	if err != nil {

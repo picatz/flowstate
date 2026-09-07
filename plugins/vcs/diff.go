@@ -18,7 +18,7 @@ import (
 func vcsDiff(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	var in vcsv1.DiffInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 
 	repoURL, err := validateRepositoryURL(in.GetUrl())

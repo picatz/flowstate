@@ -27,7 +27,7 @@ const defaultSandboxMode = codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY
 func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	var in codexv1.ExecInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 
 	prompt, err := validatePrompt(in.GetPrompt())

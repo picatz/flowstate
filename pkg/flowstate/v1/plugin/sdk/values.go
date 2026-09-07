@@ -23,7 +23,7 @@ import (
 //	func greet(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 //		var in examplev1.GreetInputs
 //		if err := sdk.DecodeInputs(inputs, &in); err != nil {
-//			return nil, sdk.InvalidInput("%v", err)
+//			return nil, err
 //		}
 //		...
 //	}
@@ -33,6 +33,16 @@ import (
 // older plugin. An input whose expression the engine has not resolved is
 // refused, since the plugin has no way to evaluate one it did not declare as
 // deferred.
+//
+// An input this cannot decode is always the workflow's mistake and never a
+// transient one, so the error comes back already classified as [InvalidInput]
+// and is returned as it is: wrapping it in [InvalidInput] again is harmless but
+// redundant, and a task that returned it bare used to reach the host as an
+// unclassified failure, which named the task rather than its input as the
+// cause. The cause is wrapped, so [errors.Is] and [errors.As] reach through the
+// classification to it. The one exception is a nil message, which is the
+// plugin's own bug rather than the workflow's, and stays an unclassified error
+// so the host records it as the permanent failure it is.
 func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error {
 	if msg == nil {
 		return fmt.Errorf("sdk: DecodeInputs needs a message to fill")
@@ -48,7 +58,7 @@ func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error
 		}
 
 		if err := setField(reflectMsg, field, value); err != nil {
-			return fmt.Errorf("input %q: %w", name, err)
+			return InvalidInput("input %q: %w", name, err)
 		}
 	}
 

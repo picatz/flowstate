@@ -190,7 +190,7 @@ func greet(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowsta
 	}
 	var in examplev1.GreetInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 
 	if in.GetName() == "" {

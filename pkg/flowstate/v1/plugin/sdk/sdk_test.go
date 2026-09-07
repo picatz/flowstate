@@ -562,6 +562,40 @@ func TestDecodeInputsRefusals(t *testing.T) {
 	}
 }
 
+// decodeRefusal is the error DecodeInputs returns for an input a task cannot
+// be given: an unresolved expression in a field that wants a string.
+func decodeRefusal(t *testing.T) error {
+	t.Helper()
+
+	var decoded flowstatev1.Task_HTTP_Inputs
+	err := DecodeInputs(map[string]*flowstatev1.Value{"url": flowstatev1.NewExpr("1 + 1")}, &decoded)
+	require.Error(t, err, "DecodeInputs accepted an unresolved expression")
+	return err
+}
+
+// TestDecodeInputsRefusalIsClassified pins the shape of what DecodeInputs
+// returns: already an [InvalidInput], naming the input, with the cause reachable
+// through the classification rather than flattened into its text (#1675). The
+// nil-message case is the plugin's bug rather than the workflow's and stays
+// unclassified, so the host records it as the permanent failure it is.
+func TestDecodeInputsRefusalIsClassified(t *testing.T) {
+	t.Parallel()
+
+	err := decodeRefusal(t)
+
+	var c *classified
+	require.True(t, errors.As(err, &c), "DecodeInputs returned %T, want an error classified as invalid input", err)
+	require.Equal(t, connect.CodeInvalidArgument, c.code)
+	require.False(t, c.retryable, "a malformed input is permanent; retrying re-sends the same one")
+	require.Contains(t, err.Error(), `input "url"`, "the refusal names the input")
+	require.NotNil(t, errors.Unwrap(errors.Unwrap(err)),
+		"the cause is wrapped with %%w, so errors.Is and errors.As reach it through the classification")
+
+	nilErr := DecodeInputs(map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral("x")}, nil)
+	require.Error(t, nilErr)
+	require.False(t, errors.As(nilErr, &c), "a nil message is the plugin's own bug, not an invalid input")
+}
+
 // TestDecodeIntegerPrecision checks that a fractional number is refused rather
 // than truncated, since truncating would turn an author's mistake into a
 // plausible result.
@@ -636,6 +670,14 @@ func TestErrorClassification(t *testing.T) {
 			name:     "an error the author did not classify",
 			err:      errors.New("something went wrong"),
 			wantCode: connect.CodeUnknown,
+		},
+		{
+			// A task that returns what DecodeInputs gave it, with no wrap of its
+			// own, must reach the host as invalid input and not as the
+			// unclassified failure a bare error becomes (#1675).
+			name:     "a DecodeInputs refusal returned bare",
+			err:      decodeRefusal(t),
+			wantCode: connect.CodeInvalidArgument,
 		},
 	}
 
