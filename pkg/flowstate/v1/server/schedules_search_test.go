@@ -47,27 +47,38 @@ func TestSchedulesAreListedByTheirTenantsSearchAttribute(t *testing.T) {
 	create(teamB, "theirs")
 	create(teamABefore, "from-before")
 
-	names := func(s *server.FlowstateServer) map[string]bool {
+	names := func(s *server.FlowstateServer) (map[string]bool, error) {
 		listed, err := s.ListSchedules(t.Context(), connect.NewRequest(&v1.ListSchedulesRequest{}))
 		if err != nil {
-			return nil
+			return nil, err
 		}
 		out := map[string]bool{}
 		for _, schedule := range listed.Msg.GetSchedules() {
 			out[schedule.GetName()] = true
 		}
-		return out
+		return out, nil
 	}
 
 	// Visibility follows a create by a moment, so the assertion waits for the
-	// store rather than for the first answer.
+	// store rather than for the first answer. The last answer, error included,
+	// is what a timeout reports, so a listing that keeps failing is not
+	// mistaken for one that keeps coming back short.
+	var (
+		teamANames map[string]bool
+		listErr    error
+	)
 	require.Eventually(t, func() bool {
-		return len(names(teamA)) == 3
-	}, 30*time.Second, 200*time.Millisecond, "team-a never saw its three schedules: %v", names(teamA))
+		teamANames, listErr = names(teamA)
 
-	require.Equal(t, map[string]bool{"tagged-one": true, "tagged-two": true, "from-before": true}, names(teamA),
+		return listErr == nil && len(teamANames) == 3
+	}, 30*time.Second, 200*time.Millisecond, "team-a never saw its three schedules: %v (last error: %v)", teamANames, listErr)
+
+	require.Equal(t, map[string]bool{"tagged-one": true, "tagged-two": true, "from-before": true}, teamANames,
 		"the listing by attribute dropped a schedule created before the attribute, or admitted another tenant's")
-	require.Equal(t, map[string]bool{"theirs": true}, names(teamB))
+
+	teamBNames, err := names(teamB)
+	require.NoError(t, err)
+	require.Equal(t, map[string]bool{"theirs": true}, teamBNames)
 
 	// And the attribute is really on the schedule, not only on the run it
 	// fires: what Temporal indexed is what the query filters on.

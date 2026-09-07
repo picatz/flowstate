@@ -577,9 +577,11 @@ func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.C
 	return schedules, truncated, nil
 }
 
-// scheduleListQuery narrows a schedule listing to the entries that can be the
-// tenant's, where the deployment has search attributes registered, and to
-// nothing otherwise.
+// scheduleListQuery is the visibility query that narrows a schedule listing
+// to the entries that can be the tenant's, where the deployment has search
+// attributes registered — and the empty query otherwise, which asks Temporal
+// for every schedule in the namespace and leaves the walk to keep the
+// tenant's, exactly as it did before there was a query.
 //
 // Two halves. The tenant's own attribute finds every schedule this server
 // created since registration was confirmed. `IS NULL` finds the ones with no
@@ -597,10 +599,11 @@ func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.C
 // visibility data anybody with cluster access can write, and the two checks
 // this file's header describes are what decide ownership.
 //
-// Empty where registration was never confirmed, which is the same in-process
-// walk every deployment had — a query naming an attribute Temporal does not
-// know is refused, and [WithSearchAttributesRegistered] documents why a server
-// that did not confirm registration must not depend on one.
+// Empty — no narrowing, not no schedules — where registration was never
+// confirmed, which is the same in-process walk every deployment had: a query
+// naming an attribute Temporal does not know is refused, and
+// [WithSearchAttributesRegistered] documents why a server that did not confirm
+// registration must not depend on one.
 //
 // The namespace is spliced into a query literal, so it is checked against the
 // grammar [auth.ValidateNamespace] admits — lowercase letters, digits and
