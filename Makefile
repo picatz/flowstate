@@ -1,4 +1,18 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+
+# The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
+# are pinned once, as `tool` directives in tools/external/go.mod, checksummed
+# in the go.sum beside it and bumped by Dependabot with the plugin modules
+# (#1729). They live in their own module so their graphs stay out of the root
+# module's: `go tool -modfile` builds a tool from that module and runs it here,
+# in this directory, with this module's sources in front of it. Everything
+# that runs one of them — this file, ci.yml, deep.yml, tools/gate, the
+# genguard hook — spells the invocation this way and never a version.
+TOOLS_MODFILE := $(CURDIR)/tools/external/go.mod
+BUF := go tool -modfile=$(TOOLS_MODFILE) buf
+GOVULNCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) govulncheck
+STATICCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) staticcheck
+PKGSITE := go tool -modfile=$(TOOLS_MODFILE) pkgsite
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -88,14 +102,14 @@ check:
 	docker compose -f examples/observability/docker-compose.yaml config -q
 	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
 	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
+	$(BUF) lint
+	$(BUF) breaking --against '.git#branch=origin/main'
+	$(BUF) generate
+	$(BUF) build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+	$(BUF) build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
 	git diff --exit-code
-	GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-	GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+	$(GOVULNCHECK) ./...
+	$(STATICCHECK) ./...
 	$(MAKE) vulncheck-plugins
 	$(MAKE) staticcheck-plugins
 
@@ -219,14 +233,14 @@ vulncheck-plugins:
 	@for module in plugins/*/; do \
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> govulncheck $$module"; \
-		( cd "$$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./... ) || exit 1; \
+		( cd "$$module" && $(GOVULNCHECK) ./... ) || exit 1; \
 	done
 
 staticcheck-plugins:
 	@for module in plugins/*/; do \
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> staticcheck $$module"; \
-		( cd "$$module" && GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./... ) || exit 1; \
+		( cd "$$module" && $(STATICCHECK) ./... ) || exit 1; \
 	done
 
 # Build the first-party plugins into an isolated directory, compare their
@@ -368,6 +382,18 @@ modernize:
 vacuity:
 	go run ./tools/vacuity $(if $(SITES),-sites,)
 
+# Report the sleeps in tests that spend real time.
+#
+#     make wallclock          # a count per file
+#     make wallclock SITES=1  # every site
+#
+# A `time.Sleep` inside `synctest.Test` is not counted: it returns the instant
+# the bubble is idle. The count is held by `tools/wallclock`'s own
+# TestTheRepositoryWallClockSleepsOnlyGoDown under `go test ./...`, a ratchet
+# in both directions, so this target is for reading the report (#1706).
+wallclock:
+	go run ./tools/wallclock $(if $(SITES),-sites,)
+
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result
 # with `git diff --exit-code`, so this is what to run when that pin fails.
@@ -393,7 +419,7 @@ docs:
 #     line, then lines indented under it. Without the blank line first, the
 #     indented text renders as an ordinary paragraph rather than as code.
 docs-preview:
-	go run golang.org/x/pkgsite/cmd/pkgsite@latest -http localhost:8080 .
+	$(PKGSITE) -http localhost:8080 .
 
 # Record the CLI's styled surfaces with charmbracelet/vhs and compare them
 # against the goldens under cmd/flow/internal/appearance/testdata. Needs vhs,

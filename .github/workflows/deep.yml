@@ -799,7 +799,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... 2>&1 | tee govulncheck.log
+          go tool -modfile=tools/external/go.mod govulncheck ./... 2>&1 | tee govulncheck.log
 
       - name: Vulnerability scan (plugin modules)
         id: scan-plugins
@@ -810,7 +810,7 @@ jobs:
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> govulncheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... ) 2>&1 | tee -a govulncheck.log || failed=1
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go tool -modfile=../../tools/external/go.mod govulncheck ./... ) 2>&1 | tee -a govulncheck.log || failed=1
           done
           exit $failed
 
@@ -844,7 +844,7 @@ jobs:
             echo "Reproduce locally (toolchain pinned to match go.mod, per CLAUDE.md):"
             echo
             echo '```'
-            echo "GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."
+            echo "GOTOOLCHAIN=go1.27.0 go tool -modfile=tools/external/go.mod govulncheck ./..."
             echo '```'
           } > "$body"
           gh issue create --title "$title" --label deep-tier --body-file "$body"

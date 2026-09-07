@@ -286,6 +286,8 @@ func TestOpenToleratesStdoutNoise(t *testing.T) {
 	}
 
 	// It keeps writing for a while; the plugin has to stay usable throughout.
+	// Real time, because the writer is the stdout-noise plugin process, which
+	// no bubble can hold.
 	for range 3 {
 		if health := p.CheckHealth(t.Context()); health.Status != HealthServing {
 			t.Fatalf("health = %v, want serving: %v", health.Status, health.Err)

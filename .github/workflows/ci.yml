@@ -48,10 +48,11 @@ permissions:
 # govulncheck still reports newly disclosed vulnerabilities while pinned: the
 # advisory database is fetched at run time, so only the analyser is fixed here.
 # That is the split worth having — reproducible tool, current facts.
+# buf, govulncheck and staticcheck are not versioned here: they are `tool`
+# directives in tools/external/go.mod, run through `go tool -modfile`, so the
+# release is spelled once and Dependabot bumps it (#1729). Only the tools
+# fetched as binaries keep a pin in this block.
 env:
-  BUF_VERSION: v1.72.0
-  GOVULNCHECK_VERSION: v1.6.0
-  STATICCHECK_VERSION: 2026.2.1
   VHS_VERSION: v0.11.0
   TTYD_VERSION: 1.7.7
   TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
@@ -203,7 +204,7 @@ jobs:
       # write token regardless of this job's `permissions:` block — cache
       # scoping is a property of the ref, not of what the workflow declares —
       # so contents: read does not touch it. Every job in this workflow runs
-      # `go test`, `go vet`, or a `go run pkg@pinned-version` that builds
+      # `go test`, `go vet`, or a `go tool` that builds
       # third-party code fresh, and a fork PR is the one context here where
       # that third-party code is untrusted. A poisoned entry a fork PR's run
       # planted would still need a same-repo run to *save* it before anything
@@ -511,6 +512,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
+            tools/external/go.sum
             .github/cache-scope/proto
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
@@ -526,12 +528,12 @@ jobs:
       # The protocol has its own package now, which is what made the names it asks
       # for the right ones, so both the violations and the suppression are gone.
       - name: Lint
-        run: go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} lint
+        run: go tool -modfile=tools/external/go.mod buf lint
 
       # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
       # nothing ran them.
       - name: Check for breaking changes
-        run: go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} breaking --against '.git#branch=origin/main'
+        run: go tool -modfile=tools/external/go.mod buf breaking --against '.git#branch=origin/main'
 
       # Generated code is committed, so it can disagree with the schema it came
       # from. That disagreement is invisible locally — the build stays green using
@@ -554,9 +556,9 @@ jobs:
       # way the engine's can.
       - name: Verify generated code is current
         run: |
-          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} generate
-          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
-          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
+          go tool -modfile=tools/external/go.mod buf generate
+          go tool -modfile=tools/external/go.mod buf build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+          go tool -modfile=tools/external/go.mod buf build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
           git diff --exit-code -- . || {
             echo "::error::generated code does not match the schema; run 'make check' (or 'buf generate' plus the 'buf build' line beside it) and commit the result"
             exit 1
@@ -582,7 +584,7 @@ jobs:
       # reachability, not mere presence, so it fails only when our code can
       # actually reach the vulnerable path.
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
+        run: go tool -modfile=tools/external/go.mod govulncheck ./...
 
       - name: Vulnerability scan (plugin modules)
         run: |
@@ -590,7 +592,7 @@ jobs:
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> govulncheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... ) || failed=1
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go tool -modfile=../../tools/external/go.mod govulncheck ./... ) || failed=1
           done
           exit $failed
 
@@ -622,6 +624,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
+            tools/external/go.sum
             .github/cache-scope/staticcheck
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
@@ -636,7 +639,7 @@ jobs:
       # says so per standard-library package instead of reporting findings. See
       # CLAUDE.md.
       - name: Static analysis
-        run: GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+        run: GOTOOLCHAIN=go1.27.0 go tool -modfile=tools/external/go.mod staticcheck ./...
 
       - name: Static analysis (plugin modules)
         run: |
@@ -644,7 +647,7 @@ jobs:
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> staticcheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./... ) || failed=1
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go tool -modfile=../../tools/external/go.mod staticcheck ./... ) || failed=1
           done
           exit $failed
 
