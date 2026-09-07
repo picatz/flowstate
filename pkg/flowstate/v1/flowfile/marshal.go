@@ -3,6 +3,7 @@ package flowfile
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
 	"slices"
 	"strings"
@@ -1059,7 +1060,7 @@ func scalarSurvives(s string, candidate any) bool {
 		return false
 	}
 	var back yaml.MapSlice
-	if err := yaml.Unmarshal(encoded, &back); err != nil {
+	if err := strictyaml.Unmarshal(encoded, &back); err != nil {
 		return false
 	}
 	if len(back) != 1 || back[0].Value != s {
@@ -1076,7 +1077,7 @@ func scalarSurvives(s string, candidate any) bool {
 	var list struct {
 		V []string `yaml:"v"`
 	}
-	if err := yaml.Unmarshal(encoded, &list); err != nil {
+	if err := strictyaml.Unmarshal(encoded, &list); err != nil {
 		return false
 	}
 	return len(list.V) == 1 && list.V[0] == s

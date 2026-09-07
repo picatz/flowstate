@@ -212,33 +212,35 @@ func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
 // tools/fuzztargets/targets.txt names, and the appearance goldens record what
 // the cmd/flow binary prints.
 //
-// The diff is netpolicy's rather than the engine's, and the swap is the whole
-// point of the case: this asserts what happens where *no* target lives, so it
-// has to name a package that holds none. It used to name the engine, which held
-// none until #403's item 4 put FuzzSignalDeliveryDecode there — at which point
-// the assertion was still true of the gate and false of the tree, which is the
-// stale-expectation shape rather than a defect. A package's arrival in
-// targets.txt is supposed to move this decision.
+// The diff is the secrets cache's rather than the engine's or netpolicy's, and
+// the swaps are the whole point of the case: this asserts what happens where
+// *no* target lives, so it has to name a package that holds none. It used to
+// name the engine, which held none until #403's item 4 put
+// FuzzSignalDeliveryDecode there, and then netpolicy, which held none until
+// #1721 put FuzzParseConfig there — at each point the assertion was still true
+// of the gate and false of the tree, which is the stale-expectation shape
+// rather than a defect. A package's arrival in targets.txt is supposed to move
+// this decision, and the next arrival moves this case to another package.
 func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
-	changed := []string{"pkg/flowstate/v1/netpolicy/body.go"}
+	changed := []string{"pkg/flowstate/v1/secrets/cache.go"}
 
-	// A diff that reaches netpolicy and nothing else. It holds no fuzz target
-	// and prints nothing the appearance goldens record, so both narrow jobs
-	// skip.
-	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/netpolicy"}, "pull_request")
+	// A diff that reaches the secrets package and nothing else. It holds no
+	// fuzz target and prints nothing the appearance goldens record, so both
+	// narrow jobs skip.
+	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/secrets"}, "pull_request")
 	mustRun(t, ds, "test", "test-plugins", "vulncheck", "staticcheck")
 	mustSkip(t, ds, "fuzz-smoke", "appearance", "proto", "test-ordering")
 	if got := ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]; got != "" {
 		t.Errorf("fuzz-smoke is skipped but publishes targets %q; the job would fuzz them on a forced rerun of nothing", got)
 	}
 
-	// The same diff, in a tree where netpolicy is on cmd/flow's import path —
-	// which is what affectedPackages actually computes. cmd/flow holds one
-	// smoke target, and that one is what the job is handed: not the seven
-	// under flowfile, and not cmd/flow/internal/mcp's, which is a package of
-	// its own that this affected set does not name.
+	// The same diff, in a tree where the secrets package is on cmd/flow's
+	// import path — which is what affectedPackages actually computes. cmd/flow
+	// holds one smoke target, and that one is what the job is handed: not the
+	// seven under flowfile, and not cmd/flow/internal/mcp's, which is a
+	// package of its own that this affected set does not name.
 	ds = decide(t, changed, []string{
-		modulePath + "/pkg/flowstate/v1/netpolicy",
+		modulePath + "/pkg/flowstate/v1/secrets",
 		cmdFlowPkg,
 	}, "pull_request")
 	mustRun(t, ds, "fuzz-smoke", "appearance")

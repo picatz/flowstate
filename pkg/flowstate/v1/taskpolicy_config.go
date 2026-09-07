@@ -2,8 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
-
-	"github.com/goccy/go-yaml"
+	"github.com/picatz/flowstate/internal/strictyaml"
 )
 
 // TaskPolicyConfig is the file form of a task-shape policy: what an operator
@@ -47,7 +46,7 @@ type TaskPolicyConfig struct {
 func ParseTaskPolicyConfig(data []byte) (TaskPolicyConfig, error) {
 	var cfg TaskPolicyConfig
 
-	if err := yaml.UnmarshalWithOptions(data, &cfg, yaml.Strict()); err != nil {
+	if err := strictyaml.UnmarshalStrict(data, &cfg); err != nil {
 		return TaskPolicyConfig{}, fmt.Errorf("%w: %w", ErrInvalidTaskPolicy, err)
 	}
 
