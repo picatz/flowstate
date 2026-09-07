@@ -210,8 +210,9 @@ regenerating needs no network beyond the module cache (see
 [`examples/flowstate-plugin-example/buf.gen.yaml`](../pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/buf.gen.yaml)):
 
 ```console
+$ go get -tool github.com/bufbuild/buf/cmd/buf@latest
 $ GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
-$ PATH=$PWD/tools:$PATH go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate proto
+$ PATH=$PWD/tools:$PATH go tool buf generate proto
 $ ls gen/hello/v1
 hello.pb.go
 ```
@@ -370,7 +371,8 @@ for the SDK to forward.
 the generated code, from the same `.proto`, and hand it to the SDK:
 
 ```console
-$ go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o schema.descriptorset.binpb proto
+$ go get -tool github.com/bufbuild/buf/cmd/buf@latest   # once per module, as above
+$ go tool buf build --exclude-imports -o schema.descriptorset.binpb proto
 ```
 
 ```go

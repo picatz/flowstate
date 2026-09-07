@@ -81,9 +81,6 @@ export PATH="$toolchain_home/go/bin:$HOME/go/bin:$PATH"
 GOTOOLCHAIN=local go version
 
 step "Caching project dependencies and pinned tools"
-buf_version="$(ci_pin BUF_VERSION)"
-govulncheck_version="$(ci_pin GOVULNCHECK_VERSION)"
-staticcheck_version="$(ci_pin STATICCHECK_VERSION)"
 vhs_version="$(ci_pin VHS_VERSION)"
 ttyd_version="$(ci_pin TTYD_VERSION)"
 ttyd_sha256="$(ci_pin TTYD_SHA256)"
@@ -102,15 +99,19 @@ echo "  Go module dependencies"
 job_names+=("Go module dependencies")
 job_pids+=("$!")
 
+# buf, govulncheck and staticcheck are `tool` directives in
+# tools/external/go.mod (their module is in the download loop above), and
+# every site runs them through `go tool -modfile`. Building each once here
+# warms the build cache so the first `make gate` does not pay for it.
 gate_tools=(
-	"github.com/bufbuild/buf/cmd/buf@$buf_version"
-	"golang.org/x/vuln/cmd/govulncheck@$govulncheck_version"
-	"honnef.co/go/tools/cmd/staticcheck@$staticcheck_version"
+	"buf --version"
+	"govulncheck -version"
+	"staticcheck -version"
 )
 for tool in "${gate_tools[@]}"; do
-	echo "  $tool"
-	(GOBIN="$HOME/go/bin" GOTOOLCHAIN="go$go_version" go install "$tool") &
-	job_names+=("$tool")
+	echo "  go tool $tool"
+	(GOTOOLCHAIN="go$go_version" go tool -modfile=tools/external/go.mod $tool >/dev/null) &
+	job_names+=("go tool $tool")
 	job_pids+=("$!")
 done
 
