@@ -292,23 +292,48 @@ func (r *listRendering) add(runs []*v1.RunSummary) error {
 			}
 
 		default:
+			// The columns lead with what a person scans for. Every run is the one
+			// interpreter workflow, so every workflow id has the same shape and
+			// the declared name is what tells `hello-world` from `approval-gate`
+			// (#1660); the id is the longest and least readable column, so it
+			// goes last. A run recorded before the name was written to the memo
+			// has an empty NAME cell, not a placeholder that could be a name.
 			if !r.header {
-				fmt.Fprintln(r.table, "WORKFLOW_ID\tSYM\tSTATUS\tSTARTED\tFINISHED")
+				fmt.Fprintln(r.table, "NAME\tSTATUS\tSTARTED\tFINISHED\tWORKFLOW_ID")
 				r.header = true
 			}
 
-			tone := statusTone(run.GetStatus())
 			fmt.Fprintf(r.table, "%s\t%s\t%s\t%s\t%s\n",
-				run.GetWorkflowId(),
-				r.surface.Theme.Tone(tone).Render(r.surface.Caps.Symbols().Mark(tone)),
-				r.surface.Theme.Tone(tone).Render(statusLabel(run.GetStatus())),
+				run.GetName(),
+				r.statusCell(run.GetStatus()),
 				formatRunTime(run.GetStartTime().AsTime(), run.GetStartTime() != nil),
 				formatRunTime(run.GetCloseTime().AsTime(), run.GetCloseTime() != nil),
+				run.GetWorkflowId(),
 			)
 		}
 	}
 
 	return nil
+}
+
+// statusCell renders a run's outcome for the table: the word in its tone where
+// the stream carries colour, and the outcome mark beside the word where it does
+// not.
+//
+// Colour is never the only carrier of meaning (docs/CLI_DESIGN.md, section 2),
+// which is why a mark used to sit in its own SYM column beside a STATUS column
+// that already said the word. The word is the carrier here, so on a coloured
+// stream the tone is decoration on it and the mark adds nothing; on a plain
+// stream the mark is the fallback that keeps the outcome scannable without
+// colour, and it joins the word in one cell rather than taking a column of its
+// own.
+func (r *listRendering) statusCell(status v1.RunResponse_Status) string {
+	tone := statusTone(status)
+	label := statusLabel(status)
+	if r.surface.Theme.Plain() {
+		return r.surface.Caps.Symbols().Mark(tone) + " " + label
+	}
+	return r.surface.Theme.Tone(tone).Render(label)
 }
 
 // note keeps what a page said about its filter: the runs it left out because
