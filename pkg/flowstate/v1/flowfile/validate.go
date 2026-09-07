@@ -2356,6 +2356,11 @@ func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnosti
 	ds := Validate(wf)
 	positionDiagnostics(ds, positions)
 
+	// What the schema refuses, in the schema's own words, so that nothing this
+	// package accepts is refused at submit for a rule an author could have read
+	// here — see [schemaDiagnostics].
+	ds = append(ds, schemaDiagnostics(wf, positions)...)
+
 	// Whether it will *fit* is a different question from whether it is well
 	// formed, and an author should meet it here rather than at submit.
 	//

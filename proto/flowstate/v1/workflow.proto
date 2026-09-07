@@ -1601,9 +1601,17 @@ message ForEach {
   // Iterator names the variable bound to the current item inside the body.
   // Defaults to "item". It must not collide with a step id, since both are
   // resolved from the same namespace.
-  string iterator = 2 [(buf.validate.field).string = {
-    max_len: 128
-    pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+  //
+  // Empty is the default, not a name, so the pattern is not applied to it:
+  // both drivers bind `item` for an empty iterator, and a rule that refused
+  // the empty string refused every `for_each:` written without `iterator:`
+  // at submit while the compiler accepted it (picatz/flowstate#1757).
+  string iterator = 2 [(buf.validate.field) = {
+    ignore: IGNORE_IF_UNPOPULATED
+    string: {
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
   }];
 
   // Body is the steps to run per item.
@@ -2081,7 +2089,16 @@ message RetryPolicy {
 
   // BackoffCoefficient multiplies the delay after each attempt. Values below one
   // are rejected, since a shrinking delay defeats the purpose of backing off.
-  double backoff_coefficient = 3 [(buf.validate.field).double = {gte: 1.0}];
+  //
+  // Zero is the default rather than a coefficient: both drivers substitute
+  // their default for a value below one, and the compiler writes zero for a
+  // `retry:` without `backoff:`. The rule therefore skips zero, or every such
+  // retry was refused at submit while the compiler accepted it
+  // (picatz/flowstate#1757).
+  double backoff_coefficient = 3 [(buf.validate.field) = {
+    ignore: IGNORE_IF_UNPOPULATED
+    double: {gte: 1.0}
+  }];
 
   // MaxInterval caps the delay between attempts, so exponential growth does not
   // produce an unbounded wait.
