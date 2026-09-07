@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity dupbodies docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -356,6 +356,18 @@ modernize:
 # containment tests are where a vacuous claim costs the most.
 vacuity:
 	go run ./tools/vacuity $(if $(SITES),-sites,)
+
+# Report function bodies that appear more than once, largest first.
+#
+#     make dupbodies
+#
+# Bodies are compared as printed code, without comments or layout, so only the
+# same code matches and a renamed copy is missed on purpose. Generated files
+# are skipped. The groups are held by `tools/dupbodies`'s own
+# TestTheRepositoryDuplicateBodiesOnlyGoDown under `go test ./...`, a ratchet
+# in both directions, so this target is for reading the report (#1708, #1709).
+dupbodies:
+	go run ./tools/dupbodies
 
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result
