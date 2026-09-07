@@ -315,9 +315,14 @@ bound parameters; the plugin does not translate placeholder dialects.
 ## Drivers
 
 PostgreSQL ([`github.com/jackc/pgx/v5`](https://github.com/jackc/pgx)) is the
-distributed plugin's supported runtime engine. SQLite
+distributed plugin's only runtime engine, and the only one the catalog offers:
+`flow tasks sql.query` shows `engine postgres`. SQLite
 ([`modernc.org/sqlite`](https://modernc.org/sqlite)) is compiled only for
-hermetic package tests - no cgo anywhere in this module.
+hermetic package tests - no cgo anywhere in this module - and its enum value
+carries `(flowstate.v1.test_only) = true`, so the host leaves it out of every
+surface that lists the choices and `flow validate --plugin-dir` refuses
+`engine: sqlite` where it is written, saying the value is test-only, rather
+than the plugin refusing it at dispatch (#1692).
 `Engine` is a closed proto enum naming exactly the drivers this build ships;
 naming one this build lacks (`engine: ENGINE_ORACLE`) is refused by `flow
 validate` with a positioned diagnostic listing the choices, the same way any
@@ -332,6 +337,16 @@ extension-loading authority without pretending plugin process separation is a
 sandbox. Package tests enable SQLite only through test-compiled code.
 
 ## Trying this example
+
+You need a PostgreSQL you can reach; there is no engine a released build runs
+without one. Without a database, `flow validate --plugin-dir` and `flow tasks
+sql.query --plugin-dir` still work in full, since both read the plugin's
+descriptors and dial nothing. For a throwaway database on this machine, a
+container is the quickest:
+
+```console
+docker run --rm -e POSTGRES_PASSWORD=dev -p 5432:5432 postgres:17
+```
 
 Neither example runs with no arguments. Put the complete PostgreSQL DSN in the
 configured secret backend, then pass a deployment-owned policy permitting only

@@ -21,7 +21,7 @@ func validateEngine(e sqlv1.Engine) error {
 		return nil
 	default:
 		return sdk.InvalidInput(
-			"engine is required; this build supports: sqlite, postgres")
+			"engine is required; this build supports: %s", supportedEngines())
 	}
 }
 

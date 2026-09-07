@@ -83,15 +83,30 @@ func openDB(ctx context.Context, engine sqlv1.Engine, dsn string, scrubber *secr
 
 	default:
 		return nil, sdk.InvalidInput(
-			"engine %q is not one this build supports; this build was compiled with: sqlite, postgres",
-			engine.String())
+			"engine %q is not one this build supports; this build was compiled with: %s",
+			engine.String(), supportedEngines())
 	}
 }
 
 // allowSQLiteFilesForTests is false in every built plugin. Package tests set it
 // from helper_test.go so existing hermetic fixtures can continue exercising SQL
 // semantics without making worker filesystem authority reachable from a task.
+//
+// The schema says the same thing to the host: ENGINE_SQLITE carries
+// `(flowstate.v1.test_only) = true`, so `flow tasks` does not list it and
+// `flow validate` refuses it where it is written (#1692). This variable is the
+// refusal at the point of use, which stays whatever the host was told.
 var allowSQLiteFilesForTests bool
+
+// supportedEngines names the engines this build will open, for the refusals
+// that list them: sqlite only in a test build, which is the one place it is
+// not a false promise.
+func supportedEngines() string {
+	if allowSQLiteFilesForTests {
+		return "sqlite, postgres"
+	}
+	return "postgres"
+}
 
 const maxPostgresHosts = 16
 

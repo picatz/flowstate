@@ -324,6 +324,38 @@ task as one it has not been told about, which is correct rather than unhelpful:
 whether a plugin is installed is a deployment's decision and not a property of
 the file.
 
+### A value your released build refuses
+
+A closed enum names exactly the choices a build carries, and every surface —
+`flow tasks`, hover and completion, the MCP catalog, `flow validate` — lists
+them from the descriptor. A build can carry one for its own tests that it will
+not run for a user: `plugins/sql` compiles SQLite in for hermetic package
+tests and refuses it in a released binary, because opening an embedded database
+grants the worker's filesystem to the workflow. Listed as a choice, that value
+was the first thing a person without Postgres tried and the one thing the
+plugin refused, at dispatch (#1692).
+
+Mark it in the schema, and the host does the rest:
+
+```proto
+import "flowstate/v1/schema.proto";
+
+enum Engine {
+  ENGINE_UNSPECIFIED = 0;
+  ENGINE_SQLITE = 1 [(flowstate.v1.test_only) = true];
+  ENGINE_POSTGRES = 2;
+}
+```
+
+The mark rides in the descriptor your manifest already ships. The host leaves
+the value out of the choices on every surface, and a Flowfile that names it —
+in either spelling — is refused where it is written, with a diagnostic that
+says the value is test-only and lists what to write instead, so the author is
+not sent hunting for a typo that is not there. `flowstate/v1/schema.proto`
+imports only `descriptor.proto`, and the engine provides it, so importing it
+adds nothing to the bytes your plugin sends. Keep your own refusal at the point
+of use; the mark moves the refusal earlier, it does not replace it.
+
 ### Your field comments, in somebody else's editor
 
 Everything above travels: names, types, required-ness, protovalidate bounds. The

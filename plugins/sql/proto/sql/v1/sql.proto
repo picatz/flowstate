@@ -4,6 +4,7 @@ package sql.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/sql/gen/sql/v1;sqlv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: sql.query (read, bounded) and sql.exec
@@ -23,7 +24,12 @@ enum Engine {
 
   // Pure-Go, embedded, no server. Retained for package-test fixtures; released
   // plugin binaries refuse it because it grants worker-filesystem authority.
-  ENGINE_SQLITE = 1;
+  //
+  // Marked test-only so the host neither lists it among the choices nor
+  // accepts it from a Flowfile: before the mark, every catalog surface
+  // advertised `sqlite | postgres` and `flow validate` accepted `sqlite`, and
+  // the refusal came at dispatch, from the released binary (#1692).
+  ENGINE_SQLITE = 1 [(flowstate.v1.test_only) = true];
 
   // Pure-Go over the network: github.com/jackc/pgx/v5, the enterprise
   // target issue #181 names first for production use.

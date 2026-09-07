@@ -343,9 +343,15 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 		return map[string]any{"type": "number"}
 
 	case protoreflect.EnumKind:
+		// The proto names, since this schema describes protojson; a value the
+		// schema marks test-only is left out the way every other surface
+		// leaves it out (#1692).
 		values := fd.Enum().Values()
 		names := make([]any, 0, values.Len())
 		for i := 0; i < values.Len(); i++ {
+			if v1.EnumValueTestOnly(values.Get(i)) {
+				continue
+			}
 			names = append(names, string(values.Get(i).Name()))
 		}
 
