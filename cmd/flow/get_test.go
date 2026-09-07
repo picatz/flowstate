@@ -642,3 +642,33 @@ func TestGetSaysWhenARunContinuedAsNew(t *testing.T) {
 	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
 	require.Contains(t, errOut.String(), "segment 3 of the workload; began as run "+first)
 }
+
+// TestGetPosesTheGatesPrompt is #1659 at the surface a person reads: the
+// prompt is on stderr, beneath the status line, where the gate's signal name
+// already is.
+func TestGetPosesTheGatesPrompt(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "0198f1e2-0000-7000-8000-000000000000",
+			Status:     v1.RunResponse_STATUS_RUNNING,
+			Progress: &v1.RunProgress{
+				StepId: "approval",
+				PendingWaits: []*v1.PendingWait{{
+					StepId:     "approval",
+					SignalName: "deploy-approved",
+					Prompt:     "Approve deploying v1.4.2 to production, requested by anonymous?",
+				}},
+			},
+		},
+	}
+	serveFake(t, fake)
+	cmd, out, errOut := getCommand(t)
+
+	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+	require.Empty(t, out.String(), "a parked run wrote outputs it does not have")
+	require.Contains(t, errOut.String(), `waiting at approval for signal "deploy-approved"`)
+	require.Contains(t, errOut.String(), "\n  prompt: Approve deploying v1.4.2 to production, requested by anonymous?\n",
+		"the question is not posed on its own line under the gate:\n%s", errOut.String())
+}

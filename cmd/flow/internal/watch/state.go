@@ -611,8 +611,10 @@ func pendingActivityKeys(response *v1.GetResponse) []string {
 }
 
 // pendingWaitKeys reduces the held gates to what identifies them across
-// polls: which step, where, which signal, policed or not, and the
-// deadline's fixed instant rather than the countdown to it.
+// polls: which step, where, which signal, policed or not, the deadline's
+// fixed instant rather than the countdown to it, and the question the gate
+// asks — which is rendered beneath it (#1659), so a gate whose prompt
+// changed is a gate that has to be drawn again.
 func pendingWaitKeys(progress *v1.RunProgress) []string {
 	waits := progress.GetPendingWaits()
 	if len(waits) == 0 && !progress.GetPendingWaitsTruncated() {
@@ -621,9 +623,9 @@ func pendingWaitKeys(progress *v1.RunProgress) []string {
 
 	keys := make([]string, 0, len(waits)+1)
 	for _, wait := range waits {
-		keys = append(keys, fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%d",
+		keys = append(keys, fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%d\x00%s\x00%t",
 			wait.GetStepId(), wait.GetPath(), wait.GetSignalName(), wait.GetPoliced(),
-			wait.GetDeadline().GetSeconds()))
+			wait.GetDeadline().GetSeconds(), wait.GetPrompt(), wait.GetPromptTruncated()))
 	}
 
 	// The gates have the identical hole, and it predates the retries' one
