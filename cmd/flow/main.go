@@ -2877,7 +2877,10 @@ flow server --verbose`,
 			"steps that do not exist or have not run yet, with the line each problem is on. " +
 			"It also applies every rule the specification's schema declares — a step list " +
 			"over its bound, an id over its length — in the words the server refuses a " +
-			"submission with, so a file that says ok here is one flow run accepts.\n\n" +
+			"submission with, so a rule the schema would refuse at submit is refused here " +
+			"first. What a deployment decides for itself at submit — the plugins it has " +
+			"pinned, the tasks it can run, its credential and signal policies — is still " +
+			"the server's answer.\n\n" +
 			"A file naming a plugin's task is checked against that plugin given " +
 			"--plugin-dir: the plugins there are launched here, through the same " +
 			"discovery, handshake and catalog a worker uses, and their tasks and input " +
