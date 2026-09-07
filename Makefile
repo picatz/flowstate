@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity dupbodies docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -209,6 +209,11 @@ test-plugins:
 		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
+	# The two ratchets that read the plugin modules' sources, run here as well
+	# as under the root `go test ./...`: a plugin-only diff reaches CI through
+	# this target alone, and a body or a sleep copied into a plugin would
+	# otherwise pass it (Codex, #1839).
+	GOMEMLIMIT=1GiB go test -timeout 120s ./tools/dupbodies/ ./tools/wallclock/
 
 # The plugin modules carry the dependencies with the largest attack surface in
 # the tree (go-git, pgx, modernc.org/sqlite, go-github, the OpenAI client).
@@ -356,6 +361,18 @@ modernize:
 # containment tests are where a vacuous claim costs the most.
 vacuity:
 	go run ./tools/vacuity $(if $(SITES),-sites,)
+
+# Report the sleeps in tests that spend real time.
+#
+#     make wallclock          # a count per file
+#     make wallclock SITES=1  # every site
+#
+# A `time.Sleep` inside `synctest.Test` is not counted: it returns the instant
+# the bubble is idle. The count is held by `tools/wallclock`'s own
+# TestTheRepositoryWallClockSleepsOnlyGoDown under `go test ./...`, a ratchet
+# in both directions, so this target is for reading the report (#1706).
+wallclock:
+	go run ./tools/wallclock $(if $(SITES),-sites,)
 
 # Report function bodies that appear more than once, largest first.
 #
