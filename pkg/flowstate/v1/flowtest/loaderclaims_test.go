@@ -149,3 +149,34 @@ tests:
 	assert.Contains(t, failureText(report.GetCases()[0].GetFailures()),
 		`output "iterations": expected string "1", got int 1`)
 }
+
+// TestAMissingWorkflowNamesTheNearestSibling pins the second of #1669's five,
+// where the loader can answer it: a `workflow:` that names no file fails the
+// case with the Flowfile beside it that it nearly spelled. The candidates are
+// the directory's Flowfiles and not its suites, so `workflow.test.yaml` is
+// never the answer for `workflow.yaml`.
+func TestAMissingWorkflowNamesTheNearestSibling(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `edition: v2026.3
+name: present
+steps:
+  - id: a
+    value: ${1}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the path is one letter off
+    workflow: ./workflwo.yaml
+    expect: {failed: false}
+`)
+
+	report := flowtest.RunFile(path)
+	require.Len(t, report.GetCases(), 1)
+	got := report.GetCases()[0].GetError()
+	assert.Contains(t, got, `loading workflow "./workflwo.yaml"`)
+	assert.Contains(t, got, `did you mean "workflow.yaml"?`)
+	assert.NotContains(t, got, "workflow.test.yaml", "a suite is never what workflow: means")
+}
