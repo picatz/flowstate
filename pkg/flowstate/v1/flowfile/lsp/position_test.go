@@ -103,6 +103,59 @@ func TestPositionRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUTF16OfByteInsideARuneIsTheRunesStart is the named regression for the
+// defect [FuzzLSPDocumentEdits] found in CI: a diagnostic whose range ran
+// backwards by one, `5:24` to `5:23`, on a line holding an emoji.
+//
+// The producer had handed [lineIndex.rangeOfOffsets] a forward pair of byte
+// offsets with the start three bytes into the emoji. Counting that prefix as
+// written made each cut byte a replacement character — three units — while
+// the whole emoji, one byte on, is a surrogate pair — two. A larger byte column
+// giving a smaller UTF-16 column is what let a forward pair of offsets come out
+// as a backwards range, so the property pinned here is monotonicity over every
+// byte column of the line, and the specific claim is that a column inside a
+// rune counts as that rune's start.
+func TestUTF16OfByteInsideARuneIsTheRunesStart(t *testing.T) {
+	t.Parallel()
+
+	ix := newLineIndex("a🙂é!")
+
+	// Byte columns 1 through 4 are the emoji; 5 and 6 the two-byte é.
+	for byteCol, want := range []int{0, 1, 1, 1, 1, 3, 3, 4, 5} {
+		assert.Equal(t, want, ix.utf16OfByte(0, byteCol), "byte column %d", byteCol)
+	}
+
+	// The same property over a line the reader cannot decode whole: a lone
+	// continuation byte and a truncated sequence. There is no right column for
+	// a byte inside those, only the requirement that walking forward through
+	// the bytes never walks the column backwards.
+	ix = newLineIndex("x\x80y\xf0\x9f\x98z🙂")
+	prev := 0
+	for byteCol := range len(ix.line(0)) + 1 {
+		got := ix.utf16OfByte(0, byteCol)
+		assert.GreaterOrEqual(t, got, prev, "byte column %d", byteCol)
+		prev = got
+	}
+}
+
+// TestRangeOfOffsetsIsForwardForAnyForwardPair is the property the regression
+// above serves: whatever byte offsets a producer found, in or between runes,
+// the range handed to the editor runs forwards.
+func TestRangeOfOffsetsIsForwardForAnyForwardPair(t *testing.T) {
+	t.Parallel()
+
+	const text = "name: ünïcödé 🙂\nlog: \xffé🙂!\n"
+	ix := newLineIndex(text)
+	for start := range len(text) + 1 {
+		for end := start; end <= len(text); end++ {
+			r := ix.rangeOfOffsets(start, end)
+			forward := r.Start.Line < r.End.Line ||
+				(r.Start.Line == r.End.Line && r.Start.Character <= r.End.Character)
+			require.True(t, forward, "offsets %d..%d gave %+v", start, end, r)
+		}
+	}
+}
+
 func TestOffsetOfYAMLMatchesParserColumns(t *testing.T) {
 	t.Parallel()
 

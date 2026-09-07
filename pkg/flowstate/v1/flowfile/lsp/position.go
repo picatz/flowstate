@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"sort"
+	"unicode/utf8"
 
 	"github.com/sourcegraph/go-lsp"
 )
@@ -129,9 +130,23 @@ func (ix *lineIndex) byteOfUTF16(line0, utf16Col int) int {
 }
 
 // utf16OfByte returns the UTF-16 column of a byte column on a line.
+//
+// A byte column inside a multi-byte sequence names no position an editor can
+// express, and is counted as the start of the rune it falls in. Counting the
+// prefix as written would count each of the cut sequence's bytes as one
+// replacement character, so that three bytes into an emoji is three units
+// and four bytes — the rune whole — is two: a larger byte column giving a
+// smaller UTF-16 one, and a range whose start is inside a rune running
+// backwards. Snapping keeps the column monotonic in the byte offset, which is
+// the property [lineIndex.rangeOfOffsets] needs to hand back a forward range
+// for any forward pair of offsets, wherever a caller found them. Found by
+// [FuzzLSPDocumentEdits].
 func (ix *lineIndex) utf16OfByte(line0, byteCol int) int {
 	l := ix.line(line0)
 	byteCol = min(max(byteCol, 0), len(l))
+	for byteCol > 0 && byteCol < len(l) && !utf8.RuneStart(l[byteCol]) {
+		byteCol--
+	}
 	return utf16Len(l[:byteCol])
 }
 
