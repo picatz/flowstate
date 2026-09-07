@@ -21,8 +21,12 @@ import (
 // before it is held in memory:
 const (
 	// maxFlowfileSourceBytes is what `flow fmt` and `flow fix` read a
-	// Flowfile up to, the same bound the compiler reads one through.
-	maxFlowfileSourceBytes = v1.MaxSpecBytes
+	// Flowfile up to: twice the compiler's own bound, deliberately. A file
+	// past the compiler's limit has to reach the compiler, which refuses it
+	// as the positioned diagnostic those verbs report in the same spelling
+	// as every other (TestFixDiagnosticsShareTheSameSpelling); one past
+	// twice that is refused here before it is held.
+	maxFlowfileSourceBytes = 2 * v1.MaxSpecBytes
 
 	// maxPolicyFileBytes bounds a trust policy or a task-shape policy: a
 	// YAML document a person wrote, of which the largest in this tree is a
