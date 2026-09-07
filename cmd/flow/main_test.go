@@ -12,7 +12,6 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/log"
-	"go.temporal.io/sdk/testsuite"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/picatz/flowstate/internal/temporaltest"
@@ -35,7 +34,7 @@ import (
 // [server_test]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/server
 
 // devServer is the package's Temporal server, started once by TestMain.
-var devServer *testsuite.DevServer
+var devServer temporaltest.Server
 
 func TestMain(m *testing.M) {
 	if handled, err := temporaltest.RunLauncher(); handled {

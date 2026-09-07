@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -296,6 +296,17 @@ test-ordering: SHELL := /bin/bash
 test-ordering: .SHELLFLAGS := -o pipefail -c
 test-ordering:
 	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+
+# One Temporal dev server that stays up for the inner loop (#1738). The
+# packages sharing a dev server — engine, server, temporalclient, cmd/flow —
+# each boot their own in TestMain, about eleven seconds before the first test
+# runs; with the variable this prints exported, they attach to this one and
+# start in about a second. Unset, `make test` and CI are exactly what they
+# were. Stop it with Ctrl-C.
+#
+#     make dev-temporal          # prints: export FLOWSTATE_TEST_TEMPORAL_ADDRESS=...
+dev-temporal:
+	go run ./tools/devtemporal
 
 # Bounded fast tier for the inner loop.
 test-fast:

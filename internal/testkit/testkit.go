@@ -40,7 +40,11 @@ var namespaceOrdinal atomic.Int64
 // behind by a crash, says which test produced it. Numbered because two subtests
 // of one parent sanitize to the same string, and because a name that collides
 // would give one test another's runs — the exact isolation a namespace per test
-// is there to provide.
+// is there to provide. The process id is in it because a server can outlive
+// the process (temporaltest.AddressEnv, #1738): a second run of the same
+// package, or another package with a test of the same name, then registers
+// against namespaces the first left behind, and the id is what keeps the
+// name a new one.
 func NamespaceNameFor(t testing.TB) string {
 	t.Helper()
 
@@ -59,7 +63,7 @@ func NamespaceNameFor(t testing.TB) string {
 		safe = safe[:maxNameLength]
 	}
 
-	return fmt.Sprintf("%s-%d", safe, namespaceOrdinal.Add(1))
+	return fmt.Sprintf("%s-%d-%d", safe, os.Getpid(), namespaceOrdinal.Add(1))
 }
 
 // RepoRoot walks up from the test's working directory to the directory holding

@@ -3,11 +3,11 @@ package temporaltest
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 )
 
 // RunPackage starts the dev server, stores it where the package's tests read
@@ -28,7 +28,10 @@ import (
 // into is the package's variable, assigned before the tests run so every test
 // that reaches for the server finds it; the caller's `-short` branch is what
 // keeps that variable nil and the tests skipping.
-func RunPackage(m *testing.M, into **testsuite.DevServer, clientOptions *client.Options) (int, error) {
+//
+// With [AddressEnv] set, the server is the one running at that address: it is
+// attached to rather than started, and left running rather than stopped.
+func RunPackage(m *testing.M, into *Server, clientOptions *client.Options) (int, error) {
 	if into == nil {
 		// Said now rather than as a nil dereference after the server is up,
 		// which would also leave the server running.
@@ -40,6 +43,18 @@ func RunPackage(m *testing.M, into **testsuite.DevServer, clientOptions *client.
 	// starts outlives the context and is stopped below.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+
+	if address := os.Getenv(AddressEnv); address != "" {
+		running, err := Attach(ctx, address, clientOptions)
+		if err != nil {
+			return 0, err
+		}
+		defer running.close()
+
+		*into = running
+
+		return m.Run(), nil
+	}
 
 	started, err := Start(ctx, clientOptions)
 	if err != nil {

@@ -23,8 +23,22 @@ Run focused tests with explicit time and memory bounds. A common bounded tier is
 GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 ```
 
-For one package or test, narrow the package and `-run` pattern further. Bound a
-fuzzer by time, memory, and parallelism:
+For one package or test, narrow the package and `-run` pattern further.
+
+The packages that share a Temporal dev server (`engine`, `server`,
+`temporalclient`, `cmd/flow`) each boot one in `TestMain`, about eleven seconds
+before the first test runs. When iterating on one of them, start a server once
+and let every run attach to it:
+
+```sh
+make dev-temporal                       # prints the export line, stays up
+export FLOWSTATE_TEST_TEMPORAL_ADDRESS=127.0.0.1:PORT
+GOMEMLIMIT=1GiB go test -timeout 120s -run TestOne ./pkg/flowstate/v1/engine/
+```
+
+Unset, nothing changes. Stop the server you started when you are done.
+
+Bound a fuzzer by time, memory, and parallelism:
 
 ```sh
 GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 \
