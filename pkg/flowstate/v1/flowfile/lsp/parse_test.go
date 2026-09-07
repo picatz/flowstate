@@ -3,6 +3,7 @@ package lsp
 import (
 	"testing"
 
+	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -480,4 +481,90 @@ func TestQuotedKeySemanticsMatchTheStrictTestLoader(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "tests", testsKey.key)
 	assert.Equal(t, "name", nameKey.key)
+}
+
+// TestAValueTheParserRewroteHasNoInnerPositions is the named regression for the
+// defect [FuzzLSPDocumentEdits] found in CI, from the model's side.
+//
+// A plain scalar has no escapes, so nothing ever asked whether its decoded text
+// was the source it was cut from — and it is not when the source holds a byte
+// that is not UTF-8, which the parser replaces with U+FFFD, three bytes for one.
+// The fence after it was mapped by adding an offset into the longer text to the
+// value's start in the shorter source, two bytes late, into the middle of the
+// emoji; and a range with an end inside a rune ran backwards once converted to
+// UTF-16. The value's own contract ([value.inline]) is that an offset into the
+// text is the same place in the document, and the honest answer where it is not
+// is the fence's whole range, which is what the diagnostic gets here.
+func TestAValueTheParserRewroteHasNoInnerPositions(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{"a plain scalar holding a byte that is not UTF-8", "\\Lé\xff${😀}\\n "},
+		{"a double-quoted scalar holding an escape", "\"\\n${😀}\""},
+		{"a single-quoted scalar holding a doubled quote", "'it''s ${😀}'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var docs documentStore
+			doc := docs.open("untitled:rewritten.yaml", 1,
+				"edition: v2026.3\nname: r\nsteps:\n- id: a\n  log:\n    message: "+tc.text+"\n", nil)
+			require.NotNil(t, doc.parsed)
+			require.Len(t, doc.parsed.steps, 1)
+			message := doc.parsed.steps[0].input("message")
+			require.NotNil(t, message)
+			require.NotNil(t, message.value)
+			assert.False(t, message.value.inline,
+				"the decoded text %q is not the source, so no offset into it names a place in the document", message.value.text)
+			require.Len(t, message.value.fences, 1)
+
+			// The emoji is not something an expression can contain, so the
+			// fence draws a diagnostic; with no inner positions to map it to,
+			// it covers the fence as written — and runs forwards.
+			var found bool
+			for _, d := range diagnose(doc) {
+				if d.Code != codeCELSyntax {
+					continue
+				}
+				found = true
+				assert.Equal(t, message.value.fences[0].rng, d.Range, "%s", d.Message)
+				requireForwardRange(t, d.Range, "a published diagnostic")
+			}
+			require.True(t, found, "the emoji in the fence must draw a CEL diagnostic")
+		})
+	}
+}
+
+// TestAnEscapeFreeQuotedScalarKeepsItsInnerPositions is the direction the
+// regression above must not take with it: a quoted scalar whose decoded text
+// is the source between the quotes still maps every offset, so a diagnostic
+// inside its fence underlines the token and not the whole fence.
+func TestAnEscapeFreeQuotedScalarKeepsItsInnerPositions(t *testing.T) {
+	t.Parallel()
+
+	var docs documentStore
+	doc := docs.open("untitled:quoted.yaml", 1,
+		"edition: v2026.3\nname: q\nsteps:\n- id: a\n  log:\n    message: \"é ${1 @ 2}\"\n", nil)
+	require.NotNil(t, doc.parsed)
+	message := doc.parsed.steps[0].input("message")
+	require.NotNil(t, message)
+	require.NotNil(t, message.value)
+	assert.True(t, message.value.inline)
+
+	var ranges []lsp.Range
+	for _, d := range diagnose(doc) {
+		if d.Code == codeCELSyntax {
+			ranges = append(ranges, d.Range)
+		}
+	}
+	// `    message: "é ${1 @ 2}"`: the `@` is the 20th UTF-16 unit on line 5,
+	// one past where a byte count would put it.
+	require.NotEmpty(t, ranges)
+	assert.Equal(t, lsp.Range{
+		Start: lsp.Position{Line: 5, Character: 20},
+		End:   lsp.Position{Line: 5, Character: 21},
+	}, ranges[0])
 }

@@ -1461,17 +1461,23 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 	raw := n.String()
 	start := ix.offsetOfYAML(tok.Position.Line, tok.Position.Column)
 	content := start
-	inline := true
 	if len(raw) >= 2 && (raw[0] == '"' || raw[0] == '\'') && raw[len(raw)-1] == raw[0] {
 		content++
-		// The quotes are allowed to be the difference between the source and the
-		// decoded text, and nothing else is: an escape — `\n` in a double-quoted
-		// scalar, `''` in a single-quoted one — rewrites the bytes, and after
-		// that an offset into the decoded text is a different place from the same
-		// offset into the source. Comparing the lengths asks exactly that, which
-		// no pattern over the raw text would.
-		inline = len(tok.Value) == len(raw)-2
 	}
+	// The quotes are allowed to be the difference between the source and the
+	// decoded text, and nothing else is: an escape — `\n` in a double-quoted
+	// scalar, `''` in a single-quoted one — rewrites the bytes, and after that
+	// an offset into the decoded text is a different place from the same offset
+	// into the source. Reading the document at the place the text claims to be
+	// asks exactly that. Comparing lengths used to, and was fooled twice over:
+	// escapes that grow (`\L` is two bytes of source and three of text) cancel
+	// against ones that shrink, and a plain scalar — which has no escapes and so
+	// was never compared — is still rewritten when it holds a byte that is not
+	// UTF-8, which the parser replaces with U+FFFD, three bytes for one. A fence
+	// mapped through that value landed two bytes late for every such byte, in
+	// the middle of whatever rune was there, and a range with one end inside a
+	// rune runs backwards in UTF-16. Found by [FuzzLSPDocumentEdits].
+	inline := strings.HasPrefix(ix.text[min(content, len(ix.text)):], tok.Value)
 	v := &value{
 		kind:       kindScalar,
 		text:       tok.Value,
