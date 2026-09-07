@@ -83,11 +83,20 @@ func (b *suiteWarningBudget) take(warnings []*v1.Diagnostic) []*v1.Diagnostic {
 // warnings, bounded like any other message: the sentence is short today, and
 // the budget stays honest if it is ever reworded, localized, or handed a count
 // with more digits than expected.
+//
+// It does not promise that `--run` reveals the tail, the way
+// [suiteTranscriptBudget.take]'s line can: a transcript over the suite budget
+// is one case's account, but a single case may exceed maxSuiteWarnings by
+// itself — [MaxStubsPerTest] stubs can each earn both a shadowed-default and
+// an unused-stub warning — and narrowing to that case would omit exactly the
+// same tail. Clearing the warnings it names is the recovery that always works
+// (Copilot, #1857).
 func omissionMarker(field string, omitted int) *v1.Diagnostic {
 	return &v1.Diagnostic{
 		Field: field,
 		Message: boundedMessage(fmt.Sprintf(
-			"%d warning(s) omitted: the suite's warning budget is spent; rerun fewer cases (--run) to see them",
+			"%d warning(s) omitted: the suite's warning budget is spent; clear the warnings shown and rerun "+
+				"— running fewer cases (--run) frees budget only for a tail other cases spent it on",
 			omitted), maxWarningMarkerBytes),
 	}
 }
