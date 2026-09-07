@@ -344,6 +344,24 @@ func taskProvenance(def v1.TaskDef, catalog *v1.PluginCatalog) string {
 	return fmt.Sprintf("Provided by the %s plugin, not by this build of flow.", name)
 }
 
+// taskPin is the plugin and version the copyable step for a plugin's task
+// is pinned to: the plugin the task's name is qualified by, at the version
+// the catalog reports for it. A zero pin for a task this build provides, and
+// for a plugin's task the catalog does not describe — the same reading
+// [taskProvenance] makes of the same catalog.
+func taskPin(def v1.TaskDef, catalog *v1.PluginCatalog) taskexample.Pin {
+	name, ok := pluginNameOf(def.Name)
+	if !ok || v1.IsBuiltinTask(def.Name) {
+		return taskexample.Pin{}
+	}
+	for _, p := range catalog.GetPlugins() {
+		if p.GetName() == name {
+			return taskexample.Pin{Plugin: name, Version: p.GetVersion()}
+		}
+	}
+	return taskexample.Pin{}
+}
+
 // writeTask describes one task completely.
 //
 // The whole story, because the argument asking for it is somebody who already knows
@@ -405,7 +423,11 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 		}
 	}
 
-	example, err := taskexample.Build(def)
+	// Under the `plugins:` block a plugin's task needs, with the version the
+	// catalog reports for it, so the step handed to an author is one a worker
+	// without the plugin refuses at submit rather than fails at the step
+	// (#1676). A task this build provides is written without one.
+	example, err := taskexample.BuildPinned(def, taskPin(def, catalog))
 	if err != nil {
 		return err
 	}

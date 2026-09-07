@@ -46,3 +46,47 @@ func TestBuildValidates(t *testing.T) {
 		})
 	}
 }
+
+// TestAPluginsTaskIsPinned is #1676: a plugin's task is written under the
+// `plugins:` block that makes the file safe to submit, at the version the
+// catalog reports, in the grammar's own spelling — and a task with no pin, or
+// a pin the grammar would refuse, is written exactly as before.
+func TestAPluginsTaskIsPinned(t *testing.T) {
+	t.Parallel()
+
+	def, ok := v1.DefaultRegistry().Lookup("log")
+	require.True(t, ok)
+
+	pinned, err := BuildPinned(def, Pin{Plugin: "example", Version: "0.1.0"})
+	require.NoError(t, err)
+	assert.Contains(t, pinned, "  plugins:\n    example: v0.1.0\n  steps:\n",
+		"the block is missing, misplaced, or spelled without the v the grammar requires:\n%s", pinned)
+
+	// The pinned file compiles: the block is one the grammar reads.
+	var source strings.Builder
+	for _, line := range strings.Split(pinned, "\n") {
+		source.WriteString(strings.TrimPrefix(line, "  ") + "\n")
+	}
+	diagnostics, err := flowfile.ValidateSource([]byte(source.String()))
+	require.NoError(t, err)
+	assert.Empty(t, diagnostics, "the pinned example does not validate:\n%s", source.String())
+
+	unpinned, err := Build(def)
+	require.NoError(t, err)
+	assert.NotContains(t, unpinned, "plugins:", "a task this build provides was given a pin")
+
+	for name, pin := range map[string]Pin{
+		"no plugin":     {Version: "0.1.0"},
+		"no version":    {Plugin: "example"},
+		"not a version": {Plugin: "example", Version: "latest"},
+		"leading zeros": {Plugin: "example", Version: "1.02.0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := BuildPinned(def, pin)
+			require.NoError(t, err)
+			assert.Equal(t, unpinned, got, "a pin the grammar would refuse was written anyway")
+		})
+	}
+}

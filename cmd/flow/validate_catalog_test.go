@@ -241,6 +241,13 @@ func TestTasksListsWhatACatalogHolds(t *testing.T) {
 	require.NoError(t, err, output)
 	assert.Contains(t, output, "Provided by the example plugin",
 		"the detail page does not say where the task came from:\n%s", output)
+
+	// And the copyable step is written under the `plugins:` block that makes
+	// the file safe to submit, at the version the catalog reports (#1676): a
+	// worker without the plugin refuses it at submit rather than failing the
+	// step with `unknown task`.
+	assert.Regexp(t, `plugins:\n\s+example: v[0-9]+\.[0-9]+\.[0-9]+\n\s+steps:`, output,
+		"the copyable step omits the plugins block:\n%s", output)
 }
 
 // TestACatalogAndAPluginDirAreRefusedTogether is the both-flags decision.
