@@ -4,4 +4,6 @@
 /proto/                         @picatz
 /pkg/flowstate/v1/auth/         @picatz
 /pkg/flowstate/v1/netpolicy/    @picatz
+/pkg/flowstate/v1/server/       @picatz
+/pkg/flowstate/v1/plugin/       @picatz
 /.github/                       @picatz

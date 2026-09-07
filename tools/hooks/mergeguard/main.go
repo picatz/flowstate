@@ -88,24 +88,20 @@ func main() {
 
 	// The squash message the merge would write, held to the conventions
 	// before the merge rather than found wanting in `git log` afterwards
-	// (#1728). A warning rather than a denial, matching the plan job's
-	// posture until 2026-09-21.
-	if findings := commitcheck.Check(stringOf(in.ToolInput["commit_title"]), stringOf(in.ToolInput["commit_message"])); len(findings) > 0 {
-		lines := make([]string, 0, len(findings))
-		for _, f := range findings {
-			lines = append(lines, f.String())
-		}
-		warn(fmt.Sprintf("mergeguard: the merge message for %s/%s#%d does not follow the conventions:\n  %s",
-			owner, repo, number, strings.Join(lines, "\n  ")))
-	}
+	// (#1728). A note rather than a denial, matching the plan job's posture
+	// until 2026-09-21, and folded into whichever single document this hook
+	// ends with: a PreToolUse hook answers with one JSON object, so a warning
+	// written here and a denial written below would be two, and the second
+	// would be the one ignored (Codex, #1848).
+	conventions := conventionNote(in, owner, repo, number)
 
 	tokCtx, tokCancel := context.WithTimeout(context.Background(), tokenLookupTimeout)
 	tok, ok := githubToken(tokCtx)
 	tokCancel()
 	if !ok {
-		warn(fmt.Sprintf(
+		warn(joinNotes(conventions, fmt.Sprintf(
 			"mergeguard: no GH_TOKEN or GITHUB_TOKEN in the environment, and `gh auth token` returned none either, so the review-thread check on %s/%s#%d did not run. MERGING WITHOUT THE CHECK.",
-			owner, repo, number))
+			owner, repo, number)))
 		return
 	}
 
@@ -115,16 +111,56 @@ func main() {
 	client := &http.Client{Timeout: requestTimeout}
 	threads, err := unresolvedThreads(ctx, client, graphQLEndpoint, tok, owner, repo, number)
 	if err != nil {
-		warn(fmt.Sprintf(
+		warn(joinNotes(conventions, fmt.Sprintf(
 			"mergeguard: could not query review threads on %s/%s#%d (%v). GraphQL and REST exhaust independently, so this can happen even when the merge call itself would succeed. MERGING WITHOUT THE CHECK.",
-			owner, repo, number, err))
+			owner, repo, number, err)))
 		return
 	}
 
 	if len(threads) == 0 {
+		if conventions != "" {
+			warn(conventions)
+		}
 		return
 	}
-	hook.Deny(denyMessage(owner, repo, number, threads))
+	hook.Deny(joinNotes(denyMessage(owner, repo, number, threads), conventions))
+}
+
+// conventionNote is what the merge message owes the conventions, or "" when
+// it owes nothing or the call carries no message to read.
+//
+// Only the MCP merge tool hands its squash message over as commit_title and
+// commit_message. A `gh pr merge` in a Bash call carries it in flags this
+// hook does not parse (-t/--subject, -b/--body, -F/--body-file), and a title
+// the call does not set is GitHub's default rather than an empty one, so
+// that path is left to the plan job, which holds the pull request's own
+// title and body (Codex, #1848).
+func conventionNote(in *hook.Input, owner, repo string, number int) string {
+	title, ok := in.ToolInput["commit_title"].(string)
+	if !ok {
+		return ""
+	}
+	findings := commitcheck.Check(title, stringOf(in.ToolInput["commit_message"]))
+	if len(findings) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(findings))
+	for _, f := range findings {
+		lines = append(lines, f.String())
+	}
+	return fmt.Sprintf("mergeguard: the merge message for %s/%s#%d does not follow the conventions:\n  %s",
+		owner, repo, number, strings.Join(lines, "\n  "))
+}
+
+// joinNotes is the notes that are not empty, one paragraph each.
+func joinNotes(notes ...string) string {
+	var out []string
+	for _, n := range notes {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, "\n\n")
 }
 
 // warn surfaces reason both on stderr and as the tool call's (allowing)

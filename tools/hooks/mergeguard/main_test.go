@@ -583,3 +583,38 @@ func setGHBinary(t *testing.T, path string) func() {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// TestConventionNoteReadsOnlyAMessageTheCallCarries pins the two paths: the
+// MCP merge tool's commit_title is checked, and a Bash `gh pr merge`, which
+// carries its message in flags this hook does not parse, is not read as an
+// empty message that fails every rule.
+func TestConventionNoteReadsOnlyAMessageTheCallCarries(t *testing.T) {
+	mcp := &hook.Input{ToolName: "mcp__github__merge_pull_request", ToolInput: map[string]any{
+		"owner": "o", "repo": "r", "pullNumber": float64(7),
+		"commit_title": "Fix bug", "commit_message": "",
+	}}
+	note := conventionNote(mcp, "o", "r", 7)
+	if !strings.Contains(note, "subject:") || !strings.Contains(note, "issue:") || !strings.Contains(note, "verification:") {
+		t.Errorf("a bare title and an empty body named fewer than three rules: %q", note)
+	}
+
+	mcp.ToolInput["commit_title"] = "tools: hold the merge message to the conventions"
+	mcp.ToolInput["commit_message"] = "Why.\n\nVerification: go test ./tools/hooks/... ok\n\nRefs #1728\n"
+	if note := conventionNote(mcp, "o", "r", 7); note != "" {
+		t.Errorf("a conforming message drew a note: %q", note)
+	}
+
+	bash := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": "gh pr merge 7 --squash"}}
+	if note := conventionNote(bash, "o", "r", 7); note != "" {
+		t.Errorf("a Bash merge, whose message is in flags this hook does not parse, was read as an empty one: %q", note)
+	}
+}
+
+func TestJoinNotesSkipsTheEmptyOnes(t *testing.T) {
+	if got := joinNotes("", "a", "", "b"); got != "a\n\nb" {
+		t.Errorf("joinNotes = %q", got)
+	}
+	if got := joinNotes("", ""); got != "" {
+		t.Errorf("joinNotes of nothing = %q", got)
+	}
+}

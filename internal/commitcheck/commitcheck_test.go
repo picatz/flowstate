@@ -84,3 +84,17 @@ func TestAnEmptyMessageFailsThreeRules(t *testing.T) {
 	assert.Equal(t, []Rule{RuleSubject, RuleIssue, RuleVerification}, rules(Check("Fix bug", "")),
 		"the issue's acceptance case: a bare title and an empty body name three rules")
 }
+
+func TestAbsoluteFindingsAreCappedAndTheRestCounted(t *testing.T) {
+	t.Parallel()
+
+	body := "Refs #1\n\nVerification: ran.\n\n" + strings.Repeat("It is safe.\n", 40)
+	findings := Check("a: b", body)
+	require.Len(t, findings, maxAbsolutes+1, "one finding per line with no bound")
+	assert.Contains(t, findings[maxAbsolutes].Message, "30 more line(s)", "the omitted lines are counted rather than listed")
+
+	// Past maxLines nothing is read at all, so a body that is one absolute
+	// per line for longer than that stops costing anything.
+	huge := "Refs #1\n\nVerification: ran.\n\n" + strings.Repeat("x\n", maxLines) + "It is safe.\n"
+	assert.Empty(t, Check("a: b", huge), "a line past the bound was inspected")
+}

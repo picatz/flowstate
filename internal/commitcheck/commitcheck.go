@@ -13,6 +13,7 @@
 package commitcheck
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -111,12 +112,24 @@ func Check(subject, body string) []Finding {
 		})
 	}
 
-	for _, line := range strings.Split(body, "\n") {
+	// Bounded where the work is spent: an author's body decides how many
+	// lines there are, so the walk stops at maxLines and the report at
+	// maxAbsolutes, with the rest counted rather than listed.
+	lines := strings.Split(body, "\n")
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	omitted := 0
+	for _, line := range lines {
 		loc := absolutes.FindStringIndex(line)
 		if loc == nil {
 			continue
 		}
 		if evidence.MatchString(line[loc[1]:]) || evidence.MatchString(line[:loc[0]]) {
+			continue
+		}
+		if len(out) >= maxAbsolutes {
+			omitted++
 			continue
 		}
 		out = append(out, Finding{
@@ -125,9 +138,23 @@ func Check(subject, body string) []Finding {
 			Skill:   prSkill,
 		})
 	}
+	if omitted > 0 {
+		out = append(out, Finding{
+			Rule:    RuleAbsolute,
+			Message: fmt.Sprintf("and %d more line(s) carry an absolute without evidence", omitted),
+			Skill:   prSkill,
+		})
+	}
 
 	return out
 }
+
+// Bounds on what one message can make this report: findings are one per
+// offending line, and a body decides how many lines it has.
+const (
+	maxLines     = 2000
+	maxAbsolutes = 10
+)
 
 // maxExcerpt bounds how much of an author's line a finding repeats: enough
 // to find it, not enough for one long line to make a warning unreadable.

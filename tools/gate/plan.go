@@ -545,7 +545,11 @@ func repoDataRoot(f string) string {
 }
 
 func isAgentConfigData(f string) bool {
-	return strings.HasPrefix(f, ".agents/") ||
+	// The pull request template is part of the same contract: its headings
+	// are the comms-pr skill's sections, and tools/agentconfig holds the two
+	// together, so a diff to either has to reach that package (#1728).
+	return f == ".github/PULL_REQUEST_TEMPLATE.md" ||
+		strings.HasPrefix(f, ".agents/") ||
 		strings.HasPrefix(f, ".claude/") ||
 		strings.HasPrefix(f, ".amp/") ||
 		strings.HasPrefix(f, ".agent-history/") ||
