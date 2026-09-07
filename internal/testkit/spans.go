@@ -34,16 +34,28 @@ func RecordSpans(t testing.TB) *tracetest.SpanRecorder {
 	return recorder
 }
 
-// RenderedSpans renders every recorded span through the %v family — over the
-// batch, over each span individually, and over a struct holding one — plus
-// every name, description, attribute, event and link on its own.
+// RenderedSpans renders every recorded span through the containment shapes
+// CLAUDE.md names rather than through the containment value: the four verbs
+// `%v`, `%+v`, `%#v` and `%s`, over the batch, over each span, over a struct
+// holding those through an *unexported* field and over a slice of such
+// structs — which is the whole point, because `fmt` cannot call a method on a
+// value it reaches that way and prints the fields instead. A redacting
+// String() protects a value printed directly and does nothing one level down.
+// Every name, description, attribute, event and link is rendered on its own
+// as well.
 //
-// These are the containment shapes a "nothing sensitive reached a span"
-// assertion has to cover: `fmt` reaching a value through an unexported field
-// prints the fields rather than calling any accessor, so a value that redacts
-// itself in `String()` is still printed whole by `%+v` on a struct that holds
-// it. A test that checked one rendering would pass on exactly the shape a
-// collector's exporter uses.
+// The `%s` shapes are over [spanText] rather than over [tracetest.SpanStub],
+// which is not a decision about coverage: a SpanStub is mostly ints and
+// timestamps, so `go vet` rejects the verb against it and what it would print
+// is `%!s(int=0)` beside the strings the other three verbs already printed.
+// spanText is the string-shaped part of the same span, reached through
+// unexported fields, which is where `%s` means something.
+//
+// One renderer for every containment test in the module (Codex, #1836): the
+// conformance cases and the netpolicy and plugin tests each had their own,
+// and they had already diverged — one rendered links, the other the `%s`
+// shapes — so a credential exposed through one shape could pass the tests
+// that used the other renderer.
 func RenderedSpans(recorder *tracetest.SpanRecorder) []string {
 	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
 
@@ -61,8 +73,15 @@ func RenderedSpans(recorder *tracetest.SpanRecorder) []string {
 	if len(stubs) > 0 {
 		w := wrapper{one: stubs[0], batch: stubs}
 		rendered = append(rendered,
-			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w))
+			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w),
+			fmt.Sprintf("%v", []wrapper{w}), fmt.Sprintf("%+v", []wrapper{w}),
+			fmt.Sprintf("%#v", []wrapper{w}))
 	}
+
+	texts := spanTexts(stubs)
+	rendered = append(rendered,
+		fmt.Sprintf("%v", texts), fmt.Sprintf("%+v", texts),
+		fmt.Sprintf("%#v", texts), fmt.Sprintf("%s", texts))
 
 	for _, stub := range stubs {
 		rendered = append(rendered,
@@ -87,5 +106,42 @@ func RenderedSpans(recorder *tracetest.SpanRecorder) []string {
 		}
 	}
 
+	for _, text := range texts {
+		rendered = append(rendered,
+			fmt.Sprintf("%v", text), fmt.Sprintf("%+v", text),
+			fmt.Sprintf("%#v", text), fmt.Sprintf("%s", text))
+	}
+
 	return rendered
+}
+
+// spanText is everything a span says in words, held through unexported fields.
+//
+// Unexported deliberately: this is the arrangement a redacting formatter cannot
+// survive, so it is the arrangement the containment assertions have to check.
+type spanText struct {
+	name        string
+	description string
+	attributes  []string
+	events      []string
+}
+
+// spanTexts reduces recorded spans to their [spanText].
+func spanTexts(stubs []tracetest.SpanStub) []spanText {
+	texts := make([]spanText, 0, len(stubs))
+	for _, stub := range stubs {
+		text := spanText{name: stub.Name, description: stub.Status.Description}
+		for _, attr := range stub.Attributes {
+			text.attributes = append(text.attributes, string(attr.Key)+"="+attr.Value.String())
+		}
+		for _, event := range stub.Events {
+			text.events = append(text.events, event.Name)
+			for _, attr := range event.Attributes {
+				text.events = append(text.events, string(attr.Key)+"="+attr.Value.String())
+			}
+		}
+		texts = append(texts, text)
+	}
+
+	return texts
 }

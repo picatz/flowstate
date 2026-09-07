@@ -29,6 +29,12 @@ import (
 // that reaches for the server finds it; the caller's `-short` branch is what
 // keeps that variable nil and the tests skipping.
 func RunPackage(m *testing.M, into **testsuite.DevServer, clientOptions *client.Options) (int, error) {
+	if into == nil {
+		// Said now rather than as a nil dereference after the server is up,
+		// which would also leave the server running.
+		return 0, fmt.Errorf("RunPackage needs the package's dev server variable to store the server in; into is nil")
+	}
+
 	// Bounds startup only. The SDK uses this context to download the executable
 	// if it is not cached and to wait for the server to answer; the process it
 	// starts outlives the context and is stopped below.
