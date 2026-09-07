@@ -18,6 +18,8 @@
 package testkit
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,13 +36,30 @@ import (
 // own test binary and is fine now for the same reason.
 var namespaceOrdinal atomic.Int64
 
+// processToken tells this process's namespaces from another's on a server both
+// reach. Six hex characters: short enough to keep a name readable, and the
+// collision it has to avoid is between the handful of runs that share one
+// server in one sitting, not between all runs ever.
+var processToken = func() string {
+	var b [3]byte
+	// Never fails on a supported platform; the runtime aborts rather than
+	// return a short read.
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}()
+
 // NamespaceNameFor derives a legal Temporal namespace name from a test's name.
 //
 // Named after the test so that a line in a server log, or a namespace left
 // behind by a crash, says which test produced it. Numbered because two subtests
 // of one parent sanitize to the same string, and because a name that collides
 // would give one test another's runs — the exact isolation a namespace per test
-// is there to provide.
+// is there to provide. A per-process token is in it because a server can
+// outlive the process (temporaltest.AddressEnv, #1738): a second run of the
+// same package, or another package with a test of the same name, then
+// registers against namespaces the first left behind, and the token is what
+// keeps the name a new one. Random rather than the process id, since two runs
+// in fresh containers can share a pid and still share a server (Codex, #1842).
 func NamespaceNameFor(t testing.TB) string {
 	t.Helper()
 
@@ -59,7 +78,7 @@ func NamespaceNameFor(t testing.TB) string {
 		safe = safe[:maxNameLength]
 	}
 
-	return fmt.Sprintf("%s-%d", safe, namespaceOrdinal.Add(1))
+	return fmt.Sprintf("%s-%s-%d", safe, processToken, namespaceOrdinal.Add(1))
 }
 
 // RepoRoot walks up from the test's working directory to the directory holding

@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -315,6 +315,19 @@ test-ordering: SHELL := /bin/bash
 test-ordering: .SHELLFLAGS := -o pipefail -c
 test-ordering:
 	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+
+# One Temporal dev server that stays up for the inner loop (#1738). The
+# packages sharing a dev server — engine, server, temporalclient, cmd/flow —
+# each boot their own in TestMain, about eleven seconds before the first test
+# runs; with the variable this prints exported, they attach to this one and
+# start in about a second. Unset, `make test` and CI are exactly what they
+# were. Stop it with Ctrl-C. The recipe is silenced so stdout is the export
+# line alone and `eval "$(make dev-temporal)"` would work, though the server
+# has to stay up, so run it in another terminal and paste the line.
+#
+#     make dev-temporal          # prints: export FLOWSTATE_TEST_TEMPORAL_ADDRESS=...
+dev-temporal:
+	@go run ./tools/devtemporal
 
 # Bounded fast tier for the inner loop.
 test-fast:
