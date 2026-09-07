@@ -1,5 +1,8 @@
 # Flowstate
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/picatz/flowstate/badge)](https://scorecard.dev/viewer/?uri=github.com/picatz/flowstate)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Author, validate, and rehearse reliable workflows on your machine—then submit
 the same workflow for governed, durable execution on Temporal.**
 
