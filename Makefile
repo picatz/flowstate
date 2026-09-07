@@ -321,11 +321,13 @@ test-ordering:
 # each boot their own in TestMain, about eleven seconds before the first test
 # runs; with the variable this prints exported, they attach to this one and
 # start in about a second. Unset, `make test` and CI are exactly what they
-# were. Stop it with Ctrl-C.
+# were. Stop it with Ctrl-C. The recipe is silenced so stdout is the export
+# line alone and `eval "$(make dev-temporal)"` would work, though the server
+# has to stay up, so run it in another terminal and paste the line.
 #
 #     make dev-temporal          # prints: export FLOWSTATE_TEST_TEMPORAL_ADDRESS=...
 dev-temporal:
-	go run ./tools/devtemporal
+	@go run ./tools/devtemporal
 
 # Bounded fast tier for the inner loop.
 test-fast:

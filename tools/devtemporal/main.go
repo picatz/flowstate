@@ -7,10 +7,12 @@
 //	go test ./pkg/flowstate/v1/engine/ -run TestOne
 //
 // The server is the same `temporal` CLI the test suite's supervisor starts,
-// from the SDK's own download cache, so what a test sees is what it sees in
-// CI; only who starts and stops it changes. It stops on SIGINT or SIGTERM.
-// Every namespace a test registers carries its process id, so runs can come
-// and go against it without colliding.
+// through the same supervisor: a copy of this binary owns the server and
+// stops it when this process goes away, however it goes (Ctrl-C, SIGTERM, a
+// SIGKILL, a crash), so a server nobody can reach any more is never left
+// running (Codex, #1842). What a test sees is what it sees in CI; only who
+// starts and stops it changes. Every namespace a test registers carries a
+// per-process token, so runs can come and go against it without colliding.
 package main
 
 import (
@@ -24,12 +26,21 @@ import (
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/log"
-	"go.temporal.io/sdk/testsuite"
 
 	"github.com/picatz/flowstate/internal/temporaltest"
 )
 
 func main() {
+	// A copy of this binary is the supervisor of the server it starts; that
+	// copy runs here and never reaches run(). See temporaltest.RunLauncher.
+	if handled, err := temporaltest.RunLauncher(); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "devtemporal: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "devtemporal: %v\n", err)
 		os.Exit(1)
@@ -46,9 +57,10 @@ func run() error {
 	defer cancel()
 
 	// Stdout carries the export line and nothing else, so a shell can eval
-	// what this prints; the SDK's start-up log and the CLI's banner go to
-	// stderr, where they can still be read.
-	server, err := testsuite.StartDevServer(startCtx, testsuite.DevServerOptions{
+	// what this prints: the SDK's start-up log and everything the supervisor
+	// writes, the CLI's banner among it, go to stderr, where they can still
+	// be read.
+	server, err := temporaltest.StartWith(startCtx, temporaltest.StartOptions{
 		ClientOptions: &client.Options{
 			Logger: log.NewStructuredLogger(slog.New(slog.NewTextHandler(os.Stderr, nil))),
 		},

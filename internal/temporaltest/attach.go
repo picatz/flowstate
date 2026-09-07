@@ -19,7 +19,7 @@ import (
 // second. Unset, nothing here changes, so CI and `make test` are exactly what
 // they were.
 //
-// The namespaces a test registers carry the process id (see
+// The namespaces a test registers carry a per-process token (see
 // testkit.NamespaceNameFor), so two packages, or two runs of one, sharing a
 // server cannot register the same name.
 const AddressEnv = "FLOWSTATE_TEST_TEMPORAL_ADDRESS"

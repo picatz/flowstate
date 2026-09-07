@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,7 +19,7 @@ import (
 func TestNamespaceNameForIsLegalAndUnique(t *testing.T) {
 	t.Parallel()
 
-	legal := regexp.MustCompile(`^[A-Za-z0-9-]+-[0-9]+-[0-9]+$`)
+	legal := regexp.MustCompile(`^[A-Za-z0-9-]+-[0-9a-f]{6}-[0-9]+$`)
 
 	t.Run("a subtest with spaces and slashes", func(t *testing.T) {
 		t.Parallel()
@@ -29,9 +28,13 @@ func TestNamespaceNameForIsLegalAndUnique(t *testing.T) {
 		second := testkit.NamespaceNameFor(t)
 		assert.Regexp(t, legal, first)
 		assert.NotEqual(t, first, second, "two names from one test collided")
-		assert.Contains(t, first, "-"+strconv.Itoa(os.Getpid())+"-",
-			"the name does not carry the process id, so a second run against a server that outlived the first would register the same name")
-		assert.LessOrEqual(t, len(first), 48+1+10+1+20, "the sanitized half is bounded, so a log line stays readable")
+		// One token per process: the two names share it, and a second
+		// process would draw its own, so a server that outlives this one
+		// never sees the same name twice.
+		token := regexp.MustCompile(`-([0-9a-f]{6})-[0-9]+$`)
+		assert.Equal(t, token.FindStringSubmatch(first)[1], token.FindStringSubmatch(second)[1],
+			"two names from one process carry different tokens")
+		assert.LessOrEqual(t, len(first), 48+1+6+1+20, "the sanitized half is bounded, so a log line stays readable")
 	})
 }
 

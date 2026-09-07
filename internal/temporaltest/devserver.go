@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -24,6 +25,24 @@ const parentPIDFlag = "--flowstate-test-parent-pid"
 //
 // Every TestMain that calls Start must call RunLauncher before parsing flags.
 func Start(ctx context.Context, clientOptions *client.Options) (*testsuite.DevServer, error) {
+	return StartWith(ctx, StartOptions{ClientOptions: clientOptions})
+}
+
+// StartOptions is what [StartWith] takes beyond the client options.
+type StartOptions struct {
+	// ClientOptions are the SDK's, for the client the server hands back.
+	ClientOptions *client.Options
+
+	// Stdout and Stderr receive what the supervisor writes, which is the
+	// SDK's start-up log and the CLI's banner. Nil discards it, which is what
+	// a test binary wants; a command whose own stdout carries an answer sends
+	// both to its stderr instead.
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+// StartWith is [Start] with a say over where the supervisor's output goes.
+func StartWith(ctx context.Context, options StartOptions) (*testsuite.DevServer, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("locating the test binary for Temporal supervision: %w", err)
@@ -31,8 +50,10 @@ func Start(ctx context.Context, clientOptions *client.Options) (*testsuite.DevSe
 
 	return testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
 		ExistingPath:  executable,
-		ClientOptions: clientOptions,
+		ClientOptions: options.ClientOptions,
 		ExtraArgs:     []string{parentPIDFlag, strconv.Itoa(os.Getpid())},
+		Stdout:        options.Stdout,
+		Stderr:        options.Stderr,
 	})
 }
 
