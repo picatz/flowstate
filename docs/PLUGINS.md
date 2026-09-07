@@ -371,6 +371,7 @@ for the SDK to forward.
 the generated code, from the same `.proto`, and hand it to the SDK:
 
 ```console
+$ go get -tool github.com/bufbuild/buf/cmd/buf@latest   # once per module, as above
 $ go tool buf build --exclude-imports -o schema.descriptorset.binpb proto
 ```
 
