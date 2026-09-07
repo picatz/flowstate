@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -223,6 +223,11 @@ test-plugins:
 		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
+	# The two ratchets that read the plugin modules' sources, run here as well
+	# as under the root `go test ./...`: a plugin-only diff reaches CI through
+	# this target alone, and a body or a sleep copied into a plugin would
+	# otherwise pass it (Codex, #1839).
+	GOMEMLIMIT=1GiB go test -timeout 120s ./tools/dupbodies/ ./tools/wallclock/
 
 # The plugin modules carry the dependencies with the largest attack surface in
 # the tree (go-git, pgx, modernc.org/sqlite, go-github, the OpenAI client).
@@ -382,6 +387,18 @@ vacuity:
 # in both directions, so this target is for reading the report (#1706).
 wallclock:
 	go run ./tools/wallclock $(if $(SITES),-sites,)
+
+# Report function bodies that appear more than once, largest first.
+#
+#     make dupbodies
+#
+# Bodies are compared as printed code, without comments or layout, so only the
+# same code matches and a renamed copy is missed on purpose. Generated files
+# are skipped. The groups are held by `tools/dupbodies`'s own
+# TestTheRepositoryDuplicateBodiesOnlyGoDown under `go test ./...`, a ratchet
+# in both directions, so this target is for reading the report (#1708, #1709).
+dupbodies:
+	go run ./tools/dupbodies
 
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result
