@@ -83,7 +83,7 @@ check:
 	go build ./...
 	go vet ./...
 	$(require-gofmt)
-	@fmt_out="$$("$(GOFMT)" -l ./cmd ./pkg)" || exit 1; \
+	@fmt_out="$$("$(GOFMT)" -l $(GO_DIRS))" || exit 1; \
 	if [ -n "$$fmt_out" ]; then \
 		echo "gofmt -l found unformatted files:"; \
 		echo "$$fmt_out"; \
@@ -320,9 +320,17 @@ test-ordering:
 test-fast:
 	GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 
+# Every directory holding Go, which is also what CI's gofmt step and the
+# gate's gofmt leg check: a tool under tools/ or a helper under internal/ is
+# held to the same formatting, and `make fmt` stopping short of them is how a
+# gofmt failure arrived from the gate twice in one day after this target had
+# been run. `check` reads the same list, so the local rehearsal and this
+# target cannot disagree about what is formatted.
+GO_DIRS := ./cmd ./pkg ./internal ./tools ./examples ./plugins
+
 fmt:
 	$(require-gofmt)
-	"$(GOFMT)" -w ./cmd ./pkg
+	"$(GOFMT)" -w $(GO_DIRS)
 
 # Report what Go's `go fix` modernizers would change, and change nothing
 # (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
