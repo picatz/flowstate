@@ -34,10 +34,37 @@ import (
 // specification, and the reason to show one at all is that it is the
 // shortest thing that works.
 func Build(def v1.TaskDef) (string, error) {
+	return BuildPinned(def, Pin{})
+}
+
+// Pin names the plugin a task comes from and the version to require of it,
+// for the `plugins:` block the example is written under.
+//
+// A zero Pin is a task this binary provides, which needs no block. A plugin's
+// task written without one is a file a worker without the plugin accepts and
+// then fails at the step with `unknown task` — the one line the shipped
+// plugin examples spend five comment lines on, and the one the copyable step
+// left out (#1676). The version is the plugin's own, as the catalog reports
+// it, taken as the minimum: a deployment resolving this to a later build is
+// what a minimum is for.
+type Pin struct {
+	Plugin  string
+	Version string
+}
+
+// BuildPinned is [Build] for a task that belongs to a plugin, written under a
+// `plugins:` block requiring it — or exactly [Build] when the pin is zero, or
+// when its version is not one the grammar accepts, since a block the parser
+// refuses is worse than no block: it turns a file that would fail at a worker
+// into one that fails at `flow validate`, on a line the author did not write.
+func BuildPinned(def v1.TaskDef, pin Pin) (string, error) {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "  edition: %s\n  name: example\n  steps:\n    - id: %s\n      %s:\n",
-		flowfile.CurrentEdition, stepID(def.Name), def.Name)
+	fmt.Fprintf(&b, "  edition: %s\n  name: example\n", flowfile.CurrentEdition)
+	if version, ok := pinnedVersion(pin); ok {
+		fmt.Fprintf(&b, "  plugins:\n    %s: %s\n", pin.Plugin, version)
+	}
+	fmt.Fprintf(&b, "  steps:\n    - id: %s\n      %s:\n", stepID(def.Name), def.Name)
 
 	written := 0
 	for _, field := range v1.Inputs(def) {
@@ -66,6 +93,27 @@ func Build(def v1.TaskDef) (string, error) {
 	}
 
 	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// pinnedVersion is the version a pin is written with, in the grammar's own
+// spelling — `vMAJOR.MINOR.PATCH` — or false for a pin that names no plugin
+// or a version the grammar would refuse.
+//
+// A plugin reports its version without the leading v (`0.1.0`, as the
+// shipped plugins do), and the grammar requires one, so the v is supplied
+// rather than the block dropped over a letter.
+func pinnedVersion(pin Pin) (string, bool) {
+	if pin.Plugin == "" || pin.Version == "" {
+		return "", false
+	}
+	version := pin.Version
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+	if !v1.ValidPluginVersion(version) {
+		return "", false
+	}
+	return version, true
 }
 
 // stepID turns a task name into an id the grammar accepts.
