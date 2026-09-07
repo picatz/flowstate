@@ -254,3 +254,34 @@ func TestAuthCheckNeverEchoesATokenReadAsPolicy(t *testing.T) {
 	assert.Contains(t, res.Stderr, "policy is malformed")
 	assert.NotContains(t, res.Output(), token)
 }
+
+// TestAuthCheckReportsTheLoadersOwnRefusal is #1693: a policy that decodes and
+// fails validation is refused with the loader's own sentence — the field and
+// the rule `flow server` would print for the same bytes — rather than the fixed
+// "policy is malformed" that hid it. The redaction is kept for what it exists
+// for, a document the decoder could not read, whose diagnostic quotes source
+// (see TestAuthCheckNeverEchoesATokenReadAsPolicy).
+func TestAuthCheckReportsTheLoadersOwnRefusal(t *testing.T) {
+	t.Parallel()
+
+	issuer := authCheckIssuer(t)
+	nameless := "issuers:\n  - issuer: " + issuer.URL() + "\n    audiences: [flowstate]\n"
+	path := filepath.Join(t.TempDir(), "trust.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(nameless), 0o600))
+
+	// The sentence the server's loader gives the same bytes, with no path in it.
+	_, loaderErr := auth.ParsePolicy([]byte(nameless))
+	require.Error(t, loaderErr)
+	require.NotErrorIs(t, loaderErr, auth.ErrPolicySyntax, "the fixture decodes; it fails validation, which is the case under test")
+
+	res := runFlowStdin(t, "not-reached", "auth", "check", "--auth-policy", path, "--token-file", "-")
+	assert.Equal(t, exitCodeFailure, res.ExitCode)
+
+	// The terminal renderer wraps a long sentence at the column width, so the
+	// comparison is over words rather than bytes.
+	unwrapped := strings.Join(strings.Fields(res.Stderr), " ")
+	assert.Contains(t, unwrapped, "issuers[0]: name is required", "the loader's refusal was hidden: %s", res.Stderr)
+	assert.Contains(t, unwrapped, "parsing auth policy: "+loaderErr.Error(),
+		"auth check and the loader disagree about the same bytes")
+	assert.NotContains(t, unwrapped, "policy is malformed")
+}

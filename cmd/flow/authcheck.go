@@ -74,9 +74,18 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 	}
 	policy, err := auth.ParsePolicy(policyData)
 	if err != nil {
-		// Parser diagnostics can quote source excerpts. The policy path may
-		// accidentally name the token file, so no parser detail is safe here.
-		return errors.New("parsing auth policy: policy is malformed")
+		// A decoder's diagnostic quotes source excerpts, and the policy path
+		// may accidentally name the token file, so no decoder detail is safe
+		// here. A validation failure is a different thing: the document
+		// decoded as a policy, so it is not a credential, and what the loader
+		// says — `issuers[0]: name is required` — is exactly what `flow server`
+		// would refuse the same bytes with, and what this verb exists to show
+		// before the server does (#1693). The path is still left out; it is
+		// the one value here that could have been the token.
+		if errors.Is(err, auth.ErrPolicySyntax) {
+			return errors.New("parsing auth policy: policy is malformed")
+		}
+		return fmt.Errorf("parsing auth policy: %w", err)
 	}
 	verifier, err := auth.NewOIDCVerifier(policy)
 	if err != nil {
