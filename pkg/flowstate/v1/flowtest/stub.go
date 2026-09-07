@@ -567,8 +567,9 @@ func shapedOutputNames(node *v1.Node) []string {
 }
 
 // rawOutputNames is the names a task's own outputs carry — the fields a step
-// without shaping would report, `status_code`, `headers` and `body` for http —
-// and nothing for a task this build has no definition of.
+// without shaping would report: `status_code`, `headers`, `body` and `json`
+// for http, the last derived from the body when `parse_json:` is set — and
+// nothing for a task this build has no definition of.
 func rawOutputNames(task string) []string {
 	def, ok := v1.DefaultRegistry().Lookup(task)
 	if !ok {

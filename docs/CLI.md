@@ -865,11 +865,13 @@ the stub *is* the step's answer — which is why `examples/http-expect` and
 `examples/http-output-shaping` assert the steps around those expressions rather
 than the expressions themselves. So `returns:` on a step that shapes its
 outputs supplies the *shaped* names (`title`, `status` — what later steps
-read), never the raw `status_code`, `headers` and `body` the shaping would have
-read; a `returns:` that carries those raw fields and none of the shaped names
-is refused at the stub rather than left to fail wherever the first reader is. To exercise the shaping
-itself, write `response:` with the raw response and the step's own `outputs:`
-and `expect:` run over it.
+read), never the raw `status_code`, `headers`, `body` and `json` the shaping
+would have read; a `returns:` that carries those raw fields and none of the
+shaped names is refused at the stub rather than left to fail wherever the first
+reader is. To exercise the shaping itself, write `response:` with the raw
+response — `status_code`, `headers` and `body` only; `parse_json:` derives
+`response.json` from the body — and the step's own `outputs:` and `expect:` run
+over it.
 
 ### What a case's identity is checked against
 
