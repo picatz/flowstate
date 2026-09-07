@@ -12,10 +12,10 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.temporal.io/sdk/testsuite"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // What these tests are for.
@@ -36,30 +36,6 @@ import (
 // theSecret is the material that must never reach a span, distinctive enough
 // that a substring search cannot match it by accident.
 const theSecret = "s3cr3t-material-that-must-never-be-exported"
-
-// recordSpans installs a recording tracer provider for the duration of a test
-// and returns the recorder.
-//
-// The global provider, because that is where the engine's spans go — the same
-// place otelconnect and the Temporal interceptor read from — and restored
-// afterwards, since these tests run in a binary shared with every other engine
-// test and a leaked recorder would keep every later span in memory.
-func recordSpans(t *testing.T) *tracetest.SpanRecorder {
-	t.Helper()
-
-	recorder := tracetest.NewSpanRecorder()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-
-	previous := otel.GetTracerProvider()
-	otel.SetTracerProvider(provider)
-
-	t.Cleanup(func() {
-		otel.SetTracerProvider(previous)
-		_ = provider.Shutdown(context.Background())
-	})
-
-	return recorder
-}
 
 // requireNoSecretInSpans is the assertion itself.
 //
@@ -189,7 +165,7 @@ func tracedSecretRuntime(t *testing.T) engine.TaskRuntimeConfig {
 // that the reference *is* named — scheme and name, which is the whole point of
 // tracing a secret read — and then that the value is nowhere.
 func TestTaskSpanNamesTheSecretReferenceAndNeverTheSecret(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	const taskName = "traced_secret_task"
 	registerSecretReadingTask(t, taskName, false)
@@ -224,7 +200,7 @@ func TestTaskSpanNamesTheSecretReferenceAndNeverTheSecret(t *testing.T) {
 // writes the message into an exception event. Both are asserted: the status says
 // something useful, and it does not say the secret.
 func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	conformance.RegisterTraceContainmentTask(t)
 	authority := conformance.TraceContainmentAuthority()
@@ -284,7 +260,7 @@ func TestNoSpansWithoutATracerProvider(t *testing.T) {
 	env.ExecuteWorkflow(engine.Run, secretReadingWorkflow(taskName))
 	require.NoError(t, env.GetWorkflowError())
 
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 	require.Empty(t, recorder.Ended(),
 		"an unconfigured process recorded spans, which it has no provider to record into")
 }

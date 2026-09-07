@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // What this file is for.
@@ -107,7 +109,7 @@ func TestEveryInstrumentCreatedInTheRepositoryIsDeclared(t *testing.T) {
 
 	var offenders []string
 
-	require.NoError(t, filepath.WalkDir(repoRoot(t), func(path string, entry os.DirEntry, err error) error {
+	require.NoError(t, filepath.WalkDir(testkit.RepoRoot(t), func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -119,7 +121,7 @@ func TestEveryInstrumentCreatedInTheRepositoryIsDeclared(t *testing.T) {
 			// Same reason [TestEveryMetricRecordingSiteGoesThroughTheSchema]
 			// prunes it: a worktree is another checkout of this repository, and
 			// walking into one reports every site twice.
-			if rel, err := filepath.Rel(repoRoot(t), path); err == nil {
+			if rel, err := filepath.Rel(testkit.RepoRoot(t), path); err == nil {
 				if filepath.ToSlash(rel) == ".claude/worktrees" {
 					return filepath.SkipDir
 				}
@@ -137,7 +139,7 @@ func TestEveryInstrumentCreatedInTheRepositoryIsDeclared(t *testing.T) {
 		}
 		for _, line := range strings.Split(string(contents), "\n") {
 			if literal.MatchString(line) {
-				rel, _ := filepath.Rel(repoRoot(t), path)
+				rel, _ := filepath.Rel(testkit.RepoRoot(t), path)
 				offenders = append(offenders, rel+": "+strings.TrimSpace(line))
 			}
 		}

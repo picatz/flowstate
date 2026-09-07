@@ -4,13 +4,14 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // stdlibLogAllowed names the non-test files under cmd and pkg that may import
@@ -40,7 +41,7 @@ var stdlibLogAllowed = map[string]string{
 // rather than the package, which is what a reader needs to fix it. Only the
 // exact path "log" matches: "log/slog" is the logger this repository wants.
 func TestNoNonTestFileImportsTheStandardLibraryLog(t *testing.T) {
-	root := repoRoot(t)
+	root := testkit.RepoRoot(t)
 
 	var importing []string
 	fset := token.NewFileSet()
@@ -104,29 +105,4 @@ func TestNoNonTestFileImportsTheStandardLibraryLog(t *testing.T) {
 			t.Errorf("%s no longer imports \"log\"; remove it from stdlibLogAllowed so the ratchet tightens", file)
 		}
 	}
-}
-
-// repoRoot walks up from this package to the directory holding go.mod.
-//
-// The same helper, by the same name, as pkg/flowstate/v1's progress_test.go
-// and tools/agentconfig's, because a test helper cannot be imported across
-// package boundaries without exporting it; #1709 consolidates the copies.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-
-	dir, err := os.Getwd()
-	require.NoError(t, err)
-
-	for range 10 {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		require.NotEqual(t, parent, dir, "walked to the filesystem root without finding go.mod")
-		dir = parent
-	}
-
-	t.Fatal("go.mod not found within ten directories of the test")
-
-	return ""
 }
