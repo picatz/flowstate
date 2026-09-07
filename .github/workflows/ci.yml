@@ -154,6 +154,16 @@ jobs:
         id: plan
         run: go run ./tools/gate -ci
 
+      # Does the pull request say what it is: a `scope:` subject, an issue
+      # or a `No-Issue:` trailer, a `Verification:` line or heading or an
+      # `Unverified:` trailer, and no absolute without evidence beside it
+      # (#1728). Warning-only until 2026-09-21, so the ratchet is visible
+      # before it bites; add -strict then. Reads the title and body from the
+      # event payload the runner already holds, so it needs no token.
+      - name: Does the pull request say what it is
+        if: github.event_name == 'pull_request'
+        run: go run ./tools/commitcheck
+
   # ── The root suite, and the critical path ─────────────────────────────────
   #
   # Three jobs where there was one. `test` used to run the root suite, the

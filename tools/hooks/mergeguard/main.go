@@ -55,6 +55,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/internal/commitcheck"
 	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/tools/hooks/internal/hook"
 )
@@ -83,6 +84,19 @@ func main() {
 			warn(reason)
 		}
 		return // not a merge call, or a merge call this hook could not identify
+	}
+
+	// The squash message the merge would write, held to the conventions
+	// before the merge rather than found wanting in `git log` afterwards
+	// (#1728). A warning rather than a denial, matching the plan job's
+	// posture until 2026-09-21.
+	if findings := commitcheck.Check(stringOf(in.ToolInput["commit_title"]), stringOf(in.ToolInput["commit_message"])); len(findings) > 0 {
+		lines := make([]string, 0, len(findings))
+		for _, f := range findings {
+			lines = append(lines, f.String())
+		}
+		warn(fmt.Sprintf("mergeguard: the merge message for %s/%s#%d does not follow the conventions:\n  %s",
+			owner, repo, number, strings.Join(lines, "\n  ")))
 	}
 
 	tokCtx, tokCancel := context.WithTimeout(context.Background(), tokenLookupTimeout)
@@ -158,6 +172,13 @@ func githubTokenFromGH(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	return tok, true
+}
+
+// stringOf is a tool-input field as a string, or "" when it is absent or
+// something else.
+func stringOf(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 // mergeTarget identifies the owner, repo and PR number a tool call would
