@@ -301,9 +301,14 @@ test-ordering:
 test-fast:
 	GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 
+# Every directory holding Go the gate's gofmt leg and CI check, not only the
+# two the product lives in: a tool under tools/ or a helper under internal/
+# is held to the same formatting, and `make fmt` stopping short of them is
+# how a gofmt failure arrived from the gate twice in one day after this
+# target had been run.
 fmt:
 	$(require-gofmt)
-	"$(GOFMT)" -w ./cmd ./pkg
+	"$(GOFMT)" -w ./cmd ./pkg ./internal ./tools ./examples ./plugins
 
 # Report what Go's `go fix` modernizers would change, and change nothing
 # (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
