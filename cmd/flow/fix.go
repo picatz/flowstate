@@ -347,7 +347,7 @@ type fixOutcome struct {
 func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions, machine bool) (fixOutcome, error) {
 	report := &v1.FixReport{File: path}
 
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "a Flowfile", maxFlowfileSourceBytes)
 	if err != nil {
 		return fixOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
 	}

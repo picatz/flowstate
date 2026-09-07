@@ -419,7 +419,7 @@ func runtimePolicy(cmd *cobra.Command, secretsConfigured bool) (*auth.Policy, *a
 		}
 		return nil, nil, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "a trust policy", maxPolicyFileBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading auth policy: %w", err)
 	}

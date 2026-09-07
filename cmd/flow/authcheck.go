@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -65,7 +64,7 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
 	tokenPath, _ := cmd.Flags().GetString("token-file")
 
-	policyData, err := os.ReadFile(policyPath)
+	policyData, err := readBoundedFile(policyPath, "a trust policy", maxPolicyFileBytes)
 	if err != nil {
 		// As with --token-file below, do not copy a path-bearing error into
 		// diagnostics. A caller can accidentally swap the two flag values and

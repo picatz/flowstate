@@ -3,8 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -147,7 +145,7 @@ func loadPluginCatalog(cmd *cobra.Command) (*v1.PluginCatalog, error) {
 // document rather than as bytes; the benefit is that there is one document
 // shape, one writer, and no content sniffing between two of them.
 func readPluginCatalog(path string) (*v1.PluginCatalog, error) {
-	data, err := readBoundedFile(path, maxPluginCatalogBytes)
+	data, err := readBoundedFile(path, "a plugin catalog", maxPluginCatalogBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -167,46 +165,6 @@ func readPluginCatalog(path string) (*v1.PluginCatalog, error) {
 	}
 
 	return catalog, nil
-}
-
-// readBoundedFile reads a file chosen by something other than this process, up
-// to max bytes.
-//
-// The shape [flowfile.readBoundedSource] established and the reasons are the
-// same: ask the *descriptor* what it is rather than the path, so there is no
-// second lookup for a symlink to land in; refuse anything but a regular file,
-// because a device or a pipe has no size a bound could be checked against; and
-// read through a limit of max+1 so that "exactly at the bound" and "larger than
-// the bound" are distinguishable rather than silently truncated into a document
-// nobody wrote.
-func readBoundedFile(path string, max int) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf(
-			"%s is not a regular file (%s); a plugin catalog is read as bytes, and a device, pipe "+
-				"or directory has no size a bound could be checked against", path, info.Mode().Type())
-	}
-
-	data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > max {
-		return nil, fmt.Errorf(
-			"%s is larger than the %d byte limit a plugin catalog is read up to; nothing was parsed",
-			path, max)
-	}
-
-	return data, nil
 }
 
 // errPluginCatalogAndLaunch is the refusal for a command line that names both a

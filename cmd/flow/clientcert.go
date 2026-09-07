@@ -114,7 +114,7 @@ func clientTLSConfig(flags clientCertFlags) (*tls.Config, error) {
 	}
 
 	if flags.caFile != "" {
-		pem, err := os.ReadFile(flags.caFile)
+		pem, err := readBoundedFile(flags.caFile, "a CA bundle", maxPEMFileBytes)
 		if err != nil {
 			return nil, fmt.Errorf("reading --tls-ca-file %s: %w", flags.caFile, err)
 		}
