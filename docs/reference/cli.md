@@ -729,7 +729,7 @@ List your runs
 flow list [flags]
 ```
 
-List the runs belonging to your tenant, newest first. A page can come back short or empty with runs still to find, because the server scans a bounded number of executions per request; pass --all to walk the rest.
+List the runs belonging to your tenant, newest first. A page can come back short or empty with runs still to find, because the server scans a bounded number of executions per request; pass --all to walk the rest. STARTED is when the workload began: a run that continued as new is one row, named by its latest segment's run id and dated from its first segment's start. The JSON forms also carry the listed segment's own start and how many segments the workload has run as.
 
 Examples:
 

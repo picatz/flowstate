@@ -589,3 +589,56 @@ func TestAPendingActivityListSaysWhenItIsPartial(t *testing.T) {
 	require.Equal(t, []string{"retrying, attempt 2: boom (next attempt in 4s)"}, whole,
 		"a complete list of retrying steps claimed there were more")
 }
+
+// TestGetSaysWhenARunContinuedAsNew checks the line that names a workload's
+// chain: present, with the count and the first run id, exactly when the run
+// continued as new, and absent otherwise — every run is "segment 1", and a line
+// that said so on all of them would be skipped on the one that matters.
+func TestGetSaysWhenARunContinuedAsNew(t *testing.T) {
+	const (
+		latest = "0198f1e2-0000-7000-8000-000000000003"
+		first  = "0198f1e2-0000-7000-8000-000000000001"
+	)
+
+	for name, tc := range map[string]struct {
+		msg  *v1.GetResponse
+		want string
+	}{
+		"never continued": {
+			msg:  &v1.GetResponse{RunId: latest, FirstRunId: latest, Segments: 1},
+			want: "",
+		},
+		"older server that answers neither": {
+			msg:  &v1.GetResponse{RunId: latest},
+			want: "",
+		},
+		"three segments": {
+			msg:  &v1.GetResponse{RunId: latest, FirstRunId: first, Segments: 3},
+			want: "continued as new: segment 3 of the workload; began as run " + first,
+		},
+		"a chain the interpreter never counted": {
+			msg:  &v1.GetResponse{RunId: latest, FirstRunId: first},
+			want: "continued as new; began as run " + first,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, runChainLine(tc.msg))
+		})
+	}
+
+	// And on the terminal, beneath the status line, for the one that continued.
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      latest,
+			FirstRunId: first,
+			Segments:   3,
+			Status:     v1.RunResponse_STATUS_RUNNING,
+		},
+	}
+	serveFake(t, fake)
+	cmd, _, errOut := getCommand(t)
+
+	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+	require.Contains(t, errOut.String(), "segment 3 of the workload; began as run "+first)
+}

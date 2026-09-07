@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
 // Listing a tenant's runs is a scan, and the scan is what has to be bounded.
@@ -369,14 +370,17 @@ func contextCode(err error) connect.Code {
 // the cheapest way to read every workload's data at once.
 func (s *FlowstateServer) summarize(execution *workflow.WorkflowExecutionInfo) *v1.RunSummary {
 	start, close := runTimes(execution)
+	chain := s.chainOf(execution, start)
 
 	return &v1.RunSummary{
-		WorkflowId: execution.GetExecution().GetWorkflowId(),
-		RunId:      execution.GetExecution().GetRunId(),
-		Status:     runStatus(execution.GetStatus()),
-		StartTime:  start,
-		CloseTime:  close,
-		Name:       s.workflowNameOf(execution),
+		WorkflowId:       execution.GetExecution().GetWorkflowId(),
+		RunId:            execution.GetExecution().GetRunId(),
+		Status:           runStatus(execution.GetStatus()),
+		StartTime:        chain.started,
+		SegmentStartTime: start,
+		Segments:         chain.segments,
+		CloseTime:        close,
+		Name:             s.workflowNameOf(execution),
 
 		// All three read off what the listing already has in hand: the memo it
 		// fetched for the tenant check, and the versioning info Temporal returns
@@ -387,6 +391,58 @@ func (s *FlowstateServer) summarize(execution *workflow.WorkflowExecutionInfo) *
 		Starter:       s.starterOf(execution),
 		WorkerVersion: workerVersionOf(execution),
 	}
+}
+
+// runChain is what a run's memo says about the Continue-As-New chain it
+// belongs to: when the workload began, and how many segments it has run as.
+type runChain struct {
+	// started is the workload's start — the memo's, when a continued segment
+	// wrote one, and otherwise the execution's own, which is the workload's
+	// for a run that never continued and the best a reader can do for one
+	// whose first segment predates the memo.
+	started *timestamppb.Timestamp
+
+	// segments is the memo's count, and zero when it wrote none: one segment,
+	// or an older chain that cannot say.
+	segments uint32
+}
+
+// chainOf reads the chain a continued segment recorded in its memo
+// ([engine.WorkloadStartedMemoKey], [engine.SegmentsMemoKey]) off what the
+// listing already has in hand, so a workload that continued as new is
+// reported from where it began (#1690).
+//
+// The two fields are written together and are read together: a memo that
+// carries one without the other, or one that will not decode, reads as no
+// chain — the segment's own start and a count of zero — rather than as half
+// of one, so a caller never sees a count beside a start it does not belong
+// to. Never a failed listing, for [labelsOf]'s reason.
+func (s *FlowstateServer) chainOf(execution *workflow.WorkflowExecutionInfo, segmentStart *timestamppb.Timestamp) runChain {
+	fields := execution.GetMemo().GetFields()
+
+	countPayload, ok := fields[engine.SegmentsMemoKey]
+	if !ok {
+		return runChain{started: segmentStart}
+	}
+	startPayload, ok := fields[engine.WorkloadStartedMemoKey]
+	if !ok {
+		return runChain{started: segmentStart}
+	}
+
+	var segments uint32
+	if err := s.dataConverter.FromPayload(countPayload, &segments); err != nil {
+		return runChain{started: segmentStart}
+	}
+	var started string
+	if err := s.dataConverter.FromPayload(startPayload, &started); err != nil {
+		return runChain{started: segmentStart}
+	}
+	at, err := time.Parse(time.RFC3339Nano, started)
+	if err != nil {
+		return runChain{started: segmentStart}
+	}
+
+	return runChain{started: timestamppb.New(at), segments: segments}
 }
 
 // labelsOf reads the workflow's declared labels off a run's memo, and reports

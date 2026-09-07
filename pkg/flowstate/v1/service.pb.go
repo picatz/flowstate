@@ -724,7 +724,21 @@ type GetResponse struct {
 	// this field - it reads the same memo itself, and denies rather than proceeds
 	// when the answer is missing (see the server's authorizeSignal) - so an empty
 	// value here weakens nothing.
-	Starter       string `protobuf:"bytes,12,opt,name=starter,proto3" json:"starter,omitempty"`
+	Starter string `protobuf:"bytes,12,opt,name=starter,proto3" json:"starter,omitempty"`
+	// FirstRunId is the segment the workload began at, read off the same
+	// Describe response everything else here comes from. Equal to run_id for a
+	// run that never continued as new; where it differs, run_id names the
+	// segment this response reports and first_run_id is where `flow timeline`
+	// walks the whole chain from (picatz/flowstate#1690).
+	FirstRunId string `protobuf:"bytes,14,opt,name=first_run_id,json=firstRunId,proto3" json:"first_run_id,omitempty"`
+	// Segments is how many Continue-As-New segments the workload has run as,
+	// this one included, with RunSummary.segments' meaning: two or more when
+	// the interpreter recorded the chain, and zero when it recorded none —
+	// which is every run that never continued as new, since a first segment
+	// writes no count, as well as a chain whose first segment predates the
+	// count. A client must not assume it is at least one; first_run_id against
+	// run_id says whether a run with no count continued at all.
+	Segments      uint32 `protobuf:"varint,15,opt,name=segments,proto3" json:"segments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -859,6 +873,20 @@ func (x *GetResponse) GetStarter() string {
 		return x.Starter
 	}
 	return ""
+}
+
+func (x *GetResponse) GetFirstRunId() string {
+	if x != nil {
+		return x.FirstRunId
+	}
+	return ""
+}
+
+func (x *GetResponse) GetSegments() uint32 {
+	if x != nil {
+		return x.Segments
+	}
+	return 0
 }
 
 type isGetResponse_Kind interface {
@@ -1578,6 +1606,8 @@ type RunSummary struct {
 	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	Status     RunResponse_Status     `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
 	// StartTime is when the workload began.
+	// For a workload that continued as new, the workload's start rather than the
+	// listed segment's — see segment_start_time.
 	StartTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
 	// CloseTime is when it finished, unset while it is still running.
 	CloseTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
@@ -1639,6 +1669,23 @@ type RunSummary struct {
 	// "recorded twice, drifting" this schema keeps out. It costs nothing extra:
 	// the listing response already carries it.
 	WorkerVersion string `protobuf:"bytes,9,opt,name=worker_version,json=workerVersion,proto3" json:"worker_version,omitempty"`
+	// SegmentStartTime is when the listed segment itself started, which for a
+	// workload that continued as new is later than start_time: start_time is
+	// the workload's start, read off the memo the interpreter writes at every
+	// continued segment (picatz/flowstate#1690), and this is the segment's own.
+	// Equal to start_time wherever no chain was recorded — a run that never
+	// continued, whose one segment is the workload, and a chain whose first
+	// segment predates the memo, which then reports the segment's start as
+	// both. segments is zero in both of those cases.
+	SegmentStartTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=segment_start_time,json=segmentStartTime,proto3" json:"segment_start_time,omitempty"`
+	// Segments is how many Continue-As-New segments the workload has run as,
+	// this one included: two or more when the interpreter recorded the chain,
+	// and zero when it recorded none. A first segment writes no count, so a run
+	// that never continued as new reports zero, not one; so does a chain whose
+	// first segment predates the count, whose start_time is then the listed
+	// segment's rather than the workload's. A listing cannot tell those two
+	// apart; a Get can, by first_run_id.
+	Segments      uint32 `protobuf:"varint,11,opt,name=segments,proto3" json:"segments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1734,6 +1781,20 @@ func (x *RunSummary) GetWorkerVersion() string {
 		return x.WorkerVersion
 	}
 	return ""
+}
+
+func (x *RunSummary) GetSegmentStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.SegmentStartTime
+	}
+	return nil
+}
+
+func (x *RunSummary) GetSegments() uint32 {
+	if x != nil {
+		return x.Segments
+	}
+	return 0
 }
 
 // ListResponse returns a page of the caller's runs.
@@ -2772,7 +2833,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\n" +
 	"workflowId\x12$\n" +
 	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\x05runId\x88\x01\x01B\t\n" +
-	"\a_run_id\"\xe6\x05\n" +
+	"\a_run_id\"\xa4\x06\n" +
 	"\vGetResponse\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
@@ -2792,7 +2853,10 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	" \x01(\v2\x18.flowstate.v1.RunOutputsR\n" +
 	"runOutputs\x12<\n" +
 	"\fentity_state\x18\v \x01(\v2\x19.flowstate.v1.EntityStateR\ventityState\x12\x18\n" +
-	"\astarter\x18\f \x01(\tR\astarterB\r\n" +
+	"\astarter\x18\f \x01(\tR\astarter\x12 \n" +
+	"\ffirst_run_id\x18\x0e \x01(\tR\n" +
+	"firstRunId\x12\x1a\n" +
+	"\bsegments\x18\x0f \x01(\rR\bsegmentsB\r\n" +
 	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xde\x01\n" +
 	"\rSignalRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
@@ -2838,7 +2902,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xbaH\a\x1a\x05\x18\xe8\a(\x00R\bpageSize\x12'\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tpageToken\x12 \n" +
-	"\x06filter\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x06filter\"\xc2\x03\n" +
+	"\x06filter\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x06filter\"\xa8\x04\n" +
 	"\n" +
 	"RunSummary\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
@@ -2852,7 +2916,10 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x04name\x18\x06 \x01(\tR\x04name\x12<\n" +
 	"\x06labels\x18\a \x03(\v2$.flowstate.v1.RunSummary.LabelsEntryR\x06labels\x12\x18\n" +
 	"\astarter\x18\b \x01(\tR\astarter\x12%\n" +
-	"\x0eworker_version\x18\t \x01(\tR\rworkerVersion\x1a9\n" +
+	"\x0eworker_version\x18\t \x01(\tR\rworkerVersion\x12H\n" +
+	"\x12segment_start_time\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\x10segmentStartTime\x12\x1a\n" +
+	"\bsegments\x18\v \x01(\rR\bsegments\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbd\x01\n" +
@@ -3028,59 +3095,60 @@ var file_flowstate_v1_service_proto_depIdxs = []int32{
 	32, // 19: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
 	32, // 20: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
 	29, // 21: flowstate.v1.RunSummary.labels:type_name -> flowstate.v1.RunSummary.LabelsEntry
-	14, // 22: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
-	32, // 23: flowstate.v1.ListCursor.issued_at:type_name -> google.protobuf.Timestamp
-	38, // 24: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
-	39, // 25: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
-	40, // 26: flowstate.v1.GetTimelineResponse.entries:type_name -> flowstate.v1.TimelineEntry
-	38, // 27: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
-	30, // 28: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
-	41, // 29: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
-	42, // 30: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
-	43, // 31: flowstate.v1.GetCatalogResponse.plugins:type_name -> flowstate.v1.PluginCatalog
-	44, // 32: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	44, // 33: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	1,  // 34: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
-	3,  // 35: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
-	5,  // 36: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
-	7,  // 37: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
-	13, // 38: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
-	19, // 39: flowstate.v1.WorkflowService.GetTimeline:input_type -> flowstate.v1.GetTimelineRequest
-	9,  // 40: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
-	11, // 41: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
-	17, // 42: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
-	21, // 43: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
-	23, // 44: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
-	45, // 45: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
-	46, // 46: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
-	47, // 47: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
-	48, // 48: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
-	49, // 49: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
-	50, // 50: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
-	51, // 51: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
-	2,  // 52: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	4,  // 53: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	6,  // 54: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
-	8,  // 55: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
-	15, // 56: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
-	20, // 57: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
-	10, // 58: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
-	12, // 59: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
-	18, // 60: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
-	22, // 61: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
-	24, // 62: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
-	52, // 63: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
-	53, // 64: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
-	54, // 65: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
-	55, // 66: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
-	56, // 67: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
-	57, // 68: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
-	58, // 69: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
-	52, // [52:70] is the sub-list for method output_type
-	34, // [34:52] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	32, // 22: flowstate.v1.RunSummary.segment_start_time:type_name -> google.protobuf.Timestamp
+	14, // 23: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
+	32, // 24: flowstate.v1.ListCursor.issued_at:type_name -> google.protobuf.Timestamp
+	38, // 25: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
+	39, // 26: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
+	40, // 27: flowstate.v1.GetTimelineResponse.entries:type_name -> flowstate.v1.TimelineEntry
+	38, // 28: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
+	30, // 29: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
+	41, // 30: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
+	42, // 31: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
+	43, // 32: flowstate.v1.GetCatalogResponse.plugins:type_name -> flowstate.v1.PluginCatalog
+	44, // 33: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	44, // 34: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	1,  // 35: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
+	3,  // 36: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
+	5,  // 37: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
+	7,  // 38: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
+	13, // 39: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
+	19, // 40: flowstate.v1.WorkflowService.GetTimeline:input_type -> flowstate.v1.GetTimelineRequest
+	9,  // 41: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
+	11, // 42: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
+	17, // 43: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
+	21, // 44: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
+	23, // 45: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
+	45, // 46: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
+	46, // 47: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
+	47, // 48: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
+	48, // 49: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
+	49, // 50: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
+	50, // 51: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
+	51, // 52: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
+	2,  // 53: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	4,  // 54: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	6,  // 55: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
+	8,  // 56: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
+	15, // 57: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
+	20, // 58: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
+	10, // 59: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
+	12, // 60: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
+	18, // 61: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
+	22, // 62: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
+	24, // 63: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
+	52, // 64: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
+	53, // 65: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
+	54, // 66: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
+	55, // 67: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
+	56, // 68: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
+	57, // 69: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
+	58, // 70: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
+	53, // [53:71] is the sub-list for method output_type
+	35, // [35:53] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_service_proto_init() }

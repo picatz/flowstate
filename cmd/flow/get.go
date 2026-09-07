@@ -122,6 +122,15 @@ func runGet(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
 	}
 
+	// Which segment of the workload this is, when it is not the only one. A run
+	// that continued as new is one workload under one workflow id, whose run id
+	// names its latest segment; the age above is measured from the workload's
+	// start, and this says how many segments it took and which run began it —
+	// the one `flow timeline` walks the whole chain from.
+	if line := runChainLine(msg); line != "" {
+		fmt.Fprintf(surface.Err, "  %s\n", surface.ErrTheme.Muted.Render(line))
+	}
+
 	// What the workflow said it would report, named before the transcript is written
 	// out beneath it — the same section `flow run` and `flow watch` finish with,
 	// through the same function, so one finished run reads the same however it was
@@ -176,6 +185,37 @@ func runAge(msg *v1.GetResponse, now time.Time) string {
 	// running run's age is measured against *some* moment, and a test that
 	// cannot say which moment can only assert it within a racy window.
 	return fmt.Sprintf(" (running for %s)", roundedDuration(now.Sub(started)))
+}
+
+// runChainLine renders a continued workload's chain, and nothing for a run that
+// never continued as new.
+//
+// Nothing rather than "segment 1", because that is every run there is, and a
+// line on every `flow get` saying so is the kind a reader learns to skip — and
+// then skips the one time it says three.
+//
+// The count and the first run id are read separately, because they come from
+// different places and either can be missing on its own: an older server answers
+// neither, and a chain whose first segment predates the interpreter's count
+// answers the id and not the count. The id alone still says that the run
+// continued and where from.
+func runChainLine(msg *v1.GetResponse) string {
+	first := msg.GetFirstRunId()
+	began := first != "" && first != msg.GetRunId()
+	if msg.GetSegments() <= 1 && !began {
+		return ""
+	}
+
+	var line strings.Builder
+	line.WriteString("continued as new")
+	if segments := msg.GetSegments(); segments > 1 {
+		fmt.Fprintf(&line, ": segment %d of the workload", segments)
+	}
+	if began {
+		fmt.Fprintf(&line, "; began as run %s", first)
+	}
+
+	return line.String()
 }
 
 // roundedDuration renders a duration at a precision somebody reads rather than
