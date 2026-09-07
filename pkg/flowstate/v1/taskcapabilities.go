@@ -129,8 +129,13 @@ func CheckTaskCapabilitiesAvailable(required, available []string) error {
 		return nil
 	}
 
+	// Leads with the words every other surface uses for this failure, since a
+	// first-time embedder meets this sentence before any other (#1674):
+	// "capabilities" is the replay contract's word, and on its own it says
+	// neither that the task is unregistered nor what to do about it.
 	return NewTaskError(missing[0], ErrorKindUnknownTask, fmt.Errorf(
-		"required task capabilities are unavailable: %s", strings.Join(missing, ", ")))
+		"unknown task %q: required task capabilities are unavailable: %s; register it before running (Tasks.Register in an embedding program, a plugin directory on a worker), or validate the workflow first to have the step that names it pointed out",
+		missing[0], strings.Join(missing, ", ")))
 }
 
 func namesOf(registry *Registry) []string {
