@@ -348,8 +348,11 @@ func pendingWaitLines(progress *v1.RunProgress, now time.Time) []string {
 		// (#1659). Through [v1.WaitPromptDescription], so a prompt that was cut
 		// says so here in the same words every other renderer uses; nothing
 		// for a gate that asks nothing, which prints exactly what it always did.
+		// Escaped for the reason a failure's text is below: the prompt is the
+		// author's, evaluated over inputs, and a newline or an escape sequence
+		// in it would fabricate rows or restyle the terminal it is printed to.
 		if prompt := v1.WaitPromptDescription(wait); prompt != "" {
-			lines = append(lines, "prompt: "+prompt)
+			lines = append(lines, "prompt: "+ui.EscapeControl(prompt))
 		}
 	}
 

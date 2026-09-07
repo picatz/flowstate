@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -105,6 +106,7 @@ func TestAGatesPromptIsPosedBeneathIt(t *testing.T) {
 			{StepId: "approval", SignalName: "deploy-approved", Prompt: "Approve deploying v1.4.2 to production, requested by anonymous?"},
 			{StepId: "silent", SignalName: "nudge"},
 			{StepId: "long", SignalName: "ok", Prompt: "Approve the release described in the attached ", PromptTruncated: true},
+			{StepId: "hostile", SignalName: "go", Prompt: "Approve?\n\x1b[2JCLEARED"},
 		},
 	}, time.Now())
 
@@ -114,6 +116,13 @@ func TestAGatesPromptIsPosedBeneathIt(t *testing.T) {
 		`waiting at silent for signal "nudge"`,
 		`waiting at long for signal "ok"`,
 		"prompt: " + v1.WaitPromptDescription(&v1.PendingWait{Prompt: "Approve the release described in the attached ", PromptTruncated: true}),
+		`waiting at hostile for signal "go"`,
+		// The author's newline and escape sequence, spelled out rather than
+		// obeyed: a prompt is evaluated text and gets the escaping a failure
+		// message gets, so it cannot fabricate rows or restyle the terminal.
+		"prompt: " + ui.EscapeControl("Approve?\n\x1b[2JCLEARED"),
 	}, lines)
 	require.Contains(t, lines[4], "cut at", "a cut prompt does not say so")
+	require.NotContains(t, lines[6], "\n", "a newline in a prompt reached the terminal as a row")
+	require.NotContains(t, lines[6], "\x1b", "an escape sequence in a prompt reached the terminal")
 }
