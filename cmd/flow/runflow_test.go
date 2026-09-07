@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -144,6 +145,15 @@ type flowRun struct {
 // run executes the invocation and reports what it left behind.
 func (r flowRun) run(t *testing.T) flowResult {
 	t.Helper()
+
+	// A run given an egress policy replaces the `http` task in the
+	// process-wide registry, and one given a plugin directory registers the
+	// plugin's tasks there; both outlive the run. Put the registry back so
+	// the next test in the binary reads it as this build shipped it, whatever
+	// order the tests run in (#1727).
+	if slices.Contains(r.Args, "--egress-policy") || slices.Contains(r.Args, "--plugin-dir") {
+		restoreDefaultRegistryAfter(t)
+	}
 
 	ctx := r.Ctx
 	if ctx == nil {
