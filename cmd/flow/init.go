@@ -471,7 +471,9 @@ tests:
     stubs:
       # ` + "`where:`" + ` is the assertion. A ` + "`log`" + ` invocation whose message is anything
       # else matches no stub and fails the case, which ` + "`ran:`" + ` alone could not
-      # notice.
+      # notice. ` + "`returns:`" + ` is the step's finished outputs; for a step that
+      # shapes its own (` + "`http`" + ` with ` + "`outputs:`" + `), ` + "`response:`" + ` supplies the raw
+      # response instead and lets that shaping run.
       - task: log
         where: inputs.message == 'hello, flowstate'
         returns: {}
