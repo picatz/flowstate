@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -103,5 +102,3 @@ func TestATypeErrorIsStillRefusedBeforeAnyRunIsRead(t *testing.T) {
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	temporal.AssertNotCalled(t, "ListWorkflow", mock.Anything, mock.Anything)
 }
-
-var _ = context.Background

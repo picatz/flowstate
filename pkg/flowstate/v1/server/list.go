@@ -298,6 +298,13 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			evaluated++
 			matched, err := filter.Match(ctx, run)
 			if err != nil {
+				// A request that was cancelled or timed out is not a run the
+				// filter could not answer for: the evaluation was interrupted,
+				// and a page reporting that as runs left out would hide the
+				// client's own deadline behind a successful answer.
+				if ctx.Err() != nil {
+					return nil, connect.NewError(contextCode(ctx.Err()), ctx.Err())
+				}
 				excluded++
 				if firstErr == nil {
 					firstErr = err
@@ -343,6 +350,15 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	}
 
 	return connect.NewResponse(response), nil
+}
+
+// contextCode is the Connect code for a request that ended before the server
+// did: the caller's deadline, or the caller going away.
+func contextCode(err error) connect.Code {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return connect.CodeDeadlineExceeded
+	}
+	return connect.CodeCanceled
 }
 
 // summarize reduces an execution to what a listing reports.

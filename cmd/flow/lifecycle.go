@@ -443,8 +443,8 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 		"keep only the runs a CEL expression answers yes about, over `workflow_id`, "+
 			"`run_id`, `status`, `start_time`, `close_time`, `finished`, `name` "+
 			"(the workflow's own declared name, empty for a run older than this field), "+
-			"`labels` (the workflow's declared labels, a map: read a key that may be "+
-			`absent with labels.?team.orValue("")), `+"`starter` (the qualified issuer#subject who submitted "+
+			"`labels` (the workflow's declared labels, a map), where a key that may be absent "+
+			`is read with labels.?team.orValue(""); `+"`starter` (the qualified issuer#subject who submitted "+
 			"it), and `worker_version` (the Worker Deployment version the run is pinned "+
 			"to, empty where versioning is off); "+
 			`for example status == "FAILED"`)
