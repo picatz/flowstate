@@ -1071,6 +1071,8 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 // and the credential scrub, which must happen before this observes the bytes.
 func httpAnswerFromResponse(ctx context.Context, taskInputs *Task_HTTP_Inputs, outputsExpr *expr.ParsedExpr, expectSpec *Value, httpResp *http.Response, respBody []byte, scope *Scope) (*Node_Outputs, error) {
 
+	result := AttemptOutcome_RESULT_OBTAINED
+
 	// Parsing is opt-in, so a body that is not JSON is a real error here rather
 	// than a silently empty value: a step that asked for JSON and got HTML has a
 	// problem worth naming.
@@ -1079,9 +1081,11 @@ func httpAnswerFromResponse(ctx context.Context, taskInputs *Task_HTTP_Inputs, o
 		var err error
 		parsedJSON, err = parseJSONResponse(respBody)
 		if err != nil {
-			return nil, NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
-				"%s %s: %w", taskInputs.GetMethod(), taskInputs.GetUrl(), err))
+			return nil, httpResponseFailure(taskInputs, httpResp, AttemptOutcome_RESULT_DECODE_FAILED,
+				AttemptOutcome_CONTRACT_NOT_EVALUATED, ErrorKindInvalidInput,
+				fmt.Errorf("%s %s: %w", taskInputs.GetMethod(), taskInputs.GetUrl(), err))
 		}
+		result = AttemptOutcome_RESULT_DECODED
 
 		// Bounded here, before anything below gets a chance to walk it: both
 		// `expect:` (httpExpectationMet, below) and `outputs:` (the
@@ -1102,7 +1106,7 @@ func httpAnswerFromResponse(ctx context.Context, taskInputs *Task_HTTP_Inputs, o
 
 	respVars := httpResponseVars(httpResp, respBody, parsedJSON)
 
-	if err := httpExpectationMet(ctx, taskInputs, expectSpec, httpResp, respVars, scope); err != nil {
+	if err := httpExpectationMet(ctx, taskInputs, expectSpec, httpResp, respVars, scope, result); err != nil {
 		return nil, err
 	}
 

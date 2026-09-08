@@ -301,8 +301,9 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOn
 // retryability from the error's application type, so an unclassified error is
 // retried until the attempt budget is exhausted — which for a deterministic
 // failure wastes the budget, and for a non-idempotent request repeats an
-// operation that already took effect. Classification happens in the
-// execution-independent layer; this function only maps it onto the substrate.
+// operation that already took effect. Classification and structured attempt
+// permission happen in the execution-independent layer; this function only
+// maps them onto the substrate.
 //
 // continueOnError is the step's own `continue_on_error:` (#750), threaded in
 // from every caller's own parameter of the same name — see [Task]'s doc for
@@ -345,7 +346,7 @@ func activityError(taskName string, err error, continueOnError bool) error {
 		category = temporal.ApplicationErrorCategoryBenign
 	}
 
-	if kind.Retryable() {
+	if v1.RetryPermitted(err) {
 		// A failure that told us when to come back gets that carried to the
 		// substrate, which schedules the next attempt. The alternative — sleeping
 		// where the failure happened — would hold a worker slot for the duration.

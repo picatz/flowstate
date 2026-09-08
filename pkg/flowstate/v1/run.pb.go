@@ -11,6 +11,7 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -23,6 +24,301 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
+
+// Effect is what the attempt established about the operation at its peer.
+type AttemptOutcome_Effect int32
+
+const (
+	// EFFECT_UNSPECIFIED means the producer supplied no effect evidence.
+	AttemptOutcome_EFFECT_UNSPECIFIED AttemptOutcome_Effect = 0
+	// EFFECT_NONE means the operation was refused before an external effect.
+	AttemptOutcome_EFFECT_NONE AttemptOutcome_Effect = 1
+	// EFFECT_KNOWN means the peer established the operation's outcome.
+	AttemptOutcome_EFFECT_KNOWN AttemptOutcome_Effect = 2
+	// EFFECT_PARTIAL means only some of a composite operation is established.
+	AttemptOutcome_EFFECT_PARTIAL AttemptOutcome_Effect = 3
+	// EFFECT_UNKNOWN means the operation may have taken effect.
+	AttemptOutcome_EFFECT_UNKNOWN AttemptOutcome_Effect = 4
+)
+
+// Enum value maps for AttemptOutcome_Effect.
+var (
+	AttemptOutcome_Effect_name = map[int32]string{
+		0: "EFFECT_UNSPECIFIED",
+		1: "EFFECT_NONE",
+		2: "EFFECT_KNOWN",
+		3: "EFFECT_PARTIAL",
+		4: "EFFECT_UNKNOWN",
+	}
+	AttemptOutcome_Effect_value = map[string]int32{
+		"EFFECT_UNSPECIFIED": 0,
+		"EFFECT_NONE":        1,
+		"EFFECT_KNOWN":       2,
+		"EFFECT_PARTIAL":     3,
+		"EFFECT_UNKNOWN":     4,
+	}
+)
+
+func (x AttemptOutcome_Effect) Enum() *AttemptOutcome_Effect {
+	p := new(AttemptOutcome_Effect)
+	*p = x
+	return p
+}
+
+func (x AttemptOutcome_Effect) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AttemptOutcome_Effect) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_run_proto_enumTypes[0].Descriptor()
+}
+
+func (AttemptOutcome_Effect) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_run_proto_enumTypes[0]
+}
+
+func (x AttemptOutcome_Effect) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AttemptOutcome_Effect.Descriptor instead.
+func (AttemptOutcome_Effect) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{0, 0}
+}
+
+// Result is whether a bounded result arrived and, when requested, decoded.
+type AttemptOutcome_Result int32
+
+const (
+	// RESULT_UNSPECIFIED means the producer supplied no result evidence.
+	AttemptOutcome_RESULT_UNSPECIFIED AttemptOutcome_Result = 0
+	// RESULT_NOT_OBTAINED means no result arrived from the peer.
+	AttemptOutcome_RESULT_NOT_OBTAINED AttemptOutcome_Result = 1
+	// RESULT_OBTAINED means a bounded raw result arrived and needed no decode.
+	AttemptOutcome_RESULT_OBTAINED AttemptOutcome_Result = 2
+	// RESULT_DECODED means the requested decoding succeeded.
+	AttemptOutcome_RESULT_DECODED AttemptOutcome_Result = 3
+	// RESULT_DECODE_FAILED means a result arrived but requested decoding failed.
+	AttemptOutcome_RESULT_DECODE_FAILED AttemptOutcome_Result = 4
+)
+
+// Enum value maps for AttemptOutcome_Result.
+var (
+	AttemptOutcome_Result_name = map[int32]string{
+		0: "RESULT_UNSPECIFIED",
+		1: "RESULT_NOT_OBTAINED",
+		2: "RESULT_OBTAINED",
+		3: "RESULT_DECODED",
+		4: "RESULT_DECODE_FAILED",
+	}
+	AttemptOutcome_Result_value = map[string]int32{
+		"RESULT_UNSPECIFIED":   0,
+		"RESULT_NOT_OBTAINED":  1,
+		"RESULT_OBTAINED":      2,
+		"RESULT_DECODED":       3,
+		"RESULT_DECODE_FAILED": 4,
+	}
+)
+
+func (x AttemptOutcome_Result) Enum() *AttemptOutcome_Result {
+	p := new(AttemptOutcome_Result)
+	*p = x
+	return p
+}
+
+func (x AttemptOutcome_Result) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AttemptOutcome_Result) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_run_proto_enumTypes[1].Descriptor()
+}
+
+func (AttemptOutcome_Result) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_run_proto_enumTypes[1]
+}
+
+func (x AttemptOutcome_Result) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AttemptOutcome_Result.Descriptor instead.
+func (AttemptOutcome_Result) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{0, 1}
+}
+
+// Contract is the attempt result's relationship to the task's postcondition.
+type AttemptOutcome_Contract int32
+
+const (
+	// CONTRACT_UNSPECIFIED means the producer supplied no contract evidence.
+	AttemptOutcome_CONTRACT_UNSPECIFIED AttemptOutcome_Contract = 0
+	// CONTRACT_NOT_EVALUATED means no postcondition was evaluated.
+	AttemptOutcome_CONTRACT_NOT_EVALUATED AttemptOutcome_Contract = 1
+	// CONTRACT_SATISFIED means the postcondition accepted the result.
+	AttemptOutcome_CONTRACT_SATISFIED AttemptOutcome_Contract = 2
+	// CONTRACT_UNSATISFIED means the postcondition rejected the result.
+	AttemptOutcome_CONTRACT_UNSATISFIED AttemptOutcome_Contract = 3
+	// CONTRACT_EVALUATION_FAILED means evaluating the postcondition failed.
+	AttemptOutcome_CONTRACT_EVALUATION_FAILED AttemptOutcome_Contract = 4
+)
+
+// Enum value maps for AttemptOutcome_Contract.
+var (
+	AttemptOutcome_Contract_name = map[int32]string{
+		0: "CONTRACT_UNSPECIFIED",
+		1: "CONTRACT_NOT_EVALUATED",
+		2: "CONTRACT_SATISFIED",
+		3: "CONTRACT_UNSATISFIED",
+		4: "CONTRACT_EVALUATION_FAILED",
+	}
+	AttemptOutcome_Contract_value = map[string]int32{
+		"CONTRACT_UNSPECIFIED":       0,
+		"CONTRACT_NOT_EVALUATED":     1,
+		"CONTRACT_SATISFIED":         2,
+		"CONTRACT_UNSATISFIED":       3,
+		"CONTRACT_EVALUATION_FAILED": 4,
+	}
+)
+
+func (x AttemptOutcome_Contract) Enum() *AttemptOutcome_Contract {
+	p := new(AttemptOutcome_Contract)
+	*p = x
+	return p
+}
+
+func (x AttemptOutcome_Contract) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AttemptOutcome_Contract) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_run_proto_enumTypes[2].Descriptor()
+}
+
+func (AttemptOutcome_Contract) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_run_proto_enumTypes[2]
+}
+
+func (x AttemptOutcome_Contract) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AttemptOutcome_Contract.Descriptor instead.
+func (AttemptOutcome_Contract) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{0, 2}
+}
+
+// RepeatSafety says whether another delivery can duplicate or conflict with
+// an external effect. REQUIRES_RECONCILIATION is the fail-closed answer when
+// the effect is unknown and the operation is not known to be idempotent.
+type AttemptOutcome_RepeatSafety int32
+
+const (
+	// REPEAT_SAFETY_UNSPECIFIED means repeat safety was not established.
+	AttemptOutcome_REPEAT_SAFETY_UNSPECIFIED AttemptOutcome_RepeatSafety = 0
+	// REPEAT_SAFETY_SAFE means another delivery cannot duplicate the effect.
+	AttemptOutcome_REPEAT_SAFETY_SAFE AttemptOutcome_RepeatSafety = 1
+	// REPEAT_SAFETY_UNSAFE means another delivery can duplicate the effect.
+	AttemptOutcome_REPEAT_SAFETY_UNSAFE AttemptOutcome_RepeatSafety = 2
+	// REPEAT_SAFETY_REQUIRES_RECONCILIATION means the effect must be checked first.
+	AttemptOutcome_REPEAT_SAFETY_REQUIRES_RECONCILIATION AttemptOutcome_RepeatSafety = 3
+)
+
+// Enum value maps for AttemptOutcome_RepeatSafety.
+var (
+	AttemptOutcome_RepeatSafety_name = map[int32]string{
+		0: "REPEAT_SAFETY_UNSPECIFIED",
+		1: "REPEAT_SAFETY_SAFE",
+		2: "REPEAT_SAFETY_UNSAFE",
+		3: "REPEAT_SAFETY_REQUIRES_RECONCILIATION",
+	}
+	AttemptOutcome_RepeatSafety_value = map[string]int32{
+		"REPEAT_SAFETY_UNSPECIFIED":             0,
+		"REPEAT_SAFETY_SAFE":                    1,
+		"REPEAT_SAFETY_UNSAFE":                  2,
+		"REPEAT_SAFETY_REQUIRES_RECONCILIATION": 3,
+	}
+)
+
+func (x AttemptOutcome_RepeatSafety) Enum() *AttemptOutcome_RepeatSafety {
+	p := new(AttemptOutcome_RepeatSafety)
+	*p = x
+	return p
+}
+
+func (x AttemptOutcome_RepeatSafety) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AttemptOutcome_RepeatSafety) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_run_proto_enumTypes[3].Descriptor()
+}
+
+func (AttemptOutcome_RepeatSafety) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_run_proto_enumTypes[3]
+}
+
+func (x AttemptOutcome_RepeatSafety) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AttemptOutcome_RepeatSafety.Descriptor instead.
+func (AttemptOutcome_RepeatSafety) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{0, 3}
+}
+
+// RetryPermission is the task's fail-closed advice before policy and budget.
+type AttemptOutcome_RetryPermission int32
+
+const (
+	// RETRY_PERMISSION_UNSPECIFIED denies retry for a structured outcome.
+	AttemptOutcome_RETRY_PERMISSION_UNSPECIFIED AttemptOutcome_RetryPermission = 0
+	// RETRY_PERMISSION_PERMITTED allows policy and budget to schedule a retry.
+	AttemptOutcome_RETRY_PERMISSION_PERMITTED AttemptOutcome_RetryPermission = 1
+	// RETRY_PERMISSION_DENIED stops retries for this failure.
+	AttemptOutcome_RETRY_PERMISSION_DENIED AttemptOutcome_RetryPermission = 2
+)
+
+// Enum value maps for AttemptOutcome_RetryPermission.
+var (
+	AttemptOutcome_RetryPermission_name = map[int32]string{
+		0: "RETRY_PERMISSION_UNSPECIFIED",
+		1: "RETRY_PERMISSION_PERMITTED",
+		2: "RETRY_PERMISSION_DENIED",
+	}
+	AttemptOutcome_RetryPermission_value = map[string]int32{
+		"RETRY_PERMISSION_UNSPECIFIED": 0,
+		"RETRY_PERMISSION_PERMITTED":   1,
+		"RETRY_PERMISSION_DENIED":      2,
+	}
+)
+
+func (x AttemptOutcome_RetryPermission) Enum() *AttemptOutcome_RetryPermission {
+	p := new(AttemptOutcome_RetryPermission)
+	*p = x
+	return p
+}
+
+func (x AttemptOutcome_RetryPermission) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AttemptOutcome_RetryPermission) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_run_proto_enumTypes[4].Descriptor()
+}
+
+func (AttemptOutcome_RetryPermission) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_run_proto_enumTypes[4]
+}
+
+func (x AttemptOutcome_RetryPermission) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AttemptOutcome_RetryPermission.Descriptor instead.
+func (AttemptOutcome_RetryPermission) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{0, 4}
+}
 
 // Kind is what happened, as the small set a reader is actually asking about.
 //
@@ -139,11 +435,11 @@ func (x TimelineEntry_Kind) String() string {
 }
 
 func (TimelineEntry_Kind) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_run_proto_enumTypes[0].Descriptor()
+	return file_flowstate_v1_run_proto_enumTypes[5].Descriptor()
 }
 
 func (TimelineEntry_Kind) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_run_proto_enumTypes[0]
+	return &file_flowstate_v1_run_proto_enumTypes[5]
 }
 
 func (x TimelineEntry_Kind) Number() protoreflect.EnumNumber {
@@ -152,7 +448,121 @@ func (x TimelineEntry_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TimelineEntry_Kind.Descriptor instead.
 func (TimelineEntry_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{11, 0}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{12, 0}
+}
+
+// AttemptOutcome records the independent facts established by one task attempt.
+//
+// It is evidence, not task output: authors cannot read it through `steps.*`, and
+// it carries no response body or plugin payload. Results remain in Node.Outputs;
+// this bounded message records only whether a result was obtained and decoded.
+// Keeping these observations separate prevents a failed decoder or postcondition
+// from silently changing whether an external mutation happened or may be repeated.
+//
+// RetryPermission is the task's permission to repeat this operation, not a retry
+// schedule. A driver still intersects it with the step's retry policy, remaining
+// attempt and time budgets, and deployment policy. PERMITTED can never widen any
+// of those limits; DENIED stops both drivers even when the projected ErrorKind is
+// otherwise retryable.
+type AttemptOutcome struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Effect is the external-effect evidence this attempt established.
+	Effect AttemptOutcome_Effect `protobuf:"varint,1,opt,name=effect,proto3,enum=flowstate.v1.AttemptOutcome_Effect" json:"effect,omitempty"`
+	// Result is the raw-result and decoding evidence this attempt established.
+	Result AttemptOutcome_Result `protobuf:"varint,2,opt,name=result,proto3,enum=flowstate.v1.AttemptOutcome_Result" json:"result,omitempty"`
+	// Contract is the postcondition evidence this attempt established.
+	Contract AttemptOutcome_Contract `protobuf:"varint,3,opt,name=contract,proto3,enum=flowstate.v1.AttemptOutcome_Contract" json:"contract,omitempty"`
+	// RepeatSafety is derived from the effect and operation semantics.
+	RepeatSafety AttemptOutcome_RepeatSafety `protobuf:"varint,4,opt,name=repeat_safety,json=repeatSafety,proto3,enum=flowstate.v1.AttemptOutcome_RepeatSafety" json:"repeat_safety,omitempty"`
+	// RetryPermission constrains, but cannot widen, policy or budget.
+	RetryPermission AttemptOutcome_RetryPermission `protobuf:"varint,5,opt,name=retry_permission,json=retryPermission,proto3,enum=flowstate.v1.AttemptOutcome_RetryPermission" json:"retry_permission,omitempty"`
+	// Deliveries is counted where a transport can observe it. Zero means the
+	// producer cannot establish a count; it must never be inferred as one.
+	Deliveries uint32 `protobuf:"varint,6,opt,name=deliveries,proto3" json:"deliveries,omitempty"`
+	// RetryAfter is a peer's bounded scheduling preference. It is meaningful only
+	// with RETRY_PERMISSION_PERMITTED and does not itself grant retry permission.
+	RetryAfter    *durationpb.Duration `protobuf:"bytes,7,opt,name=retry_after,json=retryAfter,proto3" json:"retry_after,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AttemptOutcome) Reset() {
+	*x = AttemptOutcome{}
+	mi := &file_flowstate_v1_run_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttemptOutcome) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttemptOutcome) ProtoMessage() {}
+
+func (x *AttemptOutcome) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_run_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttemptOutcome.ProtoReflect.Descriptor instead.
+func (*AttemptOutcome) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *AttemptOutcome) GetEffect() AttemptOutcome_Effect {
+	if x != nil {
+		return x.Effect
+	}
+	return AttemptOutcome_EFFECT_UNSPECIFIED
+}
+
+func (x *AttemptOutcome) GetResult() AttemptOutcome_Result {
+	if x != nil {
+		return x.Result
+	}
+	return AttemptOutcome_RESULT_UNSPECIFIED
+}
+
+func (x *AttemptOutcome) GetContract() AttemptOutcome_Contract {
+	if x != nil {
+		return x.Contract
+	}
+	return AttemptOutcome_CONTRACT_UNSPECIFIED
+}
+
+func (x *AttemptOutcome) GetRepeatSafety() AttemptOutcome_RepeatSafety {
+	if x != nil {
+		return x.RepeatSafety
+	}
+	return AttemptOutcome_REPEAT_SAFETY_UNSPECIFIED
+}
+
+func (x *AttemptOutcome) GetRetryPermission() AttemptOutcome_RetryPermission {
+	if x != nil {
+		return x.RetryPermission
+	}
+	return AttemptOutcome_RETRY_PERMISSION_UNSPECIFIED
+}
+
+func (x *AttemptOutcome) GetDeliveries() uint32 {
+	if x != nil {
+		return x.Deliveries
+	}
+	return 0
+}
+
+func (x *AttemptOutcome) GetRetryAfter() *durationpb.Duration {
+	if x != nil {
+		return x.RetryAfter
+	}
+	return nil
 }
 
 // PendingUndo is one compensation a run has registered and not yet run.
@@ -204,7 +614,7 @@ type PendingUndo struct {
 
 func (x *PendingUndo) Reset() {
 	*x = PendingUndo{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[0]
+	mi := &file_flowstate_v1_run_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -216,7 +626,7 @@ func (x *PendingUndo) String() string {
 func (*PendingUndo) ProtoMessage() {}
 
 func (x *PendingUndo) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[0]
+	mi := &file_flowstate_v1_run_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -229,7 +639,7 @@ func (x *PendingUndo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingUndo.ProtoReflect.Descriptor instead.
 func (*PendingUndo) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *PendingUndo) GetStepId() string {
@@ -272,7 +682,7 @@ type PendingSignal struct {
 
 func (x *PendingSignal) Reset() {
 	*x = PendingSignal{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[1]
+	mi := &file_flowstate_v1_run_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -284,7 +694,7 @@ func (x *PendingSignal) String() string {
 func (*PendingSignal) ProtoMessage() {}
 
 func (x *PendingSignal) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[1]
+	mi := &file_flowstate_v1_run_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -297,7 +707,7 @@ func (x *PendingSignal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingSignal.ProtoReflect.Descriptor instead.
 func (*PendingSignal) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PendingSignal) GetName() string {
@@ -342,7 +752,7 @@ type SignalDelivery struct {
 
 func (x *SignalDelivery) Reset() {
 	*x = SignalDelivery{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[2]
+	mi := &file_flowstate_v1_run_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -354,7 +764,7 @@ func (x *SignalDelivery) String() string {
 func (*SignalDelivery) ProtoMessage() {}
 
 func (x *SignalDelivery) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[2]
+	mi := &file_flowstate_v1_run_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -367,7 +777,7 @@ func (x *SignalDelivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalDelivery.ProtoReflect.Descriptor instead.
 func (*SignalDelivery) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SignalDelivery) GetPayload() *Node_Outputs {
@@ -527,7 +937,7 @@ type Scope struct {
 
 func (x *Scope) Reset() {
 	*x = Scope{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[3]
+	mi := &file_flowstate_v1_run_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -539,7 +949,7 @@ func (x *Scope) String() string {
 func (*Scope) ProtoMessage() {}
 
 func (x *Scope) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[3]
+	mi := &file_flowstate_v1_run_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -552,7 +962,7 @@ func (x *Scope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Scope.ProtoReflect.Descriptor instead.
 func (*Scope) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Scope) GetOutputs() *Workflow_StepOutputs {
@@ -669,7 +1079,7 @@ type RunAddress struct {
 
 func (x *RunAddress) Reset() {
 	*x = RunAddress{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[4]
+	mi := &file_flowstate_v1_run_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -681,7 +1091,7 @@ func (x *RunAddress) String() string {
 func (*RunAddress) ProtoMessage() {}
 
 func (x *RunAddress) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[4]
+	mi := &file_flowstate_v1_run_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -694,7 +1104,7 @@ func (x *RunAddress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunAddress.ProtoReflect.Descriptor instead.
 func (*RunAddress) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RunAddress) GetWorkflowId() string {
@@ -754,7 +1164,7 @@ type EntityState struct {
 
 func (x *EntityState) Reset() {
 	*x = EntityState{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[5]
+	mi := &file_flowstate_v1_run_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -766,7 +1176,7 @@ func (x *EntityState) String() string {
 func (*EntityState) ProtoMessage() {}
 
 func (x *EntityState) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[5]
+	mi := &file_flowstate_v1_run_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -779,7 +1189,7 @@ func (x *EntityState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntityState.ProtoReflect.Descriptor instead.
 func (*EntityState) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *EntityState) GetVars() map[string]*Value {
@@ -861,7 +1271,7 @@ type PendingActivity struct {
 
 func (x *PendingActivity) Reset() {
 	*x = PendingActivity{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[6]
+	mi := &file_flowstate_v1_run_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -873,7 +1283,7 @@ func (x *PendingActivity) String() string {
 func (*PendingActivity) ProtoMessage() {}
 
 func (x *PendingActivity) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[6]
+	mi := &file_flowstate_v1_run_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -886,7 +1296,7 @@ func (x *PendingActivity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingActivity.ProtoReflect.Descriptor instead.
 func (*PendingActivity) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{6}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PendingActivity) GetAttempt() int32 {
@@ -983,7 +1393,7 @@ type RunProgress struct {
 
 func (x *RunProgress) Reset() {
 	*x = RunProgress{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[7]
+	mi := &file_flowstate_v1_run_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -995,7 +1405,7 @@ func (x *RunProgress) String() string {
 func (*RunProgress) ProtoMessage() {}
 
 func (x *RunProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[7]
+	mi := &file_flowstate_v1_run_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1008,7 +1418,7 @@ func (x *RunProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunProgress.ProtoReflect.Descriptor instead.
 func (*RunProgress) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{7}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RunProgress) GetStepId() string {
@@ -1134,7 +1544,7 @@ type PendingWait struct {
 
 func (x *PendingWait) Reset() {
 	*x = PendingWait{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[8]
+	mi := &file_flowstate_v1_run_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1146,7 +1556,7 @@ func (x *PendingWait) String() string {
 func (*PendingWait) ProtoMessage() {}
 
 func (x *PendingWait) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[8]
+	mi := &file_flowstate_v1_run_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1159,7 +1569,7 @@ func (x *PendingWait) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PendingWait.ProtoReflect.Descriptor instead.
 func (*PendingWait) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{8}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PendingWait) GetStepId() string {
@@ -1311,7 +1721,7 @@ type Frame struct {
 
 func (x *Frame) Reset() {
 	*x = Frame{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[9]
+	mi := &file_flowstate_v1_run_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1323,7 +1733,7 @@ func (x *Frame) String() string {
 func (*Frame) ProtoMessage() {}
 
 func (x *Frame) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[9]
+	mi := &file_flowstate_v1_run_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1336,7 +1746,7 @@ func (x *Frame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Frame.ProtoReflect.Descriptor instead.
 func (*Frame) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{9}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Frame) GetNextNode() int32 {
@@ -1543,7 +1953,7 @@ type RunState struct {
 
 func (x *RunState) Reset() {
 	*x = RunState{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[10]
+	mi := &file_flowstate_v1_run_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1555,7 +1965,7 @@ func (x *RunState) String() string {
 func (*RunState) ProtoMessage() {}
 
 func (x *RunState) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[10]
+	mi := &file_flowstate_v1_run_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1568,7 +1978,7 @@ func (x *RunState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunState.ProtoReflect.Descriptor instead.
 func (*RunState) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{10}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RunState) GetWorkflow() *Workflow {
@@ -1774,7 +2184,7 @@ type TimelineEntry struct {
 
 func (x *TimelineEntry) Reset() {
 	*x = TimelineEntry{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[11]
+	mi := &file_flowstate_v1_run_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1786,7 +2196,7 @@ func (x *TimelineEntry) String() string {
 func (*TimelineEntry) ProtoMessage() {}
 
 func (x *TimelineEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[11]
+	mi := &file_flowstate_v1_run_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1799,7 +2209,7 @@ func (x *TimelineEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimelineEntry.ProtoReflect.Descriptor instead.
 func (*TimelineEntry) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{11}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TimelineEntry) GetEventId() int64 {
@@ -1855,7 +2265,45 @@ var File_flowstate_v1_run_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\n" +
-	"\x16flowstate/v1/run.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"m\n" +
+	"\x16flowstate/v1/run.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x83\t\n" +
+	"\x0eAttemptOutcome\x12E\n" +
+	"\x06effect\x18\x01 \x01(\x0e2#.flowstate.v1.AttemptOutcome.EffectB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06effect\x12E\n" +
+	"\x06result\x18\x02 \x01(\x0e2#.flowstate.v1.AttemptOutcome.ResultB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06result\x12K\n" +
+	"\bcontract\x18\x03 \x01(\x0e2%.flowstate.v1.AttemptOutcome.ContractB\b\xbaH\x05\x82\x01\x02\x10\x01R\bcontract\x12X\n" +
+	"\rrepeat_safety\x18\x04 \x01(\x0e2).flowstate.v1.AttemptOutcome.RepeatSafetyB\b\xbaH\x05\x82\x01\x02\x10\x01R\frepeatSafety\x12a\n" +
+	"\x10retry_permission\x18\x05 \x01(\x0e2,.flowstate.v1.AttemptOutcome.RetryPermissionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x0fretryPermission\x12\x1e\n" +
+	"\n" +
+	"deliveries\x18\x06 \x01(\rR\n" +
+	"deliveries\x12:\n" +
+	"\vretry_after\x18\a \x01(\v2\x19.google.protobuf.DurationR\n" +
+	"retryAfter\"k\n" +
+	"\x06Effect\x12\x16\n" +
+	"\x12EFFECT_UNSPECIFIED\x10\x00\x12\x0f\n" +
+	"\vEFFECT_NONE\x10\x01\x12\x10\n" +
+	"\fEFFECT_KNOWN\x10\x02\x12\x12\n" +
+	"\x0eEFFECT_PARTIAL\x10\x03\x12\x12\n" +
+	"\x0eEFFECT_UNKNOWN\x10\x04\"|\n" +
+	"\x06Result\x12\x16\n" +
+	"\x12RESULT_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13RESULT_NOT_OBTAINED\x10\x01\x12\x13\n" +
+	"\x0fRESULT_OBTAINED\x10\x02\x12\x12\n" +
+	"\x0eRESULT_DECODED\x10\x03\x12\x18\n" +
+	"\x14RESULT_DECODE_FAILED\x10\x04\"\x92\x01\n" +
+	"\bContract\x12\x18\n" +
+	"\x14CONTRACT_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16CONTRACT_NOT_EVALUATED\x10\x01\x12\x16\n" +
+	"\x12CONTRACT_SATISFIED\x10\x02\x12\x18\n" +
+	"\x14CONTRACT_UNSATISFIED\x10\x03\x12\x1e\n" +
+	"\x1aCONTRACT_EVALUATION_FAILED\x10\x04\"\x8a\x01\n" +
+	"\fRepeatSafety\x12\x1d\n" +
+	"\x19REPEAT_SAFETY_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12REPEAT_SAFETY_SAFE\x10\x01\x12\x18\n" +
+	"\x14REPEAT_SAFETY_UNSAFE\x10\x02\x12)\n" +
+	"%REPEAT_SAFETY_REQUIRES_RECONCILIATION\x10\x03\"p\n" +
+	"\x0fRetryPermission\x12 \n" +
+	"\x1cRETRY_PERMISSION_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aRETRY_PERMISSION_PERMITTED\x10\x01\x12\x1b\n" +
+	"\x17RETRY_PERMISSION_DENIED\x10\x02\"m\n" +
 	"\vPendingUndo\x12*\n" +
 	"\astep_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\x01R\x06stepId\x122\n" +
@@ -1997,89 +2445,102 @@ func file_flowstate_v1_run_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_run_proto_rawDescData
 }
 
-var file_flowstate_v1_run_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_flowstate_v1_run_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_flowstate_v1_run_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_flowstate_v1_run_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_flowstate_v1_run_proto_goTypes = []any{
-	(TimelineEntry_Kind)(0),       // 0: flowstate.v1.TimelineEntry.Kind
-	(*PendingUndo)(nil),           // 1: flowstate.v1.PendingUndo
-	(*PendingSignal)(nil),         // 2: flowstate.v1.PendingSignal
-	(*SignalDelivery)(nil),        // 3: flowstate.v1.SignalDelivery
-	(*Scope)(nil),                 // 4: flowstate.v1.Scope
-	(*RunAddress)(nil),            // 5: flowstate.v1.RunAddress
-	(*EntityState)(nil),           // 6: flowstate.v1.EntityState
-	(*PendingActivity)(nil),       // 7: flowstate.v1.PendingActivity
-	(*RunProgress)(nil),           // 8: flowstate.v1.RunProgress
-	(*PendingWait)(nil),           // 9: flowstate.v1.PendingWait
-	(*Frame)(nil),                 // 10: flowstate.v1.Frame
-	(*RunState)(nil),              // 11: flowstate.v1.RunState
-	(*TimelineEntry)(nil),         // 12: flowstate.v1.TimelineEntry
-	nil,                           // 13: flowstate.v1.Scope.VarsEntry
-	nil,                           // 14: flowstate.v1.Scope.AmbientVarsEntry
-	nil,                           // 15: flowstate.v1.Scope.InputsEntry
-	nil,                           // 16: flowstate.v1.EntityState.VarsEntry
-	nil,                           // 17: flowstate.v1.EntityState.LoopStateEntry
-	nil,                           // 18: flowstate.v1.Frame.CallVarsEntry
-	nil,                           // 19: flowstate.v1.RunState.VarsEntry
-	nil,                           // 20: flowstate.v1.RunState.InputsEntry
-	(*Task)(nil),                  // 21: flowstate.v1.Task
-	(*Node_Outputs)(nil),          // 22: flowstate.v1.Node.Outputs
-	(*SignalSender)(nil),          // 23: flowstate.v1.SignalSender
-	(*Workflow_StepOutputs)(nil),  // 24: flowstate.v1.Workflow.StepOutputs
-	(*WorkloadIdentity)(nil),      // 25: flowstate.v1.WorkloadIdentity
-	(*TriggerContext)(nil),        // 26: flowstate.v1.TriggerContext
-	(*timestamppb.Timestamp)(nil), // 27: google.protobuf.Timestamp
-	(*Value)(nil),                 // 28: flowstate.v1.Value
-	(*Workflow)(nil),              // 29: flowstate.v1.Workflow
-	(*RunOutputs)(nil),            // 30: flowstate.v1.RunOutputs
+	(AttemptOutcome_Effect)(0),          // 0: flowstate.v1.AttemptOutcome.Effect
+	(AttemptOutcome_Result)(0),          // 1: flowstate.v1.AttemptOutcome.Result
+	(AttemptOutcome_Contract)(0),        // 2: flowstate.v1.AttemptOutcome.Contract
+	(AttemptOutcome_RepeatSafety)(0),    // 3: flowstate.v1.AttemptOutcome.RepeatSafety
+	(AttemptOutcome_RetryPermission)(0), // 4: flowstate.v1.AttemptOutcome.RetryPermission
+	(TimelineEntry_Kind)(0),             // 5: flowstate.v1.TimelineEntry.Kind
+	(*AttemptOutcome)(nil),              // 6: flowstate.v1.AttemptOutcome
+	(*PendingUndo)(nil),                 // 7: flowstate.v1.PendingUndo
+	(*PendingSignal)(nil),               // 8: flowstate.v1.PendingSignal
+	(*SignalDelivery)(nil),              // 9: flowstate.v1.SignalDelivery
+	(*Scope)(nil),                       // 10: flowstate.v1.Scope
+	(*RunAddress)(nil),                  // 11: flowstate.v1.RunAddress
+	(*EntityState)(nil),                 // 12: flowstate.v1.EntityState
+	(*PendingActivity)(nil),             // 13: flowstate.v1.PendingActivity
+	(*RunProgress)(nil),                 // 14: flowstate.v1.RunProgress
+	(*PendingWait)(nil),                 // 15: flowstate.v1.PendingWait
+	(*Frame)(nil),                       // 16: flowstate.v1.Frame
+	(*RunState)(nil),                    // 17: flowstate.v1.RunState
+	(*TimelineEntry)(nil),               // 18: flowstate.v1.TimelineEntry
+	nil,                                 // 19: flowstate.v1.Scope.VarsEntry
+	nil,                                 // 20: flowstate.v1.Scope.AmbientVarsEntry
+	nil,                                 // 21: flowstate.v1.Scope.InputsEntry
+	nil,                                 // 22: flowstate.v1.EntityState.VarsEntry
+	nil,                                 // 23: flowstate.v1.EntityState.LoopStateEntry
+	nil,                                 // 24: flowstate.v1.Frame.CallVarsEntry
+	nil,                                 // 25: flowstate.v1.RunState.VarsEntry
+	nil,                                 // 26: flowstate.v1.RunState.InputsEntry
+	(*durationpb.Duration)(nil),         // 27: google.protobuf.Duration
+	(*Task)(nil),                        // 28: flowstate.v1.Task
+	(*Node_Outputs)(nil),                // 29: flowstate.v1.Node.Outputs
+	(*SignalSender)(nil),                // 30: flowstate.v1.SignalSender
+	(*Workflow_StepOutputs)(nil),        // 31: flowstate.v1.Workflow.StepOutputs
+	(*WorkloadIdentity)(nil),            // 32: flowstate.v1.WorkloadIdentity
+	(*TriggerContext)(nil),              // 33: flowstate.v1.TriggerContext
+	(*timestamppb.Timestamp)(nil),       // 34: google.protobuf.Timestamp
+	(*Value)(nil),                       // 35: flowstate.v1.Value
+	(*Workflow)(nil),                    // 36: flowstate.v1.Workflow
+	(*RunOutputs)(nil),                  // 37: flowstate.v1.RunOutputs
 }
 var file_flowstate_v1_run_proto_depIdxs = []int32{
-	21, // 0: flowstate.v1.PendingUndo.task:type_name -> flowstate.v1.Task
-	22, // 1: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
-	23, // 2: flowstate.v1.PendingSignal.sender:type_name -> flowstate.v1.SignalSender
-	22, // 3: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
-	23, // 4: flowstate.v1.SignalDelivery.sender:type_name -> flowstate.v1.SignalSender
-	24, // 5: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	13, // 6: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
-	14, // 7: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
-	15, // 8: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
-	25, // 9: flowstate.v1.Scope.identity:type_name -> flowstate.v1.WorkloadIdentity
-	5,  // 10: flowstate.v1.Scope.address:type_name -> flowstate.v1.RunAddress
-	26, // 11: flowstate.v1.Scope.trigger:type_name -> flowstate.v1.TriggerContext
-	16, // 12: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
-	17, // 13: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
-	27, // 14: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
-	9,  // 15: flowstate.v1.RunProgress.pending_waits:type_name -> flowstate.v1.PendingWait
-	27, // 16: flowstate.v1.PendingWait.deadline:type_name -> google.protobuf.Timestamp
-	24, // 17: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
-	24, // 18: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	18, // 19: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
-	28, // 20: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
-	29, // 21: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
-	24, // 22: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	10, // 23: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
-	25, // 24: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
-	2,  // 25: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
-	19, // 26: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
-	20, // 27: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
-	30, // 28: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
-	1,  // 29: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
-	26, // 30: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
-	27, // 31: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
-	27, // 32: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
-	0,  // 33: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
-	28, // 34: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 35: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 36: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
-	28, // 37: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 38: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
-	28, // 39: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 40: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	28, // 41: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
-	42, // [42:42] is the sub-list for method output_type
-	42, // [42:42] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	0,  // 0: flowstate.v1.AttemptOutcome.effect:type_name -> flowstate.v1.AttemptOutcome.Effect
+	1,  // 1: flowstate.v1.AttemptOutcome.result:type_name -> flowstate.v1.AttemptOutcome.Result
+	2,  // 2: flowstate.v1.AttemptOutcome.contract:type_name -> flowstate.v1.AttemptOutcome.Contract
+	3,  // 3: flowstate.v1.AttemptOutcome.repeat_safety:type_name -> flowstate.v1.AttemptOutcome.RepeatSafety
+	4,  // 4: flowstate.v1.AttemptOutcome.retry_permission:type_name -> flowstate.v1.AttemptOutcome.RetryPermission
+	27, // 5: flowstate.v1.AttemptOutcome.retry_after:type_name -> google.protobuf.Duration
+	28, // 6: flowstate.v1.PendingUndo.task:type_name -> flowstate.v1.Task
+	29, // 7: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
+	30, // 8: flowstate.v1.PendingSignal.sender:type_name -> flowstate.v1.SignalSender
+	29, // 9: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
+	30, // 10: flowstate.v1.SignalDelivery.sender:type_name -> flowstate.v1.SignalSender
+	31, // 11: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	19, // 12: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
+	20, // 13: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
+	21, // 14: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
+	32, // 15: flowstate.v1.Scope.identity:type_name -> flowstate.v1.WorkloadIdentity
+	11, // 16: flowstate.v1.Scope.address:type_name -> flowstate.v1.RunAddress
+	33, // 17: flowstate.v1.Scope.trigger:type_name -> flowstate.v1.TriggerContext
+	22, // 18: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
+	23, // 19: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
+	34, // 20: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
+	15, // 21: flowstate.v1.RunProgress.pending_waits:type_name -> flowstate.v1.PendingWait
+	34, // 22: flowstate.v1.PendingWait.deadline:type_name -> google.protobuf.Timestamp
+	31, // 23: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
+	31, // 24: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	24, // 25: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
+	35, // 26: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
+	36, // 27: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
+	31, // 28: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	16, // 29: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
+	32, // 30: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
+	8,  // 31: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
+	25, // 32: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
+	26, // 33: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
+	37, // 34: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
+	7,  // 35: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
+	33, // 36: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
+	34, // 37: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
+	34, // 38: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
+	5,  // 39: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
+	35, // 40: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
+	35, // 41: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
+	35, // 42: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
+	35, // 43: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
+	35, // 44: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
+	35, // 45: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
+	35, // 46: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	35, // 47: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
+	48, // [48:48] is the sub-list for method output_type
+	48, // [48:48] is the sub-list for method input_type
+	48, // [48:48] is the sub-list for extension type_name
+	48, // [48:48] is the sub-list for extension extendee
+	0,  // [0:48] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_run_proto_init() }
@@ -2093,14 +2554,14 @@ func file_flowstate_v1_run_proto_init() {
 	file_flowstate_v1_trigger_proto_init()
 	file_flowstate_v1_value_proto_init()
 	file_flowstate_v1_workflow_proto_init()
-	file_flowstate_v1_run_proto_msgTypes[8].OneofWrappers = []any{}
+	file_flowstate_v1_run_proto_msgTypes[9].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_run_proto_rawDesc), len(file_flowstate_v1_run_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   20,
+			NumEnums:      6,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

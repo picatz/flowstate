@@ -745,6 +745,43 @@ deployment and plugin-version transitions, resource exhaustion, or an external
 system behaving like a test double. Those require a durable run and, where
 applicable, a real integration environment.
 
+### Attempt outcomes and operation identity
+
+A task failure answers several questions which must not be collapsed into one error kind:
+
+1. Did an external effect occur, not occur, partly occur, or remain unknown?
+2. Was a bounded result obtained, and did requested decoding succeed?
+3. Did that result satisfy the task's postcondition?
+4. Is another delivery safe, unsafe, or blocked on reconciliation?
+5. Does this attempt permit retry, before the step's policy and remaining budgets are
+   applied?
+
+`v1.AttemptOutcome` is the Protobuf contract for those observations. It is infrastructure
+evidence, never `Node.Outputs`, and carries no response body or plugin payload. Drivers
+intersect its retry permission with the failure classification, policy, and budget; a
+permitted outcome cannot widen any of them, while a denied or unspecified structured
+outcome fails closed. `ErrorKind` remains the compact projection shown to a person and the
+compatibility source for tasks which have not adopted structured outcomes. A postcondition
+or decoder may change the result and contract observations; neither can rewrite what
+happened externally or make an ambiguous mutation repeatable.
+
+HTTP is the first producer. A 502, 503, or 504 leaves a non-idempotent operation's effect
+unknown, so POST and PATCH stop as `UpstreamUnknown` unless
+`retry_on_unknown_outcome: true` states that the endpoint supplies its own idempotency.
+Methods RFC 9110 defines as idempotent remain repeat-safe by their HTTP semantics. A 429 is
+a refusal with no effect and may be retried; a 503's bounded `Retry-After` is scheduling
+advice only after retry permission exists. An unmet `expect:` or a failed JSON decode
+preserves those status and repeat-safety observations instead of replacing them.
+
+The call identity proposed for plugins follows the same separation. An **operation key**
+names one logical step invocation and stays stable across retries and Continue-As-New; it
+must therefore derive from tenant namespace, workflow id, the chain's first run id, and the
+full structural step address, excluding the current run id and attempt. An **attempt key**
+adds the current run id and attempt to name one try. Both are opaque digests, not
+control-plane addresses. A provider's deduplication window still defines what an operation
+key can guarantee, and possession of a key alone is never evidence that repeating an
+operation is safe.
+
 Waiting is the case where holding that line costs something and is worth it. A step that
 waits for a signal has to be signalable locally, or local runs stop being able to
 rehearse the workflows that most need rehearsing — so a local run accepts real signals

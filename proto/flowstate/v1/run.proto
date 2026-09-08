@@ -10,9 +10,110 @@ import "flowstate/v1/trigger.proto";
 import "flowstate/v1/value.proto";
 import "flowstate/v1/workflow.proto";
 import "google/api/field_behavior.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "flowstatev1";
+
+// AttemptOutcome records the independent facts established by one task attempt.
+//
+// It is evidence, not task output: authors cannot read it through `steps.*`, and
+// it carries no response body or plugin payload. Results remain in Node.Outputs;
+// this bounded message records only whether a result was obtained and decoded.
+// Keeping these observations separate prevents a failed decoder or postcondition
+// from silently changing whether an external mutation happened or may be repeated.
+//
+// RetryPermission is the task's permission to repeat this operation, not a retry
+// schedule. A driver still intersects it with the step's retry policy, remaining
+// attempt and time budgets, and deployment policy. PERMITTED can never widen any
+// of those limits; DENIED stops both drivers even when the projected ErrorKind is
+// otherwise retryable.
+message AttemptOutcome {
+  // Effect is what the attempt established about the operation at its peer.
+  enum Effect {
+    // EFFECT_UNSPECIFIED means the producer supplied no effect evidence.
+    EFFECT_UNSPECIFIED = 0;
+    // EFFECT_NONE means the operation was refused before an external effect.
+    EFFECT_NONE = 1;
+    // EFFECT_KNOWN means the peer established the operation's outcome.
+    EFFECT_KNOWN = 2;
+    // EFFECT_PARTIAL means only some of a composite operation is established.
+    EFFECT_PARTIAL = 3;
+    // EFFECT_UNKNOWN means the operation may have taken effect.
+    EFFECT_UNKNOWN = 4;
+  }
+
+  // Result is whether a bounded result arrived and, when requested, decoded.
+  enum Result {
+    // RESULT_UNSPECIFIED means the producer supplied no result evidence.
+    RESULT_UNSPECIFIED = 0;
+    // RESULT_NOT_OBTAINED means no result arrived from the peer.
+    RESULT_NOT_OBTAINED = 1;
+    // RESULT_OBTAINED means a bounded raw result arrived and needed no decode.
+    RESULT_OBTAINED = 2;
+    // RESULT_DECODED means the requested decoding succeeded.
+    RESULT_DECODED = 3;
+    // RESULT_DECODE_FAILED means a result arrived but requested decoding failed.
+    RESULT_DECODE_FAILED = 4;
+  }
+
+  // Contract is the attempt result's relationship to the task's postcondition.
+  enum Contract {
+    // CONTRACT_UNSPECIFIED means the producer supplied no contract evidence.
+    CONTRACT_UNSPECIFIED = 0;
+    // CONTRACT_NOT_EVALUATED means no postcondition was evaluated.
+    CONTRACT_NOT_EVALUATED = 1;
+    // CONTRACT_SATISFIED means the postcondition accepted the result.
+    CONTRACT_SATISFIED = 2;
+    // CONTRACT_UNSATISFIED means the postcondition rejected the result.
+    CONTRACT_UNSATISFIED = 3;
+    // CONTRACT_EVALUATION_FAILED means evaluating the postcondition failed.
+    CONTRACT_EVALUATION_FAILED = 4;
+  }
+
+  // RepeatSafety says whether another delivery can duplicate or conflict with
+  // an external effect. REQUIRES_RECONCILIATION is the fail-closed answer when
+  // the effect is unknown and the operation is not known to be idempotent.
+  enum RepeatSafety {
+    // REPEAT_SAFETY_UNSPECIFIED means repeat safety was not established.
+    REPEAT_SAFETY_UNSPECIFIED = 0;
+    // REPEAT_SAFETY_SAFE means another delivery cannot duplicate the effect.
+    REPEAT_SAFETY_SAFE = 1;
+    // REPEAT_SAFETY_UNSAFE means another delivery can duplicate the effect.
+    REPEAT_SAFETY_UNSAFE = 2;
+    // REPEAT_SAFETY_REQUIRES_RECONCILIATION means the effect must be checked first.
+    REPEAT_SAFETY_REQUIRES_RECONCILIATION = 3;
+  }
+
+  // RetryPermission is the task's fail-closed advice before policy and budget.
+  enum RetryPermission {
+    // RETRY_PERMISSION_UNSPECIFIED denies retry for a structured outcome.
+    RETRY_PERMISSION_UNSPECIFIED = 0;
+    // RETRY_PERMISSION_PERMITTED allows policy and budget to schedule a retry.
+    RETRY_PERMISSION_PERMITTED = 1;
+    // RETRY_PERMISSION_DENIED stops retries for this failure.
+    RETRY_PERMISSION_DENIED = 2;
+  }
+
+  // Effect is the external-effect evidence this attempt established.
+  Effect effect = 1 [(buf.validate.field).enum.defined_only = true];
+  // Result is the raw-result and decoding evidence this attempt established.
+  Result result = 2 [(buf.validate.field).enum.defined_only = true];
+  // Contract is the postcondition evidence this attempt established.
+  Contract contract = 3 [(buf.validate.field).enum.defined_only = true];
+  // RepeatSafety is derived from the effect and operation semantics.
+  RepeatSafety repeat_safety = 4 [(buf.validate.field).enum.defined_only = true];
+  // RetryPermission constrains, but cannot widen, policy or budget.
+  RetryPermission retry_permission = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // Deliveries is counted where a transport can observe it. Zero means the
+  // producer cannot establish a count; it must never be inferred as one.
+  uint32 deliveries = 6;
+
+  // RetryAfter is a peer's bounded scheduling preference. It is meaningful only
+  // with RETRY_PERMISSION_PERMITTED and does not itself grant retry permission.
+  google.protobuf.Duration retry_after = 7;
+}
 
 // PendingUndo is one compensation a run has registered and not yet run.
 //

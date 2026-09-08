@@ -7,13 +7,12 @@ import (
 	"time"
 )
 
-// An ErrorKind classifies why a task failed, which determines whether retrying
-// it could ever succeed.
+// An ErrorKind is the compact user-facing classification of why a task failed.
 //
 // Classification lives here, in the execution-independent layer, so that local
-// and durable execution agree on what a failure means. The engine translates
-// these kinds into the retry semantics of the underlying durable execution
-// substrate; nothing here depends on that substrate.
+// and durable execution agree on what a failure means. For legacy task errors it
+// also supplies the retry default; structured attempts carry that permission in
+// [AttemptOutcome]. Nothing here depends on either execution substrate.
 type ErrorKind string
 
 const (
@@ -133,13 +132,16 @@ const (
 	ErrorKindRateLimited ErrorKind = "RateLimited"
 )
 
-// Retryable reports whether a failure of this kind could succeed if attempted
-// again.
+// Retryable reports the legacy retry default projected from this kind.
 //
 // The default is deliberately false: an unrecognized kind is treated as
 // permanent, so a new kind cannot accidentally cause a non-idempotent operation
 // to be repeated. Retrying a POST that already took effect is worse than
 // surfacing a failure that might have resolved on its own.
+//
+// An attempt carrying [AttemptOutcome] uses that outcome's independent retry
+// permission instead. A kind describes a failure for a person; it cannot prove
+// whether the operation behind that failure is safe to repeat.
 func (k ErrorKind) Retryable() bool {
 	switch k {
 	case ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
@@ -195,6 +197,11 @@ type TaskError struct {
 	// Err is the underlying cause.
 	Err error
 
+	// Outcome carries the independent evidence established by this attempt.
+	// Nil is the compatibility shape for tasks that have not adopted structured
+	// outcomes yet; those failures continue to derive retry behavior from Kind.
+	Outcome *AttemptOutcome
+
 	// RetryAfter is how long to wait before another attempt, when the failure said
 	// so. A 429 or a 503 carrying a Retry-After header is the server telling us when
 	// to come back, and honoring it beats guessing.
@@ -245,8 +252,33 @@ func selfNamesTask(err error) bool {
 // [errors.As] through it.
 func (e *TaskError) Unwrap() error { return e.Err }
 
-// Retryable reports whether the failure could succeed if attempted again.
-func (e *TaskError) Retryable() bool { return e.Kind.Retryable() }
+// Retryable reports whether this attempt permits another try. Structured
+// outcomes are an authoritative narrowing and fail closed on an unspecified or
+// unknown permission; they cannot widen a permanent classification. Legacy
+// task errors retain the ErrorKind projection.
+func (e *TaskError) Retryable() bool {
+	if e.Kind == ErrorKindPolicyDenied {
+		return false
+	}
+	if e.Outcome == nil {
+		return e.Kind.Retryable()
+	}
+
+	return e.Kind.Retryable() &&
+		e.Outcome.GetRetryPermission() == AttemptOutcome_RETRY_PERMISSION_PERMITTED &&
+		e.Outcome.GetRepeatSafety() == AttemptOutcome_REPEAT_SAFETY_SAFE
+}
+
+// RetryPermitted reports the attempt's retry permission before driver policy
+// and budgets are applied. Structured task outcomes can narrow the ErrorKind
+// compatibility behavior but never widen it.
+func RetryPermitted(err error) bool {
+	if taskErr, ok := errors.AsType[*TaskError](err); ok {
+		return taskErr.Retryable()
+	}
+
+	return ClassifyError(err).Retryable()
+}
 
 // RetryAfter returns how long a failure asked us to wait before another attempt, or
 // zero when it did not say.
@@ -258,6 +290,11 @@ func (e *TaskError) Retryable() bool { return e.Kind.Retryable() }
 func RetryAfter(err error) time.Duration {
 	var taskErr *TaskError
 	if errors.As(err, &taskErr) {
+		if taskErr.Outcome != nil && taskErr.Outcome.GetRetryAfter() != nil {
+			if delay := taskErr.Outcome.GetRetryAfter().AsDuration(); delay > 0 {
+				return delay
+			}
+		}
 		return taskErr.RetryAfter
 	}
 
@@ -377,6 +414,17 @@ func ParseErrorKind(s string) (ErrorKind, bool) {
 // NewTaskError returns a [TaskError] classifying a failure of the named task.
 func NewTaskError(task string, kind ErrorKind, err error) *TaskError {
 	return &TaskError{Task: task, Kind: kind, Err: err}
+}
+
+// NewTaskOutcomeError returns a task failure whose structured attempt evidence
+// is authoritative for retry permission. RetryAfter is mirrored onto the
+// legacy field while callers transition to [AttemptOutcome].
+func NewTaskOutcomeError(task string, kind ErrorKind, outcome *AttemptOutcome, err error) *TaskError {
+	taskErr := &TaskError{Task: task, Kind: kind, Err: err, Outcome: outcome}
+	if outcome != nil && outcome.GetRetryAfter() != nil {
+		taskErr.RetryAfter = outcome.GetRetryAfter().AsDuration()
+	}
+	return taskErr
 }
 
 // ClassifyError returns the kind of failure err represents.
