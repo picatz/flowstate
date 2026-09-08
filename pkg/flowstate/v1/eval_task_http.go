@@ -16,6 +16,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // Content types the task sets for the structured bodies it can build. They are set
@@ -564,15 +565,11 @@ func httpResponseVars(resp *http.Response, body []byte, parsedJSON *expr.Value) 
 	return map[string]any{ResponseRoot: fields}
 }
 
-// httpExpectationMet decides whether a response counts as success, returning a
-// classified error when it does not.
-//
-// With no `expect` expression the rule is the default one and is deliberately
-// unchanged: 2xx succeeds, 4xx is the endpoint rejecting this request and will reject
-// it again, 5xx may be transient. An `expect` expression replaces that judgement
-// entirely, because an author writing one is telling us something the status alone
-// cannot express — a 404 that means "not there yet, and that is fine", or a 200
-// carrying an error in the body.
+// httpExpectationMet decides whether a response satisfies the author's contract.
+// Status classification remains independent: an unmet expectation on a 503 is a
+// transient upstream result, while one on a 200 is a permanent postcondition
+// failure. Repeat safety independently constrains both, so a transient status
+// cannot authorize replaying an ambiguous mutation.
 func httpExpectationMet(
 	ctx context.Context,
 	inputs *Task_HTTP_Inputs,
@@ -580,37 +577,92 @@ func httpExpectationMet(
 	resp *http.Response,
 	vars map[string]any,
 	scope *Scope,
+	result AttemptOutcome_Result,
 ) error {
 	if expectSpec != nil {
-		return httpExpectSatisfied(ctx, inputs, expectSpec, resp, vars, scope)
+		return httpExpectSatisfied(ctx, inputs, expectSpec, resp, vars, scope, result)
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
 
+	return httpResponseFailure(inputs, resp, result, AttemptOutcome_CONTRACT_NOT_EVALUATED,
+		"", fmt.Errorf("%s %s returned status %d", inputs.GetMethod(), inputs.GetUrl(), resp.StatusCode))
+}
+
+// httpResponseFailure composes the independent observations made after an HTTP
+// response arrives. The ErrorKind remains the compact user-facing projection;
+// drivers take retry permission and delay from AttemptOutcome when it is present.
+func httpResponseFailure(
+	inputs *Task_HTTP_Inputs,
+	resp *http.Response,
+	result AttemptOutcome_Result,
+	contract AttemptOutcome_Contract,
+	fallbackKind ErrorKind,
+	cause error,
+) *TaskError {
 	kind := ErrorKindUpstream
+	retryWorthwhile := true
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		kind = ErrorKindRateLimited
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		kind = ErrorKindInvalidInput
+		retryWorthwhile = false
+	case fallbackKind != "" && resp.StatusCode >= 200 && resp.StatusCode < 300:
+		kind = fallbackKind
+		retryWorthwhile = false
 	}
 
-	err := NewTaskError("http", kind, fmt.Errorf(
-		"%s %s returned status %d", inputs.GetMethod(), inputs.GetUrl(), resp.StatusCode))
+	effect := AttemptOutcome_EFFECT_NONE
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		effect = AttemptOutcome_EFFECT_KNOWN
+	case resp.StatusCode == http.StatusBadGateway,
+		resp.StatusCode == http.StatusServiceUnavailable,
+		resp.StatusCode == http.StatusGatewayTimeout:
+		effect = AttemptOutcome_EFFECT_UNKNOWN
+	}
 
-	// On a 429 or a 503 the server has told us when to come back. Ignoring that is
-	// both rude and worse for us than guessing, so it is carried on the error for the
-	// substrate to schedule rather than slept off inside the activity, which would
-	// hold a worker slot for the duration.
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
-		if delay, ok := retryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
-			err.RetryAfter = delay
+	repeatSafety := AttemptOutcome_REPEAT_SAFETY_SAFE
+	idempotent := idempotentMethods[strings.ToUpper(inputs.GetMethod())]
+	if !idempotent {
+		switch effect {
+		case AttemptOutcome_EFFECT_UNKNOWN:
+			if !inputs.GetRetryOnUnknownOutcome() {
+				repeatSafety = AttemptOutcome_REPEAT_SAFETY_REQUIRES_RECONCILIATION
+				kind = ErrorKindUpstreamUnknown
+				cause = fmt.Errorf("%w; the request reached its peer and whether it took effect is unknown", cause)
+			}
+		case AttemptOutcome_EFFECT_KNOWN:
+			repeatSafety = AttemptOutcome_REPEAT_SAFETY_UNSAFE
 		}
 	}
 
-	return err
+	retryPermission := AttemptOutcome_RETRY_PERMISSION_DENIED
+	if retryWorthwhile && repeatSafety == AttemptOutcome_REPEAT_SAFETY_SAFE {
+		retryPermission = AttemptOutcome_RETRY_PERMISSION_PERMITTED
+	}
+	outcome := &AttemptOutcome{
+		Effect:          effect,
+		Result:          result,
+		Contract:        contract,
+		RepeatSafety:    repeatSafety,
+		RetryPermission: retryPermission,
+	}
+
+	// On a retryable 429 or 503 the peer has told us when to come back. The
+	// preference is inert when retry permission is denied, so an ambiguous POST
+	// cannot smuggle permission through a delay header.
+	if retryPermission == AttemptOutcome_RETRY_PERMISSION_PERMITTED &&
+		(resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) {
+		if delay, ok := retryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
+			outcome.RetryAfter = durationpb.New(delay)
+		}
+	}
+
+	return NewTaskOutcomeError("http", kind, outcome, cause)
 }
 
 // httpExpectSatisfied evaluates an `expect` expression over the response.
@@ -626,6 +678,7 @@ func httpExpectSatisfied(
 	resp *http.Response,
 	vars map[string]any,
 	scope *Scope,
+	result AttemptOutcome_Result,
 ) error {
 	parsed := expectSpec.GetExpr()
 	if parsed == nil {
@@ -673,7 +726,8 @@ func httpExpectSatisfied(
 		return nil
 	}
 
-	return NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
-		"%s %s returned status %d, which the step's expect expression does not accept",
-		inputs.GetMethod(), inputs.GetUrl(), resp.StatusCode))
+	return httpResponseFailure(inputs, resp, result, AttemptOutcome_CONTRACT_UNSATISFIED,
+		ErrorKindInvalidInput, fmt.Errorf(
+			"%s %s returned status %d, which the step's expect expression does not accept",
+			inputs.GetMethod(), inputs.GetUrl(), resp.StatusCode))
 }

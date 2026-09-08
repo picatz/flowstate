@@ -273,6 +273,28 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowHTTPAttemptOutcome is the durable caller of the shared
+// ambiguous-mutation case. It forces Temporal's retry translation to agree
+// with the local retry loop about the outcome's denied permission.
+func TestRunWorkflowHTTPAttemptOutcome(t *testing.T) {
+	tc := conformance.NewHTTPAttemptOutcomeCase(t)
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(engine.Run)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
+
+	require.True(t, env.IsWorkflowCompleted())
+	err := env.GetWorkflowError()
+	require.Error(t, err)
+	var app *temporal.ApplicationError
+	require.ErrorAs(t, err, &app)
+	require.Equal(t, v1.ErrorKindUpstreamUnknown.String(), app.Type())
+	require.Equal(t, int32(1), tc.Attempts(), "an ambiguous POST must not be delivered again")
+}
+
 // TestRunWorkflowTaskPolicy runs #187 slice 1's shared task-shape policy
 // cases ([conformance.TaskPolicyCases]) against the durable driver — the same
 // cases [flowstatev1_test.TestRunWorkflowTaskPolicy] runs against the local
