@@ -236,6 +236,22 @@ func TestRunGHIsBounded(t *testing.T) {
 	}
 }
 
+func TestRunGHIgnoresStderrOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\necho warning >&2\nprintf '{\"state\":\"OPEN\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	out, err := runGH("pr", "view")
+	if err != nil {
+		t.Fatalf("runGH: %v", err)
+	}
+	if got, want := string(out), `{"state":"OPEN"}`; got != want {
+		t.Fatalf("runGH output = %q, want %q", got, want)
+	}
+}
+
 func TestBoundedBufferCapsCollectedOutput(t *testing.T) {
 	buffer := &boundedBuffer{limit: 4}
 	input := []byte("abcdefgh")

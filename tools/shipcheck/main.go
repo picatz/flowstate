@@ -27,6 +27,8 @@ var (
 	ghOutputLimit    = 16 << 20
 )
 
+const ghErrorOutputLimit = 64 << 10
+
 var errGHOutputLimit = errors.New("gh output exceeded the byte limit")
 
 type boundedBuffer struct {
@@ -161,14 +163,18 @@ func runGH(args ...string) ([]byte, error) {
 	// after gh is killed. WaitDelay closes that pipe rather than waiting on an
 	// uncooperative descendant forever.
 	cmd.WaitDelay = ghWaitDelay
-	output := &boundedBuffer{limit: ghOutputLimit}
-	cmd.Stdout = output
-	cmd.Stderr = output
+	stdout := &boundedBuffer{limit: ghOutputLimit - ghErrorOutputLimit}
+	stderr := &boundedBuffer{limit: ghErrorOutputLimit}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
-	if output.exceeded {
-		return output.Bytes(), errGHOutputLimit
+	if stdout.exceeded || stderr.exceeded {
+		return append(stdout.Bytes(), stderr.Bytes()...), errGHOutputLimit
 	}
-	return output.Bytes(), err
+	if err != nil {
+		return append(stdout.Bytes(), stderr.Bytes()...), err
+	}
+	return stdout.Bytes(), nil
 }
 
 func evaluate(pr pullRequest, unresolved int) []string {
