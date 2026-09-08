@@ -352,6 +352,8 @@ func TestGHCLIMergeTarget(t *testing.T) {
 		{`gh pr merge --repo picatz/flowstate 498 --squash`, "picatz", "flowstate", 498},
 		{`gh pr merge --repo=picatz/flowstate 498`, "picatz", "flowstate", 498},
 		{`gh -R picatz/flowstate pr merge 498`, "picatz", "flowstate", 498},
+		{`gh -Rpicatz/flowstate pr merge 498`, "picatz", "flowstate", 498},
+		{`gh -R=picatz/flowstate pr merge 498`, "picatz", "flowstate", 498},
 		{`gh --repo=picatz/flowstate pr merge 498`, "picatz", "flowstate", 498},
 		{`cd /repo && gh pr merge 498 -R picatz/flowstate`, "picatz", "flowstate", 498},
 		// A value-taking flag ahead of the positional target: without
@@ -445,6 +447,8 @@ func TestAutoMergeIsRejected(t *testing.T) {
 		"gh pr merge 498 -R picatz/flowstate --auto=true",
 		"gh pr merge --auto https://github.com/picatz/flowstate/pull/498",
 		"gh -R picatz/flowstate pr merge 498 --auto",
+		"gh -Rpicatz/flowstate pr merge 498 --auto",
+		"gh -R=picatz/flowstate pr merge 498 --auto",
 		"gh --repo=picatz/flowstate pr merge 498 --auto=true",
 		"gh pr merge 498 -R picatz/flowstate --squash && gh pr merge 499 -R picatz/flowstate --auto",
 	} {
@@ -485,6 +489,10 @@ func TestManualMergeRequiresOneExactHeadPrecondition(t *testing.T) {
 		if mergeHeadPinned(in) {
 			t.Errorf("mergeHeadPinned(%q) = true", command)
 		}
+	}
+	multiple := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": "gh pr merge 498 -R picatz/flowstate --match-head-commit " + sha + " && gh pr merge 499 -R picatz/flowstate --match-head-commit " + sha}}
+	if !isMergeInvocation(multiple) {
+		t.Error("multiple merge invocations were treated as a non-merge command")
 	}
 	mcp := &hook.Input{ToolName: "mcp__github__merge_pull_request", ToolInput: map[string]any{"expectedHeadOid": sha}}
 	if !mergeHeadPinned(mcp) {

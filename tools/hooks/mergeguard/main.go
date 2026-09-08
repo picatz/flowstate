@@ -306,8 +306,7 @@ var ghInheritedValueFlags = map[string]bool{
 // concern pidguard's package doc names. ghPRMergeArgs preserves shell-word
 // boundaries, so a trigger can only be formed by three unquoted words.
 func isGHPRMergeInvocation(cmd string) bool {
-	_, ok := ghPRMergeArgs(cmd)
-	return ok
+	return len(ghPRMergeInvocations(cmd)) > 0
 }
 
 // autoMergeRequested reports whether a recognized gh merge invocation asks
@@ -400,6 +399,14 @@ func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
 			skipNext = true
 		case strings.HasPrefix(f, "--repo="):
 			if sub := repoFlagValue.FindStringSubmatch(strings.TrimPrefix(f, "--repo=")); sub != nil {
+				flagOwner, flagRepo = sub[1], sub[2]
+			}
+		case strings.HasPrefix(f, "-R="):
+			if sub := repoFlagValue.FindStringSubmatch(strings.TrimPrefix(f, "-R=")); sub != nil {
+				flagOwner, flagRepo = sub[1], sub[2]
+			}
+		case strings.HasPrefix(f, "-R") && len(f) > 2:
+			if sub := repoFlagValue.FindStringSubmatch(strings.TrimPrefix(f, "-R")); sub != nil {
 				flagOwner, flagRepo = sub[1], sub[2]
 			}
 		case strings.HasPrefix(f, "-"):
@@ -499,6 +506,9 @@ func ghPRMergeInvocations(s string) [][]string {
 					inherited = append(inherited, arg, command[j+1])
 					j += 2
 				case strings.HasPrefix(arg, "--repo=") || strings.HasPrefix(arg, "--hostname="):
+					inherited = append(inherited, arg)
+					j++
+				case strings.HasPrefix(arg, "-R=") || strings.HasPrefix(arg, "-R") && len(arg) > 2:
 					inherited = append(inherited, arg)
 					j++
 				default:
