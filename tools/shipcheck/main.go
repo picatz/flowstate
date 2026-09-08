@@ -50,24 +50,39 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 type pullRequest struct {
-	State            string          `json:"state"`
-	BaseRefName      string          `json:"baseRefName"`
-	IsDraft          bool            `json:"isDraft"`
-	HeadRefOID       string          `json:"headRefOid"`
-	AutoMergeRequest json.RawMessage `json:"autoMergeRequest"`
-	StatusChecks     []statusCheck   `json:"statusCheckRollup"`
-	Reviews          []review        `json:"reviews"`
-	Comments         []comment       `json:"comments"`
+	State            string        `json:"state"`
+	BaseRefName      string        `json:"baseRefName"`
+	IsDraft          bool          `json:"isDraft"`
+	HeadRefOID       string        `json:"headRefOid"`
+	AutoMergeRequest presentJSON   `json:"autoMergeRequest"`
+	ReviewDecision   string        `json:"reviewDecision"`
+	StatusChecks     []statusCheck `json:"statusCheckRollup"`
+	Reviews          []review      `json:"reviews"`
+	Comments         []comment     `json:"comments"`
+}
+
+type presentJSON struct {
+	Present bool
+	Value   json.RawMessage
+}
+
+func (p *presentJSON) UnmarshalJSON(data []byte) error {
+	p.Present = true
+	p.Value = append(p.Value[:0], data...)
+	return nil
 }
 
 type statusCheck struct {
-	Type       string `json:"__typename"`
-	Name       string `json:"name"`
-	Context    string `json:"context"`
-	Workflow   string `json:"workflowName"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-	State      string `json:"state"`
+	Type        string `json:"__typename"`
+	Name        string `json:"name"`
+	Context     string `json:"context"`
+	Workflow    string `json:"workflowName"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	State       string `json:"state"`
+	StartedAt   string `json:"startedAt"`
+	CreatedAt   string `json:"createdAt"`
+	CompletedAt string `json:"completedAt"`
 }
 
 type actor struct {
@@ -79,9 +94,10 @@ type commit struct {
 }
 
 type review struct {
-	Author actor   `json:"author"`
-	Commit *commit `json:"commit"`
-	Body   string  `json:"body"`
+	Author      actor   `json:"author"`
+	Commit      *commit `json:"commit"`
+	Body        string  `json:"body"`
+	SubmittedAt string  `json:"submittedAt"`
 }
 
 type comment struct {
@@ -124,7 +140,7 @@ func validRepo(repo string) bool {
 }
 
 func loadPullRequest(repo string, number int) (pullRequest, error) {
-	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,statusCheckRollup,reviews,comments"
+	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,reviews,comments"
 	out, err := runGH("pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields)
 	if err != nil {
 		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, strings.TrimSpace(string(out)))
@@ -168,8 +184,13 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	if pr.HeadRefOID == "" {
 		problems = append(problems, "pull request has no head commit")
 	}
-	if raw := bytes.TrimSpace(pr.AutoMergeRequest); len(raw) != 0 && !bytes.Equal(raw, []byte("null")) {
+	if !pr.AutoMergeRequest.Present {
+		problems = append(problems, "auto-merge state is missing")
+	} else if raw := bytes.TrimSpace(pr.AutoMergeRequest.Value); !bytes.Equal(raw, []byte("null")) {
 		problems = append(problems, "auto-merge is enabled; disable it before shipping")
+	}
+	if pr.ReviewDecision != "" && pr.ReviewDecision != "APPROVED" {
+		problems = append(problems, fmt.Sprintf("review decision is %q", pr.ReviewDecision))
 	}
 	if len(pr.StatusChecks) == 0 {
 		problems = append(problems, "no check runs or status contexts were reported")
@@ -211,43 +232,55 @@ func checkProblems(checks []statusCheck) []string {
 	for _, key := range order {
 		group := groups[key]
 		name := strings.SplitN(key, "\x00", 3)[2]
-		acceptable := false
-		for _, check := range group {
-			switch check.Type {
-			case "CheckRun":
-				if check.Status != "COMPLETED" {
-					problems = append(problems, fmt.Sprintf("check %q is %s/%s", name, check.Status, check.Conclusion))
-				}
-				acceptable = acceptable || check.Status == "COMPLETED" && acceptableConclusion(check.Conclusion)
-			case "StatusContext":
-				if check.State != "SUCCESS" && check.State != "FAILURE" && check.State != "ERROR" {
-					problems = append(problems, fmt.Sprintf("status %q is %s", name, check.State))
-				}
-				acceptable = acceptable || check.State == "SUCCESS"
-			default:
-				problems = append(problems, fmt.Sprintf("check %q has unsupported type %q", name, check.Type))
+		latest := latestStatusCheck(group)
+		switch latest.Type {
+		case "CheckRun":
+			if latest.Status != "COMPLETED" || !acceptableConclusion(latest.Conclusion) {
+				problems = append(problems, fmt.Sprintf("check %q latest result is %s/%s", name, latest.Status, latest.Conclusion))
 			}
-		}
-		if !acceptable {
-			last := group[len(group)-1]
-			if last.Type == "StatusContext" {
-				problems = append(problems, fmt.Sprintf("status %q has no successful result (latest %s)", name, last.State))
-			} else {
-				problems = append(problems, fmt.Sprintf("check %q has no acceptable completed result (latest %s/%s)", name, last.Status, last.Conclusion))
+		case "StatusContext":
+			if latest.State != "SUCCESS" {
+				problems = append(problems, fmt.Sprintf("status %q latest result is %s", name, latest.State))
 			}
+		default:
+			problems = append(problems, fmt.Sprintf("check %q has unsupported type %q", name, latest.Type))
 		}
 	}
 	return problems
 }
 
+func latestStatusCheck(checks []statusCheck) statusCheck {
+	latest := checks[0]
+	for _, check := range checks[1:] {
+		if checkTimestamp(check) >= checkTimestamp(latest) {
+			latest = check
+		}
+	}
+	return latest
+}
+
+func checkTimestamp(check statusCheck) string {
+	if check.StartedAt != "" {
+		return check.StartedAt
+	}
+	if check.CreatedAt != "" {
+		return check.CreatedAt
+	}
+	return check.CompletedAt
+}
+
 func copilotExactHeadHasFindings(reviews []review, head string) bool {
-	for _, review := range reviews {
+	var latest *review
+	for i := range reviews {
+		review := &reviews[i]
 		if review.Author.Login != "copilot-pull-request-reviewer" || review.Commit == nil || review.Commit.OID != head {
 			continue
 		}
-		return strings.Contains(review.Body, "Changes recommended") || strings.Contains(review.Body, "Suppressed comments (")
+		if latest == nil || review.SubmittedAt >= latest.SubmittedAt {
+			latest = review
+		}
 	}
-	return false
+	return latest != nil && (strings.Contains(latest.Body, "Changes recommended") || strings.Contains(latest.Body, "Suppressed comments ("))
 }
 
 func acceptableConclusion(conclusion string) bool {

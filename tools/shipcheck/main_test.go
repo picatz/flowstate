@@ -16,7 +16,7 @@ func passingPullRequest() pullRequest {
 		State:            "OPEN",
 		BaseRefName:      "main",
 		HeadRefOID:       testHead,
-		AutoMergeRequest: json.RawMessage("null"),
+		AutoMergeRequest: presentJSON{Present: true, Value: json.RawMessage("null")},
 		StatusChecks: []statusCheck{
 			{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"},
 			{Type: "CheckRun", Name: "not selected", Status: "COMPLETED", Conclusion: "SKIPPED"},
@@ -44,7 +44,7 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 	pr.State = "CLOSED"
 	pr.BaseRefName = "release"
 	pr.IsDraft = true
-	pr.AutoMergeRequest = json.RawMessage(`{"enabledAt":"now"}`)
+	pr.AutoMergeRequest = presentJSON{Present: true, Value: json.RawMessage(`{"enabledAt":"now"}`)}
 	pr.StatusChecks[0].Status = "IN_PROGRESS"
 	pr.StatusChecks[0].Conclusion = ""
 	pr.Reviews[0].Commit.OID = strings.Repeat("f", 40)
@@ -57,12 +57,24 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 		`pull request base is "release"`,
 		"pull request is still a draft",
 		"auto-merge is enabled",
-		`check "test" is IN_PROGRESS/`,
+		`check "test" latest result is IN_PROGRESS/`,
 		"Copilot has not reviewed the exact final head",
 		"Codex code review has not completed on the exact final head",
 		"Codex security review has not completed on the exact final head",
 		"2 review thread(s) remain unresolved",
 	} {
+		if !strings.Contains(problems, want) {
+			t.Errorf("problems do not contain %q:\n%s", want, problems)
+		}
+	}
+}
+
+func TestEvaluateRejectsMissingAutoMergeEvidenceAndBlockingReview(t *testing.T) {
+	pr := passingPullRequest()
+	pr.AutoMergeRequest = presentJSON{}
+	pr.ReviewDecision = "CHANGES_REQUESTED"
+	problems := strings.Join(evaluate(pr, 0), "\n")
+	for _, want := range []string{"auto-merge state is missing", `review decision is "CHANGES_REQUESTED"`} {
 		if !strings.Contains(problems, want) {
 			t.Errorf("problems do not contain %q:\n%s", want, problems)
 		}
@@ -92,11 +104,36 @@ func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
 func TestEvaluateAcceptsSuccessfulReplacementForCancelledDuplicate(t *testing.T) {
 	pr := passingPullRequest()
 	pr.StatusChecks = []statusCheck{
-		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "CANCELLED"},
-		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "CANCELLED", StartedAt: "2026-09-08T10:00:00Z"},
+		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:01:00Z"},
 	}
 	if problems := evaluate(pr, 0); len(problems) != 0 {
 		t.Fatalf("successful replacement was rejected: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsFailedReplacementForSuccessfulDuplicate(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "FAILURE", StartedAt: "2026-09-08T10:01:00Z"},
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:00:00Z"},
+	}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "latest result is COMPLETED/FAILURE") {
+		t.Fatalf("failed replacement was accepted: %s", problems)
+	}
+}
+
+func TestEvaluateUsesLatestExactHeadCopilotReview(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Reviews[0].SubmittedAt = "2026-09-08T10:00:00Z"
+	pr.Reviews = append(pr.Reviews, review{
+		Author:      actor{Login: "copilot-pull-request-reviewer"},
+		Commit:      &commit{OID: testHead},
+		Body:        "### Suppressed comments (1)",
+		SubmittedAt: "2026-09-08T10:01:00Z",
+	})
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Copilot exact-final-head review still contains findings") {
+		t.Fatalf("latest Copilot finding was accepted: %s", problems)
 	}
 }
 
