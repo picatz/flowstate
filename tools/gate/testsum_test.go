@@ -26,7 +26,7 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 	// The shuffle is a variable, on by default now that the tests which
 	// register into cmd/flow's process-wide registry put it back (see the
 	// Makefile), and the seed it prints is what testsum's rerun lines carry.
-	for _, want := range []string{"go test -json", "-shuffle=$(TEST_SHUFFLE)", "| ", "go run ./tools/testsum"} {
+	for _, want := range []string{"go test -json", "-shuffle=$(TEST_SHUFFLE)", "-p=1", "| ", "go run ./tools/testsum"} {
 		if !strings.Contains(recipe[1], want) {
 			t.Errorf("make test's recipe lacks %q: %s", want, recipe[1])
 		}
@@ -43,8 +43,8 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 		name string
 		spec cmdSpec
 	}{
-		{"module-wide", goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-timeout", "900s", "./...")},
-		{"narrow", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-timeout", "900s", modulePath+"/tools/gate")},
+		{"module-wide", goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-p=1", "-timeout", "900s", "./...")},
+		{"narrow", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-p=1", "-timeout", "900s", modulePath+"/tools/gate")},
 		{"ordering", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/")},
 	} {
 		display := tc.spec.display()
