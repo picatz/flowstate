@@ -280,7 +280,7 @@ message Task {
       // variables `outputs` sees.
       //
       // The default is unchanged and needs no expression: 2xx succeeds, 4xx fails
-      // permanently, and repeat-safe 5xx responses are retried. This expression
+      // permanently, and repeat-safe 3xx and 5xx responses are retried. This expression
       // changes only whether the response satisfies the step's contract; it does
       // not replace status classification or make an ambiguous mutation safe to
       // repeat. This is for the cases that default cannot express: a 404 that
@@ -310,8 +310,8 @@ message Task {
       // worse than surfacing a failure that might have resolved on its own. Set
       // this when the endpoint is idempotency-keyed and a retry is therefore safe.
       //
-      // The same rule applies to a 5xx response: even an origin's 500 cannot
-      // establish whether the mutation committed before the server failed.
+      // The same rule applies to 3xx and 5xx responses: neither a redirect nor
+      // even an origin's 500 can establish whether the mutation committed.
       // `expect:` and `parse_json:` do not override it.
       //
       // It does not affect a request that never connected, which is retried for any

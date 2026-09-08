@@ -619,7 +619,8 @@ func httpResponseFailure(
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		effect = AttemptOutcome_EFFECT_KNOWN
-	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+	case resp.StatusCode >= 300 && resp.StatusCode < 400,
+		resp.StatusCode >= 500 && resp.StatusCode < 600:
 		effect = AttemptOutcome_EFFECT_UNKNOWN
 	}
 

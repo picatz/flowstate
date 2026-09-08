@@ -559,7 +559,7 @@ func Test_httpTask_expect(t *testing.T) {
 }
 
 func Test_httpTask_ambiguousResponseDoesNotAuthorizeMutationReplay(t *testing.T) {
-	statuses := []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
+	statuses := []int{http.StatusMultipleChoices, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		for _, status := range statuses {
 			for _, optIn := range []bool{false, true} {
@@ -604,6 +604,7 @@ func Test_httpTask_ambiguousResponseDoesNotAuthorizeMutationReplay(t *testing.T)
 func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T) {
 	for _, test := range []struct {
 		name         string
+		status       int
 		body         string
 		inputs       map[string]any
 		wantContract AttemptOutcome_Contract
@@ -625,6 +626,7 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 		},
 		{
 			name:         "expect evaluation error",
+			status:       http.StatusInternalServerError,
 			body:         `{}`,
 			wantContract: AttemptOutcome_CONTRACT_EVALUATION_FAILED,
 			inputs: map[string]any{
@@ -634,6 +636,7 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 		},
 		{
 			name:         "non-boolean expectation",
+			status:       http.StatusInternalServerError,
 			body:         `{}`,
 			wantContract: AttemptOutcome_CONTRACT_EVALUATION_FAILED,
 			inputs: map[string]any{
@@ -641,9 +644,23 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 				"expect":     NewExpr("response.status_code"),
 			},
 		},
+		{
+			name:         "redirect expectation error",
+			status:       http.StatusMultipleChoices,
+			body:         `{}`,
+			wantContract: AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			inputs: map[string]any{
+				"parse_json": true,
+				"expect":     NewExpr("response.json.missing.field == true"),
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server, _ := httpTaskServer(t, http.StatusInternalServerError, test.body, nil)
+			status := test.status
+			if status == 0 {
+				status = http.StatusInternalServerError
+			}
+			server, _ := httpTaskServer(t, status, test.body, nil)
 			inputs := map[string]any{
 				"url":    server.URL,
 				"method": http.MethodPost,
