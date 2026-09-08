@@ -10,6 +10,8 @@ const testHead = "0123456789abcdef0123456789abcdef01234567"
 
 func passingPullRequest() pullRequest {
 	return pullRequest{
+		State:            "OPEN",
+		BaseRefName:      "main",
 		HeadRefOID:       testHead,
 		AutoMergeRequest: json.RawMessage("null"),
 		StatusChecks: []statusCheck{
@@ -36,6 +38,9 @@ func TestEvaluateAcceptsCompleteFinalHeadEvidence(t *testing.T) {
 
 func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 	pr := passingPullRequest()
+	pr.State = "CLOSED"
+	pr.BaseRefName = "release"
+	pr.IsDraft = true
 	pr.AutoMergeRequest = json.RawMessage(`{"enabledAt":"now"}`)
 	pr.StatusChecks[0].Status = "IN_PROGRESS"
 	pr.StatusChecks[0].Conclusion = ""
@@ -45,6 +50,9 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 
 	problems := strings.Join(evaluate(pr, 2), "\n")
 	for _, want := range []string{
+		`pull request state is "CLOSED"`,
+		`pull request base is "release"`,
+		"pull request is still a draft",
 		"auto-merge is enabled",
 		`check "test" is IN_PROGRESS/`,
 		"Copilot has not reviewed the exact final head",
@@ -55,6 +63,14 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 		if !strings.Contains(problems, want) {
 			t.Errorf("problems do not contain %q:\n%s", want, problems)
 		}
+	}
+}
+
+func TestEvaluateRejectsCopilotFindingsOnTheFinalHead(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Reviews[0].Body = "### Changes recommended\n\n### Suppressed comments (1)"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Copilot exact-final-head review still contains findings") {
+		t.Fatalf("Copilot finding was accepted: %s", problems)
 	}
 }
 

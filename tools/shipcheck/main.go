@@ -18,6 +18,9 @@ import (
 const maxThreadPages = 20
 
 type pullRequest struct {
+	State            string          `json:"state"`
+	BaseRefName      string          `json:"baseRefName"`
+	IsDraft          bool            `json:"isDraft"`
 	HeadRefOID       string          `json:"headRefOid"`
 	AutoMergeRequest json.RawMessage `json:"autoMergeRequest"`
 	StatusChecks     []statusCheck   `json:"statusCheckRollup"`
@@ -45,6 +48,7 @@ type commit struct {
 type review struct {
 	Author actor   `json:"author"`
 	Commit *commit `json:"commit"`
+	Body   string  `json:"body"`
 }
 
 type comment struct {
@@ -87,7 +91,7 @@ func validRepo(repo string) bool {
 }
 
 func loadPullRequest(repo string, number int) (pullRequest, error) {
-	fields := "headRefOid,autoMergeRequest,statusCheckRollup,reviews,comments"
+	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,statusCheckRollup,reviews,comments"
 	out, err := exec.Command("gh", "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields).CombinedOutput()
 	if err != nil {
 		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, strings.TrimSpace(string(out)))
@@ -101,6 +105,15 @@ func loadPullRequest(repo string, number int) (pullRequest, error) {
 
 func evaluate(pr pullRequest, unresolved int) []string {
 	var problems []string
+	if pr.State != "OPEN" {
+		problems = append(problems, fmt.Sprintf("pull request state is %q, want OPEN", pr.State))
+	}
+	if pr.BaseRefName != "main" {
+		problems = append(problems, fmt.Sprintf("pull request base is %q, want main", pr.BaseRefName))
+	}
+	if pr.IsDraft {
+		problems = append(problems, "pull request is still a draft")
+	}
 	if pr.HeadRefOID == "" {
 		problems = append(problems, "pull request has no head commit")
 	}
@@ -131,6 +144,8 @@ func evaluate(pr pullRequest, unresolved int) []string {
 
 	if !hasExactHeadReview(pr.Reviews, pr.HeadRefOID, "copilot-pull-request-reviewer") {
 		problems = append(problems, "Copilot has not reviewed the exact final head")
+	} else if copilotExactHeadHasFindings(pr.Reviews, pr.HeadRefOID) {
+		problems = append(problems, "Copilot exact-final-head review still contains findings")
 	}
 	if !hasCodexReview(pr, false) {
 		problems = append(problems, "Codex code review has not completed on the exact final head")
@@ -142,6 +157,16 @@ func evaluate(pr pullRequest, unresolved int) []string {
 		problems = append(problems, fmt.Sprintf("%d review thread(s) remain unresolved", unresolved))
 	}
 	return problems
+}
+
+func copilotExactHeadHasFindings(reviews []review, head string) bool {
+	for _, review := range reviews {
+		if review.Author.Login != "copilot-pull-request-reviewer" || review.Commit == nil || review.Commit.OID != head {
+			continue
+		}
+		return strings.Contains(review.Body, "Changes recommended") || strings.Contains(review.Body, "Suppressed comments (")
+	}
+	return false
 }
 
 func acceptableConclusion(conclusion string) bool {
