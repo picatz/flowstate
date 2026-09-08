@@ -19,6 +19,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -504,6 +510,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 			NeedsScope:    true,
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
 
 	case "identity-stream":
@@ -523,6 +530,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			InputMessage:  "flowstate.v1.Task.Log.Inputs",
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
 
 	case "secret-task", "secret-task-error", "secret-task-log", "secret-task-stdout", "secret-task-health", "secret-task-health-error":
@@ -537,6 +545,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 			SecretInputs:  []string{"message"},
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
 
 	default:
@@ -555,7 +564,63 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			InputMessage:  "flowstate.v1.Task.Log.Inputs",
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
+	}
+}
+
+var fixtureOutputDescriptor = sync.OnceValues(func() (protoreflect.MessageDescriptor, error) {
+	names := []string{
+		"deployment_default", "echo", "error", "has_scope", "http_proxy",
+		"identity_namespace", "loopback", "metadata", "mode", "namespace",
+		"private", "public", "public_url", "received", "refusal", "result", "subject",
+	}
+	fields := make([]*descriptorpb.FieldDescriptorProto, 0, len(names))
+	for i, name := range names {
+		fields = append(fields, &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String(name),
+			Number:   proto.Int32(int32(i + 1)),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+			TypeName: proto.String(".google.api.expr.v1alpha1.Value"),
+		})
+	}
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:       proto.String("flowstate/tests/pluginfixture/v1/outputs.proto"),
+		Package:    proto.String("flowstate.tests.pluginfixture.v1"),
+		Syntax:     proto.String("proto3"),
+		Dependency: []string{"google/api/expr/v1alpha1/value.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name:  proto.String("Outputs"),
+			Field: fields,
+		}},
+	}, protoregistry.GlobalFiles)
+	if err != nil {
+		return nil, err
+	}
+	return file.Messages().ByName("Outputs"), nil
+})
+
+func fixtureOutputMessage() proto.Message {
+	descriptor, err := fixtureOutputDescriptor()
+	if err != nil {
+		panic(err)
+	}
+	return dynamicpb.NewMessage(descriptor)
+}
+
+func setFixtureOutputManifest(tasks ...*pluginv1.TaskManifest) {
+	descriptor, err := fixtureOutputDescriptor()
+	if err != nil {
+		panic(err)
+	}
+	raw, name, err := flowstatev1.MessageDescriptorBytes(descriptor)
+	if err != nil {
+		panic(err)
+	}
+	for _, task := range tasks {
+		task.OutputDescriptor = raw
+		task.OutputMessage = name
 	}
 }
 

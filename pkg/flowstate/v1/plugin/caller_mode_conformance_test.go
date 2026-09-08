@@ -24,7 +24,7 @@ func runCallerModePlugin() int {
 			{
 				Name:   "read",
 				Input:  &flowstatev1.Task_Log_Inputs{},
-				Output: &flowstatev1.Task_Log_Outputs{},
+				Output: fixtureOutputMessage(),
 				Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 					caller, ok := sdk.CallerFromContext(ctx)
 					if !ok {
