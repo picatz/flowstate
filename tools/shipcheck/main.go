@@ -327,6 +327,9 @@ func hasCodexReview(pr pullRequest, security bool) bool {
 		if comment.Author.Login != "chatgpt-codex-connector" {
 			continue
 		}
+		if !security && completedCodeSummary(comment.Body, pr.HeadRefOID) {
+			return true
+		}
 		if security && completedSecuritySummary(comment.Body, pr.HeadRefOID) {
 			return true
 		}
@@ -335,6 +338,20 @@ func hasCodexReview(pr pullRequest, security bool) bool {
 		}
 		isSecurity := strings.Contains(comment.Body, "Security review completed")
 		if security == isSecurity && (isSecurity || strings.Contains(comment.Body, "Codex Review")) {
+			return true
+		}
+	}
+	return false
+}
+
+func completedCodeSummary(body, head string) bool {
+	if len(head) < 7 || !strings.Contains(body, "codex-pull-request-review-summary") ||
+		!strings.Contains(body, `"headSha":"`+head+`"`) {
+		return false
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "**Code Review**") && strings.Contains(line, "**Completed**") &&
+			strings.Contains(line, "`"+head[:7]+"`") {
 			return true
 		}
 	}

@@ -184,6 +184,21 @@ func TestSecuritySummaryRequiresCompletedExactHead(t *testing.T) {
 	}
 }
 
+func TestCodeSummaryRequiresFullHeadMarkerAndCompletedRow(t *testing.T) {
+	body := `<!-- codex-pull-request-review-summary -->
+<!-- codex-security-review:v1 {"headSha":"` + testHead + `","status":"completed"} -->
+| 📝 **Code Review** | ✅ **Completed** | ` + "`0123456`" + ` | Manual request |`
+	if !completedCodeSummary(body, testHead) {
+		t.Fatal("completed summary with a full head marker was not recognized")
+	}
+	if completedCodeSummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead) {
+		t.Fatal("summary for a different full head was recognized")
+	}
+	if completedCodeSummary(strings.Replace(body, "**Completed**", "**Running**", 1), testHead) {
+		t.Fatal("running code review was recognized")
+	}
+}
+
 func TestRunGHIsBounded(t *testing.T) {
 	dir := t.TempDir()
 	gh := filepath.Join(dir, "gh")
