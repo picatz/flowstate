@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,9 +14,17 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
-const maxThreadPages = 20
+const (
+	maxThreadPages = 20
+)
+
+var (
+	ghCommandTimeout = 30 * time.Second
+	ghWaitDelay      = time.Second
+)
 
 type pullRequest struct {
 	State            string          `json:"state"`
@@ -92,7 +101,7 @@ func validRepo(repo string) bool {
 
 func loadPullRequest(repo string, number int) (pullRequest, error) {
 	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,statusCheckRollup,reviews,comments"
-	out, err := exec.Command("gh", "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields).CombinedOutput()
+	out, err := runGH("pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields)
 	if err != nil {
 		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -101,6 +110,17 @@ func loadPullRequest(repo string, number int) (pullRequest, error) {
 		return pullRequest{}, fmt.Errorf("decode pull request: %w", err)
 	}
 	return pr, nil
+}
+
+func runGH(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), ghCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	// A credential helper or child process may inherit CombinedOutput's pipe
+	// after gh is killed. WaitDelay closes that pipe rather than waiting on an
+	// uncooperative descendant forever.
+	cmd.WaitDelay = ghWaitDelay
+	return cmd.CombinedOutput()
 }
 
 func evaluate(pr pullRequest, unresolved int) []string {
@@ -257,7 +277,7 @@ func unresolvedReviewThreads(repo string, number int) (int, error) {
 		if cursor != "" {
 			args = append(args, "-F", "cursor="+cursor)
 		}
-		out, err := exec.Command("gh", args...).CombinedOutput()
+		out, err := runGH(args...)
 		if err != nil {
 			return 0, fmt.Errorf("query GraphQL: %w: %s", err, strings.TrimSpace(string(out)))
 		}

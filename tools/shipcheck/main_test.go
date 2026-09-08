@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testHead = "0123456789abcdef0123456789abcdef01234567"
@@ -108,5 +111,30 @@ func TestSecuritySummaryRequiresCompletedExactHead(t *testing.T) {
 	}
 	if completedSecuritySummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead) {
 		t.Fatal("stale-head summary was recognized")
+	}
+}
+
+func TestRunGHIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\n/bin/sleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	original := ghCommandTimeout
+	originalWaitDelay := ghWaitDelay
+	ghCommandTimeout = 10 * time.Millisecond
+	ghWaitDelay = 10 * time.Millisecond
+	t.Cleanup(func() {
+		ghCommandTimeout = original
+		ghWaitDelay = originalWaitDelay
+	})
+
+	started := time.Now()
+	if _, err := runGH("pr", "view"); err == nil {
+		t.Fatal("runGH did not time out")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("runGH returned after %s, want a bounded timeout", elapsed)
 	}
 }

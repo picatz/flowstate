@@ -77,7 +77,7 @@ func main() {
 		return // lenient: unrecognized input allows
 	}
 	if autoMergeRequested(in) {
-		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run tools/shipcheck, then merge manually")
+		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, then merge manually")
 		return
 	}
 
