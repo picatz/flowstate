@@ -516,6 +516,29 @@ message Workflow {
   // list means the control plane affirmatively resolved a workflow requiring no
   // tasks; message presence distinguishes those two facts.
   ResolvedTaskCapabilities resolved_task_capabilities = 16 [(google.api.field_behavior) = OPTIONAL];
+
+  // CapabilityParameters are effectful dependencies supplied by a caller or,
+  // for the root workflow, by deployment admission. They are references, not
+  // CEL values: a capability cannot be serialized through an input, computed
+  // from a string, or discovered ambiently from the deployment catalog.
+  //
+  // This is the normalized-program seam for the composition prototype. Source
+  // syntax and module packaging remain outside this message until the prototype
+  // has established a spelling worth preserving.
+  repeated CapabilityParameter capability_parameters = 17 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+
+  // ResolvedCapabilityBindings is the admission-owned selection for this
+  // workflow's capability parameters. Admission overwrites it. The selected
+  // qualifier is compiled into concrete task names before execution, while this
+  // record preserves the logical parameter and stable binding identity for
+  // inspection. No endpoint or credential material is carried here.
+  repeated ResolvedCapabilityBinding resolved_capability_bindings = 18 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.
@@ -715,6 +738,76 @@ message ResolvedPlugin {
   // upgrade into a non-retryable failure for a property that pin never
   // promised to track.
   uint32 claims_schema_version = 7;
+}
+
+// CapabilityParameter is a typed, non-data parameter naming an effect contract.
+// Contract identifies the public meaning; contract_digest identifies its exact
+// task descriptors and security claims. Both must match at admission.
+message CapabilityParameter {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[a-z][a-z0-9_]*$"
+  }];
+  string contract = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+    pattern: "^[A-Za-z][A-Za-z0-9_.-]*$"
+  }];
+  string contract_digest = 3 [(buf.validate.field).string = {
+    len: 71
+    pattern: "^sha256:[0-9a-f]{64}$"
+  }];
+  // Tasks is the closed public method set, written without the parameter's
+  // qualifier. Admission projects these names from the selected provider's
+  // schema and verifies contract_digest over the resulting descriptors.
+  repeated string tasks = 4 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+    unique: true
+    items: {string: {min_len: 1 max_len: 64 pattern: "^[a-z][a-z0-9_]*$"}}
+  }];
+}
+
+// ResolvedCapabilityBinding records which deployment binding satisfied one
+// capability parameter. BindingId is stable across edits; Revision changes for
+// every semantic edit. A run is never re-resolved after this record and the
+// concrete task names have been written into its normalized program.
+message ResolvedCapabilityBinding {
+  string parameter = 1;
+  string binding_id = 2;
+  string revision = 3;
+  string qualifier = 4;
+  string contract = 5;
+  string contract_digest = 6;
+}
+
+// PureHelper is an importable declaration normalized away before execution. It
+// contributes a typed name to the compiler's CEL environment, never a runtime
+// function or evaluator. The body may reference only its parameters and the
+// pinned profile's pure CEL vocabulary.
+message PureHelper {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+    pattern: "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$"
+  }];
+  repeated PureHelperParameter parameters = 2 [(buf.validate.field).repeated = {max_items: 16}];
+  InputDeclaration.Type result_type = 3 [(buf.validate.field).enum = {defined_only: true not_in: [0]}];
+  Value body = 4 [(buf.validate.field).required = true];
+  string source = 5 [(buf.validate.field).string = {max_len: 1024}];
+  uint32 source_line = 6;
+  string description = 7 [(buf.validate.field).string = {max_len: 1024}];
+}
+
+// PureHelperParameter is one typed, body-local argument of a PureHelper.
+message PureHelperParameter {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+  }];
+  InputDeclaration.Type type = 2 [(buf.validate.field).enum = {defined_only: true not_in: [0]}];
 }
 
 // InputDeclaration is one parameter a run may be started with: what it is
@@ -2034,6 +2127,16 @@ message Call {
   // tenants is exactly the setting where "which bytes actually ran" needs an
   // answer that outlives the file.
   string source_digest = 4 [(buf.validate.field).string = {max_len: 128}];
+
+  // CapabilityArguments explicitly forward the caller's capability parameters
+  // into the callee. Keys name callee parameters and values name caller
+  // parameters. They are identifiers, never CEL expressions or deployment
+  // binding names; only root admission selects a concrete binding.
+  map<string, string> capability_arguments = 5 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {min_len: 1 max_len: 64 pattern: "^[a-z][a-z0-9_]*$"}}
+    values: {string: {min_len: 1 max_len: 64 pattern: "^[a-z][a-z0-9_]*$"}}
+  }];
 }
 
 // StepPolicy controls the execution of a single step.

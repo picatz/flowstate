@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package flowstate.v1;
 
+import "buf/validate/validate.proto";
+
 option go_package = "flowstatev1";
 
 // TaskCatalog is what this build can execute, described so that something other
@@ -357,6 +359,82 @@ message PluginCatalog {
   // against a file a pre-#712 build wrote. Zero means "this catalog predates
   // every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
   uint32 claims_schema_version = 3;
+
+  // CapabilityBindings are deployment-owned selections available for root
+  // capability parameters. They describe authority and provider selection but
+  // carry no credential values. Merely appearing here grants nothing: a root
+  // selection and explicit forwarding through every call boundary are required.
+  repeated CapabilityBinding capability_bindings = 4 [(buf.validate.field).repeated = {max_items: 256}];
+}
+
+// CapabilityBinding is one deployment-owned provider selection. BindingId is
+// stable across edits. Revision is the canonical sha256 digest of this message
+// with revision cleared, and therefore changes on every semantic edit.
+message CapabilityBinding {
+  enum Locality {
+    LOCALITY_UNSPECIFIED = 0;
+    LOCALITY_LOCAL = 1;
+    LOCALITY_REMOTE = 2;
+  }
+
+  enum RehearsalPosture {
+    REHEARSAL_POSTURE_UNSPECIFIED = 0;
+    REHEARSAL_POSTURE_DISPATCH = 1;
+    REHEARSAL_POSTURE_STUB = 2;
+    REHEARSAL_POSTURE_REFUSE = 3;
+  }
+
+  // PluginProvider selects one concrete plugin implementation.
+  message PluginProvider {
+    // The plugin catalog name selected by this binding. The first executable
+    // slice requires it to equal qualifier; alias registration is deferred.
+    string plugin_name = 1 [(buf.validate.field).string = {min_len: 1 max_len: 64}];
+  }
+
+  // BindingId is the deployment-owned identity that remains stable across edits.
+  string binding_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+  }];
+  // Revision is the canonical digest returned by CapabilityBindingRevision.
+  string revision = 2 [(buf.validate.field).string = {
+    len: 71
+    pattern: "^sha256:[0-9a-f]{64}$"
+  }];
+  // Qualifier is the concrete task namespace selected during normalization.
+  string qualifier = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[a-z0-9][a-z0-9-]*$"
+  }];
+  // Contract names the provider-independent capability interface.
+  string contract = 4 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+    pattern: "^[A-Za-z][A-Za-z0-9_.-]*$"
+  }];
+  // ContractDigest pins the complete normalized task descriptors and claims.
+  string contract_digest = 5 [(buf.validate.field).string = {
+    len: 71
+    pattern: "^sha256:[0-9a-f]{64}$"
+  }];
+  oneof provider {
+    // Plugin selects a provider advertised by this catalog.
+    PluginProvider plugin = 6;
+  }
+  // Locality records whether effects execute in the worker or across a boundary.
+  Locality locality = 7 [(buf.validate.field).enum = {defined_only: true not_in: [0]}];
+  // CredentialPostures describes credential kinds without carrying secret values.
+  repeated string credential_postures = 8 [(buf.validate.field).repeated = {
+    unique: true
+    max_items: 16
+    items: {string: {min_len: 1 max_len: 64 pattern: "^[a-z][a-z0-9_-]*$"}}
+  }];
+  // TrustTier is a deployment-defined tier available to admission policy.
+  uint32 trust_tier = 9 [(buf.validate.field).uint32 = {lte: 5}];
+  // Rehearsal records whether a rehearsal dispatches, stubs, or refuses effects.
+  RehearsalPosture rehearsal = 10 [(buf.validate.field).enum = {defined_only: true not_in: [0]}];
 }
 
 // PluginDescription is one plugin's identity and what it advertises.

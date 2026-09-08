@@ -399,8 +399,8 @@ func TestCatalogProseIsPresent(t *testing.T) {
 		checkMessage(file.Messages().Get(i))
 	}
 
-	if messageCount != 6 || fieldCount != 44 {
-		t.Errorf("catalog walk checked %d messages and %d fields; want 6 messages and 44 fields", messageCount, fieldCount)
+	if messageCount != 8 || fieldCount != 56 {
+		t.Errorf("catalog walk checked %d messages and %d fields; want 8 messages and 56 fields", messageCount, fieldCount)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
