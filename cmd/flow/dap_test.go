@@ -28,10 +28,160 @@ import (
 
 // dapConn is one framed conversation with the adapter's stdio.
 type dapConn struct {
-	t   *testing.T
-	in  io.Writer
-	out *bufio.Reader
-	seq int
+	t    *testing.T
+	in   io.Writer
+	out  *bufio.Reader
+	seq  int
+	seen strings.Builder
+}
+
+const dapSensitiveValue = "s3cr3t-value-nothing-may-print"
+
+func TestFlowDAPRefusesSensitiveWorkflowWithoutReveal(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: sensitive-probe
+inputs:
+  token:
+    type: string
+    sensitive: true
+    default: `+dapSensitiveValue+`
+steps:
+  - id: first
+    value: "'hello'"
+outputs: {}
+`), 0o600))
+
+	stdout, stderr := flowDAPRefusal(t, workflow)
+	require.NotContains(t, stdout, dapSensitiveValue)
+	require.NotContains(t, stderr, dapSensitiveValue)
+}
+
+func TestFlowDAPWithholdsDiagnosticsForAnInvalidWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: invalid-sensitive-probe
+steps:
+  - id: first
+    value: '${["`+dapSensitiveValue+`"]'
+outputs: {}
+`), 0o600))
+
+	stdout, stderr := flowDAPRefusal(t, workflow)
+	require.Contains(t, stdout, "workflow diagnostics withheld")
+	require.NotContains(t, stdout, dapSensitiveValue)
+	require.NotContains(t, stderr, dapSensitiveValue)
+}
+
+func TestFlowDAPRevealsSensitiveWorkflowOnlyWhenExplicitlyRequested(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: sensitive-probe
+inputs:
+  token:
+    type: string
+    sensitive: true
+    default: `+dapSensitiveValue+`
+steps:
+  - id: first
+    value: "'hello'"
+outputs: {}
+`), 0o600))
+
+	for _, test := range []struct {
+		name       string
+		commandArg []string
+		launchArg  map[string]any
+	}{
+		{"adapter flag", []string{"--reveal-sensitive"}, map[string]any{}},
+		{"launch configuration", nil, map[string]any{"revealSensitive": true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := append([]string{"dap"}, test.commandArg...)
+			cmd := flowBinaryCommand(buildFlowBinary(t), args...)
+			stdin, err := cmd.StdinPipe()
+			require.NoError(t, err)
+			stdout, err := cmd.StdoutPipe()
+			require.NoError(t, err)
+			require.NoError(t, cmd.Start())
+			t.Cleanup(func() {
+				_ = stdin.Close()
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			})
+
+			conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+			conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+			conn.await("response", "initialize")
+			conn.await("event", "initialized")
+			launch := map[string]any{"program": workflow}
+			for name, value := range test.launchArg {
+				launch[name] = value
+			}
+			conn.send("launch", launch)
+			conn.await("response", "launch")
+			conn.send("configurationDone", nil)
+			conn.await("response", "configurationDone")
+			conn.await("event", "stopped")
+
+			conn.send("evaluate", map[string]any{"expression": "inputs.token", "frameId": 1})
+			evaluated := conn.await("response", "evaluate")
+			require.Equal(t, true, evaluated["success"])
+			require.Contains(t, evaluated["body"].(map[string]any)["result"], dapSensitiveValue)
+		})
+	}
+}
+
+func flowDAPRefusal(t *testing.T, workflow string) (stdoutText, stderrText string) {
+	t.Helper()
+
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+	conn.await("response", "initialize")
+	conn.await("event", "initialized")
+	conn.send("launch", map[string]any{"program": workflow})
+	conn.await("response", "launch")
+	conn.send("configurationDone", nil)
+	conn.await("response", "configurationDone")
+
+	var refusal strings.Builder
+	for range 30 {
+		message := conn.read()
+		encoded, marshalErr := json.Marshal(message)
+		require.NoError(t, marshalErr)
+		refusal.Write(encoded)
+		require.NotEqual(t, "stopped", message["event"], "the refused workflow started")
+		if message["event"] == "output" && strings.Contains(string(encoded), "--reveal-sensitive") {
+			break
+		}
+	}
+	require.Contains(t, refusal.String(), "--reveal-sensitive")
+	require.Contains(t, refusal.String(), "revealSensitive")
+
+	exited := conn.await("event", "exited")
+	require.Equal(t, float64(1), exited["body"].(map[string]any)["exitCode"])
+	_ = stdin.Close()
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	return conn.seen.String(), stderr.String()
 }
 
 // send writes one request, framed as the protocol requires.
@@ -74,6 +224,7 @@ func (c *dapConn) read() map[string]any {
 	body := make([]byte, length)
 	_, err := io.ReadFull(c.out, body)
 	require.NoError(c.t, err)
+	c.seen.Write(body)
 
 	var message map[string]any
 	require.NoError(c.t, json.Unmarshal(body, &message), "the adapter wrote a frame that is not JSON: %s", body)
@@ -327,7 +478,9 @@ outputs: {}
 	require.NoError(t, err)
 	require.NotEmpty(t, diagnostics, "the fixture validates, so there is nothing for this to catch")
 
-	cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+	// Reveal authorizes the invalid file's source diagnostics. The default DAP
+	// posture withholds them because no valid specification exists to classify.
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap", "--reveal-sensitive")
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()

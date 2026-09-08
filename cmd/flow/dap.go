@@ -52,6 +52,7 @@ flow run local --debug examples/hello-world/workflow.yaml`,
 	addEditorPluginFlags(cmd)
 	addSecretFlags(cmd)
 	addLocalRehearsalFlags(cmd)
+	addRevealSensitiveFlag(cmd)
 
 	return cmd
 }
@@ -142,6 +143,7 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		}()
 
 		program := server.Program()
+		reveal := revealSensitiveRequested(cmd) || server.RevealSensitive()
 		if program == "" {
 			exit = 1
 			server.Output("flowdap: the launch configuration named no `program`, so there is " +
@@ -160,9 +162,27 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		workflow, err := loadWorkflow(program)
 		if err != nil {
 			// The client's console is the only place a person will look, and
-			// the diagnostics are the whole answer to why nothing ran.
+			// the diagnostics are the whole answer to why nothing ran. Without
+			// a valid specification there is no declaration posture to redact
+			// them against, so the shared decision fails closed rather than
+			// echoing source text that may contain a sensitive literal.
 			exit = 1
-			server.Output(fmt.Sprintf("flowdap: %v\n", err))
+			if decideCarriedValues(nil, reveal) == carriedValuesShown {
+				server.Output(fmt.Sprintf("flowdap: %v\n", err))
+			} else {
+				server.Output("flowdap: workflow diagnostics withheld because the invalid file has no " +
+					"trusted sensitive-value declarations; run `flow validate` outside the adapter, or " +
+					"explicitly authorize disclosure with --reveal-sensitive or revealSensitive: true\n")
+			}
+
+			return
+		}
+		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
+			exit = 1
+			server.Output(fmt.Sprintf("flowdap: %q declares sensitive inputs or outputs whose "+
+				"values the debugger would expose; add --reveal-sensitive to the adapter command "+
+				"or revealSensitive: true to the launch configuration to debug it with values shown\n",
+				workflow.GetName()))
 
 			return
 		}

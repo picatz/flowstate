@@ -81,6 +81,10 @@ type Server struct {
 	// program is what the client's launch configuration named, read once the
 	// launch request arrives and only meaningful after [Server.Launched].
 	program string
+	// revealSensitive is the editor-facing launch choice paired with program.
+	// Policy remains the command's: this package carries the client's explicit
+	// choice but does not decide what a workflow may disclose.
+	revealSensitive bool
 
 	// ended guards the terminated/exited pair, because two things can learn
 	// the run is over — a movement that meets [flowdebug.ErrRunOver], and
@@ -140,6 +144,17 @@ func (s *Server) Program() string {
 	defer s.mu.Unlock()
 
 	return s.program
+}
+
+// RevealSensitive reports whether the client's launch configuration explicitly
+// permits values declared sensitive to be shown by the debugger.
+//
+// Read after [Server.Launched] fires, for the same ordering reason as [Server.Program].
+func (s *Server) RevealSensitive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.revealSensitive
 }
 
 // Output puts text in the client's debug console.
@@ -242,12 +257,14 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		// adapter serves whatever the editor points it at, which is the whole
 		// shape of a `launch.json`.
 		var asked struct {
-			Program string `json:"program"`
+			Program         string `json:"program"`
+			RevealSensitive bool   `json:"revealSensitive"`
 		}
 		_ = json.Unmarshal(request.Arguments, &asked)
 
 		s.mu.Lock()
 		s.program = asked.Program
+		s.revealSensitive = asked.RevealSensitive
 		s.mu.Unlock()
 
 		// Answered and nothing more. The run starts at `configurationDone`,
