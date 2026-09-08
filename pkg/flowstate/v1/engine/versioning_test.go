@@ -295,7 +295,7 @@ func requireRunCompletesWithin(t *testing.T, temporal client.Client, run client.
 	}
 
 	info := description.GetWorkflowExecutionInfo()
-	t.Fatalf("the resumed run never completed, so nothing served it after build one stopped: "+
+	t.Fatalf("the run never completed before its bounded wait elapsed: "+
 		"status=%v runID=%s historyLength=%d pendingWorkflowTaskAttempt=%d",
 		info.GetStatus(), info.GetExecution().GetRunId(), info.GetHistoryLength(),
 		description.GetPendingWorkflowTask().GetAttempt())
