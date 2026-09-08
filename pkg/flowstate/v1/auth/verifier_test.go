@@ -414,6 +414,7 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 				claims := issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithAudience("flowstate"))
 				claims["email"] = "someone@example.com"
 				claims["groups"] = []string{"platform", "sre"}
+				claims["actions"] = []string{"workload.terminate"}
 				return claims
 			},
 			check: func(t *testing.T, principal auth.Principal) {
@@ -427,6 +428,8 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 
 				_, ok = principal.StringClaim("groups")
 				require.False(t, ok, "a list claim is not a string claim")
+				require.Equal(t, auth.ActionScopes{"workload.read"}, principal.Actions,
+					"a token claim replaced the policy-assigned action grant")
 			},
 		},
 		{
@@ -464,6 +467,7 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 						Issuer:    issuer.URL(),
 						Audiences: []string{"flowstate"},
 						Role:      "operator",
+						Actions:   auth.ActionScopes{"workload.read"},
 					}},
 				},
 				auth.WithClock(clock.Now),
@@ -481,6 +485,7 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 			require.Equal(t, "test", principal.IssuerName)
 			require.Equal(t, "workflow-runner", principal.Subject)
 			require.Equal(t, "operator", principal.Role)
+			require.Equal(t, auth.ActionScopes{"workload.read"}, principal.Actions)
 			require.Equal(t, issuer.URL()+"#workflow-runner", principal.ID())
 			require.False(t, principal.IsZero())
 			require.False(t, principal.IsAnonymous())

@@ -306,8 +306,39 @@ for it in as many words — admits everyone anonymously into one empty namespace
 which is Tier 0's model reachable over a socket rather than a weaker Tier 1a.
 Read the ticks below as claims about a server started with a policy.
 
-- ✅ The Flowstate API refuses every cross-tenant verb: one `ownedBy` check
-  covering `Get`/`List`/`Cancel`/`Terminate`/`Signal`/`Describe`, reported as
+An issuer entry may additionally restrict which control-plane actions its caller
+may perform. Actions use the schema-owned OAuth scope spellings advertised by the
+protected-resource metadata; `role` remains a descriptive audit label and grants
+nothing by itself:
+
+```yaml
+issuers:
+  - name: dashboard
+    issuer: https://idp.example.com
+    audiences: [https://flowstate.example.com/rpc]
+    role: reader
+    actions: [workload.read]
+    require:
+      - claim: client_id
+        any_of: [dashboard]
+  - name: ci
+    issuer: https://idp.example.com
+    audiences: [https://flowstate.example.com/rpc]
+    role: submitter
+    actions: [workload.run]
+    require:
+      - claim: client_id
+        any_of: [ci]
+```
+
+These disjoint entries let the dashboard inspect and CI submit while neither may
+terminate. `actions` omitted preserves the pre-action-policy behavior and adds no
+restriction; `actions: []` grants no control-plane action. Grants match exactly:
+`workload.run` does not imply cancel or terminate, and token `scope`/`scp` claims
+do not grant authority in this slice.
+
+- ✅ The Flowstate API refuses every cross-tenant verb: one shared addressing
+  gate checks Flowstate execution membership and then `ownedBy`, reported as
   `NotFound` — see [above](#read-this-before-you-share-a-temporal-namespace).
 - ✅ No schema field lets a caller name a namespace, a fairness weight, or a
   sender — a run's tenancy comes only from the authenticated caller, never

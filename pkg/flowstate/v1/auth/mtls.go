@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 )
 
 // mTLS composes with the rest of this package's trust policy rather than
@@ -299,6 +300,7 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		Subject:               subject,
 		Namespace:             namespace,
 		Role:                  entry.issuer.Role,
+		Actions:               slices.Clone(entry.issuer.Actions),
 		Claims:                claims,
 		CertificateThumbprint: sha256Hex(leaf.Raw),
 	}, nil

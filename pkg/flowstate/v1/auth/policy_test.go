@@ -1,10 +1,12 @@
 package auth_test
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
@@ -223,6 +225,7 @@ issuers:
     audiences: [flowstate]
     algorithms: [RS256]
     role: deployer
+    actions: [workload.run, workload.read]
     max_token_age: 10m
     require:
       - claim: repository
@@ -244,6 +247,7 @@ issuers:
 		require.Equal(t, []string{"flowstate"}, actions.Audiences)
 		require.Equal(t, []jwa.Algorithm{jwa.RS256}, actions.Algorithms)
 		require.Equal(t, "deployer", actions.Role)
+		require.Equal(t, auth.ActionScopes{"workload.run", "workload.read"}, actions.Actions)
 		require.Equal(t, 10*time.Minute, actions.MaxTokenAge)
 		require.Equal(t, []auth.ClaimRule{
 			{Claim: "repository", AnyOf: []string{"picatz/flowstate"}},
@@ -267,6 +271,49 @@ issuers:
 		require.NoError(t, err)
 		require.Len(t, policy.Issuers, 1)
 		require.Equal(t, auth.RequireClaim("sub", "runner"), policy.Issuers[0].Require[0])
+	})
+
+	t.Run("action presence is preserved", func(t *testing.T) {
+		policy, err := auth.ParsePolicy([]byte(`
+issuers:
+  - name: unrestricted
+    issuer: https://issuer.example.com
+    audiences: [flowstate]
+  - name: denied
+    issuer: https://other.example.com
+    audiences: [flowstate]
+    actions: []
+`))
+		require.NoError(t, err)
+		require.Nil(t, policy.Issuers[0].Actions)
+		require.NotNil(t, policy.Issuers[1].Actions)
+		require.Empty(t, policy.Issuers[1].Actions)
+
+		encoded, err := json.Marshal(policy)
+		require.NoError(t, err)
+		roundTrip, err := auth.ParsePolicy(encoded)
+		require.NoError(t, err)
+		require.Nil(t, roundTrip.Issuers[0].Actions)
+		require.NotNil(t, roundTrip.Issuers[1].Actions)
+
+		encoded, err = yaml.Marshal(policy)
+		require.NoError(t, err)
+		roundTrip, err = auth.ParsePolicy(encoded)
+		require.NoError(t, err)
+		require.Nil(t, roundTrip.Issuers[0].Actions)
+		require.NotNil(t, roundTrip.Issuers[1].Actions)
+	})
+
+	t.Run("null actions are refused rather than treated as omitted", func(t *testing.T) {
+		_, err := auth.ParsePolicy([]byte(`
+issuers:
+  - name: idp
+    issuer: https://issuer.example.com
+    audiences: [flowstate]
+    actions: null
+`))
+		require.Error(t, err)
+		require.ErrorContains(t, err, "actions is present but null")
 	})
 
 	tests := []struct {

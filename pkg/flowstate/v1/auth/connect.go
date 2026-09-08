@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"connectrpc.com/authn"
 	"connectrpc.com/connect"
@@ -269,9 +270,30 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			}
 			return nil, a.unauthenticated(err)
 		}
+		// The same identity with two different policy-assigned grants is still
+		// ambiguous authority. In particular, returning the certificate principal
+		// must not erase a narrower bearer-token grant.
+		if !equalActionScopes(tokenPrincipal.Actions, peerPrincipal.Actions) {
+			err := fmt.Errorf("%w: certificate and token grant different actions", ErrAmbiguousIdentity)
+			if a.observe != nil {
+				a.observe(ctx, req, err)
+			}
+			return nil, a.unauthenticated(err)
+		}
 	}
 
 	return peerPrincipal, nil
+}
+
+func equalActionScopes(a, b ActionScopes) bool {
+	if (a == nil) != (b == nil) || len(a) != len(b) {
+		return false
+	}
+	a = slices.Clone(a)
+	b = slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(a, b)
 }
 
 // unauthenticated renders a verification failure as the error a caller sees: the
