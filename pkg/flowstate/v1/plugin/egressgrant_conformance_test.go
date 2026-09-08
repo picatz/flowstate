@@ -100,7 +100,7 @@ func runEgressGrantPlugin() int {
 		Tasks: []sdk.Task{{
 			Name:   "report",
 			Input:  &flowstatev1.Task_Log_Inputs{},
-			Output: &flowstatev1.Task_Log_Outputs{},
+			Output: fixtureOutputMessage(),
 			Fn:     report,
 		}},
 	})
@@ -343,7 +343,7 @@ func runEgressIdentityPlugin() int {
 		Tasks: []sdk.Task{{
 			Name:   "fetch",
 			Input:  &flowstatev1.Task_Log_Inputs{},
-			Output: &flowstatev1.Task_Log_Outputs{},
+			Output: fixtureOutputMessage(),
 			Fn:     fetch,
 		}},
 	})

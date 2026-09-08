@@ -101,7 +101,7 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// what routes a step using one to the identity-aware activity
 		// regardless of which task it names. A plugin task with a secret input
 		// is already covered by the same scan a built-in task's `bearer:` is.
-		Fn: p.taskFunc(manifest),
+		Fn: p.taskFunc(manifest, outputs),
 	}, nil
 }
 
@@ -134,7 +134,7 @@ func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pl
 }
 
 // taskFunc returns the function that executes a task by asking the plugin to.
-func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc {
+func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor protoreflect.MessageDescriptor) flowstatev1.TaskFunc {
 	// Two names for one task, each used where it is true. The wire carries the
 	// bare manifest name, because that is what the plugin calls it; every error
 	// carries the qualified one, because that is what the author wrote and what
@@ -235,6 +235,13 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		if err := scrubPluginOutputs(scrubber, outputs); err != nil {
 			callErr = err
 			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, err)
+		}
+		if !manifest.GetShapesOutputs() {
+			if err := checkOutputContract(outputDescriptor, outputs); err != nil {
+				scrubbed := scrubber.ScrubError(err)
+				callErr = scrubbed
+				return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, scrubbed)
+			}
 		}
 
 		return outputs, nil
