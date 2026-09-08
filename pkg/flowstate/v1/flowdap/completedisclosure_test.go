@@ -14,7 +14,10 @@ import (
 )
 
 func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
-	const sensitive = "s3cr3t_value_nothing_may_print"
+	const (
+		sensitive           = "s3cr3t_value_nothing_may_print"
+		expressionSensitive = "inputs.token"
+	)
 
 	session, err := flowdebug.New(flowdebug.Options{
 		Controlled: true,
@@ -23,10 +26,11 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 	session.SetRedactor(func(text string) string {
-		return strings.ReplaceAll(text, sensitive, "[redacted]")
+		text = strings.ReplaceAll(text, sensitive, "[redacted]")
+		return strings.ReplaceAll(text, expressionSensitive, "[redacted]")
 	})
 	session.SetValueRedactor(func(value any) any {
-		if value == sensitive {
+		if value == sensitive || value == expressionSensitive {
 			return "[redacted]"
 		}
 		return value
@@ -43,7 +47,8 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 			Profile: v1.CurrentProfile,
 			Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{}},
 			Inputs: map[string]*v1.Value{
-				"token":   v1.NewLiteral(sensitive),
+				"public":  v1.NewLiteral(sensitive),
+				"token":   v1.NewLiteral(expressionSensitive),
 				sensitive: v1.NewLiteral(sensitive),
 			},
 		}
@@ -75,12 +80,17 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(positionJSON), "[redacted]")
 	require.NotContains(t, string(positionJSON), sensitive)
-	wireScope, err := session.ScopeProto(t.Context(), 10)
-	require.NoError(t, err)
-	wireScopeJSON, err := protojson.Marshal(wireScope)
-	require.NoError(t, err)
-	require.Contains(t, string(wireScopeJSON), "[redacted]")
-	require.NotContains(t, string(wireScopeJSON), sensitive)
+	for _, limit := range []int{0, 10} {
+		wireScope, scopeErr := session.ScopeProto(t.Context(), limit)
+		require.NoError(t, scopeErr)
+		wireScopeJSON, marshalErr := protojson.Marshal(wireScope)
+		require.NoError(t, marshalErr)
+		require.NotContains(t, string(wireScopeJSON), sensitive)
+		require.NotContains(t, string(wireScopeJSON), expressionSensitive)
+		if limit > 0 {
+			require.Contains(t, string(wireScopeJSON), "[redacted]")
+		}
+	}
 
 	c.send(5, "stackTrace", map[string]any{"threadId": 1})
 	stack := c.await("response", "stackTrace")
@@ -89,7 +99,7 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(stackJSON), "[redacted]")
 
-	c.send(6, "evaluate", map[string]any{"expression": "inputs.token", "frameId": 1})
+	c.send(6, "evaluate", map[string]any{"expression": "inputs.public", "frameId": 1})
 	evaluated := c.await("response", "evaluate")
 	require.Equal(t, true, evaluated["success"])
 	require.Contains(t, evaluated["body"].(map[string]any)["result"], "[redacted]")
@@ -110,15 +120,16 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.Equal(t, true, variables["success"])
 	rows := variables["body"].(map[string]any)["variables"].([]any)
 	require.Len(t, rows, 1)
-	token := rows[0].(map[string]any)
-	require.Equal(t, "token", token["name"])
-	require.Contains(t, token["value"], "[redacted]")
-	require.NotContains(t, token["value"], sensitive)
+	public := rows[0].(map[string]any)
+	require.Equal(t, "public", public["name"])
+	require.Contains(t, public["value"], "[redacted]")
+	require.NotContains(t, public["value"], sensitive)
 
 	encoded, err := json.Marshal([]any{breakpoints, stopped, stack, evaluated, scopes, variables})
 	require.NoError(t, err)
 	require.Contains(t, string(encoded), "[redacted]")
 	require.NotContains(t, string(encoded), sensitive)
+	require.NotContains(t, string(encoded), expressionSensitive)
 }
 
 func TestAdapterRedactsAStackLabelAfterJoiningItsFields(t *testing.T) {

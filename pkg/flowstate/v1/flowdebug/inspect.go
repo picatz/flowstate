@@ -448,7 +448,8 @@ func (s *Session) visibleScopeNames(subject promptSubject) []Names {
 	for _, group := range groups {
 		names := group.Names[:0]
 		for _, name := range group.Names {
-			if subject.redactText(name) == name {
+			expression := expressionFor(group.Root, name)
+			if subject.redactText(name) == name && subject.redactText(expression) == expression {
 				names = append(names, name)
 			}
 		}
