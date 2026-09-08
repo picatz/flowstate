@@ -51,6 +51,12 @@ import (
 // [Run], which converts it using the frames recorded along the way.
 var errContinueAsNew = errors.New("engine: continue as new")
 
+// workflowSliceCostChange gates cost-triggered Continue-As-New for histories
+// recorded before #1882. Adding a new continuation command while replaying one
+// of those histories would be nondeterministic; new executions record version 1
+// and later segments inherit the new behavior as fresh histories.
+const workflowSliceCostChange = "workflow-slice-cost-v1"
+
 // executor carries the state of one workflow execution.
 type executor struct {
 	ctx      workflow.Context
@@ -94,6 +100,12 @@ type executor struct {
 	// budget and processed implement the step budget for Continue-As-New.
 	budget    int
 	processed int
+
+	// sliceCost is shared by every nested executor and coroutine in this
+	// workflow execution. CEL's actual cost is deterministic; accumulating value
+	// expression cost here makes the history-producing continuation a function
+	// of recorded work rather than wall time or loop trip count.
+	sliceCost *uint64
 
 	// callDepth counts calls nested so far, zero at the top-level workflow. It
 	// is unaffected by descending into a loop body or a parallel branch — only
@@ -347,6 +359,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
+			e.yieldWorkflow()
 			continue
 		}
 
@@ -380,6 +393,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 				return stepFailed(err, "step %q", node.GetId())
 			}
 			started = append(started, e.startAsync(node, depth, susp))
+			e.yieldWorkflow()
 
 			continue
 		}
@@ -401,6 +415,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 
 		e.progress.finished()
+		e.yieldWorkflow()
 
 		// Suspending is only possible where the position is representable, and
 		// only between steps that a call cannot make opaque. A deeper suspend
@@ -429,6 +444,45 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 	e.truncateFrames(depth)
 
 	return nil
+}
+
+// yieldWorkflow ends the current workflow-goroutine slice without adding a
+// command to history. A bounded CEL expression fits inside the worker's
+// deadlock budget, but an arbitrary number of those expressions can otherwise
+// run back-to-back in value steps and loops before an activity, timer, or signal
+// receive gives the SDK scheduler control.
+//
+// The handoff is made only from Temporal workflow primitives: the current
+// coroutine blocks receiving from an in-memory workflow channel, and the new
+// coroutine makes it runnable again. Both operations are deterministic and
+// replay-identical, and neither schedules a server-side timer, so one handoff
+// per step or loop iteration does not turn pure computation into history growth.
+func (e *executor) yieldWorkflow() {
+	// The same version decision that gates cost-triggered continuations gates
+	// scheduler order: old histories must retain the coroutine order they
+	// recorded before #1882.
+	if e.sliceCost == nil {
+		return
+	}
+
+	done := workflow.NewChannel(e.ctx)
+	workflow.Go(e.ctx, func(ctx workflow.Context) {
+		done.Send(ctx, struct{}{})
+	})
+
+	var signal struct{}
+	done.Receive(e.ctx, &signal)
+}
+
+// chargeWorkflowCost records deterministic value-expression CEL work.
+// [shouldSuspend] turns a spent budget into Continue-As-New at the next
+// representable step or loop boundary, so replay of a later segment does not
+// repeat an ever-growing prefix.
+func (e *executor) chargeWorkflowCost(cost uint64) {
+	if cost == 0 || e.sliceCost == nil {
+		return
+	}
+	*e.sliceCost += cost
 }
 
 // recordOutcome applies one finished step's failure to the scope and reports the
@@ -685,6 +739,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 
 		budget:    e.budget,
 		processed: e.processed,
+		sliceCost: e.sliceCost,
 		frames:    e.frames,
 
 		// Shared by pointer with the caller, for the same reasons the top-level
@@ -785,7 +840,8 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 // observable behaviour is the answer it computed, so the two drivers share the
 // one that computes it.
 func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
-	outputs, err := v1.EvalValueNode(evalContext(), value, e.scope)
+	outputs, cost, err := v1.EvalValueNodeWithCost(evalContext(), value, e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -1376,6 +1432,7 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 		if sizeErr != nil {
 			return stepFailed(sizeErr, "iteration %d", i)
 		}
+		e.yieldWorkflow()
 
 		// A long loop is exactly where history accumulates, so an iteration
 		// boundary is worth suspending at — the position is a single index plus
@@ -1521,6 +1578,7 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 			return nil
 		}
 		state = next
+		e.yieldWorkflow()
 
 		// A long loop is exactly where history accumulates, so an iteration boundary is
 		// worth suspending at — the position is a single index plus the results and the
@@ -1563,6 +1621,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		path:      body,
 		budget:    e.budget,
 		processed: e.processed,
+		sliceCost: e.sliceCost,
 		frames:    e.frames,
 
 		signals:    e.signals,
@@ -1648,6 +1707,7 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		path:      body,
 		budget:    e.budget,
 		processed: e.processed,
+		sliceCost: e.sliceCost,
 		frames:    e.frames,
 
 		// The run's carry, by pointer. A wait in a loop body consumes from the
@@ -1733,6 +1793,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					scope:     e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
 					path:      body,
 					budget:    e.budget,
+					sliceCost: e.sliceCost,
 					signals:   e.signals,
 					debug:     e.debug,
 					undo:      iterationUndo,
@@ -1845,6 +1906,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				// exactly which `parallel:` step they were written under.
 				path:      branchPath,
 				budget:    e.budget,
+				sliceCost: e.sliceCost,
 				signals:   e.signals,
 				debug:     e.debug,
 				undo:      branchUndo,
@@ -1905,6 +1967,10 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 // shouldSuspend reports whether the run should be continued as new.
 func (e *executor) shouldSuspend() bool {
 	if e.processed >= e.budget {
+		return true
+	}
+	limit := v1.DefaultEvaluator().Limits().WorkflowSliceCost
+	if limit > 0 && e.sliceCost != nil && *e.sliceCost >= limit {
 		return true
 	}
 	if info := workflow.GetInfo(e.ctx); info != nil && info.GetContinueAsNewSuggested() {

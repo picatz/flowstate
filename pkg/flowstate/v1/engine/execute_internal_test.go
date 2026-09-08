@@ -78,6 +78,37 @@ func TestRunUndoTaskNamesUndoBudgetExpiry(t *testing.T) {
 			"reading like any other Temporal activity timeout")
 }
 
+// TestWorkflowYieldHandsTheSchedulerControl proves the handoff independently
+// of cost-triggered Continue-As-New. It also pins the compatibility gate: an
+// executor replaying a pre-#1882 history has no slice counter and must not
+// reorder a coroutine that the old interpreter left pending.
+func TestWorkflowYieldHandsTheSchedulerControl(t *testing.T) {
+	probe := func(ctx workflow.Context) ([]bool, error) {
+		oldRan := false
+		workflow.Go(ctx, func(workflow.Context) { oldRan = true })
+		old := &executor{ctx: ctx}
+		old.yieldWorkflow()
+		beforeVersion := oldRan
+
+		currentRan := false
+		workflow.Go(ctx, func(workflow.Context) { currentRan = true })
+		current := &executor{ctx: ctx, sliceCost: new(uint64)}
+		current.yieldWorkflow()
+
+		return []bool{beforeVersion, currentRan}, nil
+	}
+
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(probe)
+	env.ExecuteWorkflow(probe)
+	require.NoError(t, env.GetWorkflowError())
+
+	var got []bool
+	require.NoError(t, env.GetWorkflowResult(&got))
+	require.Equal(t, []bool{false, true}, got)
+}
+
 // TestRunUndoTaskDoesNotNameUndoBudgetExpiryForAnOrdinaryFailure is the
 // negative direction: a compensation that fails for its own classified
 // reason, under the identical narrowed timeout budget, must not have its

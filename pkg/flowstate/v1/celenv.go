@@ -46,6 +46,13 @@ import (
 // instead of exhausting the worker.
 const DefaultCostLimit uint64 = 1_000_000
 
+// DefaultWorkflowSliceCost is the accumulated value-expression CEL cost a
+// durable workflow segment may spend before it continues as new at the next
+// representable boundary. It is deliberately below [DefaultCostLimit]: that
+// limit bounds one expression, while this one keeps a sequence of individually
+// valid value expressions inside Temporal's workflow-task and deadlock budgets.
+const DefaultWorkflowSliceCost uint64 = 500_000
+
 // DefaultInterruptCheckFrequency is how many evaluation steps elapse between
 // context cancellation checks.
 //
@@ -62,6 +69,11 @@ type Limits struct {
 	// which should be used only in tests.
 	Cost uint64
 
+	// WorkflowSliceCost is the accumulated value-expression CEL cost between
+	// durable segments. Zero disables cost-triggered segmentation and should be
+	// used only in evaluator tests that do not execute a workflow.
+	WorkflowSliceCost uint64
+
 	// InterruptCheckFrequency is how many evaluation steps elapse between
 	// context cancellation checks. Zero disables cancellation checking.
 	InterruptCheckFrequency uint
@@ -72,6 +84,7 @@ type Limits struct {
 func DefaultLimits() Limits {
 	return Limits{
 		Cost:                    DefaultCostLimit,
+		WorkflowSliceCost:       DefaultWorkflowSliceCost,
 		InterruptCheckFrequency: DefaultInterruptCheckFrequency,
 	}
 }
@@ -246,11 +259,23 @@ func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activa
 // half of evaluation [Evaluator.Eval] and [Evaluator.EvalParsed] must share so
 // a cached expression cannot fail with different words than an uncached one.
 func evalProgram(ctx context.Context, prg cel.Program, activation any) (ref.Val, error) {
-	out, _, err := prg.ContextEval(ctx, activation)
-	if err != nil {
-		return nil, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
+	out, _, err := evalProgramWithCost(ctx, prg, activation)
+	return out, err
+}
+
+// evalProgramWithCost runs a compiled program and returns the actual cost CEL
+// tracked under [Limits.Cost]. A missing cost is zero, which is possible only
+// for evaluators whose tests deliberately disable cost tracking.
+func evalProgramWithCost(ctx context.Context, prg cel.Program, activation any) (ref.Val, uint64, error) {
+	out, details, err := prg.ContextEval(ctx, activation)
+	var cost uint64
+	if details != nil && details.ActualCost() != nil {
+		cost = *details.ActualCost()
 	}
-	return out, nil
+	if err != nil {
+		return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
+	}
+	return out, cost, nil
 }
 
 // An ExpressionError reports that a CEL expression failed to compile or to
@@ -317,8 +342,15 @@ func (e *ExpressionError) Unwrap() error { return e.Err }
 // the evaluation rather than the program, which is what makes sharing one
 // program across goroutines sound.
 func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
+	out, _, err := e.EvalParsedWithCost(ctx, env, parsed, activation)
+	return out, err
+}
+
+// EvalParsedWithCost is [Evaluator.EvalParsed] plus the deterministic actual
+// cost reported by CEL for this evaluation.
+func (e *Evaluator) EvalParsedWithCost(ctx context.Context, env *cel.Env, parsed *expr.ParsedExpr, activation any) (ref.Val, uint64, error) {
 	if parsed == nil {
-		return nil, fmt.Errorf("parsed expression is nil")
+		return nil, 0, fmt.Errorf("parsed expression is nil")
 	}
 
 	key := programKey{env: env, parsed: parsed}
@@ -326,11 +358,11 @@ func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.P
 	if !ok {
 		programEnv, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
 		if err != nil {
-			return nil, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
+			return nil, 0, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
 		}
 		prg, err = programEnv.Program(cel.ParsedExprToAst(orderMapComprehensions(parsed)), e.limits.programOptions()...)
 		if err != nil {
-			return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
+			return nil, 0, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 		}
 		// Two goroutines missing on the same key both compile and both store;
 		// the loser's program is garbage. That costs one compilation, which is
@@ -341,7 +373,7 @@ func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.P
 		// dwarfs it.
 		e.programs.put(key, prg, proto.Size(parsed))
 	}
-	return evalProgram(ctx, prg, activation)
+	return evalProgramWithCost(ctx, prg, activation)
 }
 
 // DefaultProgramCacheSize bounds how many compiled programs an [Evaluator]
@@ -500,11 +532,18 @@ func (c *programCache) storeCount() int {
 // poorer dialect than the `cel` step beside them. One profile is what removes that,
 // and this is where most of the file feels it.
 func (e *Evaluator) EvalParsedBase(ctx context.Context, profile string, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
+	out, _, err := e.EvalParsedBaseWithCost(ctx, profile, parsed, activation)
+	return out, err
+}
+
+// EvalParsedBaseWithCost is [Evaluator.EvalParsedBase] plus the deterministic
+// actual cost reported by CEL for this evaluation.
+func (e *Evaluator) EvalParsedBaseWithCost(ctx context.Context, profile string, parsed *expr.ParsedExpr, activation any) (ref.Val, uint64, error) {
 	env, err := e.ProfileEnv(profile)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return e.EvalParsed(ctx, env, parsed, activation)
+	return e.EvalParsedWithCost(ctx, env, parsed, activation)
 }
 
 // ProfileEnv returns the environment a named profile describes.

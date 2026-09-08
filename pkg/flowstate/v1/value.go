@@ -42,25 +42,32 @@ const ValueOutput = "value"
 // [DefaultCostLimit] like every other expression this system evaluates, and what
 // the run then carries is bounded by the same rule any output is.
 func EvalValueNode(ctx context.Context, value *Value, scope *Scope) (*Node_Outputs, error) {
+	outputs, _, err := EvalValueNodeWithCost(ctx, value, scope)
+	return outputs, err
+}
+
+// EvalValueNodeWithCost is [EvalValueNode] plus the deterministic CEL cost of
+// the value expression. Literal values cost zero.
+func EvalValueNodeWithCost(ctx context.Context, value *Value, scope *Scope) (*Node_Outputs, uint64, error) {
 	if value == nil {
-		return nil, fmt.Errorf("a `value:` step must hold an expression or a literal, and this one holds nothing")
+		return nil, 0, fmt.Errorf("a `value:` step must hold an expression or a literal, and this one holds nothing")
 	}
 
 	if _, isExpr := value.GetKind().(*Value_Expr); !isExpr {
-		return &Node_Outputs{NamedValues: map[string]*Value{ValueOutput: value}}, nil
+		return &Node_Outputs{NamedValues: map[string]*Value{ValueOutput: value}}, 0, nil
 	}
 
-	out, err := DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), value.GetExpr(), scope.Activation(ctx))
+	out, cost, err := DefaultEvaluator().EvalParsedBaseWithCost(ctx, scope.GetProfile(), value.GetExpr(), scope.Activation(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("evaluating value: %w", err)
+		return nil, cost, fmt.Errorf("evaluating value: %w", err)
 	}
 
 	literal, err := cel.RefValueToValue(out)
 	if err != nil {
-		return nil, fmt.Errorf("evaluating value: converting result: %w", err)
+		return nil, cost, fmt.Errorf("evaluating value: converting result: %w", err)
 	}
 
 	return &Node_Outputs{NamedValues: map[string]*Value{
 		ValueOutput: {Kind: &Value_Literal{Literal: literal}},
-	}}, nil
+	}}, cost, nil
 }
