@@ -24,7 +24,7 @@ func TestDocumentKeysCoverWorkflowSchema(t *testing.T) {
 	for i := range fields.Len() {
 		name := string(fields.Get(i).Name())
 		switch name {
-		case "profile", "resolved_plugins", "resolved_task_capabilities":
+		case "profile", "resolved_plugins", "resolved_task_capabilities", "capability_parameters", "resolved_capability_bindings":
 			// Compiler- or submit-time facts, never author input.
 		case "declared_inputs":
 			schema = append(schema, "inputs")
@@ -116,6 +116,9 @@ func callCompanionKeys(t *testing.T) []string {
 			keys = append(keys, "with")
 		case "source_digest":
 			keys = append(keys, "digest")
+		case "capability_arguments":
+			// Compiler-owned capability forwarding; the prototype deliberately
+			// does not choose an author-facing spelling.
 		default:
 			t.Fatalf("Call gained schema field %q with no Flowfile grammar mapping", name)
 		}

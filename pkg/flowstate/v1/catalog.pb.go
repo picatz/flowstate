@@ -7,6 +7,7 @@
 package flowstatev1
 
 import (
+	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -20,6 +21,107 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
+
+type CapabilityBinding_Locality int32
+
+const (
+	CapabilityBinding_LOCALITY_UNSPECIFIED CapabilityBinding_Locality = 0
+	CapabilityBinding_LOCALITY_LOCAL       CapabilityBinding_Locality = 1
+	CapabilityBinding_LOCALITY_REMOTE      CapabilityBinding_Locality = 2
+)
+
+// Enum value maps for CapabilityBinding_Locality.
+var (
+	CapabilityBinding_Locality_name = map[int32]string{
+		0: "LOCALITY_UNSPECIFIED",
+		1: "LOCALITY_LOCAL",
+		2: "LOCALITY_REMOTE",
+	}
+	CapabilityBinding_Locality_value = map[string]int32{
+		"LOCALITY_UNSPECIFIED": 0,
+		"LOCALITY_LOCAL":       1,
+		"LOCALITY_REMOTE":      2,
+	}
+)
+
+func (x CapabilityBinding_Locality) Enum() *CapabilityBinding_Locality {
+	p := new(CapabilityBinding_Locality)
+	*p = x
+	return p
+}
+
+func (x CapabilityBinding_Locality) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CapabilityBinding_Locality) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_catalog_proto_enumTypes[0].Descriptor()
+}
+
+func (CapabilityBinding_Locality) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_catalog_proto_enumTypes[0]
+}
+
+func (x CapabilityBinding_Locality) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CapabilityBinding_Locality.Descriptor instead.
+func (CapabilityBinding_Locality) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{4, 0}
+}
+
+type CapabilityBinding_RehearsalPosture int32
+
+const (
+	CapabilityBinding_REHEARSAL_POSTURE_UNSPECIFIED CapabilityBinding_RehearsalPosture = 0
+	CapabilityBinding_REHEARSAL_POSTURE_DISPATCH    CapabilityBinding_RehearsalPosture = 1
+	CapabilityBinding_REHEARSAL_POSTURE_STUB        CapabilityBinding_RehearsalPosture = 2
+	CapabilityBinding_REHEARSAL_POSTURE_REFUSE      CapabilityBinding_RehearsalPosture = 3
+)
+
+// Enum value maps for CapabilityBinding_RehearsalPosture.
+var (
+	CapabilityBinding_RehearsalPosture_name = map[int32]string{
+		0: "REHEARSAL_POSTURE_UNSPECIFIED",
+		1: "REHEARSAL_POSTURE_DISPATCH",
+		2: "REHEARSAL_POSTURE_STUB",
+		3: "REHEARSAL_POSTURE_REFUSE",
+	}
+	CapabilityBinding_RehearsalPosture_value = map[string]int32{
+		"REHEARSAL_POSTURE_UNSPECIFIED": 0,
+		"REHEARSAL_POSTURE_DISPATCH":    1,
+		"REHEARSAL_POSTURE_STUB":        2,
+		"REHEARSAL_POSTURE_REFUSE":      3,
+	}
+)
+
+func (x CapabilityBinding_RehearsalPosture) Enum() *CapabilityBinding_RehearsalPosture {
+	p := new(CapabilityBinding_RehearsalPosture)
+	*p = x
+	return p
+}
+
+func (x CapabilityBinding_RehearsalPosture) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CapabilityBinding_RehearsalPosture) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_catalog_proto_enumTypes[1].Descriptor()
+}
+
+func (CapabilityBinding_RehearsalPosture) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_catalog_proto_enumTypes[1]
+}
+
+func (x CapabilityBinding_RehearsalPosture) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CapabilityBinding_RehearsalPosture.Descriptor instead.
+func (CapabilityBinding_RehearsalPosture) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{4, 1}
+}
 
 // TaskCatalog is what this build can execute, described so that something other
 // than a person can read it.
@@ -631,8 +733,13 @@ type PluginCatalog struct {
 	// against a file a pre-#712 build wrote. Zero means "this catalog predates
 	// every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
 	ClaimsSchemaVersion uint32 `protobuf:"varint,3,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// CapabilityBindings are deployment-owned selections available for root
+	// capability parameters. They describe authority and provider selection but
+	// carry no credential values. Merely appearing here grants nothing: a root
+	// selection and explicit forwarding through every call boundary are required.
+	CapabilityBindings []*CapabilityBinding `protobuf:"bytes,4,rep,name=capability_bindings,json=capabilityBindings,proto3" json:"capability_bindings,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PluginCatalog) Reset() {
@@ -685,6 +792,164 @@ func (x *PluginCatalog) GetClaimsSchemaVersion() uint32 {
 	}
 	return 0
 }
+
+func (x *PluginCatalog) GetCapabilityBindings() []*CapabilityBinding {
+	if x != nil {
+		return x.CapabilityBindings
+	}
+	return nil
+}
+
+// CapabilityBinding is one deployment-owned provider selection. BindingId is
+// stable across edits. Revision is the canonical sha256 digest of this message
+// with revision cleared, and therefore changes on every semantic edit.
+type CapabilityBinding struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// BindingId is the deployment-owned identity that remains stable across edits.
+	BindingId string `protobuf:"bytes,1,opt,name=binding_id,json=bindingId,proto3" json:"binding_id,omitempty"`
+	// Revision is the canonical digest returned by CapabilityBindingRevision.
+	Revision string `protobuf:"bytes,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Qualifier is the concrete task namespace selected during normalization.
+	Qualifier string `protobuf:"bytes,3,opt,name=qualifier,proto3" json:"qualifier,omitempty"`
+	// Contract names the provider-independent capability interface.
+	Contract string `protobuf:"bytes,4,opt,name=contract,proto3" json:"contract,omitempty"`
+	// ContractDigest pins the complete normalized task descriptors and claims.
+	ContractDigest string `protobuf:"bytes,5,opt,name=contract_digest,json=contractDigest,proto3" json:"contract_digest,omitempty"`
+	// Types that are valid to be assigned to Provider:
+	//
+	//	*CapabilityBinding_Plugin
+	Provider isCapabilityBinding_Provider `protobuf_oneof:"provider"`
+	// Locality records whether effects execute in the worker or across a boundary.
+	Locality CapabilityBinding_Locality `protobuf:"varint,7,opt,name=locality,proto3,enum=flowstate.v1.CapabilityBinding_Locality" json:"locality,omitempty"`
+	// CredentialPostures describes credential kinds without carrying secret values.
+	CredentialPostures []string `protobuf:"bytes,8,rep,name=credential_postures,json=credentialPostures,proto3" json:"credential_postures,omitempty"`
+	// TrustTier is a deployment-defined tier available to admission policy.
+	TrustTier uint32 `protobuf:"varint,9,opt,name=trust_tier,json=trustTier,proto3" json:"trust_tier,omitempty"`
+	// Rehearsal records whether a rehearsal dispatches, stubs, or refuses effects.
+	Rehearsal     CapabilityBinding_RehearsalPosture `protobuf:"varint,10,opt,name=rehearsal,proto3,enum=flowstate.v1.CapabilityBinding_RehearsalPosture" json:"rehearsal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CapabilityBinding) Reset() {
+	*x = CapabilityBinding{}
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CapabilityBinding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CapabilityBinding) ProtoMessage() {}
+
+func (x *CapabilityBinding) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CapabilityBinding.ProtoReflect.Descriptor instead.
+func (*CapabilityBinding) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CapabilityBinding) GetBindingId() string {
+	if x != nil {
+		return x.BindingId
+	}
+	return ""
+}
+
+func (x *CapabilityBinding) GetRevision() string {
+	if x != nil {
+		return x.Revision
+	}
+	return ""
+}
+
+func (x *CapabilityBinding) GetQualifier() string {
+	if x != nil {
+		return x.Qualifier
+	}
+	return ""
+}
+
+func (x *CapabilityBinding) GetContract() string {
+	if x != nil {
+		return x.Contract
+	}
+	return ""
+}
+
+func (x *CapabilityBinding) GetContractDigest() string {
+	if x != nil {
+		return x.ContractDigest
+	}
+	return ""
+}
+
+func (x *CapabilityBinding) GetProvider() isCapabilityBinding_Provider {
+	if x != nil {
+		return x.Provider
+	}
+	return nil
+}
+
+func (x *CapabilityBinding) GetPlugin() *CapabilityBinding_PluginProvider {
+	if x != nil {
+		if x, ok := x.Provider.(*CapabilityBinding_Plugin); ok {
+			return x.Plugin
+		}
+	}
+	return nil
+}
+
+func (x *CapabilityBinding) GetLocality() CapabilityBinding_Locality {
+	if x != nil {
+		return x.Locality
+	}
+	return CapabilityBinding_LOCALITY_UNSPECIFIED
+}
+
+func (x *CapabilityBinding) GetCredentialPostures() []string {
+	if x != nil {
+		return x.CredentialPostures
+	}
+	return nil
+}
+
+func (x *CapabilityBinding) GetTrustTier() uint32 {
+	if x != nil {
+		return x.TrustTier
+	}
+	return 0
+}
+
+func (x *CapabilityBinding) GetRehearsal() CapabilityBinding_RehearsalPosture {
+	if x != nil {
+		return x.Rehearsal
+	}
+	return CapabilityBinding_REHEARSAL_POSTURE_UNSPECIFIED
+}
+
+type isCapabilityBinding_Provider interface {
+	isCapabilityBinding_Provider()
+}
+
+type CapabilityBinding_Plugin struct {
+	// Plugin selects a provider advertised by this catalog.
+	Plugin *CapabilityBinding_PluginProvider `protobuf:"bytes,6,opt,name=plugin,proto3,oneof"`
+}
+
+func (*CapabilityBinding_Plugin) isCapabilityBinding_Provider() {}
 
 // PluginDescription is one plugin's identity and what it advertises.
 type PluginDescription struct {
@@ -745,7 +1010,7 @@ type PluginDescription struct {
 
 func (x *PluginDescription) Reset() {
 	*x = PluginDescription{}
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[4]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -757,7 +1022,7 @@ func (x *PluginDescription) String() string {
 func (*PluginDescription) ProtoMessage() {}
 
 func (x *PluginDescription) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[4]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -770,7 +1035,7 @@ func (x *PluginDescription) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginDescription.ProtoReflect.Descriptor instead.
 func (*PluginDescription) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PluginDescription) GetName() string {
@@ -887,7 +1152,7 @@ type TaskField struct {
 
 func (x *TaskField) Reset() {
 	*x = TaskField{}
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -899,7 +1164,7 @@ func (x *TaskField) String() string {
 func (*TaskField) ProtoMessage() {}
 
 func (x *TaskField) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -912,7 +1177,7 @@ func (x *TaskField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskField.ProtoReflect.Descriptor instead.
 func (*TaskField) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TaskField) GetName() string {
@@ -950,11 +1215,58 @@ func (x *TaskField) GetConstraints() []string {
 	return nil
 }
 
+// PluginProvider selects one concrete plugin implementation.
+type CapabilityBinding_PluginProvider struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The plugin catalog name selected by this binding. The first executable
+	// slice requires it to equal qualifier; alias registration is deferred.
+	PluginName    string `protobuf:"bytes,1,opt,name=plugin_name,json=pluginName,proto3" json:"plugin_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CapabilityBinding_PluginProvider) Reset() {
+	*x = CapabilityBinding_PluginProvider{}
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CapabilityBinding_PluginProvider) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CapabilityBinding_PluginProvider) ProtoMessage() {}
+
+func (x *CapabilityBinding_PluginProvider) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CapabilityBinding_PluginProvider.ProtoReflect.Descriptor instead.
+func (*CapabilityBinding_PluginProvider) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{4, 0}
+}
+
+func (x *CapabilityBinding_PluginProvider) GetPluginName() string {
+	if x != nil {
+		return x.PluginName
+	}
+	return ""
+}
+
 var File_flowstate_v1_catalog_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\n" +
-	"\x1aflowstate/v1/catalog.proto\x12\fflowstate.v1\"\xca\x02\n" +
+	"\x1aflowstate/v1/catalog.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xca\x02\n" +
 	"\vTaskCatalog\x123\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x1d.flowstate.v1.TaskDescriptionR\x05tasks\x12#\n" +
 	"\rcel_libraries\x18\x02 \x03(\tR\fcelLibraries\x12%\n" +
@@ -986,12 +1298,43 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\rinput_message\x18\v \x01(\tR\finputMessage\x12+\n" +
 	"\x11output_descriptor\x18\f \x01(\fR\x10outputDescriptor\x12%\n" +
 	"\x0eoutput_message\x18\r \x01(\tR\routputMessage\x124\n" +
-	"\x16required_secret_inputs\x18\x0e \x03(\tR\x14requiredSecretInputs\"\x9f\x01\n" +
+	"\x16required_secret_inputs\x18\x0e \x03(\tR\x14requiredSecretInputs\"\xfc\x01\n" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +
 	"searchPath\x122\n" +
-	"\x15claims_schema_version\x18\x03 \x01(\rR\x13claimsSchemaVersion\"\x82\x03\n" +
+	"\x15claims_schema_version\x18\x03 \x01(\rR\x13claimsSchemaVersion\x12[\n" +
+	"\x13capability_bindings\x18\x04 \x03(\v2\x1f.flowstate.v1.CapabilityBindingB\t\xbaH\x06\x92\x01\x03\x10\x80\x02R\x12capabilityBindings\"\x89\b\n" +
+	"\x11CapabilityBinding\x12G\n" +
+	"\n" +
+	"binding_id\x18\x01 \x01(\tB(\xbaH%r#\x10\x01\x18\x80\x012\x1c^[A-Za-z0-9][A-Za-z0-9_.-]*$R\tbindingId\x12;\n" +
+	"\brevision\x18\x02 \x01(\tB\x1f\xbaH\x1cr\x1a2\x15^sha256:[0-9a-f]{64}$\x98\x01GR\brevision\x12=\n" +
+	"\tqualifier\x18\x03 \x01(\tB\x1f\xbaH\x1cr\x1a\x10\x01\x18@2\x14^[a-z0-9][a-z0-9-]*$R\tqualifier\x12A\n" +
+	"\bcontract\x18\x04 \x01(\tB%\xbaH\"r \x10\x01\x18\x80\x022\x19^[A-Za-z][A-Za-z0-9_.-]*$R\bcontract\x12H\n" +
+	"\x0fcontract_digest\x18\x05 \x01(\tB\x1f\xbaH\x1cr\x1a2\x15^sha256:[0-9a-f]{64}$\x98\x01GR\x0econtractDigest\x12H\n" +
+	"\x06plugin\x18\x06 \x01(\v2..flowstate.v1.CapabilityBinding.PluginProviderH\x00R\x06plugin\x12P\n" +
+	"\blocality\x18\a \x01(\x0e2(.flowstate.v1.CapabilityBinding.LocalityB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\blocality\x12W\n" +
+	"\x13credential_postures\x18\b \x03(\tB&\xbaH#\x92\x01 \x10\x10\x18\x01\"\x1ar\x18\x10\x01\x18@2\x12^[a-z][a-z0-9_-]*$R\x12credentialPostures\x12&\n" +
+	"\n" +
+	"trust_tier\x18\t \x01(\rB\a\xbaH\x04*\x02\x18\x05R\ttrustTier\x12Z\n" +
+	"\trehearsal\x18\n" +
+	" \x01(\x0e20.flowstate.v1.CapabilityBinding.RehearsalPostureB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\trehearsal\x1a<\n" +
+	"\x0ePluginProvider\x12*\n" +
+	"\vplugin_name\x18\x01 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\n" +
+	"pluginName\"M\n" +
+	"\bLocality\x12\x18\n" +
+	"\x14LOCALITY_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eLOCALITY_LOCAL\x10\x01\x12\x13\n" +
+	"\x0fLOCALITY_REMOTE\x10\x02\"\x8f\x01\n" +
+	"\x10RehearsalPosture\x12!\n" +
+	"\x1dREHEARSAL_POSTURE_UNSPECIFIED\x10\x00\x12\x1e\n" +
+	"\x1aREHEARSAL_POSTURE_DISPATCH\x10\x01\x12\x1a\n" +
+	"\x16REHEARSAL_POSTURE_STUB\x10\x02\x12\x1c\n" +
+	"\x18REHEARSAL_POSTURE_REFUSE\x10\x03B\n" +
+	"\n" +
+	"\bprovider\"\x82\x03\n" +
 	"\x11PluginDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -1024,27 +1367,36 @@ func file_flowstate_v1_catalog_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_catalog_proto_rawDescData
 }
 
-var file_flowstate_v1_catalog_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_flowstate_v1_catalog_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_flowstate_v1_catalog_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_flowstate_v1_catalog_proto_goTypes = []any{
-	(*TaskCatalog)(nil),       // 0: flowstate.v1.TaskCatalog
-	(*CELFunction)(nil),       // 1: flowstate.v1.CELFunction
-	(*TaskDescription)(nil),   // 2: flowstate.v1.TaskDescription
-	(*PluginCatalog)(nil),     // 3: flowstate.v1.PluginCatalog
-	(*PluginDescription)(nil), // 4: flowstate.v1.PluginDescription
-	(*TaskField)(nil),         // 5: flowstate.v1.TaskField
+	(CapabilityBinding_Locality)(0),          // 0: flowstate.v1.CapabilityBinding.Locality
+	(CapabilityBinding_RehearsalPosture)(0),  // 1: flowstate.v1.CapabilityBinding.RehearsalPosture
+	(*TaskCatalog)(nil),                      // 2: flowstate.v1.TaskCatalog
+	(*CELFunction)(nil),                      // 3: flowstate.v1.CELFunction
+	(*TaskDescription)(nil),                  // 4: flowstate.v1.TaskDescription
+	(*PluginCatalog)(nil),                    // 5: flowstate.v1.PluginCatalog
+	(*CapabilityBinding)(nil),                // 6: flowstate.v1.CapabilityBinding
+	(*PluginDescription)(nil),                // 7: flowstate.v1.PluginDescription
+	(*TaskField)(nil),                        // 8: flowstate.v1.TaskField
+	(*CapabilityBinding_PluginProvider)(nil), // 9: flowstate.v1.CapabilityBinding.PluginProvider
 }
 var file_flowstate_v1_catalog_proto_depIdxs = []int32{
-	2, // 0: flowstate.v1.TaskCatalog.tasks:type_name -> flowstate.v1.TaskDescription
-	1, // 1: flowstate.v1.TaskCatalog.cel_functions:type_name -> flowstate.v1.CELFunction
-	5, // 2: flowstate.v1.TaskDescription.inputs:type_name -> flowstate.v1.TaskField
-	5, // 3: flowstate.v1.TaskDescription.outputs:type_name -> flowstate.v1.TaskField
-	4, // 4: flowstate.v1.PluginCatalog.plugins:type_name -> flowstate.v1.PluginDescription
-	2, // 5: flowstate.v1.PluginDescription.tasks:type_name -> flowstate.v1.TaskDescription
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	4,  // 0: flowstate.v1.TaskCatalog.tasks:type_name -> flowstate.v1.TaskDescription
+	3,  // 1: flowstate.v1.TaskCatalog.cel_functions:type_name -> flowstate.v1.CELFunction
+	8,  // 2: flowstate.v1.TaskDescription.inputs:type_name -> flowstate.v1.TaskField
+	8,  // 3: flowstate.v1.TaskDescription.outputs:type_name -> flowstate.v1.TaskField
+	7,  // 4: flowstate.v1.PluginCatalog.plugins:type_name -> flowstate.v1.PluginDescription
+	6,  // 5: flowstate.v1.PluginCatalog.capability_bindings:type_name -> flowstate.v1.CapabilityBinding
+	9,  // 6: flowstate.v1.CapabilityBinding.plugin:type_name -> flowstate.v1.CapabilityBinding.PluginProvider
+	0,  // 7: flowstate.v1.CapabilityBinding.locality:type_name -> flowstate.v1.CapabilityBinding.Locality
+	1,  // 8: flowstate.v1.CapabilityBinding.rehearsal:type_name -> flowstate.v1.CapabilityBinding.RehearsalPosture
+	4,  // 9: flowstate.v1.PluginDescription.tasks:type_name -> flowstate.v1.TaskDescription
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_catalog_proto_init() }
@@ -1052,18 +1404,22 @@ func file_flowstate_v1_catalog_proto_init() {
 	if File_flowstate_v1_catalog_proto != nil {
 		return
 	}
+	file_flowstate_v1_catalog_proto_msgTypes[4].OneofWrappers = []any{
+		(*CapabilityBinding_Plugin)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_catalog_proto_rawDesc), len(file_flowstate_v1_catalog_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   6,
+			NumEnums:      2,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_flowstate_v1_catalog_proto_goTypes,
 		DependencyIndexes: file_flowstate_v1_catalog_proto_depIdxs,
+		EnumInfos:         file_flowstate_v1_catalog_proto_enumTypes,
 		MessageInfos:      file_flowstate_v1_catalog_proto_msgTypes,
 	}.Build()
 	File_flowstate_v1_catalog_proto = out.File

@@ -106,14 +106,20 @@ var policyFieldExclusions = map[string]string{}
 // workflowFieldExclusions are the [v1.Workflow] fields that are not author-set
 // DSL constructs the portfolio is responsible for.
 var workflowFieldExclusions = map[string]string{
-	"name":                       "every workflow has one; structural",
-	"description":                "prose",
-	"steps":                      "every workflow has them; structural",
-	"profile":                    "the CEL profile selector, an advanced deployment concern rather than a portfolio construct",
-	"labels":                     "run-selection metadata added by #904; demonstrating it belongs to that feature, and it is not a workflow-behavior construct",
-	"plugin_requirements":        "a `plugins:` block is only expressible in examples/plugins/, which this corpus excludes because those files name plugin tasks; the plugin examples' own tests demonstrate it",
-	"resolved_plugins":           "set by the control plane at submit, never written by an author",
-	"resolved_task_capabilities": "set by the control plane at submit, never written by an author",
+	"name":                         "every workflow has one; structural",
+	"description":                  "prose",
+	"steps":                        "every workflow has them; structural",
+	"profile":                      "the CEL profile selector, an advanced deployment concern rather than a portfolio construct",
+	"labels":                       "run-selection metadata added by #904; demonstrating it belongs to that feature, and it is not a workflow-behavior construct",
+	"plugin_requirements":          "a `plugins:` block is only expressible in examples/plugins/, which this corpus excludes because those files name plugin tasks; the plugin examples' own tests demonstrate it",
+	"resolved_plugins":             "set by the control plane at submit, never written by an author",
+	"resolved_task_capabilities":   "set by the control plane at submit, never written by an author",
+	"capability_parameters":        "compiler-owned normalized declarations; the prototype deliberately defines no Flowfile spelling",
+	"resolved_capability_bindings": "set by the control plane at submit, never written by an author",
+}
+
+var callFieldExclusions = map[string]string{
+	"capability_arguments": "compiler-owned normalized forwarding; the prototype deliberately defines no Flowfile spelling",
 }
 
 // declarationFieldExclusions are compiled encodings whose author-facing
@@ -176,7 +182,7 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.Loop{}, "loop", blockFieldExclusions},
 		{&v1.Parallel{}, "parallel", blockFieldExclusions},
 		{&v1.Switch{}, "switch", blockFieldExclusions},
-		{&v1.Call{}, "call", nil},
+		{&v1.Call{}, "call", callFieldExclusions},
 		{&v1.RetryPolicy{}, "retry", nil},
 
 		// The author-facing messages the graph walk found sitting outside the
@@ -221,12 +227,14 @@ func writableSpecFor(name protoreflect.FullName) (messageWritableSpec, bool) {
 // not heard of, and a list of what to exclude cannot.
 var messagesOutsideTheCharter = map[protoreflect.FullName]string{
 
-	"flowstate.v1.Value":                    "the universal value wrapper: every expression and literal in the language is one, so its own fields are the encoding rather than a construct an example demonstrates",
-	"flowstate.v1.Task":                     "a task's identity is its name, and the charter requires an example per registered task through the registry pass; its `inputs` map is the task's own schema rather than a language construct",
-	"flowstate.v1.Compensation":             "a container holding one task; `node.undo` is the construct and the task inside it is required through the registry pass",
-	"flowstate.v1.ResolvedPlugin":           "written by the control plane at submit, never by an author",
-	"flowstate.v1.ResolvedTaskCapabilities": "written by the control plane at admission, never by an author",
-	"flowstate.v1.PluginRequirement":        "a `plugins:` block is only expressible under examples/plugins/, which this corpus excludes because those files name tasks a stock `flow` cannot resolve",
+	"flowstate.v1.Value":                     "the universal value wrapper: every expression and literal in the language is one, so its own fields are the encoding rather than a construct an example demonstrates",
+	"flowstate.v1.Task":                      "a task's identity is its name, and the charter requires an example per registered task through the registry pass; its `inputs` map is the task's own schema rather than a language construct",
+	"flowstate.v1.Compensation":              "a container holding one task; `node.undo` is the construct and the task inside it is required through the registry pass",
+	"flowstate.v1.ResolvedPlugin":            "written by the control plane at submit, never by an author",
+	"flowstate.v1.ResolvedTaskCapabilities":  "written by the control plane at admission, never by an author",
+	"flowstate.v1.CapabilityParameter":       "a compiler-owned normalized declaration with no author-facing spelling in this prototype",
+	"flowstate.v1.ResolvedCapabilityBinding": "written by the control plane at admission, never by an author",
+	"flowstate.v1.PluginRequirement":         "a `plugins:` block is only expressible under examples/plugins/, which this corpus excludes because those files name tasks a stock `flow` cannot resolve",
 
 	// Encoding rather than language: the Value wrapper's own internals.
 	"flowstate.v1.Value.Structure":      "part of the value encoding",
