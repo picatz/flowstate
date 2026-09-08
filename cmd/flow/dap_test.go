@@ -104,6 +104,16 @@ outputs: {}
 	require.NotContains(t, stderr, dapSensitiveValue)
 }
 
+func TestFlowDAPReportsMissingWorkflowWithoutReveal(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-workflow.yaml")
+
+	stdout, stderr := flowDAPFailedLaunch(t, missing, "missing-workflow.yaml")
+	require.Contains(t, stdout, "missing-workflow.yaml")
+	require.NotContains(t, stdout, "workflow diagnostics withheld")
+	require.NotContains(t, stdout, "--reveal-sensitive")
+	require.Empty(t, stderr)
+}
+
 func TestFlowDAPRevealsSensitiveWorkflowOnlyWhenExplicitlyRequested(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
@@ -166,6 +176,14 @@ outputs: {}
 
 func flowDAPRefusal(t *testing.T, workflow string) (stdoutText, stderrText string) {
 	t.Helper()
+	stdoutText, stderrText = flowDAPFailedLaunch(t, workflow, "--reveal-sensitive")
+	require.Contains(t, stdoutText, "--reveal-sensitive")
+	require.Contains(t, stdoutText, "revealSensitive")
+	return stdoutText, stderrText
+}
+
+func flowDAPFailedLaunch(t *testing.T, workflow, messageFragment string) (stdoutText, stderrText string) {
+	t.Helper()
 
 	cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
 	stdin, err := cmd.StdinPipe()
@@ -190,19 +208,18 @@ func flowDAPRefusal(t *testing.T, workflow string) (stdoutText, stderrText strin
 	conn.send("configurationDone", nil)
 	conn.await("response", "configurationDone")
 
-	var refusal strings.Builder
+	var failure strings.Builder
 	for range 30 {
 		message := conn.read()
 		encoded, marshalErr := json.Marshal(message)
 		require.NoError(t, marshalErr)
-		refusal.Write(encoded)
+		failure.Write(encoded)
 		require.NotEqual(t, "stopped", message["event"], "the refused workflow started")
-		if message["event"] == "output" && strings.Contains(string(encoded), "--reveal-sensitive") {
+		if message["event"] == "output" && strings.Contains(string(encoded), messageFragment) {
 			break
 		}
 	}
-	require.Contains(t, refusal.String(), "--reveal-sensitive")
-	require.Contains(t, refusal.String(), "revealSensitive")
+	require.Contains(t, failure.String(), messageFragment)
 
 	exited := conn.await("event", "exited")
 	require.Equal(t, float64(1), exited["body"].(map[string]any)["exitCode"])

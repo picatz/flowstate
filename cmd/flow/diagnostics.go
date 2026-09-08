@@ -81,8 +81,23 @@ func diagnosticsError(path string, ds flowfile.Diagnostics) error {
 	for _, d := range ds {
 		lines = append(lines, diagnosticLine(path, d))
 	}
-	return errors.New(strings.Join(lines, "\n"))
+	return &renderedDiagnosticsError{
+		message:     strings.Join(lines, "\n"),
+		diagnostics: ds,
+	}
 }
+
+// renderedDiagnosticsError keeps the path-aware text while preserving the
+// diagnostic kind for callers that must distinguish source-derived failures
+// from invocation and I/O errors. The wrapped diagnostics render without the
+// path, so Error cannot be delegated to them.
+type renderedDiagnosticsError struct {
+	message     string
+	diagnostics flowfile.Diagnostics
+}
+
+func (e *renderedDiagnosticsError) Error() string { return e.message }
+func (e *renderedDiagnosticsError) Unwrap() error { return e.diagnostics }
 
 // errDiagnosticsOf widens any error into the diagnostics it carries: a parse or
 // compile failure already returns [flowfile.Diagnostics] with a real line and

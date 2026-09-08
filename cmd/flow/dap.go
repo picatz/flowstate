@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdap"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 )
 
@@ -161,13 +163,13 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		// exactly this reason, and this one reached past it (Codex, #1124).
 		workflow, err := loadWorkflow(program)
 		if err != nil {
-			// The client's console is the only place a person will look, and
-			// the diagnostics are the whole answer to why nothing ran. Without
-			// a valid specification there is no declaration posture to redact
-			// them against, so the shared decision fails closed rather than
-			// echoing source text that may contain a sensitive literal.
+			// Source diagnostics can quote the invalid document. Without a valid
+			// specification there is no declaration posture to redact them
+			// against, so the shared decision fails closed. Invocation and I/O
+			// errors do not carry source diagnostics and remain useful as-is.
 			exit = 1
-			if decideCarriedValues(nil, reveal) == carriedValuesShown {
+			var diagnostics flowfile.Diagnostics
+			if !errors.As(err, &diagnostics) || decideCarriedValues(nil, reveal) == carriedValuesShown {
 				server.Output(fmt.Sprintf("flowdap: %v\n", err))
 			} else {
 				server.Output("flowdap: workflow diagnostics withheld because the invalid file has no " +
