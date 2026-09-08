@@ -737,6 +737,23 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestWorkflowSlicesCompleteLocally is the local half of #1882's consecutive
+// pure-work cases. The durable half runs the identical case set against a real
+// Temporal server and additionally bounds the history it produced.
+func TestWorkflowSlicesCompleteLocally(t *testing.T) {
+	for _, test := range conformance.WorkflowSliceCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.NoError(t, err)
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+				return
+			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInterpolation covers a scalar mixing text with ${...} in the
 // local driver.
 //

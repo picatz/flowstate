@@ -545,3 +545,21 @@ func TestAParallelBranchKeepsTheProfile(t *testing.T) {
 			"  the branch scope dropped the profile, so the empty string resolved instead")
 	}
 }
+
+// TestEvalParsedWithCostReportsWorkBeforeFailure protects workflow-slice
+// accounting for a tolerated expression failure. The list is fully built before
+// the final out-of-range access fails, so returning zero would let repeated
+// expensive failures evade the segment budget.
+func TestEvalParsedWithCostReportsWorkBeforeFailure(t *testing.T) {
+	t.Parallel()
+
+	expression := NewExpr("lists.range(10000).map(i, i + 1)[10000]")
+	_, cost, err := NewEvaluator().EvalParsedBaseWithCost(
+		t.Context(), CurrentProfile, expression.GetExpr(), map[string]any{})
+	if err == nil {
+		t.Fatal("the out-of-range expression unexpectedly succeeded")
+	}
+	if cost == 0 {
+		t.Fatal("the failed expression reported zero cost after building its bounded list")
+	}
+}

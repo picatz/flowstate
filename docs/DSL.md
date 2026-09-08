@@ -2050,7 +2050,11 @@ the retired `cel:` task was this capability filed in the wrong category). It is
 evaluated in workflow code, in written order, against exactly what a task's inputs
 written in the same position would see: `vars.<name>`, `inputs.<name>`, the outputs
 of steps already run, and any name an enclosing loop or the step's own `vars:` bound.
-It schedules nothing.
+It schedules nothing. The durable executor yields its deterministic workflow
+scheduler between steps and continues as new at a step boundary only when their
+accumulated CEL cost reaches the workflow-slice budget, so a long chain of
+individually bounded values remains bounded as a group without adding one history
+event per value.
 
 #### The read form is `${steps.<id>.value}`, and that was the decision
 
@@ -3613,6 +3617,13 @@ exactly the two-fixed-steps shape `git-log-resume` was stuck at. So the conditio
 lives after the body, where the thing it tests exists. `wait_until:` refuses a
 boolean for the mirror-image reason (nothing it waits on changes while it blocks);
 `loop:` requires one, because everything it tests changes every iteration.
+
+Each iteration also ends the durable executor's current workflow-scheduler slice.
+The handoff is deterministic; the loop continues as new at an iteration boundary
+only when accumulated `value:` expression cost reaches the workflow-slice budget.
+A loop of pure workflow-side steps therefore cannot consume the worker's deadlock
+budget as one unbroken slice, and cheap iterations do not each become Temporal
+history growth.
 
 ### State: one carried value, named bare, updated explicitly
 

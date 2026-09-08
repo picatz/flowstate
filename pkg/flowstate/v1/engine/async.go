@@ -133,6 +133,7 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			// commands are labelled exactly as they would be run in order.
 			path:      e.path,
 			budget:    e.budget,
+			sliceCost: e.sliceCost,
 			signals:   e.signals,
 			debug:     e.debug,
 			undo:      e.undo,

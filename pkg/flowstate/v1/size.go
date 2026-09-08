@@ -480,16 +480,21 @@ func CheckTaskOutputSize(out *Node_Outputs) error {
 // element bound, a for_each at its trip ceiling), and a contended host turns
 // that second into more. A budget the rehearsal passes and production fails
 // would make local runs lie about what production will do, so there is one
-// value and every worker reads it: large enough that work at a documented
-// bound fits with margin on a busy host, small enough that a genuinely
-// wedged workflow goroutine is still caught quickly (#431).
+// value and every worker reads it: large enough that one bounded workflow-side
+// unit fits with margin on a busy host, small enough that a genuinely wedged
+// workflow goroutine is still caught quickly (#431). The durable executor ends
+// its in-memory scheduler slice between steps and loop iterations, and continues
+// as new only when deterministic value-expression CEL cost reaches the
+// workflow-slice budget, so consecutive bounded units do not combine into one
+// unbounded slice and cheap iterations do not each add history (#1882).
 //
 // What happens when the budget is exceeded is the other half of the decision,
 // and it lives beside the SDK type it needs: engine.WorkerWorkflowPanicPolicy
-// fails the run rather than retrying the task forever (#1769). An expression
-// that could spend this budget deterministically is refused before it runs —
-// the element bound in cellistbound.go — so the policy is the last line, not
-// the first.
+// fails the run rather than retrying the task forever (#1769). An individual
+// expression that could spend this budget deterministically is refused before
+// it runs — the element bound in cellistbound.go — and workflow-side units are
+// separated by the scheduler handoff above, so the policy is the last line,
+// not the first.
 const WorkerDeadlockDetectionTimeout = 5 * time.Second
 
 // DefaultWorkerStopTimeout is how long `flow worker` gives the Temporal SDK to

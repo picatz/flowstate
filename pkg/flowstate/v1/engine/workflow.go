@@ -577,6 +577,16 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	}
 	position.setVars(vars)
 
+	// A continuation is a history command, so introducing a new reason to emit
+	// one must be versioned. Old histories take the pre-#1882 path until they
+	// complete or cross an already-recorded Continue-As-New boundary; new
+	// executions accumulate deterministic value-expression CEL cost from their
+	// first segment.
+	var sliceCost *uint64
+	if workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		sliceCost = new(uint64)
+	}
+
 	// Execute through the recursive executor, which handles nested control flow
 	// and records where to resume if the run has to be continued as new.
 	exec := &executor{
@@ -590,9 +600,10 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
-		budget: stepsBudget,
-		resume: resumeFrames(st),
+		scope:     varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
+		budget:    stepsBudget,
+		resume:    resumeFrames(st),
+		sliceCost: sliceCost,
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.

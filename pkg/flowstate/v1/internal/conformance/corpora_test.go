@@ -110,6 +110,7 @@ func corpusSizes() map[string]int {
 		"WebhookDeliveryCases":            len(WebhookDeliveryCases()),
 		"WebhookRedeliveryCases":          len(WebhookRedeliveryCases()),
 		"WebhookSignalDeliveryCases":      len(WebhookSignalDeliveryCases()),
+		"WorkflowSliceCases":              len(WorkflowSliceCases()),
 		"SignalDedupeCases":               len(SignalDedupeCases()),
 		"WebhookTriggerCases":             len(WebhookTriggerCases()),
 		"Workflows":                       len(Workflows(standIn)),
