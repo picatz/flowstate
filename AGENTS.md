@@ -141,6 +141,24 @@ make check
   may have changed, coordinate ownership, and verify the pushed revision rather
   than inferring from a dirty local tree.
 
+## Autonomous shipping
+
+- Open a pull request without auto-merge. After the final push, request
+  independent Codex code and security reviews and Copilot review on the exact
+  head; visibly disposition every finding, and re-request every channel after a
+  fix.
+- Wait for every applicable check and review channel, not only GitHub's required
+  checks. Immediately before a manual merge, run
+  `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`; unavailable,
+  pending, stale, cancelled, or failing evidence blocks the merge.
+- After merging, fetch `origin/main`, prove the merge landed, and verify its
+  applicable `main` checks. Follow `.agents/ship.md` for the complete Amp Custom
+  Ship procedure.
+- Only explicit human authorization naming a skipped gate can grant an exception;
+  an agent never infers one. A process miss must produce a durable regression
+  check or guidance fix, or a searched, scoped issue when that is not yet
+  feasible, before the next autonomous merge.
+
 ## On-demand skills
 
 Amp and Codex discover the portable skills under `.agents/skills/`. Claude Code

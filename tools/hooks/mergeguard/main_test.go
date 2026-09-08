@@ -105,10 +105,10 @@ func TestUnresolvedThreadsAllowsWhenAllResolved(t *testing.T) {
 	}
 }
 
-// TestUnresolvedThreadsFailsOpenOnAPIError is case 3: a genuine network
-// failure (a closed listener, not a stub) surfaces as an error rather than
-// a panic or a false deny, so main()'s caller allows and warns.
-func TestUnresolvedThreadsFailsOpenOnAPIError(t *testing.T) {
+// TestUnresolvedThreadsReportsAPIError is case 3: a genuine network failure
+// (a closed listener, not a stub) surfaces as an error rather than a panic or
+// a false clean result, so main()'s caller can deny the merge.
+func TestUnresolvedThreadsReportsAPIError(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -408,16 +408,16 @@ func TestUnidentifiedMergeCallWarns(t *testing.T) {
 		if _, _, _, ok := mergeTarget(tt.in); ok {
 			t.Fatalf("%s: mergeTarget unexpectedly identified a PR", tt.name)
 		}
-		reason := unidentifiedMergeWarning(tt.in)
+		reason := unidentifiedMergeReason(tt.in)
 		if reason == "" {
-			t.Errorf("%s: unidentifiedMergeWarning returned no warning for a merge attempt", tt.name)
+			t.Errorf("%s: unidentifiedMergeReason returned no reason for a merge attempt", tt.name)
 			continue
 		}
-		if !strings.Contains(reason, "MERGING WITHOUT THE CHECK") {
-			t.Errorf("%s: warning does not say the merge proceeded unchecked: %s", tt.name, reason)
+		if !strings.Contains(reason, "Merge blocked") {
+			t.Errorf("%s: reason does not say the merge is blocked: %s", tt.name, reason)
 		}
 	}
-	if reason := unidentifiedMergeWarning(warns[2].in); !strings.Contains(reason, "-R") {
+	if reason := unidentifiedMergeReason(warns[2].in); !strings.Contains(reason, "-R") {
 		t.Errorf("bare-number case does not say how to make the PR identifiable: %s", reason)
 	}
 
@@ -430,8 +430,30 @@ func TestUnidentifiedMergeCallWarns(t *testing.T) {
 		{"prose mentioning gh pr merge", &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": `git commit -m "docs: gh pr merge 42"`}}},
 	}
 	for _, tt := range silent {
-		if reason := unidentifiedMergeWarning(tt.in); reason != "" {
+		if reason := unidentifiedMergeReason(tt.in); reason != "" {
 			t.Errorf("%s: warned on a call that is not an identifiable merge attempt: %s", tt.name, reason)
+		}
+	}
+}
+
+func TestAutoMergeIsRejected(t *testing.T) {
+	t.Parallel()
+	for _, command := range []string{
+		"gh pr merge 498 -R picatz/flowstate --auto",
+		"gh pr merge --auto https://github.com/picatz/flowstate/pull/498",
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if !autoMergeRequested(in) {
+			t.Errorf("autoMergeRequested(%q) = false", command)
+		}
+	}
+	for _, command := range []string{
+		"gh pr merge 498 -R picatz/flowstate --squash",
+		"git commit -m 'never run gh pr merge --auto'",
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if autoMergeRequested(in) {
+			t.Errorf("autoMergeRequested(%q) = true", command)
 		}
 	}
 }

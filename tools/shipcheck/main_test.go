@@ -1,0 +1,96 @@
+package main
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+const testHead = "0123456789abcdef0123456789abcdef01234567"
+
+func passingPullRequest() pullRequest {
+	return pullRequest{
+		HeadRefOID:       testHead,
+		AutoMergeRequest: json.RawMessage("null"),
+		StatusChecks: []statusCheck{
+			{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Type: "CheckRun", Name: "not selected", Status: "COMPLETED", Conclusion: "SKIPPED"},
+			{Type: "StatusContext", Context: "external", State: "SUCCESS"},
+		},
+		Reviews: []review{
+			{Author: actor{Login: "copilot-pull-request-reviewer"}, Commit: &commit{OID: testHead}},
+			{Author: actor{Login: "chatgpt-codex-connector"}, Commit: &commit{OID: testHead}},
+		},
+		Comments: []comment{{
+			Author: actor{Login: "chatgpt-codex-connector"},
+			Body:   "Security review completed. No security issues were found.\n\n**Reviewed commit:** `0123456789`",
+		}},
+	}
+}
+
+func TestEvaluateAcceptsCompleteFinalHeadEvidence(t *testing.T) {
+	if problems := evaluate(passingPullRequest(), 0); len(problems) != 0 {
+		t.Fatalf("evaluate returned problems: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
+	pr := passingPullRequest()
+	pr.AutoMergeRequest = json.RawMessage(`{"enabledAt":"now"}`)
+	pr.StatusChecks[0].Status = "IN_PROGRESS"
+	pr.StatusChecks[0].Conclusion = ""
+	pr.Reviews[0].Commit.OID = strings.Repeat("f", 40)
+	pr.Reviews[1].Commit.OID = strings.Repeat("e", 40)
+	pr.Comments[0].Body = strings.ReplaceAll(pr.Comments[0].Body, "0123456789", "abcdef0123")
+
+	problems := strings.Join(evaluate(pr, 2), "\n")
+	for _, want := range []string{
+		"auto-merge is enabled",
+		`check "test" is IN_PROGRESS/`,
+		"Copilot has not reviewed the exact final head",
+		"Codex code review has not completed on the exact final head",
+		"Codex security review has not completed on the exact final head",
+		"2 review thread(s) remain unresolved",
+	} {
+		if !strings.Contains(problems, want) {
+			t.Errorf("problems do not contain %q:\n%s", want, problems)
+		}
+	}
+}
+
+func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{{Type: "CheckRun", Name: "appearance", Status: "COMPLETED", Conclusion: "CANCELLED"}}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "CANCELLED") {
+		t.Fatalf("cancelled check was accepted: %s", problems)
+	}
+	pr.StatusChecks = nil
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "no check runs") {
+		t.Fatalf("missing checks were accepted: %s", problems)
+	}
+}
+
+func TestMentionsCommitRequiresAQuotedHeadPrefix(t *testing.T) {
+	if !mentionsCommit("Reviewed commit: `0123456`", testHead) {
+		t.Fatal("quoted seven-character prefix was not recognized")
+	}
+	if mentionsCommit("unrelated 0123456789abcdef", testHead) {
+		t.Fatal("unquoted commit text was recognized")
+	}
+	if mentionsCommit("Reviewed commit: `0123450`", testHead) {
+		t.Fatal("different commit was recognized")
+	}
+}
+
+func TestSecuritySummaryRequiresCompletedExactHead(t *testing.T) {
+	body := `<!-- codex-security-review:v1 {"headSha":"` + testHead + `","status":"completed"} -->`
+	if !completedSecuritySummary(body, testHead) {
+		t.Fatal("completed exact-head summary was not recognized")
+	}
+	if completedSecuritySummary(strings.Replace(body, "completed", "running", 1), testHead) {
+		t.Fatal("running summary was recognized")
+	}
+	if completedSecuritySummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead) {
+		t.Fatal("stale-head summary was recognized")
+	}
+}

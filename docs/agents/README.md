@@ -15,6 +15,7 @@ software rather than prose for checks that can be deterministic.
 | `.claude/skills/*/SKILL.md` | Claude Code mirrors of the portable skills | The body loads when selected |
 | `.claude/settings.json` | Claude-specific hooks and permission-time controls | Enforced by Claude Code |
 | `.amp/settings.json` | Amp workspace skill selection; no repository-specific permission prompts | Applied by Amp in this repository |
+| `.agents/ship.md` | Versioned Amp Custom Ship procedure | Copied into the Amp project setting; it is not read automatically after edits |
 | `.agents/setup` / `.agents/resume` | Amp Orb provisioning and wake behavior | Run by the Orb lifecycle |
 | `AGENT_FIELD_NOTES.md` | Small index of historical guidance | Never imported; used to locate one relevant archive |
 | `AGENT_FIELD_NOTES_LEGACY.md` and `.agent-history/` | Byte-preserved legacy guidance and skill bodies | Historical reference, loaded only for a concrete question |
@@ -98,6 +99,20 @@ and whether a deterministic mechanism can prevent it more reliably.
   change—proceed under Amp's own authorization contract without a second
   Flowstate-specific confirmation layer. Repository guidance cannot widen the
   host's authority.
+- The Amp project uses the supported
+  [Custom Ship](https://ampcode.com/docs/orbs/shipping) behavior with the
+  versioned prompt in `.agents/ship.md`. Amp stores a copy rather than reading
+  that file at Ship time, so synchronize every accepted edit with:
+
+  ```sh
+  amp projects update picatz/flowstate --ship-behavior custom \
+    --custom-ship-prompt-file .agents/ship.md
+  ```
+
+  The procedure opens a PR without auto-merge, requires exact-final-head Codex
+  code/security and Copilot review, dispositions and re-reviews after fixes,
+  waits for all applicable checks, runs `tools/shipcheck`, merges manually, and
+  verifies `origin/main` afterward.
 - Teams that later demonstrate a recurring need for stricter push, merge,
   release, or destructive-command controls should add an explicit user/team
   policy or an opt-in example. Flowstate does not ship a brittle command
@@ -131,12 +146,15 @@ and whether a deterministic mechanism can prevent it more reliably.
 
 ## Maintaining the system
 
-1. Reproduce the recurring failure and identify the smallest layer that owns it.
-2. Propose the change before allowing an agent to persist a new rule.
-3. Prefer deletion or movement over repeating the instruction in another file.
-4. Update both skill mirrors and run `go test ./tools/agentconfig`.
-5. Test the behavior on representative coding, review, and communication tasks.
-6. After a major model or harness upgrade, audit old instructions for ritualized
+1. Reproduce the process failure and identify the smallest layer that owns it.
+2. Before the next autonomous merge, add a regression check where feasible,
+   update the owning guidance, or file a searched, scoped issue for work needing
+   an admin/product decision. Link the durable artifact from the incident.
+3. Propose the change before allowing an agent to persist a new rule.
+4. Prefer deletion or movement over repeating the instruction in another file.
+5. Update both skill mirrors and run `go test ./tools/agentconfig`.
+6. Test the behavior on representative coding, review, and communication tasks.
+7. After a major model or harness upgrade, audit old instructions for ritualized
    verification, mandatory narration, fixed reasoning sequences, and assumptions
    the new host no longer needs.
 

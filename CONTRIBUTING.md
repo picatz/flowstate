@@ -35,11 +35,16 @@ Labels: `kind/bug` is a defect with a reproducer; `kind/design-record` is a deci
 - Commit subjects are `scope: lowercase imperative` (`engine: bound the walker's depth`). The body says why, not what the diff already shows.
 - Behavior observable in both drivers (local and Temporal) needs a shared conformance case, not two tests.
 
-Every PR runs the same gate you ran locally. A merge needs green CI on the current head and no unresolved review thread.
+Every PR runs the same gate you ran locally. A merge needs every applicable CI
+and review channel green on the current head, not only required checks, and no
+unresolved review thread. Maintainers can verify the remote evidence with
+`go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. Auto-merge is not
+used: a final push invalidates earlier review, and the PR is merged manually only
+after exact-head review completes.
 
 ## Bringing an agent
 
-Coding agents are first-class contributors here. The repository ships their configuration: `AGENTS.md`, the skills under `.agents/skills/` and `.claude/skills/`, and hooks under `.claude/settings.json` that refuse edits to generated files, check formatting, and guard merges. Point your agent at `AGENTS.md`; the same rules, gate, and PR shape apply to its work as to yours, and you own what it opens.
+Coding agents are first-class contributors here. The repository ships their configuration: `AGENTS.md`, Amp's Custom Ship procedure at `.agents/ship.md`, the skills under `.agents/skills/` and `.claude/skills/`, and hooks under `.claude/settings.json` that refuse edits to generated files, check formatting, and guard merges. Point your agent at `AGENTS.md`; the same rules, gate, and PR shape apply to its work as to yours, and you own what it opens.
 
 ## Maintainers and decisions
 

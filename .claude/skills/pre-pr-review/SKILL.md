@@ -35,6 +35,11 @@ ignore the next real one.
 Use the `flowstate-verify` skill to select the appropriate checks. Inspect the
 resulting diff again after formatting or generation.
 
+Before an autonomous merge, follow `.agents/ship.md`: leave auto-merge disabled,
+request every configured AI review on the exact final head, visibly disposition
+all findings, re-request after any push, and require `tools/shipcheck` to pass.
+An unavailable review or check is a blocker, not approval.
+
 ## Output
 
 Return only material findings with location, consequence, evidence, and a

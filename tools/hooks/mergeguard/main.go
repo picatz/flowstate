@@ -23,22 +23,21 @@
 //     number together with an explicit `-R`/`--repo owner/repo` flag. A bare
 //     `gh pr merge` with neither resolves the current branch's PR through
 //     gh's own lookup, which this hook cannot reproduce without an API call
-//     of its own — recognizing that would be guessing, so it allows instead.
+//     of its own — recognizing that would be guessing, so it is denied.
 //
 // Any other tool call is not a merge and returns immediately.
 //
-// # Fail open, loudly
+// # Fail closed on merge evidence
 //
 // Review threads live behind GitHub's GraphQL API, not REST, and GraphQL and
 // REST exhaust independently — CLAUDE.md, and the outage that motivated this
 // hook (two API failures in one session on 2026-08-12). A session that has
 // burned its GraphQL budget can still merge through REST while this hook is
-// blind to threads. On any failure to query GraphQL — network, auth, rate
-// limit, or a malformed response — the hook allows the merge and prints a
-// visible warning, on stderr and as the permission-decision reason, that the
-// check did not run and why. Blocking every merge because GitHub is slow
-// would be worse than the problem this hook solves, and failing silently
-// would be worse still.
+// blind to threads. On any failure to identify the target or query GraphQL —
+// network, auth, rate limit, or a malformed response — the hook denies the
+// merge. A reviewer can retry after evidence is available; absence of evidence
+// is not approval. Auto-merge is denied because it can execute later without a
+// final-head review immediately preceding it.
 package main
 
 import (
@@ -77,11 +76,15 @@ func main() {
 	if err != nil {
 		return // lenient: unrecognized input allows
 	}
+	if autoMergeRequested(in) {
+		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run tools/shipcheck, then merge manually")
+		return
+	}
 
 	owner, repo, number, ok := mergeTarget(in)
 	if !ok {
-		if reason := unidentifiedMergeWarning(in); reason != "" {
-			warn(reason)
+		if reason := unidentifiedMergeReason(in); reason != "" {
+			hook.Deny(reason)
 		}
 		return // not a merge call, or a merge call this hook could not identify
 	}
@@ -99,8 +102,8 @@ func main() {
 	tok, ok := githubToken(tokCtx)
 	tokCancel()
 	if !ok {
-		warn(joinNotes(conventions, fmt.Sprintf(
-			"mergeguard: no GH_TOKEN or GITHUB_TOKEN in the environment, and `gh auth token` returned none either, so the review-thread check on %s/%s#%d did not run. MERGING WITHOUT THE CHECK.",
+		hook.Deny(joinNotes(conventions, fmt.Sprintf(
+			"mergeguard: no GH_TOKEN or GITHUB_TOKEN in the environment, and `gh auth token` returned none either, so the review-thread check on %s/%s#%d did not run. Merge blocked until the evidence is available.",
 			owner, repo, number)))
 		return
 	}
@@ -111,8 +114,8 @@ func main() {
 	client := &http.Client{Timeout: requestTimeout}
 	threads, err := unresolvedThreads(ctx, client, graphQLEndpoint, tok, owner, repo, number)
 	if err != nil {
-		warn(joinNotes(conventions, fmt.Sprintf(
-			"mergeguard: could not query review threads on %s/%s#%d (%v). GraphQL and REST exhaust independently, so this can happen even when the merge call itself would succeed. MERGING WITHOUT THE CHECK.",
+		hook.Deny(joinNotes(conventions, fmt.Sprintf(
+			"mergeguard: could not query review threads on %s/%s#%d (%v). Merge blocked until the evidence is available.",
 			owner, repo, number, err)))
 		return
 	}
@@ -231,21 +234,15 @@ func mergeTarget(in *hook.Input) (owner, repo string, number int, ok bool) {
 	}
 }
 
-// unidentifiedMergeWarning reports the fail-open warning for a tool call
-// that is a merge attempt this hook recognizes but could not identify a PR
-// for, or "" when the call is not a merge attempt at all (in which case
-// main stays silent, correctly: there is nothing to warn about). Silence on
-// an unidentified merge attempt is the same failure mode as silence on an
-// API error — a check that reports nothing looks identical to a check that
-// passed — so both paths warn the same way: on stderr and as the visible
-// permission-decision reason.
-func unidentifiedMergeWarning(in *hook.Input) string {
+// unidentifiedMergeReason reports why a merge attempt whose target cannot be
+// identified must be denied, or "" when the call is not a merge attempt.
+func unidentifiedMergeReason(in *hook.Input) string {
 	switch in.ToolName {
 	case "mcp__github__merge_pull_request":
-		return "mergeguard: this merge_pull_request call did not carry a usable owner, repo and pullNumber, so unresolved review threads were not checked. MERGING WITHOUT THE CHECK."
+		return "mergeguard: this merge_pull_request call did not carry a usable owner, repo and pullNumber, so unresolved review threads were not checked. Merge blocked until the target is explicit."
 	case "Bash":
 		if isGHPRMergeInvocation(in.Command()) {
-			return "mergeguard: could not identify the pull request from this `gh pr merge` invocation, so unresolved review threads were not checked. MERGING WITHOUT THE CHECK. Name the PR explicitly (a full PR URL, or a number together with -R/--repo owner/repo) to make it checkable."
+			return "mergeguard: could not identify the pull request from this `gh pr merge` invocation, so unresolved review threads were not checked. Merge blocked. Name the PR explicitly (a full PR URL, or a number together with -R/--repo owner/repo) to make it checkable."
 		}
 		return ""
 	default:
@@ -298,6 +295,25 @@ var ghMergeValueFlags = map[string]bool{
 func isGHPRMergeInvocation(cmd string) bool {
 	_, ok := ghPRMergeArgs(cmd)
 	return ok
+}
+
+// autoMergeRequested reports whether a recognized gh merge invocation asks
+// GitHub to merge later. The strict Ship procedure requires a manual merge
+// immediately after exact-head evidence passes.
+func autoMergeRequested(in *hook.Input) bool {
+	if in == nil || in.ToolName != "Bash" {
+		return false
+	}
+	args, ok := ghPRMergeArgs(in.Command())
+	if !ok {
+		return false
+	}
+	for _, arg := range args {
+		if arg == "--auto" {
+			return true
+		}
+	}
+	return false
 }
 
 // ghCLIMergeTarget recognizes `gh pr merge` only when the command names the
