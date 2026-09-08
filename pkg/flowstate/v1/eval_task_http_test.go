@@ -603,9 +603,10 @@ func Test_httpTask_ambiguousResponseDoesNotAuthorizeMutationReplay(t *testing.T)
 
 func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		body   string
-		inputs map[string]any
+		name         string
+		body         string
+		inputs       map[string]any
+		wantContract AttemptOutcome_Contract
 	}{
 		{
 			name: "failed JSON decode",
@@ -620,6 +621,24 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 			inputs: map[string]any{
 				"parse_json": true,
 				"expect":     NewExpr("response.json.ok"),
+			},
+		},
+		{
+			name:         "expect evaluation error",
+			body:         `{}`,
+			wantContract: AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			inputs: map[string]any{
+				"parse_json": true,
+				"expect":     NewExpr("response.json.missing.field == true"),
+			},
+		},
+		{
+			name:         "non-boolean expectation",
+			body:         `{}`,
+			wantContract: AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			inputs: map[string]any{
+				"parse_json": true,
+				"expect":     NewExpr("response.status_code"),
 			},
 		},
 	} {
@@ -641,6 +660,9 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 			require.Equal(t, AttemptOutcome_EFFECT_UNKNOWN, taskErr.Outcome.GetEffect())
 			require.Equal(t, AttemptOutcome_REPEAT_SAFETY_REQUIRES_RECONCILIATION, taskErr.Outcome.GetRepeatSafety())
 			require.False(t, RetryPermitted(err))
+			if test.wantContract != AttemptOutcome_CONTRACT_UNSPECIFIED {
+				require.Equal(t, test.wantContract, taskErr.Outcome.GetContract())
+			}
 		})
 	}
 }

@@ -682,18 +682,21 @@ func httpExpectSatisfied(
 	if parsed == nil {
 		// A literal expect is a mistake worth naming: `expect: true` would accept
 		// every response, including the ones the default rule exists to catch.
-		return NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
-			"expect must be an expression over the response, such as ${response.status_code == 200 || response.status_code == 404}"))
+		return httpResponseFailure(inputs, resp, result, AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			ErrorKindInvalidInput, fmt.Errorf(
+				"expect must be an expression over the response, such as ${response.status_code == 200 || response.status_code == 404}"))
 	}
 
 	env, err := httpResponseEnv(scope.GetProfile())
 	if err != nil {
-		return NewTaskError("http", ErrorKindInternal, err)
+		return httpResponseFailure(inputs, resp, result, AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			ErrorKindInternal, err)
 	}
 
 	activation, err := interpreter.NewActivation(vars)
 	if err != nil {
-		return NewTaskError("http", ErrorKindInternal, fmt.Errorf("failed to create activation: %w", err))
+		return httpResponseFailure(inputs, resp, result, AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			ErrorKindInternal, fmt.Errorf("failed to create activation: %w", err))
 	}
 
 	// The scope's own activation, not a hand-built one over its step outputs. See
@@ -709,15 +712,17 @@ func httpExpectSatisfied(
 	out, err := DefaultEvaluator().EvalParsed(ctx, env, parsed,
 		interpreter.NewHierarchicalActivation(scope.Activation(ctx), activation))
 	if err != nil {
-		return NewTaskError("http", ErrorKindExpression, fmt.Errorf("evaluating expect: %w", err))
+		return httpResponseFailure(inputs, resp, result, AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			ErrorKindExpression, fmt.Errorf("evaluating expect: %w", err))
 	}
 
 	met, ok := out.Value().(bool)
 	if !ok {
 		// Guessing at truthiness would mean an expression returning a status code
 		// silently accepted every response.
-		return NewTaskError("http", ErrorKindInvalidInput, fmt.Errorf(
-			"expect must evaluate to a boolean, got %s", out.Type().TypeName()))
+		return httpResponseFailure(inputs, resp, result, AttemptOutcome_CONTRACT_EVALUATION_FAILED,
+			ErrorKindInvalidInput, fmt.Errorf(
+				"expect must evaluate to a boolean, got %s", out.Type().TypeName()))
 	}
 
 	if met {
