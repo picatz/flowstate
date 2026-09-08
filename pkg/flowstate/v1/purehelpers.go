@@ -21,6 +21,7 @@ const (
 type checkedPureHelper struct {
 	definition *PureHelper
 	body       *cel.Ast
+	overload   string
 }
 
 // ExpandPureHelpers normalizes imported, typed pure helpers into ordinary CEL
@@ -141,6 +142,9 @@ func checkPureHelpers(profile string, helpers []*PureHelper) (map[string]checked
 			return nil, nil, fmt.Errorf("pure helper %q%s: build its type environment: %w", helper.GetName(), helperSource(helper), err)
 		}
 		bodyAST := cel.ParsedExprToAst(body)
+		if n := expressionASTSize(bodyAST); n > maxPureHelperBodyAST {
+			return nil, nil, fmt.Errorf("pure helper %q%s body contains %d CEL nodes before type checking; at most %d are allowed", helper.GetName(), helperSource(helper), n, maxPureHelperBodyAST)
+		}
 		bodyChecked, issues := env.Check(bodyAST)
 		if issues != nil && issues.Err() != nil {
 			return nil, nil, fmt.Errorf("pure helper %q%s body does not type-check: %w", helper.GetName(), helperSource(helper), issues.Err())
@@ -152,8 +156,8 @@ func checkPureHelpers(profile string, helpers []*PureHelper) (map[string]checked
 			return nil, nil, fmt.Errorf("pure helper %q%s body expands to %d CEL nodes; at most %d are allowed", helper.GetName(), helperSource(helper), n, maxPureHelperBodyAST)
 		}
 
-		checked[helper.GetName()] = checkedPureHelper{definition: helper, body: bodyChecked}
 		overload := strings.NewReplacer(".", "_", "-", "_").Replace(helper.GetName()) + "_pure_helper"
+		checked[helper.GetName()] = checkedPureHelper{definition: helper, body: bodyChecked, overload: overload}
 		declarations = append(declarations, cel.Function(helper.GetName(), cel.Overload(overload, argTypes, pureHelperCELType(helper.GetResultType()))))
 	}
 	return checked, declarations, nil
@@ -243,8 +247,12 @@ func (o *pureHelperOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonas
 		if expr.Kind() != commonast.CallKind || expr.AsCall().IsMemberFunction() {
 			return false
 		}
-		_, ok := o.helpers[expr.AsCall().FunctionName()]
-		return ok
+		helper, ok := o.helpers[expr.AsCall().FunctionName()]
+		if !ok {
+			return false
+		}
+		overloads := tree.GetOverloadIDs(expr.ID())
+		return len(overloads) == 1 && overloads[0] == helper.overload
 	})
 	for _, match := range matches {
 		o.calls++
@@ -261,13 +269,26 @@ func (o *pureHelperOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonas
 			return tree
 		}
 		replacement := ctx.CopyASTAndMetadata(helper.body.NativeRep())
+		temporaries := make([]string, len(call.Args()))
+		for i := range call.Args() {
+			temporaries[i] = fmt.Sprintf("@flowstate_helper_arg_%d_%d", match.ID(), i)
+		}
+		// Introduce parameter names only after every argument has been captured
+		// under an identifier source CEL cannot spell. This keeps each argument
+		// in caller scope even when it refers to a later parameter's name.
+		for i := len(call.Args()) - 1; i >= 0; i-- {
+			bindID := ctx.NewIdent(temporaries[i]).ID()
+			var macro commonast.Expr
+			replacement, macro = ctx.NewBindMacro(bindID, helper.definition.GetParameters()[i].GetName(), ctx.NewIdent(temporaries[i]), replacement)
+			ctx.SetMacroCall(bindID, macro)
+		}
 		for i := len(call.Args()) - 1; i >= 0; i-- {
 			bindID := match.ID()
 			if i != 0 {
-				bindID = ctx.NewIdent("unused").ID()
+				bindID = ctx.NewIdent(temporaries[i]).ID()
 			}
 			var macro commonast.Expr
-			replacement, macro = ctx.NewBindMacro(bindID, helper.definition.GetParameters()[i].GetName(), call.Args()[i], replacement)
+			replacement, macro = ctx.NewBindMacro(bindID, temporaries[i], call.Args()[i], replacement)
 			ctx.SetMacroCall(bindID, macro)
 		}
 		ctx.UpdateExpr(match, replacement)

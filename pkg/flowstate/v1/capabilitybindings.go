@@ -28,8 +28,10 @@ func CapabilityBindingRevision(binding *CapabilityBinding) string {
 
 // CapabilityContractDigest returns the identity of a capability's complete task
 // contract. Provider qualifiers are removed from task names before hashing, so
-// two providers implementing the same methods produce the same digest. Every
-// descriptor and security-claim field remains in the digest.
+// two providers implementing the same methods produce the same digest. The
+// stable schema and security-claim projections are both covered, along with the
+// claims schema version; raw descriptor bytes are deliberately excluded by the
+// same projection used for plugin task-schema identity.
 func CapabilityContractDigest(tasks []*TaskDescription) (string, error) {
 	canonical := make([]*TaskDescription, 0, len(tasks))
 	seen := make(map[string]bool, len(tasks))
@@ -38,7 +40,10 @@ func CapabilityContractDigest(tasks []*TaskDescription) (string, error) {
 			return "", fmt.Errorf("capability contract contains an empty task description")
 		}
 		name := task.GetName()
-		if _, bare, qualified := strings.Cut(name, "."); qualified {
+		if qualifier, bare, qualified := strings.Cut(name, "."); qualified {
+			if qualifier == "" {
+				return "", fmt.Errorf("capability contract task %q has an empty qualifier", task.GetName())
+			}
 			name = bare
 		}
 		if name == "" || strings.Contains(name, ".") {
@@ -48,14 +53,19 @@ func CapabilityContractDigest(tasks []*TaskDescription) (string, error) {
 			return "", fmt.Errorf("capability contract declares task %q more than once", name)
 		}
 		seen[name] = true
-		copy := proto.Clone(task).(*TaskDescription)
-		copy.Name = name
-		canonical = append(canonical, copy)
+		schema := TaskDescriptionSansClaims(task)
+		claims := TaskDescriptionClaimsOnly(task)
+		schema.Name = name
+		claims.Name = name
+		proto.Merge(schema, claims)
+		canonical = append(canonical, schema)
 	}
 	slices.SortFunc(canonical, func(a, b *TaskDescription) int {
 		return strings.Compare(a.GetName(), b.GetName())
 	})
-	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&TaskCatalog{Tasks: canonical})
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&TaskCatalog{
+		Tasks: canonical, ClaimsSchemaVersion: CurrentClaimsSchemaVersion,
+	})
 	if err != nil {
 		return "", fmt.Errorf("encode capability contract: %w", err)
 	}
@@ -75,6 +85,9 @@ func CapabilityContractDigest(tasks []*TaskDescription) (string, error) {
 func ResolveCapabilityBindings(wf *Workflow, selections map[string]string, catalog *PluginCatalog) error {
 	if wf == nil {
 		return fmt.Errorf("cannot resolve capability bindings for an empty workflow")
+	}
+	if catalog.GetClaimsSchemaVersion() != CurrentClaimsSchemaVersion {
+		return fmt.Errorf("capability catalog uses claims schema version %d, want %d", catalog.GetClaimsSchemaVersion(), CurrentClaimsSchemaVersion)
 	}
 	bindings, plugins, err := indexCapabilityCatalog(catalog)
 	if err != nil {
@@ -260,6 +273,11 @@ func rewriteCapabilityNodes(nodes []*Node, selected map[string]selectedCapabilit
 			}
 			selection, ok := selected[qualifier]
 			if !ok {
+				if len(selected) == 0 {
+					// A workflow with no capability parameters keeps its independently
+					// declared concrete plugin requirements. ResolvePlugins owns those.
+					continue
+				}
 				return fmt.Errorf("step %q uses undeclared capability %q; explicit-capability workflows may use dotted tasks only through a declared parameter", node.GetId(), qualifier)
 			}
 			if !slices.Contains(selection.parameter.GetTasks(), method) {

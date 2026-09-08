@@ -62,6 +62,11 @@ func TestCapabilityParametersBindAndForwardWithoutChangingTheLibrary(t *testing.
 }
 
 func TestCapabilityBindingFailuresAreAtomicAndFailClosed(t *testing.T) {
+	t.Run("missing catalog", func(t *testing.T) {
+		err := v1.ResolveCapabilityBindings(&v1.Workflow{Name: "empty"}, nil, nil)
+		require.ErrorContains(t, err, "claims schema version 0")
+	})
+
 	t.Run("missing root selection", func(t *testing.T) {
 		wf, _, catalog, _, _ := compositionFixture(t)
 		before := proto.Clone(wf).(*v1.Workflow)
@@ -117,6 +122,36 @@ func TestCapabilityBindingFailuresAreAtomicAndFailClosed(t *testing.T) {
 		}, catalog)
 		require.ErrorContains(t, err, "receives explicit capabilities and also declares `plugins:`")
 	})
+
+	t.Run("legacy callee keeps its direct plugin task", func(t *testing.T) {
+		wf, _, catalog, _, _ := compositionFixture(t)
+		legacy := &v1.Workflow{
+			Name:               "legacy-library",
+			PluginRequirements: []*v1.PluginRequirement{{Name: "audit", MinimumVersion: "v1.0.0"}},
+			Steps: []*v1.Node{{
+				Id: "write", Kind: &v1.Node_Task{Task: &v1.Task{Name: "audit.write"}},
+			}},
+		}
+		wf.Steps = append(wf.Steps, &v1.Node{
+			Id: "legacy", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: legacy}},
+		})
+
+		err := v1.ResolveCapabilityBindings(wf, map[string]string{
+			"billing": "billing-environment-stable", "support": "support-environment-stable",
+		}, catalog)
+
+		require.NoError(t, err)
+		require.Equal(t, "audit.write", legacy.GetSteps()[0].GetTask().GetName())
+	})
+
+	t.Run("unknown claims schema", func(t *testing.T) {
+		wf, _, catalog, _, _ := compositionFixture(t)
+		catalog.ClaimsSchemaVersion = v1.CurrentClaimsSchemaVersion + 1
+		err := v1.ResolveCapabilityBindings(wf, map[string]string{
+			"billing": "billing-environment-stable", "support": "support-environment-stable",
+		}, catalog)
+		require.ErrorContains(t, err, "claims schema version")
+	})
 }
 
 func TestCapabilityContractDigestIgnoresProviderQualifierButNotClaims(t *testing.T) {
@@ -132,4 +167,14 @@ func TestCapabilityContractDigestIgnoresProviderQualifierButNotClaims(t *testing
 	rightDigest, err = v1.CapabilityContractDigest(right)
 	require.NoError(t, err)
 	require.NotEqual(t, leftDigest, rightDigest, "a security-claim change did not change the contract")
+
+	right[0].SecretInputs = []string{"token"}
+	right[0].InputDescriptor = []byte("provider-specific descriptor encoding")
+	right[0].InputMessage = "provider.v1.Request"
+	rightDigest, err = v1.CapabilityContractDigest(right)
+	require.NoError(t, err)
+	require.Equal(t, leftDigest, rightDigest, "raw descriptor identity changed the stable contract")
+
+	_, err = v1.CapabilityContractDigest([]*v1.TaskDescription{{Name: ".provision"}})
+	require.ErrorContains(t, err, "empty qualifier")
 }

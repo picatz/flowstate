@@ -92,3 +92,69 @@ func TestPureHelperExpansionUsesEachWorkflowProfile(t *testing.T) {
 	require.ErrorContains(t, err, `workflow "helper-callee": unknown language profile "2099.9"`)
 	require.True(t, proto.Equal(before, wf), "a profile refusal partially rewrote the workflow")
 }
+
+func TestPureHelperArgumentsEvaluateInCallerScope(t *testing.T) {
+	wf := &v1.Workflow{
+		Name: "caller-scope",
+		Vars: map[string]*v1.Value{"n": v1.NewLiteral(42)},
+		Steps: []*v1.Node{{
+			Id:   "pick",
+			Kind: &v1.Node_Value{Value: v1.NewExpr(`helpers.pick({"n": 7}, vars.n)`)},
+		}},
+	}
+	helper := &v1.PureHelper{
+		Name: "helpers.pick",
+		Parameters: []*v1.PureHelperParameter{
+			{Name: "vars", Type: v1.InputDeclaration_TYPE_STRUCT},
+			{Name: "n", Type: v1.InputDeclaration_TYPE_INT},
+		},
+		ResultType: v1.InputDeclaration_TYPE_INT,
+		Body:       v1.NewExpr("n"),
+	}
+
+	require.NoError(t, v1.ExpandPureHelpers(wf, []*v1.PureHelper{helper}))
+	out, err := v1.Run(t.Context(), wf)
+	require.NoError(t, err)
+	require.EqualValues(t, 42, out.GetStepValues()["pick"].GetNamedValues()[v1.ValueOutput].GetLiteral().GetInt64Value())
+}
+
+func TestPureHelperExpandsOnlyItsResolvedOverload(t *testing.T) {
+	wf := &v1.Workflow{
+		Name: "overload",
+		Steps: []*v1.Node{{
+			Id: "absolute", Kind: &v1.Node_Value{Value: v1.NewExpr("math.abs(-1)")},
+		}},
+	}
+	helper := &v1.PureHelper{
+		Name:       "math.abs",
+		Parameters: []*v1.PureHelperParameter{{Name: "value", Type: v1.InputDeclaration_TYPE_STRING}},
+		ResultType: v1.InputDeclaration_TYPE_STRING,
+		Body:       v1.NewExpr("value"),
+	}
+
+	require.NoError(t, v1.ExpandPureHelpers(wf, []*v1.PureHelper{helper}))
+	out, err := v1.Run(t.Context(), wf)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, out.GetStepValues()["absolute"].GetNamedValues()[v1.ValueOutput].GetLiteral().GetInt64Value())
+}
+
+func TestPureHelperBodyBoundAppliesBeforeTypeChecking(t *testing.T) {
+	wf := &v1.Workflow{Name: "bounded"}
+	helper := &v1.PureHelper{
+		Name:       "helpers.tooLarge",
+		ResultType: v1.InputDeclaration_TYPE_LIST,
+		Body:       v1.NewExpr("[" + strings.Repeat("1,", 4097) + "1]"),
+	}
+
+	err := v1.ExpandPureHelpers(wf, []*v1.PureHelper{helper})
+	require.ErrorContains(t, err, "before type checking")
+	require.ErrorContains(t, err, "at most 4096")
+}
+
+func TestPureHelperNilParameterFailsClosed(t *testing.T) {
+	err := v1.ExpandPureHelpers(&v1.Workflow{Name: "invalid"}, []*v1.PureHelper{{
+		Name: "helpers.invalid", Parameters: []*v1.PureHelperParameter{nil},
+		ResultType: v1.InputDeclaration_TYPE_INT, Body: v1.NewExpr("1"),
+	}})
+	require.Error(t, err)
+}
