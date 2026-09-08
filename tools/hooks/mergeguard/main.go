@@ -457,8 +457,11 @@ func ghPRMergeInvocations(s string) [][]string {
 	for _, r := range s {
 		switch {
 		case escaped:
-			word.WriteRune(r)
-			started, escaped = true, false
+			if r != '\n' {
+				word.WriteRune(r)
+				started = true
+			}
+			escaped = false
 		case inSingle:
 			if r == '\'' {
 				inSingle = false
@@ -475,7 +478,7 @@ func ghPRMergeInvocations(s string) [][]string {
 				word.WriteRune(r)
 			}
 		case r == '\\':
-			escaped, started = true, true
+			escaped = true
 		case r == '\'':
 			inSingle, started = true, true
 		case r == '"':
