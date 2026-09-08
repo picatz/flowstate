@@ -195,7 +195,7 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 		return nil, ErrNotPaused
 	}
 
-	groups := s.scopeNames(subject.scope, subject.extra)
+	groups := s.visibleScopeNames(subject)
 
 	scope := &v1.DebugScope{Groups: make([]*v1.DebugScopeGroup, 0, len(groups))}
 

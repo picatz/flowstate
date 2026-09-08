@@ -75,6 +75,12 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(positionJSON), "[redacted]")
 	require.NotContains(t, string(positionJSON), sensitive)
+	wireScope, err := session.ScopeProto(t.Context(), 10)
+	require.NoError(t, err)
+	wireScopeJSON, err := protojson.Marshal(wireScope)
+	require.NoError(t, err)
+	require.Contains(t, string(wireScopeJSON), "[redacted]")
+	require.NotContains(t, string(wireScopeJSON), sensitive)
 
 	c.send(5, "stackTrace", map[string]any{"threadId": 1})
 	stack := c.await("response", "stackTrace")

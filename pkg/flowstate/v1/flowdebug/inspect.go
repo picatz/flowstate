@@ -433,9 +433,15 @@ func (s *Session) Scope() ([]Names, error) {
 		return nil, ErrNotPaused
 	}
 
+	return s.visibleScopeNames(subject), nil
+}
+
+// visibleScopeNames applies the pause's identifier-withholding posture to the
+// one shared scope collection consumed by local and wire renderers.
+func (s *Session) visibleScopeNames(subject promptSubject) []Names {
 	groups := s.scopeNames(subject.scope, subject.extra)
 	if subject.redactText == nil {
-		return groups, nil
+		return groups
 	}
 
 	visible := groups[:0]
@@ -453,7 +459,7 @@ func (s *Session) Scope() ([]Names, error) {
 		visible = append(visible, group)
 	}
 
-	return visible, nil
+	return visible
 }
 
 // StepState is what a session last watched one step do.
