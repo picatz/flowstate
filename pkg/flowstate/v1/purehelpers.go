@@ -252,9 +252,14 @@ func (o *pureHelperOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonas
 			return false
 		}
 		overloads := tree.GetOverloadIDs(expr.ID())
-		return len(overloads) == 1 && overloads[0] == helper.overload
+		return slices.Contains(overloads, helper.overload)
 	})
 	for _, match := range matches {
+		overloads := tree.GetOverloadIDs(match.ID())
+		if len(overloads) != 1 {
+			ctx.ReportErrorAtID(match.ID(), "pure helper %s has an ambiguous overload at this call", match.AsCall().FunctionName())
+			return tree
+		}
 		o.calls++
 		if o.calls > maxPureHelperCalls {
 			ctx.ReportErrorAtID(match.ID(), "expression calls imported pure helpers more than %d times", maxPureHelperCalls)

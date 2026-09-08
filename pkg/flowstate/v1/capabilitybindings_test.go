@@ -144,6 +144,25 @@ func TestCapabilityBindingFailuresAreAtomicAndFailClosed(t *testing.T) {
 		require.Equal(t, "audit.write", legacy.GetSteps()[0].GetTask().GetName())
 	})
 
+	t.Run("legacy callee cannot use an undeclared plugin task", func(t *testing.T) {
+		wf, _, catalog, _, _ := compositionFixture(t)
+		legacy := &v1.Workflow{
+			Name: "legacy-library",
+			Steps: []*v1.Node{{
+				Id: "write", Kind: &v1.Node_Task{Task: &v1.Task{Name: "audit.write"}},
+			}},
+		}
+		wf.Steps = append(wf.Steps, &v1.Node{
+			Id: "legacy", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: legacy}},
+		})
+
+		err := v1.ResolveCapabilityBindings(wf, map[string]string{
+			"billing": "billing-environment-stable", "support": "support-environment-stable",
+		}, catalog)
+
+		require.ErrorContains(t, err, `uses undeclared capability "audit"`)
+	})
+
 	t.Run("unknown claims schema", func(t *testing.T) {
 		wf, _, catalog, _, _ := compositionFixture(t)
 		catalog.ClaimsSchemaVersion = v1.CurrentClaimsSchemaVersion + 1

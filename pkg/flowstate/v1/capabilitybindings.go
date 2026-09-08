@@ -219,7 +219,11 @@ func resolveWorkflowCapabilities(wf *Workflow, selections map[string]string, bin
 		ensurePluginRequirement(wf, plugin)
 	}
 
-	if err := rewriteCapabilityNodes(wf.GetSteps(), selected, bindings, plugins, depth); err != nil {
+	directPlugins := make(map[string]bool, len(wf.GetPluginRequirements()))
+	for _, requirement := range wf.GetPluginRequirements() {
+		directPlugins[requirement.GetName()] = true
+	}
+	if err := rewriteCapabilityNodes(wf.GetSteps(), selected, directPlugins, bindings, plugins, depth); err != nil {
 		return fmt.Errorf("workflow %q: %w", wf.GetName(), err)
 	}
 	return nil
@@ -255,7 +259,7 @@ func ensurePluginRequirement(wf *Workflow, plugin *PluginDescription) {
 	wf.PluginRequirements = append(wf.PluginRequirements, &PluginRequirement{Name: plugin.GetName(), MinimumVersion: version})
 }
 
-func rewriteCapabilityNodes(nodes []*Node, selected map[string]selectedCapability, bindings map[string]*CapabilityBinding, plugins map[string]*PluginDescription, depth int) error {
+func rewriteCapabilityNodes(nodes []*Node, selected map[string]selectedCapability, directPlugins map[string]bool, bindings map[string]*CapabilityBinding, plugins map[string]*PluginDescription, depth int) error {
 	if depth > maxWorkflowScanDepth {
 		return fmt.Errorf("steps nest more than %d deep, past what a specification is checked to", maxWorkflowScanDepth)
 	}
@@ -273,7 +277,7 @@ func rewriteCapabilityNodes(nodes []*Node, selected map[string]selectedCapabilit
 			}
 			selection, ok := selected[qualifier]
 			if !ok {
-				if len(selected) == 0 {
+				if len(selected) == 0 && directPlugins[qualifier] {
 					// A workflow with no capability parameters keeps its independently
 					// declared concrete plugin requirements. ResolvePlugins owns those.
 					continue
@@ -287,25 +291,25 @@ func rewriteCapabilityNodes(nodes []*Node, selected map[string]selectedCapabilit
 		}
 
 		if loop := node.GetForEach(); loop != nil {
-			if err := rewriteCapabilityNodes(loop.GetBody(), selected, bindings, plugins, depth+1); err != nil {
+			if err := rewriteCapabilityNodes(loop.GetBody(), selected, directPlugins, bindings, plugins, depth+1); err != nil {
 				return err
 			}
 		}
 		if loop := node.GetLoop(); loop != nil {
-			if err := rewriteCapabilityNodes(loop.GetBody(), selected, bindings, plugins, depth+1); err != nil {
+			if err := rewriteCapabilityNodes(loop.GetBody(), selected, directPlugins, bindings, plugins, depth+1); err != nil {
 				return err
 			}
 		}
 		if parallel := node.GetParallel(); parallel != nil {
 			for _, branch := range parallel.GetBranches() {
-				if err := rewriteCapabilityNodes(branch.GetSteps(), selected, bindings, plugins, depth+1); err != nil {
+				if err := rewriteCapabilityNodes(branch.GetSteps(), selected, directPlugins, bindings, plugins, depth+1); err != nil {
 					return err
 				}
 			}
 		}
 		if sw := node.GetSwitch(); sw != nil {
 			for _, body := range SwitchBodies(sw) {
-				if err := rewriteCapabilityNodes(body, selected, bindings, plugins, depth+1); err != nil {
+				if err := rewriteCapabilityNodes(body, selected, directPlugins, bindings, plugins, depth+1); err != nil {
 					return err
 				}
 			}

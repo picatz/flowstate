@@ -138,6 +138,28 @@ func TestPureHelperExpandsOnlyItsResolvedOverload(t *testing.T) {
 	require.EqualValues(t, 1, out.GetStepValues()["absolute"].GetNamedValues()[v1.ValueOutput].GetLiteral().GetInt64Value())
 }
 
+func TestPureHelperRejectsAmbiguousDynamicOverload(t *testing.T) {
+	wf := &v1.Workflow{
+		Name: "ambiguous-overload",
+		Vars: map[string]*v1.Value{"x": v1.NewLiteral("value")},
+		Steps: []*v1.Node{{
+			Id: "absolute", Kind: &v1.Node_Value{Value: v1.NewExpr("math.abs(vars.x)")},
+		}},
+	}
+	helper := &v1.PureHelper{
+		Name:       "math.abs",
+		Parameters: []*v1.PureHelperParameter{{Name: "value", Type: v1.InputDeclaration_TYPE_STRING}},
+		ResultType: v1.InputDeclaration_TYPE_STRING,
+		Body:       v1.NewExpr("value"),
+	}
+	before := proto.Clone(wf).(*v1.Workflow)
+
+	err := v1.ExpandPureHelpers(wf, []*v1.PureHelper{helper})
+
+	require.ErrorContains(t, err, "ambiguous overload")
+	require.True(t, proto.Equal(before, wf), "a refused ambiguous call changed the workflow")
+}
+
 func TestPureHelperBodyBoundAppliesBeforeTypeChecking(t *testing.T) {
 	wf := &v1.Workflow{Name: "bounded"}
 	helper := &v1.PureHelper{
