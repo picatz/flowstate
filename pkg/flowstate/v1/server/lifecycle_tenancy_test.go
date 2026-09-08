@@ -6,10 +6,14 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // Stopping and listing are the same authorization question Get and Signal ask, so
@@ -21,6 +25,105 @@ import (
 // run at all, so nothing about the request itself reveals a mistake. A List that
 // forgot to filter would look completely healthy to every test that only checked
 // that a tenant can see its own runs.
+
+// TestDirectAddressingRejectsExecutionsListWouldHide exercises the shared
+// Temporal-namespace boundary against a real execution. An execution from
+// another application has the same no-memo shape as a legacy Flowstate run, so
+// checking only tenant ownership would make it reachable from the default
+// tenant even though List deliberately excludes it by workflow type.
+func TestDirectAddressingRejectsExecutionsListWouldHide(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	foreignID := "foreign-" + uuid.NewString()
+	_, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
+		ID:        foreignID,
+		TaskQueue: "another-application",
+	}, "AnotherApplication")
+	require.NoError(t, err)
+
+	callers := []struct {
+		name string
+		api  *server.FlowstateServer
+	}{
+		{name: "default tenant", api: mustNew(t, temporal)},
+		{name: "named tenant", api: mustNew(t, temporal, server.WithNamespace("acme"))},
+	}
+	for _, caller := range callers {
+		caller := caller
+		t.Run(caller.name, func(t *testing.T) {
+			calls := map[string]func() error{
+				"Get": func() error {
+					_, err := caller.api.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: foreignID}))
+					return err
+				},
+				"GetTimeline": func() error {
+					_, err := caller.api.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{WorkflowId: foreignID}))
+					return err
+				},
+				"Signal": func() error {
+					_, err := caller.api.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+						WorkflowId: foreignID,
+						Name:       "wake",
+					}))
+					return err
+				},
+				"Cancel": func() error {
+					_, err := caller.api.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: foreignID}))
+					return err
+				},
+				"Terminate": func() error {
+					_, err := caller.api.Terminate(t.Context(), connect.NewRequest(&v1.TerminateRequest{
+						WorkflowId: foreignID,
+						Reason:     "must not reach Temporal",
+					}))
+					return err
+				},
+			}
+			for name, call := range calls {
+				t.Run(name, func(t *testing.T) {
+					err := call()
+					require.Error(t, err, "direct addressing accepted another application's execution")
+					require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+				})
+			}
+		})
+	}
+
+	described, err := temporal.DescribeWorkflowExecution(t.Context(), foreignID, "")
+	require.NoError(t, err)
+	require.Equal(t, enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		described.GetWorkflowExecutionInfo().GetStatus(),
+		"a refused direct-address operation still stopped the foreign execution")
+}
+
+// TestLegacyFlowstateExecutionRemainsReachable preserves the compatibility arm
+// intentionally: before tenant memos existed, Flowstate still registered the
+// workflow as Run. The default tenant may address that execution, while a named
+// tenant may not claim ownership of an execution with no recorded tenant.
+func TestLegacyFlowstateExecutionRemainsReachable(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	legacyID := "legacy-" + uuid.NewString()
+	_, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
+		ID:        legacyID,
+		TaskQueue: "legacy-flowstate-no-worker",
+	}, "Run")
+	require.NoError(t, err)
+
+	defaultTenant := mustNew(t, temporal)
+	_, err = defaultTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: legacyID}))
+	require.NoError(t, err, "the default tenant could not inspect a legacy Flowstate execution")
+
+	namedTenant := mustNew(t, temporal, server.WithNamespace("acme"))
+	_, err = namedTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: legacyID}))
+	require.Error(t, err, "a named tenant claimed a legacy execution with no recorded tenant")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	_, err = defaultTenant.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: legacyID}))
+	require.NoError(t, err, "the default tenant could not cancel a legacy Flowstate execution")
+}
 
 // TestAnotherTenantCannotStopARun checks that a run cannot be stopped by someone
 // who cannot see it.

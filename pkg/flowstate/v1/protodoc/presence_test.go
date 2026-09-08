@@ -472,8 +472,8 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		}
 	}
 
-	if checked != 154 {
-		t.Errorf("run/report walk checked %d declarations; want 154", checked)
+	if checked != 189 {
+		t.Errorf("run/report walk checked %d declarations; want 189", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)

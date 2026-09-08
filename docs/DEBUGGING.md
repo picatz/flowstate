@@ -16,6 +16,12 @@ doors, so a habit learned at one carries to the others:
 | a person, debugging a real local run | `flow run local --debug <workflow>` | the same prompt, over a real run |
 | an agent | the `flowstate_debug` MCP tool | the same session, driven by a script |
 
+These are local surfaces. The architecture's [driver parity
+boundary](ARCHITECTURE.md#execution-model) names what they prove and what still needs
+a durable or integration run. Inspect a durable run with [`flow get` and `flow
+timeline`](#reading-a-durable-run); operate a shared service using the
+[deployment guide](DEPLOYMENT.md).
+
 ## The commands
 
 The vocabulary is the one a debugger has had since `dbx`, which is the point —

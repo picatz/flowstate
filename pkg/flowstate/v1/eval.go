@@ -2707,7 +2707,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 		// Only failures that could plausibly succeed on another attempt are
 		// retried, matching how the durable driver classifies them.
-		if attempt >= attempts || !ClassifyError(err).Retryable() {
+		if attempt >= attempts || !RetryPermitted(err) {
 			return nil, err
 		}
 
