@@ -169,7 +169,7 @@ vocabulary. An omitted allowlist preserves unrestricted legacy behavior; an empt
 one grants nothing, role names grant nothing, and token `scope`/`scp` claims are not
 authority. Enforcement is shared by every WorkflowService RPC at the audit seam and
 records a policy denial before returning `PermissionDenied`
-(`pkg/flowstate/v1/server/audit.go`). Submitted
+(`pkg/flowstate/v1/server/audit.go:60-75`). Submitted
 specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`),
 and `List` is bounded by executions read and by requests made
 (`pkg/flowstate/v1/server/list.go:56`, `:68`).
