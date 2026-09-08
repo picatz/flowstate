@@ -266,9 +266,13 @@ func requireRunHasExecuted(t *testing.T, temporal client.Client, workflowID stri
 // next person to run it again; "it is RUNNING on attempt 4 of a workflow task"
 // tells them nothing is serving it, which is the answer.
 func requireRunCompletes(t *testing.T, temporal client.Client, run client.WorkflowRun, out any) {
+	requireRunCompletesWithin(t, temporal, run, out, 90*time.Second)
+}
+
+func requireRunCompletesWithin(t *testing.T, temporal client.Client, run client.WorkflowRun, out any, timeout time.Duration) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	err := run.Get(ctx, out)

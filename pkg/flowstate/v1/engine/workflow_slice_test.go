@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -33,15 +34,20 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 
 	for _, test := range conformance.WorkflowSliceCases() {
 		t.Run(test.Name, func(t *testing.T) {
+			// Race instrumentation scales the worker's deadlock detector above,
+			// so scale the server's independent workflow-task deadline too. The
+			// production binary completes each segment well inside its default;
+			// this keeps the instrumented test comparing like with like.
 			run, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
-				ID:        "workflow-slices-" + test.Workflow.GetName(),
-				TaskQueue: taskQueue,
+				ID:                  "workflow-slices-" + test.Workflow.GetName(),
+				TaskQueue:           taskQueue,
+				WorkflowTaskTimeout: 30 * time.Second,
 			}, engine.Run, &v1.RunState{Workflow: test.Workflow, StepsBudget: 2000})
 			require.NoError(t, err)
 			firstRunID := run.GetRunID()
 
 			var out v1.Workflow_StepOutputs
-			requireRunCompletes(t, temporal, run, &out)
+			requireRunCompletesWithin(t, temporal, run, &out, 5*time.Minute)
 			if test.ExpectedOutputsPredicate != nil {
 				require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
 			} else {
@@ -51,7 +57,14 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 			histories := recordRunChain(t.Context(), t, temporal, run.GetID(), firstRunID)
 			events := 0
 			timers := 0
-			replayer := worker.NewWorkflowReplayer()
+			// The live worker above is the deadlock assertion, with the race
+			// slowdown applied. The offline replayer hard-codes an independent
+			// one-second detector with no scaling hook, so disable that clock here
+			// and keep replay focused on command determinism.
+			replayer, err := worker.NewWorkflowReplayerWithOptions(worker.WorkflowReplayerOptions{
+				DisableDeadlockDetection: true,
+			})
+			require.NoError(t, err)
 			engine.RegisterWorkflows(replayer)
 			for i, history := range histories {
 				// The first segment ends at the new continuation and the last
