@@ -10,6 +10,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/credentialsource"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // newAuthCommand builds `flow auth`, the operator tools for the caller trust
@@ -84,6 +85,9 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 		if errors.Is(err, auth.ErrPolicySyntax) {
 			return errors.New("parsing auth policy: policy is malformed")
 		}
+		return fmt.Errorf("parsing auth policy: %w", err)
+	}
+	if err := server.ValidateAuthorizationPolicy(&policy); err != nil {
 		return fmt.Errorf("parsing auth policy: %w", err)
 	}
 	verifier, err := auth.NewOIDCVerifier(policy)

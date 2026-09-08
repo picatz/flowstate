@@ -72,6 +72,7 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 	ignored := map[string]string{
 		"Name":           "a label, and reported rather than compared",
 		"Role":           "granted after an entry has already won",
+		"Actions":        "granted after an entry has already won",
 		"Namespace":      "determined after admission; failure rejects, never falls through",
 		"NamespaceClaim": "same",
 		"NamespaceMap":   "same",

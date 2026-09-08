@@ -163,7 +163,13 @@ asymmetric algorithms are verifiable, so no HMAC token can be checked against an
 issuer's public key (`pkg/flowstate/v1/auth/policy.go:192-231`). A verified caller
 whose namespace claim is missing or fails the namespace grammar is rejected, never
 admitted to a default tenant (`:119-142`, `:345`). Unauthenticated error text never
-describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). Submitted
+describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). An issuer
+entry may grant an exact allowlist from the schema-owned control-plane action
+vocabulary. An omitted allowlist preserves unrestricted legacy behavior; an empty
+one grants nothing, role names grant nothing, and token `scope`/`scp` claims are not
+authority. Enforcement is shared by every WorkflowService RPC at the audit seam and
+records a policy denial before returning `PermissionDenied`
+(`pkg/flowstate/v1/server/audit.go`). Submitted
 specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`),
 and `List` is bounded by executions read and by requests made
 (`pkg/flowstate/v1/server/list.go:56`, `:68`).

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -76,6 +77,25 @@ func TestAuthVerifierRefusesInsecureBesideAPolicy(t *testing.T) {
 		_, _, err := authVerifier(authFlags{})
 		require.ErrorContains(t, err, "no authentication configured")
 	})
+}
+
+func TestAuthVerifierRefusesUnknownPolicyAction(t *testing.T) {
+	t.Parallel()
+
+	policyPath := filepath.Join(t.TempDir(), "trust.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(`
+issuers:
+  - name: reader
+    issuer: https://issuer.example.com
+    audiences: [flowstate]
+    actions: [workload.raed]
+`), 0o600))
+
+	verifier, policy, err := authVerifier(authFlags{policyPath: policyPath})
+	require.Nil(t, verifier)
+	require.Nil(t, policy)
+	require.ErrorContains(t, err, "workload.raed")
+	require.ErrorContains(t, err, "is not a Flowstate authorization action")
 }
 
 // TestServerRefusesInsecureBesideAnInheritedPolicy is the same refusal reached

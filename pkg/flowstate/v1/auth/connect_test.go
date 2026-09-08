@@ -2,6 +2,8 @@ package auth_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,6 +21,59 @@ import (
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAuthenticatorRefusesSameIdentityWithDifferentActionGrants(t *testing.T) {
+	t.Parallel()
+
+	token := fixedPrincipalVerifier{principal: auth.Principal{
+		Issuer: "issuer", Subject: "caller", Actions: auth.ActionScopes{"workload.read"},
+	}}
+	peer := fixedPeerPrincipalVerifier{principal: auth.Principal{
+		Issuer: "issuer", Subject: "caller", Actions: auth.ActionScopes{"workload.terminate"},
+	}}
+	authenticator := auth.NewAuthenticator(token, auth.WithPeerVerifier(peer))
+
+	req := httptest.NewRequest(http.MethodPost, "https://flowstate.example.com/", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	req.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{}}}}
+
+	principal, err := authenticator.Authenticate(t.Context(), req)
+	require.Nil(t, principal)
+	require.Error(t, err, "the certificate's broader grant replaced the token's restriction")
+	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestAuthenticatorAcceptsSameActionGrantsInDifferentOrder(t *testing.T) {
+	t.Parallel()
+
+	token := fixedPrincipalVerifier{principal: auth.Principal{
+		Issuer: "issuer", Subject: "caller", Actions: auth.ActionScopes{"workload.read", "workload.list"},
+	}}
+	peer := fixedPeerPrincipalVerifier{principal: auth.Principal{
+		Issuer: "issuer", Subject: "caller", Actions: auth.ActionScopes{"workload.list", "workload.read"},
+	}}
+	authenticator := auth.NewAuthenticator(token, auth.WithPeerVerifier(peer))
+
+	req := httptest.NewRequest(http.MethodPost, "https://flowstate.example.com/", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	req.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{}}}}
+
+	principal, err := authenticator.Authenticate(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, peer.principal, principal)
+}
+
+type fixedPrincipalVerifier struct{ principal auth.Principal }
+
+func (v fixedPrincipalVerifier) Verify(context.Context, string) (auth.Principal, error) {
+	return v.principal, nil
+}
+
+type fixedPeerPrincipalVerifier struct{ principal auth.Principal }
+
+func (v fixedPeerPrincipalVerifier) VerifyPeer(context.Context, [][]*x509.Certificate) (auth.Principal, error) {
+	return v.principal, nil
+}
 
 // authenticatedResponse is what the test handler reports about its caller.
 type authenticatedResponse struct {

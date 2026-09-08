@@ -630,6 +630,8 @@ func changedPrincipalField(t *testing.T, base auth.Principal, i int) auth.Princi
 		field.SetString(value + "-changed")
 	case []string:
 		field.Set(reflect.ValueOf([]string{"https://changed.example.com"}))
+	case auth.ActionScopes:
+		field.Set(reflect.ValueOf(auth.ActionScopes{"workload.read"}))
 	case time.Time:
 		field.Set(reflect.ValueOf(value.Add(time.Hour)))
 	case map[string]any:
@@ -672,6 +674,27 @@ func TestMCPSessionUserIDIgnoresAudienceOrder(t *testing.T) {
 	}
 	require.NotEqual(t, mcpSessionUserID(t, one), mcpSessionUserID(t, fewer),
 		"a token addressed to one audience shares a session key with one addressed to two")
+}
+
+func TestMCPSessionUserIDTreatsActionsAsASetAndPreservesDenyAll(t *testing.T) {
+	t.Parallel()
+
+	one := auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice",
+		Actions: auth.ActionScopes{"workload.read", "workload.list"},
+	}
+	other := auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice",
+		Actions: auth.ActionScopes{"workload.list", "workload.read"},
+	}
+	require.Equal(t, mcpSessionUserID(t, one), mcpSessionUserID(t, other),
+		"the same action grants in another order produced a different session key")
+
+	unrestricted := auth.Principal{Issuer: "https://idp.example.com", Subject: "alice"}
+	denyAll := unrestricted
+	denyAll.Actions = auth.ActionScopes{}
+	require.NotEqual(t, mcpSessionUserID(t, unrestricted), mcpSessionUserID(t, denyAll),
+		"an unrestricted principal shares a session key with an explicit deny-all principal")
 }
 
 // TestMCPSessionUserIDIsUnambiguousAcrossTheFieldsItNowBinds extends

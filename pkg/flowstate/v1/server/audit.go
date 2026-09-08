@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"slices"
 
+	"connectrpc.com/connect"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -50,11 +53,48 @@ import (
 // auditAllow records an authorization that was granted, before the mutation it
 // permits.
 //
-// The returned error is non-nil only when a required recorder could not
-// record, and every caller must return it: that is the fail-closed path, and
-// dropping it converts a required sink into an advisory one.
+// This is also the shared per-action authorization seam. A policy entry with
+// no action list preserves legacy behavior; a configured list must contain the
+// exact scope bound to this RPC. The check is outside the recorder so disabling
+// audit output cannot disable authorization.
 func (s *FlowstateServer) auditAllow(ctx context.Context, rpc string, kind v1.AuditResourceKind, key string) error {
+	if principal, ok := auth.PrincipalFromContext(ctx); ok && principal.Actions != nil {
+		action, err := v1.AuthorizationActionForRPC(rpc)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		scope := v1.AuthorizationActionScope(action)
+		if !slices.Contains(principal.Actions, scope) {
+			refusal := connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("the caller is not authorized for required action %q", scope))
+			refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
+			return s.auditDeny(ctx, rpc, kind, key, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
+		}
+	}
+
 	return s.audit.Allow(ctx, s.auditSubject(ctx, rpc, kind, key))
+}
+
+// ValidateAuthorizationPolicy checks every policy-assigned action against the
+// schema-owned scope vocabulary. The auth package cannot perform this semantic
+// check without importing its parent package and creating a cycle, so control
+// plane assembly calls this before constructing its verifier.
+func ValidateAuthorizationPolicy(policy *auth.Policy) error {
+	if policy == nil {
+		return nil
+	}
+
+	known := v1.AuthorizationActionScopes()
+	for i, issuer := range policy.Issuers {
+		for j, action := range issuer.Actions {
+			if !slices.Contains(known, action) {
+				return fmt.Errorf("%w: issuers[%d] (%q): actions[%d] %q is not a Flowstate authorization action; want one of %v",
+					auth.ErrInvalidPolicy, i, issuer.Name, j, action, known)
+			}
+		}
+	}
+
+	return nil
 }
 
 // auditDeny records a refusal and returns the refusal to hand back.

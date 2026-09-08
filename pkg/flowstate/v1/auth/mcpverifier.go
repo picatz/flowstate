@@ -281,6 +281,10 @@ func MCPSessionUserID(p Principal) (string, error) {
 	binding.ExpiresAt = time.Time{}
 	binding.Claims = nil
 	binding.Audience = slices.Sorted(slices.Values(p.Audience))
+	if p.Actions != nil {
+		binding.Actions = slices.Clone(p.Actions)
+		slices.Sort(binding.Actions)
+	}
 
 	encoded, err := json.Marshal(binding)
 	if err != nil {

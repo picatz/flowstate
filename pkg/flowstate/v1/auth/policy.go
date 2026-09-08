@@ -19,10 +19,10 @@ import (
 	"github.com/picatz/jose/pkg/jwa"
 )
 
-// Policy is the set of issuers Flowstate trusts to authenticate callers, and
-// the rules a token from each must satisfy. It is the whole of Flowstate's
-// authentication configuration: an issuer that is not named here cannot
-// authenticate anyone, so the empty Policy trusts nobody.
+// Policy is the set of issuers Flowstate trusts to authenticate callers, the
+// rules a credential from each must satisfy, and any actions that entry grants.
+// An issuer that is not named here cannot authenticate anyone, so the empty
+// Policy trusts nobody.
 //
 // A Policy is data rather than code so that trusting a new platform is a
 // configuration change an operator can review, rather than a change to a
@@ -98,6 +98,22 @@ type Policy struct {
 	// of it, and a first run needs no configuration at all.
 	Tenancy *Tenancy `json:"tenancy,omitempty" yaml:"tenancy,omitempty"`
 }
+
+// ActionScopes is an optional allowlist of Flowstate authorization actions,
+// written using the canonical OAuth scope spellings published by the protected
+// resource (for example, "workload.read"). Nil means the policy entry does not
+// restrict actions; a present empty list grants none.
+//
+// The auth package preserves and bounds these strings but does not own their
+// vocabulary. The parent flowstate.v1 package validates them against
+// AuthorizationActionScopes at the point the complete server is assembled,
+// avoiding a second action table or an import cycle.
+type ActionScopes []string
+
+// IsZero distinguishes an omitted allowlist from an explicitly empty one when
+// policy files are serialized: only omission preserves legacy unrestricted
+// behavior.
+func (s ActionScopes) IsZero() bool { return s == nil }
 
 // NamespaceMap is the wire type of [TrustedIssuer.NamespaceMap]: an exact
 // claim-value-to-namespace table, decoded from either YAML or JSON.
@@ -306,6 +322,12 @@ type TrustedIssuer struct {
 	// recorded as [Principal.Role]. It comes from the policy and never from the
 	// token, so a caller cannot choose its own role.
 	Role string `json:"role,omitempty" yaml:"role,omitempty"`
+
+	// Actions optionally restricts callers admitted by this entry to exact
+	// actions from Flowstate's canonical scope vocabulary. Omitted preserves the
+	// pre-authorization behavior (all actions); [] grants none. Role remains an
+	// audit label and does not grant authority by itself.
+	Actions ActionScopes `json:"actions,omitzero" yaml:"actions,omitempty"`
 
 	// Namespace assigns every caller this entry admits to one tenant.
 	//
@@ -541,12 +563,41 @@ func ParsePolicy(data []byte) (Policy, error) {
 	if err := rejectNullNamespaceMap(data, policy); err != nil {
 		return Policy{}, err
 	}
+	if err := rejectNullActions(data, policy); err != nil {
+		return Policy{}, err
+	}
 
 	if err := policy.Validate(); err != nil {
 		return Policy{}, err
 	}
 
 	return policy, nil
+}
+
+// rejectNullActions preserves the security-significant distinction between an
+// omitted action restriction and a present empty one. goccy/go-yaml decodes an
+// explicit null directly to nil without invoking a field unmarshaler, so inspect
+// the already-valid raw document exactly as rejectNullNamespaceMap does.
+func rejectNullActions(data []byte, policy Policy) error {
+	var raw struct {
+		Issuers []map[string]any `yaml:"issuers" json:"issuers"`
+	}
+	if err := strictyaml.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+
+	for i, issuer := range raw.Issuers {
+		if i >= len(policy.Issuers) {
+			break
+		}
+		if _, present := issuer["actions"]; !present || policy.Issuers[i].Actions != nil {
+			continue
+		}
+		return fmt.Errorf("%w: issuers[%d] (%q): actions is present but null; remove it to preserve unrestricted legacy behavior, or use [] to grant no actions",
+			ErrInvalidPolicy, i, policy.Issuers[i].Name)
+	}
+
+	return nil
 }
 
 // rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the
@@ -813,6 +864,19 @@ func (t TrustedIssuer) validate() error {
 	if len(t.Role) > MaxPolicyProvenanceBytes {
 		return fmt.Errorf("role is %d bytes, over the %d byte audit provenance limit",
 			len(t.Role), MaxPolicyProvenanceBytes)
+	}
+	if len(t.Actions) > 64 {
+		return fmt.Errorf("actions has %d entries, over the 64 entry limit", len(t.Actions))
+	}
+	seenActions := make(map[string]struct{}, len(t.Actions))
+	for i, action := range t.Actions {
+		if action == "" || len(action) > 64 || strings.ContainsAny(action, " \t\r\n") {
+			return fmt.Errorf("actions[%d] must be a non-empty canonical scope of at most 64 bytes with no whitespace", i)
+		}
+		if _, duplicate := seenActions[action]; duplicate {
+			return fmt.Errorf("actions[%d]: duplicate action %q", i, action)
+		}
+		seenActions[action] = struct{}{}
 	}
 
 	switch t.kind() {
@@ -1331,6 +1395,7 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 
 	clone.Audiences = slices.Clone(t.Audiences)
 	clone.Algorithms = slices.Clone(t.Algorithms)
+	clone.Actions = slices.Clone(t.Actions)
 	clone.Require = slices.Clone(t.Require)
 	for i, rule := range clone.Require {
 		// Every slice inside a rule, not only the accepting one. A NoneOf left

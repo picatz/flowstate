@@ -45,6 +45,7 @@ func TestCloneSharesNoClaimRuleSliceWithItsSource(t *testing.T) {
 		Name:      "corp",
 		Issuer:    "https://issuer.example",
 		Audiences: []string{"flowstate"},
+		Actions:   ActionScopes{"workload.read"},
 		Require:   []ClaimRule{rule},
 	}
 	clone := source.clone()
@@ -62,6 +63,9 @@ func TestCloneSharesNoClaimRuleSliceWithItsSource(t *testing.T) {
 		mutated++
 	}
 	require.Equal(t, populated, mutated, "every list populated above must have been written through")
+	source.Actions[0] = "workload.terminate"
+	require.Equal(t, ActionScopes{"workload.read"}, clone.Actions,
+		"TrustedIssuer.clone left the action grant aliased to the caller's slice")
 
 	clonedRule := reflect.ValueOf(&clone.Require[0]).Elem()
 	for i := range clonedRule.NumField() {

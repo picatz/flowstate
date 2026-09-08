@@ -295,17 +295,14 @@ says plainly what it is missing.
   a deployment has no IdP, HTTP MCP is not available to it today —
   `--insecure-no-auth` is refused on this command, and `flow mcp` over stdio is
   the supported local shape.
-- **A scope vocabulary, and nothing that enforces it.** #567's D1 is
-  answered: the action list is in the schema
-  (`proto/flowstate/v1/authorization.proto`), one closed enum whose value
-  names spell the scopes, and the metadata document now advertises it as
-  `scopes_supported`. What has not landed is any place that *reads* a token's
-  scopes. Authorization here is still coarse — a caller with a verified,
-  audience-bound token from a trusted issuer may call every tool the trust
-  policy's claim rules and role admit — the same granularity every other
-  authenticated Connect RPC already has, and no `401`/`403` challenge names a
-  `scope` parameter, because a challenge naming one would tell a caller to
-  acquire a scope this deployment never consults.
+- **MCP still does not enforce token scopes.** #567's D1 is answered: the action
+  list is in the schema (`proto/flowstate/v1/authorization.proto`), one closed
+  enum whose value names spell the scopes, and the metadata document advertises
+  it as `scopes_supported`. Connect RPCs can now be restricted by the admitting
+  trust-policy entry's `actions:` list, using those same spellings. This MCP
+  surface does not yet apply that list, and no surface reads a token's `scope` or
+  `scp` claim; an MCP caller admitted by the trust policy may therefore call every
+  tool this reduced surface registers. A challenge must not imply otherwise.
 
   Two things the published list does not say, worth being explicit about
   because a scope value looks like a promise. It is a *vocabulary*, not a
@@ -313,9 +310,9 @@ says plainly what it is missing.
   what that action is, not that this surface registers a tool for it — the
   reduced tool list below is unchanged, and tools are discovered where a
   client actually discovers them, through MCP's own `tools/list`, rather than
-  from an OAuth metadata document its authorization layer reads. And a token
-  carrying one of these scopes is admitted no differently from one carrying
-  none, until the enforcement point exists.
+  from an OAuth metadata document its authorization layer reads. A token carrying
+  one of these scopes is admitted no differently from one carrying none; Connect
+  action grants come from trusted configuration, never from that token claim.
 - **No delegation.** A token carrying an RFC 8693 `act` or `may_act` claim —
   the shape an agent acting for a human produces — is refused outright, not
   silently accepted as the bare subject and not stripped down to one. Refusal

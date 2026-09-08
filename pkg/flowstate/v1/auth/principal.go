@@ -69,6 +69,11 @@ type Principal struct {
 	// caller cannot choose its own role.
 	Role string `json:"role,omitempty"`
 
+	// Actions is the policy-assigned allowlist of canonical Flowstate action
+	// scopes. Nil means the admitting policy entry did not restrict actions;
+	// present empty means it granted none. It never comes from token claims.
+	Actions ActionScopes `json:"actions,omitzero"`
+
 	// IssuedAt is the token's "iat" claim.
 	IssuedAt time.Time `json:"issued_at"`
 

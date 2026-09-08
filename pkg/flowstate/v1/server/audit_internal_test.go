@@ -100,9 +100,14 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: running},
 			WithNamespace("acme"), WithAudit(recorderFor(t, sink)))
+		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+			Issuer: "https://issuer.example", Subject: "under-authorized", Actions: auth.ActionScopes{},
+		})
 
-		_, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+		_, err := s.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
 		require.Error(t, err)
+		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+			"an action denial disclosed that a run exists in another tenant")
 
 		record := sink.only(t)
 		require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
@@ -122,14 +127,46 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		}
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: foreign}, WithAudit(recorderFor(t, sink)))
+		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+			Issuer: "https://issuer.example", Subject: "under-authorized", Actions: auth.ActionScopes{},
+		})
 
-		_, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+		_, err := s.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
 		require.Error(t, err)
 		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
 		record := sink.only(t)
 		require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
 		require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, record.GetDenyCode())
+	})
+
+	t.Run("a reader cannot terminate", func(t *testing.T) {
+		t.Parallel()
+
+		sink := &recordingEmitter{}
+		s := mustNew(t, &fakeRunClient{describe: running}, WithAudit(recorderFor(t, sink)))
+		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+			Issuer:  "https://issuer.example",
+			Subject: "dashboard",
+			Role:    "reader",
+			Actions: auth.ActionScopes{"workload.read"},
+		})
+
+		_, err := s.Terminate(ctx, connect.NewRequest(&v1.TerminateRequest{
+			WorkflowId: "orders-1",
+			Reason:     "must not happen",
+		}))
+		require.Error(t, err)
+		require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+		var connectErr *connect.Error
+		require.ErrorAs(t, err, &connectErr)
+		require.Contains(t, connectErr.Meta().Get("WWW-Authenticate"), `scope="workload.terminate"`)
+
+		record := sink.only(t)
+		require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
+		require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_TERMINATE, record.GetAction())
+		require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, record.GetDenyCode())
+		require.Equal(t, "reader", record.GetRole())
 	})
 
 	t.Run("a verb that reaches no resource", func(t *testing.T) {
@@ -149,6 +186,22 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		require.Equal(t, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_UNSPECIFIED, record.GetResourceKind())
 		require.Empty(t, record.GetResourceKey())
 	})
+}
+
+func TestValidateAuthorizationPolicyUsesTheCanonicalVocabulary(t *testing.T) {
+	t.Parallel()
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:    "reader",
+		Actions: auth.ActionScopes{"workload.read"},
+	}}}
+	require.NoError(t, ValidateAuthorizationPolicy(policy))
+
+	policy.Issuers[0].Actions[0] = "workload.raed"
+	err := ValidateAuthorizationPolicy(policy)
+	require.Error(t, err, "a misspelled action silently produced a deny-all principal")
+	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+	require.ErrorContains(t, err, "workload.raed")
 }
 
 // TestSignalWalkingAChainRecordsOneDecision is the case that made the

@@ -1741,6 +1741,9 @@ func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing auth policy %s: %w", flags.policyPath, err)
 	}
+	if err := server.ValidateAuthorizationPolicy(&policy); err != nil {
+		return nil, nil, fmt.Errorf("parsing auth policy %s: %w", flags.policyPath, err)
+	}
 	verifier, err := auth.NewOIDCVerifier(policy)
 	if err != nil {
 		return nil, nil, fmt.Errorf("configuring token verification: %w", err)
