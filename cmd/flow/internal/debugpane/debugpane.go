@@ -161,6 +161,10 @@ type Frame struct {
 	// network-attached session answering the same question the same way.
 	Steps []flowdebug.Step
 
+	// StepLabels overrides a row only where assembling its individually safe
+	// qualifier and id recreated text the pause redactor withholds.
+	StepLabels []string
+
 	// StepsBefore and StepsAfter are how many steps the window left out on
 	// each side, so an elision can say how many rather than that there were
 	// some.
@@ -226,6 +230,16 @@ func Snapshot(ctx context.Context, session *flowdebug.Session, layout Layout) (F
 	list := session.Steps(first, last-first)
 
 	frame.Steps = list.Steps
+	frame.StepLabels = make([]string, len(list.Steps))
+	for i, qualifier := range qualifiers(list.Steps) {
+		label := list.Steps[i].ID
+		if qualifier != "" {
+			label = qualifier + "." + label
+		}
+		if redacted := list.RedactText(label); redacted != label {
+			frame.StepLabels[i] = redacted
+		}
+	}
 	frame.StepsBefore = list.Offset
 	frame.StepsAfter = list.Total - list.Offset - len(list.Steps)
 	frame.StepsTotal = list.Total
@@ -464,7 +478,11 @@ func stepRows(frame Frame, theme ui.Theme, symbols ui.SymbolSet) []string {
 		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d earlier", symbols.Ellipsis, frame.StepsBefore)))
 	}
 	for i, step := range frame.Steps {
-		rows = append(rows, stepRow(step, i == frame.Held, qualify[i], theme, symbols))
+		label := ""
+		if i < len(frame.StepLabels) {
+			label = frame.StepLabels[i]
+		}
+		rows = append(rows, stepRow(step, i == frame.Held, qualify[i], label, theme, symbols))
 	}
 	if frame.StepsAfter > 0 {
 		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d later", symbols.Ellipsis, frame.StepsAfter)))
@@ -577,10 +595,12 @@ func window(n, at, budget int) (first, last int) {
 // "the status is the word RUNNING, and the mark beside it only helps the eye
 // find the row". Removing every colour and every mark from this pane loses
 // emphasis and no information.
-func stepRow(step flowdebug.Step, held bool, qualifier string, theme ui.Theme, symbols ui.SymbolSet) string {
+func stepRow(step flowdebug.Step, held bool, qualifier, label string, theme ui.Theme, symbols ui.SymbolSet) string {
 	gutter := " "
 	name := step.ID
-	if qualifier != "" {
+	if label != "" {
+		name = label
+	} else if qualifier != "" {
 		// The qualifier first, muted, because the id is still the name: a
 		// reader scanning the column is looking for `build`, and the prefix is
 		// there to tell two of them apart rather than to be read.

@@ -638,7 +638,15 @@ type StepList struct {
 	// is [Session.sawStep]'s one cache, so a second notice would be a second
 	// thing to keep true.
 	Truncated bool
+
+	// redactText is the display posture captured with this window. A renderer
+	// uses it after composing labels whose individually safe pieces can form a
+	// sensitive value when joined.
+	redactText func(string) string
 }
+
+// RedactText applies the display posture captured with this step window.
+func (l StepList) RedactText(text string) string { return applyText(l.redactText, text) }
 
 // StepPosition reports where a step sits in the run's step list, and how long
 // that list is.
@@ -741,6 +749,7 @@ func (s *Session) Steps(offset, limit int) StepList {
 	s.mu.Unlock()
 
 	redactStepList(list.Steps, redact)
+	list.redactText = redact
 
 	return list
 }

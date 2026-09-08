@@ -468,20 +468,28 @@ func TestAHugeStepListTruncatesLegibly(t *testing.T) {
 }
 
 func TestStepPaneRedactsInventoryIdentitiesBeforeRendering(t *testing.T) {
-	const sensitive = "sensitive-pane-identity"
+	const sensitive = "outer.build"
 	layout := debugpane.Layout{Width: 100, Height: 20}
-	caps := paneCapabilities(100, 20, colorprofile.NoTTY, true)
+	callee := &v1.Workflow{Name: "inner", Steps: []*v1.Node{markStep("build")}}
 	frame := frameAtStep(t, layout,
-		[]flowdebug.Step{{ID: sensitive, Workflow: sensitive, Via: sensitive}},
-		&v1.Workflow{Name: sensitive, Steps: []*v1.Node{markStep(sensitive)}},
-		"continue\n",
+		[]flowdebug.Step{
+			{ID: "build", Workflow: "outer"},
+			{ID: "build", Workflow: "inner", Via: "nested", Declaration: 1},
+		},
+		&v1.Workflow{Name: "outer", Steps: []*v1.Node{
+			markStep("build"),
+			{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}},
+		}},
+		"quit\n",
 		func(text string) string { return strings.ReplaceAll(text, sensitive, "[redacted]") })
 
-	require.Len(t, frame.Steps, 1)
-	require.NotContains(t, frame.Steps[0].ID+frame.Steps[0].Workflow+frame.Steps[0].Via, sensitive)
-	rendered := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
-	require.NotContains(t, rendered, sensitive)
-	require.Contains(t, rendered, "[redacted]")
+	require.Len(t, frame.Steps, 2)
+	for _, profile := range []colorprofile.Profile{colorprofile.NoTTY, colorprofile.TrueColor} {
+		caps := paneCapabilities(100, 20, profile, true)
+		rendered := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
+		require.NotContains(t, rendered, sensitive)
+		require.Contains(t, rendered, "[redacted]")
+	}
 }
 
 // frameAtStep runs a workflow under a script and returns the frame at the last
