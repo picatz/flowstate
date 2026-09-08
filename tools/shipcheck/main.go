@@ -232,6 +232,14 @@ func checkProblems(checks []statusCheck) []string {
 	for _, key := range order {
 		group := groups[key]
 		name := strings.SplitN(key, "\x00", 3)[2]
+		for _, check := range group {
+			if check.Type == "CheckRun" && check.Status != "COMPLETED" {
+				problems = append(problems, fmt.Sprintf("check %q is %s/%s", name, check.Status, check.Conclusion))
+			}
+			if check.Type == "StatusContext" && check.State != "SUCCESS" && check.State != "FAILURE" && check.State != "ERROR" {
+				problems = append(problems, fmt.Sprintf("status %q is %s", name, check.State))
+			}
+		}
 		latest := latestStatusCheck(group)
 		switch latest.Type {
 		case "CheckRun":

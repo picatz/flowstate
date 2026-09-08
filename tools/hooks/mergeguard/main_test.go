@@ -351,6 +351,8 @@ func TestGHCLIMergeTarget(t *testing.T) {
 		{`gh pr merge 498 -R picatz/flowstate`, "picatz", "flowstate", 498},
 		{`gh pr merge --repo picatz/flowstate 498 --squash`, "picatz", "flowstate", 498},
 		{`gh pr merge --repo=picatz/flowstate 498`, "picatz", "flowstate", 498},
+		{`gh -R picatz/flowstate pr merge 498`, "picatz", "flowstate", 498},
+		{`gh --repo=picatz/flowstate pr merge 498`, "picatz", "flowstate", 498},
 		{`cd /repo && gh pr merge 498 -R picatz/flowstate`, "picatz", "flowstate", 498},
 		// A value-taking flag ahead of the positional target: without
 		// consuming its argument, "$sha" is mistaken for the target and the
@@ -442,6 +444,8 @@ func TestAutoMergeIsRejected(t *testing.T) {
 		"gh pr merge 498 -R picatz/flowstate --auto",
 		"gh pr merge 498 -R picatz/flowstate --auto=true",
 		"gh pr merge --auto https://github.com/picatz/flowstate/pull/498",
+		"gh -R picatz/flowstate pr merge 498 --auto",
+		"gh --repo=picatz/flowstate pr merge 498 --auto=true",
 	} {
 		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
 		if !autoMergeRequested(in) {

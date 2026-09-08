@@ -287,6 +287,15 @@ var ghMergeValueFlags = map[string]bool{
 	"-t":                  true,
 }
 
+// ghInheritedValueFlags are gh-wide flags that may precede the `pr merge`
+// subcommand. Preserve them in the returned arguments so repository selection
+// is still available to mergeTarget and auto-merge cannot hide before `pr`.
+var ghInheritedValueFlags = map[string]bool{
+	"--hostname": true,
+	"--repo":     true,
+	"-R":         true,
+}
+
 // isGHPRMergeInvocation reports whether cmd actually invokes `gh pr merge`,
 // as opposed to merely mentioning the words — a commit message or a grep
 // pattern quoting them must never trigger this guard, the same false-alarm
@@ -442,9 +451,27 @@ func ghPRMergeArgs(s string) ([]string, bool) {
 	flushCommand()
 
 	for _, command := range commands {
-		for i := 0; i+2 < len(command); i++ {
-			if command[i] == "gh" && command[i+1] == "pr" && command[i+2] == "merge" {
-				return command[i+3:], true
+		for i := 0; i < len(command); i++ {
+			if command[i] != "gh" {
+				continue
+			}
+			var inherited []string
+			j := i + 1
+			for j < len(command) {
+				arg := command[j]
+				switch {
+				case ghInheritedValueFlags[arg] && j+1 < len(command):
+					inherited = append(inherited, arg, command[j+1])
+					j += 2
+				case strings.HasPrefix(arg, "--repo=") || strings.HasPrefix(arg, "--hostname="):
+					inherited = append(inherited, arg)
+					j++
+				default:
+					if j+1 < len(command) && arg == "pr" && command[j+1] == "merge" {
+						return append(inherited, command[j+2:]...), true
+					}
+					j = len(command)
+				}
 			}
 		}
 	}
