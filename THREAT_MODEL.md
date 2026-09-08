@@ -77,12 +77,16 @@ egress, secret, and task-shape policies permit that tenant, and nothing else. Ca
 consume budget: a legal Flowfile may `sleep: 24h`, loop to its declared
 `max_iterations`, or fetch large bodies.
 
-**A co-tenant.** Cannot address another tenant's runs through the API: one `ownedBy`
-check covers every addressed verb and answers `NotFound` rather than
-`PermissionDenied`, so a probe learns nothing (`pkg/flowstate/v1/server/lifecycle.go:657`,
-`:85`, `:104`). Can read another tenant's history if both execute in the same
-Temporal namespace and they have substrate access, because the Flowstate API's
-tenancy governs the Flowstate API and nothing downstream of it.
+**A co-tenant.** Cannot address another tenant's runs through the API: one
+`authorizeRunDecision` gate covers every addressed verb, accepts only Flowstate's
+`Run` workflow type, and then applies `ownedBy`. Both membership and tenant
+mismatches answer `NotFound` rather than `PermissionDenied`, so a probe learns
+nothing. `List` applies the same workflow-type membership rule. Consequently, a
+legacy Flowstate run with no tenant memo remains reachable from the default tenant
+without making an unrelated workflow in a shared Temporal namespace reachable. A
+caller can still read another tenant's history if both execute in the same Temporal
+namespace and they have substrate access, because the Flowstate API's tenancy
+governs the Flowstate API and nothing downstream of it.
 
 **A network attacker on egress paths.** Sees and can answer requests a task makes.
 Bounded by categorical address denial, per-hop redirect re-checks with the https to
