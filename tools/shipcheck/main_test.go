@@ -24,7 +24,7 @@ func passingPullRequest() pullRequest {
 		},
 		Reviews: []review{
 			{Author: actor{Login: "copilot-pull-request-reviewer"}, Commit: &commit{OID: testHead}},
-			{Author: actor{Login: "chatgpt-codex-connector"}, Commit: &commit{OID: testHead}},
+			{Author: actor{Login: "chatgpt-codex-connector"}, Commit: &commit{OID: testHead}, Body: "### Codex Review"},
 		},
 		Comments: []comment{{
 			Author: actor{Login: "chatgpt-codex-connector"},
@@ -181,6 +181,15 @@ func TestSecuritySummaryRequiresCompletedExactHead(t *testing.T) {
 	}
 	if completedSecuritySummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead) {
 		t.Fatal("stale-head summary was recognized")
+	}
+}
+
+func TestCodexSecurityReviewDoesNotCountAsCodeReview(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Reviews[1].Body = "### Codex Security Review"
+	pr.Comments = nil
+	if hasCodexReview(pr, false) {
+		t.Fatal("security review was recognized as a code review")
 	}
 }
 

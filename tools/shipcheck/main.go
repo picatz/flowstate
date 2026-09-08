@@ -326,7 +326,9 @@ func hasExactHeadReview(reviews []review, head, login string) bool {
 
 func hasCodexReview(pr pullRequest, security bool) bool {
 	for _, review := range pr.Reviews {
-		if !security && review.Author.Login == "chatgpt-codex-connector" && review.Commit != nil && review.Commit.OID == pr.HeadRefOID {
+		if !security && review.Author.Login == "chatgpt-codex-connector" && review.Commit != nil &&
+			review.Commit.OID == pr.HeadRefOID && strings.Contains(review.Body, "Codex Review") &&
+			!strings.Contains(review.Body, "Codex Security Review") {
 			return true
 		}
 	}
