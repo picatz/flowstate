@@ -408,7 +408,7 @@ func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug
 
 		s.emit("output", map[string]string{
 			"category": "stderr",
-			"output":   "flowdap: " + err.Error() + "\n",
+			"output":   s.session.RedactText("flowdap: " + err.Error() + "\n"),
 		})
 
 		return

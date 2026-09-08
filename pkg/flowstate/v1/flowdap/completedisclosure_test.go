@@ -44,8 +44,10 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 			},
 		}
 		_ = session.BeforeStep(t.Context(), &v1.Node{
-			Id:   "first",
-			Kind: &v1.Node_Value{Value: v1.NewLiteral("hello")},
+			Id: sensitive,
+			Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+				Name: sensitive,
+			}}},
 		}, scope)
 	}()
 
@@ -56,14 +58,22 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	c.await("response", "launch")
 	c.send(3, "configurationDone", nil)
 	c.await("response", "configurationDone")
-	c.await("event", "stopped")
+	stopped := c.await("event", "stopped")
+	require.Contains(t, stopped["body"].(map[string]any)["description"], "[redacted]")
 
-	c.send(4, "evaluate", map[string]any{"expression": "inputs.token", "frameId": 1})
+	c.send(4, "stackTrace", map[string]any{"threadId": 1})
+	stack := c.await("response", "stackTrace")
+	require.Equal(t, true, stack["success"])
+	stackJSON, err := json.Marshal(stack)
+	require.NoError(t, err)
+	require.Contains(t, string(stackJSON), "[redacted]")
+
+	c.send(5, "evaluate", map[string]any{"expression": "inputs.token", "frameId": 1})
 	evaluated := c.await("response", "evaluate")
 	require.Equal(t, true, evaluated["success"])
 	require.Contains(t, evaluated["body"].(map[string]any)["result"], "[redacted]")
 
-	c.send(5, "scopes", map[string]any{"frameId": 1})
+	c.send(6, "scopes", map[string]any{"frameId": 1})
 	scopes := c.await("response", "scopes")
 	var inputsReference float64
 	for _, item := range scopes["body"].(map[string]any)["scopes"].([]any) {
@@ -74,7 +84,7 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	}
 	require.NotZero(t, inputsReference)
 
-	c.send(6, "variables", map[string]any{"variablesReference": inputsReference})
+	c.send(7, "variables", map[string]any{"variablesReference": inputsReference})
 	variables := c.await("response", "variables")
 	require.Equal(t, true, variables["success"])
 	rows := variables["body"].(map[string]any)["variables"].([]any)
@@ -84,7 +94,7 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.Contains(t, token["value"], "[redacted]")
 	require.NotContains(t, token["value"], sensitive)
 
-	encoded, err := json.Marshal([]any{evaluated, variables})
+	encoded, err := json.Marshal([]any{stopped, stack, evaluated, variables})
 	require.NoError(t, err)
 	require.Contains(t, string(encoded), "[redacted]")
 	require.NotContains(t, string(encoded), sensitive)

@@ -95,7 +95,7 @@ func (s *Session) Paused() (Position, bool) {
 
 	return Position{
 		Step:     subject.step,
-		Kind:     subject.kind,
+		Kind:     applyText(subject.redactText, subject.kind),
 		Workflow: subject.workflow,
 		Autopsy:  subject.autopsy,
 	}, true
@@ -116,7 +116,14 @@ func (s *Session) Backtrace() (*v1.DebugBacktrace, error) {
 		return &v1.DebugBacktrace{}, nil
 	}
 
-	return proto.Clone(subject.backtrace).(*v1.DebugBacktrace), nil
+	trace := proto.Clone(subject.backtrace).(*v1.DebugBacktrace)
+	for _, frame := range trace.GetFrames() {
+		frame.Workflow = applyText(subject.redactText, frame.GetWorkflow())
+		frame.StepId = applyText(subject.redactText, frame.GetStepId())
+		frame.Kind = applyText(subject.redactText, frame.GetKind())
+	}
+
+	return trace, nil
 }
 
 // Evaluate answers one CEL expression against the scope the run is paused in,

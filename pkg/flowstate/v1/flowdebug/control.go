@@ -341,7 +341,7 @@ func (s *Session) waitForPause(ctx context.Context, after uint64) (Position, err
 		if generation > after && subject.scope != nil {
 			return Position{
 				Step:    subject.step,
-				Kind:    subject.kind,
+				Kind:    applyText(subject.redactText, subject.kind),
 				Autopsy: subject.autopsy,
 			}, nil
 		}

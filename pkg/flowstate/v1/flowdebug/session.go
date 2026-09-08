@@ -1755,6 +1755,20 @@ func (s *Session) SetRedactor(redact func(string) string) {
 	s.redact = redact
 }
 
+// RedactText applies the text redactor snapshotted by the current pause, or the
+// session's current redactor while it is not paused. Fronts use it for display
+// text they derive from session identities rather than from [Session.Evaluate].
+func (s *Session) RedactText(text string) string {
+	s.mu.Lock()
+	redact := s.redact
+	if s.at.scope != nil {
+		redact = s.at.redactText
+	}
+	s.mu.Unlock()
+
+	return applyText(redact, text)
+}
+
 // redactText applies the installed redactor, if any.
 // SetValueRedactor installs what every structured value this session renders
 // passes through, or clears it with nil.
