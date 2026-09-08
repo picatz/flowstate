@@ -309,7 +309,7 @@ func autoMergeRequested(in *hook.Input) bool {
 		return false
 	}
 	for _, arg := range args {
-		if arg == "--auto" {
+		if arg == "--auto" || strings.HasPrefix(arg, "--auto=") {
 			return true
 		}
 	}

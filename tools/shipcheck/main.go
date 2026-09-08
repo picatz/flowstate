@@ -24,7 +24,30 @@ const (
 var (
 	ghCommandTimeout = 30 * time.Second
 	ghWaitDelay      = time.Second
+	ghOutputLimit    = 16 << 20
 )
+
+var errGHOutputLimit = errors.New("gh output exceeded the byte limit")
+
+type boundedBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := b.limit - b.Len()
+	if remaining < len(p) {
+		b.exceeded = true
+		if remaining <= 0 {
+			return n, nil
+		}
+		p = p[:remaining]
+	}
+	_, _ = b.Buffer.Write(p)
+	return n, nil
+}
 
 type pullRequest struct {
 	State            string          `json:"state"`
@@ -117,11 +140,18 @@ func runGH(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	// A credential helper or child process may inherit CombinedOutput's pipe
+	// A credential helper or child process may inherit an output pipe
 	// after gh is killed. WaitDelay closes that pipe rather than waiting on an
 	// uncooperative descendant forever.
 	cmd.WaitDelay = ghWaitDelay
-	return cmd.CombinedOutput()
+	output := &boundedBuffer{limit: ghOutputLimit}
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err := cmd.Run()
+	if output.exceeded {
+		return output.Bytes(), errGHOutputLimit
+	}
+	return output.Bytes(), err
 }
 
 func evaluate(pr pullRequest, unresolved int) []string {

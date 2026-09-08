@@ -149,3 +149,18 @@ func TestRunGHIsBounded(t *testing.T) {
 		t.Fatalf("runGH returned after %s, want a bounded timeout", elapsed)
 	}
 }
+
+func TestBoundedBufferCapsCollectedOutput(t *testing.T) {
+	buffer := &boundedBuffer{limit: 4}
+	input := []byte("abcdefgh")
+	n, err := buffer.Write(input)
+	if err != nil || n != len(input) {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if got := buffer.String(); got != "abcd" {
+		t.Fatalf("buffer = %q, want abcd", got)
+	}
+	if !buffer.exceeded {
+		t.Fatal("buffer did not record overflow")
+	}
+}

@@ -440,6 +440,7 @@ func TestAutoMergeIsRejected(t *testing.T) {
 	t.Parallel()
 	for _, command := range []string{
 		"gh pr merge 498 -R picatz/flowstate --auto",
+		"gh pr merge 498 -R picatz/flowstate --auto=true",
 		"gh pr merge --auto https://github.com/picatz/flowstate/pull/498",
 	} {
 		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
