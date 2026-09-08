@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -225,33 +226,45 @@ func TestTheSecretIsInTheScopeThisIsCompletingOver(t *testing.T) {
 }
 
 func TestBacktraceLabelsKeepThePauseRedactorWhileRendering(t *testing.T) {
-	const sensitive = `build (call "callee")`
+	const (
+		firstFrame = `inner.leaf (value)`
+		sensitive  = `outer.nested (call "inner")`
+	)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 
-	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled:  true,
+		Breakpoints: []string{"leaf"},
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 	session.SetRedactor(func(text string) string {
-		if text != sensitive {
-			return text
+		if text == firstFrame {
+			close(entered)
+			<-release
 		}
-		close(entered)
-		<-release
-
-		return "[redacted]"
+		return strings.ReplaceAll(text, sensitive, "[redacted]")
 	})
 
+	ctx := v1.NewContextWithDebugger(t.Context(), session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+	callee := &v1.Workflow{Name: "inner", Steps: []*v1.Node{{
+		Id:   "leaf",
+		Kind: &v1.Node_Value{Value: v1.NewLiteral("done")},
+	}}}
+	workflow := &v1.Workflow{Name: "outer", Steps: []*v1.Node{{
+		Id:   "nested",
+		Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}},
+	}}}
+	runDone := make(chan error, 1)
 	go func() {
-		_ = session.BeforeStep(t.Context(), &v1.Node{
-			Id: "build",
-			Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
-				Name: "callee",
-			}}},
-		}, v1.NewScope(v1.CurrentProfile, nil))
+		_, runErr := v1.Run(ctx, workflow)
+		runDone <- runErr
 	}()
-	_, err = session.WaitForPause(t.Context())
+	at, err := session.WaitForPause(t.Context())
 	require.NoError(t, err)
+	require.Equal(t, "leaf", at.Step, "the run did not stop inside the callee, so there are not two frames to test")
 
 	type result struct {
 		labels []string
@@ -263,11 +276,23 @@ func TestBacktraceLabelsKeepThePauseRedactorWhileRendering(t *testing.T) {
 		answer <- result{labels: labels, err: labelErr}
 	}()
 	<-entered
+	moveDone := make(chan error, 1)
+	go func() {
+		_, moveErr := session.Continue(t.Context())
+		moveDone <- moveErr
+	}()
+	require.Eventually(t, func() bool {
+		_, paused := session.Paused()
+		return !paused
+	}, 2*time.Second, time.Millisecond, "the originating pause never ended")
 	session.SetRedactor(nil)
 	close(release)
 
 	got := <-answer
 	require.NoError(t, got.err)
-	require.Equal(t, []string{"[redacted]"}, got.labels,
+	require.Equal(t, []string{firstFrame, "[redacted]"}, got.labels,
 		"rendering switched to the live redactor after capturing the pause")
+	require.NoError(t, <-runDone)
+	require.NoError(t, session.Close())
+	require.ErrorIs(t, <-moveDone, flowdebug.ErrRunOver)
 }

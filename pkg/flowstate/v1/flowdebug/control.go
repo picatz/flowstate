@@ -406,16 +406,18 @@ func (s *Session) WaitForPause(ctx context.Context) (Position, error) {
 // the whole set for a source each time one changes, so anything kept from the
 // last call is a breakpoint the person removed.
 func (s *Session) SetBreakpoints(ids []string) error {
+	redact := s.snapshotTextRedactor()
+
 	// Bounded before anything is replaced, so a refusal leaves the session with
 	// the set it had rather than half of a new one.
 	if len(ids) > MaxBreakpoints {
-		return fmt.Errorf("flowdebug: a session may hold %d breakpoints and %d were named",
-			MaxBreakpoints, len(ids))
+		return errors.New(applyText(redact, fmt.Sprintf("flowdebug: a session may hold %d breakpoints and %d were named",
+			MaxBreakpoints, len(ids))))
 	}
 
 	for _, id := range ids {
 		if err := oneArgument(id); err != nil {
-			return err
+			return errors.New(applyText(redact, err.Error()))
 		}
 	}
 
@@ -428,7 +430,7 @@ func (s *Session) SetBreakpoints(ids []string) error {
 	// and expects each to come back with its own verdict.
 	for _, id := range ids {
 		if notice, unknown := s.UnknownStep(id); unknown {
-			return fmt.Errorf("flowdebug: breakpoint: %s", notice)
+			return errors.New(applyText(redact, fmt.Sprintf("flowdebug: breakpoint: %s", notice)))
 		}
 	}
 

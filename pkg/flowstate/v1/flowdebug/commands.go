@@ -734,7 +734,10 @@ const maxStepIDLength = 128
 //
 // An empty inventory reports nothing unknown; see [Session.unknownStepNotice].
 func (s *Session) UnknownStep(id string) (string, bool) {
-	return s.unknownStepNotice(strings.TrimSpace(id))
+	redact := s.snapshotTextRedactor()
+	notice, unknown := s.unknownStepNotice(strings.TrimSpace(id))
+
+	return applyText(redact, notice), unknown
 }
 
 // unknownStepNotice reports that a step id names nothing this run can reach,
