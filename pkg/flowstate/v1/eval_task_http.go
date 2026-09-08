@@ -615,14 +615,7 @@ func httpResponseFailure(
 		retryWorthwhile = false
 	}
 
-	effect := AttemptOutcome_EFFECT_NONE
-	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		effect = AttemptOutcome_EFFECT_KNOWN
-	case resp.StatusCode >= 300 && resp.StatusCode < 400,
-		resp.StatusCode >= 500 && resp.StatusCode < 600:
-		effect = AttemptOutcome_EFFECT_UNKNOWN
-	}
+	effect := httpResponseEffect(resp)
 
 	repeatSafety := AttemptOutcome_REPEAT_SAFETY_SAFE
 	idempotent := idempotentMethods[strings.ToUpper(inputs.GetMethod())]
@@ -662,6 +655,23 @@ func httpResponseFailure(
 	}
 
 	return NewTaskOutcomeError("http", kind, outcome, cause)
+}
+
+func httpResponseEffect(resp *http.Response) AttemptOutcome_Effect {
+	effect := AttemptOutcome_EFFECT_NONE
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		effect = AttemptOutcome_EFFECT_KNOWN
+	case resp.StatusCode >= 300 && resp.StatusCode < 400,
+		resp.StatusCode >= 500 && resp.StatusCode < 600:
+		effect = AttemptOutcome_EFFECT_UNKNOWN
+	}
+	for request := resp.Request; request != nil && request.Response != nil; request = request.Response.Request {
+		if status := request.Response.StatusCode; status >= 300 && status < 400 {
+			return AttemptOutcome_EFFECT_UNKNOWN
+		}
+	}
+	return effect
 }
 
 // httpExpectSatisfied evaluates an `expect` expression over the response.
