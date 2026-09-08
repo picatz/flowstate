@@ -101,8 +101,9 @@ type review struct {
 }
 
 type comment struct {
-	Author actor  `json:"author"`
-	Body   string `json:"body"`
+	Author    actor  `json:"author"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"createdAt"`
 }
 
 func main() {
@@ -327,7 +328,7 @@ func hasCodexReview(pr pullRequest, security bool) bool {
 		if comment.Author.Login != "chatgpt-codex-connector" {
 			continue
 		}
-		if !security && completedCodeSummary(comment.Body, pr.HeadRefOID) {
+		if !security && completedCodeSummary(comment.Body, pr.HeadRefOID, pr.Comments) {
 			return true
 		}
 		if security && completedSecuritySummary(comment.Body, pr.HeadRefOID) {
@@ -344,14 +345,46 @@ func hasCodexReview(pr pullRequest, security bool) bool {
 	return false
 }
 
-func completedCodeSummary(body, head string) bool {
+func completedCodeSummary(body, head string, comments []comment) bool {
 	if len(head) < 7 || !strings.Contains(body, "codex-pull-request-review-summary") ||
 		!strings.Contains(body, `"headSha":"`+head+`"`) {
 		return false
 	}
 	for _, line := range strings.Split(body, "\n") {
-		if strings.Contains(line, "**Code Review**") && strings.Contains(line, "**Completed**") &&
-			strings.Contains(line, "`"+head[:7]+"`") {
+		completedAt, ok := codeReviewCompletion(line, head)
+		if ok && hasExactCodeReviewRequest(comments, head, completedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func codeReviewCompletion(line, head string) (time.Time, bool) {
+	if len(head) < 7 || !strings.Contains(line, "**Code Review**") ||
+		!strings.Contains(line, "**Completed**") || !strings.Contains(line, "`"+head[:7]+"`") {
+		return time.Time{}, false
+	}
+	const marker = `datetime="`
+	start := strings.Index(line, marker)
+	if start < 0 {
+		return time.Time{}, false
+	}
+	start += len(marker)
+	end := strings.IndexByte(line[start:], '"')
+	if end < 0 {
+		return time.Time{}, false
+	}
+	completedAt, err := time.Parse(time.RFC3339Nano, line[start:start+end])
+	return completedAt, err == nil
+}
+
+func hasExactCodeReviewRequest(comments []comment, head string, completedAt time.Time) bool {
+	for _, comment := range comments {
+		if !strings.Contains(comment.Body, "@codex review") || !mentionsCommit(comment.Body, head) {
+			continue
+		}
+		requestedAt, err := time.Parse(time.RFC3339Nano, comment.CreatedAt)
+		if err == nil && !requestedAt.After(completedAt) {
 			return true
 		}
 	}

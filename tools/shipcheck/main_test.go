@@ -187,15 +187,27 @@ func TestSecuritySummaryRequiresCompletedExactHead(t *testing.T) {
 func TestCodeSummaryRequiresFullHeadMarkerAndCompletedRow(t *testing.T) {
 	body := `<!-- codex-pull-request-review-summary -->
 <!-- codex-security-review:v1 {"headSha":"` + testHead + `","status":"completed"} -->
-| 📝 **Code Review** | ✅ **Completed** | ` + "`0123456`" + ` | Manual request |`
-	if !completedCodeSummary(body, testHead) {
-		t.Fatal("completed summary with a full head marker was not recognized")
+| 📝 **Code Review** | ✅ **Completed** <relative-time datetime="2026-09-08T10:01:00Z">now</relative-time> | ` + "`0123456`" + ` | Manual request |`
+	request := []comment{{
+		Body:      "@codex review\n\nReview exact head `" + testHead + "`.",
+		CreatedAt: "2026-09-08T10:00:00Z",
+	}}
+	if !completedCodeSummary(body, testHead, request) {
+		t.Fatal("completed summary following an exact-head request was not recognized")
 	}
-	if completedCodeSummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead) {
+	if completedCodeSummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead, request) {
 		t.Fatal("summary for a different full head was recognized")
 	}
-	if completedCodeSummary(strings.Replace(body, "**Completed**", "**Running**", 1), testHead) {
+	if completedCodeSummary(strings.Replace(body, "**Completed**", "**Running**", 1), testHead, request) {
 		t.Fatal("running code review was recognized")
+	}
+	if completedCodeSummary(body, testHead, nil) {
+		t.Fatal("abbreviated row without a full-head code-review request was recognized")
+	}
+	lateRequest := append([]comment(nil), request...)
+	lateRequest[0].CreatedAt = "2026-09-08T10:02:00Z"
+	if completedCodeSummary(body, testHead, lateRequest) {
+		t.Fatal("completion predating the exact-head request was recognized")
 	}
 }
 
