@@ -36,6 +36,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 	running := &workflowservice.DescribeWorkflowExecutionResponse{
 		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
 			Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
+			Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 		},
 	}
@@ -109,6 +110,28 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		require.Equal(t, "acme", record.GetIdentity().GetNamespace())
 	})
 
+	t.Run("an execution of another workflow type", func(t *testing.T) {
+		t.Parallel()
+
+		foreign := &workflowservice.DescribeWorkflowExecutionResponse{
+			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+				Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
+				Type:      &commonpb.WorkflowType{Name: "AnotherApplication"},
+				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			},
+		}
+		sink := &recordingEmitter{}
+		s := mustNew(t, &fakeRunClient{describe: foreign}, WithAudit(recorderFor(t, sink)))
+
+		_, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+		require.Error(t, err)
+		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+		record := sink.only(t)
+		require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
+		require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, record.GetDenyCode())
+	})
+
 	t.Run("a verb that reaches no resource", func(t *testing.T) {
 		t.Parallel()
 
@@ -145,6 +168,7 @@ func TestSignalWalkingAChainRecordsOneDecision(t *testing.T) {
 			"": {
 				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
 					Execution:  &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-current"},
+					Type:       &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 					FirstRunId: "r-first",
 					Status:     enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 				},
@@ -181,6 +205,7 @@ func TestARequiredRecordThatCannotBeWrittenStopsTheMutation(t *testing.T) {
 		describe: &workflowservice.DescribeWorkflowExecutionResponse{
 			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
 				Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
+				Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 			},
 		},
@@ -226,6 +251,7 @@ func TestASignalPolicyDenialIsAuditedAsADenial(t *testing.T) {
 		describe: &workflowservice.DescribeWorkflowExecutionResponse{
 			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
 				Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
+				Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 				Memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{
 					signalProtocolMemoKey: protocol,

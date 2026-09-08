@@ -105,6 +105,15 @@ func (s *FlowstateServer) authorizeRunDecision(ctx context.Context, workflowID, 
 		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, notFound(workflowID)
 	}
 
+	// A Temporal namespace may be shared with applications other than
+	// Flowstate. Listing asks Temporal for only this engine's workflow type;
+	// direct addressing must answer the same membership question before the
+	// legacy no-memo rule below can treat an execution as belonging to the
+	// default tenant.
+	if resp.GetWorkflowExecutionInfo().GetType().GetName() != flowstateRunWorkflowType {
+		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, notFound(workflowID)
+	}
+
 	if !s.ownedBy(caller, resp.GetWorkflowExecutionInfo().GetMemo()) {
 		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, notFound(workflowID)
 	}
