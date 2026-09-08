@@ -299,6 +299,29 @@ func CheckDeclarationTypes(wf *Workflow) error {
 	})
 }
 
+// DeclaresSensitiveValues reports whether wf or any workflow embedded in it by
+// a call declares a sensitive input or output. Whole-run display decisions must
+// include callees because their steps execute under the same run and debugger.
+func DeclaresSensitiveValues(wf *Workflow) (bool, error) {
+	var declared bool
+	err := walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+		for _, input := range current.GetDeclaredInputs() {
+			if input.GetSensitive() {
+				declared = true
+			}
+		}
+		for _, output := range current.GetDeclaredOutputs() {
+			if output.GetSensitive() {
+				declared = true
+			}
+		}
+
+		return nil
+	})
+
+	return declared, err
+}
+
 // checkTypeDepth iteratively verifies that t does not nest deeper than
 // maxDepth levels through its list and map recursive arms, and that no
 // pointer cycle exists in the Go object graph.

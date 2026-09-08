@@ -58,6 +58,35 @@ outputs: {}
 	require.NotContains(t, stderr, dapSensitiveValue)
 }
 
+func TestFlowDAPRefusesSensitiveEmbeddedWorkflowWithoutReveal(t *testing.T) {
+	dir := t.TempDir()
+	callee := filepath.Join(dir, "callee.yaml")
+	require.NoError(t, os.WriteFile(callee, []byte(`edition: v2026.3
+name: sensitive-callee
+inputs:
+  token:
+    type: string
+    sensitive: true
+    default: `+dapSensitiveValue+`
+steps:
+  - id: inside
+    value: ${inputs.token}
+outputs: {}
+`), 0o600))
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: ordinary-caller
+steps:
+  - id: called
+    call: ./callee.yaml
+outputs: {}
+`), 0o600))
+
+	stdout, stderr := flowDAPRefusal(t, workflow)
+	require.NotContains(t, stdout, dapSensitiveValue)
+	require.NotContains(t, stderr, dapSensitiveValue)
+}
+
 func TestFlowDAPWithholdsDiagnosticsForAnInvalidWorkflow(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
