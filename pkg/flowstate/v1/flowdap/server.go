@@ -671,7 +671,7 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 		// after construction and re-reporting breakpoints already answered, which
 		// is the editor-front work #1297 owns (Copilot, #1627).
 		if notice, unknown := s.session.UnknownStep(name); unknown {
-			answers = append(answers, breakpoint{Message: notice})
+			answers = append(answers, breakpoint{Message: s.session.RedactText(notice)})
 
 			continue
 		}
@@ -684,7 +684,7 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 		// The set was refused whole, so no entry may claim to be verified: the
 		// alternative is a person watching for stops at breakpoints the session
 		// never took.
-		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), err.Error())}
+		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), s.session.RedactText(err.Error()))}
 	}
 
 	return breakpointsBody{Breakpoints: answers}
