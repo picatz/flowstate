@@ -46,11 +46,8 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 			firstRunID := run.GetRunID()
 
 			var out v1.Workflow_StepOutputs
-			// The whole chain includes many independently bounded workflow tasks.
-			// Scale its wall-clock allowance with the same race factor as each
-			// task: 200 seconds normally and 10 minutes under instrumentation.
 			requireRunCompletesWithin(t, temporal, run, &out,
-				40*conformance.BoundaryDeadlockDetectionTimeout)
+				conformance.BoundaryWorkflowChainTimeout)
 			if test.ExpectedOutputsPredicate != nil {
 				require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
 			} else {

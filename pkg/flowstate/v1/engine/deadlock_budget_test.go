@@ -48,6 +48,11 @@ func TestABoundaryEnvironmentRaisesTheDeadlockBudget(t *testing.T) {
 	require.Greater(t, conformance.BoundaryWorkflowTaskTimeout,
 		conformance.BoundaryDeadlockDetectionTimeout,
 		"the server deadline must leave the live worker's deadlock detector first say")
+	require.Equal(t, 2*conformance.BoundaryDeadlockDetectionTimeout,
+		conformance.BoundaryWorkflowTaskTimeout,
+		"the server deadline must scale once with the worker's race allowance")
+	require.Equal(t, 5*time.Minute, conformance.BoundaryWorkflowChainTimeout,
+		"race instrumentation must not weaken the whole-chain bound")
 
 	suite := &testsuite.WorkflowTestSuite{}
 	env := atABound(suite.NewTestWorkflowEnvironment())

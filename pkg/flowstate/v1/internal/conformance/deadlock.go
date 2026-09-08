@@ -24,9 +24,11 @@ import (
 const BoundaryDeadlockDetectionTimeout time.Duration = v1.WorkerDeadlockDetectionTimeout * raceDetectorSlowdown
 
 // BoundaryWorkflowTaskTimeout is the Temporal server deadline for the same
-// at-a-bound tests. Without race instrumentation it remains the SDK's ten-second
-// default. Under instrumentation it leaves a second slowdown factor between the
-// separately scheduled worker and server clocks, so the worker's detector—not
-// CPU contention—still decides whether a workflow goroutine failed to yield.
-const BoundaryWorkflowTaskTimeout time.Duration = 2 * v1.WorkerDeadlockDetectionTimeout *
-	raceDetectorSlowdown * raceDetectorSlowdown
+// at-a-bound tests. It leaves the live worker's race-scaled detector first say
+// while preserving the SDK's ten-second default without instrumentation.
+const BoundaryWorkflowTaskTimeout time.Duration = 2 * BoundaryDeadlockDetectionTimeout
+
+// BoundaryWorkflowChainTimeout bounds the complete continuation chain rather
+// than one workflow task. It is deliberately fixed across build modes so race
+// instrumentation cannot silently weaken the five-minute rehearsal contract.
+const BoundaryWorkflowChainTimeout = 5 * time.Minute
