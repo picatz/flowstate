@@ -743,18 +743,27 @@ type StepNotice struct {
 	Unknown bool
 }
 
-// UnknownSteps is [Session.UnknownStep] for a set that must be rendered as one
-// answer. Its redactor is captured once so a pause ending between entries cannot
-// make the later notices disclose text the first notice withheld.
-func (s *Session) UnknownSteps(ids []string) []StepNotice {
+// SetBreakpointsWithNotices validates a front end's whole requested set under
+// one redaction snapshot, omitting unknown and empty ids from the installed set
+// while returning one notice slot per request.
+func (s *Session) SetBreakpointsWithNotices(ids []string) ([]StepNotice, error) {
 	redact := s.snapshotTextRedactor()
 	notices := make([]StepNotice, 0, len(ids))
+	known := make([]string, 0, len(ids))
 	for _, id := range ids {
-		message, unknown := s.unknownStep(strings.TrimSpace(id), redact)
+		id = strings.TrimSpace(id)
+		if id == "" {
+			notices = append(notices, StepNotice{})
+			continue
+		}
+		message, unknown := s.unknownStep(id, redact)
 		notices = append(notices, StepNotice{Message: message, Unknown: unknown})
+		if !unknown {
+			known = append(known, id)
+		}
 	}
 
-	return notices
+	return notices, s.setBreakpoints(known, redact, false)
 }
 
 func (s *Session) unknownStep(id string, redact func(string) string) (string, bool) {

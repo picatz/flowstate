@@ -402,8 +402,10 @@ func (s *Session) WaitForPause(ctx context.Context) (Position, error) {
 // the whole set for a source each time one changes, so anything kept from the
 // last call is a breakpoint the person removed.
 func (s *Session) SetBreakpoints(ids []string) error {
-	redact := s.snapshotTextRedactor()
+	return s.setBreakpoints(ids, s.snapshotTextRedactor(), true)
+}
 
+func (s *Session) setBreakpoints(ids []string, redact func(string) string, checkUnknown bool) error {
 	// Bounded before anything is replaced, so a refusal leaves the session with
 	// the set it had rather than half of a new one.
 	if len(ids) > MaxBreakpoints {
@@ -420,12 +422,15 @@ func (s *Session) SetBreakpoints(ids []string) error {
 	// Also before anything is replaced, and for the same reason the count is: an
 	// id naming no declared step is never armed, so nothing here is ever reported
 	// as installed and then silently skipped at run time (#1367). A caller that
-	// wants to answer per breakpoint rather than lose the whole set asks
-	// [Session.UnknownStep] first and sends only what it holds — which is what
-	// the DAP adapter does, because a client sets breakpoints one edit at a time
-	// and expects each to come back with its own verdict.
-	for _, id := range ids {
-		if notice, unknown := s.UnknownStep(id); unknown {
+	// wants to answer per breakpoint rather than lose the whole set uses
+	// [Session.SetBreakpointsWithNotices], which keeps those answers and final
+	// validation under one display posture.
+	if checkUnknown {
+		for _, id := range ids {
+			notice, unknown := s.unknownStepNotice(id)
+			if !unknown {
+				continue
+			}
 			return errors.New(applyText(redact, fmt.Sprintf("flowdebug: breakpoint: %s", notice)))
 		}
 	}

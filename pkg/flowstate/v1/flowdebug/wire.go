@@ -187,7 +187,7 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 // binding — so this message cannot come to list fewer names than the scope
 // holds.
 func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, error) {
-	return s.scopeProto(ctx, "", limit, MaxScopeBindings)
+	return s.scopeProto(ctx, "", limit, MaxScopeBindings, nil)
 }
 
 // ScopeGroupProto is [Session.ScopeProto] narrowed to one named group. Both the
@@ -198,10 +198,21 @@ func (s *Session) ScopeGroupProto(ctx context.Context, group string, limit int) 
 	if limit >= 0 {
 		carryLimit = min(limit, MaxScopeBindings)
 	}
-	return s.scopeProto(ctx, group, limit, carryLimit)
+	return s.scopeProto(ctx, group, limit, carryLimit, nil)
 }
 
-func (s *Session) scopeProto(ctx context.Context, onlyGroup string, limit, carryLimit int) (*v1.DebugScope, error) {
+// ScopeGroupProtoAt is [Session.ScopeGroupProto] only while generation still
+// identifies the current pause. A front end can therefore reject a stale scope
+// address instead of answering it from a later pause.
+func (s *Session) ScopeGroupProtoAt(ctx context.Context, group string, limit int, generation uint64) (*v1.DebugScope, error) {
+	carryLimit := MaxScopeBindings
+	if limit >= 0 {
+		carryLimit = min(limit, MaxScopeBindings)
+	}
+	return s.scopeProto(ctx, group, limit, carryLimit, &generation)
+}
+
+func (s *Session) scopeProto(ctx context.Context, onlyGroup string, limit, carryLimit int, generation *uint64) (*v1.DebugScope, error) {
 	// One pause for the whole message, taken once here rather than once per
 	// call inside [Session.Scope] and again inside each [Session.Evaluate].
 	//
@@ -215,9 +226,13 @@ func (s *Session) scopeProto(ctx context.Context, onlyGroup string, limit, carry
 	// pause can outlive it.
 	s.mu.Lock()
 	subject := s.at
+	currentGeneration := s.pauseGen
 	s.mu.Unlock()
 
 	if subject.scope == nil {
+		return nil, ErrNotPaused
+	}
+	if generation != nil && currentGeneration != *generation {
 		return nil, ErrNotPaused
 	}
 

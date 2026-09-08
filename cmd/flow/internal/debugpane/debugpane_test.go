@@ -467,9 +467,26 @@ func TestAHugeStepListTruncatesLegibly(t *testing.T) {
 	assert.Contains(t, text, held, "the paused step was not in the window drawn around it")
 }
 
+func TestStepPaneRedactsInventoryIdentitiesBeforeRendering(t *testing.T) {
+	const sensitive = "sensitive-pane-identity"
+	layout := debugpane.Layout{Width: 100, Height: 20}
+	caps := paneCapabilities(100, 20, colorprofile.NoTTY, true)
+	frame := frameAtStep(t, layout,
+		[]flowdebug.Step{{ID: sensitive, Workflow: sensitive, Via: sensitive}},
+		&v1.Workflow{Name: sensitive, Steps: []*v1.Node{markStep(sensitive)}},
+		"continue\n",
+		func(text string) string { return strings.ReplaceAll(text, sensitive, "[redacted]") })
+
+	require.Len(t, frame.Steps, 1)
+	require.NotContains(t, frame.Steps[0].ID+frame.Steps[0].Workflow+frame.Steps[0].Via, sensitive)
+	rendered := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
+	require.NotContains(t, rendered, sensitive)
+	require.Contains(t, rendered, "[redacted]")
+}
+
 // frameAtStep runs a workflow under a script and returns the frame at the last
 // stop it reached.
-func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.Step, workflow *v1.Workflow, script string) debugpane.Frame {
+func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.Step, workflow *v1.Workflow, script string, redactors ...func(string) string) debugpane.Frame {
 	t.Helper()
 
 	var (
@@ -494,6 +511,9 @@ func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.St
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
+	if len(redactors) > 0 {
+		session.SetRedactor(redactors[0])
+	}
 
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
 	ctx = v1.NewContextWithDebugger(ctx, session)

@@ -53,12 +53,13 @@ type Server struct {
 	// as though it meant something.
 	reference int
 
-	// scopes maps a variablesReference back to the group it was minted for.
+	// scopes maps a variablesReference back to the group and pause it was
+	// minted for.
 	// Rebuilt at every stop: a reference is only meaningful for the pause it
 	// was handed out during, and answering a stale one with the current scope
 	// would report the run's position as the answer to a question about a
 	// different one.
-	scopes map[int]string
+	scopes map[int]scopeReference
 
 	// stream is where responses and events go.
 	stream Stream
@@ -96,12 +97,17 @@ type Server struct {
 	exit int
 }
 
+type scopeReference struct {
+	group      string
+	generation uint64
+}
+
 // NewServer returns a server that drives session over stream.
 func NewServer(session *flowdebug.Session, stream Stream) *Server {
 	return &Server{
 		session:  session,
 		stream:   stream,
-		scopes:   map[int]string{},
+		scopes:   map[int]scopeReference{},
 		launched: make(chan struct{}),
 		entered:  make(chan struct{}),
 	}
@@ -491,7 +497,7 @@ func (s *Server) scopeList(arguments json.RawMessage) scopesBody {
 		return scopesBody{Scopes: []scope{}}
 	}
 
-	groups, err := s.session.Scope()
+	groups, generation, err := s.session.ScopeAtPause()
 	if err != nil {
 		return scopesBody{Scopes: []scope{}}
 	}
@@ -505,7 +511,7 @@ func (s *Server) scopeList(arguments json.RawMessage) scopesBody {
 		// handed out with reference zero is one a client will not ask about.
 		s.reference++
 		reference := s.reference
-		s.scopes[reference] = group.Group
+		s.scopes[reference] = scopeReference{group: group.Group, generation: generation}
 		scopes = append(scopes, scope{
 			Name:               group.Group,
 			VariablesReference: reference,
@@ -524,14 +530,14 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 	_ = json.Unmarshal(arguments, &asked)
 
 	s.mu.Lock()
-	group, known := s.scopes[asked.VariablesReference]
+	reference, known := s.scopes[asked.VariablesReference]
 	s.mu.Unlock()
 
 	if !known {
 		return variablesBody{Variables: []variable{}}
 	}
 
-	wireScope, err := s.session.ScopeGroupProto(ctx, group, MaxScopeVariables)
+	wireScope, err := s.session.ScopeGroupProtoAt(ctx, reference.group, MaxScopeVariables, reference.generation)
 	if err != nil {
 		return variablesBody{Variables: []variable{}}
 	}
@@ -613,9 +619,8 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 	for _, want := range asked.Breakpoints {
 		requested = append(requested, strings.TrimSpace(want.Name))
 	}
-	notices := s.session.UnknownSteps(requested)
+	notices, setErr := s.session.SetBreakpointsWithNotices(requested)
 
-	names := make([]string, 0, len(requested))
 	answers := make([]breakpoint, 0, len(asked.Breakpoints))
 	for i, name := range requested {
 		if name == "" {
@@ -647,15 +652,14 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 			continue
 		}
 
-		names = append(names, name)
 		answers = append(answers, breakpoint{Verified: true})
 	}
 
-	if err := s.session.SetBreakpoints(names); err != nil {
+	if setErr != nil {
 		// The set was refused whole, so no entry may claim to be verified: the
 		// alternative is a person watching for stops at breakpoints the session
 		// never took.
-		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), err.Error())}
+		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), setErr.Error())}
 	}
 
 	return breakpointsBody{Breakpoints: answers}

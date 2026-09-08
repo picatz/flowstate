@@ -61,6 +61,50 @@ func TestFunctionBreakpointResponseKeepsOneRedactionSnapshot(t *testing.T) {
 		"one response switched redaction posture between breakpoint entries")
 }
 
+func TestFunctionBreakpointRefusalKeepsTheRequestRedactor(t *testing.T) {
+	const sensitive = "sensitive-breakpoint"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	session, err := flowdebug.New(flowdebug.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	first := true
+	session.SetRedactor(func(text string) string {
+		if first {
+			first = false
+			close(entered)
+			<-release
+		}
+		return strings.ReplaceAll(text, sensitive, "[redacted]")
+	})
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "setFunctionBreakpoints", map[string]any{
+		"breakpoints": []map[string]any{{"name": "valid"}, {"name": sensitive + " bad"}},
+	})
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("breakpoint validation never reached the request redactor")
+	}
+	session.SetRedactor(nil)
+	close(release)
+
+	response := c.await("response", "setFunctionBreakpoints")
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), sensitive)
+	require.Equal(t, 2, strings.Count(string(encoded), "[redacted]"),
+		"whole-set validation switched redactors after per-entry checks")
+}
+
 func TestVariablesResponseKeepsOnePauseSnapshot(t *testing.T) {
 	const sensitive = "sensitive-value-between-pauses"
 	entered := make(chan struct{})
@@ -150,6 +194,13 @@ func TestVariablesResponseKeepsOnePauseSnapshot(t *testing.T) {
 	require.NotContains(t, string(encoded), sensitive)
 	require.Equal(t, 2, strings.Count(string(encoded), "[redacted]"),
 		"one variables response mixed values from two pause redaction postures")
+	// The copied reference remains in the adapter because this test moved the
+	// session directly, bypassing the adapter's ordinary new-stop cleanup. Its
+	// generation must still keep a later request from reading the second pause.
+	c.send(6, "variables", map[string]any{"variablesReference": inputsReference})
+	stale := c.await("response", "variables")
+	require.Empty(t, stale["body"].(map[string]any)["variables"],
+		"a reference minted for the first pause read values from the second")
 	finishMove := make(chan error, 1)
 	go func() {
 		_, moveErr := session.Continue(t.Context())

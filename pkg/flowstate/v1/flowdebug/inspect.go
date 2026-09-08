@@ -450,15 +450,23 @@ type Names struct {
 // not an expression for the value it replaced. This is the same fail-closed
 // choice completion makes for names it cannot safely offer.
 func (s *Session) Scope() ([]Names, error) {
+	groups, _, err := s.ScopeAtPause()
+	return groups, err
+}
+
+// ScopeAtPause is [Session.Scope] with the generation that identifies the
+// captured pause, for a front end that hands out addresses to query later.
+func (s *Session) ScopeAtPause() ([]Names, uint64, error) {
 	s.mu.Lock()
 	subject := s.at
+	generation := s.pauseGen
 	s.mu.Unlock()
 
 	if subject.scope == nil {
-		return nil, ErrNotPaused
+		return nil, 0, ErrNotPaused
 	}
 
-	return s.visibleScopeNames(subject), nil
+	return s.visibleScopeNames(subject), generation, nil
 }
 
 // visibleScopeNames applies the pause's identifier-withholding posture to the
@@ -719,13 +727,30 @@ func positionIn(order []Step, workflow, id string) int {
 // The one exception is the step the run is *held* at, which the position names
 // exactly when it carries a workflow — that row reads [StepRunning], because
 // there the session does know.
+//
+// Display identities use the redactor captured by the current pause, or the
+// session's current redactor between pauses. Position resolution remains over
+// the untouched inventory inside the session.
 func (s *Session) Steps(offset, limit int) StepList {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	list, _ := s.stepWindow(offset, limit)
+	redact := s.redact
+	if s.at.scope != nil {
+		redact = s.at.redactText
+	}
+	s.mu.Unlock()
+
+	redactStepList(list.Steps, redact)
 
 	return list
+}
+
+func redactStepList(steps []Step, redact func(string) string) {
+	for i := range steps {
+		steps[i].ID = applyText(redact, steps[i].ID)
+		steps[i].Workflow = applyText(redact, steps[i].Workflow)
+		steps[i].Via = applyText(redact, steps[i].Via)
+	}
 }
 
 // stepWindow is [Session.Steps]' whole answer, plus where the held row sits in
