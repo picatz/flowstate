@@ -1729,5 +1729,6 @@
       "claimsDigest": "sha256:568efc111a8e63f042c2d507e5c7e2b99b8ba6ac930a7a9dccda34c1f2ce8f09"
     }
   ],
-  "claimsSchemaVersion": 2
+  "claimsSchemaVersion": 2,
+  "capabilityBindings": []
 }
