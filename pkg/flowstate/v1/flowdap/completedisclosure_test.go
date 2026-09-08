@@ -13,7 +13,7 @@ import (
 )
 
 func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
-	const sensitive = "s3cr3t-value-nothing-may-print"
+	const sensitive = "s3cr3t_value_nothing_may_print"
 
 	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
 	require.NoError(t, err)
@@ -38,7 +38,10 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 		scope := &v1.Scope{
 			Profile: v1.CurrentProfile,
 			Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{}},
-			Inputs:  map[string]*v1.Value{"token": v1.NewLiteral(sensitive)},
+			Inputs: map[string]*v1.Value{
+				"token":   v1.NewLiteral(sensitive),
+				sensitive: v1.NewLiteral(sensitive),
+			},
 		}
 		_ = session.BeforeStep(t.Context(), &v1.Node{
 			Id:   "first",

@@ -380,7 +380,11 @@ type Names struct {
 	listing string
 }
 
-// Scope lists what the paused run can name.
+// Scope lists what the paused run can name without returning an identifier the
+// pause's text redactor would withhold. Such a name is dropped rather than
+// rewritten: callers use names to build expressions, and a redaction marker is
+// not an expression for the value it replaced. This is the same fail-closed
+// choice completion makes for names it cannot safely offer.
 func (s *Session) Scope() ([]Names, error) {
 	s.mu.Lock()
 	subject := s.at
@@ -390,7 +394,27 @@ func (s *Session) Scope() ([]Names, error) {
 		return nil, ErrNotPaused
 	}
 
-	return s.scopeNames(subject.scope, subject.extra), nil
+	groups := s.scopeNames(subject.scope, subject.extra)
+	if subject.redactText == nil {
+		return groups, nil
+	}
+
+	visible := groups[:0]
+	for _, group := range groups {
+		names := group.Names[:0]
+		for _, name := range group.Names {
+			if subject.redactText(name) == name {
+				names = append(names, name)
+			}
+		}
+		if len(names) == 0 {
+			continue
+		}
+		group.Names = names
+		visible = append(visible, group)
+	}
+
+	return visible, nil
 }
 
 // StepState is what a session last watched one step do.

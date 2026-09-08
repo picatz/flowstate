@@ -172,7 +172,7 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 			} else {
 				server.Output("flowdap: workflow diagnostics withheld because the invalid file has no " +
 					"trusted sensitive-value declarations; run `flow validate` outside the adapter, or " +
-					"explicitly authorize disclosure with --reveal-sensitive or revealSensitive: true\n")
+					"explicitly authorize disclosure with --reveal-sensitive or \"revealSensitive\": true\n")
 			}
 
 			return
@@ -181,7 +181,7 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 			exit = 1
 			server.Output(fmt.Sprintf("flowdap: %q declares sensitive inputs or outputs whose "+
 				"values the debugger would expose; add --reveal-sensitive to the adapter command "+
-				"or revealSensitive: true to the launch configuration to debug it with values shown\n",
+				"or \"revealSensitive\": true to the launch configuration to debug it with values shown\n",
 				workflow.GetName()))
 
 			return
