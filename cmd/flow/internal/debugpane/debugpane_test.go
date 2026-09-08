@@ -471,24 +471,28 @@ func TestStepPaneRedactsInventoryIdentitiesBeforeRendering(t *testing.T) {
 	const sensitive = "outer.build"
 	layout := debugpane.Layout{Width: 100, Height: 20}
 	callee := &v1.Workflow{Name: "inner", Steps: []*v1.Node{markStep("build")}}
-	frame := frameAtStep(t, layout,
-		[]flowdebug.Step{
-			{ID: "build", Workflow: "outer"},
-			{ID: "build", Workflow: "inner", Via: "nested", Declaration: 1},
-		},
-		&v1.Workflow{Name: "outer", Steps: []*v1.Node{
-			markStep("build"),
-			{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}},
-		}},
-		"quit\n",
-		func(text string) string { return strings.ReplaceAll(text, sensitive, "[redacted]") })
+	for _, replacement := range []string{"[redacted]", ""} {
+		frame := frameAtStep(t, layout,
+			[]flowdebug.Step{
+				{ID: "build", Workflow: "outer"},
+				{ID: "build", Workflow: "inner", Via: "nested", Declaration: 1},
+			},
+			&v1.Workflow{Name: "outer", Steps: []*v1.Node{
+				markStep("build"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}},
+			}},
+			"quit\n",
+			func(text string) string { return strings.ReplaceAll(text, sensitive, replacement) })
 
-	require.Len(t, frame.Steps, 2)
-	for _, profile := range []colorprofile.Profile{colorprofile.NoTTY, colorprofile.TrueColor} {
-		caps := paneCapabilities(100, 20, profile, true)
-		rendered := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
-		require.NotContains(t, rendered, sensitive)
-		require.Contains(t, rendered, "[redacted]")
+		require.Len(t, frame.Steps, 2)
+		for _, profile := range []colorprofile.Profile{colorprofile.NoTTY, colorprofile.TrueColor} {
+			caps := paneCapabilities(100, 20, profile, true)
+			rendered := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
+			require.NotContains(t, rendered, sensitive)
+			if replacement != "" {
+				require.Contains(t, rendered, replacement)
+			}
+		}
 	}
 }
 
