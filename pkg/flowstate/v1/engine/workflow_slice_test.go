@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -47,7 +46,11 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 			firstRunID := run.GetRunID()
 
 			var out v1.Workflow_StepOutputs
-			requireRunCompletesWithin(t, temporal, run, &out, 5*time.Minute)
+			// The whole chain includes many independently bounded workflow tasks.
+			// Scale its wall-clock allowance with the same race factor as each
+			// task: 200 seconds normally and 10 minutes under instrumentation.
+			requireRunCompletesWithin(t, temporal, run, &out,
+				40*conformance.BoundaryDeadlockDetectionTimeout)
 			if test.ExpectedOutputsPredicate != nil {
 				require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
 			} else {
