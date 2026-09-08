@@ -668,8 +668,8 @@ func httpResponseFailure(
 //
 // A failed expectation records an unsatisfied contract without replacing the
 // response status classification or repeat-safety evidence. Thus a 200 that does
-// not satisfy the contract is permanent, while a 5xx remains transient when the
-// request is repeat-safe.
+// not satisfy the contract is permanent, while a redirect or 5xx remains
+// transient when the request is repeat-safe.
 func httpExpectSatisfied(
 	ctx context.Context,
 	inputs *Task_HTTP_Inputs,
