@@ -41,6 +41,7 @@ type statusCheck struct {
 	Type       string `json:"__typename"`
 	Name       string `json:"name"`
 	Context    string `json:"context"`
+	Workflow   string `json:"workflowName"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	State      string `json:"state"`
@@ -143,24 +144,7 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	if len(pr.StatusChecks) == 0 {
 		problems = append(problems, "no check runs or status contexts were reported")
 	}
-	for _, check := range pr.StatusChecks {
-		name := check.Name
-		if name == "" {
-			name = check.Context
-		}
-		switch check.Type {
-		case "CheckRun":
-			if check.Status != "COMPLETED" || !acceptableConclusion(check.Conclusion) {
-				problems = append(problems, fmt.Sprintf("check %q is %s/%s", name, check.Status, check.Conclusion))
-			}
-		case "StatusContext":
-			if check.State != "SUCCESS" {
-				problems = append(problems, fmt.Sprintf("status %q is %s", name, check.State))
-			}
-		default:
-			problems = append(problems, fmt.Sprintf("check %q has unsupported type %q", name, check.Type))
-		}
-	}
+	problems = append(problems, checkProblems(pr.StatusChecks)...)
 
 	if !hasExactHeadReview(pr.Reviews, pr.HeadRefOID, "copilot-pull-request-reviewer") {
 		problems = append(problems, "Copilot has not reviewed the exact final head")
@@ -175,6 +159,53 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	}
 	if unresolved != 0 {
 		problems = append(problems, fmt.Sprintf("%d review thread(s) remain unresolved", unresolved))
+	}
+	return problems
+}
+
+func checkProblems(checks []statusCheck) []string {
+	groups := make(map[string][]statusCheck, len(checks))
+	var order []string
+	for _, check := range checks {
+		name := check.Name
+		if name == "" {
+			name = check.Context
+		}
+		key := check.Type + "\x00" + check.Workflow + "\x00" + name
+		if len(groups[key]) == 0 {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], check)
+	}
+	var problems []string
+	for _, key := range order {
+		group := groups[key]
+		name := strings.SplitN(key, "\x00", 3)[2]
+		acceptable := false
+		for _, check := range group {
+			switch check.Type {
+			case "CheckRun":
+				if check.Status != "COMPLETED" {
+					problems = append(problems, fmt.Sprintf("check %q is %s/%s", name, check.Status, check.Conclusion))
+				}
+				acceptable = acceptable || check.Status == "COMPLETED" && acceptableConclusion(check.Conclusion)
+			case "StatusContext":
+				if check.State != "SUCCESS" && check.State != "FAILURE" && check.State != "ERROR" {
+					problems = append(problems, fmt.Sprintf("status %q is %s", name, check.State))
+				}
+				acceptable = acceptable || check.State == "SUCCESS"
+			default:
+				problems = append(problems, fmt.Sprintf("check %q has unsupported type %q", name, check.Type))
+			}
+		}
+		if !acceptable {
+			last := group[len(group)-1]
+			if last.Type == "StatusContext" {
+				problems = append(problems, fmt.Sprintf("status %q has no successful result (latest %s)", name, last.State))
+			} else {
+				problems = append(problems, fmt.Sprintf("check %q has no acceptable completed result (latest %s/%s)", name, last.Status, last.Conclusion))
+			}
+		}
 	}
 	return problems
 }

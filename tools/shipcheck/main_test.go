@@ -89,6 +89,17 @@ func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
 	}
 }
 
+func TestEvaluateAcceptsSuccessfulReplacementForCancelledDuplicate(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "CANCELLED"},
+		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "SUCCESS"},
+	}
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("successful replacement was rejected: %v", problems)
+	}
+}
+
 func TestMentionsCommitRequiresAQuotedHeadPrefix(t *testing.T) {
 	if !mentionsCommit("Reviewed commit: `0123456`", testHead) {
 		t.Fatal("quoted seven-character prefix was not recognized")
