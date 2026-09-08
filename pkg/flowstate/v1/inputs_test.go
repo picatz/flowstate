@@ -47,6 +47,15 @@ func TestDeclaresSensitiveValuesIncludesEmbeddedCallees(t *testing.T) {
 	declared, err = v1.DeclaresSensitiveValues(caller)
 	require.NoError(t, err)
 	require.True(t, declared, "the callee's sensitive declaration was ignored")
+
+	caller.Steps = append(caller.Steps, &v1.Node{
+		Id:   "recursive",
+		Kind: &v1.Node_Call{Call: &v1.Call{Workflow: caller}},
+	})
+	declared, err = v1.DeclaresSensitiveValues(caller)
+	require.NoError(t, err)
+	require.True(t, declared,
+		"a known sensitive declaration was downgraded to unverified by unreachable malformed work")
 }
 
 // TestArgumentsAloneCannotPushARunPastWhatItCanCarry is the size half of the submit
