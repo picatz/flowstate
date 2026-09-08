@@ -235,6 +235,14 @@ func TestRequiredCheckCannotDisappear(t *testing.T) {
 	}
 }
 
+func TestRequiredCheckCannotBeSkipped(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks[0].Conclusion = "SKIPPED"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "Analyze Go"`) {
+		t.Fatalf("skipped CodeQL check was accepted: %s", problems)
+	}
+}
+
 func TestRunGHIsBounded(t *testing.T) {
 	dir := t.TempDir()
 	gh := filepath.Join(dir, "gh")

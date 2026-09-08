@@ -247,7 +247,7 @@ func evaluate(pr pullRequest, unresolved int) []string {
 
 func checkProblems(checks []statusCheck) []string {
 	groups := make(map[string][]statusCheck, len(checks))
-	reported := make(map[string]bool, len(checks))
+	reported := make(map[string][]statusCheck, len(checks))
 	var order []string
 	for _, check := range checks {
 		name := check.Name
@@ -255,7 +255,8 @@ func checkProblems(checks []statusCheck) []string {
 			name = check.Context
 		}
 		key := check.Type + "\x00" + check.Workflow + "\x00" + name
-		reported[check.Workflow+"\x00"+name] = true
+		identity := check.Workflow + "\x00" + name
+		reported[identity] = append(reported[identity], check)
 		if len(groups[key]) == 0 {
 			order = append(order, key)
 		}
@@ -263,8 +264,14 @@ func checkProblems(checks []statusCheck) []string {
 	}
 	var problems []string
 	for _, required := range requiredChecks {
-		if !reported[required.workflow+"\x00"+required.name] {
+		results := reported[required.workflow+"\x00"+required.name]
+		if len(results) == 0 {
 			problems = append(problems, fmt.Sprintf("required check %q from workflow %q was not reported", required.name, required.workflow))
+			continue
+		}
+		latest := latestStatusCheck(results)
+		if latest.Type != "CheckRun" || latest.Status != "COMPLETED" || latest.Conclusion != "SUCCESS" {
+			problems = append(problems, fmt.Sprintf("required check %q from workflow %q latest result is %s/%s", required.name, required.workflow, latest.Status, latest.Conclusion))
 		}
 	}
 	for _, key := range order {
