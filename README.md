@@ -222,7 +222,9 @@ $ flow server dev
 ```
 
 It starts an ephemeral Temporal development server, Flowstate API server, and
-worker on loopback. In another terminal:
+worker on loopback. No separate Temporal installation is required: on its first
+launch, this command downloads the Temporal CLI and caches it, so that first
+launch needs network access and later launches do not. In another terminal:
 
 ```console
 $ flow run my-workflow/workflow.yaml

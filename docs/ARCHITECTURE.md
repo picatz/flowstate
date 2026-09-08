@@ -735,6 +735,16 @@ The local driver short-circuits from the spec directly to the `StepExecutor`, sk
 control plane and Temporal. That is the entire difference between `flow run local` and a
 durable run, and invariant 3 exists to keep it that way.
 
+That agreement covers the workflow model, not the properties of the skipped
+systems. A local rehearsal proves expressions, control flow, gates, retries,
+cooperative timeout handling, and compensation; with real rather than stubbed
+tasks, it also exercises those task implementations under the local process's
+policy. It does not prove persisted history, recovery after that process or a
+worker stops, server-enforced timeout behavior when task code ignores cancellation,
+deployment and plugin-version transitions, resource exhaustion, or an external
+system behaving like a test double. Those require a durable run and, where
+applicable, a real integration environment.
+
 Waiting is the case where holding that line costs something and is worth it. A step that
 waits for a signal has to be signalable locally, or local runs stop being able to
 rehearse the workflows that most need rehearsing — so a local run accepts real signals
