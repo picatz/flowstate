@@ -237,12 +237,14 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 // TestRunWorkflowHTTPAttemptOutcome is the local caller of the shared
 // ambiguous-mutation case. The durable caller lives in engine/workflow_test.go.
 func TestRunWorkflowHTTPAttemptOutcome(t *testing.T) {
-	tc := conformance.NewHTTPAttemptOutcomeCase(t)
-
-	_, err := v1.Run(t.Context(), tc.Workflow)
-	require.Error(t, err)
-	require.Equal(t, v1.ErrorKindUpstreamUnknown, v1.ClassifyError(err))
-	require.Equal(t, int32(1), tc.Attempts(), "an ambiguous POST must not be delivered again")
+	for _, tc := range conformance.NewHTTPAttemptOutcomeCases(t) {
+		t.Run(tc.Name, func(t *testing.T) {
+			_, err := v1.Run(t.Context(), tc.Workflow)
+			require.Error(t, err)
+			require.Equal(t, v1.ErrorKindUpstreamUnknown, v1.ClassifyError(err))
+			require.Equal(t, int32(1), tc.Attempts(), "an ambiguous POST must not be delivered again")
+		})
+	}
 }
 
 // TestRunWorkflowTaskPolicy covers #187 slice 1's task-shape policy in the

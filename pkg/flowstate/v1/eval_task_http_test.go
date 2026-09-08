@@ -602,16 +602,30 @@ func Test_httpTask_ambiguousResponseDoesNotAuthorizeMutationReplay(t *testing.T)
 }
 
 func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T) {
+	var oversizedJSON strings.Builder
+	oversizedJSON.WriteByte('[')
+	for i := 0; i <= maxListElements; i++ {
+		if i > 0 {
+			oversizedJSON.WriteByte(',')
+		}
+		oversizedJSON.WriteByte('0')
+	}
+	oversizedJSON.WriteByte(']')
+	tooDeepJSON := strings.Repeat("[", MaxStructureDepth+1) + "0" + strings.Repeat("]", MaxStructureDepth+1)
+
 	for _, test := range []struct {
 		name         string
 		status       int
 		body         string
 		inputs       map[string]any
+		wantResult   AttemptOutcome_Result
 		wantContract AttemptOutcome_Contract
+		wantError    string
 	}{
 		{
-			name: "failed JSON decode",
-			body: "not-json",
+			name:       "failed JSON decode",
+			body:       "not-json",
+			wantResult: AttemptOutcome_RESULT_DECODE_FAILED,
 			inputs: map[string]any{
 				"parse_json": true,
 			},
@@ -622,6 +636,30 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 			inputs: map[string]any{
 				"parse_json": true,
 				"expect":     NewExpr("response.json.ok"),
+			},
+		},
+		{
+			name:       "response byte limit",
+			body:       strings.Repeat("x", int(netpolicy.DefaultMaxResponseBytes)+1),
+			wantResult: AttemptOutcome_RESULT_NOT_OBTAINED,
+			wantError:  "too large",
+		},
+		{
+			name:       "response element limit",
+			body:       oversizedJSON.String(),
+			wantResult: AttemptOutcome_RESULT_DECODED,
+			wantError:  "list elements",
+			inputs: map[string]any{
+				"parse_json": true,
+			},
+		},
+		{
+			name:       "response depth limit",
+			body:       tooDeepJSON,
+			wantResult: AttemptOutcome_RESULT_DECODED,
+			wantError:  "nests",
+			inputs: map[string]any{
+				"parse_json": true,
 			},
 		},
 		{
@@ -670,6 +708,9 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 			}
 
 			_, err := runHTTPTask(t, inputs)
+			if test.wantError != "" {
+				require.ErrorContains(t, err, test.wantError)
+			}
 
 			var taskErr *TaskError
 			require.ErrorAs(t, err, &taskErr)
@@ -677,6 +718,9 @@ func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T
 			require.Equal(t, AttemptOutcome_EFFECT_UNKNOWN, taskErr.Outcome.GetEffect())
 			require.Equal(t, AttemptOutcome_REPEAT_SAFETY_REQUIRES_RECONCILIATION, taskErr.Outcome.GetRepeatSafety())
 			require.False(t, RetryPermitted(err))
+			if test.wantResult != AttemptOutcome_RESULT_UNSPECIFIED {
+				require.Equal(t, test.wantResult, taskErr.Outcome.GetResult())
+			}
 			if test.wantContract != AttemptOutcome_CONTRACT_UNSPECIFIED {
 				require.Equal(t, test.wantContract, taskErr.Outcome.GetContract())
 			}

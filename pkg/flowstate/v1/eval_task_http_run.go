@@ -1017,9 +1017,10 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 			err = scrubber.ScrubError(err)
 			var tooLarge *netpolicy.BodyTooLargeError
 			if errors.As(err, &tooLarge) {
-				return nil, NewTaskError("http", ErrorKindLimitExceeded, fmt.Errorf(
-					"response body from %s is too large: %w; use the outputs input to select only the fields this step needs",
-					taskInputs.GetUrl(), err))
+				return nil, httpResponseFailure(taskInputs, httpResp, AttemptOutcome_RESULT_NOT_OBTAINED,
+					AttemptOutcome_CONTRACT_NOT_EVALUATED, ErrorKindLimitExceeded, fmt.Errorf(
+						"response body from %s is too large: %w; use the outputs input to select only the fields this step needs",
+						taskInputs.GetUrl(), err))
 			}
 			// The status said the request succeeded and only reading the reply
 			// failed. For an idempotent method another attempt is free; for a POST
@@ -1100,7 +1101,8 @@ func httpAnswerFromResponse(ctx context.Context, taskInputs *Task_HTTP_Inputs, o
 		// measured for the input side and #224 review found still open
 		// here for a task's own evaluation of its result.
 		if err := checkHTTPResponseElementBound(taskInputs.GetUrl(), parsedJSON); err != nil {
-			return nil, err
+			return nil, httpResponseFailure(taskInputs, httpResp, AttemptOutcome_RESULT_DECODED,
+				AttemptOutcome_CONTRACT_NOT_EVALUATED, ErrorKindLimitExceeded, err)
 		}
 	}
 
