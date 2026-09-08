@@ -177,11 +177,19 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 
 			return
 		}
-		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
+		disclosure := decideCarriedValues(workflow, reveal)
+		if disclosure != carriedValuesShown {
 			exit = 1
-			server.Output("flowdap: the workflow declares sensitive inputs or outputs whose " +
-				"values the debugger would expose; add --reveal-sensitive to the adapter command " +
-				"or \"revealSensitive\": true to the launch configuration to debug it with values shown\n")
+			if disclosure == carriedValuesDeclared {
+				server.Output("flowdap: the workflow declares sensitive inputs or outputs whose " +
+					"values the debugger would expose; add --reveal-sensitive to the adapter command " +
+					"or \"revealSensitive\": true to the launch configuration to debug it with values shown\n")
+			} else {
+				server.Output("flowdap: the workflow's sensitive-value declarations could not be fully " +
+					"inspected, so the debugger will not start without explicit disclosure authorization; " +
+					"add --reveal-sensitive to the adapter command or \"revealSensitive\": true to the " +
+					"launch configuration\n")
+			}
 
 			return
 		}
