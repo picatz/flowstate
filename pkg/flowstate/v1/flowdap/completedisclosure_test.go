@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdap"
@@ -68,6 +69,12 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	c.await("response", "configurationDone")
 	stopped := c.await("event", "stopped")
 	require.Contains(t, stopped["body"].(map[string]any)["description"], "[redacted]")
+	position, paused := session.PositionProto()
+	require.True(t, paused)
+	positionJSON, err := protojson.Marshal(position)
+	require.NoError(t, err)
+	require.Contains(t, string(positionJSON), "[redacted]")
+	require.NotContains(t, string(positionJSON), sensitive)
 
 	c.send(5, "stackTrace", map[string]any{"threadId": 1})
 	stack := c.await("response", "stackTrace")
@@ -103,6 +110,46 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.NotContains(t, token["value"], sensitive)
 
 	encoded, err := json.Marshal([]any{breakpoints, stopped, stack, evaluated, scopes, variables})
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), "[redacted]")
+	require.NotContains(t, string(encoded), sensitive)
+}
+
+func TestAdapterRedactsAStackLabelAfterJoiningItsFields(t *testing.T) {
+	const sensitive = `build (call "callee")`
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, sensitive, "[redacted]")
+	})
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+	go func() {
+		<-server.Launched()
+		_ = session.BeforeStep(t.Context(), &v1.Node{
+			Id: "build",
+			Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+				Name: "callee",
+			}}},
+		}, v1.NewScope(v1.CurrentProfile, nil))
+	}()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": "workflow.yaml"})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+	c.send(4, "stackTrace", map[string]any{"threadId": 1})
+	stack := c.await("response", "stackTrace")
+	encoded, err := json.Marshal(stack)
 	require.NoError(t, err)
 	require.Contains(t, string(encoded), "[redacted]")
 	require.NotContains(t, string(encoded), sensitive)

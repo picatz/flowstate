@@ -65,9 +65,9 @@ func (s *Session) PositionProto() (*v1.DebugPosition, bool) {
 	}
 
 	position := &v1.DebugPosition{
-		StepId:   subject.step,
-		Workflow: subject.workflow,
-		Kind:     subject.kind,
+		StepId:   applyText(subject.redactText, subject.step),
+		Workflow: applyText(subject.redactText, subject.workflow),
+		Kind:     applyText(subject.redactText, subject.kind),
 		Autopsy:  subject.autopsy,
 	}
 

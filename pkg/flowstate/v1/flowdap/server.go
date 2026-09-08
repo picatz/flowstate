@@ -464,7 +464,7 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 		if frame.GetKind() != "" {
 			name = fmt.Sprintf("%s (%s)", name, frame.GetKind())
 		}
-		frames = append(frames, stackFrame{ID: i + 1, Name: name})
+		frames = append(frames, stackFrame{ID: i + 1, Name: s.session.RedactText(name)})
 	}
 
 	return stackTraceBody{
