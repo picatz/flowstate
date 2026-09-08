@@ -339,11 +339,7 @@ func (s *Session) waitForPause(ctx context.Context, after uint64) (Position, err
 		s.mu.Unlock()
 
 		if generation > after && subject.scope != nil {
-			return Position{
-				Step:    subject.step,
-				Kind:    applyText(subject.redactText, subject.kind),
-				Autopsy: subject.autopsy,
-			}, nil
+			return positionOf(subject), nil
 		}
 
 		select {

@@ -209,7 +209,7 @@ type Frame struct {
 // between stops has no scope to answer against, and drawing a frame of its last
 // one would report a position the run has left.
 func Snapshot(ctx context.Context, session *flowdebug.Session, layout Layout) (Frame, bool) {
-	at, paused := session.Paused()
+	at, index, total, paused := session.PausedStepPosition()
 	if !paused {
 		return Frame{}, false
 	}
@@ -221,7 +221,6 @@ func Snapshot(ctx context.Context, session *flowdebug.Session, layout Layout) (F
 	// The workflow is what makes the position resolvable across a `call:`; the
 	// session answers -1 rather than guessing when it cannot tell (see
 	// [flowdebug.Session.StepPosition]).
-	index, total := session.StepPosition(at.Workflow, positionStep(at))
 	first, last := window(total, index, paneRows(layout.Height))
 
 	list := session.Steps(first, last-first)

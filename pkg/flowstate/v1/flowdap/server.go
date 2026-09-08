@@ -531,53 +531,26 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 		return variablesBody{Variables: []variable{}}
 	}
 
-	groups, err := s.session.Scope()
+	wireScope, err := s.session.ScopeGroupProto(ctx, group, MaxScopeVariables)
 	if err != nil {
 		return variablesBody{Variables: []variable{}}
 	}
 
-	var names []string
-	root := ""
-	for _, candidate := range groups {
-		if candidate.Group == group {
-			names = candidate.Names
-
-			// The session's own answer for what these names hang from, rather
-			// than a switch here over its group names. This adapter kept one,
-			// and its comment said what was wrong with it — "the same fact read
-			// for a different renderer" is a parallel declaration, and a second
-			// pane renderer would have made it a third (#928 slice 1).
-			root = candidate.Root
-
-			break
-		}
+	if len(wireScope.GetGroups()) == 0 {
+		return variablesBody{Variables: []variable{}}
 	}
+	wireGroup := wireScope.GetGroups()[0]
 
-	variables := make([]variable, 0, min(len(names), MaxScopeVariables)+1)
-	for i, name := range names {
-		if i == MaxScopeVariables {
-			variables = append(variables, variable{
-				Name:  "…",
-				Value: fmt.Sprintf("%d more, not rendered", len(names)-MaxScopeVariables),
-			})
-
-			break
+	variables := make([]variable, 0, len(wireGroup.GetBindings())+1)
+	for _, binding := range wireGroup.GetBindings() {
+		text := binding.GetRendered()
+		if binding.GetError() != "" {
+			text = "(" + binding.GetError() + ")"
 		}
-
-		expression := name
-		if root != "" {
-			expression = root + "." + name
-		}
-
-		text, _, evalErr := s.session.Evaluate(ctx, expression)
-		if evalErr != nil {
-			// The name is real — the run told us so — and only its value could
-			// not be produced. Saying so beats dropping the row, which would
-			// make the pane disagree with the scope listing beside it.
-			text = "(" + evalErr.Error() + ")"
-		}
-
-		variables = append(variables, variable{Name: name, Value: text})
+		variables = append(variables, variable{Name: binding.GetName(), Value: text})
+	}
+	if omitted := int(wireGroup.GetTotal()) - len(wireGroup.GetBindings()); omitted > 0 {
+		variables = append(variables, variable{Name: "…", Value: fmt.Sprintf("%d more, not rendered", omitted)})
 	}
 
 	return variablesBody{Variables: variables}
@@ -636,10 +609,15 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 	//
 	// It replaces the set for the same reason the method does: a client sends
 	// everything it has each time one changes.
-	names := make([]string, 0, len(asked.Breakpoints))
-	answers := make([]breakpoint, 0, len(asked.Breakpoints))
+	requested := make([]string, 0, len(asked.Breakpoints))
 	for _, want := range asked.Breakpoints {
-		name := strings.TrimSpace(want.Name)
+		requested = append(requested, strings.TrimSpace(want.Name))
+	}
+	notices := s.session.UnknownSteps(requested)
+
+	names := make([]string, 0, len(requested))
+	answers := make([]breakpoint, 0, len(asked.Breakpoints))
+	for i, name := range requested {
 		if name == "" {
 			answers = append(answers, breakpoint{Message: "a breakpoint here is a step id, and this one is empty"})
 
@@ -663,8 +641,8 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 		// where it does not. Closing that gap means giving a session its steps
 		// after construction and re-reporting breakpoints already answered, which
 		// is the editor-front work #1297 owns (Copilot, #1627).
-		if notice, unknown := s.session.UnknownStep(name); unknown {
-			answers = append(answers, breakpoint{Message: notice})
+		if notices[i].Unknown {
+			answers = append(answers, breakpoint{Message: notices[i].Message})
 
 			continue
 		}

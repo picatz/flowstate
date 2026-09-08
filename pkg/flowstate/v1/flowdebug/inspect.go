@@ -93,12 +93,37 @@ func (s *Session) Paused() (Position, bool) {
 		return Position{}, false
 	}
 
+	return positionOf(subject), true
+}
+
+// PausedStepPosition is [Session.Paused] with the displayed position's index
+// and the inventory length resolved from raw identities in the same snapshot.
+// A renderer must not use redacted display text as an inventory lookup key.
+func (s *Session) PausedStepPosition() (position Position, index, total int, paused bool) {
+	s.mu.Lock()
+	subject := s.at
+	order := s.inventory()
+	index = positionIn(order, subject.workflow, subject.step)
+	total = len(order)
+	s.mu.Unlock()
+
+	if subject.scope == nil {
+		return Position{}, -1, total, false
+	}
+
+	return positionOf(subject), index, total, true
+}
+
+// positionOf renders every author-controlled identity through the redactor
+// captured with the pause. Keep resolution against subject's raw fields before
+// calling this: redacted identifiers are display values, not lookup keys.
+func positionOf(subject promptSubject) Position {
 	return Position{
-		Step:     subject.step,
+		Step:     applyText(subject.redactText, subject.step),
 		Kind:     applyText(subject.redactText, subject.kind),
-		Workflow: subject.workflow,
+		Workflow: applyText(subject.redactText, subject.workflow),
 		Autopsy:  subject.autopsy,
-	}, true
+	}
 }
 
 // Backtrace returns the paused run's current step and caller chain, innermost

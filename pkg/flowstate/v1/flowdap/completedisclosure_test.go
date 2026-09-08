@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -13,6 +14,152 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
+func TestFunctionBreakpointResponseKeepsOneRedactionSnapshot(t *testing.T) {
+	const sensitive = "sensitive-declared-step"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls int
+
+	session, err := flowdebug.New(flowdebug.Options{
+		Steps: []flowdebug.Step{{ID: sensitive}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	session.SetRedactor(func(text string) string {
+		calls++
+		if calls == 1 {
+			close(entered)
+			<-release
+		}
+		return strings.ReplaceAll(text, sensitive, "[redacted]")
+	})
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "setFunctionBreakpoints", map[string]any{
+		"breakpoints": []map[string]any{{"name": "unknown-one"}, {"name": "unknown-two"}},
+	})
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first breakpoint notice never reached the redactor")
+	}
+	session.SetRedactor(nil)
+	close(release)
+
+	response := c.await("response", "setFunctionBreakpoints")
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), sensitive)
+	require.Equal(t, 2, strings.Count(string(encoded), "[redacted]"),
+		"one response switched redaction posture between breakpoint entries")
+}
+
+func TestVariablesResponseKeepsOnePauseSnapshot(t *testing.T) {
+	const sensitive = "sensitive-value-between-pauses"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	blocked := false
+	session.SetRedactor(func(text string) string {
+		if !blocked && strings.Contains(text, sensitive) {
+			blocked = true
+			close(entered)
+			<-release
+		}
+		return strings.ReplaceAll(text, sensitive, "[redacted]")
+	})
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	runDone := make(chan error, 1)
+	go func() {
+		<-server.Launched()
+		scope := &v1.Scope{
+			Profile: v1.CurrentProfile,
+			Inputs: map[string]*v1.Value{
+				"first":  v1.NewLiteral(sensitive),
+				"second": v1.NewLiteral(sensitive),
+			},
+		}
+		for _, id := range []string{"first", "second"} {
+			if stepErr := session.BeforeStep(t.Context(), &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewLiteral("done")}}, scope); stepErr != nil {
+				runDone <- stepErr
+				return
+			}
+		}
+		runDone <- nil
+	}()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": "workflow.yaml"})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+	c.send(4, "scopes", map[string]any{"frameId": 1})
+	var inputsReference float64
+	for _, item := range c.await("response", "scopes")["body"].(map[string]any)["scopes"].([]any) {
+		group := item.(map[string]any)
+		if group["name"] == "inputs" {
+			inputsReference = group["variablesReference"].(float64)
+		}
+	}
+	require.NotZero(t, inputsReference)
+
+	c.send(5, "variables", map[string]any{"variablesReference": inputsReference})
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first variable never reached the redactor")
+	}
+	// Changing the live posture cannot alter the first pause's snapshot. Move
+	// to a second pause under that new posture before the first response has
+	// finished rendering; every row must still describe the first pause.
+	session.SetRedactor(nil)
+	moved := make(chan error, 1)
+	go func() {
+		_, moveErr := session.Step(t.Context())
+		moved <- moveErr
+	}()
+	select {
+	case moveErr := <-moved:
+		require.NoError(t, moveErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the run did not reach its second pause")
+	}
+	close(release)
+
+	response := c.await("response", "variables")
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), sensitive)
+	require.Equal(t, 2, strings.Count(string(encoded), "[redacted]"),
+		"one variables response mixed values from two pause redaction postures")
+	finishMove := make(chan error, 1)
+	go func() {
+		_, moveErr := session.Continue(t.Context())
+		finishMove <- moveErr
+	}()
+	require.NoError(t, <-runDone)
+	require.NoError(t, session.Close())
+	require.ErrorIs(t, <-finishMove, flowdebug.ErrRunOver)
+}
+
 func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	const (
 		sensitive           = "s3cr3t_value_nothing_may_print"
@@ -21,7 +168,7 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 
 	session, err := flowdebug.New(flowdebug.Options{
 		Controlled: true,
-		Steps:      []flowdebug.Step{{ID: sensitive}},
+		Steps:      []flowdebug.Step{{ID: sensitive, Workflow: sensitive, Via: sensitive}},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
@@ -74,12 +221,23 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	c.await("response", "configurationDone")
 	stopped := c.await("event", "stopped")
 	require.Contains(t, stopped["body"].(map[string]any)["description"], "[redacted]")
+	pausedAt, pausedIndex, _, paused := session.PausedStepPosition()
+	require.True(t, paused)
+	require.NotContains(t, pausedAt.Step+pausedAt.Workflow+pausedAt.Kind, sensitive)
+	require.Zero(t, pausedIndex, "redacting the displayed position changed which inventory row it resolves to")
+	waitedAt, err := session.WaitForPause(t.Context())
+	require.NoError(t, err)
+	require.NotContains(t, waitedAt.Step+waitedAt.Workflow+waitedAt.Kind, sensitive)
 	position, paused := session.PositionProto()
 	require.True(t, paused)
 	positionJSON, err := protojson.Marshal(position)
 	require.NoError(t, err)
 	require.Contains(t, string(positionJSON), "[redacted]")
 	require.NotContains(t, string(positionJSON), sensitive)
+	windowJSON, err := protojson.Marshal(session.StepWindowProto(0, 10))
+	require.NoError(t, err)
+	require.Contains(t, string(windowJSON), "[redacted]")
+	require.NotContains(t, string(windowJSON), sensitive)
 	for _, limit := range []int{0, 10} {
 		wireScope, scopeErr := session.ScopeProto(t.Context(), limit)
 		require.NoError(t, scopeErr)
