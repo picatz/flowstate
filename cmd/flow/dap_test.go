@@ -41,7 +41,7 @@ func TestFlowDAPRefusesSensitiveWorkflowWithoutReveal(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, "workflow.yaml")
 	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
-name: sensitive-probe
+name: `+dapSensitiveValue+`
 inputs:
   token:
     type: string

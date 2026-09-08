@@ -102,7 +102,7 @@ func TestAdapterPreservesSessionRedactionForEvaluateAndVariables(t *testing.T) {
 	require.Contains(t, token["value"], "[redacted]")
 	require.NotContains(t, token["value"], sensitive)
 
-	encoded, err := json.Marshal([]any{breakpoints, stopped, stack, evaluated, variables})
+	encoded, err := json.Marshal([]any{breakpoints, stopped, stack, evaluated, scopes, variables})
 	require.NoError(t, err)
 	require.Contains(t, string(encoded), "[redacted]")
 	require.NotContains(t, string(encoded), sensitive)
