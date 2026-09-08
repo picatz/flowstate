@@ -17,11 +17,11 @@ func passingPullRequest() pullRequest {
 		BaseRefName:      "main",
 		HeadRefOID:       testHead,
 		AutoMergeRequest: presentJSON{Present: true, Value: json.RawMessage("null")},
-		StatusChecks: []statusCheck{
-			{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"},
-			{Type: "CheckRun", Name: "not selected", Status: "COMPLETED", Conclusion: "SKIPPED"},
-			{Type: "StatusContext", Context: "external", State: "SUCCESS"},
-		},
+		StatusChecks: append(passingRequiredChecks(),
+			statusCheck{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			statusCheck{Type: "CheckRun", Name: "not selected", Status: "COMPLETED", Conclusion: "SKIPPED"},
+			statusCheck{Type: "StatusContext", Context: "external", State: "SUCCESS"},
+		),
 		Reviews: []review{
 			{Author: actor{Login: "copilot-pull-request-reviewer"}, Commit: &commit{OID: testHead}},
 			{Author: actor{Login: "chatgpt-codex-connector"}, Commit: &commit{OID: testHead}, Body: "### Codex Review"},
@@ -31,6 +31,17 @@ func passingPullRequest() pullRequest {
 			Body:   "Security review completed. No security issues were found.\n\n**Reviewed commit:** `" + testHead + "`",
 		}},
 	}
+}
+
+func passingRequiredChecks() []statusCheck {
+	checks := make([]statusCheck, 0, len(requiredChecks))
+	for _, required := range requiredChecks {
+		checks = append(checks, statusCheck{
+			Type: "CheckRun", Workflow: required.workflow, Name: required.name,
+			Status: "COMPLETED", Conclusion: "SUCCESS",
+		})
+	}
+	return checks
 }
 
 func TestEvaluateAcceptsCompleteFinalHeadEvidence(t *testing.T) {
@@ -57,7 +68,7 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 		`pull request base is "release"`,
 		"pull request is still a draft",
 		"auto-merge is enabled",
-		`check "test" latest result is IN_PROGRESS/`,
+		`check "Analyze Go" latest result is IN_PROGRESS/`,
 		"Copilot has not reviewed the exact final head",
 		"Codex code review has not completed on the exact final head",
 		"Codex security review has not completed on the exact final head",
@@ -103,10 +114,10 @@ func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
 
 func TestEvaluateAcceptsSuccessfulReplacementForCancelledDuplicate(t *testing.T) {
 	pr := passingPullRequest()
-	pr.StatusChecks = []statusCheck{
-		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "CANCELLED", StartedAt: "2026-09-08T10:00:00Z"},
-		{Type: "CheckRun", Name: "commitcheck", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:01:00Z"},
-	}
+	pr.StatusChecks = append(passingRequiredChecks(),
+		statusCheck{Type: "CheckRun", Name: "replacement", Status: "COMPLETED", Conclusion: "CANCELLED", StartedAt: "2026-09-08T10:00:00Z"},
+		statusCheck{Type: "CheckRun", Name: "replacement", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:01:00Z"},
+	)
 	if problems := evaluate(pr, 0); len(problems) != 0 {
 		t.Fatalf("successful replacement was rejected: %v", problems)
 	}
@@ -193,30 +204,34 @@ func TestCodexSecurityReviewDoesNotCountAsCodeReview(t *testing.T) {
 	}
 }
 
-func TestCodeSummaryRequiresFullHeadMarkerAndCompletedRow(t *testing.T) {
+func TestCodeSummaryCannotSubstituteForExactHeadReview(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Reviews = pr.Reviews[:1]
 	body := `<!-- codex-pull-request-review-summary -->
 <!-- codex-security-review:v1 {"headSha":"` + testHead + `","status":"completed"} -->
 | 📝 **Code Review** | ✅ **Completed** <relative-time datetime="2026-09-08T10:01:00Z">now</relative-time> | ` + "`0123456`" + ` | Manual request |`
-	request := []comment{{
-		Body:      "@codex review\n\nReview exact head `" + testHead + "`.",
-		CreatedAt: "2026-09-08T10:00:00Z",
-	}}
-	if !completedCodeSummary(body, testHead, request) {
-		t.Fatal("completed summary following an exact-head request was not recognized")
+	pr.Comments = []comment{{Author: actor{Login: "chatgpt-codex-connector"}, Body: body}}
+	if hasCodexReview(pr, false) {
+		t.Fatal("an editable summary substituted for an exact-head review artifact")
 	}
-	if completedCodeSummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead, request) {
-		t.Fatal("summary for a different full head was recognized")
+}
+
+func TestExactHeadSecurityReviewArtifactIsAccepted(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments = nil
+	pr.Reviews = append(pr.Reviews, review{
+		Author: actor{Login: "chatgpt-codex-connector"}, Commit: &commit{OID: testHead}, Body: "### Codex Security Review",
+	})
+	if !hasCodexReview(pr, true) {
+		t.Fatal("exact-head security review was not recognized")
 	}
-	if completedCodeSummary(strings.Replace(body, "**Completed**", "**Running**", 1), testHead, request) {
-		t.Fatal("running code review was recognized")
-	}
-	if completedCodeSummary(body, testHead, nil) {
-		t.Fatal("abbreviated row without a full-head code-review request was recognized")
-	}
-	lateRequest := append([]comment(nil), request...)
-	lateRequest[0].CreatedAt = "2026-09-08T10:02:00Z"
-	if completedCodeSummary(body, testHead, lateRequest) {
-		t.Fatal("completion predating the exact-head request was recognized")
+}
+
+func TestRequiredCheckCannotDisappear(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = pr.StatusChecks[1:]
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "Analyze Go"`) {
+		t.Fatalf("missing CodeQL check was accepted: %s", problems)
 	}
 }
 
@@ -273,5 +288,16 @@ func TestBoundedBufferCapsCollectedOutput(t *testing.T) {
 	}
 	if !buffer.exceeded {
 		t.Fatal("buffer did not record overflow")
+	}
+}
+
+func TestErrorSnippetIsSmallAndValidUTF8(t *testing.T) {
+	out := append([]byte(strings.Repeat("x", errorSnippetLimit-1)), 0xe2, 0x82)
+	got := errorSnippet(out)
+	if len(got) > errorSnippetLimit+len("�… (truncated)") {
+		t.Fatalf("snippet has %d bytes", len(got))
+	}
+	if !strings.HasSuffix(got, "… (truncated)") || strings.ContainsRune(got, '\uFFFD') == false {
+		t.Fatalf("snippet did not clean and mark truncation: %q", got[len(got)-32:])
 	}
 }

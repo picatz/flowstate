@@ -440,6 +440,7 @@ func ghPRMergeInvocations(s string) [][]string {
 	var words []string
 	var word strings.Builder
 	var inSingle, inDouble, escaped, started bool
+	redirection := 0 // 1 awaits a target; 2 consumes one
 	flushWord := func() {
 		if started {
 			words = append(words, word.String())
@@ -457,7 +458,9 @@ func ghPRMergeInvocations(s string) [][]string {
 	for _, r := range s {
 		switch {
 		case escaped:
-			if r != '\n' {
+			if redirection != 0 {
+				redirection = 2
+			} else if r != '\n' {
 				word.WriteRune(r)
 				started = true
 			}
@@ -465,7 +468,7 @@ func ghPRMergeInvocations(s string) [][]string {
 		case inSingle:
 			if r == '\'' {
 				inSingle = false
-			} else {
+			} else if redirection == 0 {
 				word.WriteRune(r)
 			}
 		case inDouble:
@@ -475,21 +478,46 @@ func ghPRMergeInvocations(s string) [][]string {
 			case '"':
 				inDouble = false
 			default:
-				word.WriteRune(r)
+				if redirection == 0 {
+					word.WriteRune(r)
+				}
 			}
 		case r == '\\':
 			escaped = true
 		case r == '\'':
 			inSingle, started = true, true
+			if redirection != 0 {
+				redirection, started = 2, false
+			}
 		case r == '"':
 			inDouble, started = true, true
+			if redirection != 0 {
+				redirection, started = 2, false
+			}
 		case r == ' ' || r == '\t' || r == '\r':
-			flushWord()
+			if redirection == 2 {
+				redirection = 0
+			} else if redirection == 0 {
+				flushWord()
+			}
+		case r == '<' || r == '>':
+			if started && strings.Trim(word.String(), "0123456789") == "" {
+				word.Reset()
+				started = false
+			} else {
+				flushWord()
+			}
+			redirection = 1
 		case strings.ContainsRune(";&|\n`(){}", r):
+			redirection = 0
 			flushCommand()
 		default:
-			word.WriteRune(r)
-			started = true
+			if redirection != 0 {
+				redirection = 2
+			} else {
+				word.WriteRune(r)
+				started = true
+			}
 		}
 	}
 	flushCommand()

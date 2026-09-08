@@ -446,6 +446,8 @@ func TestAutoMergeIsRejected(t *testing.T) {
 	t.Parallel()
 	for _, command := range []string{
 		"gh pr merge 498 -R picatz/flowstate --auto",
+		"gh>/tmp/merge-output pr merge 498 -R picatz/flowstate --auto",
+		"gh 2> /tmp/merge-error pr merge 498 -R picatz/flowstate --auto",
 		"gh pr merge 498 -R picatz/flowstate --auto=true",
 		"gh pr merge --auto https://github.com/picatz/flowstate/pull/498",
 		"gh -R picatz/flowstate pr merge 498 --auto",
@@ -477,6 +479,7 @@ func TestManualMergeRequiresOneExactHeadPrecondition(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	for _, command := range []string{
 		"gh pr merge 498 -R picatz/flowstate --squash --match-head-commit " + sha,
+		"gh>/tmp/merge-output pr merge 498 -R picatz/flowstate --squash --match-head-commit " + sha,
 		"gh -R picatz/flowstate pr merge 498 --match-head-commit=" + sha,
 	} {
 		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}

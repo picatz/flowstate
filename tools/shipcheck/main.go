@@ -18,8 +18,20 @@ import (
 )
 
 const (
-	maxThreadPages = 20
+	maxThreadPages    = 20
+	errorSnippetLimit = 4 << 10
 )
+
+var requiredChecks = []struct {
+	workflow string
+	name     string
+}{
+	{"CodeQL", "Analyze Go"},
+	{"CI", "plan"},
+	{"CI", "verdict"},
+	{"Commit conventions", "commitcheck"},
+	{"Dependency review", "Review dependency changes"},
+}
 
 var (
 	ghCommandTimeout = 30 * time.Second
@@ -146,7 +158,7 @@ func loadPullRequest(repo string, number int) (pullRequest, error) {
 	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,reviews,comments"
 	out, err := runGH("pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields)
 	if err != nil {
-		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, strings.TrimSpace(string(out)))
+		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, errorSnippet(out))
 	}
 	var pr pullRequest
 	if err := json.Unmarshal(out, &pr); err != nil {
@@ -175,6 +187,18 @@ func runGH(args ...string) ([]byte, error) {
 		return append(stdout.Bytes(), stderr.Bytes()...), err
 	}
 	return stdout.Bytes(), nil
+}
+
+func errorSnippet(out []byte) string {
+	truncated := len(out) > errorSnippetLimit
+	if truncated {
+		out = out[:errorSnippetLimit]
+	}
+	snippet := strings.TrimSpace(strings.ToValidUTF8(string(out), "�"))
+	if truncated {
+		snippet += "… (truncated)"
+	}
+	return snippet
 }
 
 func evaluate(pr pullRequest, unresolved int) []string {
@@ -223,6 +247,7 @@ func evaluate(pr pullRequest, unresolved int) []string {
 
 func checkProblems(checks []statusCheck) []string {
 	groups := make(map[string][]statusCheck, len(checks))
+	reported := make(map[string]bool, len(checks))
 	var order []string
 	for _, check := range checks {
 		name := check.Name
@@ -230,12 +255,18 @@ func checkProblems(checks []statusCheck) []string {
 			name = check.Context
 		}
 		key := check.Type + "\x00" + check.Workflow + "\x00" + name
+		reported[check.Workflow+"\x00"+name] = true
 		if len(groups[key]) == 0 {
 			order = append(order, key)
 		}
 		groups[key] = append(groups[key], check)
 	}
 	var problems []string
+	for _, required := range requiredChecks {
+		if !reported[required.workflow+"\x00"+required.name] {
+			problems = append(problems, fmt.Sprintf("required check %q from workflow %q was not reported", required.name, required.workflow))
+		}
+	}
 	for _, key := range order {
 		group := groups[key]
 		name := strings.SplitN(key, "\x00", 3)[2]
@@ -326,73 +357,25 @@ func hasExactHeadReview(reviews []review, head, login string) bool {
 
 func hasCodexReview(pr pullRequest, security bool) bool {
 	for _, review := range pr.Reviews {
-		if !security && review.Author.Login == "chatgpt-codex-connector" && review.Commit != nil &&
-			review.Commit.OID == pr.HeadRefOID && strings.Contains(review.Body, "Codex Review") &&
-			!strings.Contains(review.Body, "Codex Security Review") {
+		if review.Author.Login != "chatgpt-codex-connector" || review.Commit == nil || review.Commit.OID != pr.HeadRefOID {
+			continue
+		}
+		isSecurity := strings.Contains(review.Body, "Codex Security Review")
+		if security == isSecurity && (isSecurity || strings.Contains(review.Body, "Codex Review")) {
 			return true
 		}
 	}
 	for _, comment := range pr.Comments {
-		if comment.Author.Login != "chatgpt-codex-connector" {
+		if !security || comment.Author.Login != "chatgpt-codex-connector" {
 			continue
 		}
-		if !security && completedCodeSummary(comment.Body, pr.HeadRefOID, pr.Comments) {
-			return true
-		}
-		if security && completedSecuritySummary(comment.Body, pr.HeadRefOID) {
+		if completedSecuritySummary(comment.Body, pr.HeadRefOID) {
 			return true
 		}
 		if !mentionsCommit(comment.Body, pr.HeadRefOID) {
 			continue
 		}
-		isSecurity := strings.Contains(comment.Body, "Security review completed")
-		if security == isSecurity && (isSecurity || strings.Contains(comment.Body, "Codex Review")) {
-			return true
-		}
-	}
-	return false
-}
-
-func completedCodeSummary(body, head string, comments []comment) bool {
-	if len(head) < 7 || !strings.Contains(body, "codex-pull-request-review-summary") ||
-		!strings.Contains(body, `"headSha":"`+head+`"`) {
-		return false
-	}
-	for _, line := range strings.Split(body, "\n") {
-		completedAt, ok := codeReviewCompletion(line, head)
-		if ok && hasExactCodeReviewRequest(comments, head, completedAt) {
-			return true
-		}
-	}
-	return false
-}
-
-func codeReviewCompletion(line, head string) (time.Time, bool) {
-	if len(head) < 7 || !strings.Contains(line, "**Code Review**") ||
-		!strings.Contains(line, "**Completed**") || !strings.Contains(line, "`"+head[:7]+"`") {
-		return time.Time{}, false
-	}
-	const marker = `datetime="`
-	start := strings.Index(line, marker)
-	if start < 0 {
-		return time.Time{}, false
-	}
-	start += len(marker)
-	end := strings.IndexByte(line[start:], '"')
-	if end < 0 {
-		return time.Time{}, false
-	}
-	completedAt, err := time.Parse(time.RFC3339Nano, line[start:start+end])
-	return completedAt, err == nil
-}
-
-func hasExactCodeReviewRequest(comments []comment, head string, completedAt time.Time) bool {
-	for _, comment := range comments {
-		if !strings.Contains(comment.Body, "@codex review") || !mentionsCommit(comment.Body, head) {
-			continue
-		}
-		requestedAt, err := time.Parse(time.RFC3339Nano, comment.CreatedAt)
-		if err == nil && !requestedAt.After(completedAt) {
+		if strings.Contains(comment.Body, "Security review completed") {
 			return true
 		}
 	}
@@ -442,7 +425,7 @@ func unresolvedReviewThreads(repo string, number int) (int, error) {
 		}
 		out, err := runGH(args...)
 		if err != nil {
-			return 0, fmt.Errorf("query GraphQL: %w: %s", err, strings.TrimSpace(string(out)))
+			return 0, fmt.Errorf("query GraphQL: %w: %s", err, errorSnippet(out))
 		}
 		var response threadPage
 		if err := json.Unmarshal(out, &response); err != nil {
