@@ -28,7 +28,7 @@ func passingPullRequest() pullRequest {
 		},
 		Comments: []comment{{
 			Author: actor{Login: "chatgpt-codex-connector"},
-			Body:   "Security review completed. No security issues were found.\n\n**Reviewed commit:** `0123456789`",
+			Body:   "Security review completed. No security issues were found.\n\n**Reviewed commit:** `" + testHead + "`",
 		}},
 	}
 }
@@ -159,15 +159,15 @@ func TestEvaluateUsesLatestExactHeadCopilotReview(t *testing.T) {
 	}
 }
 
-func TestMentionsCommitRequiresAQuotedHeadPrefix(t *testing.T) {
-	if !mentionsCommit("Reviewed commit: `0123456`", testHead) {
-		t.Fatal("quoted seven-character prefix was not recognized")
+func TestMentionsCommitRequiresTheQuotedFullHead(t *testing.T) {
+	if !mentionsCommit("Reviewed commit: `"+testHead+"`", testHead) {
+		t.Fatal("quoted full head was not recognized")
 	}
 	if mentionsCommit("unrelated 0123456789abcdef", testHead) {
 		t.Fatal("unquoted commit text was recognized")
 	}
-	if mentionsCommit("Reviewed commit: `0123450`", testHead) {
-		t.Fatal("different commit was recognized")
+	if mentionsCommit("Reviewed commit: `0123456789`", testHead) {
+		t.Fatal("abbreviated commit was recognized")
 	}
 }
 

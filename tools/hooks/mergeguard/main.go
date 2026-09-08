@@ -485,7 +485,7 @@ func ghPRMergeInvocations(s string) [][]string {
 			inDouble, started = true, true
 		case r == ' ' || r == '\t' || r == '\r':
 			flushWord()
-		case strings.ContainsRune(";&|\n`", r):
+		case strings.ContainsRune(";&|\n`(){}", r):
 			flushCommand()
 		default:
 			word.WriteRune(r)

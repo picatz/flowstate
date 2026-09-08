@@ -348,12 +348,7 @@ func completedSecuritySummary(body, head string) bool {
 }
 
 func mentionsCommit(body, head string) bool {
-	for n := 7; n <= len(head); n++ {
-		if strings.Contains(body, "`"+head[:n]+"`") {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(body, "`"+head+"`")
 }
 
 type threadPage struct {
