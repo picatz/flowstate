@@ -45,6 +45,9 @@ func stallsPastTheDefaultBudget(workflow.Context) error {
 func TestABoundaryEnvironmentRaisesTheDeadlockBudget(t *testing.T) {
 	require.Greater(t, conformance.BoundaryDeadlockDetectionTimeout, sdkDefaultDeadlockBudget,
 		"the boundary budget has to be above the default it exists to raise")
+	require.Greater(t, conformance.BoundaryWorkflowTaskTimeout,
+		conformance.BoundaryDeadlockDetectionTimeout,
+		"the server deadline must leave the live worker's deadlock detector first say")
 
 	suite := &testsuite.WorkflowTestSuite{}
 	env := atABound(suite.NewTestWorkflowEnvironment())

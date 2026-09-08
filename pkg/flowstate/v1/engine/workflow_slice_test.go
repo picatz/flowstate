@@ -40,7 +40,7 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 			run, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
 				ID:                  "workflow-slices-" + test.Workflow.GetName(),
 				TaskQueue:           taskQueue,
-				WorkflowTaskTimeout: 2 * conformance.BoundaryDeadlockDetectionTimeout,
+				WorkflowTaskTimeout: conformance.BoundaryWorkflowTaskTimeout,
 			}, engine.Run, &v1.RunState{Workflow: test.Workflow, StepsBudget: 2000})
 			require.NoError(t, err)
 			firstRunID := run.GetRunID()
