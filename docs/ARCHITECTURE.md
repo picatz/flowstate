@@ -765,8 +765,8 @@ compatibility source for tasks which have not adopted structured outcomes. A pos
 or decoder may change the result and contract observations; neither can rewrite what
 happened externally or make an ambiguous mutation repeatable.
 
-HTTP is the first producer. A 502, 503, or 504 leaves a non-idempotent operation's effect
-unknown, so POST and PATCH stop as `UpstreamUnknown` unless
+HTTP is the first producer. A 5xx response cannot prove whether a non-idempotent
+operation took effect, so POST and PATCH stop as `UpstreamUnknown` unless
 `retry_on_unknown_outcome: true` states that the endpoint supplies its own idempotency.
 Methods RFC 9110 defines as idempotent remain repeat-safe by their HTTP semantics. A 429 is
 a refusal with no effect and may be retried; a 503's bounded `Retry-After` is scheduling

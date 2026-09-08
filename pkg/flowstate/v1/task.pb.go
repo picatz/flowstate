@@ -538,9 +538,9 @@ type Task_HTTP_Inputs struct {
 	// worse than surfacing a failure that might have resolved on its own. Set
 	// this when the endpoint is idempotency-keyed and a retry is therefore safe.
 	//
-	// The same rule applies when a 502, 503, or 504 response cannot establish
-	// whether the mutation reached or committed at the origin. `expect:` and
-	// `parse_json:` do not override it.
+	// The same rule applies to a 5xx response: even an origin's 500 cannot
+	// establish whether the mutation committed before the server failed.
+	// `expect:` and `parse_json:` do not override it.
 	//
 	// It does not affect a request that never connected, which is retried for any
 	// method because it cannot have taken effect.

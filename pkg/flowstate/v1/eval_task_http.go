@@ -619,9 +619,7 @@ func httpResponseFailure(
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		effect = AttemptOutcome_EFFECT_KNOWN
-	case resp.StatusCode == http.StatusBadGateway,
-		resp.StatusCode == http.StatusServiceUnavailable,
-		resp.StatusCode == http.StatusGatewayTimeout:
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
 		effect = AttemptOutcome_EFFECT_UNKNOWN
 	}
 
@@ -667,10 +665,10 @@ func httpResponseFailure(
 
 // httpExpectSatisfied evaluates an `expect` expression over the response.
 //
-// A failed expectation is permanent. The author has described what success looks
-// like, and a response that does not match it is this endpoint answering this request
-// in a way they said is wrong — repeating the request will not change their mind. An
-// expression that needs a retry says so by accepting the retryable status instead.
+// A failed expectation records an unsatisfied contract without replacing the
+// response status classification or repeat-safety evidence. Thus a 200 that does
+// not satisfy the contract is permanent, while a 5xx remains transient when the
+// request is repeat-safe.
 func httpExpectSatisfied(
 	ctx context.Context,
 	inputs *Task_HTTP_Inputs,

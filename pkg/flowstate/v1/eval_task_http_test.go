@@ -559,7 +559,7 @@ func Test_httpTask_expect(t *testing.T) {
 }
 
 func Test_httpTask_ambiguousResponseDoesNotAuthorizeMutationReplay(t *testing.T) {
-	statuses := []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
+	statuses := []int{http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		for _, status := range statuses {
 			for _, optIn := range []bool{false, true} {
@@ -598,6 +598,50 @@ func Test_httpTask_ambiguousResponseDoesNotAuthorizeMutationReplay(t *testing.T)
 				})
 			}
 		}
+	}
+}
+
+func Test_httpTask_ambiguousMutationRemainsUnknownAfterResultChecks(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		body   string
+		inputs map[string]any
+	}{
+		{
+			name: "failed JSON decode",
+			body: "not-json",
+			inputs: map[string]any{
+				"parse_json": true,
+			},
+		},
+		{
+			name: "unmet expectation",
+			body: `{"ok":false}`,
+			inputs: map[string]any{
+				"parse_json": true,
+				"expect":     NewExpr("response.json.ok"),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, _ := httpTaskServer(t, http.StatusInternalServerError, test.body, nil)
+			inputs := map[string]any{
+				"url":    server.URL,
+				"method": http.MethodPost,
+			}
+			for name, value := range test.inputs {
+				inputs[name] = value
+			}
+
+			_, err := runHTTPTask(t, inputs)
+
+			var taskErr *TaskError
+			require.ErrorAs(t, err, &taskErr)
+			require.Equal(t, ErrorKindUpstreamUnknown, taskErr.Kind)
+			require.Equal(t, AttemptOutcome_EFFECT_UNKNOWN, taskErr.Outcome.GetEffect())
+			require.Equal(t, AttemptOutcome_REPEAT_SAFETY_REQUIRES_RECONCILIATION, taskErr.Outcome.GetRepeatSafety())
+			require.False(t, RetryPermitted(err))
+		})
 	}
 }
 
