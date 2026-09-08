@@ -396,10 +396,11 @@ func TestAGateChangeIsStillAnOrdinaryGoChange(t *testing.T) {
 // ciWorkflow is the slice of .github/workflows/ci.yml this test reads.
 type ciWorkflow struct {
 	Jobs map[string]struct {
-		Needs   any               `yaml:"needs"`
-		If      string            `yaml:"if"`
-		Outputs map[string]string `yaml:"outputs"`
-		Steps   []struct {
+		Needs          any               `yaml:"needs"`
+		If             string            `yaml:"if"`
+		Outputs        map[string]string `yaml:"outputs"`
+		TimeoutMinutes int               `yaml:"timeout-minutes"`
+		Steps          []struct {
 			ID   string            `yaml:"id"`
 			Name string            `yaml:"name"`
 			If   string            `yaml:"if"`
@@ -407,6 +408,13 @@ type ciWorkflow struct {
 			Env  map[string]string `yaml:"env"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
+}
+
+func TestSerializedRootSuiteRetainsOuterJobHeadroom(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
+	if got := wf.Jobs["test"].TimeoutMinutes; got != 35 {
+		t.Fatalf("the serialized root suite needs its measured post-test headroom; timeout-minutes = %d, want 35", got)
+	}
 }
 
 // TestCIFetchesMainWithAForcedRefUpdate is the regression for main run

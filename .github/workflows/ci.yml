@@ -171,13 +171,13 @@ jobs:
     needs: plan
     if: needs.plan.outputs.test == 'true'
     runs-on: ubuntu-latest
-    # A hung job otherwise runs to the six-hour default. The root suite is
-    # bounded below, but a dependency bump changes the cache key and
-    # legitimately puts its cold path in one run. Twenty-five minutes leaves
-    # that run headroom without letting a stuck dev server or wedged test
-    # consume the default six hours — the same reasoning the engine applies to
-    # a step's own timeout.
-    timeout-minutes: 25
+    # A hung job otherwise runs to the six-hour default. Serial package binaries
+    # keep independent Temporal test processes from consuming one another's
+    # wall-clock budgets; the first measured CI run took 24m03s in `make test`
+    # alone. Thirty-five minutes leaves bounded room for a cold build, artifact
+    # upload, and final diagnostics without returning to cross-package
+    # contention or the default six hours.
+    timeout-minutes: 35
     steps:
       # persist-credentials: false everywhere in this workflow (and deep.yml,
       # and editors.yml): checkout otherwise leaves the job's GITHUB_TOKEN in
