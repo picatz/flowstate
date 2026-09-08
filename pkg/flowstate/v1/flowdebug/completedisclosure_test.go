@@ -223,3 +223,51 @@ func TestTheSecretIsInTheScopeThisIsCompletingOver(t *testing.T) {
 		"and the redactor installed for the negative tests is a live seam, not a no-op")
 	require.Contains(t, withheld, "[redacted]")
 }
+
+func TestBacktraceLabelsKeepThePauseRedactorWhileRendering(t *testing.T) {
+	const sensitive = `build (call "callee")`
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	session.SetRedactor(func(text string) string {
+		if text != sensitive {
+			return text
+		}
+		close(entered)
+		<-release
+
+		return "[redacted]"
+	})
+
+	go func() {
+		_ = session.BeforeStep(t.Context(), &v1.Node{
+			Id: "build",
+			Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+				Name: "callee",
+			}}},
+		}, v1.NewScope(v1.CurrentProfile, nil))
+	}()
+	_, err = session.WaitForPause(t.Context())
+	require.NoError(t, err)
+
+	type result struct {
+		labels []string
+		err    error
+	}
+	answer := make(chan result, 1)
+	go func() {
+		labels, labelErr := session.BacktraceLabels()
+		answer <- result{labels: labels, err: labelErr}
+	}()
+	<-entered
+	session.SetRedactor(nil)
+	close(release)
+
+	got := <-answer
+	require.NoError(t, got.err)
+	require.Equal(t, []string{"[redacted]"}, got.labels,
+		"rendering switched to the live redactor after capturing the pause")
+}

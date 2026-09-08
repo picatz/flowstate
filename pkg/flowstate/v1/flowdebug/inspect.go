@@ -126,6 +126,38 @@ func (s *Session) Backtrace() (*v1.DebugBacktrace, error) {
 	return trace, nil
 }
 
+// BacktraceLabels renders the paused run's call chain with the text redactor
+// snapshotted by that same pause. Assembly belongs inside this boundary because
+// joining individually safe fields can recreate a protected substring, and a
+// caller consulting the session again after [Session.Backtrace] can race a
+// resume that clears or replaces the originating redactor.
+func (s *Session) BacktraceLabels() ([]string, error) {
+	s.mu.Lock()
+	subject := s.at
+	s.mu.Unlock()
+
+	if subject.scope == nil {
+		return nil, ErrNotPaused
+	}
+	if subject.autopsy || subject.backtrace == nil {
+		return []string{}, nil
+	}
+
+	labels := make([]string, 0, len(subject.backtrace.GetFrames()))
+	for _, frame := range subject.backtrace.GetFrames() {
+		name := frame.GetStepId()
+		if frame.GetWorkflow() != "" {
+			name = frame.GetWorkflow() + "." + name
+		}
+		if frame.GetKind() != "" {
+			name = fmt.Sprintf("%s (%s)", name, frame.GetKind())
+		}
+		labels = append(labels, applyText(subject.redactText, name))
+	}
+
+	return labels, nil
+}
+
 // Evaluate answers one CEL expression against the scope the run is paused in,
 // which is what `inspect` prints.
 //

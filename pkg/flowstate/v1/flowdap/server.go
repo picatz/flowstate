@@ -423,8 +423,8 @@ func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug
 	})
 }
 
-// stackTrace is the run's shared call chain, translated without reconstructing
-// it from adapter state.
+// stackTrace is the run's shared, already-redacted call-chain rendering rather
+// than one reconstructed from adapter state or a live redactor.
 func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 	var asked struct {
 		StartFrame int `json:"startFrame"`
@@ -436,14 +436,14 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 		}
 	}
 
-	trace, err := s.session.Backtrace()
+	labels, err := s.session.BacktraceLabels()
 	if err != nil {
 		// An empty stack rather than a refusal: a client asks for this
 		// speculatively, and "the run is not stopped" is exactly what no frames
 		// means.
 		return stackTraceBody{StackFrames: []stackFrame{}}
 	}
-	if len(trace.GetFrames()) == 0 {
+	if len(labels) == 0 {
 		if at, paused := s.session.Paused(); paused && at.Autopsy {
 			// An autopsy has no current step or call chain, but it does retain a
 			// readable scope. Keep the synthetic frame DAP requires as the address
@@ -455,16 +455,9 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 		return stackTraceBody{StackFrames: []stackFrame{}}
 	}
 
-	frames := make([]stackFrame, 0, len(trace.GetFrames()))
-	for i, frame := range trace.GetFrames() {
-		name := frame.GetStepId()
-		if frame.GetWorkflow() != "" {
-			name = frame.GetWorkflow() + "." + name
-		}
-		if frame.GetKind() != "" {
-			name = fmt.Sprintf("%s (%s)", name, frame.GetKind())
-		}
-		frames = append(frames, stackFrame{ID: i + 1, Name: s.session.RedactText(name)})
+	frames := make([]stackFrame, 0, len(labels))
+	for i, label := range labels {
+		frames = append(frames, stackFrame{ID: i + 1, Name: label})
 	}
 
 	return stackTraceBody{
