@@ -44,7 +44,7 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 		spec cmdSpec
 	}{
 		{"module-wide", goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-timeout", "900s", "./...")},
-		{"narrow", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-timeout", "300s", modulePath+"/tools/gate")},
+		{"narrow", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-timeout", "900s", modulePath+"/tools/gate")},
 		{"ordering", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/")},
 	} {
 		display := tc.spec.display()

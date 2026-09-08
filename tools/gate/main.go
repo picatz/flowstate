@@ -356,8 +356,11 @@ func run(suppliedBase string) error {
 	case len(affected) == 0:
 		g.skip("test", withTestResidual(p, "no Go packages affected by this diff"))
 	default:
+		// Keep the per-package ceiling aligned with CI. The engine's race
+		// rehearsals intentionally exercise admitted CEL bounds and can spend
+		// more than five minutes without hanging when the runner is loaded.
 		g.leg("test", withTestResidual(p, narrowWhy),
-			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, append([]string{"-race", "-timeout", "300s"}, affected...)...))
+			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, append([]string{"-race", "-timeout", "900s"}, affected...)...))
 	}
 
 	// Affected packages: staticcheck, on the same trigger and with the same
