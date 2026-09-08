@@ -80,6 +80,10 @@ func main() {
 		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, then merge manually")
 		return
 	}
+	if isMergeInvocation(in) && !mergeHeadPinned(in) {
+		hook.Deny("mergeguard: a manual merge must be pinned to the reviewed final head. Use one explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes; merge tools without an exact-head precondition are blocked.")
+		return
+	}
 
 	owner, repo, number, ok := mergeTarget(in)
 	if !ok {
@@ -313,13 +317,43 @@ func autoMergeRequested(in *hook.Input) bool {
 	if in == nil || in.ToolName != "Bash" {
 		return false
 	}
+	for _, args := range ghPRMergeInvocations(in.Command()) {
+		for _, arg := range args {
+			if arg == "--auto" || strings.HasPrefix(arg, "--auto=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var fullCommitOID = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+func isMergeInvocation(in *hook.Input) bool {
+	if in == nil {
+		return false
+	}
+	return in.ToolName == "mcp__github__merge_pull_request" ||
+		(in.ToolName == "Bash" && isGHPRMergeInvocation(in.Command()))
+}
+
+func mergeHeadPinned(in *hook.Input) bool {
+	if in == nil {
+		return false
+	}
+	if in.ToolName == "mcp__github__merge_pull_request" {
+		return fullCommitOID.MatchString(stringOf(in.ToolInput["expectedHeadOid"]))
+	}
 	args, ok := ghPRMergeArgs(in.Command())
 	if !ok {
 		return false
 	}
-	for _, arg := range args {
-		if arg == "--auto" || strings.HasPrefix(arg, "--auto=") {
-			return true
+	for i, arg := range args {
+		if arg == "--match-head-commit" && i+1 < len(args) {
+			return fullCommitOID.MatchString(args[i+1])
+		}
+		if strings.HasPrefix(arg, "--match-head-commit=") {
+			return fullCommitOID.MatchString(strings.TrimPrefix(arg, "--match-head-commit="))
 		}
 	}
 	return false
@@ -394,7 +428,7 @@ func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
 // redirect the guard to a different pull request. Control operators bound
 // each simple command; this intentionally remains a small recognizer, not a
 // shell evaluator.
-func ghPRMergeArgs(s string) ([]string, bool) {
+func ghPRMergeInvocations(s string) [][]string {
 	var commands [][]string
 	var words []string
 	var word strings.Builder
@@ -450,6 +484,7 @@ func ghPRMergeArgs(s string) ([]string, bool) {
 	}
 	flushCommand()
 
+	var invocations [][]string
 	for _, command := range commands {
 		for i := 0; i < len(command); i++ {
 			if command[i] != "gh" {
@@ -468,14 +503,22 @@ func ghPRMergeArgs(s string) ([]string, bool) {
 					j++
 				default:
 					if j+1 < len(command) && arg == "pr" && command[j+1] == "merge" {
-						return append(inherited, command[j+2:]...), true
+						invocations = append(invocations, append(inherited, command[j+2:]...))
 					}
 					j = len(command)
 				}
 			}
 		}
 	}
-	return nil, false
+	return invocations
+}
+
+func ghPRMergeArgs(s string) ([]string, bool) {
+	invocations := ghPRMergeInvocations(s)
+	if len(invocations) != 1 {
+		return nil, false
+	}
+	return invocations[0], true
 }
 
 // thread is the part of an unresolved review thread this guard names in its

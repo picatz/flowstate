@@ -134,6 +134,17 @@ func TestEvaluateRejectsQueuedReplacementWithoutTimestamps(t *testing.T) {
 	}
 }
 
+func TestEvaluateRejectsUnorderedCompletedDuplicates(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:00:00Z"},
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "FAILURE"},
+	}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "without enough timestamp evidence") {
+		t.Fatalf("unordered failed duplicate was accepted: %s", problems)
+	}
+}
+
 func TestEvaluateUsesLatestExactHeadCopilotReview(t *testing.T) {
 	pr := passingPullRequest()
 	pr.Reviews[0].SubmittedAt = "2026-09-08T10:00:00Z"

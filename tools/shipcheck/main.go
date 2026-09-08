@@ -232,6 +232,14 @@ func checkProblems(checks []statusCheck) []string {
 	for _, key := range order {
 		group := groups[key]
 		name := strings.SplitN(key, "\x00", 3)[2]
+		if len(group) > 1 {
+			for _, check := range group {
+				if checkTimestamp(check) == "" {
+					problems = append(problems, fmt.Sprintf("check %q has duplicate results without enough timestamp evidence to order them", name))
+					break
+				}
+			}
+		}
 		for _, check := range group {
 			if check.Type == "CheckRun" && check.Status != "COMPLETED" {
 				problems = append(problems, fmt.Sprintf("check %q is %s/%s", name, check.Status, check.Conclusion))

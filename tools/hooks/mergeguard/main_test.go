@@ -446,6 +446,7 @@ func TestAutoMergeIsRejected(t *testing.T) {
 		"gh pr merge --auto https://github.com/picatz/flowstate/pull/498",
 		"gh -R picatz/flowstate pr merge 498 --auto",
 		"gh --repo=picatz/flowstate pr merge 498 --auto=true",
+		"gh pr merge 498 -R picatz/flowstate --squash && gh pr merge 499 -R picatz/flowstate --auto",
 	} {
 		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
 		if !autoMergeRequested(in) {
@@ -460,6 +461,34 @@ func TestAutoMergeIsRejected(t *testing.T) {
 		if autoMergeRequested(in) {
 			t.Errorf("autoMergeRequested(%q) = true", command)
 		}
+	}
+}
+
+func TestManualMergeRequiresOneExactHeadPrecondition(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+	for _, command := range []string{
+		"gh pr merge 498 -R picatz/flowstate --squash --match-head-commit " + sha,
+		"gh -R picatz/flowstate pr merge 498 --match-head-commit=" + sha,
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if !mergeHeadPinned(in) {
+			t.Errorf("mergeHeadPinned(%q) = false", command)
+		}
+	}
+	for _, command := range []string{
+		"gh pr merge 498 -R picatz/flowstate --squash",
+		"gh pr merge 498 -R picatz/flowstate --match-head-commit abc1234",
+		"gh pr merge 498 -R picatz/flowstate --match-head-commit " + sha + " && gh pr merge 499 -R picatz/flowstate --match-head-commit " + sha,
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if mergeHeadPinned(in) {
+			t.Errorf("mergeHeadPinned(%q) = true", command)
+		}
+	}
+	mcp := &hook.Input{ToolName: "mcp__github__merge_pull_request", ToolInput: map[string]any{"expectedHeadOid": sha}}
+	if !mergeHeadPinned(mcp) {
+		t.Error("structured exact-head precondition was rejected")
 	}
 }
 
