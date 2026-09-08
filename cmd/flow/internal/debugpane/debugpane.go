@@ -324,18 +324,6 @@ func capValue(text string) string {
 	return string(runes[:MaxValueRunes]) + " (cut)"
 }
 
-// positionStep is the step a position names, or "" where it names none.
-//
-// An autopsy is a real pause with no step to be at — the run is over — so it
-// windows the front of the list rather than pointing into it.
-func positionStep(at flowdebug.Position) string {
-	if at.Autopsy {
-		return ""
-	}
-
-	return at.Step
-}
-
 // Layout is the space the panes have.
 type Layout struct {
 	// Width is the columns to draw within. Zero or less is answered with the
