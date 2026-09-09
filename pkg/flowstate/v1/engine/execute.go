@@ -353,13 +353,18 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// saved position; everything after it starts fresh.
 		descend := resuming && i == start
 
-		run, err := v1.EvalConditionInScope(evalContext(), node.GetCondition(), e.scope)
+		run, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), node.GetCondition(), e.scope)
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return stepFailed(err, "step %q", node.GetId())
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
 			e.yieldWorkflow()
+			if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
+				e.setFrame(depth, i+1)
+				return errContinueAsNew
+			}
 			continue
 		}
 
@@ -474,7 +479,7 @@ func (e *executor) yieldWorkflow() {
 	done.Receive(e.ctx, &signal)
 }
 
-// chargeWorkflowCost records deterministic value-expression CEL work.
+// chargeWorkflowCost records deterministic workflow-side CEL work.
 // [shouldSuspend] turns a spent budget into Continue-As-New at the next
 // representable step or loop boundary, so replay of a later segment does not
 // repeat an ever-growing prefix.
@@ -1509,7 +1514,9 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		state = e.resume[inner].GetLoopState()
 	} else {
 		var err error
-		state, err = v1.LoopInitialState(evalContext(), loop, e.scope)
+		var cost uint64
+		state, cost, err = v1.LoopInitialStateWithCost(evalContext(), loop, e.scope)
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -1658,7 +1665,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 
 	// `until:` and `update:` see the body's outputs and the current state, so they
 	// are evaluated against the scope the body finished in.
-	stop, err := v1.EvalLoopUntil(evalContext(), loop, nested.scope)
+	stop, cost, err := v1.EvalLoopUntilWithCost(evalContext(), loop, nested.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -1679,7 +1687,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), true, nil, nil
 	}
 
-	next, err := v1.LoopNextState(evalContext(), loop, nested.scope)
+	next, cost, err := v1.LoopNextStateWithCost(evalContext(), loop, nested.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, false, nil, err
 	}

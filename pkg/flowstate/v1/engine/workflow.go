@@ -580,7 +580,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	// A continuation is a history command, so introducing a new reason to emit
 	// one must be versioned. Old histories take the pre-#1882 path until they
 	// complete or cross an already-recorded Continue-As-New boundary; new
-	// executions accumulate deterministic value-expression CEL cost from their
+	// executions accumulate deterministic workflow-side CEL cost from their
 	// first segment.
 	var sliceCost *uint64
 	if workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {

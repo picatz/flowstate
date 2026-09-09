@@ -29,6 +29,15 @@ func WorkflowSliceCases() []Case {
 		wantRunValues[i] = int64(10000)
 	}
 
+	skipped := make([]*v1.Node, 30)
+	for i := range skipped {
+		skipped[i] = &v1.Node{
+			Id:        fmt.Sprintf("skipped-%02d", i),
+			Condition: v1.NewExpr(heavy + " == 0"),
+			Kind:      &v1.Node_Value{Value: v1.NewLiteral(int64(1))},
+		}
+	}
+
 	return []Case{
 		{
 			Name: "one hundred bounded value steps complete as separate scheduler slices",
@@ -46,6 +55,24 @@ func WorkflowSliceCases() []Case {
 				RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
 					"values": v1.NewLiteralList(wantRunValues...),
 				}},
+			},
+		},
+		{
+			Name: "costly false conditions continue at step boundaries",
+			Workflow: &v1.Workflow{
+				Name:    "bounded-skipped-condition-slices",
+				Profile: v1.CurrentProfile,
+				Steps: append(skipped, &v1.Node{
+					Id:   "observed",
+					Kind: &v1.Node_Value{Value: v1.NewLiteral(int64(30))},
+				}),
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"observed": {NamedValues: map[string]*v1.Value{
+						v1.ValueOutput: v1.NewLiteral(int64(30)),
+					}},
+				},
 			},
 		},
 		{

@@ -38,6 +38,38 @@ func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOut
 	)
 }
 
+func TestWorkflowControlExpressionsReportCELCost(t *testing.T) {
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+
+	run, conditionCost, err := v1.EvalConditionInScopeWithCost(
+		t.Context(), v1.NewExpr("lists.range(100).size() == 0"), scope,
+	)
+	require.NoError(t, err)
+	require.False(t, run)
+	require.Positive(t, conditionCost)
+
+	loop := &v1.Loop{
+		State:   "n",
+		Initial: v1.NewExpr("lists.range(100).size()"),
+		Update:  v1.NewExpr("n + lists.range(100).size()"),
+		Until:   v1.NewExpr("lists.range(100).size() == 0"),
+	}
+	state, initialCost, err := v1.LoopInitialStateWithCost(t.Context(), loop, scope)
+	require.NoError(t, err)
+	require.Positive(t, initialCost)
+
+	iterationScope := scope.WithLocal("n", state)
+	stop, untilCost, err := v1.EvalLoopUntilWithCost(t.Context(), loop, iterationScope)
+	require.NoError(t, err)
+	require.False(t, stop)
+	require.Positive(t, untilCost)
+
+	next, updateCost, err := v1.LoopNextStateWithCost(t.Context(), loop, iterationScope)
+	require.NoError(t, err)
+	require.Equal(t, int64(200), next.GetLiteral().GetInt64Value())
+	require.Positive(t, updateCost)
+}
+
 func TestRunWorkflow(t *testing.T) {
 	baseURL := conformance.NewHTTPServer(t)
 	for _, test := range conformance.Workflows(baseURL) {
