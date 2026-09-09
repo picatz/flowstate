@@ -16,7 +16,6 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
-	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
@@ -1528,26 +1527,40 @@ func (s *Session) prompting(at promptSubject) {
 // above make it true of the withholding: one idea, applied to everything the
 // pause hands out.
 //
-// The cost, stated rather than glossed: one deep copy per pause. It is paid
-// only where the run actually stops — [Session.prompting] is reached from
-// [Session.BeforeStep] only once `shouldStop` says so — and it copies state the
-// run is already holding in memory, so it briefly doubles a bounded thing
-// rather than introducing growth of its own. A stop is the slowest moment this
-// system has; a copy is not what makes it slow.
+// Only the step-output map is copied. The values already recorded in it and the
+// other scope fields are immutable; every scope helper uses copy-on-write for
+// its local maps. Deep-copying those payloads at every pause would make a run
+// with cumulative large outputs pay for all prior bytes once per stop.
 //
 // [promptSubject.extra] is deliberately not copied. It holds the autopsy's bare
 // bindings and nothing at a breakpoint, and an autopsy runs after the engine has
 // finished with the run — so there is no writer to be separated from.
 func frozen(scope *v1.Scope) *v1.Scope {
-	clone, ok := proto.Clone(scope).(*v1.Scope)
-	if !ok {
-		// Unreachable for a generated type, and the answer if it ever were
-		// reached is the pause with nothing to hand out rather than a live map
-		// handed to another goroutine.
+	if scope == nil {
 		return nil
 	}
 
-	return clone
+	var outputs *v1.Workflow_StepOutputs
+	if scope.GetOutputs() != nil {
+		outputs = &v1.Workflow_StepOutputs{
+			StepValues: make(map[string]*v1.Node_Outputs, len(scope.GetOutputs().GetStepValues())),
+		}
+		for id, value := range scope.GetOutputs().GetStepValues() {
+			outputs.StepValues[id] = value
+		}
+	}
+
+	return &v1.Scope{
+		Outputs:     outputs,
+		Profile:     scope.GetProfile(),
+		Vars:        scope.GetVars(),
+		AmbientVars: scope.GetAmbientVars(),
+		Inputs:      scope.GetInputs(),
+		Identity:    scope.GetIdentity(),
+		Local:       scope.GetLocal(),
+		Address:     scope.GetAddress(),
+		Trigger:     scope.GetTrigger(),
+	}
 }
 
 // sawStep remembers a step id this session has watched go past, so that
