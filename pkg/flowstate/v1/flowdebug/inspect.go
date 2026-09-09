@@ -93,12 +93,37 @@ func (s *Session) Paused() (Position, bool) {
 		return Position{}, false
 	}
 
+	return positionOf(subject), true
+}
+
+// PausedStepPosition is [Session.Paused] with the displayed position's index
+// and the inventory length resolved from raw identities in the same snapshot.
+// A renderer must not use redacted display text as an inventory lookup key.
+func (s *Session) PausedStepPosition() (position Position, index, total int, paused bool) {
+	s.mu.Lock()
+	subject := s.at
+	order := s.inventory()
+	index = positionIn(order, subject.workflow, subject.step)
+	total = len(order)
+	s.mu.Unlock()
+
+	if subject.scope == nil {
+		return Position{}, -1, total, false
+	}
+
+	return positionOf(subject), index, total, true
+}
+
+// positionOf renders every author-controlled identity through the redactor
+// captured with the pause. Keep resolution against subject's raw fields before
+// calling this: redacted identifiers are display values, not lookup keys.
+func positionOf(subject promptSubject) Position {
 	return Position{
-		Step:     subject.step,
-		Kind:     subject.kind,
-		Workflow: subject.workflow,
+		Step:     applyText(subject.redactText, subject.step),
+		Kind:     applyText(subject.redactText, subject.kind),
+		Workflow: applyText(subject.redactText, subject.workflow),
 		Autopsy:  subject.autopsy,
-	}, true
+	}
 }
 
 // Backtrace returns the paused run's current step and caller chain, innermost
@@ -116,7 +141,46 @@ func (s *Session) Backtrace() (*v1.DebugBacktrace, error) {
 		return &v1.DebugBacktrace{}, nil
 	}
 
-	return proto.Clone(subject.backtrace).(*v1.DebugBacktrace), nil
+	trace := proto.Clone(subject.backtrace).(*v1.DebugBacktrace)
+	for _, frame := range trace.GetFrames() {
+		frame.Workflow = applyText(subject.redactText, frame.GetWorkflow())
+		frame.StepId = applyText(subject.redactText, frame.GetStepId())
+		frame.Kind = applyText(subject.redactText, frame.GetKind())
+	}
+
+	return trace, nil
+}
+
+// BacktraceLabels renders the paused run's call chain with the text redactor
+// snapshotted by that same pause. Assembly belongs inside this boundary because
+// joining individually safe fields can recreate a protected substring, and a
+// caller consulting the session again after [Session.Backtrace] can race a
+// resume that clears or replaces the originating redactor.
+func (s *Session) BacktraceLabels() ([]string, error) {
+	s.mu.Lock()
+	subject := s.at
+	s.mu.Unlock()
+
+	if subject.scope == nil {
+		return nil, ErrNotPaused
+	}
+	if subject.autopsy || subject.backtrace == nil {
+		return []string{}, nil
+	}
+
+	labels := make([]string, 0, len(subject.backtrace.GetFrames()))
+	for _, frame := range subject.backtrace.GetFrames() {
+		name := frame.GetStepId()
+		if frame.GetWorkflow() != "" {
+			name = frame.GetWorkflow() + "." + name
+		}
+		if frame.GetKind() != "" {
+			name = fmt.Sprintf("%s (%s)", name, frame.GetKind())
+		}
+		labels = append(labels, applyText(subject.redactText, name))
+	}
+
+	return labels, nil
 }
 
 // Evaluate answers one CEL expression against the scope the run is paused in,
@@ -380,17 +444,56 @@ type Names struct {
 	listing string
 }
 
-// Scope lists what the paused run can name.
+// Scope lists what the paused run can name without returning an identifier the
+// pause's text redactor would withhold. Such a name is dropped rather than
+// rewritten: callers use names to build expressions, and a redaction marker is
+// not an expression for the value it replaced. This is the same fail-closed
+// choice completion makes for names it cannot safely offer.
 func (s *Session) Scope() ([]Names, error) {
+	groups, _, err := s.ScopeAtPause()
+	return groups, err
+}
+
+// ScopeAtPause is [Session.Scope] with the generation that identifies the
+// captured pause, for a front end that hands out addresses to query later.
+func (s *Session) ScopeAtPause() ([]Names, uint64, error) {
 	s.mu.Lock()
 	subject := s.at
+	generation := s.pauseGen
 	s.mu.Unlock()
 
 	if subject.scope == nil {
-		return nil, ErrNotPaused
+		return nil, 0, ErrNotPaused
 	}
 
-	return s.scopeNames(subject.scope, subject.extra), nil
+	return s.visibleScopeNames(subject), generation, nil
+}
+
+// visibleScopeNames applies the pause's identifier-withholding posture to the
+// one shared scope collection consumed by local and wire renderers.
+func (s *Session) visibleScopeNames(subject promptSubject) []Names {
+	groups := s.scopeNames(subject.scope, subject.extra)
+	if subject.redactText == nil {
+		return groups
+	}
+
+	visible := groups[:0]
+	for _, group := range groups {
+		names := group.Names[:0]
+		for _, name := range group.Names {
+			expression := expressionFor(group.Root, name)
+			if subject.redactText(name) == name && subject.redactText(expression) == expression {
+				names = append(names, name)
+			}
+		}
+		if len(names) == 0 {
+			continue
+		}
+		group.Names = names
+		visible = append(visible, group)
+	}
+
+	return visible
 }
 
 // StepState is what a session last watched one step do.
@@ -535,7 +638,15 @@ type StepList struct {
 	// is [Session.sawStep]'s one cache, so a second notice would be a second
 	// thing to keep true.
 	Truncated bool
+
+	// redactText is the display posture captured with this window. A renderer
+	// uses it after composing labels whose individually safe pieces can form a
+	// sensitive value when joined.
+	redactText func(string) string
 }
+
+// RedactText applies the display posture captured with this step window.
+func (l StepList) RedactText(text string) string { return applyText(l.redactText, text) }
 
 // StepPosition reports where a step sits in the run's step list, and how long
 // that list is.
@@ -624,13 +735,31 @@ func positionIn(order []Step, workflow, id string) int {
 // The one exception is the step the run is *held* at, which the position names
 // exactly when it carries a workflow — that row reads [StepRunning], because
 // there the session does know.
+//
+// Display identities use the redactor captured by the current pause, or the
+// session's current redactor between pauses. Position resolution remains over
+// the untouched inventory inside the session.
 func (s *Session) Steps(offset, limit int) StepList {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	list, _ := s.stepWindow(offset, limit)
+	redact := s.redact
+	if s.at.scope != nil {
+		redact = s.at.redactText
+	}
+	s.mu.Unlock()
+
+	redactStepList(list.Steps, redact)
+	list.redactText = redact
 
 	return list
+}
+
+func redactStepList(steps []Step, redact func(string) string) {
+	for i := range steps {
+		steps[i].ID = applyText(redact, steps[i].ID)
+		steps[i].Workflow = applyText(redact, steps[i].Workflow)
+		steps[i].Via = applyText(redact, steps[i].Via)
+	}
 }
 
 // stepWindow is [Session.Steps]' whole answer, plus where the held row sits in

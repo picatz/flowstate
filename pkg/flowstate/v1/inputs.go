@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -298,6 +299,33 @@ func CheckDeclarationTypes(wf *Workflow) error {
 		return nil
 	})
 }
+
+// DeclaresSensitiveValues reports whether wf or any workflow embedded in it by
+// a call declares a sensitive input or output. Whole-run display decisions must
+// include callees because their steps execute under the same run and debugger.
+func DeclaresSensitiveValues(wf *Workflow) (bool, error) {
+	err := walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+		for _, input := range current.GetDeclaredInputs() {
+			if input.GetSensitive() {
+				return errSensitiveDeclaration
+			}
+		}
+		for _, output := range current.GetDeclaredOutputs() {
+			if output.GetSensitive() {
+				return errSensitiveDeclaration
+			}
+		}
+
+		return nil
+	})
+	if errors.Is(err, errSensitiveDeclaration) {
+		return true, nil
+	}
+
+	return false, err
+}
+
+var errSensitiveDeclaration = errors.New("sensitive declaration found")
 
 // checkTypeDepth iteratively verifies that t does not nest deeper than
 // maxDepth levels through its list and map recursive arms, and that no

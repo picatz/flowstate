@@ -243,6 +243,9 @@ applies here rather than a second, weaker one.
   the final render withhold its transcript, naming `--reveal-sensitive`. Say the
   reveal out loud, or do not attach a debugger — there is no third answer where
   the debugger quietly shows what the renderer would have hidden.
+- `flow dap` makes the same refusal before starting the local run. An editor can
+  state the deliberate reveal as `"revealSensitive": true` in its launch
+  configuration, or whoever starts the adapter can pass `--reveal-sensitive`.
 - Under `flow test --debug` and `flowstate_debug`, the case's own redaction
   posture applies to **everything the session prints** — each step's account as
   it arrives, every `inspect` answer, and the autopsy's failures — so a

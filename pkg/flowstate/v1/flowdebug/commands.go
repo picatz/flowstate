@@ -734,7 +734,42 @@ const maxStepIDLength = 128
 //
 // An empty inventory reports nothing unknown; see [Session.unknownStepNotice].
 func (s *Session) UnknownStep(id string) (string, bool) {
-	return s.unknownStepNotice(strings.TrimSpace(id))
+	return s.unknownStep(strings.TrimSpace(id), s.snapshotTextRedactor())
+}
+
+// StepNotice is one front end's answer about whether a requested step exists.
+type StepNotice struct {
+	Message string
+	Unknown bool
+}
+
+// SetBreakpointsWithNotices validates a front end's whole requested set under
+// one redaction snapshot, omitting unknown and empty ids from the installed set
+// while returning one notice slot per request.
+func (s *Session) SetBreakpointsWithNotices(ids []string) ([]StepNotice, error) {
+	redact := s.snapshotTextRedactor()
+	notices := make([]StepNotice, 0, len(ids))
+	known := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			notices = append(notices, StepNotice{})
+			continue
+		}
+		message, unknown := s.unknownStep(id, redact)
+		notices = append(notices, StepNotice{Message: message, Unknown: unknown})
+		if !unknown {
+			known = append(known, id)
+		}
+	}
+
+	return notices, s.setBreakpoints(known, redact, false)
+}
+
+func (s *Session) unknownStep(id string, redact func(string) string) (string, bool) {
+	notice, unknown := s.unknownStepNotice(id)
+
+	return applyText(redact, notice), unknown
 }
 
 // unknownStepNotice reports that a step id names nothing this run can reach,

@@ -266,6 +266,33 @@ func taggedScope(tag string, n int) *v1.Scope {
 	return &v1.Scope{Outputs: &v1.Workflow_StepOutputs{StepValues: values}}
 }
 
+// TestAPauseCopiesTheMutableIndexNotItsPayloads pins both halves of the scope
+// snapshot contract: later map writes cannot enter an admitted pause, while
+// immutable values are shared rather than recopied at every stop.
+func TestAPauseCopiesTheMutableIndexNotItsPayloads(t *testing.T) {
+	t.Parallel()
+
+	first := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"value": v1.NewLiteral("large")}}
+	scope := &v1.Scope{
+		Outputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{"first": first}},
+		Inputs:  map[string]*v1.Value{"fixed": v1.NewLiteral("input")},
+	}
+
+	snapshot := frozen(scope)
+	require.NotNil(t, snapshot)
+	require.Same(t, first, snapshot.GetOutputs().GetStepValues()["first"],
+		"immutable output payloads were deep-copied, making cumulative pauses quadratic")
+	require.Same(t, scope.GetInputs()["fixed"], snapshot.GetInputs()["fixed"],
+		"fixed scope fields were deep-copied even though they are never written through")
+
+	scope.Outputs.StepValues["first"] = &v1.Node_Outputs{}
+	scope.Outputs.StepValues["later"] = &v1.Node_Outputs{}
+	assert.Same(t, first, snapshot.GetOutputs().GetStepValues()["first"],
+		"a later replacement changed the admitted pause")
+	assert.NotContains(t, snapshot.GetOutputs().GetStepValues(), "later",
+		"a later output entered the admitted pause")
+}
+
 // TestAnEvaluationIsPinnedToThePauseItWasGiven is the mechanism, stated where a
 // fixture can drive it rather than left to a concurrent interleave.
 //

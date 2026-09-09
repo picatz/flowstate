@@ -355,16 +355,12 @@ func decideCarriedValues(workflow *v1.Workflow, reveal bool) carriedValues {
 		return carriedValuesUnverified
 	}
 
-	for _, declared := range workflow.GetDeclaredInputs() {
-		if declared.GetSensitive() {
-			return carriedValuesDeclared
-		}
+	declared, err := v1.DeclaresSensitiveValues(workflow)
+	if err != nil {
+		return carriedValuesUnverified
 	}
-
-	for _, declared := range workflow.GetDeclaredOutputs() {
-		if declared.GetSensitive() {
-			return carriedValuesDeclared
-		}
+	if declared {
+		return carriedValuesDeclared
 	}
 
 	return carriedValuesShown

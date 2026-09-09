@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -477,6 +478,27 @@ func TestAPositionIsNotAnsweredBetweenStops(t *testing.T) {
 	_, err = session.ScopeProto(t.Context(), -1)
 	assert.ErrorIs(t, err, flowdebug.ErrNotPaused,
 		"a scope was answered against a run that is not held")
+}
+
+func TestPositionProtoDoesNotCallTheRedactorUnderTheSessionLock(t *testing.T) {
+	pausedAt(t, secretScope(), func(session *flowdebug.Session) {
+		session.SetRedactor(func(text string) string {
+			done := make(chan struct{})
+			go func() {
+				_ = session.Script()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Error("the position redactor ran while holding the session lock")
+			}
+			return text
+		})
+	}, func(session *flowdebug.Session) {
+		_, paused := session.PositionProto()
+		assert.True(t, paused)
+	})
 }
 
 // TestAnAutopsyPositionNamesNoDeclaration is the third state of the position.

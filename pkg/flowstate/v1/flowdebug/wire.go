@@ -57,18 +57,10 @@ import (
 // fail-closed answer the pane draws by marking none.
 func (s *Session) PositionProto() (*v1.DebugPosition, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	subject := s.at
 	if subject.scope == nil {
+		s.mu.Unlock()
 		return nil, false
-	}
-
-	position := &v1.DebugPosition{
-		StepId:   subject.step,
-		Workflow: subject.workflow,
-		Kind:     subject.kind,
-		Autopsy:  subject.autopsy,
 	}
 
 	// An autopsy needs no arm of its own, and writing one would be an arm no
@@ -77,13 +69,28 @@ func (s *Session) PositionProto() (*v1.DebugPosition, bool) {
 	// it is asked everywhere else.
 	order := s.inventory()
 	index := positionIn(order, subject.workflow, subject.step)
+	declaration := 0
+	if index >= 0 {
+		declaration = order[index].Declaration
+	}
+	s.mu.Unlock()
+
+	// Redactors are caller-supplied code and can consult the session, so invoke
+	// them only after releasing its mutex. The subject keeps the pause's
+	// redactor stable across the whole message.
+	position := &v1.DebugPosition{
+		StepId:   applyText(subject.redactText, subject.step),
+		Workflow: applyText(subject.redactText, subject.workflow),
+		Kind:     applyText(subject.redactText, subject.kind),
+		Autopsy:  subject.autopsy,
+	}
 	if index < 0 {
 		return position, true
 	}
 
 	// Narrowed without a check, because [New] refused an inventory whose
 	// declarations the wire cannot say — see [validDeclaration].
-	position.Declaration = proto.Int32(int32(order[index].Declaration))
+	position.Declaration = proto.Int32(int32(declaration))
 
 	return position, true
 }
@@ -107,7 +114,6 @@ func (s *Session) PositionProto() (*v1.DebugPosition, bool) {
 // more pages, which is what [DebugStepWindow.total] is for.
 func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Held to the producer's ceiling before the window is cut, so the bound is
 	// on the copy rather than on the message built from it (Codex, #1194).
@@ -116,6 +122,11 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 	}
 
 	list, held := s.stepWindow(offset, limit)
+	redact := s.redact
+	if s.at.scope != nil {
+		redact = s.at.redactText
+	}
+	s.mu.Unlock()
 
 	window := &v1.DebugStepWindow{
 		Steps:        make([]*v1.DebugStep, 0, len(list.Steps)),
@@ -127,12 +138,12 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 
 	for _, step := range list.Steps {
 		window.Steps = append(window.Steps, &v1.DebugStep{
-			Workflow: step.Workflow,
+			Workflow: applyText(redact, step.Workflow),
 			// Narrowed without a check for [Session.PositionProto]'s reason:
 			// the inventory was refused at the door if it could not be said.
 			Declaration: int32(step.Declaration),
-			Via:         step.Via,
-			StepId:      step.ID,
+			Via:         applyText(redact, step.Via),
+			StepId:      applyText(redact, step.ID),
 			State:       stepStates[step.State],
 		})
 	}
@@ -176,6 +187,32 @@ func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 // binding — so this message cannot come to list fewer names than the scope
 // holds.
 func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, error) {
+	return s.scopeProto(ctx, "", limit, MaxScopeBindings, nil)
+}
+
+// ScopeGroupProto is [Session.ScopeProto] narrowed to one named group. Both the
+// names and their values come from one pause snapshot, and at most limit
+// bindings are carried, for front ends that render one group per request.
+func (s *Session) ScopeGroupProto(ctx context.Context, group string, limit int) (*v1.DebugScope, error) {
+	carryLimit := MaxScopeBindings
+	if limit >= 0 {
+		carryLimit = min(limit, MaxScopeBindings)
+	}
+	return s.scopeProto(ctx, group, limit, carryLimit, nil)
+}
+
+// ScopeGroupProtoAt is [Session.ScopeGroupProto] only while generation still
+// identifies the current pause. A front end can therefore reject a stale scope
+// address instead of answering it from a later pause.
+func (s *Session) ScopeGroupProtoAt(ctx context.Context, group string, limit int, generation uint64) (*v1.DebugScope, error) {
+	carryLimit := MaxScopeBindings
+	if limit >= 0 {
+		carryLimit = min(limit, MaxScopeBindings)
+	}
+	return s.scopeProto(ctx, group, limit, carryLimit, &generation)
+}
+
+func (s *Session) scopeProto(ctx context.Context, onlyGroup string, limit, carryLimit int, generation *uint64) (*v1.DebugScope, error) {
 	// One pause for the whole message, taken once here rather than once per
 	// call inside [Session.Scope] and again inside each [Session.Evaluate].
 	//
@@ -189,13 +226,27 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 	// pause can outlive it.
 	s.mu.Lock()
 	subject := s.at
+	currentGeneration := s.pauseGen
 	s.mu.Unlock()
 
 	if subject.scope == nil {
 		return nil, ErrNotPaused
 	}
+	if generation != nil && currentGeneration != *generation {
+		return nil, ErrNotPaused
+	}
 
-	groups := s.scopeNames(subject.scope, subject.extra)
+	groups := s.visibleScopeNames(subject)
+	if onlyGroup != "" {
+		selected := groups[:0]
+		for _, group := range groups {
+			if group.Group == onlyGroup {
+				selected = append(selected, group)
+				break
+			}
+		}
+		groups = selected
+	}
 
 	scope := &v1.DebugScope{Groups: make([]*v1.DebugScopeGroup, 0, len(groups))}
 
@@ -231,7 +282,7 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 			// shape as a chunk size that bounds allocation rather than count.
 			// Written down rather than left as coverage nobody can account for
 			// (CLAUDE.md).
-			Bindings: make([]*v1.DebugBinding, 0, min(len(group.Names), MaxScopeBindings)),
+			Bindings: make([]*v1.DebugBinding, 0, min(len(group.Names), carryLimit)),
 			Total:    int32(len(group.Names)),
 		}
 		scope.Total += int32(len(group.Names))
@@ -246,7 +297,7 @@ func (s *Session) ScopeProto(ctx context.Context, limit int) (*v1.DebugScope, er
 			// Counting continues past it, which is what keeps the totals above
 			// honest — an elision that reported the bound back as the size of
 			// the scope would say the run can reach fewer names than it can.
-			if carried >= MaxScopeBindings {
+			if carried >= carryLimit {
 				continue
 			}
 			carried++

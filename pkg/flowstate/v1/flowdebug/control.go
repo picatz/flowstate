@@ -339,11 +339,7 @@ func (s *Session) waitForPause(ctx context.Context, after uint64) (Position, err
 		s.mu.Unlock()
 
 		if generation > after && subject.scope != nil {
-			return Position{
-				Step:    subject.step,
-				Kind:    subject.kind,
-				Autopsy: subject.autopsy,
-			}, nil
+			return positionOf(subject), nil
 		}
 
 		select {
@@ -406,29 +402,36 @@ func (s *Session) WaitForPause(ctx context.Context) (Position, error) {
 // the whole set for a source each time one changes, so anything kept from the
 // last call is a breakpoint the person removed.
 func (s *Session) SetBreakpoints(ids []string) error {
+	return s.setBreakpoints(ids, s.snapshotTextRedactor(), true)
+}
+
+func (s *Session) setBreakpoints(ids []string, redact func(string) string, checkUnknown bool) error {
 	// Bounded before anything is replaced, so a refusal leaves the session with
 	// the set it had rather than half of a new one.
 	if len(ids) > MaxBreakpoints {
-		return fmt.Errorf("flowdebug: a session may hold %d breakpoints and %d were named",
-			MaxBreakpoints, len(ids))
+		return errors.New(applyText(redact, fmt.Sprintf("flowdebug: a session may hold %d breakpoints and %d were named",
+			MaxBreakpoints, len(ids))))
 	}
 
 	for _, id := range ids {
 		if err := oneArgument(id); err != nil {
-			return err
+			return errors.New(applyText(redact, err.Error()))
 		}
 	}
 
 	// Also before anything is replaced, and for the same reason the count is: an
 	// id naming no declared step is never armed, so nothing here is ever reported
 	// as installed and then silently skipped at run time (#1367). A caller that
-	// wants to answer per breakpoint rather than lose the whole set asks
-	// [Session.UnknownStep] first and sends only what it holds — which is what
-	// the DAP adapter does, because a client sets breakpoints one edit at a time
-	// and expects each to come back with its own verdict.
-	for _, id := range ids {
-		if notice, unknown := s.UnknownStep(id); unknown {
-			return fmt.Errorf("flowdebug: breakpoint: %s", notice)
+	// wants to answer per breakpoint rather than lose the whole set uses
+	// [Session.SetBreakpointsWithNotices], which keeps those answers and final
+	// validation under one display posture.
+	if checkUnknown {
+		for _, id := range ids {
+			notice, unknown := s.unknownStepNotice(id)
+			if !unknown {
+				continue
+			}
+			return errors.New(applyText(redact, fmt.Sprintf("flowdebug: breakpoint: %s", notice)))
 		}
 	}
 

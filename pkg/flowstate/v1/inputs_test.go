@@ -25,6 +25,39 @@ func takesABlob() *v1.Workflow {
 	}
 }
 
+func TestDeclaresSensitiveValuesIncludesEmbeddedCallees(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{
+		Name:           "callee",
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "token"}},
+	}
+	caller := &v1.Workflow{Steps: []*v1.Node{{
+		Id: "called",
+		Kind: &v1.Node_Call{Call: &v1.Call{
+			Workflow: callee,
+		}},
+	}}}
+
+	declared, err := v1.DeclaresSensitiveValues(caller)
+	require.NoError(t, err)
+	require.False(t, declared, "a non-sensitive call tree was refused")
+
+	callee.DeclaredInputs[0].Sensitive = true
+	declared, err = v1.DeclaresSensitiveValues(caller)
+	require.NoError(t, err)
+	require.True(t, declared, "the callee's sensitive declaration was ignored")
+
+	caller.Steps = append(caller.Steps, &v1.Node{
+		Id:   "recursive",
+		Kind: &v1.Node_Call{Call: &v1.Call{Workflow: caller}},
+	})
+	declared, err = v1.DeclaresSensitiveValues(caller)
+	require.NoError(t, err)
+	require.True(t, declared,
+		"a known sensitive declaration was downgraded to unverified by unreachable malformed work")
+}
+
 // TestArgumentsAloneCannotPushARunPastWhatItCanCarry is the size half of the submit
 // check, in the direction the specification's own check cannot see.
 //

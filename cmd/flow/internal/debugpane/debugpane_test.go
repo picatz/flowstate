@@ -467,9 +467,38 @@ func TestAHugeStepListTruncatesLegibly(t *testing.T) {
 	assert.Contains(t, text, held, "the paused step was not in the window drawn around it")
 }
 
+func TestStepPaneRedactsInventoryIdentitiesBeforeRendering(t *testing.T) {
+	const sensitive = "outer.build"
+	layout := debugpane.Layout{Width: 100, Height: 20}
+	callee := &v1.Workflow{Name: "inner", Steps: []*v1.Node{markStep("build")}}
+	for _, replacement := range []string{"[redacted]", ""} {
+		frame := frameAtStep(t, layout,
+			[]flowdebug.Step{
+				{ID: "build", Workflow: "outer"},
+				{ID: "build", Workflow: "inner", Via: "nested", Declaration: 1},
+			},
+			&v1.Workflow{Name: "outer", Steps: []*v1.Node{
+				markStep("build"),
+				{Id: "nested", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}},
+			}},
+			"quit\n",
+			func(text string) string { return strings.ReplaceAll(text, sensitive, replacement) })
+
+		require.Len(t, frame.Steps, 2)
+		for _, profile := range []colorprofile.Profile{colorprofile.NoTTY, colorprofile.TrueColor} {
+			caps := paneCapabilities(100, 20, profile, true)
+			rendered := debugpane.Render(frame, ui.NewTheme(true, caps), caps.Symbols(), layout)
+			require.NotContains(t, rendered, sensitive)
+			if replacement != "" {
+				require.Contains(t, rendered, replacement)
+			}
+		}
+	}
+}
+
 // frameAtStep runs a workflow under a script and returns the frame at the last
 // stop it reached.
-func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.Step, workflow *v1.Workflow, script string) debugpane.Frame {
+func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.Step, workflow *v1.Workflow, script string, redactors ...func(string) string) debugpane.Frame {
 	t.Helper()
 
 	var (
@@ -494,6 +523,9 @@ func frameAtStep(t *testing.T, layout debugpane.Layout, inventory []flowdebug.St
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
+	if len(redactors) > 0 {
+		session.SetRedactor(redactors[0])
+	}
 
 	ctx := v1.NewContextWithRegistry(t.Context(), paneRegistry(t))
 	ctx = v1.NewContextWithDebugger(ctx, session)

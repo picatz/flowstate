@@ -32,6 +32,18 @@ func TestSensitiveOutputNamesDistinguishesNoSpecFromNoSensitiveOutputs(t *testin
 	require.False(t, names["url"])
 }
 
+func TestCarriedValuesAreUnverifiedWhenTheWholeCallTreeCannotBeInspected(t *testing.T) {
+	workflow := &v1.Workflow{}
+	workflow.Steps = []*v1.Node{{
+		Id:   "recursive",
+		Kind: &v1.Node_Call{Call: &v1.Call{Workflow: workflow}},
+	}}
+
+	require.Equal(t, carriedValuesUnverified, decideCarriedValues(workflow, false))
+	require.Equal(t, carriedValuesShown, decideCarriedValues(workflow, true),
+		"an explicit reveal remains the escape hatch when inspection cannot finish")
+}
+
 // TestRedactGetResponseFailsClosedWithNoWorkflow is the ambiguous case CLAUDE.md
 // names directly: a declaration missing, a spec absent, or an older run whose
 // spec predates the field. workflow == nil covers all three here, since this

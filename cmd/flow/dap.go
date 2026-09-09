@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdap"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 )
 
@@ -52,6 +54,7 @@ flow run local --debug examples/hello-world/workflow.yaml`,
 	addEditorPluginFlags(cmd)
 	addSecretFlags(cmd)
 	addLocalRehearsalFlags(cmd)
+	addRevealSensitiveFlag(cmd)
 
 	return cmd
 }
@@ -142,6 +145,7 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		}()
 
 		program := server.Program()
+		reveal := revealSensitiveRequested(cmd) || server.RevealSensitive()
 		if program == "" {
 			exit = 1
 			server.Output("flowdap: the launch configuration named no `program`, so there is " +
@@ -159,10 +163,35 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		// exactly this reason, and this one reached past it (Codex, #1124).
 		workflow, err := loadWorkflow(program)
 		if err != nil {
-			// The client's console is the only place a person will look, and
-			// the diagnostics are the whole answer to why nothing ran.
+			// Source diagnostics can quote the invalid document. Without a valid
+			// specification there is no declaration posture to redact them
+			// against, so the shared decision fails closed. Invocation and I/O
+			// errors do not carry source diagnostics and remain useful as-is.
 			exit = 1
-			server.Output(fmt.Sprintf("flowdap: %v\n", err))
+			var diagnostics flowfile.Diagnostics
+			if !errors.As(err, &diagnostics) || decideCarriedValues(nil, reveal) == carriedValuesShown {
+				server.Output(fmt.Sprintf("flowdap: %v\n", err))
+			} else {
+				server.Output("flowdap: workflow diagnostics withheld because the invalid file has no " +
+					"trusted sensitive-value declarations; run `flow validate` outside the adapter, or " +
+					"explicitly authorize disclosure with --reveal-sensitive or \"revealSensitive\": true\n")
+			}
+
+			return
+		}
+		disclosure := decideCarriedValues(workflow, reveal)
+		if disclosure != carriedValuesShown {
+			exit = 1
+			if disclosure == carriedValuesDeclared {
+				server.Output("flowdap: the workflow declares sensitive inputs or outputs whose " +
+					"values the debugger would expose; add --reveal-sensitive to the adapter command " +
+					"or \"revealSensitive\": true to the launch configuration to debug it with values shown\n")
+			} else {
+				server.Output("flowdap: the workflow's sensitive-value declarations could not be fully " +
+					"inspected, so the debugger will not start without explicit disclosure authorization; " +
+					"add --reveal-sensitive to the adapter command or \"revealSensitive\": true to the " +
+					"launch configuration\n")
+			}
 
 			return
 		}
