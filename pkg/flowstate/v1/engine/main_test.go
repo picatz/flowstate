@@ -76,7 +76,9 @@ func TestMain(m *testing.M) {
 // with itself" names: the half that skips and the half that boots would
 // eventually answer differently, and the way that fails is a nil devServer
 // dereference in whichever test the disagreement reaches first.
-func withoutDevServer() bool { return testing.Short() || fuzzing() }
+func withoutDevServer() bool {
+	return testing.Short() || fuzzing() || os.Getenv(workflowSliceReplayHelperEnv) != ""
+}
 
 // fuzzing reports whether this process was started to fuzz — the coordinator
 // `go test -fuzz` starts, or a worker it forks.
