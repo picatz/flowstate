@@ -171,6 +171,31 @@ func TestAmpSettingsUsePortableSkillsWithoutRepositoryPermissionPrompts(t *testi
 	}
 }
 
+func TestAmpShipProcedurePinsFinalHeadEvidence(t *testing.T) {
+	raw := string(read(t, filepath.Join(repoRoot(t), ".agents", "ship.md")))
+	ship := strings.Join(strings.Fields(raw), " ")
+	for _, required := range []string{
+		"without auto-merge",
+		"distinct independent AI review",
+		"code-security",
+		"PASS/no-actionable-findings",
+		"optional additional channels",
+		"at most once",
+		"flowstate-independent-review:v1",
+		"./tools/shipcheck",
+		"--match-head-commit",
+		"explicit human authorization",
+		"Before the next autonomous merge",
+	} {
+		if !strings.Contains(ship, required) {
+			t.Errorf(".agents/ship.md does not contain required process control %q", required)
+		}
+	}
+	if strings.Contains(ship, "gh pr merge --auto") && !strings.Contains(ship, "Never use `gh pr merge --auto`") {
+		t.Error(".agents/ship.md appears to recommend auto-merge")
+	}
+}
+
 func TestClaudeSessionUsesThePinnedGoToolchain(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Claude session hook requires Bash and POSIX symlinks")

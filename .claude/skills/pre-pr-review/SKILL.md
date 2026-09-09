@@ -35,6 +35,13 @@ ignore the next real one.
 Use the `flowstate-verify` skill to select the appropriate checks. Inspect the
 resulting diff again after formatting or generation.
 
+Before an autonomous merge, follow `.agents/ship.md`: leave auto-merge disabled,
+obtain a distinct independent AI code-and-security review on the exact final
+head, visibly disposition all findings, review again after any push, and require
+`go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER` to pass. Codex and
+Copilot are optional channels, requested at most once each; their absence is not
+approval and does not replace the provider-neutral exact-head evidence.
+
 ## Output
 
 Return only material findings with location, consequence, evidence, and a
