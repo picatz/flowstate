@@ -109,6 +109,27 @@ func TestWorkflowYieldHandsTheSchedulerControl(t *testing.T) {
 	require.Equal(t, []bool{false, true}, got)
 }
 
+func TestWorkflowSliceCostPolicyPreservesRecordedVersions(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		version  workflow.Version
+		enabled  bool
+		controls bool
+	}{
+		{"pre-slice history", workflow.DefaultVersion, false, false},
+		{"value-only v1 history", 1, true, false},
+		{"control-cost v2 history", 2, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cost, controls := workflowSliceCostPolicy(test.version)
+			require.Equal(t, test.enabled, cost != nil)
+			require.Equal(t, test.controls, controls)
+		})
+	}
+}
+
 // TestRunUndoTaskDoesNotNameUndoBudgetExpiryForAnOrdinaryFailure is the
 // negative direction: a compensation that fails for its own classified
 // reason, under the identical narrowed timeout budget, must not have its

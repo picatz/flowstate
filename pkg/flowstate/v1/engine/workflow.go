@@ -582,10 +582,8 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	// complete or cross an already-recorded Continue-As-New boundary; new
 	// executions accumulate deterministic workflow-side CEL cost from their
 	// first segment.
-	var sliceCost *uint64
-	if workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-		sliceCost = new(uint64)
-	}
+	sliceCostVersion := workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 2)
+	sliceCost, controls := workflowSliceCostPolicy(sliceCostVersion)
 
 	// Execute through the recursive executor, which handles nested control flow
 	// and records where to resume if the run has to be continued as new.
@@ -604,6 +602,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		budget:    stepsBudget,
 		resume:    resumeFrames(st),
 		sliceCost: sliceCost,
+		controls:  controls,
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
@@ -862,6 +861,17 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// payload on a failure path fails the workflow *task* rather than the run.
 		return v1.PartialTranscript(stepOutputs), compensate(ctx, exec, err)
 	}
+}
+
+// workflowSliceCostPolicy maps the recorded Temporal version to its compatible
+// accounting behavior. Keep version 1 value-only: charging control expressions
+// or continuing at skipped steps while replaying a v1 history can add a command
+// where that history did not record one.
+func workflowSliceCostPolicy(version workflow.Version) (*uint64, bool) {
+	if version == workflow.DefaultVersion {
+		return nil, false
+	}
+	return new(uint64), version >= 2
 }
 
 // compensate takes back what the run already did, and returns the failure it will

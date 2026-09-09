@@ -52,9 +52,11 @@ import (
 var errContinueAsNew = errors.New("engine: continue as new")
 
 // workflowSliceCostChange gates cost-triggered Continue-As-New for histories
-// recorded before #1882. Adding a new continuation command while replaying one
-// of those histories would be nondeterministic; new executions record version 1
-// and later segments inherit the new behavior as fresh histories.
+// recorded before #1882. Version 1 charges value expressions; version 2 also
+// charges control expressions and admits skipped steps as continuation
+// boundaries. Adding either continuation behavior while replaying an older
+// history would be nondeterministic; later segments inherit the current behavior
+// as fresh histories.
 const workflowSliceCostChange = "workflow-slice-cost-v1"
 
 // executor carries the state of one workflow execution.
@@ -106,6 +108,10 @@ type executor struct {
 	// expression cost here makes the history-producing continuation a function
 	// of recorded work rather than wall time or loop trip count.
 	sliceCost *uint64
+	// controls is true only for histories that recorded version 2 of
+	// workflowSliceCostChange. Version 1 histories keep their original value-only
+	// accounting and continuation boundaries during replay.
+	controls bool
 
 	// callDepth counts calls nested so far, zero at the top-level workflow. It
 	// is unaffected by descending into a loop body or a parallel branch — only
@@ -354,14 +360,16 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		descend := resuming && i == start
 
 		run, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), node.GetCondition(), e.scope)
-		e.chargeWorkflowCost(cost)
+		if e.controls {
+			e.chargeWorkflowCost(cost)
+		}
 		if err != nil {
 			return stepFailed(err, "step %q", node.GetId())
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
 			e.yieldWorkflow()
-			if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
+			if e.controls && susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 				e.setFrame(depth, i+1)
 				return errContinueAsNew
 			}
@@ -745,6 +753,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		budget:    e.budget,
 		processed: e.processed,
 		sliceCost: e.sliceCost,
+		controls:  e.controls,
 		frames:    e.frames,
 
 		// Shared by pointer with the caller, for the same reasons the top-level
@@ -1516,7 +1525,9 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		var err error
 		var cost uint64
 		state, cost, err = v1.LoopInitialStateWithCost(evalContext(), loop, e.scope)
-		e.chargeWorkflowCost(cost)
+		if e.controls {
+			e.chargeWorkflowCost(cost)
+		}
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -1629,6 +1640,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		budget:    e.budget,
 		processed: e.processed,
 		sliceCost: e.sliceCost,
+		controls:  e.controls,
 		frames:    e.frames,
 
 		signals:    e.signals,
@@ -1666,7 +1678,9 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 	// `until:` and `update:` see the body's outputs and the current state, so they
 	// are evaluated against the scope the body finished in.
 	stop, cost, err := v1.EvalLoopUntilWithCost(evalContext(), loop, nested.scope)
-	e.chargeWorkflowCost(cost)
+	if e.controls {
+		e.chargeWorkflowCost(cost)
+	}
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -1688,7 +1702,9 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 	}
 
 	next, cost, err := v1.LoopNextStateWithCost(evalContext(), loop, nested.scope)
-	e.chargeWorkflowCost(cost)
+	if e.controls {
+		e.chargeWorkflowCost(cost)
+	}
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -1717,6 +1733,7 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		budget:    e.budget,
 		processed: e.processed,
 		sliceCost: e.sliceCost,
+		controls:  e.controls,
 		frames:    e.frames,
 
 		// The run's carry, by pointer. A wait in a loop body consumes from the
@@ -1803,6 +1820,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					path:      body,
 					budget:    e.budget,
 					sliceCost: e.sliceCost,
+					controls:  e.controls,
 					signals:   e.signals,
 					debug:     e.debug,
 					undo:      iterationUndo,
@@ -1916,6 +1934,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				path:      branchPath,
 				budget:    e.budget,
 				sliceCost: e.sliceCost,
+				controls:  e.controls,
 				signals:   e.signals,
 				debug:     e.debug,
 				undo:      branchUndo,
