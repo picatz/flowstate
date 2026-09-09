@@ -186,12 +186,18 @@ fuzz-smoke:
 # red. /bin/sh is dash (0.5.12 on Ubuntu 24.04, here and on the runners),
 # which rejects `set -o pipefail`, and that is why this is a per-target shell
 # rather than a line in the recipe.
+#
+# Packages run one at a time because several own real Temporal test processes.
+# Letting those processes compete made the admitted-bound workflow-slice
+# rehearsal spend its entire five-minute bound before its first task ran; the
+# same complete engine package passes under the production-derived deadlines
+# when it owns the runner. Tests within each package retain their own parallelism.
 TEST_SHUFFLE ?= on
 
 test: SHELL := /bin/bash
 test: .SHELLFLAGS := -o pipefail -c
 test:
-	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -timeout 900s ./... | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -p=1 -timeout 900s ./... | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # The plugins are separate modules, which is the point of them: `./...` above
 # does not reach them, and a plugin that does not compile would leave every

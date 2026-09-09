@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,9 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 			t.Errorf("make test's recipe lacks %q: %s", want, recipe[1])
 		}
 	}
+	if !regexp.MustCompile(`(?:^|\s)-p=1\s+-timeout\s+900s(?:\s|$)`).MatchString(recipe[1]) {
+		t.Errorf("make test does not retain the exact package isolation and timeout tokens: %s", recipe[1])
+	}
 	if !strings.HasSuffix(recipe[1], "go run ./tools/testsum") {
 		t.Errorf("make test's recipe does not end in the summarizer, so its status is not the summarizer's: %s", recipe[1])
 	}
@@ -43,8 +47,8 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 		name string
 		spec cmdSpec
 	}{
-		{"module-wide", goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-timeout", "900s", "./...")},
-		{"narrow", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-timeout", "300s", modulePath+"/tools/gate")},
+		{"module-wide", moduleWideTestCommand()},
+		{"narrow", affectedTestCommand([]string{modulePath + "/tools/gate"})},
 		{"ordering", goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/")},
 	} {
 		display := tc.spec.display()
@@ -57,7 +61,20 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 		if tc.spec.verify == nil {
 			t.Errorf("%s leg has no verify func, so the pipeline would be run as one argv", tc.name)
 		}
+		if tc.name != "ordering" && !hasFieldSequence(display, "-p=1", "-timeout", "900s") {
+			t.Errorf("%s leg does not retain the exact package isolation and timeout tokens: %s", tc.name, display)
+		}
 	}
+}
+
+func hasFieldSequence(line string, want ...string) bool {
+	fields := strings.Fields(line)
+	for i := 0; i+len(want) <= len(fields); i++ {
+		if slices.Equal(fields[i:i+len(want)], want) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestASummarizedLegFailsWhenGoTestFails is the pipefail half: the step's

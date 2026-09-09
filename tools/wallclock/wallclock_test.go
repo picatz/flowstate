@@ -24,7 +24,8 @@ import (
 //     never opens.
 //   - internal/temporaltest — the supervised dev server process.
 //   - engine/deadlock_budget_test.go — a workflow task deliberately running
-//     past the deadlock budget on a real Temporal worker.
+//     past the deadlock budget on a real Temporal worker; workflow_slice_test.go
+//     is the child process that deliberately outlives its replay deadline.
 //   - flowdebug, netpolicy, secrets, wait_local — a wall-clock bound the test
 //     is measuring (a cache TTL, a span's duration, a command's runtime, a
 //     wait's deadline); candidates for a bubble once the code under test
@@ -40,6 +41,7 @@ var wallClockSleeps = map[string]int{
 	"cmd/flow/workershutdown_test.go":                 1,
 	"internal/temporaltest/supervisor_linux_test.go":  1,
 	"pkg/flowstate/v1/engine/deadlock_budget_test.go": 1,
+	"pkg/flowstate/v1/engine/workflow_slice_test.go":  1,
 	"pkg/flowstate/v1/flowdebug/session_test.go":      1,
 	"pkg/flowstate/v1/netpolicy/tracing_test.go":      1,
 	"pkg/flowstate/v1/plugin/helper_test.go":          12,

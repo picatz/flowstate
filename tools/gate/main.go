@@ -352,12 +352,16 @@ func run(suppliedBase string) error {
 	switch {
 	case p.moduleWide:
 		g.leg("test", fmt.Sprintf("%s changed, every package is affected", p.reasons["module"]),
-			goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-timeout", "900s", "./..."))
+			moduleWideTestCommand())
 	case len(affected) == 0:
 		g.skip("test", withTestResidual(p, "no Go packages affected by this diff"))
 	default:
+		// Keep the per-package ceiling aligned with CI. The engine's race
+		// rehearsals intentionally exercise admitted CEL bounds; serialize
+		// packages so their Temporal processes do not consume one another's
+		// wall-clock budgets while retaining within-package parallelism.
 		g.leg("test", withTestResidual(p, narrowWhy),
-			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, append([]string{"-race", "-timeout", "300s"}, affected...)...))
+			affectedTestCommand(affected))
 	}
 
 	// Affected packages: staticcheck, on the same trigger and with the same
@@ -867,6 +871,15 @@ func commandEnv(env []string, name string, args ...string) cmdSpec {
 // testsumArgv is the summarizer the test legs pipe through: the same program
 // `make test` runs, so the local loop and CI print one shape (#1727).
 var testsumArgv = []string{"go", "run", "./tools/testsum"}
+
+func moduleWideTestCommand() cmdSpec {
+	return goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-p=1", "-timeout", "900s", "./...")
+}
+
+func affectedTestCommand(packages []string) cmdSpec {
+	return goTestSummarized([]string{"GOMEMLIMIT=1GiB"},
+		append([]string{"-race", "-p=1", "-timeout", "900s"}, packages...)...)
+}
 
 // goTestSummarized is `go test -json <args> | go run ./tools/testsum` as a
 // leg step, without a shell: the two processes are started here with the

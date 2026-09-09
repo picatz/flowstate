@@ -1,7 +1,12 @@
 package engine_test
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -9,9 +14,16 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/stretchr/testify/require"
 	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/api/temporalproto"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/testing/protocmp"
+)
+
+const (
+	workflowSliceReplayHelperEnv     = "FLOWSTATE_WORKFLOW_SLICE_REPLAY_HELPER"
+	workflowSliceReplayHelperTimeout = 15 * time.Second
 )
 
 // TestWorkflowSlicesCompleteDurably is #1882's boundary test. The cases run the
@@ -33,15 +45,21 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 
 	for _, test := range conformance.WorkflowSliceCases() {
 		t.Run(test.Name, func(t *testing.T) {
+			// Race instrumentation scales the worker's deadlock detector above,
+			// so scale the server's independent workflow-task deadline too. The
+			// production binary completes each segment well inside its default;
+			// this keeps the instrumented test comparing like with like.
 			run, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
-				ID:        "workflow-slices-" + test.Workflow.GetName(),
-				TaskQueue: taskQueue,
+				ID:                  "workflow-slices-" + test.Workflow.GetName(),
+				TaskQueue:           taskQueue,
+				WorkflowTaskTimeout: conformance.BoundaryWorkflowTaskTimeout,
 			}, engine.Run, &v1.RunState{Workflow: test.Workflow, StepsBudget: 2000})
 			require.NoError(t, err)
 			firstRunID := run.GetRunID()
 
 			var out v1.Workflow_StepOutputs
-			requireRunCompletes(t, temporal, run, &out)
+			requireRunCompletesWithin(t, temporal, run, &out,
+				conformance.BoundaryWorkflowChainTimeout)
 			if test.ExpectedOutputsPredicate != nil {
 				require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
 			} else {
@@ -51,16 +69,13 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 			histories := recordRunChain(t.Context(), t, temporal, run.GetID(), firstRunID)
 			events := 0
 			timers := 0
-			replayer := worker.NewWorkflowReplayer()
-			engine.RegisterWorkflows(replayer)
 			for i, history := range histories {
 				// The first segment ends at the new continuation and the last
 				// resumes from carried state and completes. Together they cover
 				// both distinct replay shapes without replaying 25 equivalent
 				// middle segments in this bounded test.
 				if i == 0 || i == len(histories)-1 {
-					require.NoError(t, replayer.ReplayWorkflowHistory(nil, history),
-						"a cost-bounded segment did not replay")
+					requireWorkflowSliceReplay(t, history)
 				}
 				for _, event := range history.GetEvents() {
 					require.NotEqual(t, enumspb.EVENT_TYPE_WORKFLOW_TASK_FAILED, event.GetEventType(),
@@ -81,4 +96,76 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 				test.Workflow.GetName(), len(histories), events)
 		})
 	}
+}
+
+// TestWorkflowSliceReplayHelper is a subprocess entry point. Replaying in a
+// child process gives the SDK's synchronous, context-free replay API a hard
+// wall-clock bound without abandoning a stuck goroutine in the package suite.
+//
+//vacuity:ignore unasserted this is a subprocess entry point; its parent asserts the exit status and timeout
+func TestWorkflowSliceReplayHelper(t *testing.T) {
+	input := os.Getenv(workflowSliceReplayHelperEnv)
+	if input == "" {
+		t.Skip("not running as the workflow-slice replay helper")
+	}
+	if input == "hang" {
+		time.Sleep(30 * time.Second)
+		return
+	}
+
+	replayer, err := worker.NewWorkflowReplayerWithOptions(worker.WorkflowReplayerOptions{
+		DisableDeadlockDetection: true,
+	})
+	require.NoError(t, err)
+	engine.RegisterWorkflows(replayer)
+	require.NoError(t, replayer.ReplayWorkflowHistoryFromJSONFile(nil, input))
+}
+
+func requireWorkflowSliceReplay(t *testing.T, history *historypb.History) {
+	t.Helper()
+
+	path := t.TempDir() + "/history.json"
+	// Use the SDK's JSON dialect because the child reads through the SDK too.
+	// This is an ephemeral transport, not replay corpus output; machine-specific
+	// worker identity is expected and the temp file is removed with the test.
+	data, err := temporalproto.CustomJSONMarshalOptions{}.Marshal(history)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	require.NoError(t, runWorkflowSliceReplayHelper(t, path, workflowSliceReplayHelperTimeout),
+		"a cost-bounded segment did not replay within %s", workflowSliceReplayHelperTimeout)
+}
+
+func runWorkflowSliceReplayHelper(t *testing.T, input string, timeout time.Duration) error {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], workflowSliceReplayHelperArgs(timeout)...)
+	cmd.Env = append(os.Environ(), workflowSliceReplayHelperEnv+"="+input)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("workflow replay exceeded %s: %w", timeout, ctx.Err())
+	}
+	if err != nil {
+		return fmt.Errorf("workflow replay helper failed: %w\n%s", err, output)
+	}
+	return nil
+}
+
+func workflowSliceReplayHelperArgs(timeout time.Duration) []string {
+	return []string{
+		"-test.run=^TestWorkflowSliceReplayHelper$",
+		"-test.v=false",
+		"-test.timeout=" + (timeout + 5*time.Second).String(),
+	}
+}
+
+func TestWorkflowSliceReplayHelperHasAHardDeadline(t *testing.T) {
+	require.Equal(t, "-test.timeout=6s", workflowSliceReplayHelperArgs(time.Second)[2],
+		"the child must retain its own deadline if its parent exits")
+	start := time.Now()
+	err := runWorkflowSliceReplayHelper(t, "hang", time.Second)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 10*time.Second,
+		"the subprocess deadline did not terminate a stuck replay")
 }

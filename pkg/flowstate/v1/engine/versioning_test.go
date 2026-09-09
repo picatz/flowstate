@@ -266,9 +266,13 @@ func requireRunHasExecuted(t *testing.T, temporal client.Client, workflowID stri
 // next person to run it again; "it is RUNNING on attempt 4 of a workflow task"
 // tells them nothing is serving it, which is the answer.
 func requireRunCompletes(t *testing.T, temporal client.Client, run client.WorkflowRun, out any) {
+	requireRunCompletesWithin(t, temporal, run, out, 90*time.Second)
+}
+
+func requireRunCompletesWithin(t *testing.T, temporal client.Client, run client.WorkflowRun, out any, timeout time.Duration) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	err := run.Get(ctx, out)
@@ -291,7 +295,7 @@ func requireRunCompletes(t *testing.T, temporal client.Client, run client.Workfl
 	}
 
 	info := description.GetWorkflowExecutionInfo()
-	t.Fatalf("the resumed run never completed, so nothing served it after build one stopped: "+
+	t.Fatalf("the run never completed before its bounded wait elapsed: "+
 		"status=%v runID=%s historyLength=%d pendingWorkflowTaskAttempt=%d",
 		info.GetStatus(), info.GetExecution().GetRunId(), info.GetHistoryLength(),
 		description.GetPendingWorkflowTask().GetAttempt())

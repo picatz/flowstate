@@ -498,7 +498,7 @@ gh api -X POST repos/picatz/flowstate/rulesets --input - <<'JSON'
         "max_entries_to_merge": 5,
         "min_entries_to_merge": 1,
         "min_entries_to_merge_wait_minutes": 1,
-        "check_response_timeout_minutes": 20
+        "check_response_timeout_minutes": 45
       }
     }
   ]
@@ -524,8 +524,9 @@ Five parameters there are load-bearing and easy to get wrong:
   a lone pull request sit idle waiting for company. Batching still emerges
   naturally, because entries arriving while a group is building join the next
   one, and `max_entries_to_build: 5` is what caps the group.
-- **`check_response_timeout_minutes: 20`** must exceed the slowest job. `test`
-  budgets 15 minutes and `appearance` 15; 20 leaves room without letting a
+- **`check_response_timeout_minutes: 45`** must exceed the slowest job. `test`
+  has a 35-minute outer bound after package serialization made its measured
+  24-minute suite reliable; 45 leaves final-check headroom without letting a
   wedged group hold the queue indefinitely.
 
 Optionally pin the check provider by adding `"integration_id": <GitHub Actions'
