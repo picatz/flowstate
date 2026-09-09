@@ -21,7 +21,10 @@ import (
 	"google.golang.org/protobuf/testing/protocmp"
 )
 
-const workflowSliceReplayHelperEnv = "FLOWSTATE_WORKFLOW_SLICE_REPLAY_HELPER"
+const (
+	workflowSliceReplayHelperEnv     = "FLOWSTATE_WORKFLOW_SLICE_REPLAY_HELPER"
+	workflowSliceReplayHelperTimeout = 15 * time.Second
+)
 
 // TestWorkflowSlicesCompleteDurably is #1882's boundary test. The cases run the
 // maximum number of top-level steps and loop iterations as individually bounded
@@ -128,8 +131,8 @@ func requireWorkflowSliceReplay(t *testing.T, history *historypb.History) {
 	data, err := temporalproto.CustomJSONMarshalOptions{}.Marshal(history)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
-	require.NoError(t, runWorkflowSliceReplayHelper(t, path, time.Minute),
-		"a cost-bounded segment did not replay within one minute")
+	require.NoError(t, runWorkflowSliceReplayHelper(t, path, workflowSliceReplayHelperTimeout),
+		"a cost-bounded segment did not replay within %s", workflowSliceReplayHelperTimeout)
 }
 
 func runWorkflowSliceReplayHelper(t *testing.T, input string, timeout time.Duration) error {
