@@ -415,6 +415,13 @@ func TestSerializedRootSuiteRetainsOuterJobHeadroom(t *testing.T) {
 	if got := wf.Jobs["test"].TimeoutMinutes; got != 35 {
 		t.Fatalf("the serialized root suite needs its measured post-test headroom; timeout-minutes = %d, want 35", got)
 	}
+	docs, err := os.ReadFile("../../docs/CI.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(docs), `"check_response_timeout_minutes": 45`) {
+		t.Fatal("the documented merge-queue response bound must remain ten minutes beyond the test job")
+	}
 }
 
 // TestCIFetchesMainWithAForcedRefUpdate is the regression for main run
