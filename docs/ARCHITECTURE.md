@@ -741,9 +741,12 @@ cooperative timeout handling, and compensation; with real rather than stubbed
 tasks, it also exercises those task implementations under the local process's
 policy. It does not prove persisted history, recovery after that process or a
 worker stops, server-enforced timeout behavior when task code ignores cancellation,
-deployment and plugin-version transitions, resource exhaustion, or an external
-system behaving like a test double. Those require a durable run and, where
-applicable, a real integration environment.
+control-plane authentication and authorization, request auditing, deployment and
+plugin-version transitions, resource exhaustion, or an external system behaving
+like a test double. Those require a durable run and, where applicable, a real
+integration environment. In particular, local policy and synthetic `--as-*`
+identities rehearse workload policy; they do not exercise a deployment's caller
+authentication or control-plane access rules.
 
 ### Attempt outcomes and operation identity
 
