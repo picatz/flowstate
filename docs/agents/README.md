@@ -111,7 +111,8 @@ and whether a deterministic mechanism can prevent it more reliably.
 
   The procedure opens a PR without auto-merge, requires exact-final-head Codex
   code/security and Copilot review, dispositions and re-reviews after fixes,
-  waits for all applicable checks, runs `tools/shipcheck`, merges manually, and
+  waits for all applicable checks, runs
+  `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, merges manually, and
   verifies `origin/main` afterward.
 - Teams that later demonstrate a recurring need for stricter push, merge,
   release, or destructive-command controls should add an explicit user/team

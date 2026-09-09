@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const testHead = "0123456789abcdef0123456789abcdef01234567"
@@ -227,6 +228,62 @@ func TestExactHeadSecurityReviewArtifactIsAccepted(t *testing.T) {
 	}
 }
 
+func TestUnavailableProviderAcceptsDocumentedIndependentFallback(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments = []comment{
+		{
+			Author: actor{Login: "chatgpt-codex-connector"}, URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-10",
+			Body: "You have reached your Codex usage limits for security reviews.",
+		},
+		{
+			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER", URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-11",
+			Body: "Independent exact-head AI code/security review for `" + testHead + "`: PASS with no actionable findings.",
+		},
+		{
+			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
+			Body: `<!-- flowstate-review-fallback:v1 {"provider":"codex-security","headSha":"` + testHead +
+				`","unavailableUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-10","evidenceUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-11","incidentUrl":"https://github.com/picatz/flowstate/issues/1931","reviewer":"independent-ai","scope":"code-security","status":"pass"} -->`,
+		},
+	}
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("documented fallback was rejected: %v", problems)
+	}
+}
+
+func TestFallbackRejectsStaleHeadAndMissingOutageEvidence(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments = []comment{{
+		Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
+		Body: `<!-- flowstate-review-fallback:v1 {"provider":"codex-security","headSha":"` + strings.Repeat("f", 40) +
+			`","unavailableUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-10","evidenceUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-11","incidentUrl":"https://github.com/picatz/flowstate/issues/1931","reviewer":"independent-ai","scope":"code-security","status":"pass"} -->`,
+	}}
+	if hasReviewFallback(pr, "codex-security") {
+		t.Fatal("stale fallback without linked evidence was accepted")
+	}
+}
+
+func TestFallbackRejectsOutageFromAnotherChannelAndMalformedIncident(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments = []comment{
+		{
+			Author: actor{Login: "chatgpt-codex-connector"}, URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-10",
+			Body: "You have reached your Codex usage limits for security reviews.",
+		},
+		{
+			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER", URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-11",
+			Body: "Independent exact-head AI code/security review for `" + testHead + "`: PASS with no actionable findings.",
+		},
+		{
+			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
+			Body: `<!-- flowstate-review-fallback:v1 {"provider":"codex-code","headSha":"` + testHead +
+				`","unavailableUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-10","evidenceUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-11","incidentUrl":"https://github.com/picatz/flowstate/issues/not-an-issue","reviewer":"independent-ai","scope":"code-security","status":"pass"} -->`,
+		},
+	}
+	if hasReviewFallback(pr, "codex-code") {
+		t.Fatal("security-channel outage or malformed incident was accepted for code review")
+	}
+}
+
 func TestRequiredCheckCannotDisappear(t *testing.T) {
 	pr := passingPullRequest()
 	pr.StatusChecks = pr.StatusChecks[1:]
@@ -240,6 +297,24 @@ func TestRequiredCheckCannotBeSkipped(t *testing.T) {
 	pr.StatusChecks[0].Conclusion = "SKIPPED"
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "Analyze Go"`) {
 		t.Fatalf("skipped CodeQL check was accepted: %s", problems)
+	}
+}
+
+func TestEditorChangesRequireBothEditorChecks(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Files = []changedFile{{Path: "cmd/flow/dap.go"}}
+	problems := strings.Join(evaluate(pr, 0), "\n")
+	for _, name := range []string{"Neovim LSP smoke", "VS Code extension"} {
+		if !strings.Contains(problems, name) {
+			t.Errorf("missing Editors check %q was accepted: %s", name, problems)
+		}
+	}
+	pr.StatusChecks = append(pr.StatusChecks,
+		statusCheck{Type: "CheckRun", Workflow: "Editors", Name: "Neovim LSP smoke", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		statusCheck{Type: "CheckRun", Workflow: "Editors", Name: "VS Code extension", Status: "COMPLETED", Conclusion: "SUCCESS"},
+	)
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("complete Editors evidence was rejected: %v", problems)
 	}
 }
 
@@ -302,10 +377,10 @@ func TestBoundedBufferCapsCollectedOutput(t *testing.T) {
 func TestErrorSnippetIsSmallAndValidUTF8(t *testing.T) {
 	out := append([]byte(strings.Repeat("x", errorSnippetLimit-1)), 0xe2, 0x82)
 	got := errorSnippet(out)
-	if len(got) > errorSnippetLimit+len("�… (truncated)") {
+	if len(got) > errorSnippetLimit+len("...") {
 		t.Fatalf("snippet has %d bytes", len(got))
 	}
-	if !strings.HasSuffix(got, "… (truncated)") || strings.ContainsRune(got, '\uFFFD') == false {
+	if !strings.HasSuffix(got, "...") || !utf8.ValidString(got) {
 		t.Fatalf("snippet did not clean and mark truncation: %q", got[len(got)-32:])
 	}
 }

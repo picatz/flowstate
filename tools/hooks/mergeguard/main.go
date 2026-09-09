@@ -80,6 +80,10 @@ func main() {
 		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, then merge manually")
 		return
 	}
+	if mergeUsesShellExpansion(in) {
+		hook.Deny("mergeguard: shell expansion in a `gh pr merge` invocation can hide auto-merge or change its target and head. Use one fully explicit invocation after shipcheck passes.")
+		return
+	}
 	if isMergeInvocation(in) && !mergeHeadPinned(in) {
 		hook.Deny("mergeguard: a manual merge must be pinned to the reviewed final head. Use one explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes; merge tools without an exact-head precondition are blocked.")
 		return
@@ -321,6 +325,26 @@ func autoMergeRequested(in *hook.Input) bool {
 			if arg == "--auto" || strings.HasPrefix(arg, "--auto=") {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func mergeUsesShellExpansion(in *hook.Input) bool {
+	if in == nil || in.ToolName != "Bash" || !isGHPRMergeInvocation(in.Command()) {
+		return false
+	}
+	var inSingle, escaped bool
+	for _, r := range in.Command() {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && !inSingle:
+			escaped = true
+		case r == '\'':
+			inSingle = !inSingle
+		case !inSingle && (r == '$' || r == '`'):
+			return true
 		}
 	}
 	return false

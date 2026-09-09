@@ -474,6 +474,27 @@ func TestAutoMergeIsRejected(t *testing.T) {
 	}
 }
 
+func TestMergeShellExpansionIsRejected(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+	for _, command := range []string{
+		"flag=--auto; gh pr merge 498 -R picatz/flowstate --match-head-commit " + sha + ` "$flag"`,
+		"gh pr merge 498 -R picatz/flowstate --match-head-commit $HEAD",
+		"gh pr merge 498 -R picatz/flowstate --body \"$(payload)\" --match-head-commit " + sha,
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if !mergeUsesShellExpansion(in) {
+			t.Errorf("mergeUsesShellExpansion(%q) = false", command)
+		}
+	}
+	in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{
+		"command": "gh pr merge 498 -R picatz/flowstate --body '$literal' --match-head-commit " + sha,
+	}}
+	if mergeUsesShellExpansion(in) {
+		t.Error("single-quoted literal was treated as shell expansion")
+	}
+}
+
 func TestManualMergeRequiresOneExactHeadPrecondition(t *testing.T) {
 	t.Parallel()
 	sha := strings.Repeat("a", 40)
@@ -507,9 +528,8 @@ func TestManualMergeRequiresOneExactHeadPrecondition(t *testing.T) {
 	}
 }
 
-// TestWarnReachesStderrAndPermissionReason confirms the fail-open warning
-// (shared by the API-failure and unidentified-PR paths) actually reaches a
-// human on stderr and as systemMessage, and confirms the P1 fix directly:
+// TestWarnReachesStderrAndPermissionReason confirms a neutral warning reaches
+// a human on stderr and as systemMessage, and confirms the P1 fix directly:
 // it must never carry a permissionDecision at all. permissionDecision:
 // "allow" bypasses the normal permission prompt outright under the hook
 // contract, which would make a blind mergeguard grant more than its own

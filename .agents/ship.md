@@ -9,7 +9,9 @@ evidence because the change looks small.
    use `gh pr merge --auto` or enable GitHub auto-merge.
 3. Finish all edits before requesting independent review. Record the exact
    40-character head, then request all configured channels: `@codex review`,
-   `@codex security review`, and `@copilot review`.
+   `@codex security review`, and Copilot review. Make at most two requests per
+   channel and wait at most ten minutes total for each provider on one head;
+   retries after that are churn, not stronger evidence.
 4. Read every review, suppressed suggestion, check, and review thread. Reply
    with one visible disposition for every finding: fixed with evidence, false
    positive with evidence, obsolete, or linked to a searched, scoped follow-up
@@ -17,11 +19,22 @@ evidence because the change looks small.
 5. Any pushed fix invalidates prior approval. Request every review channel again
    on the new exact head. Wait for every applicable check, including non-required
    checks and external review channels—not merely GitHub's required checks.
-6. Run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. It must
-   pass on the unchanged final head. If a check or review API is unavailable,
-   pending, cancelled, stale, or failing, stop; absence of evidence is not a
-   pass.
-7. Merge manually with exact-head protection, for example
+6. A review that returns findings must be dispositioned and re-reviewed; the
+   fallback below never waives findings. When a named provider instead remains
+   unavailable or quota-limited after step 3's bounded attempts and wait, use a
+   distinct available AI reviewer for an independent code **and** security
+   review of the exact head. Post its PASS/no-actionable-findings evidence on
+   the PR, link the provider's outage response, and link the one searched
+   tooling-incident issue. Then post this machine-readable owner disposition:
+
+   `<!-- flowstate-review-fallback:v1 {"provider":"codex-security","headSha":"FULL_SHA","unavailableUrl":"PR_COMMENT_URL","evidenceUrl":"PR_COMMENT_URL","incidentUrl":"ISSUE_URL","reviewer":"DISTINCT_REVIEWER","scope":"code-security","status":"pass"} -->`
+
+   Provider unavailability remains recorded as unavailable, never PASS. A stale
+   review, unresolved or undispositioned finding, red/pending check, missing
+   exact-head fallback review, or absent outage evidence still blocks.
+7. Run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. It must
+   pass on the unchanged final head.
+8. Merge manually with exact-head protection, for example
    `gh pr merge NUMBER -R picatz/flowstate --squash --match-head-commit SHA`.
    Fetch `origin/main`, prove the merged commit is reachable, and wait for all
    applicable post-merge checks on `main`. Report the PR, final head, merge

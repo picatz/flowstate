@@ -37,8 +37,10 @@ resulting diff again after formatting or generation.
 
 Before an autonomous merge, follow `.agents/ship.md`: leave auto-merge disabled,
 request every configured AI review on the exact final head, visibly disposition
-all findings, re-request after any push, and require `tools/shipcheck` to pass.
-An unavailable review or check is a blocker, not approval.
+all findings, re-request after any push, and require
+`go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER` to pass.
+Provider unavailability is never approval; only `.agents/ship.md`'s bounded,
+documented exact-head independent-review fallback can satisfy that channel.
 
 ## Output
 

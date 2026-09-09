@@ -149,8 +149,10 @@ make check
   fix.
 - Wait for every applicable check and review channel, not only GitHub's required
   checks. Immediately before a manual merge, run
-  `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`; unavailable,
-  pending, stale, cancelled, or failing evidence blocks the merge.
+  `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. A provider
+  outage may use only `.agents/ship.md`'s bounded, documented exact-head
+  independent-review fallback; pending, stale, cancelled, failing, or
+  undispositioned evidence still blocks.
 - After merging, fetch `origin/main`, prove the merge landed, and verify its
   applicable `main` checks. Follow `.agents/ship.md` for the complete Amp Custom
   Ship procedure.

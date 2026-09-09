@@ -12,9 +12,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 const (
@@ -22,10 +25,12 @@ const (
 	errorSnippetLimit = 4 << 10
 )
 
-var requiredChecks = []struct {
+type requiredCheck struct {
 	workflow string
 	name     string
-}{
+}
+
+var requiredChecks = []requiredCheck{
 	{"CodeQL", "Analyze Go"},
 	{"CI", "plan"},
 	{"CI", "verdict"},
@@ -73,6 +78,11 @@ type pullRequest struct {
 	StatusChecks     []statusCheck `json:"statusCheckRollup"`
 	Reviews          []review      `json:"reviews"`
 	Comments         []comment     `json:"comments"`
+	Files            []changedFile `json:"files"`
+}
+
+type changedFile struct {
+	Path string `json:"path"`
 }
 
 type presentJSON struct {
@@ -115,9 +125,22 @@ type review struct {
 }
 
 type comment struct {
-	Author    actor  `json:"author"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"createdAt"`
+	Author            actor  `json:"author"`
+	AuthorAssociation string `json:"authorAssociation"`
+	Body              string `json:"body"`
+	CreatedAt         string `json:"createdAt"`
+	URL               string `json:"url"`
+}
+
+type reviewFallback struct {
+	Provider       string `json:"provider"`
+	HeadSHA        string `json:"headSha"`
+	UnavailableURL string `json:"unavailableUrl"`
+	EvidenceURL    string `json:"evidenceUrl"`
+	IncidentURL    string `json:"incidentUrl"`
+	Reviewer       string `json:"reviewer"`
+	Scope          string `json:"scope"`
+	Status         string `json:"status"`
 }
 
 func main() {
@@ -146,7 +169,7 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("shipcheck: PASS PR %s#%d at %s; auto-merge disabled, every check terminal and acceptable, Codex code/security and Copilot reviewed the final head, zero unresolved review threads\n", *repo, *prNumber, pr.HeadRefOID)
+	fmt.Printf("shipcheck: PASS PR %s#%d at %s; auto-merge disabled, every check terminal and acceptable, exact-head review requirements satisfied (including any documented provider fallback), zero unresolved review threads\n", *repo, *prNumber, pr.HeadRefOID)
 }
 
 func validRepo(repo string) bool {
@@ -155,7 +178,7 @@ func validRepo(repo string) bool {
 }
 
 func loadPullRequest(repo string, number int) (pullRequest, error) {
-	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,reviews,comments"
+	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,reviews,comments,files"
 	out, err := runGH("pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields)
 	if err != nil {
 		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, errorSnippet(out))
@@ -194,9 +217,9 @@ func errorSnippet(out []byte) string {
 	if truncated {
 		out = out[:errorSnippetLimit]
 	}
-	snippet := strings.TrimSpace(strings.ToValidUTF8(string(out), "�"))
+	snippet := strings.TrimSpace(textbound.Cut(string(out), errorSnippetLimit))
 	if truncated {
-		snippet += "… (truncated)"
+		snippet += "..."
 	}
 	return snippet
 }
@@ -226,17 +249,17 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	if len(pr.StatusChecks) == 0 {
 		problems = append(problems, "no check runs or status contexts were reported")
 	}
-	problems = append(problems, checkProblems(pr.StatusChecks)...)
+	problems = append(problems, checkProblems(pr.StatusChecks, requiredChecksFor(pr.Files))...)
 
-	if !hasExactHeadReview(pr.Reviews, pr.HeadRefOID, "copilot-pull-request-reviewer") {
+	if !hasExactHeadReview(pr.Reviews, pr.HeadRefOID, "copilot-pull-request-reviewer") && !hasReviewFallback(pr, "copilot") {
 		problems = append(problems, "Copilot has not reviewed the exact final head")
 	} else if copilotExactHeadHasFindings(pr.Reviews, pr.HeadRefOID) {
 		problems = append(problems, "Copilot exact-final-head review still contains findings")
 	}
-	if !hasCodexReview(pr, false) {
+	if !hasCodexReview(pr, false) && !hasReviewFallback(pr, "codex-code") {
 		problems = append(problems, "Codex code review has not completed on the exact final head")
 	}
-	if !hasCodexReview(pr, true) {
+	if !hasCodexReview(pr, true) && !hasReviewFallback(pr, "codex-security") {
 		problems = append(problems, "Codex security review has not completed on the exact final head")
 	}
 	if unresolved != 0 {
@@ -245,7 +268,22 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	return problems
 }
 
-func checkProblems(checks []statusCheck) []string {
+func requiredChecksFor(files []changedFile) []requiredCheck {
+	required := append([]requiredCheck(nil), requiredChecks...)
+	for _, file := range files {
+		if file.Path == "docs/EDITORS.md" || file.Path == ".github/workflows/editors.yml" ||
+			strings.HasPrefix(file.Path, "tools/editorsmoke/") || strings.HasPrefix(file.Path, "pkg/flowstate/v1/flowfile/") ||
+			strings.HasPrefix(file.Path, "cmd/flow/") || strings.HasPrefix(file.Path, "editors/vscode/") {
+			return append(required,
+				requiredCheck{"Editors", "Neovim LSP smoke"},
+				requiredCheck{"Editors", "VS Code extension"},
+			)
+		}
+	}
+	return required
+}
+
+func checkProblems(checks []statusCheck, requiredChecks []requiredCheck) []string {
 	groups := make(map[string][]statusCheck, len(checks))
 	reported := make(map[string][]statusCheck, len(checks))
 	var order []string
@@ -397,6 +435,71 @@ func completedSecuritySummary(body, head string) bool {
 
 func mentionsCommit(body, head string) bool {
 	return strings.Contains(body, "`"+head+"`")
+}
+
+const fallbackMarker = "<!-- flowstate-review-fallback:v1 "
+
+var flowstateIssueURL = regexp.MustCompile(`^https://github\.com/picatz/flowstate/issues/[1-9][0-9]*$`)
+
+func hasReviewFallback(pr pullRequest, provider string) bool {
+	for _, comment := range pr.Comments {
+		if comment.AuthorAssociation != "OWNER" {
+			continue
+		}
+		for _, line := range strings.Split(comment.Body, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, fallbackMarker) || !strings.HasSuffix(line, " -->") {
+				continue
+			}
+			var fallback reviewFallback
+			raw := strings.TrimSuffix(strings.TrimPrefix(line, fallbackMarker), " -->")
+			if json.Unmarshal([]byte(raw), &fallback) != nil || !validReviewFallback(pr, provider, fallback) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func validReviewFallback(pr pullRequest, provider string, fallback reviewFallback) bool {
+	if fallback.Provider != provider || fallback.HeadSHA != pr.HeadRefOID || fallback.Status != "pass" ||
+		fallback.Scope != "code-security" || fallback.Reviewer == "" || fallback.Reviewer == provider ||
+		!flowstateIssueURL.MatchString(fallback.IncidentURL) ||
+		fallback.UnavailableURL == fallback.EvidenceURL {
+		return false
+	}
+	var unavailable, evidence bool
+	for _, comment := range pr.Comments {
+		if comment.URL == fallback.UnavailableURL && providerUnavailable(comment, provider) {
+			unavailable = true
+		}
+		if comment.URL == fallback.EvidenceURL && comment.AuthorAssociation == "OWNER" &&
+			mentionsCommit(comment.Body, pr.HeadRefOID) && strings.Contains(strings.ToLower(comment.Body), "independent") &&
+			strings.Contains(strings.ToLower(comment.Body), "code/security") && strings.Contains(comment.Body, "PASS") &&
+			strings.Contains(strings.ToLower(comment.Body), "no actionable") {
+			evidence = true
+		}
+	}
+	return unavailable && evidence
+}
+
+func providerUnavailable(comment comment, provider string) bool {
+	body := strings.ToLower(comment.Body)
+	switch provider {
+	case "codex-code":
+		return comment.Author.Login == "chatgpt-codex-connector" &&
+			!strings.Contains(body, "security review") &&
+			(strings.Contains(body, "usage limit") || strings.Contains(body, "unavailable"))
+	case "codex-security":
+		return comment.Author.Login == "chatgpt-codex-connector" && strings.Contains(body, "security review") &&
+			(strings.Contains(body, "usage limit") || strings.Contains(body, "unavailable"))
+	case "copilot":
+		return comment.Author.Login == "copilot-pull-request-reviewer" &&
+			(strings.Contains(body, "usage limit") || strings.Contains(body, "unavailable"))
+	default:
+		return false
+	}
 }
 
 type threadPage struct {
