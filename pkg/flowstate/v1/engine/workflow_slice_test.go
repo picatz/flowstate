@@ -137,7 +137,7 @@ func runWorkflowSliceReplayHelper(t *testing.T, input string, timeout time.Durat
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWorkflowSliceReplayHelper$", "-test.v=false")
+	cmd := exec.CommandContext(ctx, os.Args[0], workflowSliceReplayHelperArgs(timeout)...)
 	cmd.Env = append(os.Environ(), workflowSliceReplayHelperEnv+"="+input)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
@@ -149,7 +149,17 @@ func runWorkflowSliceReplayHelper(t *testing.T, input string, timeout time.Durat
 	return nil
 }
 
+func workflowSliceReplayHelperArgs(timeout time.Duration) []string {
+	return []string{
+		"-test.run=^TestWorkflowSliceReplayHelper$",
+		"-test.v=false",
+		"-test.timeout=" + (timeout + 5*time.Second).String(),
+	}
+}
+
 func TestWorkflowSliceReplayHelperHasAHardDeadline(t *testing.T) {
+	require.Equal(t, "-test.timeout=6s", workflowSliceReplayHelperArgs(time.Second)[2],
+		"the child must retain its own deadline if its parent exits")
 	start := time.Now()
 	err := runWorkflowSliceReplayHelper(t, "hang", time.Second)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
