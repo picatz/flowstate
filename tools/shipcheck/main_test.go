@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,18 +19,16 @@ func passingPullRequest() pullRequest {
 		BaseRefName:      "main",
 		HeadRefOID:       testHead,
 		AutoMergeRequest: presentJSON{Present: true, Value: json.RawMessage("null")},
+		ChangedFiles:     0,
 		StatusChecks: append(passingRequiredChecks(),
 			statusCheck{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"},
 			statusCheck{Type: "CheckRun", Name: "not selected", Status: "COMPLETED", Conclusion: "SKIPPED"},
 			statusCheck{Type: "StatusContext", Context: "external", State: "SUCCESS"},
 		),
-		Reviews: []review{
-			{Author: actor{Login: "copilot-pull-request-reviewer"}, Commit: &commit{OID: testHead}},
-			{Author: actor{Login: "chatgpt-codex-connector"}, Commit: &commit{OID: testHead}, Body: "### Codex Review"},
-		},
 		Comments: []comment{{
-			Author: actor{Login: "chatgpt-codex-connector"},
-			Body:   "Security review completed. No security issues were found.\n\n**Reviewed commit:** `" + testHead + "`",
+			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
+			Body: "Independent AI code/security review by amp-oracle for `" + testHead + "`: PASS with no actionable findings.\n\n" +
+				`<!-- flowstate-independent-review:v1 {"headSha":"` + testHead + `","reviewer":"amp-oracle","scope":"code-security","status":"pass"} -->`,
 		}},
 	}
 }
@@ -59,8 +58,6 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 	pr.AutoMergeRequest = presentJSON{Present: true, Value: json.RawMessage(`{"enabledAt":"now"}`)}
 	pr.StatusChecks[0].Status = "IN_PROGRESS"
 	pr.StatusChecks[0].Conclusion = ""
-	pr.Reviews[0].Commit.OID = strings.Repeat("f", 40)
-	pr.Reviews[1].Commit.OID = strings.Repeat("e", 40)
 	pr.Comments[0].Body = strings.ReplaceAll(pr.Comments[0].Body, "0123456789", "abcdef0123")
 
 	problems := strings.Join(evaluate(pr, 2), "\n")
@@ -70,9 +67,7 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 		"pull request is still a draft",
 		"auto-merge is enabled",
 		`check "Analyze Go" latest result is IN_PROGRESS/`,
-		"Copilot has not reviewed the exact final head",
-		"Codex code review has not completed on the exact final head",
-		"Codex security review has not completed on the exact final head",
+		"independent code/security review has not passed on the exact final head",
 		"2 review thread(s) remain unresolved",
 	} {
 		if !strings.Contains(problems, want) {
@@ -93,14 +88,6 @@ func TestEvaluateRejectsMissingAutoMergeEvidenceAndBlockingReview(t *testing.T) 
 	}
 }
 
-func TestEvaluateRejectsCopilotFindingsOnTheFinalHead(t *testing.T) {
-	pr := passingPullRequest()
-	pr.Reviews[0].Body = "### Changes recommended\n\n### Suppressed comments (1)"
-	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Copilot exact-final-head review still contains findings") {
-		t.Fatalf("Copilot finding was accepted: %s", problems)
-	}
-}
-
 func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
 	pr := passingPullRequest()
 	pr.StatusChecks = []statusCheck{{Type: "CheckRun", Name: "appearance", Status: "COMPLETED", Conclusion: "CANCELLED"}}
@@ -110,6 +97,15 @@ func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
 	pr.StatusChecks = nil
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "no check runs") {
 		t.Fatalf("missing checks were accepted: %s", problems)
+	}
+}
+
+func TestEvaluateRejectsTruncatedChangedFiles(t *testing.T) {
+	pr := passingPullRequest()
+	pr.ChangedFiles = 101
+	pr.Files = make([]changedFile, 100)
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "changed-file evidence is incomplete") {
+		t.Fatalf("truncated changed files were accepted: %s", problems)
 	}
 }
 
@@ -157,130 +153,89 @@ func TestEvaluateRejectsUnorderedCompletedDuplicates(t *testing.T) {
 	}
 }
 
-func TestEvaluateUsesLatestExactHeadCopilotReview(t *testing.T) {
+func TestEvaluateRejectsConflictingChecksAtSameTimestamp(t *testing.T) {
+	for _, conclusions := range [][]string{{"FAILURE", "SUCCESS"}, {"SUCCESS", "FAILURE"}} {
+		pr := passingPullRequest()
+		pr.StatusChecks = append(pr.StatusChecks,
+			statusCheck{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: conclusions[0], StartedAt: "2026-09-09T16:00:00Z"},
+			statusCheck{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: conclusions[1], StartedAt: "2026-09-09T16:00:00Z"},
+		)
+		if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "conflicting results at the latest timestamp") {
+			t.Fatalf("equal-timestamp conflict %v was accepted: %s", conclusions, problems)
+		}
+	}
+}
+
+func TestIndependentReviewRejectsStaleOrIncompleteEvidence(t *testing.T) {
 	pr := passingPullRequest()
-	pr.Reviews[0].SubmittedAt = "2026-09-08T10:00:00Z"
-	pr.Reviews = append(pr.Reviews, review{
-		Author:      actor{Login: "copilot-pull-request-reviewer"},
-		Commit:      &commit{OID: testHead},
-		Body:        "### Suppressed comments (1)",
-		SubmittedAt: "2026-09-08T10:01:00Z",
-	})
-	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Copilot exact-final-head review still contains findings") {
-		t.Fatalf("latest Copilot finding was accepted: %s", problems)
+	for name, mutate := range map[string]func(*comment){
+		"stale head":  func(c *comment) { c.Body = strings.ReplaceAll(c.Body, testHead, strings.Repeat("f", 40)) },
+		"no reviewer": func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "amp-oracle", "") },
+		"wrong scope": func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "code-security", "code") },
+		"no verdict":  func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "no actionable", "reviewed") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := pr
+			candidate.Comments = append([]comment(nil), pr.Comments...)
+			mutate(&candidate.Comments[0])
+			if hasIndependentReview(candidate) {
+				t.Fatal("invalid independent-review evidence was accepted")
+			}
+		})
 	}
 }
 
-func TestMentionsCommitRequiresTheQuotedFullHead(t *testing.T) {
-	if !mentionsCommit("Reviewed commit: `"+testHead+"`", testHead) {
-		t.Fatal("quoted full head was not recognized")
-	}
-	if mentionsCommit("unrelated 0123456789abcdef", testHead) {
-		t.Fatal("unquoted commit text was recognized")
-	}
-	if mentionsCommit("Reviewed commit: `0123456789`", testHead) {
-		t.Fatal("abbreviated commit was recognized")
-	}
-}
-
-func TestSecuritySummaryRequiresCompletedExactHead(t *testing.T) {
-	body := `<!-- codex-security-review:v1 {"headSha":"` + testHead + `","status":"completed"} -->`
-	if !completedSecuritySummary(body, testHead) {
-		t.Fatal("completed exact-head summary was not recognized")
-	}
-	if completedSecuritySummary(strings.Replace(body, "completed", "running", 1), testHead) {
-		t.Fatal("running summary was recognized")
-	}
-	if completedSecuritySummary(strings.Replace(body, testHead, strings.Repeat("f", 40), 1), testHead) {
-		t.Fatal("stale-head summary was recognized")
-	}
-}
-
-func TestCodexSecurityReviewDoesNotCountAsCodeReview(t *testing.T) {
+func TestIndependentReviewMustFollowExactHeadReviewArtifacts(t *testing.T) {
 	pr := passingPullRequest()
-	pr.Reviews[1].Body = "### Codex Security Review"
-	pr.Comments = nil
-	if hasCodexReview(pr, false) {
-		t.Fatal("security review was recognized as a code review")
+	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
+	pr.Reviews = []review{{SubmittedAt: "2026-09-09T16:01:00Z"}}
+	if hasIndependentReview(pr) {
+		t.Fatal("attestation older than an exact-head review artifact was accepted")
+	}
+	pr.Reviews[0].SubmittedAt = "2026-09-09T15:59:00Z"
+	if !hasIndependentReview(pr) {
+		t.Fatal("attestation newer than every exact-head review artifact was rejected")
+	}
+	pr.Reviews = []review{{SubmittedAt: pr.Comments[0].CreatedAt}}
+	if hasIndependentReview(pr) {
+		t.Fatal("equal-timestamp stale-head review artifact did not invalidate attestation")
+	}
+	pr.Reviews = []review{{SubmittedAt: "2026-09-09T15:00:00Z", UpdatedAt: "2026-09-09T16:01:00Z"}}
+	if hasIndependentReview(pr) {
+		t.Fatal("edited formal review did not invalidate attestation")
 	}
 }
 
-func TestCodeSummaryCannotSubstituteForExactHeadReview(t *testing.T) {
+func TestIndependentReviewMustFollowOtherComments(t *testing.T) {
 	pr := passingPullRequest()
-	pr.Reviews = pr.Reviews[:1]
-	body := `<!-- codex-pull-request-review-summary -->
-<!-- codex-security-review:v1 {"headSha":"` + testHead + `","status":"completed"} -->
-| 📝 **Code Review** | ✅ **Completed** <relative-time datetime="2026-09-08T10:01:00Z">now</relative-time> | ` + "`0123456`" + ` | Manual request |`
-	pr.Comments = []comment{{Author: actor{Login: "chatgpt-codex-connector"}, Body: body}}
-	if hasCodexReview(pr, false) {
-		t.Fatal("an editable summary substituted for an exact-head review artifact")
+	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
+	pr.Comments[0].URL = "https://example.test/attestation"
+	pr.Comments = append(pr.Comments, comment{URL: "https://example.test/finding", CreatedAt: "2026-09-09T16:01:00Z"})
+	if hasIndependentReview(pr) {
+		t.Fatal("attestation older than another PR comment was accepted")
+	}
+	pr.Comments[1].CreatedAt = "2026-09-09T15:00:00Z"
+	pr.Comments[1].UpdatedAt = "2026-09-09T16:01:00Z"
+	if hasIndependentReview(pr) {
+		t.Fatal("attestation older than an edited PR comment was accepted")
+	}
+	pr.Comments = pr.Comments[:1]
+	pr.Comments[0].UpdatedAt = "2026-09-09T16:01:00Z"
+	if hasIndependentReview(pr) {
+		t.Fatal("edited attestation was accepted")
 	}
 }
 
-func TestExactHeadSecurityReviewArtifactIsAccepted(t *testing.T) {
+func TestIndependentReviewMustFollowInlineReviewCommentEdits(t *testing.T) {
 	pr := passingPullRequest()
-	pr.Comments = nil
-	pr.Reviews = append(pr.Reviews, review{
-		Author: actor{Login: "chatgpt-codex-connector"}, Commit: &commit{OID: testHead}, Body: "### Codex Security Review",
-	})
-	if !hasCodexReview(pr, true) {
-		t.Fatal("exact-head security review was not recognized")
+	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
+	pr.LatestReviewCommentUpdatedAt = "2026-09-09T16:00:00Z"
+	if hasIndependentReview(pr) {
+		t.Fatal("equal-timestamp inline review comment was accepted")
 	}
-}
-
-func TestUnavailableProviderAcceptsDocumentedIndependentFallback(t *testing.T) {
-	pr := passingPullRequest()
-	pr.Comments = []comment{
-		{
-			Author: actor{Login: "chatgpt-codex-connector"}, URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-10",
-			Body: "You have reached your Codex usage limits for security reviews.",
-		},
-		{
-			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER", URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-11",
-			Body: "Independent exact-head AI code/security review for `" + testHead + "`: PASS with no actionable findings.",
-		},
-		{
-			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
-			Body: `<!-- flowstate-review-fallback:v1 {"provider":"codex-security","headSha":"` + testHead +
-				`","unavailableUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-10","evidenceUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-11","incidentUrl":"https://github.com/picatz/flowstate/issues/1931","reviewer":"independent-ai","scope":"code-security","status":"pass"} -->`,
-		},
-	}
-	if problems := evaluate(pr, 0); len(problems) != 0 {
-		t.Fatalf("documented fallback was rejected: %v", problems)
-	}
-}
-
-func TestFallbackRejectsStaleHeadAndMissingOutageEvidence(t *testing.T) {
-	pr := passingPullRequest()
-	pr.Comments = []comment{{
-		Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
-		Body: `<!-- flowstate-review-fallback:v1 {"provider":"codex-security","headSha":"` + strings.Repeat("f", 40) +
-			`","unavailableUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-10","evidenceUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-11","incidentUrl":"https://github.com/picatz/flowstate/issues/1931","reviewer":"independent-ai","scope":"code-security","status":"pass"} -->`,
-	}}
-	if hasReviewFallback(pr, "codex-security") {
-		t.Fatal("stale fallback without linked evidence was accepted")
-	}
-}
-
-func TestFallbackRejectsOutageFromAnotherChannelAndMalformedIncident(t *testing.T) {
-	pr := passingPullRequest()
-	pr.Comments = []comment{
-		{
-			Author: actor{Login: "chatgpt-codex-connector"}, URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-10",
-			Body: "You have reached your Codex usage limits for security reviews.",
-		},
-		{
-			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER", URL: "https://github.com/picatz/flowstate/pull/1#issuecomment-11",
-			Body: "Independent exact-head AI code/security review for `" + testHead + "`: PASS with no actionable findings.",
-		},
-		{
-			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
-			Body: `<!-- flowstate-review-fallback:v1 {"provider":"codex-code","headSha":"` + testHead +
-				`","unavailableUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-10","evidenceUrl":"https://github.com/picatz/flowstate/pull/1#issuecomment-11","incidentUrl":"https://github.com/picatz/flowstate/issues/not-an-issue","reviewer":"independent-ai","scope":"code-security","status":"pass"} -->`,
-		},
-	}
-	if hasReviewFallback(pr, "codex-code") {
-		t.Fatal("security-channel outage or malformed incident was accepted for code review")
+	pr.LatestReviewCommentUpdatedAt = "2026-09-09T15:59:00Z"
+	if !hasIndependentReview(pr) {
+		t.Fatal("older inline review comment invalidated attestation")
 	}
 }
 
@@ -303,6 +258,7 @@ func TestRequiredCheckCannotBeSkipped(t *testing.T) {
 func TestEditorChangesRequireBothEditorChecks(t *testing.T) {
 	pr := passingPullRequest()
 	pr.Files = []changedFile{{Path: "cmd/flow/dap.go"}}
+	pr.ChangedFiles = len(pr.Files)
 	problems := strings.Join(evaluate(pr, 0), "\n")
 	for _, name := range []string{"Neovim LSP smoke", "VS Code extension"} {
 		if !strings.Contains(problems, name) {
@@ -319,6 +275,9 @@ func TestEditorChangesRequireBothEditorChecks(t *testing.T) {
 }
 
 func TestRunGHIsBounded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a POSIX shell script")
+	}
 	dir := t.TempDir()
 	gh := filepath.Join(dir, "gh")
 	if err := os.WriteFile(gh, []byte("#!/bin/sh\n/bin/sleep 1\n"), 0o755); err != nil {
@@ -344,6 +303,9 @@ func TestRunGHIsBounded(t *testing.T) {
 }
 
 func TestRunGHIgnoresStderrOnSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a POSIX shell script")
+	}
 	dir := t.TempDir()
 	gh := filepath.Join(dir, "gh")
 	if err := os.WriteFile(gh, []byte("#!/bin/sh\necho warning >&2\nprintf '{\"state\":\"OPEN\"}'\n"), 0o755); err != nil {
@@ -371,6 +333,28 @@ func TestBoundedBufferCapsCollectedOutput(t *testing.T) {
 	}
 	if !buffer.exceeded {
 		t.Fatal("buffer did not record overflow")
+	}
+}
+
+func TestRunGHCapsSubprocessOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nprintf '1234567890'\nprintf 'abcdefghij' >&2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	originalLimit := ghOutputLimit
+	ghOutputLimit = ghErrorOutputLimit + 4
+	t.Cleanup(func() { ghOutputLimit = originalLimit })
+	out, err := runGH("pr", "view")
+	if err != errGHOutputLimit {
+		t.Fatalf("runGH error = %v, want %v", err, errGHOutputLimit)
+	}
+	if len(out) > ghErrorOutputLimit+4 {
+		t.Fatalf("runGH collected %d bytes beyond configured limit", len(out))
 	}
 }
 

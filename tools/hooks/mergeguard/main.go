@@ -74,14 +74,25 @@ const graphQLEndpoint = "https://api.github.com/graphql"
 func main() {
 	in, err := hook.Read(os.Stdin)
 	if err != nil {
-		return // lenient: unrecognized input allows
+		hook.Deny("mergeguard: hook input could not be read or parsed, so merge evidence was not checked. Merge blocked.")
+		return
 	}
 	if autoMergeRequested(in) {
 		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, then merge manually")
 		return
 	}
+	if adminMergeRequested(in) {
+		hook.Deny("mergeguard: --admin can bypass repository requirements and is not permitted by the autonomous shipping policy")
+		return
+	}
 	if mergeUsesShellExpansion(in) {
 		hook.Deny("mergeguard: shell expansion in a `gh pr merge` invocation can hide auto-merge or change its target and head. Use one fully explicit invocation after shipcheck passes.")
+		return
+	}
+	if mergeHelpOnly(in) {
+		return
+	}
+	if disableAutoOnly(in) {
 		return
 	}
 	if isMergeInvocation(in) && !mergeHeadPinned(in) {
@@ -287,6 +298,9 @@ var repoFlagValue = regexp.MustCompile(`^([^/\s]+)/([^/\s]+)$`)
 // happens to precede the target (`gh pr merge --match-head-commit "$sha"
 // 498 -R owner/repo`) is mistaken for the target itself.
 var ghMergeValueFlags = map[string]bool{
+	"-A":                  true,
+	"-b":                  true,
+	"-F":                  true,
 	"--author-email":      true,
 	"--body":              true,
 	"--body-file":         true,
@@ -321,7 +335,12 @@ func autoMergeRequested(in *hook.Input) bool {
 		return false
 	}
 	for _, args := range ghPRMergeInvocations(in.Command()) {
-		for _, arg := range args {
+		for i := 0; i < len(args); i++ {
+			arg := args[i]
+			if ghMergeValueFlags[arg] || arg == "-R" || arg == "--repo" {
+				i++
+				continue
+			}
 			if arg == "--auto" || strings.HasPrefix(arg, "--auto=") {
 				return true
 			}
@@ -330,25 +349,164 @@ func autoMergeRequested(in *hook.Input) bool {
 	return false
 }
 
-func mergeUsesShellExpansion(in *hook.Input) bool {
-	if in == nil || in.ToolName != "Bash" || !isGHPRMergeInvocation(in.Command()) {
+func mergeHelpOnly(in *hook.Input) bool {
+	if in == nil || in.ToolName != "Bash" {
 		return false
 	}
-	var inSingle, escaped bool
-	for _, r := range in.Command() {
+	invocations := ghPRMergeInvocations(in.Command())
+	if len(invocations) != 1 {
+		return false
+	}
+	help := false
+	helpSeen := false
+	for i := 0; i < len(invocations[0]); i++ {
+		arg := invocations[0][i]
 		switch {
-		case escaped:
-			escaped = false
-		case r == '\\' && !inSingle:
-			escaped = true
-		case r == '\'':
-			inSingle = !inSingle
-		case !inSingle && (r == '$' || r == '`'):
-			return true
+		case arg == "-R" || arg == "--repo":
+			i++
+		case strings.HasPrefix(arg, "-R") || strings.HasPrefix(arg, "--repo="):
+		case arg == "-h" || arg == "--help":
+			help = true
+			helpSeen = true
+		case strings.HasPrefix(arg, "--help="):
+			value, err := strconv.ParseBool(strings.TrimPrefix(arg, "--help="))
+			if err != nil {
+				return false
+			}
+			help = value
+			helpSeen = true
+		case strings.HasPrefix(arg, "-"):
+			return false
+		}
+	}
+	return helpSeen && help
+}
+
+func adminMergeRequested(in *hook.Input) bool {
+	if in == nil || in.ToolName != "Bash" {
+		return false
+	}
+	for _, args := range ghPRMergeInvocations(in.Command()) {
+		for i := 0; i < len(args); i++ {
+			arg := args[i]
+			if ghMergeValueFlags[arg] || arg == "-R" || arg == "--repo" {
+				i++
+				continue
+			}
+			if arg == "--admin" || strings.HasPrefix(arg, "--admin=") {
+				return true
+			}
 		}
 	}
 	return false
 }
+
+// disableAutoOnly recognizes the gh subcommand's corrective early-return path.
+// It changes no code and performs no merge, so requiring merge evidence would
+// obstruct disabling the state that shipcheck rejects. Compound invocations do
+// not qualify: every actual merge in the command must still be checked.
+func disableAutoOnly(in *hook.Input) bool {
+	if in == nil || in.ToolName != "Bash" {
+		return false
+	}
+	invocations := ghPRMergeInvocations(in.Command())
+	if len(invocations) != 1 {
+		return false
+	}
+	args := invocations[0]
+	if hasUnsupportedShortOptionGroup(args) {
+		return false
+	}
+	var disableCount int
+	var disable bool
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if ghMergeValueFlags[arg] || arg == "-R" || arg == "--repo" {
+			i++
+			continue
+		}
+		switch arg {
+		case "--disable-auto", "--disable-auto=true":
+			disableCount++
+			disable = true
+		case "--disable-auto=false":
+			disableCount++
+			disable = false
+		case "--":
+			return false
+		default:
+			if strings.HasPrefix(arg, "--disable-auto=") {
+				return false
+			}
+		}
+	}
+	return disableCount == 1 && disable
+}
+
+func mergeUsesShellExpansion(in *hook.Input) bool {
+	if in == nil || in.ToolName != "Bash" {
+		return false
+	}
+	cmd := in.Command()
+	recognized := isGHPRMergeInvocation(cmd)
+	processSubstitution := (strings.Contains(cmd, ">(") || strings.Contains(cmd, "<(")) &&
+		ghMergeText.MatchString(cmd)
+	braceExpansion := ghExpansionMergeText.MatchString(cmd) && strings.Contains(cmd, "{") && strings.Contains(cmd, "}")
+	mergeExpansion := !recognized && (ghExpansionMergeText.MatchString(cmd) || ghDynamicPRMergeText.MatchString(cmd) || dynamicGHExecutable.MatchString(cmd)) && (strings.ContainsAny(cmd, "$`") ||
+		strings.Contains(cmd, "{") && strings.Contains(cmd, "}"))
+	nestedEvaluation := ghMergeText.MatchString(cmd) && (strings.Contains(cmd, "eval ") || bashCommandEvaluation.MatchString(cmd))
+	if !recognized && !expandedMergeExecutable.MatchString(cmd) && !processSubstitution && !braceExpansion && !mergeExpansion && !nestedEvaluation {
+		return false
+	}
+	if processSubstitution || braceExpansion || mergeExpansion || nestedEvaluation {
+		return true
+	}
+	var inSingle, inDouble, inComment, escaped, wordStarted bool
+	for _, r := range in.Command() {
+		switch {
+		case inComment:
+			if r == '\n' {
+				inComment = false
+				wordStarted = false
+			}
+		case escaped:
+			escaped = false
+			wordStarted = true
+		case r == '\\' && !inSingle:
+			escaped = true
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+			wordStarted = true
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+			wordStarted = true
+		case r == '#' && !inSingle && !inDouble && !wordStarted:
+			inComment = true
+		case !inSingle && (r == '$' || r == '`'):
+			return true
+		case !inSingle && !inDouble && strings.ContainsRune(" \t\r\n;&|(){}", r):
+			wordStarted = false
+		default:
+			wordStarted = true
+		}
+	}
+	return false
+}
+
+// expandedMergeExecutable catches a merge whose executable is supplied by
+// parameter or command expansion, before the literal gh recognizer can see it.
+// It permits inherited gh flags between that executable and `pr merge` so a
+// dynamic `gh -R owner/repo pr merge` is denied too.
+var expandedMergeExecutable = regexp.MustCompile(`(?:^|[;&|(){}\n])\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^;\n]+;\s*)?(?:"?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}\n]+\}|\([^\n)]*\))"?|` + "`[^`\n]+`" + `)(?:\s+(?:-R\S+|(?:-R|--repo|--hostname)(?:=\S+|\s+\S+)))*\s+pr(?:\s+(?:-R\S+|(?:-R|--repo|--hostname)(?:=\S+|\s+\S+)))*\s+merge(?:\s|$)`)
+
+// Process substitution can contain shell separators that the deliberately
+// small command lexer does not nest. Match across them and deny conservatively
+// rather than letting their contents split a merge into unrecognized commands.
+var ghMergeText = regexp.MustCompile(`(?s)\bgh\b.*\bpr\b.*\bmerge\b`)
+var ghExpansionMergeText = regexp.MustCompile(`(?s)\bgh\b.*\bmerge\b`)
+var ghDynamicPRMergeText = regexp.MustCompile(`(?s)\bgh\b[^;\n]*\bp\S*\s+m\S*`)
+var dynamicGHExecutable = regexp.MustCompile("\\bg\\S*(?:\\$|`)\\S*h\\b[^;\\n]*\\bpr\\b[^;\\n]*\\bmerge\\b")
+var bashCommandEvaluation = regexp.MustCompile(`\b(?:ba|da)?sh(?:\s+(?:--[A-Za-z-]+|-[A-Za-z]*))*\s+-[A-Za-z]*c[A-Za-z]*\b`)
 
 var fullCommitOID = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
@@ -365,18 +523,49 @@ func mergeHeadPinned(in *hook.Input) bool {
 		return false
 	}
 	if in.ToolName == "mcp__github__merge_pull_request" {
-		return fullCommitOID.MatchString(stringOf(in.ToolInput["expectedHeadOid"]))
+		// The official GitHub MCP server forwards expectedHeadSha to the REST
+		// merge API's SHA precondition. expectedHeadOid is not part of that
+		// contract and must not make an unpinned merge appear pinned.
+		return fullCommitOID.MatchString(stringOf(in.ToolInput["expectedHeadSha"]))
 	}
 	args, ok := ghPRMergeArgs(in.Command())
 	if !ok {
 		return false
 	}
-	for i, arg := range args {
-		if arg == "--match-head-commit" && i+1 < len(args) {
-			return fullCommitOID.MatchString(args[i+1])
+	if hasUnsupportedShortOptionGroup(args) {
+		return false
+	}
+	var heads []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--match-head-commit" {
+			if i+1 >= len(args) {
+				return false
+			}
+			heads = append(heads, args[i+1])
+			i++
+			continue
 		}
 		if strings.HasPrefix(arg, "--match-head-commit=") {
-			return fullCommitOID.MatchString(strings.TrimPrefix(arg, "--match-head-commit="))
+			heads = append(heads, strings.TrimPrefix(arg, "--match-head-commit="))
+			continue
+		}
+		if ghMergeValueFlags[arg] || arg == "-R" || arg == "--repo" {
+			i++
+		}
+	}
+	return len(heads) == 1 && fullCommitOID.MatchString(heads[0])
+}
+
+// hasUnsupportedShortOptionGroup rejects bundled short options rather than
+// guessing which rune owns a following value. The documented shipping command
+// uses long options, and a false negative here could mistake body text for the
+// exact-head precondition.
+func hasUnsupportedShortOptionGroup(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && len(arg) > 2 &&
+			!strings.HasPrefix(arg, "-R") {
+			return true
 		}
 	}
 	return false
@@ -460,10 +649,14 @@ func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
 // each simple command; this intentionally remains a small recognizer, not a
 // shell evaluator.
 func ghPRMergeInvocations(s string) [][]string {
+	// Normalize Bash's combined output-redirection spellings before tokenizing.
+	// Their leading ampersand is not a command separator, and >| is one
+	// redirection operator rather than a redirect followed by a pipeline.
+	s = strings.NewReplacer("&>>", ">>", "&>", ">", ">|", ">").Replace(s)
 	var commands [][]string
 	var words []string
 	var word strings.Builder
-	var inSingle, inDouble, escaped, started bool
+	var inSingle, inDouble, inComment, escaped, started bool
 	redirection := 0 // 1 awaits a target; 2 consumes one
 	flushWord := func() {
 		if started {
@@ -481,6 +674,11 @@ func ghPRMergeInvocations(s string) [][]string {
 	}
 	for _, r := range s {
 		switch {
+		case inComment:
+			if r == '\n' {
+				inComment = false
+				flushCommand()
+			}
 		case escaped:
 			if redirection != 0 {
 				redirection = 2
@@ -518,6 +716,8 @@ func ghPRMergeInvocations(s string) [][]string {
 			if redirection != 0 {
 				redirection, started = 2, false
 			}
+		case r == '#' && !started && redirection == 0:
+			inComment = true
 		case r == ' ' || r == '\t' || r == '\r':
 			if redirection == 2 {
 				redirection = 0
@@ -531,6 +731,11 @@ func ghPRMergeInvocations(s string) [][]string {
 			} else {
 				flushWord()
 			}
+			redirection = 1
+		case r == '&' && redirection == 1:
+			// Descriptor duplication (for example 2>&1) is part of the
+			// redirection, not a command separator. Keep the following merge
+			// arguments in this simple command.
 			redirection = 1
 		case strings.ContainsRune(";&|\n`(){}", r):
 			redirection = 0
@@ -549,7 +754,7 @@ func ghPRMergeInvocations(s string) [][]string {
 	var invocations [][]string
 	for _, command := range commands {
 		for i := 0; i < len(command); i++ {
-			if command[i] != "gh" {
+			if command[i] != "gh" && !strings.HasSuffix(command[i], "/gh") {
 				continue
 			}
 			var inherited []string
@@ -557,6 +762,9 @@ func ghPRMergeInvocations(s string) [][]string {
 			for j < len(command) {
 				arg := command[j]
 				switch {
+				case arg == "--help" || strings.HasPrefix(arg, "--help="):
+					inherited = append(inherited, arg)
+					j++
 				case ghInheritedValueFlags[arg] && j+1 < len(command):
 					inherited = append(inherited, arg, command[j+1])
 					j += 2
@@ -567,8 +775,28 @@ func ghPRMergeInvocations(s string) [][]string {
 					inherited = append(inherited, arg)
 					j++
 				default:
-					if j+1 < len(command) && arg == "pr" && command[j+1] == "merge" {
-						invocations = append(invocations, append(inherited, command[j+2:]...))
+					if arg == "pr" {
+						j++
+						for j < len(command) {
+							arg = command[j]
+							switch {
+							case arg == "--help" || strings.HasPrefix(arg, "--help="):
+								inherited = append(inherited, arg)
+								j++
+							case ghInheritedValueFlags[arg] && j+1 < len(command):
+								inherited = append(inherited, arg, command[j+1])
+								j += 2
+							case strings.HasPrefix(arg, "--repo=") || strings.HasPrefix(arg, "--hostname=") ||
+								strings.HasPrefix(arg, "-R=") || strings.HasPrefix(arg, "-R") && len(arg) > 2:
+								inherited = append(inherited, arg)
+								j++
+							default:
+								if arg == "merge" {
+									invocations = append(invocations, append(inherited, command[j+1:]...))
+								}
+								j = len(command)
+							}
+						}
 					}
 					j = len(command)
 				}

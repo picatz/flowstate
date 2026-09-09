@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -49,14 +48,14 @@ const ghErrorOutputLimit = 64 << 10
 var errGHOutputLimit = errors.New("gh output exceeded the byte limit")
 
 type boundedBuffer struct {
-	bytes.Buffer
+	buffer   bytes.Buffer
 	limit    int
 	exceeded bool
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
-	remaining := b.limit - b.Len()
+	remaining := b.limit - b.buffer.Len()
 	if remaining < len(p) {
 		b.exceeded = true
 		if remaining <= 0 {
@@ -64,21 +63,26 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		}
 		p = p[:remaining]
 	}
-	_, _ = b.Buffer.Write(p)
+	_, _ = b.buffer.Write(p)
 	return n, nil
 }
 
+func (b *boundedBuffer) Bytes() []byte  { return b.buffer.Bytes() }
+func (b *boundedBuffer) String() string { return b.buffer.String() }
+
 type pullRequest struct {
-	State            string        `json:"state"`
-	BaseRefName      string        `json:"baseRefName"`
-	IsDraft          bool          `json:"isDraft"`
-	HeadRefOID       string        `json:"headRefOid"`
-	AutoMergeRequest presentJSON   `json:"autoMergeRequest"`
-	ReviewDecision   string        `json:"reviewDecision"`
-	StatusChecks     []statusCheck `json:"statusCheckRollup"`
-	Reviews          []review      `json:"reviews"`
-	Comments         []comment     `json:"comments"`
-	Files            []changedFile `json:"files"`
+	State                        string        `json:"state"`
+	BaseRefName                  string        `json:"baseRefName"`
+	IsDraft                      bool          `json:"isDraft"`
+	HeadRefOID                   string        `json:"headRefOid"`
+	AutoMergeRequest             presentJSON   `json:"autoMergeRequest"`
+	ReviewDecision               string        `json:"reviewDecision"`
+	StatusChecks                 []statusCheck `json:"statusCheckRollup"`
+	Reviews                      []review      `json:"reviews"`
+	Comments                     []comment     `json:"comments"`
+	Files                        []changedFile `json:"files"`
+	ChangedFiles                 int           `json:"changedFiles"`
+	LatestReviewCommentUpdatedAt string
 }
 
 type changedFile struct {
@@ -113,15 +117,9 @@ type actor struct {
 	Login string `json:"login"`
 }
 
-type commit struct {
-	OID string `json:"oid"`
-}
-
 type review struct {
-	Author      actor   `json:"author"`
-	Commit      *commit `json:"commit"`
-	Body        string  `json:"body"`
-	SubmittedAt string  `json:"submittedAt"`
+	SubmittedAt string `json:"submittedAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 type comment struct {
@@ -129,18 +127,15 @@ type comment struct {
 	AuthorAssociation string `json:"authorAssociation"`
 	Body              string `json:"body"`
 	CreatedAt         string `json:"createdAt"`
+	UpdatedAt         string `json:"updatedAt"`
 	URL               string `json:"url"`
 }
 
-type reviewFallback struct {
-	Provider       string `json:"provider"`
-	HeadSHA        string `json:"headSha"`
-	UnavailableURL string `json:"unavailableUrl"`
-	EvidenceURL    string `json:"evidenceUrl"`
-	IncidentURL    string `json:"incidentUrl"`
-	Reviewer       string `json:"reviewer"`
-	Scope          string `json:"scope"`
-	Status         string `json:"status"`
+type independentReview struct {
+	HeadSHA  string `json:"headSha"`
+	Reviewer string `json:"reviewer"`
+	Scope    string `json:"scope"`
+	Status   string `json:"status"`
 }
 
 func main() {
@@ -169,7 +164,7 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("shipcheck: PASS PR %s#%d at %s; auto-merge disabled, every check terminal and acceptable, exact-head review requirements satisfied (including any documented provider fallback), zero unresolved review threads\n", *repo, *prNumber, pr.HeadRefOID)
+	fmt.Printf("shipcheck: PASS PR %s#%d at %s; auto-merge disabled, every check terminal and acceptable, independent exact-head code/security review passed, zero unresolved review threads\n", *repo, *prNumber, pr.HeadRefOID)
 }
 
 func validRepo(repo string) bool {
@@ -178,7 +173,7 @@ func validRepo(repo string) bool {
 }
 
 func loadPullRequest(repo string, number int) (pullRequest, error) {
-	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,reviews,comments,files"
+	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,files,changedFiles"
 	out, err := runGH("pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields)
 	if err != nil {
 		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, errorSnippet(out))
@@ -187,7 +182,132 @@ func loadPullRequest(repo string, number int) (pullRequest, error) {
 	if err := json.Unmarshal(out, &pr); err != nil {
 		return pullRequest{}, fmt.Errorf("decode pull request: %w", err)
 	}
+	comments, err := loadComments(repo, number)
+	if err != nil {
+		return pullRequest{}, err
+	}
+	pr.Comments = comments
+	reviews, err := loadReviews(repo, number)
+	if err != nil {
+		return pullRequest{}, err
+	}
+	pr.Reviews = reviews
+	latestReviewComment, err := loadLatestReviewCommentUpdate(repo, number)
+	if err != nil {
+		return pullRequest{}, err
+	}
+	pr.LatestReviewCommentUpdatedAt = latestReviewComment
 	return pr, nil
+}
+
+func loadLatestReviewCommentUpdate(repo string, number int) (string, error) {
+	endpoint := fmt.Sprintf("repos/%s/pulls/%d/comments", repo, number)
+	out, err := runGH("api", "--method", "GET", endpoint, "-f", "sort=updated", "-f", "direction=desc", "-F", "per_page=1")
+	if err != nil {
+		return "", fmt.Errorf("query latest inline review comment: %w: %s", err, errorSnippet(out))
+	}
+	var comments []struct {
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(out, &comments); err != nil {
+		return "", fmt.Errorf("decode latest inline review comment: %w", err)
+	}
+	if len(comments) == 0 {
+		return "", nil
+	}
+	return comments[0].UpdatedAt, nil
+}
+
+const commentsQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{author{login} authorAssociation body createdAt updatedAt url}}}}}`
+
+func loadComments(repo string, number int) ([]comment, error) {
+	parts := strings.Split(repo, "/")
+	var comments []comment
+	var cursor string
+	for page := 0; page < maxThreadPages; page++ {
+		args := []string{"api", "graphql", "-f", "query=" + commentsQuery, "-F", "owner=" + parts[0], "-F", "repo=" + parts[1], "-F", "number=" + strconv.Itoa(number)}
+		if cursor != "" {
+			args = append(args, "-f", "cursor="+cursor)
+		}
+		out, err := runGH(args...)
+		if err != nil {
+			return nil, fmt.Errorf("query pull-request comments: %w: %s", err, errorSnippet(out))
+		}
+		var response struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						Comments struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []comment `json:"nodes"`
+						} `json:"comments"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(out, &response); err != nil {
+			return nil, fmt.Errorf("decode pull-request comments: %w", err)
+		}
+		pageData := response.Data.Repository.PullRequest.Comments
+		comments = append(comments, pageData.Nodes...)
+		if !pageData.PageInfo.HasNextPage {
+			return comments, nil
+		}
+		if pageData.PageInfo.EndCursor == "" {
+			return nil, errors.New("pull-request comment pagination has no end cursor")
+		}
+		cursor = pageData.PageInfo.EndCursor
+	}
+	return nil, fmt.Errorf("pull-request comment query exceeded %d pages", maxThreadPages)
+}
+
+const reviewsQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviews(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{submittedAt updatedAt}}}}}`
+
+func loadReviews(repo string, number int) ([]review, error) {
+	parts := strings.Split(repo, "/")
+	var reviews []review
+	var cursor string
+	for page := 0; page < maxThreadPages; page++ {
+		args := []string{"api", "graphql", "-f", "query=" + reviewsQuery, "-F", "owner=" + parts[0], "-F", "repo=" + parts[1], "-F", "number=" + strconv.Itoa(number)}
+		if cursor != "" {
+			args = append(args, "-f", "cursor="+cursor)
+		}
+		out, err := runGH(args...)
+		if err != nil {
+			return nil, fmt.Errorf("query pull-request reviews: %w: %s", err, errorSnippet(out))
+		}
+		var response struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						Reviews struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []review `json:"nodes"`
+						} `json:"reviews"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(out, &response); err != nil {
+			return nil, fmt.Errorf("decode pull-request reviews: %w", err)
+		}
+		pageData := response.Data.Repository.PullRequest.Reviews
+		reviews = append(reviews, pageData.Nodes...)
+		if !pageData.PageInfo.HasNextPage {
+			return reviews, nil
+		}
+		if pageData.PageInfo.EndCursor == "" {
+			return nil, errors.New("pull-request review pagination has no end cursor")
+		}
+		cursor = pageData.PageInfo.EndCursor
+	}
+	return nil, fmt.Errorf("pull-request review query exceeded %d pages", maxThreadPages)
 }
 
 func runGH(args ...string) ([]byte, error) {
@@ -249,18 +369,13 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	if len(pr.StatusChecks) == 0 {
 		problems = append(problems, "no check runs or status contexts were reported")
 	}
+	if pr.ChangedFiles != len(pr.Files) {
+		problems = append(problems, fmt.Sprintf("changed-file evidence is incomplete: GitHub reports %d but returned %d", pr.ChangedFiles, len(pr.Files)))
+	}
 	problems = append(problems, checkProblems(pr.StatusChecks, requiredChecksFor(pr.Files))...)
 
-	if !hasExactHeadReview(pr.Reviews, pr.HeadRefOID, "copilot-pull-request-reviewer") && !hasReviewFallback(pr, "copilot") {
-		problems = append(problems, "Copilot has not reviewed the exact final head")
-	} else if copilotExactHeadHasFindings(pr.Reviews, pr.HeadRefOID) {
-		problems = append(problems, "Copilot exact-final-head review still contains findings")
-	}
-	if !hasCodexReview(pr, false) && !hasReviewFallback(pr, "codex-code") {
-		problems = append(problems, "Codex code review has not completed on the exact final head")
-	}
-	if !hasCodexReview(pr, true) && !hasReviewFallback(pr, "codex-security") {
-		problems = append(problems, "Codex security review has not completed on the exact final head")
+	if !hasIndependentReview(pr) {
+		problems = append(problems, "independent code/security review has not passed on the exact final head")
 	}
 	if unresolved != 0 {
 		problems = append(problems, fmt.Sprintf("%d review thread(s) remain unresolved", unresolved))
@@ -322,6 +437,9 @@ func checkProblems(checks []statusCheck, requiredChecks []requiredCheck) []strin
 					break
 				}
 			}
+			if conflictingLatestChecks(group) {
+				problems = append(problems, fmt.Sprintf("check %q has conflicting results at the latest timestamp", name))
+			}
 		}
 		for _, check := range group {
 			if check.Type == "CheckRun" && check.Status != "COMPLETED" {
@@ -348,6 +466,27 @@ func checkProblems(checks []statusCheck, requiredChecks []requiredCheck) []strin
 	return problems
 }
 
+func conflictingLatestChecks(checks []statusCheck) bool {
+	latestTimestamp := ""
+	for _, check := range checks {
+		if timestamp := checkTimestamp(check); timestamp > latestTimestamp {
+			latestTimestamp = timestamp
+		}
+	}
+	latestResult := ""
+	for _, check := range checks {
+		if checkTimestamp(check) != latestTimestamp {
+			continue
+		}
+		result := check.Type + "\x00" + check.Status + "\x00" + check.Conclusion + "\x00" + check.State
+		if latestResult != "" && latestResult != result {
+			return true
+		}
+		latestResult = result
+	}
+	return false
+}
+
 func latestStatusCheck(checks []statusCheck) statusCheck {
 	latest := checks[0]
 	for _, check := range checks[1:] {
@@ -368,20 +507,6 @@ func checkTimestamp(check statusCheck) string {
 	return check.CompletedAt
 }
 
-func copilotExactHeadHasFindings(reviews []review, head string) bool {
-	var latest *review
-	for i := range reviews {
-		review := &reviews[i]
-		if review.Author.Login != "copilot-pull-request-reviewer" || review.Commit == nil || review.Commit.OID != head {
-			continue
-		}
-		if latest == nil || review.SubmittedAt >= latest.SubmittedAt {
-			latest = review
-		}
-	}
-	return latest != nil && (strings.Contains(latest.Body, "Changes recommended") || strings.Contains(latest.Body, "Suppressed comments ("))
-}
-
 func acceptableConclusion(conclusion string) bool {
 	switch conclusion {
 	case "SUCCESS", "SKIPPED", "NEUTRAL":
@@ -391,115 +516,53 @@ func acceptableConclusion(conclusion string) bool {
 	}
 }
 
-func hasExactHeadReview(reviews []review, head, login string) bool {
-	for _, review := range reviews {
-		if review.Author.Login == login && review.Commit != nil && review.Commit.OID == head {
-			return true
-		}
-	}
-	return false
-}
+const independentReviewMarker = "<!-- flowstate-independent-review:v1 "
 
-func hasCodexReview(pr pullRequest, security bool) bool {
-	for _, review := range pr.Reviews {
-		if review.Author.Login != "chatgpt-codex-connector" || review.Commit == nil || review.Commit.OID != pr.HeadRefOID {
-			continue
-		}
-		isSecurity := strings.Contains(review.Body, "Codex Security Review")
-		if security == isSecurity && (isSecurity || strings.Contains(review.Body, "Codex Review")) {
-			return true
-		}
-	}
-	for _, comment := range pr.Comments {
-		if !security || comment.Author.Login != "chatgpt-codex-connector" {
-			continue
-		}
-		if completedSecuritySummary(comment.Body, pr.HeadRefOID) {
-			return true
-		}
-		if !mentionsCommit(comment.Body, pr.HeadRefOID) {
-			continue
-		}
-		if strings.Contains(comment.Body, "Security review completed") {
-			return true
-		}
-	}
-	return false
-}
-
-func completedSecuritySummary(body, head string) bool {
-	return strings.Contains(body, "codex-security-review:v1") &&
-		strings.Contains(body, `"headSha":"`+head+`"`) &&
-		strings.Contains(body, `"status":"completed"`)
-}
-
-func mentionsCommit(body, head string) bool {
-	return strings.Contains(body, "`"+head+"`")
-}
-
-const fallbackMarker = "<!-- flowstate-review-fallback:v1 "
-
-var flowstateIssueURL = regexp.MustCompile(`^https://github\.com/picatz/flowstate/issues/[1-9][0-9]*$`)
-
-func hasReviewFallback(pr pullRequest, provider string) bool {
+func hasIndependentReview(pr pullRequest) bool {
 	for _, comment := range pr.Comments {
 		if comment.AuthorAssociation != "OWNER" {
 			continue
 		}
 		for _, line := range strings.Split(comment.Body, "\n") {
 			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, fallbackMarker) || !strings.HasSuffix(line, " -->") {
+			if !strings.HasPrefix(line, independentReviewMarker) || !strings.HasSuffix(line, " -->") {
 				continue
 			}
-			var fallback reviewFallback
-			raw := strings.TrimSuffix(strings.TrimPrefix(line, fallbackMarker), " -->")
-			if json.Unmarshal([]byte(raw), &fallback) != nil || !validReviewFallback(pr, provider, fallback) {
+			var evidence independentReview
+			raw := strings.TrimSuffix(strings.TrimPrefix(line, independentReviewMarker), " -->")
+			if json.Unmarshal([]byte(raw), &evidence) != nil || evidence.HeadSHA != pr.HeadRefOID ||
+				evidence.Reviewer == "" || evidence.Scope != "code-security" || evidence.Status != "pass" {
 				continue
 			}
-			return true
+			body := strings.ToLower(comment.Body)
+			if !strings.Contains(body, "pass") || !strings.Contains(body, "no actionable") {
+				continue
+			}
+			if comment.UpdatedAt > comment.CreatedAt {
+				continue
+			}
+			if pr.LatestReviewCommentUpdatedAt != "" && pr.LatestReviewCommentUpdatedAt >= comment.CreatedAt {
+				continue
+			}
+			stale := false
+			for _, other := range pr.Comments {
+				if other.URL != comment.URL && (other.CreatedAt >= comment.CreatedAt || other.UpdatedAt >= comment.CreatedAt) {
+					stale = true
+					break
+				}
+			}
+			for _, review := range pr.Reviews {
+				if review.SubmittedAt >= comment.CreatedAt || review.UpdatedAt >= comment.CreatedAt {
+					stale = true
+					break
+				}
+			}
+			if !stale {
+				return true
+			}
 		}
 	}
 	return false
-}
-
-func validReviewFallback(pr pullRequest, provider string, fallback reviewFallback) bool {
-	if fallback.Provider != provider || fallback.HeadSHA != pr.HeadRefOID || fallback.Status != "pass" ||
-		fallback.Scope != "code-security" || fallback.Reviewer == "" || fallback.Reviewer == provider ||
-		!flowstateIssueURL.MatchString(fallback.IncidentURL) ||
-		fallback.UnavailableURL == fallback.EvidenceURL {
-		return false
-	}
-	var unavailable, evidence bool
-	for _, comment := range pr.Comments {
-		if comment.URL == fallback.UnavailableURL && providerUnavailable(comment, provider) {
-			unavailable = true
-		}
-		if comment.URL == fallback.EvidenceURL && comment.AuthorAssociation == "OWNER" &&
-			mentionsCommit(comment.Body, pr.HeadRefOID) && strings.Contains(strings.ToLower(comment.Body), "independent") &&
-			strings.Contains(strings.ToLower(comment.Body), "code/security") && strings.Contains(comment.Body, "PASS") &&
-			strings.Contains(strings.ToLower(comment.Body), "no actionable") {
-			evidence = true
-		}
-	}
-	return unavailable && evidence
-}
-
-func providerUnavailable(comment comment, provider string) bool {
-	body := strings.ToLower(comment.Body)
-	switch provider {
-	case "codex-code":
-		return comment.Author.Login == "chatgpt-codex-connector" &&
-			!strings.Contains(body, "security review") &&
-			(strings.Contains(body, "usage limit") || strings.Contains(body, "unavailable"))
-	case "codex-security":
-		return comment.Author.Login == "chatgpt-codex-connector" && strings.Contains(body, "security review") &&
-			(strings.Contains(body, "usage limit") || strings.Contains(body, "unavailable"))
-	case "copilot":
-		return comment.Author.Login == "copilot-pull-request-reviewer" &&
-			(strings.Contains(body, "usage limit") || strings.Contains(body, "unavailable"))
-	default:
-		return false
-	}
 }
 
 type threadPage struct {
