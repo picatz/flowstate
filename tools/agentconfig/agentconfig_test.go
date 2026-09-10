@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -200,26 +202,32 @@ func TestAmpShipProcedurePinsFinalHeadEvidence(t *testing.T) {
 	}
 }
 
-func TestClaudeSessionUsesThePinnedGoToolchain(t *testing.T) {
+func TestClaudeSessionPreparesPinnedToolchainAndHooks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Claude session hook requires Bash and POSIX symlinks")
 	}
 
 	root := repoRoot(t)
 	data := read(t, filepath.Join(root, ".claude", "settings.json"))
+	type hookGroup struct {
+		Hooks []struct {
+			Command string `json:"command"`
+		} `json:"hooks"`
+	}
 	var settings struct {
 		Hooks struct {
-			SessionStart []struct {
-				Hooks []struct {
-					Command string `json:"command"`
-				} `json:"hooks"`
-			} `json:"SessionStart"`
+			SessionStart []hookGroup `json:"SessionStart"`
+			PreToolUse   []hookGroup `json:"PreToolUse"`
+			PostToolUse  []hookGroup `json:"PostToolUse"`
 		} `json:"hooks"`
 	}
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatalf("parse .claude/settings.json: %v", err)
 	}
-	const hookCommand = `bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-env.sh"`
+	guardedCommand := func(command string) string {
+		return `bash -c 'if [[ -z "${CLAUDE_PROJECT_DIR:-}" || ! -d "${CLAUDE_PROJECT_DIR}" ]]; then printf "CLAUDE_PROJECT_DIR does not name a checkout directory.\n" >&2; exit 2; fi; if ! bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/` + command + `; then printf "Flowstate Claude hook entrypoint could not run.\n" >&2; exit 2; fi'`
+	}
+	hookCommand := guardedCommand(`session-env.sh"`)
 	if len(settings.Hooks.SessionStart) != 1 || len(settings.Hooks.SessionStart[0].Hooks) != 1 ||
 		settings.Hooks.SessionStart[0].Hooks[0].Command != hookCommand {
 		t.Fatalf("Claude SessionStart must run %q", hookCommand)
@@ -280,6 +288,297 @@ func TestClaudeSessionUsesThePinnedGoToolchain(t *testing.T) {
 	if got != want {
 		t.Fatalf("Claude session gofmt = %q, want pinned toolchain formatter %q", got, want)
 	}
+
+	hookDir := filepath.Join(root, ".claude", "hooks", ".bin")
+	wantCommands := map[string]int{}
+	for _, name := range []string{"genguard", "gofmtcheck", "pidguard", "mergeguard"} {
+		path := filepath.Join(hookDir, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("SessionStart did not build %s: %v", name, err)
+		} else if info.Mode()&0o111 == 0 {
+			t.Errorf("SessionStart built non-executable hook %s", path)
+		}
+		wantCommands[guardedCommand(fmt.Sprintf(`run-hook.sh" %s`, name))] = 1
+	}
+	if _, err := os.Stat(filepath.Join(hookDir, ".ready")); err != nil {
+		t.Errorf("SessionStart did not mark the complete hook build ready: %v", err)
+	}
+	// mergeguard is shared by Bash and the native GitHub merge tool.
+	wantCommands[guardedCommand(`run-hook.sh" mergeguard`)] = 2
+
+	gotCommands := map[string]int{}
+	configuredCommands := []string{hookCommand}
+	for _, groups := range [][]hookGroup{settings.Hooks.PreToolUse, settings.Hooks.PostToolUse} {
+		for _, group := range groups {
+			for _, hook := range group.Hooks {
+				gotCommands[hook.Command]++
+				configuredCommands = append(configuredCommands, hook.Command)
+				if strings.Contains(hook.Command, "go run") {
+					t.Errorf("per-tool Claude hook recompiles through go run: %q", hook.Command)
+				}
+			}
+		}
+	}
+	if !reflect.DeepEqual(gotCommands, wantCommands) {
+		t.Fatalf("Claude per-tool commands = %v, want the session-built hooks %v", gotCommands, wantCommands)
+	}
+	for _, command := range configuredCommands {
+		for _, projectDir := range []string{"", "/definitely/not/a/checkout", t.TempDir()} {
+			cmd := exec.Command("bash", "-c", command)
+			cmd.Env = []string{"PATH=/usr/bin:/bin", "CLAUDE_PROJECT_DIR=" + projectDir}
+			output, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 || len(output) == 0 {
+				t.Errorf("configured hook with project dir %q = %v, want explained exit 2; output:\n%s", projectDir, err, output)
+			}
+		}
+	}
+}
+
+func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude hooks require Bash")
+	}
+
+	root := repoRoot(t)
+	project := t.TempDir()
+	hookDir := filepath.Join(project, ".claude", "hooks", ".bin")
+	if err := os.MkdirAll(hookDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(root, ".claude", "hooks", "run-hook.sh")
+	for _, script := range []string{launcher, filepath.Join(root, ".claude", "hooks", "session-env.sh")} {
+		cmd := exec.Command("bash", script)
+		cmd.Env = []string{"PATH=/usr/bin:/bin"}
+		output, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 || !strings.Contains(string(output), "CLAUDE_PROJECT_DIR") {
+			t.Fatalf("%s without CLAUDE_PROJECT_DIR = %v, want explained exit 2; output:\n%s", script, err, output)
+		}
+	}
+	runLauncher := func(wantMessage string, paths ...string) {
+		t.Helper()
+		path := os.Getenv("PATH")
+		if len(paths) != 0 {
+			path = paths[0]
+		}
+		cmd := exec.Command("bash", launcher, "mergeguard")
+		cmd.Env = []string{"CLAUDE_PROJECT_DIR=" + project, "HOME=" + os.Getenv("HOME"), "PATH=" + path}
+		output, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+			t.Fatalf("launcher without a ready build = %v, want exit 2; output:\n%s", err, output)
+		}
+		if !strings.Contains(string(output), wantMessage) {
+			t.Fatalf("launcher did not explain how to restore hooks: %s", output)
+		}
+	}
+
+	// A missing build denies instead of returning the shell's non-blocking 127.
+	runLauncher("is not ready")
+
+	sentinel := filepath.Join(project, "stale-hook-ran")
+	stale := []byte("#!/bin/sh\ntouch " + strconv.Quote(sentinel) + "\n")
+	writeStaleBuild := func() {
+		t.Helper()
+		if err := os.Remove(sentinel); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(hookDir, "mergeguard"), stale, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(hookDir, ".ready"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runFailedSession := func(path string, extraEnv ...string) {
+		t.Helper()
+		session := exec.Command("bash", filepath.Join(root, ".claude", "hooks", "session-env.sh"))
+		session.Env = append(os.Environ(), append([]string{"CLAUDE_PROJECT_DIR=" + project, "PATH=" + path}, extraEnv...)...)
+		if output, err := session.CombinedOutput(); err == nil {
+			t.Fatalf("SessionStart unexpectedly accepted a failed hook build; output:\n%s", output)
+		}
+		runLauncher("is not ready")
+		if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("invalidated stale hook executed: %v", err)
+		}
+	}
+
+	// Even setup failures before compilation must invalidate an older build.
+	writeStaleBuild()
+	runFailedSession("/usr/bin:/bin") // go.mod is deliberately absent.
+
+	sourceIDScript := filepath.Join(project, ".claude", "hooks", "source-id.sh")
+	sourceIDData, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", "source-id.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourceIDScript, sourceIDData, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/hooks\n\ngo 1.27.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "go.sum"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	toolSource := filepath.Join(project, "tools", "hooks", "dummy.go")
+	testSource := filepath.Join(project, "tools", "hooks", "dummy_test.go")
+	unicodeSource := filepath.Join(project, "tools", "hooks", "règle.go")
+	dependencySource := filepath.Join(project, "internal", "commitcheck", "dummy.go")
+	textboundSource := filepath.Join(project, "internal", "textbound", "dummy.go")
+	for _, source := range []string{toolSource, testSource, unicodeSource, dependencySource, textboundSource} {
+		if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(source, []byte("package hooks\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"add", "go.mod", "go.sum", "tools/hooks/dummy.go", "tools/hooks/dummy_test.go", "tools/hooks/règle.go", "internal/commitcheck/dummy.go", "internal/textbound/dummy.go"},
+		{"-c", "user.name=Flowstate Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"},
+	} {
+		if output, err := exec.Command("git", append([]string{"-C", project}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	sourceDirs := filepath.Join(hookDir, ".source-dirs")
+	if err := os.WriteFile(sourceDirs, []byte("internal/commitcheck\ninternal/textbound\ntools/hooks\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourceID := func() string {
+		t.Helper()
+		cmd := exec.Command("bash", sourceIDScript, sourceDirs)
+		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("compute hook source identity: %v\n%s", err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	baselineSourceID := sourceID()
+	if err := os.WriteFile(testSource, []byte("package hooks\n\nconst testOnlyChange = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := sourceID(); got != baselineSourceID {
+		t.Fatalf("test-only edit changed hook build identity: got %s, want %s", got, baselineSourceID)
+	}
+	if output, err := exec.Command("git", "-C", project, "checkout", "--", "tools/hooks/dummy_test.go").CombinedOutput(); err != nil {
+		t.Fatalf("restore fixture test source: %v\n%s", err, output)
+	}
+	if err := os.WriteFile(unicodeSource, []byte("package hooks\n\nconst unicodeChange = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := sourceID(); got == baselineSourceID {
+		t.Fatal("tracked Unicode-named Go source edit did not change hook build identity")
+	}
+	if output, err := exec.Command("git", "-C", project, "checkout", "--", "tools/hooks/règle.go").CombinedOutput(); err != nil {
+		t.Fatalf("restore fixture Unicode source: %v\n%s", err, output)
+	}
+	untrackedUnicodeSource := filepath.Join(project, "tools", "hooks", "nøuveau.go")
+	if err := os.WriteFile(untrackedUnicodeSource, []byte("package hooks\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := sourceID(); got == baselineSourceID {
+		t.Fatal("untracked Unicode-named Go source did not change hook build identity")
+	}
+	if err := os.Remove(untrackedUnicodeSource); err != nil {
+		t.Fatal(err)
+	}
+
+	writeStaleBuild()
+	cachePath := filepath.Join(project, ".claude", "hooks", ".cache")
+	if err := os.WriteFile(cachePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runFailedSession("/usr/bin:/bin")
+	if err := os.Remove(cachePath); err != nil {
+		t.Fatal(err)
+	}
+
+	// A compiler failure cannot reactivate the stale generation either.
+	writeStaleBuild()
+	fakeBin := filepath.Join(project, "fake-bin")
+	if err := os.Mkdir(fakeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runFailedSession(fakeBin + ":/usr/bin:/bin")
+
+	// An identity command that fails only after compilation must not publish the
+	// hash it happened to print as a ready generation.
+	writeStaleBuild()
+	postBuildBin := filepath.Join(project, "post-build-bin")
+	if err := os.Mkdir(postBuildBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitCount := filepath.Join(project, "git-ls-files-count")
+	postBuildGit := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = ls-files ]; then\n    count=$(cat \"$FLOWSTATE_TEST_GIT_COUNT\" 2>/dev/null || echo 0)\n    count=$((count + 1))\n    printf '%s\\n' \"$count\" > \"$FLOWSTATE_TEST_GIT_COUNT\"\n    if [ \"$count\" -gt 1 ]; then exit 1; fi\n  fi\ndone\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(postBuildBin, "git"), []byte(postBuildGit), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	postBuildGo := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = list ]; then\n    printf '%s\\n' \"$CLAUDE_PROJECT_DIR/tools/hooks\" \"$CLAUDE_PROJECT_DIR/internal/commitcheck\" \"$CLAUDE_PROJECT_DIR/internal/textbound\"\n    exit 0\n  fi\ndone\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then shift; out=$1; break; fi\n  shift\ndone\nfor name in genguard gofmtcheck pidguard mergeguard; do\n  printf '#!/bin/sh\\nexit 0\\n' > \"$out/$name\"\n  chmod 700 \"$out/$name\"\ndone\n"
+	if err := os.WriteFile(filepath.Join(postBuildBin, "go"), []byte(postBuildGo), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runFailedSession(postBuildBin+":/usr/bin:/bin", "FLOWSTATE_TEST_GIT_COUNT="+gitCount)
+
+	// A source change after SessionStart invalidates an otherwise ready binary.
+	writeStaleBuild()
+	if err := os.WriteFile(filepath.Join(hookDir, ".source-id"), []byte(sourceID()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dependencySource, []byte("package hooks\n\nconst changed = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runLauncher("sources changed")
+	if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale hook ran after its sources changed: %v", err)
+	}
+
+	// Failure to enumerate untracked sources is an identity failure, not an
+	// empty untracked-file set that can accidentally trust the old binary.
+	if output, err := exec.Command("git", "-C", project, "checkout", "--", "internal/commitcheck/dummy.go").CombinedOutput(); err != nil {
+		t.Fatalf("restore fixture source: %v\n%s", err, output)
+	}
+	writeStaleBuild()
+	if err := os.WriteFile(filepath.Join(hookDir, ".source-id"), []byte(sourceID()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeGitBin := filepath.Join(project, "fake-git-bin")
+	if err := os.Mkdir(fakeGitBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = ls-files ]; then exit 1; fi\ndone\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(fakeGitBin, "git"), []byte(fakeGit), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runLauncher("sources changed", fakeGitBin+":/usr/bin:/bin")
+	if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale hook ran after source enumeration failed: %v", err)
+	}
+
+	// A ready executable that cannot launch after the readiness check is still
+	// converted to Claude's blocking exit status.
+	if err := os.WriteFile(filepath.Join(hookDir, "mergeguard"), []byte("#!/definitely/missing/interpreter\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hookDir, ".ready"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hookDir, ".source-id"), []byte(sourceID()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runLauncher("could not run")
 }
 
 // gitBlobID returns the Git blob identity of canonical repository text. Git may

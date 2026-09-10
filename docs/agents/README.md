@@ -164,7 +164,12 @@ and whether a deterministic mechanism can prevent it more reliably.
 - Verify the loaded memory files and skills with `/context`.
 - Use `/doctor` when always-loaded guidance grows or becomes inconsistent.
 - The repository's `.claude/settings.json` hooks guard generated files, process
-  cleanup, merge review state, and formatting. Other hosts do not run them.
+  cleanup, merge review state, and formatting. SessionStart builds those four
+  existing commands once in the checkout-local ignored `.claude/hooks/.bin`
+  directory; per-tool hooks use a fail-closed launcher to execute the ready
+  binaries instead of recompiling through `go run`. The launcher rejects stale
+  binaries after hook sources or their Go module change. Other hosts do not run
+  these Claude-native tool events.
 - Legacy `.claude/commands/ci-check.md` and `test-fast.md` remain only as short
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
   in skills.

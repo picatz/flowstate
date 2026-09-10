@@ -57,6 +57,11 @@ go.work
 # checked in.
 .claude/worktrees/
 
+# Claude SessionStart compiles the checked-in hook commands once per session;
+# per-tool hook events execute these checkout-local binaries directly.
+.claude/hooks/.bin/
+.claude/hooks/.cache/
+
 .worktrees/
 
 # `make coverage`'s output (#519): raw GOCOVERDIR counters, the merged

@@ -7,7 +7,7 @@
 //
 // Wired in .claude/settings.json as:
 //
-//	go -C "${CLAUDE_PROJECT_DIR}" run ./tools/hooks/pidguard
+//	bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh" pidguard
 //
 // Matching is deliberately conservative, because a false positive on prose
 // would teach people to ignore the guard: quoted regions are stripped first
