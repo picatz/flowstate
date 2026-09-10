@@ -11,7 +11,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -134,6 +137,8 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 	// that also fired on answers that fit would quietly strip every run's
 	// transcript.
 	t.Run("an answer under the ceiling is untouched", func(t *testing.T) {
+		packed, err := anypb.New(wrapperspb.String("opaque"))
+		require.NoError(t, err)
 		response := &v1.GetResponse{
 			WorkflowId: "flowstate-workflow-3f7c",
 			RunId:      "6b1f",
@@ -146,6 +151,12 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
 				"answer":       v1.NewValue("42"),
 				"not-a-number": v1.NewValue(math.NaN()),
+				"null":         v1.NewValue(nil),
+				"object": {
+					Kind: &v1.Value_Literal{Literal: &expr.Value{
+						Kind: &expr.Value_ObjectValue{ObjectValue: packed},
+					}},
+				},
 			}},
 		}
 

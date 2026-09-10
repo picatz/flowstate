@@ -362,6 +362,12 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 		}
 
 	case protoreflect.EnumKind:
+		// NullValue is the one enum protojson does not spell by name: its only
+		// value is the JSON null literal.
+		if fd.Enum().FullName() == "google.protobuf.NullValue" {
+			return map[string]any{"type": "null"}
+		}
+
 		// The proto names, since this schema describes protojson; a value the
 		// schema marks test-only is left out the way every other surface
 		// leaves it out (#1692).
@@ -377,6 +383,17 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 		return map[string]any{"type": "string", "enum": names}
 
 	case protoreflect.MessageKind, protoreflect.GroupKind:
+		// Any is an intentionally dynamic boundary: protojson emits @type plus
+		// fields from the packed message rather than Any's storage fields. Its
+		// concrete shape cannot be derived from this descriptor, so advertise
+		// the object honestly without inventing a closed set of properties.
+		if fd.Message().FullName() == "google.protobuf.Any" {
+			if !budget.take(1) {
+				return nil
+			}
+			return map[string]any{"type": "object"}
+		}
+
 		// The two well-known types protojson spells as strings, and the cycle
 		// cut below, are each one object of their own.
 		wellKnown := fd.Message().FullName() == "google.protobuf.Timestamp" ||

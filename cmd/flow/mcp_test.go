@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -303,6 +304,50 @@ func TestRPCToolsAdvertiseTheirResponseSchemas(t *testing.T) {
 	successfulCompileWorkflow["type"] = "object"
 	assert.Equal(t, successfulCompileWorkflow, runProperties["workflow"],
 		"a successful Compile workflow result is not structurally accepted by Run")
+}
+
+func TestACompiledStructuredWorkflowIsAcceptedByRun(t *testing.T) {
+	t.Parallel()
+
+	const source = `edition: v2026.3
+name: schema-chain
+steps:
+  - id: hello
+    log:
+      message: hello
+`
+
+	session := connectMCP(t, defaultLocalRunPosture())
+	listed, err := session.ListTools(t.Context(), &mcp.ListToolsParams{})
+	require.NoError(t, err)
+	tools := map[string]*mcp.Tool{}
+	for _, tool := range listed.Tools {
+		tools[tool.Name] = tool
+	}
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.ToolName("Compile"),
+		Arguments: map[string]any{"file": map[string]any{
+			"name":   "workflow.yaml",
+			"source": base64.StdEncoding.EncodeToString([]byte(source)),
+		}},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Content)
+	require.False(t, result.IsError, "Compile refused a valid Flowfile: %s",
+		result.Content[0].(*mcp.TextContent).Text)
+	structured, ok := result.StructuredContent.(map[string]any)
+	require.True(t, ok, "Compile structuredContent arrived as %T", result.StructuredContent)
+
+	compile := tools[flowmcp.ToolName("Compile")]
+	require.NotNil(t, compile)
+	requireStructuredContentMatchesSchema(t, compile.OutputSchema, structured)
+	workflow, ok := structured["workflow"].(map[string]any)
+	require.True(t, ok, "a successful Compile workflow arrived as %T", structured["workflow"])
+
+	run := tools[flowmcp.ToolName("Run")]
+	require.NotNil(t, run)
+	requireStructuredContentMatchesSchema(t, run.InputSchema, map[string]any{"workflow": workflow})
 }
 
 // TestEveryToolDescriptionComesFromTheSchema is the half of #424 that a
