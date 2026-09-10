@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -47,7 +49,7 @@ func manyStepTranscript() *v1.Workflow_StepOutputs {
 
 // getToolBlocks calls flowstate_get against a stand-in deployment and returns
 // the answer's content blocks: the document, then any notes after it.
-func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, notes []string, result *mcp.CallToolResult) {
+func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, notes []string, result *mcp.CallToolResult, outputSchema any) {
 	t.Helper()
 
 	posture := defaultLocalRunPosture()
@@ -59,8 +61,17 @@ func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, not
 	require.NoError(t, posture.Flags().Set(revealSensitiveFlagName, "true"))
 
 	session := connectRemoteMCP(t, posture, &fakeWorkflowService{getResponse: response})
+	tools, err := session.ListTools(t.Context(), &mcp.ListToolsParams{})
+	require.NoError(t, err)
+	for _, tool := range tools.Tools {
+		if tool.Name == flowmcp.ToolName("Get") {
+			outputSchema = tool.OutputSchema
+			break
+		}
+	}
+	require.NotNil(t, outputSchema, "flowstate_get did not advertise its response schema")
 
-	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+	result, err = session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      flowmcp.ToolName("Get"),
 		Arguments: map[string]any{"workflowId": "flowstate-workflow-3f7c"},
 	})
@@ -74,7 +85,39 @@ func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, not
 		blocks = append(blocks, text.Text)
 	}
 
-	return blocks[0], blocks[1:], result
+	return blocks[0], blocks[1:], result, outputSchema
+}
+
+func requireStructuredContentMatchesSchema(t *testing.T, schema, content any) {
+	t.Helper()
+
+	structured, ok := content.(map[string]any)
+	require.True(t, ok, "structuredContent arrived as %T, want an object", content)
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "output-schema-validator", Version: "test"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:         "validate_output",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: schema,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, map[string]any, error) {
+		return nil, structured, nil
+	})
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	go func() { _ = srv.Run(t.Context(), serverTransport) }()
+	client := mcp.NewClient(&mcp.Implementation{Name: "output-schema-validator", Version: "test"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "validate_output",
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err,
+		"structuredContent does not match the tool's advertised outputSchema")
+	require.False(t, result.IsError,
+		"structuredContent does not match the tool's advertised outputSchema: %v", result.Content)
 }
 
 // TestTheGetToolLadderOverTheWire drives both directions through a real MCP
@@ -100,10 +143,13 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 					"greet": {NamedValues: map[string]*v1.Value{"message": v1.NewValue("hello")}},
 				},
 			}},
-			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{"answer": v1.NewValue("42")}},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"answer":       v1.NewValue("42"),
+				"not-a-number": v1.NewValue(math.NaN()),
+			}},
 		}
 
-		document, notes, result := getToolBlocks(t, response)
+		document, notes, result, outputSchema := getToolBlocks(t, response)
 
 		require.False(t, result.IsError, "a small answer must not be refused: %v", result.Content)
 		assert.Empty(t, notes,
@@ -123,6 +169,7 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result.StructuredContent,
 			"the schema's own form is gone, so a client that parses GetResponse has nothing to read")
+		requireStructuredContentMatchesSchema(t, outputSchema, result.StructuredContent)
 		// Re-marshalled rather than type-asserted: structuredContent crosses the
 		// protocol as JSON and arrives decoded, so what is compared is the
 		// document rather than the Go value that carried it.
@@ -150,7 +197,7 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		require.Greater(t, len(untouched), flowmcp.MaxResultBytes,
 			"the fixture fits, so this test would pass without the ladder ever running")
 
-		document, notes, result := getToolBlocks(t, response)
+		document, notes, result, outputSchema := getToolBlocks(t, response)
 
 		// Not an error: a reduced answer is an answer. An error result is what
 		// the refusal this replaced meant, and a model reading IsError as "ask
@@ -168,6 +215,7 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		// cannot parse back and was never meant to.
 		require.NotNil(t, result.StructuredContent,
 			"a reduced answer must still carry the schema's form for a client that parses it")
+		requireStructuredContentMatchesSchema(t, outputSchema, result.StructuredContent)
 
 		structured, err := json.Marshal(result.StructuredContent)
 		require.NoError(t, err)
@@ -254,11 +302,14 @@ func TestAFailedRunWithAnOversizedReasonIsStillAnswered(t *testing.T) {
 	require.Greater(t, len(untouched), flowmcp.MaxResultBytes,
 		"the fixture fits, so this test would pass without the cap ever running")
 
-	document, notes, result := getToolBlocks(t, response)
+	document, notes, result, outputSchema := getToolBlocks(t, response)
 
 	assert.False(t, result.IsError, "a run whose reason had to be shortened is still an answer")
 	require.LessOrEqual(t, len(document), flowmcp.MaxResultBytes,
 		"a failure-only answer escaped the surface's ceiling")
+	require.NotNil(t, result.StructuredContent,
+		"the bounded failure must still carry a schema-readable answer")
+	requireStructuredContentMatchesSchema(t, outputSchema, result.StructuredContent)
 
 	var got v1.GetResponse
 	require.NoError(t, protojson.Unmarshal([]byte(document), &got))

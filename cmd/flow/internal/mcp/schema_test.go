@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -46,6 +47,22 @@ func TestTheSchemaSaysWhatTheServerWillRefuse(t *testing.T) {
 	assert.NotContains(t, list, "required",
 		"ListRequest requires nothing and the schema claims otherwise, so a bare listing "+
 			"would be refused client-side")
+}
+
+func TestTheSchemaDescribesUnpopulatedProtoJSONMessages(t *testing.T) {
+	t.Parallel()
+
+	get := SchemaForMessage((&v1.GetResponse{}).ProtoReflect().Descriptor())
+	properties := get["properties"].(map[string]any)
+	runOutputs := properties["runOutputs"].(map[string]any)
+	assert.Equal(t, []any{"object", "null"}, runOutputs["type"],
+		"an absent response message is emitted as null but the schema rejects it")
+
+	run := SchemaForMessage((&v1.RunRequest{}).ProtoReflect().Descriptor())
+	properties = run["properties"].(map[string]any)
+	workflow := properties["workflow"].(map[string]any)
+	assert.Equal(t, "object", workflow["type"],
+		"a required request message became nullable even though the server rejects it when unset")
 }
 
 // TestAnAcyclicDescriptorCannotExplodeTheProjection is the regression test for
@@ -101,19 +118,26 @@ func TestAnAcyclicDescriptorCannotExplodeTheProjection(t *testing.T) {
 // Exhausting the budget truncates: fields past the exhaustion point are left
 // out and the schema stops saying `additionalProperties: false`, which is right
 // for a hostile descriptor and wrong for a real one — it would advertise a tool
-// whose arguments are only partly described. So the thing to catch is a *real*
-// request message growing toward the bound, and a quarter of it is the line:
-// far enough above today's largest (SignalWithStart, 5,068 nodes) to not be
-// noise, close enough that nothing reaches truncation without failing here
-// first.
+// whose arguments or result are only partly described. So the thing to catch is
+// a *real* request or response message growing toward the bound, and a quarter
+// of it is the line: far enough above today's largest to not be noise, close
+// enough that nothing reaches truncation without failing here first.
 func TestTheAdvertisedSchemasStayWellUnderTheNodeBound(t *testing.T) {
 	t.Parallel()
 
 	for _, method := range WorkflowServiceMethods() {
-		nodes := countSchemaNodes(SchemaForMessage(method.Input))
-		assert.Less(t, nodes, maxSchemaNodes/4,
-			"%s advertises %d schema nodes, over a quarter of the %d bound: raise the bound "+
-				"deliberately rather than letting a real tool schema be truncated",
-			method.Name, nodes, maxSchemaNodes)
+		for _, schema := range []struct {
+			direction  string
+			descriptor protoreflect.MessageDescriptor
+		}{
+			{direction: "input", descriptor: method.Input},
+			{direction: "output", descriptor: method.Output},
+		} {
+			nodes := countSchemaNodes(SchemaForMessage(schema.descriptor))
+			assert.Less(t, nodes, maxSchemaNodes/4,
+				"%s advertises %d %s schema nodes, over a quarter of the %d bound: raise the bound "+
+					"deliberately rather than letting a real tool schema be truncated",
+				method.Name, nodes, schema.direction, maxSchemaNodes)
+		}
 	}
 }

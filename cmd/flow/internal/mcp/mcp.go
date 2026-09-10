@@ -410,9 +410,10 @@ func AddLocalCapabilities(
 
 		name := ToolName(method.Name)
 		srv.AddTool(&mcp.Tool{
-			Name:        name,
-			Description: toolDescription(method.Name, deps.reduced),
-			InputSchema: SchemaForMessage(method.Input),
+			Name:         name,
+			Description:  toolDescription(method.Name, deps.reduced),
+			InputSchema:  SchemaForMessage(method.Input),
+			OutputSchema: SchemaForMessage(method.Output),
 			// No Meta: [ToolViews] names no local tool today, and a view
 			// declared here would point at a resource this function does not
 			// mount. If that ever changes, it changes here deliberately.
@@ -526,9 +527,10 @@ func AddTools(
 ) {
 	for _, method := range WorkflowServiceMethods() {
 		tool := &mcp.Tool{
-			Name:        ToolName(method.Name),
-			Description: ToolDescription(method.Name),
-			InputSchema: SchemaForMessage(method.Input),
+			Name:         ToolName(method.Name),
+			Description:  ToolDescription(method.Name),
+			InputSchema:  SchemaForMessage(method.Input),
+			OutputSchema: SchemaForMessage(method.Output),
 		}
 		if view, ok := ToolViews[method.Name]; ok {
 			tool.Meta = uiToolMeta(view)
@@ -558,9 +560,10 @@ func ToolName(rpc string) string {
 
 // ServiceMethod is one RPC, as the tool derivation needs it.
 type ServiceMethod struct {
-	Name  string
-	Input protoreflect.MessageDescriptor
-	Call  func(ctx context.Context, local *server.FlowstateServer,
+	Name   string
+	Input  protoreflect.MessageDescriptor
+	Output protoreflect.MessageDescriptor
+	Call   func(ctx context.Context, local *server.FlowstateServer,
 		remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error)
 }
 
@@ -574,8 +577,9 @@ type ServiceMethod struct {
 func WorkflowServiceMethods() []ServiceMethod {
 	return []ServiceMethod{
 		{
-			Name:  "Validate",
-			Input: (&v1.ValidateRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Validate",
+			Input:  (&v1.ValidateRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ValidateResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := local.Validate(ctx, connect.NewRequest(in.(*v1.ValidateRequest)))
 				if err != nil {
@@ -586,8 +590,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Compile",
-			Input: (&v1.CompileRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Compile",
+			Input:  (&v1.CompileRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.CompileResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := local.Compile(ctx, connect.NewRequest(in.(*v1.CompileRequest)))
 				if err != nil {
@@ -598,8 +603,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "GetCatalog",
-			Input: (&v1.GetCatalogRequest{}).ProtoReflect().Descriptor(),
+			Name:   "GetCatalog",
+			Input:  (&v1.GetCatalogRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.GetCatalogResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := local.GetCatalog(ctx, connect.NewRequest(in.(*v1.GetCatalogRequest)))
 				if err != nil {
@@ -610,8 +616,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Run",
-			Input: (&v1.RunRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Run",
+			Input:  (&v1.RunRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.RunResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Run(ctx, connect.NewRequest(in.(*v1.RunRequest)))
 				if err != nil {
@@ -622,8 +629,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Get",
-			Input: (&v1.GetRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Get",
+			Input:  (&v1.GetRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.GetResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Get(ctx, connect.NewRequest(in.(*v1.GetRequest)))
 				if err != nil {
@@ -634,8 +642,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "GetTimeline",
-			Input: (&v1.GetTimelineRequest{}).ProtoReflect().Descriptor(),
+			Name:   "GetTimeline",
+			Input:  (&v1.GetTimelineRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.GetTimelineResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().GetTimeline(ctx, connect.NewRequest(in.(*v1.GetTimelineRequest)))
 				if err != nil {
@@ -646,8 +655,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Signal",
-			Input: (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Signal",
+			Input:  (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.SignalResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Signal(ctx, connect.NewRequest(in.(*v1.SignalRequest)))
 				if err != nil {
@@ -663,8 +673,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			// an order or a subscription needs this rather than Run, because it
 			// does not know — and must not have to know — whether this is the
 			// first event for that key.
-			Name:  "SignalWithStart",
-			Input: (&v1.SignalWithStartRequest{}).ProtoReflect().Descriptor(),
+			Name:   "SignalWithStart",
+			Input:  (&v1.SignalWithStartRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.SignalWithStartResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().SignalWithStart(ctx, connect.NewRequest(in.(*v1.SignalWithStartRequest)))
 				if err != nil {
@@ -675,8 +686,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "List",
-			Input: (&v1.ListRequest{}).ProtoReflect().Descriptor(),
+			Name:   "List",
+			Input:  (&v1.ListRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ListResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().List(ctx, connect.NewRequest(in.(*v1.ListRequest)))
 				if err != nil {
@@ -687,8 +699,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Cancel",
-			Input: (&v1.CancelRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Cancel",
+			Input:  (&v1.CancelRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.CancelResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Cancel(ctx, connect.NewRequest(in.(*v1.CancelRequest)))
 				if err != nil {
@@ -699,8 +712,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Terminate",
-			Input: (&v1.TerminateRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Terminate",
+			Input:  (&v1.TerminateRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.TerminateResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Terminate(ctx, connect.NewRequest(in.(*v1.TerminateRequest)))
 				if err != nil {
@@ -718,8 +732,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 		// that can start a workload every night should have to say so in a tool call
 		// somebody can read rather than by writing a loop that sleeps.
 		{
-			Name:  "CreateSchedule",
-			Input: (&v1.CreateScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "CreateSchedule",
+			Input:  (&v1.CreateScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.CreateScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().CreateSchedule(ctx, connect.NewRequest(in.(*v1.CreateScheduleRequest)))
 				if err != nil {
@@ -730,8 +745,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "ListSchedules",
-			Input: (&v1.ListSchedulesRequest{}).ProtoReflect().Descriptor(),
+			Name:   "ListSchedules",
+			Input:  (&v1.ListSchedulesRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ListSchedulesResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().ListSchedules(ctx, connect.NewRequest(in.(*v1.ListSchedulesRequest)))
 				if err != nil {
@@ -742,8 +758,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "DescribeSchedule",
-			Input: (&v1.DescribeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "DescribeSchedule",
+			Input:  (&v1.DescribeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DescribeScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().DescribeSchedule(ctx, connect.NewRequest(in.(*v1.DescribeScheduleRequest)))
 				if err != nil {
@@ -754,8 +771,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "DeleteSchedule",
-			Input: (&v1.DeleteScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "DeleteSchedule",
+			Input:  (&v1.DeleteScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DeleteScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().DeleteSchedule(ctx, connect.NewRequest(in.(*v1.DeleteScheduleRequest)))
 				if err != nil {
@@ -766,8 +784,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "PauseSchedule",
-			Input: (&v1.PauseScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "PauseSchedule",
+			Input:  (&v1.PauseScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.PauseScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().PauseSchedule(ctx, connect.NewRequest(in.(*v1.PauseScheduleRequest)))
 				if err != nil {
@@ -778,8 +797,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "ResumeSchedule",
-			Input: (&v1.ResumeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "ResumeSchedule",
+			Input:  (&v1.ResumeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ResumeScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().ResumeSchedule(ctx, connect.NewRequest(in.(*v1.ResumeScheduleRequest)))
 				if err != nil {
@@ -790,8 +810,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "TriggerSchedule",
-			Input: (&v1.TriggerScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "TriggerSchedule",
+			Input:  (&v1.TriggerScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.TriggerScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().TriggerSchedule(ctx, connect.NewRequest(in.(*v1.TriggerScheduleRequest)))
 				if err != nil {
