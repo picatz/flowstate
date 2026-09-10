@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -47,15 +48,23 @@ import (
 func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 	t.Parallel()
 
+	descriptors := serviceMethodDescriptors(t)
 	table := map[string]bool{}
 	for _, m := range flowmcp.WorkflowServiceMethods() {
 		require.False(t, table[m.Name], "the dispatch table lists %q twice", m.Name)
 		table[m.Name] = true
 
-		// The schema each tool advertises is the schema of the RPC's own request
-		// message; a row pointing at the wrong descriptor would advertise fields
-		// the handler then refuses.
+		// The schemas each tool advertises are the schemas of the RPC's own
+		// request and response messages; a row pointing at the wrong descriptor
+		// would advertise fields the handler then refuses or never returns.
 		require.NotNil(t, m.Input, "%q has no input descriptor", m.Name)
+		require.NotNil(t, m.Output, "%q has no output descriptor", m.Name)
+		method, ok := descriptors[m.Name]
+		require.True(t, ok, "the dispatch table lists %q, which the service no longer declares", m.Name)
+		assert.Equal(t, method.Input().FullName(), m.Input.FullName(),
+			"%q advertises the wrong request message", m.Name)
+		assert.Equal(t, method.Output().FullName(), m.Output.FullName(),
+			"%q advertises the wrong response message", m.Name)
 	}
 
 	names := serviceMethodNames(t)
@@ -251,6 +260,96 @@ func TestEveryToolHasADescription(t *testing.T) {
 	}
 }
 
+func TestRPCToolsAdvertiseTheirResponseSchemas(t *testing.T) {
+	t.Parallel()
+
+	tools := map[string]*mcp.Tool{}
+	for _, tool := range registeredTools(t) {
+		tools[tool.Name] = tool
+	}
+
+	for _, method := range flowmcp.WorkflowServiceMethods() {
+		tool := tools[flowmcp.ToolName(method.Name)]
+		require.NotNil(t, tool, "rpc %s has no registered tool", method.Name)
+		want, err := json.Marshal(flowmcp.SchemaForMessage(method.Output))
+		require.NoError(t, err)
+		got, err := json.Marshal(tool.OutputSchema)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(want), string(got),
+			"tool %s does not advertise its RPC response schema", tool.Name)
+	}
+	for name := range documentedLocalTools {
+		tool := tools[name]
+		require.NotNil(t, tool, "documented local tool %s is not registered", name)
+		assert.Nil(t, tool.OutputSchema,
+			"local tool %s acquired a response contract without a schema-owned message", name)
+	}
+
+	compileOutput, ok := tools[flowmcp.ToolName("Compile")].OutputSchema.(map[string]any)
+	require.True(t, ok, "Compile outputSchema arrived as %T", tools[flowmcp.ToolName("Compile")].OutputSchema)
+	compileProperties, ok := compileOutput["properties"].(map[string]any)
+	require.True(t, ok, "Compile outputSchema properties arrived as %T", compileOutput["properties"])
+	runInput, ok := tools[flowmcp.ToolName("Run")].InputSchema.(map[string]any)
+	require.True(t, ok, "Run inputSchema arrived as %T", tools[flowmcp.ToolName("Run")].InputSchema)
+	runProperties, ok := runInput["properties"].(map[string]any)
+	require.True(t, ok, "Run inputSchema properties arrived as %T", runInput["properties"])
+	compileWorkflow, ok := compileProperties["workflow"].(map[string]any)
+	require.True(t, ok, "Compile workflow output arrived as %T", compileProperties["workflow"])
+	assert.ElementsMatch(t, []any{"object", "null"}, compileWorkflow["type"],
+		"Compile must represent its documented diagnostic-only response without a workflow")
+	successfulCompileWorkflow := make(map[string]any, len(compileWorkflow))
+	for key, value := range compileWorkflow {
+		successfulCompileWorkflow[key] = value
+	}
+	successfulCompileWorkflow["type"] = "object"
+	assert.Equal(t, successfulCompileWorkflow, runProperties["workflow"],
+		"a successful Compile workflow result is not structurally accepted by Run")
+}
+
+func TestACompiledStructuredWorkflowIsAcceptedByRun(t *testing.T) {
+	t.Parallel()
+
+	const source = `edition: v2026.3
+name: schema-chain
+steps:
+  - id: hello
+    log:
+      message: hello
+`
+
+	session := connectMCP(t, defaultLocalRunPosture())
+	listed, err := session.ListTools(t.Context(), &mcp.ListToolsParams{})
+	require.NoError(t, err)
+	tools := map[string]*mcp.Tool{}
+	for _, tool := range listed.Tools {
+		tools[tool.Name] = tool
+	}
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.ToolName("Compile"),
+		Arguments: map[string]any{"file": map[string]any{
+			"name":   "workflow.yaml",
+			"source": base64.StdEncoding.EncodeToString([]byte(source)),
+		}},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Content)
+	require.False(t, result.IsError, "Compile refused a valid Flowfile: %s",
+		result.Content[0].(*mcp.TextContent).Text)
+	structured, ok := result.StructuredContent.(map[string]any)
+	require.True(t, ok, "Compile structuredContent arrived as %T", result.StructuredContent)
+
+	compile := tools[flowmcp.ToolName("Compile")]
+	require.NotNil(t, compile)
+	requireStructuredContentMatchesSchema(t, compile.OutputSchema, structured)
+	workflow, ok := structured["workflow"].(map[string]any)
+	require.True(t, ok, "a successful Compile workflow arrived as %T", structured["workflow"])
+
+	run := tools[flowmcp.ToolName("Run")]
+	require.NotNil(t, run)
+	requireStructuredContentMatchesSchema(t, run.InputSchema, map[string]any{"workflow": workflow})
+}
+
 // TestEveryToolDescriptionComesFromTheSchema is the half of #424 that a
 // non-empty check cannot see.
 //
@@ -308,9 +407,9 @@ func TestTheRunLocalToolDescribesWhatItDoesNotProve(t *testing.T) {
 	}
 }
 
-// serviceMethodNames reads the service's methods from the compiled-in schema —
-// the same registry the tools' input schemas come from.
-func serviceMethodNames(t *testing.T) map[string]bool {
+// serviceMethodDescriptors reads the service's methods from the compiled-in
+// schema — the same registry the tools' input and output schemas come from.
+func serviceMethodDescriptors(t *testing.T) map[string]protoreflect.MethodDescriptor {
 	t.Helper()
 
 	desc, err := protoregistry.GlobalFiles.FindDescriptorByName("flowstate.v1.WorkflowService")
@@ -319,10 +418,22 @@ func serviceMethodNames(t *testing.T) map[string]bool {
 	service, ok := desc.(protoreflect.ServiceDescriptor)
 	require.True(t, ok, "flowstate.v1.WorkflowService is not a service descriptor")
 
-	names := map[string]bool{}
+	descriptors := map[string]protoreflect.MethodDescriptor{}
 	methods := service.Methods()
 	for i := 0; i < methods.Len(); i++ {
-		names[string(methods.Get(i).Name())] = true
+		method := methods.Get(i)
+		descriptors[string(method.Name())] = method
+	}
+
+	return descriptors
+}
+
+func serviceMethodNames(t *testing.T) map[string]bool {
+	t.Helper()
+
+	names := map[string]bool{}
+	for name := range serviceMethodDescriptors(t) {
+		names[name] = true
 	}
 
 	return names
