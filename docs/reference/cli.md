@@ -690,6 +690,7 @@ flow keys public --in identity/2026-08.pem
 |---|---|---|---|---|
 | `--id <string>` | `string` | — | — | key id published in the JWK (default: --in's file name, without its extension) |
 | `--in <string>` | `string` | — | — | path to a PKCS#8 private key PEM (required) |
+| `--jwks` | `bool` | `false` | — | wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file |
 
 ## `flow lint`
 
@@ -1532,7 +1533,7 @@ flow server dev [flags]
 
 Start everything a durable run needs, in one process: a Temporal dev server, the Flowstate control plane, and a worker polling the run queue. Everything binds loopback and everything is ephemeral unless --db names a file, so a session leaves nothing behind. Ctrl-C stops all three, the Temporal child process included.
 
-It takes two postures on your behalf and states both at start-up: callers are anonymous (what `flow server --insecure-no-auth` does) and the interpreter is unversioned (what `flow worker --allow-unversioned-interpreter` does). Both are acceptable here only because nothing is reachable off this machine, which is why the command refuses to start when that stops being true.
+By default it takes two postures on your behalf and states both at start-up: callers are anonymous (what `flow server --insecure-no-auth` does) and the interpreter is unversioned (what `flow worker --allow-unversioned-interpreter` does). Both are acceptable here only because nothing is reachable off this machine, which is why the command refuses to start when that stops being true. `--auth` replaces the anonymous posture with a generated local issuer and the same bearer-token middleware a deployment uses.
 
 The Temporal dev server is the `temporal` CLI, downloaded on first use and cached afterwards, so the first run needs network and later ones do not. Telemetry composes rather than being contained: set OTEL_EXPORTER_OTLP_ENDPOINT and traces, metrics and logs flow to it exactly as they do from `flow server` and `flow worker`, which is how this points at examples/observability.
 
@@ -1541,6 +1542,9 @@ Examples:
 ```sh
 # The whole stack, ephemeral, on loopback:
 flow server dev
+
+# The same stack with token authentication and a copyable sign command:
+flow server dev --auth
 
 # Keep the runs: Temporal persists to sqlite at this path.
 flow server dev --db ./flowstate.db
@@ -1561,7 +1565,8 @@ flow server dev -o json
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
-| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution. Only its secrets section is read: this command serves every caller anonymously, so the policy's issuers go unused, and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring the authentication a deployment configured |
+| `--auth` | `bool` | `false` | — | require a locally signed bearer token, generating or reusing a dev key and printing the sign command; the default remains anonymous |
+| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution. Only its secrets section is read: issuer entries are unused (callers are anonymous by default, or verified against the generated local issuer with --auth), and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring deployment authentication |
 | `--db <string>` | `string` | — | — | persist Temporal to a sqlite file at this path, so runs survive a restart; unset keeps everything in memory and nothing outlives the process |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |

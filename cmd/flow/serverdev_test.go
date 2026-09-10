@@ -492,6 +492,112 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	assertNothingAnswersAt(t, stack.FlowstateAddress)
 }
 
+// TestServerDevAuthReachesADurableRunWithThePrintedCredentialContract is the
+// authenticated leg of the first-day journey: one process owns Temporal,
+// server, worker and a local issuer posture, while clients still cross the
+// production bearer-token middleware and endpoint-bound audience check.
+func TestServerDevAuthReachesADurableRunWithThePrintedCredentialContract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: needs a Temporal dev server; CI runs the full suite")
+	}
+
+	for _, name := range []string{
+		"FLOWSTATE_ADDRESS", "FLOWSTATE_AUTH_POLICY", "TEMPORAL_ADDRESS", "TEMPORAL_PROFILE",
+		"TEMPORAL_CONFIG_FILE",
+	} {
+		t.Setenv(name, "")
+	}
+
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, scaffoldWorkflow)
+	require.NoError(t, runFlow(t, "init", dir).Err)
+
+	out, errOut := &syncWriter{}, &syncWriter{}
+	root := newRootCommand()
+	root.SetOut(out)
+	root.SetErr(errOut)
+	root.SetArgs([]string{
+		"server", "dev", "--auth", "--listen", "localhost:0", "--ui-port", "0", "-o", "json",
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	stopped := make(chan error, 1)
+	go func() { stopped <- root.ExecuteContext(ctx) }()
+
+	stack, err := awaitDevStack(t, out, stopped)
+	if err != nil {
+		if !devServerUnavailable(err) {
+			t.Fatalf("authenticated `flow server dev` failed to start: %v", err)
+		}
+		t.Skipf("SKIPPING the authenticated dev gate: this environment cannot start a Temporal dev server (%v)", err)
+	}
+
+	require.False(t, stack.AnonymousAuth)
+	require.Equal(t, "http://"+stack.FlowstateAddress, stack.AuthResource)
+	require.Equal(t, devAuthIssuer, stack.AuthIssuer)
+	require.Equal(t, devAuthSubject, stack.AuthSubject)
+	require.Equal(t, devAuthNamespace, stack.AuthNamespace)
+	require.FileExists(t, stack.AuthKeyFile)
+	require.FileExists(t, stack.AuthPolicyFile)
+	require.Contains(t, stack.TokenCommand, "flow jwt sign")
+	require.Contains(t, errOut.String(), stack.TokenCommand,
+		"the command machine output advertises must be the one the human banner prints")
+	tokenPath := filepath.Join(filepath.Dir(stack.AuthKeyFile), "token.jwt")
+	require.Contains(t, errOut.String(),
+		"flow run <file> --address "+shellArg(stack.FlowstateAddress)+" --token-file "+shellArg(tokenPath))
+	require.Contains(t, errOut.String(),
+		"flow list --address "+shellArg(stack.FlowstateAddress)+" --token-file "+shellArg(tokenPath))
+
+	anonymous := runFlow(t, "run", workflow, "--address", stack.FlowstateAddress)
+	require.Error(t, anonymous.Err)
+	require.Contains(t, anonymous.Output(), "unauthenticated")
+
+	token, _, err := runJWTSignInto(t,
+		"key", stack.AuthKeyFile,
+		"id", devAuthKeyID,
+		"issuer", stack.AuthIssuer,
+		"subject", stack.AuthSubject,
+		"audience", stack.AuthResource,
+		"claim", "namespace="+stack.AuthNamespace,
+	)
+	require.NoError(t, err)
+	// Exercise the advertised location under the permissive mode ordinary shell
+	// redirection may create. Its mode-0700 parent is the confidentiality bound.
+	tokenFile := tokenPath
+	require.NoError(t, os.WriteFile(tokenFile, []byte(strings.TrimSpace(token)), 0o644))
+
+	run := runFlow(t, "run", workflow, "--address", stack.FlowstateAddress, "--token-file", tokenFile)
+	require.NoError(t, run.Err, "authenticated durable run: %s", run.Output())
+	require.Contains(t, run.Output(), "COMPLETED")
+
+	wrongToken, _, err := runJWTSignInto(t,
+		"key", stack.AuthKeyFile,
+		"id", devAuthKeyID,
+		"issuer", stack.AuthIssuer,
+		"subject", stack.AuthSubject,
+		"audience", "http://127.0.0.1:1",
+		"claim", "namespace="+stack.AuthNamespace,
+	)
+	require.NoError(t, err)
+	wrongTokenFile := filepath.Join(dir, "wrong-token.jwt")
+	require.NoError(t, os.WriteFile(wrongTokenFile, []byte(strings.TrimSpace(wrongToken)), 0o600))
+	wrong := runFlow(t, "list", "--address", stack.FlowstateAddress, "--token-file", wrongTokenFile)
+	require.Error(t, wrong.Err)
+	require.Contains(t, wrong.Output(), "unauthenticated")
+
+	cancel()
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-time.After(devShutdownTimeout + 30*time.Second):
+		t.Fatal("authenticated `flow server dev` did not return after cancellation")
+	}
+	assertNothingAnswersAt(t, stack.TemporalAddress)
+	assertNothingAnswersAt(t, stack.FlowstateAddress)
+	require.NoFileExists(t, stack.AuthKeyFile, "ephemeral authentication material must leave with the stack")
+}
+
 // runIDInProse matches the clause a narrated line carries a run id in.
 //
 // Anchored on the word as well as the shape, so it cannot match a workflow id

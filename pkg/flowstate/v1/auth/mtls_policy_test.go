@@ -88,6 +88,11 @@ func TestPolicyValidateMTLS(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "jwks_file is not meaningful: there is no key set",
+			policy:  spoil(func(i *auth.TrustedIssuer) { i.JWKSFile = "/etc/flowstate/issuer.jwks" }),
+			wantErr: true,
+		},
+		{
 			name:    "max_token_age is not meaningful: a certificate has no issued-at claim",
 			policy:  spoil(func(i *auth.TrustedIssuer) { i.MaxTokenAge = 1 }),
 			wantErr: true,
@@ -131,6 +136,30 @@ func TestPolicyValidateMTLS(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPolicyValidateKeySourceAgreementAppliesOnlyToOIDCEntries(t *testing.T) {
+	caFile := newTestCA(t, "test-ca").clientCAFile(t)
+	const issuerLabel = "https://shared.example.com"
+
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
+		{
+			Name:      "tokens",
+			Issuer:    issuerLabel,
+			Audiences: []string{"flowstate"},
+			JWKSFile:  "/etc/flowstate/issuer.jwks",
+		},
+		{
+			Name:         "mesh",
+			Kind:         auth.IssuerKindMTLS,
+			Issuer:       issuerLabel,
+			ClientCAFile: caFile,
+			SubjectFrom:  auth.SubjectFromURISAN,
+		},
+	}}
+
+	require.NoError(t, policy.Validate(),
+		"an mTLS label has no key source and must not conflict with an OIDC issuer using the same label")
 }
 
 // TestPolicyValidateOIDCRefusesMTLSFields checks the other direction: an

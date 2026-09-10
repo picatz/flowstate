@@ -619,7 +619,7 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 // stays readable. The `--` its caller prints before it handles the remaining
 // hazard, a path beginning with `-` parsing as a flag.
 func shellArg(path string) string {
-	if path != "" && !strings.ContainsAny(path, " \t'\"\\$&|;<>()*?[]#~%{}!\n") {
+	if path != "" && !strings.ContainsAny(path, " \t'\"`\\$&|;<>()*?[]#~%{}!\n") {
 		return path
 	}
 	return "'" + strings.ReplaceAll(path, "'", `'"'"'`) + "'"

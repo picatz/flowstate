@@ -316,6 +316,7 @@ func TestShellArgQuotesHostilePaths(t *testing.T) {
 		"examples/hello/workflow.test.yaml": "examples/hello/workflow.test.yaml",
 		"my tests/workflow.test.yaml":       "'my tests/workflow.test.yaml'",
 		"a$b/workflow.test.yaml":            "'a$b/workflow.test.yaml'",
+		"run`id`.test.yaml":                 "'run`id`.test.yaml'",
 		"odd'name.test.yaml":                `'odd'"'"'name.test.yaml'`,
 	} {
 		if got := shellArg(path); got != want {

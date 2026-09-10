@@ -24,7 +24,6 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -39,9 +38,11 @@ import (
 //
 // Every one of those flags is a lesson somebody has not had yet, and a person
 // evaluating this tool met all three of them before they had run anything. This
-// assembles the same three processes into one, takes the same postures, and says
-// every one of them out loud at start-up rather than leaving an operator to
-// discover which flag they were spared.
+// assembles the same three processes into one, takes the same postures by
+// default, and says every one of them out loud at start-up rather than leaving
+// an operator to discover which flag they were spared. --auth replaces only
+// the anonymous posture with the ordinary bearer-token middleware over a local
+// file-backed issuer.
 //
 // Three decisions carry the design.
 //
@@ -121,11 +122,12 @@ func newServerDevCommand() *cobra.Command {
 			"Flowstate control plane, and a worker polling the run queue. Everything binds loopback " +
 			"and everything is ephemeral unless --db names a file, so a session leaves nothing " +
 			"behind. Ctrl-C stops all three, the Temporal child process included.\n\n" +
-			"It takes two postures on your behalf and states both at start-up: callers are " +
+			"By default it takes two postures on your behalf and states both at start-up: callers are " +
 			"anonymous (what `flow server --insecure-no-auth` does) and the interpreter is " +
 			"unversioned (what `flow worker --allow-unversioned-interpreter` does). Both are " +
 			"acceptable here only because nothing is reachable off this machine, which is why the " +
-			"command refuses to start when that stops being true.\n\n" +
+			"command refuses to start when that stops being true. `--auth` replaces the anonymous " +
+			"posture with a generated local issuer and the same bearer-token middleware a deployment uses.\n\n" +
 			"The Temporal dev server is the `temporal` CLI, downloaded on first use and cached " +
 			"afterwards, so the first run needs network and later ones do not. Telemetry composes " +
 			"rather than being contained: set OTEL_EXPORTER_OTLP_ENDPOINT and traces, metrics and " +
@@ -141,6 +143,9 @@ func newServerDevCommand() *cobra.Command {
 		SilenceUsage: true,
 		Example: `# The whole stack, ephemeral, on loopback:
 flow server dev
+
+# The same stack with token authentication and a copyable sign command:
+flow server dev --auth
 
 # Keep the runs: Temporal persists to sqlite at this path.
 flow server dev --db ./flowstate.db
@@ -177,6 +182,9 @@ flow server dev -o json`,
 
 	cmd.Flags().Int("ui-port", devDefaultUIPort,
 		"port for Temporal's web UI, where a run's history is readable; 0 serves no UI")
+	cmd.Flags().Bool("auth", false,
+		"require a locally signed bearer token, generating or reusing a dev key and printing the sign command; "+
+			"the default remains anonymous")
 
 	// The worker's posture, taken on purpose: plugins, the egress policy, the
 	// task-shape policy and the secret providers are all process-global, and
@@ -187,9 +195,9 @@ flow server dev -o json`,
 	addSecretFlags(cmd)
 	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize worker-side resolution. Only its "+
-			"secrets section is read: this command serves every caller anonymously, so the policy's "+
-			"issuers go unused, and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather "+
-			"than silently ignoring the authentication a deployment configured")
+			"secrets section is read: issuer entries are unused (callers are anonymous by default, or "+
+			"verified against the generated local issuer with --auth), and inheriting the path from "+
+			"$FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring deployment authentication")
 	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 
 	// picatz/flowstate#1018, same flag `flow server` takes: whether an audit
@@ -215,6 +223,7 @@ type devFlags struct {
 	listenGiven bool
 	db          string
 	uiPort      int
+	auth        bool
 
 	authPolicy      string
 	authPolicyGiven bool
@@ -225,6 +234,7 @@ func devFlagsOf(cmd *cobra.Command) devFlags {
 	listen, _ := cmd.Flags().GetString("listen")
 	db, _ := cmd.Flags().GetString("db")
 	uiPort, _ := cmd.Flags().GetInt("ui-port")
+	localAuth, _ := cmd.Flags().GetBool("auth")
 	authPolicy, _ := cmd.Flags().GetString("auth-policy")
 
 	return devFlags{
@@ -232,6 +242,7 @@ func devFlagsOf(cmd *cobra.Command) devFlags {
 		listenGiven:     cmd.Flags().Changed("listen"),
 		db:              db,
 		uiPort:          uiPort,
+		auth:            localAuth,
 		authPolicy:      authPolicy,
 		authPolicyGiven: cmd.Flags().Changed("auth-policy"),
 	}
@@ -380,13 +391,16 @@ func devCheckAuthPolicy(flags devFlags, getenv devEnv) error {
 		return nil
 	}
 
+	posture := "authenticates nobody: it would accept callers that policy rejects, and verify no token at all"
+	if flags.auth {
+		posture = "uses its generated local issuer instead: it would ignore which callers that policy admits"
+	}
 	return fmt.Errorf(
 		"refusing to start: FLOWSTATE_AUTH_POLICY=%s configures how callers are authenticated, and "+
-			"`flow server dev` authenticates nobody: it would accept callers that policy rejects, "+
-			"and verify no token at all. Run the two commands the policy is for, "+
-			"`flow server --auth-policy %s` and `flow worker --%s`, or pass --auth-policy %s on this "+
-			"command line to use only its secrets rules, for this dev stack, with the issuers unused",
-		path, path, allowUnversionedFlag, path)
+			"`flow server dev` %s. Run the two commands the policy is for, `flow server --auth-policy %s` "+
+			"and `flow worker --%s`, or pass --auth-policy %s on this command line to use only its secrets "+
+			"rules for this dev stack, with the issuer entries unused",
+		path, posture, path, allowUnversionedFlag, path)
 }
 
 // devStack is what came up, and what the banner and the JSON document describe.
@@ -414,11 +428,12 @@ type devStack struct {
 
 	// egressPolicy and taskPolicy name files the operator supplied, empty for
 	// the built-in defaults, and authPolicy the access policy whose secrets
-	// rules this stack's worker resolves under, whose issuers it does not use,
-	// which is the part the banner has to say out loud.
+	// rules this stack's worker resolves under, whose issuers it does not use
+	// under either authentication posture, which the banner says out loud.
 	egressPolicy string
 	taskPolicy   string
 	authPolicy   string
+	auth         devAuthentication
 }
 
 // runServerDev starts Temporal, the server and a worker, and stops all three.
@@ -647,10 +662,11 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	stopWorker := sync.OnceFunc(w.Stop)
 	defer stopWorker()
 
-	httpServer, listener, err := devHTTPServer(flags, serverOpts, temporal)
+	httpServer, listener, devAuth, err := devHTTPServer(flags, serverOpts, temporal)
 	if err != nil {
 		return err
 	}
+	defer devAuth.cleanup()
 
 	// Bound before the banner is written rather than inside the goroutine that
 	// serves, so the address printed is one a client can already connect to. A
@@ -663,6 +679,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		database:       flags.db,
 		otlp:           devOTLPEndpoint(),
 		loopbackEgress: os.Getenv(v1.AllowLoopbackEgressEnv) == v1.AllowLoopbackEgressValue,
+		auth:           devAuth,
 	}
 	stack.egressPolicy, _ = cmd.Flags().GetString("egress-policy")
 	stack.taskPolicy, _ = cmd.Flags().GetString("task-policy")
@@ -865,10 +882,10 @@ func devStartError(err error, flags devFlags) error {
 // The listener is opened here rather than by ListenAndServe so that the address
 // the banner prints is one already accepting connections, and so that a port of
 // 0 resolves to a real port this command can report.
-func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client) (*http.Server, net.Listener, error) {
+func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client) (*http.Server, net.Listener, devAuthentication, error) {
 	flowServer, err := server.New(temporal, opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, devAuthentication{}, err
 	}
 
 	// The same chain and the same read bound `flow server` sets, from the
@@ -877,7 +894,7 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 	// answer.
 	rpcOpts, err := rpcHandlerOptions(flowServer, infraLogger())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, devAuthentication{}, err
 	}
 
 	rpcMux := http.NewServeMux()
@@ -885,14 +902,20 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 
 	listener, err := net.Listen("tcp", flags.listen)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listening on %s: %w", flags.listen, err)
+		return nil, nil, devAuthentication{}, fmt.Errorf("listening on %s: %w", flags.listen, err)
 	}
 
-	// The anonymous verifier and no broker: this command's whole authentication
-	// posture in one line, and the same one `flow server --insecure-no-auth`
-	// installs.
+	devAuth, err := configureDevAuthentication(flags, listener.Addr().String())
+	if err != nil {
+		_ = listener.Close()
+		return nil, nil, devAuthentication{}, err
+	}
+
+	// The default remains the same anonymous verifier `flow server
+	// --insecure-no-auth` installs. --auth replaces it with the ordinary OIDC
+	// verifier over the generated file-backed policy; no dev-only request path.
 	httpServer := &http.Server{
-		Handler: serverHandler(infraLogger(), auth.InsecureAnonymousVerifier(), nil, nil, "", rpcMux, nil, nil),
+		Handler: serverHandler(infraLogger(), devAuth.verifier, nil, nil, devAuth.resource, rpcMux, nil, nil),
 
 		// The same timeouts `flow server` sets, for the same reason: Go's zero
 		// values mean no timeout at all, and a dev stack on loopback still has a
@@ -908,7 +931,7 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 		MaxHeaderValueCount: maxHeaderValueCount,
 	}
 
-	return httpServer, listener, nil
+	return httpServer, listener, devAuth, nil
 }
 
 // writeDevBanner says what is running, what it is not protecting, and what to
@@ -954,7 +977,13 @@ func writeDevBanner(surface *ui.UI, stack devStack) {
 	}
 	warn, muted := theme.Warning, theme.Muted
 
-	posture("--insecure-no-auth", devPostureAnonymous, warn)
+	if stack.auth.enabled {
+		posture("--auth", "callers must present a token signed by this stack's local dev key", muted)
+		posture("trust policy "+stack.auth.policyPath,
+			"uses jwks_file; no identity HTTP fetch or egress exception is required", muted)
+	} else {
+		posture("--insecure-no-auth", devPostureAnonymous, warn)
+	}
 	posture("--"+allowUnversionedFlag, devPostureUnversioned, warn)
 
 	if stack.loopbackEgress {
@@ -976,17 +1005,28 @@ func writeDevBanner(surface *ui.UI, stack devStack) {
 		// Said as a warning rather than a note, because the half that is *not*
 		// in force is the surprising one: a file named on the command line
 		// reads as configuration that took effect.
+		reason := "callers are anonymous by default"
+		if stack.auth.enabled {
+			reason = "--auth uses the generated local issuer"
+		}
 		posture("--auth-policy "+stack.authPolicy,
-			"only its secrets rules are in force; its issuers are unused, because nothing here "+
-				"authenticates a caller", warn)
+			"only its secrets rules are in force; its issuers are unused, because "+reason, warn)
 	}
 
 	fmt.Fprintf(out, "\n%s\n", theme.Accent.Render("NEXT"))
-	fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow run <file>"))
-	fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow list"))
+	if stack.auth.enabled {
+		clientArgs := " --address " + shellArg(stack.flowstate) +
+			" --token-file " + shellArg(stack.auth.tokenPath())
+		fmt.Fprintf(out, "  %s\n", theme.Strong.Render(stack.auth.tokenCommand()))
+		fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow run <file>"+clientArgs))
+		fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow list"+clientArgs))
+	} else {
+		fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow run <file>"))
+		fmt.Fprintf(out, "  %s\n", theme.Strong.Render("flow list"))
+	}
 
 	fmt.Fprintf(out, "\n%s\n\n", muted.Render(
-		"Production differs in three ways: a trust policy instead of anonymous callers, "+
+		"Production differs in three ways: a production issuer instead of anonymous or local dev callers, "+
 			"a Worker Deployment version instead of an unversioned interpreter, and a Temporal "+
 			"cluster that outlives this terminal. Ctrl-C stops all of it."))
 }
@@ -1009,6 +1049,13 @@ type devStackJSON struct {
 	AnonymousAuth     bool   `json:"anonymousAuth"`
 	Unversioned       bool   `json:"unversionedInterpreter"`
 	LoopbackEgress    bool   `json:"loopbackEgress"`
+	AuthIssuer        string `json:"authIssuer,omitempty"`
+	AuthResource      string `json:"authResource,omitempty"`
+	AuthSubject       string `json:"authSubject,omitempty"`
+	AuthNamespace     string `json:"authNamespace,omitempty"`
+	AuthKeyFile       string `json:"authKeyFile,omitempty"`
+	AuthPolicyFile    string `json:"authPolicyFile,omitempty"`
+	TokenCommand      string `json:"tokenCommand,omitempty"`
 }
 
 // writeDevStackJSON writes the resolved endpoints to the answer stream, on one
@@ -1033,9 +1080,16 @@ func writeDevStackJSON(surface *ui.UI, stack devStack) error {
 		Database:          stack.database,
 		Persistence:       persistence,
 		OTLPEndpoint:      stack.otlp,
-		AnonymousAuth:     true,
+		AnonymousAuth:     !stack.auth.enabled,
 		Unversioned:       true,
 		LoopbackEgress:    stack.loopbackEgress,
+		AuthIssuer:        stack.auth.issuer,
+		AuthResource:      stack.auth.resource,
+		AuthSubject:       stack.auth.subject,
+		AuthNamespace:     stack.auth.namespace,
+		AuthKeyFile:       stack.auth.keyPath,
+		AuthPolicyFile:    stack.auth.policyPath,
+		TokenCommand:      stack.auth.tokenCommand(),
 	})
 	if err != nil {
 		return fmt.Errorf("rendering the resolved endpoints: %w", err)

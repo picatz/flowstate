@@ -306,7 +306,7 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 		}
 
 		if _, ok := verifier.keys[entry.Issuer]; !ok {
-			verifier.keys[entry.Issuer] = &keySet{
+			keys := &keySet{
 				issuer:       entry.Issuer,
 				staticURL:    entry.JWKSURL,
 				client:       client,
@@ -315,6 +315,15 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 				minRefresh:   cfg.minRefresh,
 				fetchTimeout: cfg.fetchTimeout,
 			}
+			if entry.JWKSFile != "" {
+				fixed, err := loadJWKSFile(entry.JWKSFile)
+				if err != nil {
+					return nil, fmt.Errorf("loading signing keys for issuer %q: %w", entry.Issuer, err)
+				}
+				keys.keys = fixed
+				keys.fixed = true
+			}
+			verifier.keys[entry.Issuer] = keys
 		}
 	}
 

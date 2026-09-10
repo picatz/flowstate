@@ -178,6 +178,18 @@ func TestPolicyValidate(t *testing.T) {
 			policy: spoil(func(i *auth.TrustedIssuer) { i.JWKSURL = "https://issuer.example.com/keys" }),
 		},
 		{
+			name:   "an explicit key set file",
+			policy: spoil(func(i *auth.TrustedIssuer) { i.JWKSFile = "/etc/flowstate/issuer.jwks" }),
+		},
+		{
+			name: "two key set sources",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.JWKSURL = "https://issuer.example.com/keys"
+				i.JWKSFile = "/etc/flowstate/issuer.jwks"
+			}),
+			wantErr: true,
+		},
+		{
 			name: "two entries with the same name",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
 				{Name: "idp", Issuer: valid.Issuer, Audiences: []string{"flowstate"}},
@@ -190,6 +202,14 @@ func TestPolicyValidate(t *testing.T) {
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
 				{Name: "a", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/keys"},
 				{Name: "b", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/other-keys"},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "entries for one issuer that disagree between URL and file keys",
+			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
+				{Name: "a", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/keys"},
+				{Name: "b", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSFile: "/etc/flowstate/keys.jwks"},
 			}},
 			wantErr: true,
 		},

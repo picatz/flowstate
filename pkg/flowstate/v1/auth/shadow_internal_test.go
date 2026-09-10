@@ -77,6 +77,7 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 		"NamespaceClaim": "same",
 		"NamespaceMap":   "same",
 		"JWKSURL":        "entries sharing an issuer must already agree on it (Policy.Validate)",
+		"JWKSFile":       "entries sharing an issuer must already agree on it (Policy.Validate)",
 	}
 
 	fields := reflect.VisibleFields(reflect.TypeOf(TrustedIssuer{}))
