@@ -377,10 +377,30 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	if !hasIndependentReview(pr) {
 		problems = append(problems, "independent code/security review has not passed on the exact final head")
 	}
+	if requests := exactHeadCodexRequests(pr); requests > 1 {
+		problems = append(problems, fmt.Sprintf("Codex was requested %d times on the intended final head; request an optional provider at most once", requests))
+	}
 	if unresolved != 0 {
 		problems = append(problems, fmt.Sprintf("%d review thread(s) remain unresolved", unresolved))
 	}
 	return problems
+}
+
+func exactHeadCodexRequests(pr pullRequest) int {
+	requests := 0
+	for _, comment := range pr.Comments {
+		if comment.AuthorAssociation != "OWNER" || !strings.Contains(comment.Body, pr.HeadRefOID) {
+			continue
+		}
+		for _, line := range strings.Split(strings.ToLower(comment.Body), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "@codex review") || strings.HasPrefix(line, "@codex security review") {
+				requests++
+				break
+			}
+		}
+	}
+	return requests
 }
 
 func requiredChecksFor(files []changedFile) []requiredCheck {

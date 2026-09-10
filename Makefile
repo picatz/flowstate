@@ -193,11 +193,12 @@ fuzz-smoke:
 # same complete engine package passes under the production-derived deadlines
 # when it owns the runner. Tests within each package retain their own parallelism.
 TEST_SHUFFLE ?= on
+TEST_PACKAGES ?= ./...
 
 test: SHELL := /bin/bash
 test: .SHELLFLAGS := -o pipefail -c
 test:
-	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -p=1 -timeout 900s ./... | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -p=1 -timeout 900s $(TEST_PACKAGES) | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # The plugins are separate modules, which is the point of them: `./...` above
 # does not reach them, and a plugin that does not compile would leave every

@@ -1,2 +1,0 @@
-test: the root module suite, `go test -race ./...` and the example checks.
-See README.md beside this file for why this file exists.

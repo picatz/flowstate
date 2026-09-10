@@ -1,0 +1,2 @@
+test-cli: the serialized cmd/flow package race suite.
+See README.md beside this file for why this file exists.

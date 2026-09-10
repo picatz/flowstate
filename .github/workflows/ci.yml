@@ -157,27 +157,25 @@ jobs:
 
   # ── The root suite, and the critical path ─────────────────────────────────
   #
-  # Three jobs where there was one. `test` used to run the root suite, the
-  # plugin modules and the ordering rehearsal back to back — 5m22s, 2m08s and
-  # 2m33s on run 33894879891, none depending on another — so every code PR
-  # waited twelve minutes for a path that is six (#1726). The plugin and
-  # ordering legs are `test-plugins` and `test-ordering` below, each
-  # `needs: plan` and nothing else, so the critical path is `plan` plus this
-  # job. It is a split of independent Make targets, not a shard of `make
-  # test`: the command a contributor runs is still the command CI runs, which
-  # docs/CI.md's "considered and excluded" gives as the reason sharding was
-  # refused.
+  # The complete root race suite became 24 minutes when package binaries were
+  # serialized to keep independent Temporal servers from consuming one
+  # another's deadlines. Two measured runs spent 19-20 of those minutes in
+  # three independent packages. This matrix gives each one a runner and puts
+  # every other package in the rest lane, while every lane still invokes the
+  # same `make test` recipe contributors run. The matrix is one logical job to
+  # `needs.test.result`, so verdict remains the single fail-closed authority.
   test:
     needs: plan
     if: needs.plan.outputs.test == 'true'
     runs-on: ubuntu-latest
-    # A hung job otherwise runs to the six-hour default. Serial package binaries
-    # keep independent Temporal test processes from consuming one another's
-    # wall-clock budgets; the first measured CI run took 24m03s in `make test`
-    # alone. Thirty-five minutes leaves bounded room for a cold build, artifact
-    # upload, and final diagnostics without returning to cross-package
-    # contention or the default six hours.
-    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [engine, v1, cli, rest]
+    # The slowest measured lane is engine at 7m59s. Twenty minutes leaves five
+    # minutes after the test command's own 15-minute package deadline for a
+    # cold build, artifact upload, and final diagnostics.
+    timeout-minutes: 20
     steps:
       # persist-credentials: false everywhere in this workflow (and deep.yml,
       # and editors.yml): checkout otherwise leaves the job's GITHUB_TOKEN in
@@ -218,16 +216,18 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
-            .github/cache-scope/test
+            .github/cache-scope/test-${{ matrix.lane }}
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       - name: Report toolchain
         run: go version
 
       - name: Build
+        if: matrix.lane == 'rest'
         run: go build ./...
 
       - name: Vet
+        if: matrix.lane == 'rest'
         run: go vet ./...
 
       # Cheap, and it stays cheap only while it is enforced. Two files had drifted
@@ -235,6 +235,7 @@ jobs:
       # saw — formatting noise then rides along in the next real diff and makes it
       # harder to review than it needed to be.
       - name: Format
+        if: matrix.lane == 'rest'
         run: |
           unformatted=$(gofmt -l ./cmd ./pkg ./internal ./tools ./examples ./plugins)
           if [ -n "$unformatted" ]; then
@@ -254,7 +255,21 @@ jobs:
       # it. TEST_JSON keeps the raw stream for the artifact step below, so
       # the summary is the short answer and the record is still there.
       - name: Test
-        run: make test TEST_JSON=go-test.json
+        shell: bash
+        run: |
+          case "${{ matrix.lane }}" in
+            engine) packages='./pkg/flowstate/v1/engine' ;;
+            v1) packages='./pkg/flowstate/v1' ;;
+            cli) packages='./cmd/flow' ;;
+            rest)
+              packages=$(go list ./... | grep -vxF \
+                -e github.com/picatz/flowstate/pkg/flowstate/v1/engine \
+                -e github.com/picatz/flowstate/pkg/flowstate/v1 \
+                -e github.com/picatz/flowstate/cmd/flow | tr '\n' ' ')
+              ;;
+            *) echo "::error::unknown test lane ${{ matrix.lane }}"; exit 1 ;;
+          esac
+          make test TEST_PACKAGES="$packages" TEST_JSON="go-test-${{ matrix.lane }}.json"
 
       # The raw stream, whatever the outcome (`if: always()`): a reader who
       # needs more than the summary — the log of a test that passed, the
@@ -264,8 +279,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: go-test-json
-          path: go-test.json
+          name: go-test-${{ matrix.lane }}-json
+          path: go-test-${{ matrix.lane }}.json
           if-no-files-found: ignore
           retention-days: 14
 
@@ -281,6 +296,7 @@ jobs:
       # the schema: `flow docs generate` runs the binary, so a failure here is a
       # tree whose documentation disagrees with its own code.
       - name: Verify generated reference docs are current
+        if: matrix.lane == 'rest'
         run: |
           go run ./cmd/flow docs generate
           git diff --exit-code -- docs/reference/ || {
@@ -303,6 +319,7 @@ jobs:
       # (`steps:` or `tests:`), so a policy file or an observability config
       # under examples/ is never even handed to the rewriter.
       - name: Examples are in the current edition
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow fix --check examples/
 
       # Tier 4 of the style charter (docs/STYLE.md, Part II), over the corpus R8
@@ -324,6 +341,7 @@ jobs:
       # docs/STYLE.md are linted by TestShownWorkflowsAreLintClean in the test
       # run above, and they are clean.
       - name: Examples in the canonical style
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow lint --strict examples/
 
       # `flow test` is the reachability gate for #155: at least one example's
@@ -338,6 +356,7 @@ jobs:
       # coverage.allow_unreached (the three enterprise gates on !run.local are
       # the only residuals, reachable only against a real server).
       - name: Example workflows pass their own tests, every branch reached or reasoned
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow test --coverage-required examples/
 
       # `flow breaking` is `buf breaking` one level up: a workflow's declared
@@ -353,8 +372,10 @@ jobs:
       # before the breaking check can run. A break fails the same way validate
       # does.
       - name: Fetch base branch for the breaking check
+        if: matrix.lane == 'rest'
         run: git fetch --no-tags --depth=1 origin +main:refs/remotes/origin/main
       - name: Example workflow contracts did not shrink against main
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow breaking --against origin/main examples/
 
       # The observability lab is eight services of other people's software, so
@@ -365,6 +386,7 @@ jobs:
       # `config` is a client-side operation: no daemon, no pulls, under a second.
       # The full-stack smoke is a manual step, written out in the lab's README.
       - name: Observability lab compose file resolves
+        if: matrix.lane == 'rest'
         run: docker compose -f examples/observability/docker-compose.yaml config -q
 
   # The plugins are separate Go modules, which is the point of them: a plugin

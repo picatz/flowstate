@@ -27,7 +27,7 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 	// The shuffle is a variable, on by default now that the tests which
 	// register into cmd/flow's process-wide registry put it back (see the
 	// Makefile), and the seed it prints is what testsum's rerun lines carry.
-	for _, want := range []string{"go test -json", "-shuffle=$(TEST_SHUFFLE)", "| ", "go run ./tools/testsum"} {
+	for _, want := range []string{"go test -json", "-shuffle=$(TEST_SHUFFLE)", "$(TEST_PACKAGES)", "| ", "go run ./tools/testsum"} {
 		if !strings.Contains(recipe[1], want) {
 			t.Errorf("make test's recipe lacks %q: %s", want, recipe[1])
 		}
