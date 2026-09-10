@@ -690,6 +690,13 @@ command is visible so you can change those claims deliberately. Move to `flow
 server --auth-policy ... --rpc-resource ...` and a discoverable organizational
 issuer for a shared deployment.
 
+Claims beyond subject, issuer, and namespace are not copied into durable run or
+signal-sender identity unless the server names them. Add repeatable
+`--identity-claim <name>` flags when a local `signals:` or `workload.claims[...]`
+rule needs to inspect a verified claim, just as on `flow server`; for example,
+the [authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
+uses `--identity-claim team`.
+
 ### Docker Compose
 
 `examples/observability/docker-compose.yaml` is a working compose file

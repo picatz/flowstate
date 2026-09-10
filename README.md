@@ -139,6 +139,9 @@ Rehearse its decisions, timeout, and refusal paths locally with virtual time:
 $ flow test examples/approval-gate/
 ```
 
+Then follow its [worked authenticated approval journey](examples/approval-gate/README.md#run-an-authenticated-approval)
+to cross the durable driver with separate requester and approver credentials.
+
 Production authorization also requires deployment-side trust and task policy.
 Read [Deployment](docs/DEPLOYMENT.md) before sharing a server or Temporal
 namespace.

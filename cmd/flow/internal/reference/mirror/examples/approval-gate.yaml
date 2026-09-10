@@ -22,10 +22,16 @@ inputs:
     description: who this run expects to approve it
     example: sre-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
+  expected_approver_issuer:
+    type: string
+    default: https://issuer.example.com
+    description: issuer that must have attested the expected approver
+    example: https://issuer.example.com
+    must: this.startsWith("https://")
 signals:
   deploy-approved:
     allow:
-      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
+      - subject: ${inputs.expected_approver_issuer + "#" + inputs.expected_approver}
         claims:
           team: release-managers
     distinct_from_starter: true

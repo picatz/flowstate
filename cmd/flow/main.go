@@ -2840,10 +2840,7 @@ flow server --verbose`,
 	serverCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"name of this Flowstate deployment, recorded in each run's workload identity "+
 			"and in every assertion subject it mints")
-	serverCmd.Flags().StringArray("identity-claim", nil,
-		"caller token claim to carry into each run's workload identity (repeatable), "+
-			"such as repository or email; only named claims are carried, and they are "+
-			"what workload.claims[...] policy rules read")
+	serverCmd.Flags().StringArray("identity-claim", nil, identityClaimUsage)
 
 	// The public listener's own address. Until now this was the one setting in
 	// the tree configured by environment variable with no flag beside it:
