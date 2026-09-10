@@ -8,10 +8,12 @@ evidence because the change looks small.
 2. Push a focused branch and open a pull request **without auto-merge**. Never
    use `gh pr merge --auto` or enable GitHub auto-merge.
 3. Finish all edits before requesting review. Record the intended final
-   40-character head, request Codex and Copilot at most once each on that head,
-   and obtain at least one distinct provider-neutral AI review covering both
-   code and security on it. The independent evidence must identify the reviewer,
-   full head SHA, `code-security` scope, and PASS/no-actionable-findings verdict.
+   40-character head, request Codex and Copilot at most once each per pull
+   request and only after recording that head, and obtain at least one distinct
+   provider-neutral AI review covering both code and security on it. A later fix
+   requires another provider-neutral review, not another vendor request. The
+   independent evidence must identify the reviewer, full head SHA,
+   `code-security` scope, and PASS/no-actionable-findings verdict.
    Codex and Copilot availability is optional: do not wait, retry, or treat
    quota/unavailability as a project defect or as PASS. Their feedback is not
    optional once it arrives.
