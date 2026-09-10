@@ -88,14 +88,14 @@ func TestEvaluateRejectsMissingAutoMergeEvidenceAndBlockingReview(t *testing.T) 
 	}
 }
 
-func TestEvaluateRejectsRepeatedCodexRequestsOnFinalHead(t *testing.T) {
+func TestEvaluateRejectsRepeatedCodexRequestsWithoutDependingOnSHAAnnotations(t *testing.T) {
 	pr := passingPullRequest()
 	pr.Comments = append(pr.Comments,
-		comment{AuthorAssociation: "OWNER", Body: "@codex review exact head " + strings.ToUpper(testHead)},
-		comment{AuthorAssociation: "OWNER", Body: "@codex security review exact head " + testHead},
+		comment{AuthorAssociation: "OWNER", Body: "@codex review"},
+		comment{AuthorAssociation: "OWNER", Body: "@codex security review"},
 	)
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
-		t.Fatalf("repeated exact-head requests with mixed-case SHAs were accepted: %s", problems)
+		t.Fatalf("repeated requests without SHA annotations were accepted: %s", problems)
 	}
 }
 

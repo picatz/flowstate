@@ -377,8 +377,8 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	if !hasIndependentReview(pr) {
 		problems = append(problems, "independent code/security review has not passed on the exact final head")
 	}
-	if requests := exactHeadCodexRequests(pr); requests > 1 {
-		problems = append(problems, fmt.Sprintf("Codex was requested %d times on the intended final head; request an optional provider at most once", requests))
+	if requests := ownerCodexRequests(pr); requests > 1 {
+		problems = append(problems, fmt.Sprintf("Codex was requested %d times on this pull request; request an optional provider at most once", requests))
 	}
 	if unresolved != 0 {
 		problems = append(problems, fmt.Sprintf("%d review thread(s) remain unresolved", unresolved))
@@ -386,14 +386,13 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	return problems
 }
 
-func exactHeadCodexRequests(pr pullRequest) int {
+func ownerCodexRequests(pr pullRequest) int {
 	requests := 0
 	for _, comment := range pr.Comments {
-		body := strings.ToLower(comment.Body)
-		if comment.AuthorAssociation != "OWNER" || !strings.Contains(body, strings.ToLower(pr.HeadRefOID)) {
+		if comment.AuthorAssociation != "OWNER" {
 			continue
 		}
-		for _, line := range strings.Split(body, "\n") {
+		for _, line := range strings.Split(strings.ToLower(comment.Body), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "@codex review") || strings.HasPrefix(line, "@codex security review") {
 				requests++

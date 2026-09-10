@@ -67,10 +67,11 @@ while adding latency and another host-specific resolution failure.
 The shared shipping semantics are deliberately provider-neutral: one exact-head
 code-and-security review is mandatory, while Codex and Copilot are each requested
 at most once on the intended final head and are not availability gates. Feedback
-that arrives is still mandatory work. `shipcheck` rejects repeated exact-head
-Codex requests, any review artifact newer than the owner attestation, unresolved
-threads, stale evidence, and nonterminal or failing checks. A late artifact thus
-forces explicit re-attestation without requiring either vendor to answer.
+that arrives is still mandatory work. `shipcheck` rejects repeated Codex requests
+across the pull request, any review artifact newer than the owner attestation,
+unresolved threads, stale evidence, and nonterminal or failing checks. A late
+artifact thus forces explicit re-attestation without requiring either vendor to
+answer.
 
 ## Why skills are mirrored
 

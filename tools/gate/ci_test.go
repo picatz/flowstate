@@ -401,7 +401,7 @@ type ciWorkflow struct {
 		Outputs        map[string]string `yaml:"outputs"`
 		TimeoutMinutes int               `yaml:"timeout-minutes"`
 		Strategy       struct {
-			FailFast bool `yaml:"fail-fast"`
+			FailFast *bool `yaml:"fail-fast"`
 			Matrix   struct {
 				Lane []string `yaml:"lane"`
 			} `yaml:"matrix"`
@@ -429,8 +429,8 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	if !strings.Contains(string(docs), `"check_response_timeout_minutes": 45`) {
 		t.Fatal("the documented merge-queue response bound must remain above every test lane's outer timeout")
 	}
-	if job.Strategy.FailFast {
-		t.Fatal("test matrix must retain every lane's result when another lane fails")
+	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
+		t.Fatal("test matrix must explicitly set fail-fast: false to retain every lane's result when another lane fails")
 	}
 	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), "[engine v1 cli rest]"; got != want {
 		t.Fatalf("test matrix lanes = %s, want %s", got, want)
