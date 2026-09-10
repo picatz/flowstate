@@ -538,8 +538,8 @@ Five parameters there are load-bearing and easy to get wrong:
   naturally, because entries arriving while a group is building join the next
   one, and `max_entries_to_build: 5` is what caps the group.
 - **`check_response_timeout_minutes: 45`** must exceed the slowest job. `test`
-  has a 35-minute outer bound after package serialization made its measured
-  24-minute suite reliable; 45 leaves final-check headroom without letting a
+  now has a 20-minute outer bound per matrix lane; 45 also accommodates the
+  remaining unsharded jobs and leaves final-check headroom without letting a
   wedged group hold the queue indefinitely.
 
 Optionally pin the check provider by adding `"integration_id": <GitHub Actions'

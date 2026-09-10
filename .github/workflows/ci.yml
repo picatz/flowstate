@@ -192,10 +192,11 @@ jobs:
       # version from go.mod keeps CI on exactly what local builds use, so a
       # toolchain-level security fix cannot be present locally and missing here.
       #
-      # cache-dependency-path names .github/cache-scope/test beside go.sum so
-      # this job's build cache — the -race build of the whole module, the
-      # largest in the workflow — has a key of its own rather than racing the
-      # four other jobs that key on go.sum alone. See the README beside it.
+      # cache-dependency-path names a lane-specific
+      # .github/cache-scope/test-${{ matrix.lane }} beside go.sum so each
+      # matrix lane's -race build cache has a key of its own rather than
+      # racing the other lanes and jobs that key on go.sum. See the README
+      # beside it.
       # The plugin modules' go.sum files moved to test-plugins' key with the
       # step that needs them.
       #

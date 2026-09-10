@@ -389,10 +389,11 @@ func evaluate(pr pullRequest, unresolved int) []string {
 func exactHeadCodexRequests(pr pullRequest) int {
 	requests := 0
 	for _, comment := range pr.Comments {
-		if comment.AuthorAssociation != "OWNER" || !strings.Contains(comment.Body, pr.HeadRefOID) {
+		body := strings.ToLower(comment.Body)
+		if comment.AuthorAssociation != "OWNER" || !strings.Contains(body, strings.ToLower(pr.HeadRefOID)) {
 			continue
 		}
-		for _, line := range strings.Split(strings.ToLower(comment.Body), "\n") {
+		for _, line := range strings.Split(body, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "@codex review") || strings.HasPrefix(line, "@codex security review") {
 				requests++

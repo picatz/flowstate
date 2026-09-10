@@ -422,6 +422,13 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	if got := job.TimeoutMinutes; got != 20 {
 		t.Fatalf("each root-suite lane needs headroom beyond go test's 15-minute package bound; timeout-minutes = %d, want 20", got)
 	}
+	docs, err := os.ReadFile("../../docs/CI.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(docs), `"check_response_timeout_minutes": 45`) {
+		t.Fatal("the documented merge-queue response bound must remain above every test lane's outer timeout")
+	}
 	if job.Strategy.FailFast {
 		t.Fatal("test matrix must retain every lane's result when another lane fails")
 	}
