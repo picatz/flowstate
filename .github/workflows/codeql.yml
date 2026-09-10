@@ -9,7 +9,9 @@ name: CodeQL
 # generated for the job the same way `make coverage` generates one: the
 # plugin modules are separate on purpose (see the Makefile's .coverage/go.work
 # recipe) and a committed workspace would undo that separation for every
-# ordinary build.
+# ordinary build. The traced build is explicit because CodeQL's autobuilder
+# otherwise runs the Makefile's default `gate` target, duplicating unrelated
+# tests inside this analysis job and making its time depend on the PR diff.
 on:
   push:
     branches: [main]
@@ -61,11 +63,25 @@ jobs:
         uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: go
-          build-mode: autobuild
+          build-mode: manual
           # The default suite plus the security-extended queries: the
           # boundaries this repository cares about are the ones the extended
           # taint queries model.
           queries: security-extended
+
+      - name: Build every workspace module for CodeQL
+        # `go build ./...` does not cross nested module boundaries. Enumerate
+        # the generated workspace so adding another plugin automatically adds
+        # it here too, without maintaining a second module list. Build each as
+        # its own module: the plugin module paths intentionally sit below the
+        # root module path, which makes ./... ambiguous in workspace mode.
+        run: |
+          modules="$(go list -m -f '{{.Dir}}')"
+          test -n "$modules"
+          while IFS= read -r module; do
+            echo "==> $module"
+            (cd "$module" && GOWORK=off go build ./...)
+          done <<< "$modules"
 
       - name: Analyze
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9

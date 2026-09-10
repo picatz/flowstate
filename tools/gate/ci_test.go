@@ -412,8 +412,40 @@ type ciWorkflow struct {
 			If   string            `yaml:"if"`
 			Run  string            `yaml:"run"`
 			Env  map[string]string `yaml:"env"`
+			Uses string            `yaml:"uses"`
+			With map[string]string `yaml:"with"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
+}
+
+// TestCodeQLBuildDoesNotInvokeTheDefaultGate pins the critical-path failure
+// observed on PR run 34433381877: Go autobuild found the Makefile and invoked
+// its default target, so CodeQL repeated 27 minutes of diff-dependent tests
+// before doing static analysis. Manual mode must still trace every module; the
+// generated workspace is the one source of that module list.
+func TestCodeQLBuildDoesNotInvokeTheDefaultGate(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/codeql.yml")
+	job := wf.Jobs["analyze"]
+	var initMode, build string
+	for _, step := range job.Steps {
+		if strings.Contains(step.Uses, "github/codeql-action/init@") {
+			initMode = step.With["build-mode"]
+		}
+		if step.Name == "Build every workspace module for CodeQL" {
+			build = step.Run
+		}
+	}
+	if initMode != "manual" {
+		t.Fatalf("CodeQL build-mode = %q, want manual so it cannot invoke the default make target", initMode)
+	}
+	for _, want := range []string{`modules="$(go list -m -f '{{.Dir}}')"`, `test -n "$modules"`, `cd "$module"`, "GOWORK=off go build ./..."} {
+		if !strings.Contains(build, want) {
+			t.Errorf("CodeQL's traced build does not preserve workspace-module token %q:\n%s", want, build)
+		}
+	}
+	if strings.Contains(build, "make") || strings.Contains(build, "tools/gate") {
+		t.Fatalf("CodeQL's traced build invokes the repository gate:\n%s", build)
+	}
 }
 
 func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {

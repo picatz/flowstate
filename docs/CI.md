@@ -608,9 +608,12 @@ listed.
 - `codeql.yml` analyses Go with the security-extended queries on every pull
   request, on `main` and weekly. It crosses the plugin module boundary through
   a `go.work` generated for the job by the Makefile's `.coverage/go.work`
-  recipe and copied to the root of the checkout, since CodeQL's Go autobuild
-  reads the workspace from the checkout rather than from `GOWORK`; the
-  workspace is never committed, for the reason that recipe gives.
+  recipe and copied to the root of the checkout. Its manual traced build
+  enumerates every module in that workspace: a plain `go build ./...` does not
+  cross nested module boundaries, so each is built with `GOWORK=off`, while
+  CodeQL's autobuilder would run this repository's default `make` target
+  (`gate`) and duplicate tests unrelated to static analysis. The workspace is
+  never committed, for the reason that recipe gives.
 - `scorecard.yml` runs the OpenSSF Scorecard on `main` and weekly and
   publishes the result, which is what the README badge reads.
 - `dependency-review.yml` diffs a pull request's dependency graph against its
