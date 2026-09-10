@@ -58,6 +58,7 @@ defaults:
     version: v1.4.2
     environment: production
     expected_approver: "${vars.approver}"
+    expected_approver_issuer: "${vars.issuer}"
   # The approver most cases name. A case that names its own `sender:` overrides
   # this (explicit beats inherited); the "without an attested sender" case opts
   # out with an explicit empty `sender: {}`, which is refused exactly as an
