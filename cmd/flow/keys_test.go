@@ -176,6 +176,25 @@ func TestKeysPublicMatchesWhatGenerateAlreadyPrinted(t *testing.T) {
 	require.JSONEq(t, generated, public)
 }
 
+func TestKeysPublicCanPrintABoundedVerifierDocumentWithoutPrivateMaterial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dev.pem")
+	_, _, err := runKeysGenerateInto(t, "out", path)
+	require.NoError(t, err)
+
+	public, stderr, err := runKeysPublicInto(t, "in", path, "jwks", "true")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+
+	var document struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(public), &document))
+	require.Len(t, document.Keys, 1)
+	require.Equal(t, "dev", document.Keys[0]["kid"])
+	require.NotContains(t, public, "PRIVATE KEY")
+	require.NotContains(t, public, "\"d\"")
+}
+
 func TestKeysPublicRefusesAFileThatIsNotAPrivateKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "not-a-key.pem")
 	require.NoError(t, os.WriteFile(path, []byte("not pem data at all"), 0o600))

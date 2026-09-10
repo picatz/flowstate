@@ -245,7 +245,7 @@ type TrustedIssuer struct {
 
 	// Issuer is, for kind: oidc, the exact value a token's "iss" claim must
 	// have, and the base URL used for OpenID Connect discovery unless JWKSURL
-	// is set. It must be an absolute https URL, for example
+	// or JWKSFile is set. It must be an absolute https URL, for example
 	// "https://token.actions.githubusercontent.com". Required.
 	//
 	// The match is exact: no normalization, no trailing-slash tolerance, no
@@ -408,6 +408,18 @@ type TrustedIssuer struct {
 	//
 	// Entries that share an Issuer must agree on this value.
 	JWKSURL string `json:"jwks_url,omitempty" yaml:"jwks_url,omitempty"`
+
+	// JWKSFile is a local JSON Web Key Set read once when the verifier is
+	// constructed. It supports air-gapped deployments and local rehearsal
+	// without weakening identity egress policy or standing up an HTTP server.
+	// Relative paths are resolved from the server process's working directory.
+	//
+	// Mutually exclusive with JWKSURL. Leave both empty for ordinary OpenID
+	// Connect discovery. Rotation is a file replacement followed by a server
+	// restart; a running verifier never rereads this file.
+	//
+	// Entries that share an Issuer must agree on this value.
+	JWKSFile string `json:"jwks_file,omitempty" yaml:"jwks_file,omitempty"`
 
 	// MaxTokenAge, when positive, rejects tokens whose "iat" claim is older
 	// than this, regardless of the lifetime the issuer chose. Workload tokens
@@ -654,7 +666,11 @@ func (p Policy) Validate() error {
 	}
 
 	names := make(map[string]struct{}, len(p.Issuers))
-	jwksURLs := make(map[string]string, len(p.Issuers))
+	type keySource struct {
+		url  string
+		file string
+	}
+	keySources := make(map[string]keySource, len(p.Issuers))
 
 	for i, issuer := range p.Issuers {
 		if err := issuer.validate(); err != nil {
@@ -666,13 +682,16 @@ func (p Policy) Validate() error {
 		}
 		names[issuer.Name] = struct{}{}
 
-		// Entries that share an issuer share its key set, so they cannot
-		// disagree about where those keys come from.
-		if previous, seen := jwksURLs[issuer.Issuer]; seen && previous != issuer.JWKSURL {
-			return fmt.Errorf("%w: issuers[%d]: entries for issuer %q disagree on jwks_url (%q and %q)",
-				ErrInvalidPolicy, i, issuer.Issuer, previous, issuer.JWKSURL)
+		// OIDC entries that share an issuer share its key set, so they cannot
+		// disagree about where those keys come from. An mTLS entry may use the
+		// same operator-chosen issuer label, but has no signing-key source.
+		if issuer.kind() == IssuerKindOIDC {
+			source := keySource{url: issuer.JWKSURL, file: issuer.JWKSFile}
+			if previous, seen := keySources[issuer.Issuer]; seen && previous != source {
+				return fmt.Errorf("%w: issuers[%d]: entries for issuer %q disagree on signing-key source", ErrInvalidPolicy, i, issuer.Issuer)
+			}
+			keySources[issuer.Issuer] = source
 		}
-		jwksURLs[issuer.Issuer] = issuer.JWKSURL
 	}
 
 	// A policy is either tenant-aware or it is not. If any entry determines a
@@ -945,6 +964,9 @@ func (t TrustedIssuer) validateOIDC() error {
 			return err
 		}
 	}
+	if t.JWKSURL != "" && t.JWKSFile != "" {
+		return fmt.Errorf("jwks_url and jwks_file are mutually exclusive: configure one signing-key source")
+	}
 
 	return nil
 }
@@ -981,6 +1003,9 @@ func (t TrustedIssuer) validateMTLS() error {
 	}
 	if t.JWKSURL != "" {
 		return fmt.Errorf("jwks_url is not meaningful for kind: %s entries: there is no key set to discover", IssuerKindMTLS)
+	}
+	if t.JWKSFile != "" {
+		return fmt.Errorf("jwks_file is not meaningful for kind: %s entries: there is no key set to load", IssuerKindMTLS)
 	}
 	if t.MaxTokenAge != 0 {
 		return fmt.Errorf("max_token_age is not meaningful for kind: %s entries: a client certificate carries no issued-at claim to age", IssuerKindMTLS)

@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/picatz/flowstate/internal/textbound"
@@ -126,6 +128,10 @@ type keySet struct {
 	cacheTTL     time.Duration
 	minRefresh   time.Duration
 	fetchTimeout time.Duration
+	// fixed marks keys loaded from jwks_file. They are immutable for this
+	// verifier's lifetime: rotation is an explicit file update and restart,
+	// never a request-triggered local reread.
+	fixed bool
 
 	mu sync.Mutex
 	// jwksURL is the discovered (or configured) key set URL, cached for the
@@ -159,6 +165,9 @@ func (ks *keySet) publicKey(ctx context.Context, keyID string, alg jwa.Algorithm
 	defer ks.mu.Unlock()
 
 	now := ks.clock()
+	if ks.fixed {
+		return ks.lookupLocked(keyID, alg)
+	}
 
 	cached := now.Before(ks.expiresAt)
 	if cached {
@@ -201,6 +210,13 @@ func (ks *keySet) publicKey(ctx context.Context, keyID string, alg jwa.Algorithm
 func (ks *keySet) prime(ctx context.Context) error {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
+
+	// File-backed sets are complete when the verifier is constructed. Priming
+	// must not replace an explicitly pinned local set through discovery, nor
+	// turn an offline configuration into a network-dependent startup.
+	if ks.fixed {
+		return nil
+	}
 
 	now := ks.clock()
 	if now.Before(ks.expiresAt) {
@@ -405,6 +421,46 @@ func fetchJWKS(ctx context.Context, client *http.Client, jwksURL string) (*jwk.S
 		return nil, fmt.Errorf("key set at %q contains no keys", jwksURL)
 	}
 	return &set, nil
+}
+
+// loadJWKSFile reads and parses a local key set once, under the same byte and
+// key-shape bounds as a remote issuer response. A local file is configuration,
+// not a cache: callers cannot trigger a reread by inventing a key id.
+func loadJWKSFile(path string) ([]publicKey, error) {
+	// O_NONBLOCK makes opening a mistakenly named FIFO return so the descriptor
+	// can be rejected below instead of hanging server startup waiting for a
+	// writer. It has no effect on an ordinary file.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("opening jwks_file %q: %w", path, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspecting jwks_file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("jwks_file %q is not a regular file (%s)", path, info.Mode())
+	}
+
+	body, err := netpolicy.ReadLimited(file, maxJWKSBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading jwks_file %q: %w", path, err)
+	}
+
+	var set jwk.Set
+	if err := json.Unmarshal(body, &set); err != nil {
+		return nil, fmt.Errorf("decoding jwks_file %q: %w", path, err)
+	}
+	if len(set.Keys) == 0 {
+		return nil, fmt.Errorf("jwks_file %q contains no keys", path)
+	}
+
+	keys, err := parseJWKS(&set)
+	if err != nil {
+		return nil, fmt.Errorf("jwks_file %q: %w", path, err)
+	}
+	return keys, nil
 }
 
 // parseJWKS converts a JSON Web Key Set into the usable signing keys it

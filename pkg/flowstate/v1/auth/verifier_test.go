@@ -3,7 +3,10 @@ package auth_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwk"
@@ -44,6 +48,12 @@ func newVerifierWithClient(t *testing.T, policy auth.Policy, opts ...auth.Option
 	require.NoError(t, err)
 
 	return verifier
+}
+
+type refusingTransport struct{}
+
+func (refusingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("unexpected network request to %s", req.URL)
 }
 
 // TestOIDCVerifierRejects covers the failures that matter: everything a caller
@@ -981,6 +991,88 @@ func TestOIDCVerifierStaticJWKSURL(t *testing.T) {
 	discovery, jwks := requests.Discovery, requests.JWKS
 	require.Zero(t, discovery)
 	require.Equal(t, 1, jwks)
+}
+
+func TestOIDCVerifierJWKSFileNeedsNoNetworkAndDoesNotReloadPerRequest(t *testing.T) {
+	var (
+		key        = authtest.GenerateKey("primary", jwa.ES256)
+		unknownKey = authtest.GenerateKey("not-in-file", jwa.ES256)
+		clock      = authtest.NewClock(referenceTime)
+		issuer     = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+	)
+
+	document, err := json.Marshal(map[string]any{"keys": []any{key.JWK()}})
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "issuer.jwks")
+	require.NoError(t, os.WriteFile(path, document, 0o600))
+
+	verifier := newVerifierWithClient(t,
+		auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:      "offline",
+			Issuer:    issuer.URL(),
+			Audiences: []string{"flowstate"},
+			JWKSFile:  path,
+		}}},
+		auth.WithClock(clock.Now),
+		auth.WithHTTPClient(&http.Client{Transport: refusingTransport{}}),
+	)
+
+	// Servers prime OIDC verifiers at startup. A file-pinned set is already
+	// primed and must not fall through to discovery or replace its keys.
+	require.NoError(t, verifier.Prime(t.Context()))
+	require.Equal(t, authtest.Requests{}, issuer.Requests())
+
+	// Removing the file proves verification uses the bounded start-up read,
+	// not a request-triggered reread. The unknown key first exercises the path
+	// remote sets use to refresh; a fixed set must fail from memory instead.
+	require.NoError(t, os.Remove(path))
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(nil,
+		authtest.WithSubject("runner"), authtest.WithAudience("flowstate"), authtest.SignedBy(unknownKey)))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, os.ErrNotExist)
+
+	_, err = verifier.Verify(t.Context(), issuer.MintToken(nil,
+		authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
+	require.NoError(t, err)
+	require.Equal(t, authtest.Requests{}, issuer.Requests())
+}
+
+func TestOIDCVerifierRefusesInvalidOrOversizedJWKSFileAtStartup(t *testing.T) {
+	newVerifier := func(t *testing.T, data []byte) error {
+		path := filepath.Join(t.TempDir(), "issuer.jwks")
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+
+		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:      "offline",
+			Issuer:    "https://issuer.example.com",
+			Audiences: []string{"flowstate"},
+			JWKSFile:  path,
+		}}})
+		return err
+	}
+
+	t.Run("invalid", func(t *testing.T) {
+		err := newVerifier(t, []byte(`{"keys":`))
+		require.Error(t, err)
+		require.ErrorContains(t, err, "jwks_file")
+	})
+
+	t.Run("oversized but otherwise valid", func(t *testing.T) {
+		document := []byte(`{"keys":[],"padding":"` + strings.Repeat("a", (1<<20)+1) + `"}`)
+		err := newVerifier(t, document)
+		require.ErrorIs(t, err, netpolicy.ErrBodyTooLarge)
+		require.ErrorContains(t, err, "jwks_file")
+	})
+
+	t.Run("not a regular file", func(t *testing.T) {
+		_, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:      "offline",
+			Issuer:    "https://issuer.example.com",
+			Audiences: []string{"flowstate"},
+			JWKSFile:  t.TempDir(),
+		}}})
+		require.ErrorContains(t, err, "not a regular file")
+	})
 }
 
 // TestOIDCVerifierAmbiguousKey checks that a token without a key id is refused

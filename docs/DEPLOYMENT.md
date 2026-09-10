@@ -567,6 +567,30 @@ narrower form for production. Link-local and cloud metadata addresses have no
 option, on purpose. The boundary stays default-deny; what the section changes
 is what this deployment's own identity provider is allowed to be.
 
+For local rehearsal or an air-gapped deployment, the policy can load a bounded
+JSON Web Key Set from disk instead. This performs no identity HTTP request and
+therefore needs no `egress:` exception:
+
+```console
+$ flow keys public --in ./issuer.pem --jwks > ./issuer.jwks
+```
+
+```yaml
+issuers:
+  - name: local-issuer
+    issuer: https://issuer.example.invalid
+    audiences: [http://127.0.0.1:9233]
+    namespace_claim: namespace
+    jwks_file: /absolute/path/to/issuer.jwks
+```
+
+`jwks_file` and `jwks_url` are mutually exclusive. The path must resolve to a
+regular file. Its contents are capped at 1 MiB, parsed at server startup, and
+never reread while that process is running. Replace it and restart the server to
+rotate keys; retain old public keys in the set for the overlap during which
+already-minted tokens remain valid. A relative path is resolved from the server
+process's working directory, so deployment units should prefer an absolute path.
+
 ### Bearer-token audiences are per surface
 
 A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical
@@ -633,14 +657,38 @@ your first deploy rather than while reading this document.
 ### Local development
 
 ```console
-$ temporal server start-dev
-$ flow worker --allow-unversioned-interpreter
-$ flow server --insecure-no-auth
+$ flow server dev
 ```
 
-Tier 0/1a boundary: this is the shared-server shape, but `--insecure-no-auth`
-means there is no tenancy to speak of — everyone is anonymous. Fine for a
-laptop; never a service that anyone but you can reach.
+That one command starts Temporal, the server, and a worker on loopback. By
+default it takes the same anonymous posture as `flow server
+--insecure-no-auth`, so there is no tenancy to speak of — everyone is anonymous.
+Fine for a laptop; never a service that anyone but you can reach.
+
+To rehearse the real bearer-token middleware, endpoint-bound audience, named
+principal, and namespace mapping without building a local identity server:
+
+```console
+$ flow server dev --auth
+```
+
+The startup banner prints a copyable `flow jwt sign` command and matching `flow
+run` and `flow list` commands carrying the resolved server address. The stack
+generates an ES256 private key in a mode-0700 temporary directory, writes a
+`jwks_file` trust policy beside it, and directs the bearer token there too so a
+normal shell umask cannot expose it through a shared working directory. It
+removes the directory at shutdown. With `--db ./flowstate.db`, it instead reuses
+the mode-0600 key and token location in `./flowstate.db.flowstate-auth/` so
+restarting the durable dev stack does not silently invalidate its credentials.
+The audience and printed client address follow the loopback endpoint the server
+actually bound, including an automatically selected port.
+
+This is authentication rehearsal, not an OAuth service or production issuer:
+there is no login, refresh, revocation, or automatic rotation. The generated
+token says it represents local subject `developer` in namespace `default`; the
+command is visible so you can change those claims deliberately. Move to `flow
+server --auth-policy ... --rpc-resource ...` and a discoverable organizational
+issuer for a shared deployment.
 
 ### Docker Compose
 

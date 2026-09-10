@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -61,7 +62,9 @@ const (
 // The open error is returned as os.Open gave it, so a caller can still ask
 // [errors.Is] whether the file was simply absent.
 func readBoundedFile(path, what string, max int) ([]byte, error) {
-	f, err := os.Open(path)
+	// Nonblocking open lets the descriptor check below reject a FIFO without
+	// waiting forever for a writer. It has no effect on regular files.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
