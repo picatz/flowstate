@@ -159,11 +159,12 @@ jobs:
   #
   # The complete root race suite became 24 minutes when package binaries were
   # serialized to keep independent Temporal servers from consuming one
-  # another's deadlines. Two measured runs spent 19-20 of those minutes in
-  # three independent packages. This matrix gives each one a runner and puts
-  # every other package in the rest lane, while every lane still invokes the
-  # same `make test` recipe contributors run. The matrix is one logical job to
-  # `needs.test.result`, so verdict remains the single fail-closed authority.
+  # another's deadlines. In two measured runs, three independent packages
+  # accounted for 16m40s-17m47s of package execution. This matrix gives each
+  # one a runner and puts every other package in the rest lane, while every
+  # lane still invokes the same `make test` recipe contributors run. The
+  # matrix is one logical job to `needs.test.result`, so verdict remains the
+  # single fail-closed authority.
   test:
     needs: plan
     if: needs.plan.outputs.test == 'true'

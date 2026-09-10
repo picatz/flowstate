@@ -254,16 +254,16 @@ Since #1726:
 - After #1922 made root-package processes serial for deadline isolation, the
   same root suite grew from about five minutes to 24–25 minutes. The Actions
   artifacts from runs `34403410255` and `34400366207` show three independent
-  packages consuming 19–20 minutes of that sum: engine 7m39s–7m59s, the root
-  v1 package 5m53s–5m59s, and cmd/flow 3m08s–3m49s. `test` is therefore one
-  four-lane matrix: those three packages each own a runner and `rest` receives
-  the exact `go list ./...` complement. Every lane still calls the one `make
-  test` recipe with its package set, retains `-race -p=1`, and reports through
-  `tools/testsum`; build, vet, formatting, generated docs, examples, breaking,
-  and compose checks run once in `rest`. `fail-fast: false` preserves every
-  lane's diagnostics, and `verdict` sees the aggregate matrix result, so a
-  missing or failed lane remains red. Four cache-scope files prevent the lanes
-  racing to save one incomplete build cache.
+  packages accounting for 16m40s–17m47s of package execution: engine
+  7m39s–7m59s, the root v1 package 5m53s–5m59s, and cmd/flow 3m08s–3m49s.
+  `test` is therefore one four-lane matrix: those three packages each own a
+  runner and `rest` receives the exact `go list ./...` complement. Every lane
+  still calls the one `make test` recipe with its package set, retains `-race
+  -p=1`, and reports through `tools/testsum`; build, vet, formatting, generated
+  docs, examples, breaking, and compose checks run once in `rest`. `fail-fast:
+  false` preserves every lane's diagnostics, and `verdict` sees the aggregate
+  matrix result, so a missing or failed lane remains red. Four cache-scope
+  files prevent the lanes racing to save one incomplete build cache.
 - `plan` publishes `fuzz_targets` beside the job booleans: the smoke-tier
   targets whose package the diff reaches, in `targets.txt` order, and every
   smoke target on a forced run. `fuzz-smoke` hands it to `make fuzz-smoke` as
