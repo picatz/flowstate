@@ -39,8 +39,12 @@ Before an autonomous merge, follow `.agents/ship.md`: leave auto-merge disabled,
 obtain a distinct independent AI code-and-security review on the exact final
 head, visibly disposition all findings, review again after any push, and require
 `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER` to pass. Codex and
-Copilot are optional channels, requested at most once each; their absence is not
-approval and does not replace the provider-neutral exact-head evidence.
+Copilot are requested at most once each per pull request, only after recording
+the intended final head; a later fix gets provider-neutral re-review, not another
+vendor request. Do not wait or retry on quota or absence, but read and visibly
+classify every substantive suggestion that arrives before merge; provider
+unavailability is neither a project defect nor approval and does not replace
+provider-neutral evidence.
 
 ## Output
 

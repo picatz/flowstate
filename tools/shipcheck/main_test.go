@@ -88,6 +88,34 @@ func TestEvaluateRejectsMissingAutoMergeEvidenceAndBlockingReview(t *testing.T) 
 	}
 }
 
+func TestEvaluateRejectsRepeatedCodexRequestsWithoutDependingOnSHAAnnotations(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments = append(pr.Comments,
+		comment{AuthorAssociation: "OWNER", Body: "@codex review"},
+		comment{AuthorAssociation: "OWNER", Body: "@codex security review"},
+	)
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("repeated requests without SHA annotations were accepted: %s", problems)
+	}
+}
+
+func TestEvaluateDoesNotRequireCodexAvailability(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments[0].CreatedAt = "2026-09-10T16:01:00Z"
+	pr.Comments[0].URL = "https://example.test/attestation"
+	pr.Comments = append(pr.Comments, comment{
+		Author:    actor{Login: "chatgpt-codex-connector"},
+		Body:      "You have reached your Codex usage limits for security reviews.",
+		CreatedAt: "2026-09-10T16:00:00Z",
+		URL:       "https://example.test/provider-response",
+	})
+	// The provider response arrived before the final owner attestation, so
+	// availability contributes neither a pass nor a failure.
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("optional provider unavailability blocked shipping: %v", problems)
+	}
+}
+
 func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
 	pr := passingPullRequest()
 	pr.StatusChecks = []statusCheck{{Type: "CheckRun", Name: "appearance", Status: "COMPLETED", Conclusion: "CANCELLED"}}

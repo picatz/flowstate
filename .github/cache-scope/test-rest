@@ -1,0 +1,2 @@
+test-rest: every other root-module package and repository-level check.
+See README.md beside this file for why this file exists.

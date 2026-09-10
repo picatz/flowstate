@@ -7,17 +7,24 @@ evidence because the change looks small.
    falsifying tests and the diff-scoped gate, and report any unavailable leg.
 2. Push a focused branch and open a pull request **without auto-merge**. Never
    use `gh pr merge --auto` or enable GitHub auto-merge.
-3. Finish all edits before requesting independent review. Record the exact
-   40-character head, then obtain at least one distinct independent AI review
-   covering both code and security on that head. The evidence must identify the
-   reviewer, full head SHA, `code-security` scope, and PASS/no-actionable-findings
-   verdict. A clean exact-head summary is valid evidence. Codex and Copilot are
-   optional additional channels: request each at most once and do not wait on
-   quota, unavailability, or a missing vendor-specific artifact.
-4. Read every review, suppressed suggestion, check, and review thread. Reply
-   with one visible disposition for every finding: fixed with evidence, false
-   positive with evidence, obsolete, or linked to a searched, scoped follow-up
-   issue. Resolve a thread only after its disposition is visible.
+3. Finish all edits before requesting review. Record the intended final
+   40-character head, request Codex and Copilot at most once each per pull
+   request and only after recording that head, and obtain at least one distinct
+   provider-neutral AI review covering both code and security on it. A later fix
+   requires another provider-neutral review, not another vendor request. The
+   independent evidence must identify the reviewer, full head SHA,
+   `code-security` scope, and PASS/no-actionable-findings verdict.
+   Codex and Copilot availability is optional: do not wait, retry, or treat
+   quota/unavailability as a project defect or as PASS. Their feedback is not
+   optional once it arrives.
+4. Before merging, read every response that has arrived, including suppressed
+   suggestions, checks, and review threads. Give every substantive suggestion
+   one visible classification: fixed with evidence, false positive with
+   evidence, obsolete, or deferred to a searched, non-duplicate scoped issue.
+   Correctness and security findings block until fixed and independently
+   re-reviewed. Resolve a thread only after its disposition is visible. A late
+   response invalidates the final attestation below; if one arrives after merge,
+   triage it promptly into a focused fix or issue rather than ignoring it.
 5. Any pushed fix invalidates prior review evidence. Obtain a new independent
    code-and-security review on the new exact head. Post its evidence and this
    machine-readable owner attestation in one PR comment:
@@ -25,7 +32,7 @@ evidence because the change looks small.
    `<!-- flowstate-independent-review:v1 {"headSha":"FULL_SHA","reviewer":"REVIEWER_IDENTITY","scope":"code-security","status":"pass"} -->`
 
    Wait for every applicable check, including non-required checks—not merely
-   GitHub's required checks. Run expensive CI only once per candidate final
+   GitHub's required checks. Run expensive CI only once per intended final
    head. A stale review, unresolved or undispositioned finding, semantic
    uncertainty, or red/pending check still blocks. Optional-provider
    unavailability is never represented as PASS.

@@ -36,6 +36,44 @@ This follows each host's current discovery contract:
   procedures to skills. See [Claude memory](https://code.claude.com/docs/en/memory)
   and [Claude skills](https://code.claude.com/docs/en/skills).
 
+## One contract, native controls
+
+The successful Claude Code workflow supplies the design evidence: a 989-byte
+adapter imports the shared contract, task procedures load as skills rather than
+always-loaded prompt, the session hook selects the pinned toolchain once, edit
+hooks return deterministic feedback, and the merge hook fails closed at the
+last local action. The speed comes from moving repeatable judgments into small
+tools and loading prose only when its task is active; the safety comes from
+keeping merge evidence independent of the model's summary.
+
+Amp and Codex share those semantics without pretending they share Claude's tool
+events. `AGENTS.md` is the canonical durable policy; `.agents/ship.md` is the
+canonical shipping procedure; `tools/gate` owns changed-area selection; and
+`tools/shipcheck` owns remote exact-head evidence. Claude keeps its native hooks,
+Amp keeps its Custom Ship adapter, and Codex consumes `AGENTS.md` plus portable
+skills. `tools/agentconfig` validates the thin Claude adapter and byte-identical
+skill mirrors, while `.amp/settings.json` prevents Amp from loading both mirror
+trees. A host-specific control is added only when that host can test its tool
+input and blocking behavior end to end.
+
+At this revision, the always-loaded shared contract is 10.5 KB and Claude adds
+989 bytes. The portable skill corpus is 24.4 KB per discovery tree but only the
+selected skill body enters a task; Amp's disabled Claude fallback avoids loading
+both. The 72.6 KB legacy manual is indexed rather than imported. The mirror
+therefore costs repository bytes and one drift test, not duplicate model tokens
+or an extra runtime read; replacing it with forwarding files would save storage
+while adding latency and another host-specific resolution failure.
+
+The shared shipping semantics are deliberately provider-neutral: one exact-head
+code-and-security review is mandatory, while Codex and Copilot are each requested
+at most once per pull request, only after recording the intended final head, and
+are not availability gates. A later fix gets provider-neutral re-review rather
+than another vendor request. Feedback that arrives is still mandatory work.
+`shipcheck` rejects repeated Codex requests across the pull request, any review
+artifact newer than the owner attestation, unresolved threads, stale evidence,
+and nonterminal or failing checks. A late artifact thus forces explicit
+re-attestation without requiring either vendor to answer.
+
 ## Why skills are mirrored
 
 Amp and Codex prefer `.agents/skills/`; Claude Code discovers project skills in

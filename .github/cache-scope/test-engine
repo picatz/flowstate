@@ -1,0 +1,2 @@
+test-engine: the serialized engine package race suite.
+See README.md beside this file for why this file exists.

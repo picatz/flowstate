@@ -145,8 +145,12 @@ make check
 
 - Open a pull request without auto-merge. After the final push, obtain at least
   one distinct independent AI code-and-security review on the exact head;
-  visibly disposition every finding and review the new head after a fix. Codex
-  and Copilot are optional additional channels, requested at most once each.
+  visibly disposition every finding and review the new head after a fix. Request
+  Codex and Copilot at most once each per pull request, only after recording the
+  intended final head. A later fix requires another provider-neutral review, not
+  another vendor request. Their availability is optional, but feedback that
+  arrives before merge must be read and dispositioned; quota or absence is
+  neither a defect nor approval.
 - Wait for every applicable CI check and the mandatory independent review
   evidence, not only GitHub's required checks. Immediately before a manual merge, run
   `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. Pending,

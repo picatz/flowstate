@@ -400,7 +400,13 @@ type ciWorkflow struct {
 		If             string            `yaml:"if"`
 		Outputs        map[string]string `yaml:"outputs"`
 		TimeoutMinutes int               `yaml:"timeout-minutes"`
-		Steps          []struct {
+		Strategy       struct {
+			FailFast *bool `yaml:"fail-fast"`
+			Matrix   struct {
+				Lane []string `yaml:"lane"`
+			} `yaml:"matrix"`
+		} `yaml:"strategy"`
+		Steps []struct {
 			ID   string            `yaml:"id"`
 			Name string            `yaml:"name"`
 			If   string            `yaml:"if"`
@@ -410,17 +416,47 @@ type ciWorkflow struct {
 	} `yaml:"jobs"`
 }
 
-func TestSerializedRootSuiteRetainsOuterJobHeadroom(t *testing.T) {
+func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
-	if got := wf.Jobs["test"].TimeoutMinutes; got != 35 {
-		t.Fatalf("the serialized root suite needs its measured post-test headroom; timeout-minutes = %d, want 35", got)
+	job := wf.Jobs["test"]
+	if got := job.TimeoutMinutes; got != 20 {
+		t.Fatalf("each root-suite lane needs headroom beyond go test's 15-minute package bound; timeout-minutes = %d, want 20", got)
 	}
 	docs, err := os.ReadFile("../../docs/CI.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(docs), `"check_response_timeout_minutes": 45`) {
-		t.Fatal("the documented merge-queue response bound must remain ten minutes beyond the test job")
+		t.Fatal("the documented merge-queue response bound must remain above every test lane's outer timeout")
+	}
+	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
+		t.Fatal("test matrix must explicitly set fail-fast: false to retain every lane's result when another lane fails")
+	}
+	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), "[engine v1 cli rest]"; got != want {
+		t.Fatalf("test matrix lanes = %s, want %s", got, want)
+	}
+
+	var testStep string
+	for _, step := range job.Steps {
+		if step.Name == "Test" {
+			testStep = step.Run
+			break
+		}
+	}
+	for _, want := range []string{
+		"make test TEST_PACKAGES=", "./pkg/flowstate/v1/engine", "./pkg/flowstate/v1", "./cmd/flow",
+		"go list ./...", "grep -vxF", "github.com/picatz/flowstate/pkg/flowstate/v1/engine",
+		"github.com/picatz/flowstate/pkg/flowstate/v1", "github.com/picatz/flowstate/cmd/flow",
+	} {
+		if !strings.Contains(testStep, want) {
+			t.Errorf("test matrix does not preserve partition token %q:\n%s", want, testStep)
+		}
+	}
+	if testStep == "" {
+		t.Fatal("test matrix has no Test step")
+	}
+	if got := strings.Count(testStep, "-e github.com/picatz/flowstate/"); got != 3 {
+		t.Fatalf("rest lane excludes %d package(s), want exactly the three dedicated lanes", got)
 	}
 }
 

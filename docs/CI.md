@@ -226,7 +226,7 @@ with a sibling job that explains the interlock) until releases are switched on
 deliberately — #1216 carries that decision. It produces no check run for a pull
 request and is not in `verdict`'s `needs:`.
 
-### Three test jobs, and a fuzz job that runs what the diff reaches
+### Parallel test lanes, and a fuzz job that runs what the diff reaches
 
 The docs-only path above was measured and fixed; the code path was not. On two
 `main` runs in September (`33894879891` and `33872952044`) the `test` job took
@@ -251,6 +251,19 @@ Since #1726:
   seeds read off disk. This is a split of independent Make targets, not a shard
   of `make test`, so the objection under "Considered and excluded" still holds:
   the command a contributor runs is the command CI runs.
+- After #1922 made root-package processes serial for deadline isolation, the
+  same root suite grew from about five minutes to 24–25 minutes. The Actions
+  artifacts from runs `34403410255` and `34400366207` show three independent
+  packages accounting for 16m40s–17m47s of package execution: engine
+  7m39s–7m59s, the root v1 package 5m53s–5m59s, and cmd/flow 3m08s–3m49s.
+  `test` is therefore one four-lane matrix: those three packages each own a
+  runner and `rest` receives the exact `go list ./...` complement. Every lane
+  still calls the one `make test` recipe with its package set, retains `-race
+  -p=1`, and reports through `tools/testsum`; build, vet, formatting, generated
+  docs, examples, breaking, and compose checks run once in `rest`. `fail-fast:
+  false` preserves every lane's diagnostics, and `verdict` sees the aggregate
+  matrix result, so a missing or failed lane remains red. Four cache-scope
+  files prevent the lanes racing to save one incomplete build cache.
 - `plan` publishes `fuzz_targets` beside the job booleans: the smoke-tier
   targets whose package the diff reaches, in `targets.txt` order, and every
   smoke target on a forced run. `fuzz-smoke` hands it to `make fuzz-smoke` as
@@ -525,8 +538,8 @@ Five parameters there are load-bearing and easy to get wrong:
   naturally, because entries arriving while a group is building join the next
   one, and `max_entries_to_build: 5` is what caps the group.
 - **`check_response_timeout_minutes: 45`** must exceed the slowest job. `test`
-  has a 35-minute outer bound after package serialization made its measured
-  24-minute suite reliable; 45 leaves final-check headroom without letting a
+  now has a 20-minute outer bound per matrix lane; 45 also accommodates the
+  remaining unsharded jobs and leaves final-check headroom without letting a
   wedged group hold the queue indefinitely.
 
 Optionally pin the check provider by adding `"integration_id": <GitHub Actions'
@@ -609,14 +622,13 @@ listed.
 
 ## Considered and excluded
 
-- **Test sharding, and `-count` tuning.** `test` is the long pole at 6m13s.
-  Sharding would cut wall clock and *increase* job-minutes, and every shard is
-  another name someone will be tempted to add to the required list. The
-  affected-set skip already removes the whole job on the diffs that cannot
-  reach it, which is the larger win, and `make test` staying one command is
-  what keeps CI and the local rehearsal from disagreeing about what "the tests"
-  means. The #1726 split is not this: it moved two other Make targets out of
-  the job, and `make test` is still one command.
+- **Test-count tuning.** Reducing counts or race coverage would buy time by
+  weakening semantics and remains excluded. Package-level parallel lanes were
+  excluded while `test` was 6m13s; #1922 changed that premise to a measured
+  24–25 minutes. The current matrix keeps one logical `test` job and one Make
+  recipe, partitions packages exhaustively, and spends roughly three extra
+  checkout/setup minutes to remove about sixteen minutes from the critical
+  path. A finer shard is still excluded until timings justify its maintenance.
 - **Diff-scoping the `test` job's own package list.** The same objection, one
   level worse: `make test` is what the Makefile, `make check` and CI all run,
   and splitting it would put the "one value written down twice" defect inside
