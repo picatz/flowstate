@@ -39,8 +39,7 @@
 # evaluated once when the file loads, in dependency order. The addresses and
 # the issuer then agree with each other by construction rather than by
 # everyone remembering to edit eight lines — and the workflow's own
-# `signals:` rule qualifies its subject with exactly this issuer
-# (workflow.yaml, `subject: ${"https://issuer.example.com#" + ...}`), so the
+# `signals:` rule reads this issuer through `expected_approver_issuer`, so the
 # two halves of that comparison are stated in one place here.
 vars:
   domain: example.com
