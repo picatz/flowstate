@@ -1425,8 +1425,8 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := v1.CheckManualStart(workflow, manualStartPrincipal(ctx), req.Msg.GetReason()); err != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	if err := s.authorizeManualStart(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, req.Msg.GetReason()); err != nil {
+		return nil, err
 	}
 
 	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
