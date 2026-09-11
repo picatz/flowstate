@@ -81,12 +81,18 @@ consume budget: a legal Flowfile may `sleep: 24h`, loop to its declared
 `authorizeRunDecision` gate covers every addressed verb, accepts only Flowstate's
 `Run` workflow type, and then applies `ownedBy`. Both membership and tenant
 mismatches answer `NotFound` rather than `PermissionDenied`, so a probe learns
-nothing. `List` applies the same workflow-type membership rule. Consequently, a
-legacy Flowstate run with no tenant memo remains reachable from the default tenant
-without making an unrelated workflow in a shared Temporal namespace reachable. A
-caller can still read another tenant's history if both execute in the same Temporal
-namespace and they have substrate access, because the Flowstate API's tenancy
-governs the Flowstate API and nothing downstream of it.
+nothing. `List` applies the same workflow-type membership rule and the same
+`ownedBy`, so the two stay coherent by construction. `ownedBy` requires positive
+provenance: an execution with no tenant memo is refused for every caller,
+including the default tenant, rather than resolved into whichever caller has no
+namespace — a memo-less execution of the same `Run` type name is not
+distinguishable, from what Temporal records, from another application in a
+shared namespace that happens to register it (#1896). Nothing has ever been
+released, so this deployment accepts that a pre-tenancy Flowstate run, had one
+ever existed, would be orphaned by the same rule. A caller can still read
+another tenant's history if both execute in the same Temporal namespace and
+they have substrate access, because the Flowstate API's tenancy governs the
+Flowstate API and nothing downstream of it.
 
 **A network attacker on egress paths.** Sees and can answer requests a task makes.
 Bounded by categorical address denial, per-hop redirect re-checks with the https to

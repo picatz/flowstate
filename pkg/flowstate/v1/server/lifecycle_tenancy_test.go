@@ -101,28 +101,43 @@ func TestDirectAddressingRejectsExecutionsListWouldHide(t *testing.T) {
 // intentionally: before tenant memos existed, Flowstate still registered the
 // workflow as Run. The default tenant may address that execution, while a named
 // tenant may not claim ownership of an execution with no recorded tenant.
-func TestLegacyFlowstateExecutionRemainsReachable(t *testing.T) {
+// TestAMemoLessExecutionOfTheEnginesOwnWorkflowTypeIsRefused is #1896's
+// reopening scenario, reproduced directly: an execution of
+// [flowstateRunWorkflowType] ("Run") with no tenant memo — indistinguishable,
+// on the data Temporal records, from a pre-tenancy Flowstate run and from
+// another application in the same namespace that happens to register the
+// identical type name. [FlowstateServer.ownedBy]'s doc explains why this
+// deployment's answer is to require positive provenance rather than resolve
+// the ambiguity into the default tenant: neither the default tenant nor a
+// named one may reach it, and it is not just hidden but genuinely
+// unterminable through this server — the caller who could stop it, had it
+// been treated as theirs, no longer can either. That is the accepted cost:
+// nothing has ever been released, so this build wrote a tenant onto every
+// run it could ever have reason to reach.
+func TestAMemoLessExecutionOfTheEnginesOwnWorkflowTypeIsRefused(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	legacyID := "legacy-" + uuid.NewString()
+	ambiguousID := "ambiguous-" + uuid.NewString()
 	_, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
-		ID:        legacyID,
-		TaskQueue: "legacy-flowstate-no-worker",
+		ID:        ambiguousID,
+		TaskQueue: "no-worker-reads-this-queue",
 	}, "Run")
 	require.NoError(t, err)
 
 	defaultTenant := mustNew(t, temporal)
-	_, err = defaultTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: legacyID}))
-	require.NoError(t, err, "the default tenant could not inspect a legacy Flowstate execution")
-
-	namedTenant := mustNew(t, temporal, server.WithNamespace("acme"))
-	_, err = namedTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: legacyID}))
-	require.Error(t, err, "a named tenant claimed a legacy execution with no recorded tenant")
+	_, err = defaultTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: ambiguousID}))
+	require.Error(t, err, "the default tenant reached an execution with no recorded tenant")
 	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	_, err = defaultTenant.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: legacyID}))
-	require.NoError(t, err, "the default tenant could not cancel a legacy Flowstate execution")
+	namedTenant := mustNew(t, temporal, server.WithNamespace("acme"))
+	_, err = namedTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: ambiguousID}))
+	require.Error(t, err, "a named tenant claimed an execution with no recorded tenant")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	_, err = defaultTenant.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: ambiguousID}))
+	require.Error(t, err, "the default tenant cancelled an execution with no recorded tenant")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
 // TestAnotherTenantCannotStopARun checks that a run cannot be stopped by someone
