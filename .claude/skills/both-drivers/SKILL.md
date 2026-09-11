@@ -25,10 +25,17 @@ behavior observable through both `flow run local` and Temporal.
    then let both drivers read it.
 4. Test the direction that distinguishes the implementations. A case that only
    proves each driver can succeed independently does not prove agreement.
-5. Run the bounded shared suite:
+5. Run the specific case against both drivers. `-short` is wrong here: this
+   step exists to prove the durable driver agrees with the local one, and
+   `engine`'s own tests exit early under `testing.Short()` — the same flag
+   flowstate-verify's inner loop reaches for would make this step certify
+   nothing about Temporal. Start a shared dev server once and run the case's
+   local and durable tests against it:
 
    ```sh
-   GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...
+   make dev-temporal                       # prints the export line, stays up
+   export FLOWSTATE_TEST_TEMPORAL_ADDRESS=127.0.0.1:PORT
+   GOMEMLIMIT=1GiB go test -timeout 120s -run <TestName> ./pkg/flowstate/v1/ ./pkg/flowstate/v1/engine/
    ```
 
 6. Use the `flowstate-verify` skill for the broader gate before PR handoff.
