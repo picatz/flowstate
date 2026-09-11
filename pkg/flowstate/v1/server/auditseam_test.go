@@ -204,18 +204,38 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 		// resolves to the same callee the allowlist names, rather than
 		// silently reading as a different, unrecognized one.
 		imported := map[string]string{}
+		var ambiguous []string
 		for _, spec := range file.Imports {
 			path, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
 				continue
 			}
-			var alias string
-			if spec.Name != nil {
-				alias = spec.Name.Name
-			} else {
-				alias = path[strings.LastIndex(path, "/")+1:]
+			switch {
+			case spec.Name != nil && spec.Name.Name == ".":
+				// A dot import puts the package's exported names directly into
+				// this file's scope, so a call to one of them parses as a bare
+				// *ast.Ident indistinguishable from a call to a function this
+				// package declares itself. There is no syntactic way to tell
+				// which without type information, so below, this file's bare
+				// calls and unresolved selector calls are both recorded under
+				// the qualified form too, for every import in this list.
+				ambiguous = append(ambiguous, path)
+			case spec.Name != nil:
+				imported[spec.Name.Name] = path
+			default:
+				// An unaliased import's in-file identifier is the imported
+				// package's own declared name, which this syntactic pass never
+				// sees — only its import path. The path's last segment is
+				// usually that name, but not always (this repo's own
+				// pkg/flowstate/v1 declares "package flowstatev1", not "v1").
+				// The guess still seeds the common case below, and the same
+				// path is also tracked as ambiguous so a selector whose
+				// receiver identifier doesn't match the guess is not silently
+				// dropped instead of recorded.
+				alias := path[strings.LastIndex(path, "/")+1:]
+				imported[alias] = path
+				ambiguous = append(ambiguous, path)
 			}
-			imported[alias] = path
 		}
 
 		file, err = parser.ParseFile(fset, filepath.Clean(name), nil, parser.SkipObjectResolution)
@@ -238,8 +258,15 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 				case *ast.CallExpr:
 					switch callee := n.Fun.(type) {
 					case *ast.Ident:
+						// A bare call is only ambiguous with a dot import; an
+						// aliased or unaliased import always needs a selector.
 						calls[declared][callee.Name] = true
+						for _, path := range ambiguous {
+							canonical := path[strings.LastIndex(path, "/")+1:]
+							calls[declared][canonical+"."+callee.Name] = true
+						}
 					case *ast.SelectorExpr:
+						resolved := false
 						if pkg, ok := callee.X.(*ast.Ident); ok {
 							if path, ok := imported[pkg.Name]; ok {
 								// Recorded qualified by the import path's own
@@ -257,10 +284,25 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 								// allowlist names.
 								canonical := path[strings.LastIndex(path, "/")+1:]
 								calls[declared][canonical+"."+callee.Sel.Name] = true
-								break
+								resolved = pkg.Name == path[strings.LastIndex(path, "/")+1:]
 							}
 						}
 						calls[declared][callee.Sel.Name] = true
+						if resolved {
+							break
+						}
+						// The receiver either matched no import at all, or matched
+						// only the path-segment guess for an unaliased import,
+						// which is not necessarily the package's real declared
+						// name (see the ambiguous-import comment above). Either
+						// way this pass cannot rule out that the call is actually
+						// reaching one of the ambiguous imports under a name this
+						// guess didn't predict, so it is recorded under all of
+						// their canonical forms too.
+						for _, path := range ambiguous {
+							canonical := path[strings.LastIndex(path, "/")+1:]
+							calls[declared][canonical+"."+callee.Sel.Name] = true
+						}
 					}
 				case *ast.BasicLit:
 					if n.Kind == token.STRING {
