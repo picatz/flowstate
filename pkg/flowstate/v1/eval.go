@@ -3027,6 +3027,15 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
 	}
 
+	// Depth beside breadth, for the same reason and at the same choke point.
+	// checkTaskOutputElementBound above already walks a Literal-kind result
+	// for depth too; this closes the gap it leaves for a Structure-kind one,
+	// which it skips rather than walks — see [CheckTaskOutputDepth]'s own
+	// doc for why sharing [CheckValueDepth] here is #1770's fourth door.
+	if err := CheckTaskOutputDepth(t.Name, out); err != nil {
+		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
+	}
+
 	// And what it weighs (#787). The element bound above caps what a later
 	// expression pays to walk the result; this caps what the substrate is
 	// asked to store it as — on the durable driver the outputs returned here

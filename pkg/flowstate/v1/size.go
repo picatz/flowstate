@@ -293,6 +293,39 @@ func CheckSignalPayloadDepth(payload *Node_Outputs) error {
 	return nil
 }
 
+// CheckTaskOutputDepth reports whether a task's result nests within
+// [MaxStructureDepth], field by field, in the sentence the submit door
+// refuses an input with.
+//
+// [CheckSignalPayloadDepth]'s sibling, for the fourth door #1770 named: a
+// task's own result is a value an outside party (a plugin, or a service an
+// `http` task called) chose the shape of, evaluated by exactly the
+// expressions the input door's refusal names — the step's `outputs:` and
+// every later `${steps.<id>.<output>}`. [checkTaskOutputElementBound],
+// called alongside this at the same seam, already walks a Literal-kind
+// value for depth as well as element count; what it does not see is a
+// Structure-kind value, since it reads `values[name].GetLiteral()` and skips
+// a name that is not one. [Node_Outputs] does not forbid a task from
+// returning one, so this closes that gap by sharing [CheckValueDepth] with
+// the signal and webhook doors rather than adding a second walk that only
+// half-agrees with theirs.
+//
+// Called from [Task.EvalInScope], the one choke point every task's result
+// returns through on both drivers — see [checkTaskOutputElementBound]'s own
+// doc for why that placement is what makes the built-in and plugin bridges
+// agree by construction. Fields are walked in name order so the refusal
+// names the same field every time.
+func CheckTaskOutputDepth(taskName string, out *Node_Outputs) error {
+	values := out.GetNamedValues()
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if err := CheckValueDepth(fmt.Sprintf("task %q output field", taskName), name, values[name]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // encodedPayloadSize reports a ProtoJSON byte length for m — deliberately not
 // proto.Size's binary estimate, and, since #911, deliberately not the encoding
 // flowstate now writes either.

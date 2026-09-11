@@ -193,3 +193,61 @@ func TestTaskOutputAndHTTPResponseBoundMessagesDoNotContradict(t *testing.T) {
 	assert.NotContains(t, httpErr.Error(), "submitting the whole thing as one input",
 		"an http-response refusal must not carry the input-side remedy")
 }
+
+// TestCheckTaskOutputDepthCatchesAStructureKindValue is #1770's residual gap:
+// [checkTaskOutputElementBound] reads values[name].GetLiteral() and skips a
+// name whose Value is Structure-kind rather than Literal-kind, so a task
+// whose result carries a [Value_Structure] — legal on [Node_Outputs], unlike
+// a run input's own must-be-a-literal rule — walked past that bound
+// unmeasured for depth. [CheckTaskOutputDepth] shares [CheckValueDepth] with
+// the signal and webhook doors, which does handle both kinds, so it closes
+// exactly this gap rather than duplicating the element bound's own walk.
+func TestCheckTaskOutputDepthCatchesAStructureKindValue(t *testing.T) {
+	deep := NewLiteral("leaf")
+	for range maxConstraintValueDepth + 1 {
+		deep = NewStructureMap(map[string]*Value{"child": deep})
+	}
+	out := &Node_Outputs{NamedValues: map[string]*Value{"result": deep}}
+
+	require.NoError(t, checkTaskOutputElementBound("structured_stub", out),
+		"the element bound's own literal-only walk does not see a Structure-kind value at all")
+
+	err := CheckTaskOutputDepth("structured_stub", out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"structured_stub"`)
+	assert.Contains(t, err.Error(), "levels deep")
+}
+
+// TestEvalInScopeRefusesDeeplyNestedTaskOutput is the wiring test for
+// [CheckTaskOutputDepth], mirroring
+// [TestEvalInScopeRefusesOversizedTaskOutput] for the depth dimension: a
+// task registered directly whose Fn returns a Structure-kind result past
+// [MaxStructureDepth] must have EvalInScope refuse it, classified
+// non-retryable for the same reason an oversized result is — the shape of a
+// task's result does not change between attempts.
+func TestEvalInScopeRefusesDeeplyNestedTaskOutput(t *testing.T) {
+	deep := NewLiteral("leaf")
+	for range maxConstraintValueDepth + 1 {
+		deep = NewStructureMap(map[string]*Value{"child": deep})
+	}
+
+	registry := NewRegistry()
+	require.NoError(t, registry.Register(TaskDef{
+		Name: "deeply_nested_stub",
+		Fn: func(ctx context.Context, inputs map[string]*Value, scope *Scope) (*Node_Outputs, error) {
+			return &Node_Outputs{NamedValues: map[string]*Value{"result": deep}}, nil
+		},
+	}))
+	ctx := NewContextWithRegistry(context.Background(), registry)
+
+	task := &Task{Name: "deeply_nested_stub"}
+	out, err := task.EvalInScope(ctx, NewScope("", &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}))
+	require.Error(t, err, "a task result past the depth bound must be refused")
+	require.Nil(t, out)
+	assert.Contains(t, err.Error(), "deeply_nested_stub")
+
+	var taskErr *TaskError
+	require.ErrorAs(t, err, &taskErr)
+	assert.Equal(t, ErrorKindLimitExceeded, taskErr.Kind)
+	assert.False(t, ClassifyError(err).Retryable(), "a too-deep task result must not be retried")
+}
