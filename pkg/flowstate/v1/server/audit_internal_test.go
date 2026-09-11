@@ -38,6 +38,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 			Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
 			Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			Memo:      mineMemo(t),
 		},
 	}
 
@@ -224,6 +225,7 @@ func TestSignalWalkingAChainRecordsOneDecision(t *testing.T) {
 					Type:       &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 					FirstRunId: "r-first",
 					Status:     enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+					Memo:       mineMemo(t),
 				},
 			},
 		},
@@ -260,6 +262,7 @@ func TestARequiredRecordThatCannotBeWrittenStopsTheMutation(t *testing.T) {
 				Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
 				Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+				Memo:      mineMemo(t),
 			},
 		},
 	}
@@ -300,6 +303,9 @@ func TestASignalPolicyDenialIsAuditedAsADenial(t *testing.T) {
 	protocol, err := converter.GetDefaultDataConverter().ToPayload(currentSignalProtocol)
 	require.NoError(t, err)
 
+	namespace, err := converter.GetDefaultDataConverter().ToPayload("")
+	require.NoError(t, err)
+
 	fake := &fakeRunClient{
 		describe: &workflowservice.DescribeWorkflowExecutionResponse{
 			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
@@ -308,6 +314,7 @@ func TestASignalPolicyDenialIsAuditedAsADenial(t *testing.T) {
 				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 				Memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{
 					signalProtocolMemoKey: protocol,
+					namespaceMemoKey:      namespace,
 				}},
 			},
 		},
