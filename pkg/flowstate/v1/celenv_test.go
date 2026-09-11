@@ -384,16 +384,18 @@ func TestAnUnknownProfileIsRefused(t *testing.T) {
 // TestProfileConfigDoesNotPanic covers #1854: cel-go's Env.ToConfig panics
 // reconstructing the "regex" library in isolation, because ext.Regex()
 // requires cel.OptionalTypes() and ToConfig discards the reconstruction
-// error. ProfileConfig must never panic on any known profile — and, on the
-// pinned cel-go version where the gap is reproduced, must report it as an
-// error naming the library rather than a config.
+// error. Every known profile includes "regex" (see the `profiles` map), so on
+// the pinned cel-go version this must report the gap as an error naming the
+// library, never panic, and never silently return a config instead — that
+// last case is exactly the regression a future bug in ProfileConfig's regex
+// preflight would produce, and a test that also accepted it as passing would
+// not catch it.
 //
-// Deliberately tolerant of the gap closing: a future cel-go bump could fix
-// the discarded error (or the first-party libraries could stop needing this
-// path at all, #1853), at which point ProfileConfig legitimately returns a
-// config and no error. Asserting only "regex" would make that fix read as a
-// regression here. What this test actually owns is "never panics"; which of
-// the two legitimate outcomes follows is cel-go's to decide, not this test's.
+// A cel-go bump that fixes the discarded error (or a first-party rework that
+// stops needing this path at all, #1853) legitimately turns this red: that is
+// this test doing its job, and the fix is to update this assertion
+// deliberately in the same change, not to have it tolerate both outcomes
+// forever.
 func TestProfileConfigDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
@@ -411,10 +413,12 @@ func TestProfileConfigDoesNotPanic(t *testing.T) {
 			}
 
 			cfg, err := ProfileConfig(env, name)
-			switch {
-			case err == nil && cfg == nil:
-				t.Fatalf("ProfileConfig(%q) = nil, nil; want a config or an error, never neither", name)
-			case err != nil && !strings.Contains(err.Error(), "regex"):
+			if err == nil {
+				t.Fatalf("ProfileConfig(%q) = %v, nil; every known profile includes \"regex\", which "+
+					"the pinned cel-go cannot reconstruct in isolation — want that error, not a config",
+					name, cfg)
+			}
+			if !strings.Contains(err.Error(), "regex") {
 				t.Fatalf("ProfileConfig(%q) error %q does not name the regex library", name, err)
 			}
 		})
