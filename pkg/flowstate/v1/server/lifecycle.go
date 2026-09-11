@@ -107,9 +107,9 @@ func (s *FlowstateServer) authorizeRunDecision(ctx context.Context, workflowID, 
 
 	// A Temporal namespace may be shared with applications other than
 	// Flowstate. Listing asks Temporal for only this engine's workflow type;
-	// direct addressing must answer the same membership question before the
-	// legacy no-memo rule below can treat an execution as belonging to the
-	// default tenant.
+	// direct addressing must answer the same membership question before
+	// ownedBy's positive-provenance check below decides whether the caller
+	// may see this execution at all.
 	if resp.GetWorkflowExecutionInfo().GetType().GetName() != flowstateRunWorkflowType {
 		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, notFound(workflowID)
 	}
@@ -155,7 +155,7 @@ func (s *FlowstateServer) ownedBy(caller string, memo *common.Memo) bool {
 		// No tenant recorded, or a memo present and unreadable: nothing can be
 		// concluded about who owns this run, so nobody may act on it. See this
 		// function's own doc for why an absent memo is refused rather than
-		// resolved into the default tenant.
+		// treated as evidence of ownership.
 		return false
 	}
 
