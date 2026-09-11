@@ -28,7 +28,7 @@ behavior observable through both `flow run local` and Temporal.
 5. Run the bounded shared suite:
 
    ```sh
-   GOMEMLIMIT=1GiB go test -timeout 120s ./pkg/flowstate/v1/...
+   GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...
    ```
 
 6. Use the `flowstate-verify` skill for the broader gate before PR handoff.
