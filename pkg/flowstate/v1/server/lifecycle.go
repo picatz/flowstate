@@ -214,6 +214,29 @@ func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.Sign
 	return declared, true, nil
 }
 
+// authorizeManualStart decides whether wf's `manual:` block permits this
+// caller to bring a run into existence, and records the refusal — coded the
+// same way authorizeSignal's name-level refusal is — when it does not.
+//
+// [v1.CheckManualStart] is a second authorization question the admission
+// record does not answer: "may this caller start work in their own
+// namespace" (the admission ALLOW) is not "may this caller start *this*
+// workflow, which has its own opinion about who may". Run and
+// SignalWithStart both write the admission ALLOW before reaching this, and
+// both are held to the same rule they call it for: a caller `manual:
+// denied` refused, or refused for lacking a required reason or an
+// allowed_principals match, must leave a DENY under the RPC's own name — not
+// an unaudited PermissionDenied, which reads in the trail as a request that
+// never made a second decision at all. See #1883 and #1889.
+func (s *FlowstateServer) authorizeManualStart(ctx context.Context, rpc string, resourceKind v1.AuditResourceKind, resourceKey string, wf *v1.Workflow, reason string) error {
+	if err := v1.CheckManualStart(wf, manualStartPrincipal(ctx), reason); err != nil {
+		return s.auditDeny(ctx, rpc, resourceKind, resourceKey,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, connect.NewError(connect.CodePermissionDenied, err))
+	}
+
+	return nil
+}
+
 // authorizeSignal reports whether sender may deliver a signal named name to
 // the run resp describes, enforced here — before the signal ever reaches
 // Temporal — rather than left to a condition the workflow itself might or
@@ -771,7 +794,8 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		temporal, resp, _, existingErr := s.authorizeRunDecision(ctx, workflowID, "")
 		if existingErr == nil {
 			if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
-				return nil, err
+				return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+					v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 			}
 			runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
 			if err := temporal.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), &v1.SignalDelivery{
@@ -840,8 +864,8 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// through `Run` and not through here — which is the fail-closed direction:
 	// a requirement nothing can satisfy refuses, rather than being waived by the
 	// path that has nowhere to put it.
-	if err := v1.CheckManualStart(workflow, manualStartPrincipal(ctx), ""); err != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	if err := s.authorizeManualStart(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, ""); err != nil {
+		return nil, err
 	}
 
 	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
@@ -910,7 +934,8 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 		if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
-			return nil, err
+			return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 		}
 
 		// From the execution that was just described and authorized, rather than
