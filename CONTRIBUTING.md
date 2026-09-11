@@ -10,7 +10,7 @@ Flowstate is intentionally super-alpha (#1216). There is no release, no tag, and
 
 ```sh
 go build ./...                                   # the module
-GOMEMLIMIT=1GiB go test -timeout 120s ./pkg/...  # a bounded targeted run
+GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/...  # a bounded targeted run
 go run ./tools/gate                              # the diff-scoped gate: run this before opening or updating a PR
 make check                                       # full CI parity, when the scope warrants it
 make fmt                                         # never a bare gofmt; the Makefile uses the pinned toolchain
