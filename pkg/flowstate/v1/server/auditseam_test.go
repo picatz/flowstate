@@ -103,6 +103,17 @@ func TestTheAuditSeamIsNotBypassed(t *testing.T) {
 			"CreateSchedule":   "describes what it has just created and been audited for",
 			"DescribeSchedule": "the describe is this verb's decision, and it audits the outcome itself",
 		},
+		// v1.CheckManualStart is not this package's own un-audited decision
+		// function, but the shape of the risk is identical: a second
+		// authorization question with no record of its own if a caller
+		// reaches it directly. authorizeManualStart is the one place that
+		// calls it and audits the refusal (#1889); a future handler calling
+		// v1.CheckManualStart itself, the way Run and SignalWithStart used
+		// to, would return PermissionDenied with no DENY and this test
+		// would be the thing that catches it.
+		"v1.CheckManualStart": {
+			"authorizeManualStart": "the audited wrapper: this is where the DENY is written",
+		},
 	}
 
 	calls, _ := analyzeServerSource(t)
@@ -221,8 +232,13 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 						calls[declared][callee.Name] = true
 					case *ast.SelectorExpr:
 						if pkg, ok := callee.X.(*ast.Ident); ok && imported[pkg.Name] {
-							// Another package's function, named here only by
-							// coincidence of spelling.
+							// Recorded qualified — "v1.CheckManualStart", not
+							// "CheckManualStart" — so it reads as another
+							// package's function and is never mistaken for a
+							// coincidentally-named method of this package's
+							// own, the same confusion the alias check above
+							// exists to avoid for the unqualified map.
+							calls[declared][pkg.Name+"."+callee.Sel.Name] = true
 							break
 						}
 						calls[declared][callee.Sel.Name] = true
