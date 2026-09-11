@@ -94,10 +94,12 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 	t.Run("a run belonging to another tenant", func(t *testing.T) {
 		t.Parallel()
 
-		// No memo on the described run, so [FlowstateServer.ownedBy] treats it
-		// as reachable only from the empty namespace — and this caller is in
-		// acme. The refusal the caller receives is identical to the one above,
-		// which is exactly why the record must distinguish them.
+		// running's memo positively records the default (empty-string) tenant
+		// as its owner (mineMemo(t), above), and this caller is in acme —
+		// a genuine tenant mismatch, not the no-memo case "a run that cannot
+		// be read" above covers. The refusal the caller receives is
+		// identical to that one, which is exactly why the record must
+		// distinguish them.
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: running},
 			WithNamespace("acme"), WithAudit(recorderFor(t, sink)))

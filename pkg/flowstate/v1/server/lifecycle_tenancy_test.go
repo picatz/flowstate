@@ -97,10 +97,6 @@ func TestDirectAddressingRejectsExecutionsListWouldHide(t *testing.T) {
 		"a refused direct-address operation still stopped the foreign execution")
 }
 
-// TestLegacyFlowstateExecutionRemainsReachable preserves the compatibility arm
-// intentionally: before tenant memos existed, Flowstate still registered the
-// workflow as Run. The default tenant may address that execution, while a named
-// tenant may not claim ownership of an execution with no recorded tenant.
 // TestAMemoLessExecutionOfTheEnginesOwnWorkflowTypeIsRefused is #1896's
 // reopening scenario, reproduced directly: an execution of
 // [flowstateRunWorkflowType] ("Run") with no tenant memo — indistinguishable,
