@@ -380,6 +380,39 @@ func TestAnUnknownProfileIsRefused(t *testing.T) {
 	}
 }
 
+// TestProfileConfigDoesNotPanic covers #1854: cel-go's Env.ToConfig panics
+// reconstructing the "regex" library in isolation, because ext.Regex()
+// requires cel.OptionalTypes() and ToConfig discards the reconstruction
+// error. ProfileConfig must report that as an error, on every known profile,
+// rather than crash its caller.
+func TestProfileConfigDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range ProfileNames() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			libs, err := ProfileLibraries(name)
+			if err != nil {
+				t.Fatalf("ProfileLibraries(%q): %v", name, err)
+			}
+			env, err := DefaultEvaluator().Env(libs...)
+			if err != nil {
+				t.Fatalf("Env(%v): %v", libs, err)
+			}
+
+			cfg, err := ProfileConfig(env, name)
+			if err == nil {
+				t.Fatalf("ProfileConfig(%q) = %v, nil; want an error naming the library cel-go "+
+					"cannot reconstruct in isolation on the pinned cel-go version", name, cfg)
+			}
+			if !strings.Contains(err.Error(), "regex") {
+				t.Fatalf("ProfileConfig(%q) error %q does not name the regex library", name, err)
+			}
+		})
+	}
+}
+
 // The engine has to honour the profile a spec recorded, and that is a different
 // claim from `ProfileLibraries` resolving a name.
 //
