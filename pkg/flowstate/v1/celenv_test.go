@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	celconfig "github.com/google/cel-go/common/env"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -383,8 +384,16 @@ func TestAnUnknownProfileIsRefused(t *testing.T) {
 // TestProfileConfigDoesNotPanic covers #1854: cel-go's Env.ToConfig panics
 // reconstructing the "regex" library in isolation, because ext.Regex()
 // requires cel.OptionalTypes() and ToConfig discards the reconstruction
-// error. ProfileConfig must report that as an error, on every known profile,
-// rather than crash its caller.
+// error. ProfileConfig must never panic on any known profile — and, on the
+// pinned cel-go version where the gap is reproduced, must report it as an
+// error naming the library rather than a config.
+//
+// Deliberately tolerant of the gap closing: a future cel-go bump could fix
+// the discarded error (or the first-party libraries could stop needing this
+// path at all, #1853), at which point ProfileConfig legitimately returns a
+// config and no error. Asserting only "regex" would make that fix read as a
+// regression here. What this test actually owns is "never panics"; which of
+// the two legitimate outcomes follows is cel-go's to decide, not this test's.
 func TestProfileConfigDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
@@ -402,14 +411,37 @@ func TestProfileConfigDoesNotPanic(t *testing.T) {
 			}
 
 			cfg, err := ProfileConfig(env, name)
-			if err == nil {
-				t.Fatalf("ProfileConfig(%q) = %v, nil; want an error naming the library cel-go "+
-					"cannot reconstruct in isolation on the pinned cel-go version", name, cfg)
-			}
-			if !strings.Contains(err.Error(), "regex") {
+			switch {
+			case err == nil && cfg == nil:
+				t.Fatalf("ProfileConfig(%q) = nil, nil; want a config or an error, never neither", name)
+			case err != nil && !strings.Contains(err.Error(), "regex"):
 				t.Fatalf("ProfileConfig(%q) error %q does not name the regex library", name, err)
 			}
 		})
+	}
+}
+
+// TestRecoverToConfigConvertsAnyPanicToAnError drives a synthetic panic
+// through ProfileConfig's actual recovery path — the generic defer that
+// exists for every library besides "regex" whose isolated reconstruction
+// could panic the same way, and that TestProfileConfigDoesNotPanic cannot
+// reach: every known profile includes "regex", so it returns from the
+// preflight check above before recoverToConfig's defer is ever installed.
+func TestRecoverToConfigConvertsAnyPanicToAnError(t *testing.T) {
+	cfg, err := recoverToConfig("synthetic-profile", func() (*celconfig.Config, error) {
+		panic("a library's reconstruction fell over")
+	})
+	if cfg != nil {
+		t.Fatalf("recoverToConfig returned a config alongside the recovered panic: %v", cfg)
+	}
+	if err == nil {
+		t.Fatal("expected the panic to be converted into an error")
+	}
+	if !strings.Contains(err.Error(), "synthetic-profile") {
+		t.Errorf("error %q does not name the profile", err)
+	}
+	if !strings.Contains(err.Error(), "a library's reconstruction fell over") {
+		t.Errorf("error %q does not carry the recovered panic value", err)
 	}
 }
 
