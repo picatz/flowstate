@@ -266,7 +266,6 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 							calls[declared][canonical+"."+callee.Name] = true
 						}
 					case *ast.SelectorExpr:
-						resolved := false
 						if pkg, ok := callee.X.(*ast.Ident); ok {
 							if path, ok := imported[pkg.Name]; ok {
 								// Recorded qualified by the import path's own
@@ -282,23 +281,34 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 								// the tracked package under a different name
 								// still resolves to the one callee the
 								// allowlist names.
+								//
+								// The unqualified edge below is deliberately not also
+								// recorded here: pkg.Name matching a known import means
+								// this selector is that import's, never a coincidentally
+								// named method of this package's own, so adding both
+								// edges would let a caller's real v1.CheckManualStart
+								// call also read as reaching this package's own
+								// Validate handler through the coincidence of a shared
+								// method name — a bypass this test would then miss.
 								canonical := path[strings.LastIndex(path, "/")+1:]
 								calls[declared][canonical+"."+callee.Sel.Name] = true
-								resolved = pkg.Name == path[strings.LastIndex(path, "/")+1:]
+								break
 							}
 						}
+						// The receiver either matched no import at all (a method
+						// call on this package's own receiver, most calls here) or
+						// its name simply isn't a known import alias.
 						calls[declared][callee.Sel.Name] = true
-						if resolved {
-							break
-						}
-						// The receiver either matched no import at all, or matched
-						// only the path-segment guess for an unaliased import,
-						// which is not necessarily the package's real declared
-						// name (see the ambiguous-import comment above). Either
-						// way this pass cannot rule out that the call is actually
-						// reaching one of the ambiguous imports under a name this
-						// guess didn't predict, so it is recorded under all of
-						// their canonical forms too.
+						// It also matched no import specifically because the guess
+						// this analysis makes for an unaliased import (the path's own
+						// last segment) is not necessarily the package's real
+						// declared name (see the ambiguous-import comment above), so
+						// this pass cannot rule out that the call is actually
+						// reaching one of the ambiguous imports under a name the
+						// guess didn't predict. Recorded under all of their canonical
+						// forms too, alongside the unqualified edge above rather than
+						// instead of it: unlike a resolved import, this receiver is
+						// still also a real candidate for a same-named local method.
 						for _, path := range ambiguous {
 							canonical := path[strings.LastIndex(path, "/")+1:]
 							calls[declared][canonical+"."+callee.Sel.Name] = true
