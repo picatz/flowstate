@@ -28,15 +28,28 @@ behavior observable through both `flow run local` and Temporal.
 5. Run the specific case against both drivers. `-short` is wrong here: this
    step exists to prove the durable driver agrees with the local one, and
    `engine`'s own tests exit early under `testing.Short()` — the same flag
-   flowstate-verify's inner loop reaches for would make this step certify
-   nothing about Temporal. Start a shared dev server once and run the case's
-   local and durable tests against it:
+   that `flowstate-verify`'s inner loop reaches for would make this step
+   certify nothing about Temporal. `make dev-temporal` is a foreground
+   recipe that stays running, so start it in one terminal and paste its
+   printed `export` line into a second one before running the test:
 
    ```sh
-   make dev-temporal                       # prints the export line, stays up
+   # terminal 1 — stays running, Ctrl-C when done
+   make dev-temporal
+
+   # terminal 2 — paste the export line make dev-temporal printed, then:
    export FLOWSTATE_TEST_TEMPORAL_ADDRESS=127.0.0.1:PORT
-   GOMEMLIMIT=1GiB go test -timeout 120s -run <TestName> ./pkg/flowstate/v1/ ./pkg/flowstate/v1/engine/
+   GOMEMLIMIT=1GiB go test -timeout 120s -run '<LocalTestName>|<DurableTestName>' ./pkg/flowstate/v1/ ./pkg/flowstate/v1/engine/
    ```
+
+   The local and durable tests for one case rarely share a literal name —
+   `TestStepTimeoutReachesTheTaskLocal` and
+   `TestStepTimeoutReachesTheTaskDurable` are one case, not two — and `-run`
+   is a regexp applied independently to each package: a single name that
+   only one package has still exits 0 in the other with "no tests to run",
+   silently certifying only one driver. Give `-run` an alternation naming
+   both (or run each package with its own `-run`), and confirm both actually
+   ran — `go test -v` printing both names, or two `PASS` lines, not one.
 
 6. Use the `flowstate-verify` skill for the broader gate before PR handoff.
 
