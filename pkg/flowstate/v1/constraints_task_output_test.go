@@ -199,9 +199,12 @@ func TestTaskOutputAndHTTPResponseBoundMessagesDoNotContradict(t *testing.T) {
 // name whose Value is Structure-kind rather than Literal-kind, so a task
 // whose result carries a [Value_Structure] — legal on [Node_Outputs], unlike
 // a run input's own must-be-a-literal rule — walked past that bound
-// unmeasured for depth. [CheckTaskOutputDepth] shares [CheckValueDepth] with
-// the signal and webhook doors, which does handle both kinds, so it closes
-// exactly this gap rather than duplicating the element bound's own walk.
+// unmeasured for depth. [CheckTaskOutputDepth] reuses [valueDepthViolation]'s
+// walk, which does handle both kinds, so it closes exactly this gap rather
+// than duplicating the element bound's own walk — but words the refusal with
+// [taskOutputConstraintBoundError], not [CheckValueDepth]'s own formatter,
+// since this is the task's own result rather than a value the workflow
+// submitted; a #1947 review found the two require opposite remedies.
 func TestCheckTaskOutputDepthCatchesAStructureKindValue(t *testing.T) {
 	deep := NewLiteral("leaf")
 	for range maxConstraintValueDepth + 1 {
@@ -216,6 +219,10 @@ func TestCheckTaskOutputDepthCatchesAStructureKindValue(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"structured_stub"`)
 	assert.Contains(t, err.Error(), "levels deep")
+	assert.NotContains(t, err.Error(), "submitting it nested this deep",
+		"a task-output refusal must not carry the input door's remedy: the task chose this shape, not the workflow")
+	assert.NotContains(t, err.Error(), `"result"`,
+		"the field name is peer-controlled and unbounded in length; the task-output formatter names only the task, not the field")
 }
 
 // TestEvalInScopeRefusesDeeplyNestedTaskOutput is the wiring test for

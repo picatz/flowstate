@@ -447,6 +447,34 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputDepth covers the local driver's half of #1947: a
+// task's own result carrying a [v1.Value_Structure] nested deeper than
+// [v1.MaxStructureDepth] — the shape [checkTaskOutputElementBound]'s
+// literal-only walk cannot see at all, and the residual gap
+// [v1.CheckTaskOutputDepth] closes.
+//
+// The same cases run against the durable driver in the engine package — see
+// the identically-named test there. Both reach the bound through the one
+// function every task's call funnels through, [v1.Task.EvalInScope], which is
+// what invariant 3 asks a shared case to hold the two drivers to.
+func TestRunWorkflowTaskOutputDepth(t *testing.T) {
+	conformance.RegisterDeepStructureOutputTask(t)
+
+	for _, test := range conformance.TaskOutputDepthCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a task result past the depth bound must be refused")
+				require.Contains(t, err.Error(), "levels deep",
+					"the refusal must name the resource it reached")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowExpressionElementBound covers the local driver's half of
 // #1769: a list manufactured inside an expression past the element bound.
 //
