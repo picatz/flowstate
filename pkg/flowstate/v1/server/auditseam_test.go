@@ -196,17 +196,26 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 		// appear to reach it through a function it never calls. That is a
 		// coverage test that passes by accident, which is the failure mode
 		// CLAUDE.md names.
-		imported := map[string]bool{}
+		//
+		// Maps the local alias to the import path itself, not merely to
+		// "yes, this is an import" — a qualified call is recorded keyed by
+		// path, below, so a handler importing the tracked package under a
+		// different local name (`flowv1 "…/v1"` instead of `v1`) still
+		// resolves to the same callee the allowlist names, rather than
+		// silently reading as a different, unrecognized one.
+		imported := map[string]string{}
 		for _, spec := range file.Imports {
-			alias := ""
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				continue
+			}
+			var alias string
 			if spec.Name != nil {
 				alias = spec.Name.Name
-			} else if path, err := strconv.Unquote(spec.Path.Value); err == nil {
+			} else {
 				alias = path[strings.LastIndex(path, "/")+1:]
 			}
-			if alias != "" {
-				imported[alias] = true
-			}
+			imported[alias] = path
 		}
 
 		file, err = parser.ParseFile(fset, filepath.Clean(name), nil, parser.SkipObjectResolution)
@@ -231,15 +240,25 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 					case *ast.Ident:
 						calls[declared][callee.Name] = true
 					case *ast.SelectorExpr:
-						if pkg, ok := callee.X.(*ast.Ident); ok && imported[pkg.Name] {
-							// Recorded qualified — "v1.CheckManualStart", not
-							// "CheckManualStart" — so it reads as another
-							// package's function and is never mistaken for a
-							// coincidentally-named method of this package's
-							// own, the same confusion the alias check above
-							// exists to avoid for the unqualified map.
-							calls[declared][pkg.Name+"."+callee.Sel.Name] = true
-							break
+						if pkg, ok := callee.X.(*ast.Ident); ok {
+							if path, ok := imported[pkg.Name]; ok {
+								// Recorded qualified by the import path's own
+								// last segment — "v1.CheckManualStart", not
+								// "CheckManualStart" — so it reads as another
+								// package's function and is never mistaken
+								// for a coincidentally-named method of this
+								// package's own, the same confusion the
+								// alias map above exists to avoid for the
+								// unqualified map. Keyed by path rather than
+								// by whatever local alias this file happens
+								// to spell it with, so a handler importing
+								// the tracked package under a different name
+								// still resolves to the one callee the
+								// allowlist names.
+								canonical := path[strings.LastIndex(path, "/")+1:]
+								calls[declared][canonical+"."+callee.Sel.Name] = true
+								break
+							}
 						}
 						calls[declared][callee.Sel.Name] = true
 					}

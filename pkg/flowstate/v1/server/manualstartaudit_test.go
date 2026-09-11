@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -172,4 +173,79 @@ func TestSignalWithStartAuditsAPolicyRefusalOnTheConcurrencyCompatibilityArm(t *
 	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, strangerDeny.GetDecision())
 	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, strangerDeny.GetDenyCode())
 	require.Equal(t, strangerAllow.GetResourceKey(), strangerDeny.GetResourceKey(), "both of the stranger's decisions name the same run")
+}
+
+// allowFirstNThenFailEmitter succeeds on its first n Emit calls and fails on
+// every one after, so a test can isolate whether one specific later
+// decision's own required-sink failure is what stops the RPC.
+type allowFirstNThenFailEmitter struct {
+	n     int
+	calls int
+}
+
+func (e *allowFirstNThenFailEmitter) Emit(context.Context, *v1.AuditRecord) error {
+	e.calls++
+	if e.calls <= e.n {
+		return nil
+	}
+
+	return errors.New("the sink is down")
+}
+
+// TestSignalWithStartSurfacesARequiredSinkFailureOnThePolicyDenial is the
+// fail-closed claim for the already-running arm's new auditDeny call,
+// mirroring TestAuthorizeManualStartSurfacesARequiredSinkFailure
+// (manualstartaudit_internal_test.go) for #1883's own new call site: under a
+// required recorder, the owner's create ALLOW and the stranger's admission
+// ALLOW both succeed, and the stranger's policy DENY is what fails — the
+// caller must see the sink's own failure, not the policy refusal the sink
+// could not record.
+func TestSignalWithStartSurfacesARequiredSinkFailureOnThePolicyDenial(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	sink := &allowFirstNThenFailEmitter{n: 2}
+	required, err := audit.NewRecorder(audit.WithoutStderr(), audit.Required(), audit.WithEmitter(sink))
+	require.NoError(t, err)
+
+	s := mustNew(t, temporal, server.WithNamespace("acme"), server.WithAudit(required))
+
+	restricted := entityWorkflow(map[string]*v1.SignalPolicy{
+		"update": {
+			Allow: []*v1.SignalPolicyRule{
+				{Subject: v1.QualifiedSubject("https://issuer.example.com", "owner@example.com")},
+			},
+		},
+	})
+
+	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:  "https://issuer.example.com",
+		Subject: "owner@example.com",
+	})
+	created, err := s.SignalWithStart(owner, connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "sink-down-order",
+		Workflow:  restricted,
+		Name:      "update",
+		Payload:   updatePayload(1, false),
+	}))
+	require.NoError(t, err)
+	require.True(t, created.Msg.GetCreated())
+
+	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:  "https://issuer.example.com",
+		Subject: "some-other-engineer@example.com",
+	})
+	_, err = s.SignalWithStart(stranger, connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "sink-down-order",
+		Workflow:  restricted,
+		Name:      "update",
+		Payload:   updatePayload(1, true),
+	}))
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "signal",
+		"the sink's own failure must surface before the policy refusal it could not record")
+	require.Equal(t, 3, sink.calls,
+		"the owner's ALLOW and the stranger's admission ALLOW succeeded; the stranger's policy DENY was attempted and failed")
 }
