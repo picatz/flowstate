@@ -27,7 +27,10 @@ For one package or test, narrow the package and `-run` pattern further.
 
 The packages that share a Temporal dev server (`engine`, `server`,
 `temporalclient`, `cmd/flow`) each boot one in `TestMain`, about eleven seconds
-before the first test runs. When iterating on one of them, start a server once
+before the first test runs. Without `-short`, `engine`'s own suite alone runs
+about 264s on two CPUs — well past a 120s bound — which is why the always-loaded
+example in `AGENTS.md` and `CONTRIBUTING.md` carries `-short`; `engine` honors
+it and drops to about 20s. When iterating on one of them, start a server once
 and let every run attach to it:
 
 ```sh

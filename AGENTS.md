@@ -113,7 +113,7 @@ with the risk and scope of the diff.
 
 ```sh
 # Bounded targeted example
-GOMEMLIMIT=1GiB go test -timeout 120s ./pkg/flowstate/v1/...
+GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...
 
 # Diff-scoped repository gate; the default before opening or updating a PR
 go run ./tools/gate
