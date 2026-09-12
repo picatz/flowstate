@@ -192,10 +192,12 @@ func TestAmpShipProcedurePinsFinalHeadEvidence(t *testing.T) {
 	for _, required := range []string{
 		"without auto-merge",
 		"provider-neutral AI review",
+		"fresh-context review that carries this repository's rubrics",
 		"code-security",
 		"PASS/no-actionable-findings",
 		"Do not request a vendor review bot",
-		"Only a material defect in this change earns a new head",
+		"Only a material defect",
+		"earns a new head",
 		"does not restart these gates",
 		"false positive with evidence",
 		"searched, non-duplicate scoped issue",

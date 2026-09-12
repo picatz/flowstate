@@ -76,10 +76,16 @@ absence is neither a defect nor a PASS. Only a material defect earns a new head;
 an advisory finding is answered or deferred to a scoped issue, so a bot that
 re-reviews each push cannot turn a finished change into an endless loop. That
 bound is the difference between review as evidence and review as a treadmill.
-`shipcheck` still rejects repeated vendor requests across the pull request, any
-review artifact newer than the owner attestation, unresolved threads, stale
-evidence, and nonterminal or failing checks, so a late artifact forces explicit
-re-attestation without requiring any vendor to answer.
+`shipcheck` enforces what it can read: an attestation that any later comment,
+review, or inline-comment update follows, an edited attestation, unresolved
+threads, nonterminal or failing checks, enabled auto-merge, and more than one
+owner comment asking `@codex` for a review, which is the only request shape it
+recognizes. A late artifact therefore forces explicit re-attestation without
+requiring any vendor to answer. Two things it does not cover: a request to a
+different vendor, since nothing in a pull request records one, and, on the REST
+fallback, a review body edited after the attestation, which REST cannot report;
+the tool says so and asks the operator to read the reviews once more before
+merging.
 
 ## Rightsized for the Claude 5 generation
 

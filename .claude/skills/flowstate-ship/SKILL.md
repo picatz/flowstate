@@ -64,7 +64,8 @@ Fix material findings; classify the rest visibly and move on. A round that
 yields only optional or stylistic findings is a passing round, and its findings
 become follow-ups rather than another head. Review is bounded per head, not per
 reviewer: a bot that re-reviews a new head does not reopen a gate already
-satisfied, and a finding already dispositioned does not become new by being
-repeated. Two rounds that keep producing new material findings mean the change
-needs rethinking: stop, summarize the recurring root cause, and ask rather than
-iterate.
+satisfied, and a finding does not become new by being repeated while its
+disposition still holds. A repetition after a push that reintroduced the defect,
+or that the fix did not cure, is a finding again. Two rounds that keep producing
+new material findings mean the change needs rethinking: stop, summarize the
+recurring root cause, and ask rather than iterate.

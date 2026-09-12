@@ -31,8 +31,11 @@ evidence because the change looks small.
    fix rather than auditing the whole diff again unless the fix changed the
    design. An advisory, stylistic, or out-of-scope finding is dispositioned on
    the head where it arrived, or becomes a scoped follow-up issue; it does not
-   restart these gates, and neither does a bot repeating a finding already
-   dispositioned. Post the review evidence and this machine-readable owner
+   restart these gates, and neither does a bot repeating a finding whose
+   disposition still holds on the current head. A repetition after a push that
+   reintroduced the defect, or that the fix did not actually cure, is a finding
+   again and gets normal material-defect treatment. Post the review evidence
+   and this machine-readable owner
    attestation in one PR comment, authored by the repository owner, since
    `shipcheck` reads the comment's `OWNER` association and a comment posted
    under a bot identity does not carry it:
@@ -42,7 +45,7 @@ evidence because the change looks small.
    Wait for every applicable check, including non-required checks—not merely
    GitHub's required checks. Run expensive CI only once per intended final
    head. A stale review, unresolved or undispositioned finding, semantic
-   uncertainty, or red/pending check still blocks. Optional-provider
+   uncertainty, or red/pending check still blocks. A vendor bot's silence or
    unavailability is never represented as PASS.
 6. Run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. It must
    pass on the unchanged final head.
