@@ -269,6 +269,11 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 	// written order, since a scope starts a step where it is written.
 	var started []*asyncStep
 
+	// deferred holds a failure an early join heard on a debugger's behalf,
+	// raised at the scope-end join below rather than where it was heard. See
+	// the debug-ask branch in the walk.
+	var deferred error
+
 	// A scope's end joins everything it started, and *every* way out of the loop
 	// below is an end: the successful one, the failing one, and the
 	// Continue-As-New one. Draining here rather than at the successful exit is
@@ -405,7 +410,27 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 					joined := started[0]
 					started = started[1:]
 					if err := e.joinAsync(joined); err != nil {
-						return err
+						// Held, not raised. A debugger may hold a run and may
+						// end it, and may never change what it computes — the
+						// claim `conformance/debugger.go` names as the one
+						// thing a debugger must never break. Raising here does
+						// change it: an `async:` step nothing after it reads is
+						// heard at the scope-end join, so the steps written
+						// between its failure and that join still run. Joining
+						// early to make the hold honest, and then propagating
+						// early, skips exactly those steps — so whether a
+						// side-effecting step ran came to depend on whether
+						// somebody was debugging, and on when their ask
+						// happened to arrive (#1119).
+						//
+						// The failure is carried to the point that join would
+						// have reached instead. [executor.recordOutcome] has
+						// already run, so a *tolerated* failure is recorded
+						// exactly as it would have been; what waits is only the
+						// propagation this scope owes its caller.
+						if deferred == nil {
+							deferred = err
+						}
 					}
 				}
 			}
@@ -463,6 +488,13 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		if err := e.joinAsync(joined); err != nil {
 			return err
 		}
+	}
+
+	// And the failure a debug ask made this scope hear early, raised where the
+	// join above would have raised it. Nothing outlives this scope: a deferred
+	// failure is the propagation the loop above would have returned.
+	if deferred != nil {
+		return deferred
 	}
 
 	e.truncateFrames(depth)
