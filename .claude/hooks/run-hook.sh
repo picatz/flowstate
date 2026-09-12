@@ -8,15 +8,9 @@ if [[ -z "${project_dir}" || ! -d "${project_dir}" ]]; then
 fi
 
 name="${1:-}"
-# Refusing a merge never stands between anyone and repairing a broken tree, on
-# any call site, so the merge guard never fails open: not on the merge tool,
-# which passes `strict`, and not on the shell, where a merge command would
-# otherwise run unguarded while this guard's own sources were mid-edit. The
-# other guards match the tools a repair needs, which is why they may warn.
+# The merge tool's entry passes `strict`, because refusing a merge there stands
+# between nobody and repairing a broken tree.
 strict="${2:-}"
-if [[ "${name}" == "mergeguard" ]]; then
-	strict="always"
-fi
 case "${name}" in
 	genguard | gofmtcheck | pidguard | mergeguard) ;;
 	*)
@@ -50,6 +44,52 @@ warn() {
 	exit 0
 }
 
+# Reports whether this call could be a merge, for the one case where the merge
+# guard cannot be consulted about it. mergeguard is wired on Bash as well as on
+# the merge tool, and it returns immediately from every Bash call that is not a
+# merge, so refusing them all when it cannot be built would take away `go
+# build`, `git` and `make` — the tools a repair needs — to guard calls the guard
+# itself would have ignored. That is a worse failure than the one being
+# prevented, and it is not what this entry did before it was prebuilt: `go run`
+# on a tree that does not compile exits 1, which Claude Code does not treat as
+# a block.
+#
+# This is deliberately a coarse over-approximation, not a second recognizer:
+# tools/hooks/mergeguard/main.go remains the only thing that decides what a
+# merge is and which one. Anything that could reach that decision is refused
+# here; only a payload that provably cannot is let through.
+#
+# Reading stdin is safe only because every path that consults this exits
+# without running the guard. On every other path the guard is still waiting for
+# this payload.
+payload_could_merge() {
+	local payload
+	payload="$(cat)"
+	# Not provably an ordinary shell call — the merge tool's own entry, or a
+	# payload this could not read. Neither may fail open.
+	if ! printf '%s' "${payload}" | grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"Bash"'; then
+		return 0
+	fi
+	if printf '%s' "${payload}" | grep -Eq 'gh[^"]*[[:space:]]pr[[:space:]]+merge|merge_pull_request'; then
+		return 0
+	fi
+	return 1
+}
+
+# Decides the fail-open paths below. A guard that could not be built has not
+# refused anything, and these guards match the very tools a repair needs, so
+# the default is to warn loudly and let the call through. The exceptions are a
+# call site that never fails open, and a call the merge guard would have judged.
+may_fail_open() {
+	if [[ -n "${strict}" ]]; then
+		return 1
+	fi
+	if [[ "${name}" == "mergeguard" ]] && payload_could_merge; then
+		return 1
+	fi
+	return 0
+}
+
 # A stale generation is rebuilt here rather than deferred to a restart. Editing
 # a guard's source is ordinary work, and a session that answers it by refusing
 # every tool call until Claude Code restarts cannot be used to do that work.
@@ -72,7 +112,7 @@ if ! hooks_are_current; then
 	case "${rebuild_status}" in
 		0) ;;
 		3)
-			if [[ -n "${strict}" ]]; then
+			if ! may_fail_open; then
 				printf 'Flowstate Claude hook %q could not be rebuilt and this call does not fail open:\n%s\n' "${name}" "${rebuild}" >&2
 				exit 2
 			fi
@@ -87,8 +127,13 @@ if ! hooks_are_current; then
 		# The build published, so the other guards are current; this one did
 		# not compile. Treat it like the whole tree not compiling, for the
 		# same reason, unless this call site never fails open.
-		if [[ -z "${strict}" ]] && grep -qxF "${name}" "${hook_dir}/.unbuilt" 2>/dev/null; then
-			warn "Flowstate Claude hook ${name} did not run: its own sources do not compile right now."
+		if grep -qxF "${name}" "${hook_dir}/.unbuilt" 2>/dev/null; then
+			if may_fail_open; then
+				warn "Flowstate Claude hook ${name} did not run: its own sources do not compile right now."
+			fi
+			printf 'Flowstate Claude hook %q does not compile right now, and this call is not one it may skip. Repair %s and retry; other commands still run.\n' \
+				"${name}" "tools/hooks/${name}" >&2
+			exit 2
 		fi
 		printf 'Flowstate Claude hook %q is still not current after a rebuild; restart Claude Code.\n' "${name}" >&2
 		exit 2

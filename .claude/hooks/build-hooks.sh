@@ -13,6 +13,15 @@ if [[ -z "${project_dir}" || ! -d "${project_dir}" ]]; then
 	printf 'CLAUDE_PROJECT_DIR does not name a checkout directory.\n' >&2
 	exit 2
 fi
+# Resolved once, because `go list` reports a package directory with every
+# symbolic link already followed. Comparing those against an unresolved root
+# classified every first-party package as outside the checkout the moment any
+# component of the path was a link, which is ordinary on macOS, where a
+# temporary directory lives under /var -> /private/var.
+if ! project_dir="$(cd "${project_dir}" && pwd -P)"; then
+	printf 'CLAUDE_PROJECT_DIR could not be resolved.\n' >&2
+	exit 2
+fi
 
 hooks=(genguard gofmtcheck pidguard mergeguard)
 packages=()
@@ -97,6 +106,7 @@ list_source_dirs() {
 				"") ;;
 				*)
 					printf 'hook dependency %q is outside the checkout.\n' "${directory}" >&2
+					touch "${cache_dir}/incoherent"
 					exit 2
 					;;
 			esac
@@ -136,7 +146,18 @@ for hook in "${hooks[@]}"; do
 	fi
 done
 
+# `exit 2` inside list_source_dirs leaves the pipeline's subshell, not this
+# script, so the sentinel is what carries "incoherent" back to here. Without it
+# every failure of the query would read as "does not compile", and an
+# incoherent dependency set would take the one branch that fails open.
+incoherent="${cache_dir}/incoherent"
+rm -f "${incoherent}"
 if ! list_source_dirs > "${stage_dir}/.source-dirs" || [[ ! -s "${stage_dir}/.source-dirs" ]]; then
+	if [[ -f "${incoherent}" ]]; then
+		rm -f "${incoherent}"
+		printf 'the Flowstate Claude hook dependencies are not coherent.\n' >&2
+		exit 2
+	fi
 	printf 'could not determine what the Flowstate Claude hooks are built from.\n' >&2
 	exit "${not_buildable}"
 fi
@@ -185,7 +206,7 @@ fi
 # accepting a stale guard every time that input changes afterwards.
 if ! list_extra_inputs > "${post_build_extra}"; then
 	printf 'could not verify the other inputs the Flowstate Claude hooks compiled.\n' >&2
-	exit "${not_buildable}"
+	exit 2
 fi
 if ! cmp -s "${stage_dir}/.source-extra" "${post_build_extra}"; then
 	printf 'the Flowstate Claude hook inputs changed while they were compiling.\n' >&2

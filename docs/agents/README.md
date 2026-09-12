@@ -238,10 +238,17 @@ and whether a deterministic mechanism can prevent it more reliably.
   guard whose own package does not compile warns and lets the call through,
   since the guards match the very tools needed to repair it and a guard that
   could not be built has refused nothing. Each guard is compiled separately, so
-  one mid-edit does not decide for the others; a guard whose package is gone
-  denies, because that is a control removed rather than unfinished; and the
-  merge tool's entry passes `strict`, which never fails open, since refusing a
-  merge stands between nobody and a repair. Every other failure denies. Other hosts do not run these Claude-native tool events.
+  one mid-edit does not decide for the others, and a guard whose package is
+  gone denies, because that is a control removed rather than unfinished. The
+  merge guard is the one exception to failing open, and only for the calls it
+  would have judged: the merge tool's entry passes `strict`, and on the shell
+  the launcher refuses a payload that could be a merge while letting every
+  other command through, since it is wired on all of Bash but ignores
+  everything that is not a merge, and denying `go build` to guard a `go build`
+  would take away the repair itself. That test is a deliberate
+  over-approximation and not a second recognizer: `tools/hooks/mergeguard`
+  stays the only thing that decides which merge. Every other failure denies.
+  Other hosts do not run these Claude-native tool events.
 - Legacy `.claude/commands/ci-check.md` and `test-fast.md` remain only as short
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
   in skills. A command never shares a skill's name: `both-drivers.md` was

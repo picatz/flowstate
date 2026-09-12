@@ -636,8 +636,11 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	// The compiler itself refuses, which is the tree-does-not-compile case.
 	runFailedSession(warnsAndContinues, fakeBin+":/usr/bin:/bin")
 
-	// An identity command that fails only after compilation must not publish the
-	// hash it happened to print as a ready generation.
+	// An identity command that fails only after compilation must not publish
+	// the hash it happened to print as a ready generation. The `go` double
+	// honours `-o <file>`, because build-hooks.sh names a file there: a double
+	// that treated it as a directory would fail every compile and stop at the
+	// exit-3 warn path above, never reaching the identity this asserts.
 	writeStaleBuild()
 	postBuildBin := filepath.Join(project, "post-build-bin")
 	if err := os.Mkdir(postBuildBin, 0o700); err != nil {
@@ -656,13 +659,14 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(postBuildBin, "git"), []byte(postBuildGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	postBuildGo := "#!/bin/sh\nfor arg do\n  case \"$arg\" in *EmbedFiles*) exit 0 ;; esac\ndone\nfor arg do\n  if [ \"$arg\" = list ]; then\n    printf '%s\\n' \"$CLAUDE_PROJECT_DIR/tools/hooks\" \"$CLAUDE_PROJECT_DIR/internal/commitcheck\" \"$CLAUDE_PROJECT_DIR/internal/textbound\"\n    exit 0\n  fi\ndone\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then shift; out=$1; break; fi\n  shift\ndone\nfor name in genguard gofmtcheck pidguard mergeguard; do\n  printf '#!/bin/sh\\nexit 0\\n' > \"$out/$name\"\n  chmod 700 \"$out/$name\"\ndone\n"
+	postBuildGo := "#!/bin/sh\nfor arg do\n  case \"$arg\" in *EmbedFiles*) exit 0 ;; esac\ndone\nfor arg do\n  if [ \"$arg\" = list ]; then\n    printf '%s\\n' \"$CLAUDE_PROJECT_DIR/tools/hooks\" \"$CLAUDE_PROJECT_DIR/internal/commitcheck\" \"$CLAUDE_PROJECT_DIR/internal/textbound\"\n    exit 0\n  fi\ndone\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then shift; out=$1; break; fi\n  shift\ndone\nprintf '#!/bin/sh\\nexit 0\\n' > \"$out\"\nchmod 700 \"$out\"\n"
 	if err := os.WriteFile(filepath.Join(postBuildBin, "go"), []byte(postBuildGo), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The identity fails only after a successful compile, so SessionStart
-	// publishes nothing; the next call then finds no generation to trust.
-	runFailedSession(warnsAndContinues, postBuildBin+":/usr/bin:/bin", "FLOWSTATE_TEST_GIT_COUNT="+gitCount)
+	// publishes nothing. A build that cannot verify what it just compiled is
+	// incoherent rather than merely unfinished, so the next call denies.
+	runFailedSession(deniesTheCall, postBuildBin+":/usr/bin:/bin", "FLOWSTATE_TEST_GIT_COUNT="+gitCount)
 
 	// A source change after SessionStart invalidates an otherwise ready binary.
 	writeStaleBuild()
@@ -674,19 +678,69 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	}
 	runLauncherWarns("do not compile right now")
 
-	// The merge guard never fails open, on either call site: refusing a merge
-	// stands between nobody and a repair, while the guards that match the
-	// tools a repair needs may warn. Asserted here without the argument, so
-	// the shell path is covered too.
-	strictCmd := exec.Command("bash", launcher, "mergeguard")
-	strictCmd.Env = []string{"CLAUDE_PROJECT_DIR=" + project, "HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
-	strictOutput, strictErr := strictCmd.CombinedOutput()
-	var strictExit *exec.ExitError
-	if !errors.As(strictErr, &strictExit) || strictExit.ExitCode() != 2 {
-		t.Fatalf("merge tool entry with an uncompilable tree = %v, want exit 2; output:\n%s", strictErr, strictOutput)
+	// mergeguard is wired on Bash as well as on the merge tool, and it returns
+	// immediately from every Bash call that is not a merge. So when it cannot
+	// be built, the calls it would have ignored must still run -- denying them
+	// would take away `go build` and `git`, the tools the repair itself needs,
+	// and this entry did not deny them before it was prebuilt -- while
+	// anything that could be a merge must not. The guard stays the only thing
+	// that decides which merge; the launcher only decides what could be one.
+	mergeLauncher := func(payload string, args ...string) (int, string) {
+		t.Helper()
+		cmd := exec.Command("bash", append([]string{launcher, "mergeguard"}, args...)...)
+		cmd.Env = []string{"CLAUDE_PROJECT_DIR=" + project, "HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+		cmd.Stdin = strings.NewReader(payload)
+		output, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			return 0, string(output)
+		case errors.As(err, &exit):
+			return exit.ExitCode(), string(output)
+		default:
+			t.Fatalf("run the merge guard launcher: %v\n%s", err, output)
+			return 0, ""
+		}
 	}
-	if !strings.Contains(string(strictOutput), "does not fail open") {
-		t.Fatalf("merge tool denial did not say why it does not fail open:\n%s", strictOutput)
+	bashPayload := func(command string) string {
+		return `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"` + command + `"}}`
+	}
+	for _, allowed := range []string{
+		"go build ./tools/hooks/mergeguard",
+		"git status --short",
+		"make fmt",
+	} {
+		if status, output := mergeLauncher(bashPayload(allowed)); status != 0 {
+			t.Fatalf("a broken merge guard blocked %q with exit %d; the repair it needs must still run:\n%s", allowed, status, output)
+		}
+	}
+	for _, refused := range []string{
+		"gh pr merge 1942 -R picatz/flowstate --squash",
+		"gh pr merge https://github.com/picatz/flowstate/pull/1942",
+	} {
+		status, output := mergeLauncher(bashPayload(refused))
+		if status != 2 {
+			t.Fatalf("a broken merge guard let %q through with exit %d:\n%s", refused, status, output)
+		}
+		if !strings.Contains(output, "tools/hooks/mergeguard") {
+			t.Fatalf("the denial did not name what to repair:\n%s", output)
+		}
+	}
+	// The merge tool's own call carries no Bash command, and a payload the
+	// launcher cannot read is not evidence of anything. Neither fails open.
+	for _, entry := range []struct {
+		name    string
+		payload string
+	}{
+		{"the merge tool entry", `{"hook_event_name":"PreToolUse","tool_name":"mcp__github__merge_pull_request","tool_input":{"pullNumber":1942}}`},
+		{"an unreadable payload", ""},
+	} {
+		if status, output := mergeLauncher(entry.payload); status != 2 {
+			t.Fatalf("%s with a broken merge guard = %d, want 2:\n%s", entry.name, status, output)
+		}
+	}
+	if status, output := mergeLauncher(bashPayload("go build ./..."), "strict"); status != 2 {
+		t.Fatalf("the strict call site failed open with exit %d:\n%s", status, output)
 	}
 
 	// Remove one of them: a control that is gone must not fail open.
@@ -886,40 +940,7 @@ func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
 	newProject := func(t *testing.T) string {
 		t.Helper()
 		project := t.TempDir()
-		for _, dir := range []string{".claude/hooks", "internal/commitcheck"} {
-			if err := os.MkdirAll(filepath.Join(project, filepath.FromSlash(dir)), 0o700); err != nil {
-				t.Fatal(err)
-			}
-		}
-		for _, script := range []string{"source-id.sh", "build-hooks.sh"} {
-			data, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", script))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(project, ".claude", "hooks", script), data, 0o700); err != nil {
-				t.Fatal(err)
-			}
-		}
-		write := func(path, body string) {
-			t.Helper()
-			full := filepath.Join(project, filepath.FromSlash(path))
-			if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		write("go.mod", "module example.com/hooks\n\ngo "+goDirective(t, root)+"\n")
-		write("go.sum", "")
-		write("internal/commitcheck/check.go", "package commitcheck\n\n// Shared so the manifest holds more than the commands.\nconst Name = \"commitcheck\"\n")
-		for _, hook := range []string{"genguard", "gofmtcheck", "pidguard", "mergeguard"} {
-			write("tools/hooks/"+hook+"/main.go",
-				"package main\n\nimport _ \"example.com/hooks/internal/commitcheck\"\n\nfunc main() {}\n")
-		}
-		if output, err := exec.Command("git", "-C", project, "init", "--quiet").CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v\n%s", err, output)
-		}
+		writeHookFixture(t, root, project)
 		return project
 	}
 
@@ -1111,6 +1132,145 @@ func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
 			t.Fatal("a failed build left the previous generation marked ready")
 		}
 	})
+}
+
+// TestClaudeHookBuildRunsOnAnOrdinaryCheckout covers the two properties that
+// have nothing to do with a broken tree and everything to do with where the
+// checkout happens to sit. Both failed silently in exactly the direction that
+// matters: the guards are a control, so a build that cannot run, or that
+// misjudges its own dependencies, disables them rather than announcing itself.
+// CI runs one Linux image, so these are asserted against behavior a developer
+// machine can differ on rather than against the host that happens to run them.
+func TestClaudeHookBuildRunsOnAnOrdinaryCheckout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude hooks require Bash")
+	}
+	root := repoRoot(t)
+
+	t.Run("a checkout reached through a symbolic link", func(t *testing.T) {
+		// `go list` reports a package directory with every link resolved, so a
+		// build that compares those against an unresolved CLAUDE_PROJECT_DIR
+		// decides every first-party package lives outside the checkout. That
+		// is not hypothetical: a macOS temporary directory is under
+		// /var -> /private/var, and so is any checkout under one.
+		project := t.TempDir()
+		real := filepath.Join(project, "real")
+		link := filepath.Join(project, "link")
+		if err := os.Mkdir(real, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeHookFixture(t, root, real)
+		if err := os.Symlink(real, link); err != nil {
+			t.Skipf("this filesystem does not support symbolic links: %v", err)
+		}
+		cmd := exec.Command("bash", filepath.Join(link, ".claude", "hooks", "build-hooks.sh"))
+		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+link)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build through a symbolic link: %v\n%s", err, output)
+		}
+		if _, err := os.Stat(filepath.Join(real, ".claude", "hooks", ".bin", ".ready")); err != nil {
+			t.Fatalf("a build through a symbolic link published nothing: %v", err)
+		}
+	})
+
+	t.Run("a mktemp that requires a template", func(t *testing.T) {
+		// BSD `mktemp` -- macOS -- is a usage error without one, where GNU
+		// coreutils defaults. source-id.sh stands under every guard, so the
+		// difference is not a portability nit: it denies every tool call, on a
+		// healthy tree, with no tool left to repair anything.
+		project := t.TempDir()
+		writeHookFixture(t, root, project)
+		bin := filepath.Join(project, "double")
+		if err := os.Mkdir(bin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		realMktemp, err := exec.LookPath("mktemp")
+		if err != nil {
+			t.Skip("mktemp is not available")
+		}
+		double := "#!/bin/sh\nfor arg do\n  case \"$arg\" in -*) ;; *) exec " +
+			strconv.Quote(realMktemp) + " \"$@\" ;; esac\ndone\n" +
+			"printf 'usage: mktemp [-d] [-q] [-t prefix] [-u] template ...\\n' >&2\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(bin, "mktemp"), []byte(double), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "build-hooks.sh"))
+		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project, "PATH="+bin+":"+os.Getenv("PATH"))
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build where mktemp requires a template: %v\n%s", err, output)
+		}
+		if _, err := os.Stat(filepath.Join(project, ".claude", "hooks", ".bin", ".ready")); err != nil {
+			t.Fatalf("published nothing where mktemp requires a template: %v", err)
+		}
+	})
+
+	t.Run("a session start whose build fails still pins the toolchain", func(t *testing.T) {
+		// The pin and the prebuild are independent, and only one of them can
+		// be recovered later: the launcher rebuilds the hooks on the next tool
+		// call, while a session that never got the pin resolves `go` and
+		// `gofmt` from the base image for as long as it lives.
+		project := t.TempDir()
+		writeHookFixture(t, root, project)
+		// The shared package, so every guard fails and the build reports the
+		// tree does not compile rather than publishing a partial generation.
+		if err := os.WriteFile(filepath.Join(project, "internal", "commitcheck", "check.go"),
+			[]byte("package commitcheck\n\nthis is not go\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		envFile := filepath.Join(project, "env")
+		cmd := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "session-env.sh"))
+		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project, "CLAUDE_ENV_FILE="+envFile)
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("a session start whose hooks did not compile reported success:\n%s", output)
+		}
+		pin, readErr := os.ReadFile(envFile)
+		if readErr != nil {
+			t.Fatalf("a failing hook build took the toolchain pin with it: %v\n%s", readErr, output)
+		}
+		if !strings.Contains(string(pin), "export PATH=") {
+			t.Fatalf("the session was left without a pinned toolchain: %q", pin)
+		}
+	})
+}
+
+// writeHookFixture lays down a module the real toolchain can build the four
+// guards from, so a case fails only for the reason it is testing.
+func writeHookFixture(t *testing.T, root, project string) {
+	t.Helper()
+	for _, script := range []string{"source-id.sh", "build-hooks.sh", "session-env.sh"} {
+		data, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		full := filepath.Join(project, ".claude", "hooks", script)
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path, body string) {
+		t.Helper()
+		full := filepath.Join(project, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module example.com/hooks\n\ngo "+goDirective(t, root)+"\n")
+	write("go.sum", "")
+	write("internal/commitcheck/check.go", "package commitcheck\n\nconst Name = \"commitcheck\"\n")
+	for _, hook := range []string{"genguard", "gofmtcheck", "pidguard", "mergeguard"} {
+		write("tools/hooks/"+hook+"/main.go",
+			"package main\n\nimport _ \"example.com/hooks/internal/commitcheck\"\n\nfunc main() {}\n")
+	}
+	if output, err := exec.Command("git", "-C", project, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
+	}
 }
 
 // goDirective reads the Go version the repository pins, so a fixture module

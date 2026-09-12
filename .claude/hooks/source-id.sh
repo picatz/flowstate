@@ -30,7 +30,9 @@ if [[ ${#directories[@]} -eq 0 ]]; then
 	exit 2
 fi
 
-build_paths="$(mktemp)"
+# A template, not a bare `mktemp`: BSD `mktemp` requires one, and this script
+# stands under every guard, so failing here would deny every tool at once.
+build_paths="$(mktemp "${TMPDIR:-/tmp}/flowstate-hook-source-id.XXXXXX")"
 trap 'rm -f "${build_paths}"' EXIT
 
 # go.mod and go.sum select the toolchain and the module versions, so a change to
