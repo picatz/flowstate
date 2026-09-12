@@ -164,7 +164,11 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("shipcheck: PASS PR %s#%d at %s; auto-merge disabled, every check terminal and acceptable, independent exact-head code/security review passed, zero unresolved review threads\n", *repo, *prNumber, pr.HeadRefOID)
+	caveat := ""
+	if fallbackNoted {
+		caveat = "; read over REST, which cannot report a review body edited after the attestation"
+	}
+	fmt.Printf("shipcheck: PASS PR %s#%d at %s; auto-merge disabled, every check terminal and acceptable, independent exact-head code/security review passed, zero unresolved review threads%s\n", *repo, *prNumber, pr.HeadRefOID, caveat)
 }
 
 func validRepo(repo string) bool {

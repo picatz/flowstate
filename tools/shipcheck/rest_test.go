@@ -136,8 +136,8 @@ func TestRESTFallbackStillReportsWhatBlocks(t *testing.T) {
 	restFixtures(t, dir)
 	writeFixture(t, dir, "threads.json", `[{"resolved":false,"path":"AGENTS.md","line":3,"comment_ids":[1]}]`)
 	writeFixture(t, dir, "reviews.json", `[
-		{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
-		{"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED","submitted_at":"2026-09-12T00:00:06Z"}]`)
+		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
+		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"CHANGES_REQUESTED","submitted_at":"2026-09-12T00:00:06Z"}]`)
 
 	pr, err := loadPullRequest("picatz/flowstate", 7)
 	if err != nil {
@@ -181,38 +181,72 @@ func TestRESTFallbackReadsARequiredReviewRule(t *testing.T) {
 		t.Errorf("problems %q do not block on the required review", problems)
 	}
 
-	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`)
-	pr, err = loadPullRequest("picatz/flowstate", 7)
-	if err != nil {
-		t.Fatalf("loadPullRequest over REST: %v", err)
+	decisionWith := func(reviews string) string {
+		t.Helper()
+		writeFixture(t, dir, "reviews.json", reviews)
+		pr, err := loadPullRequest("picatz/flowstate", 7)
+		if err != nil {
+			t.Fatalf("loadPullRequest over REST: %v", err)
+		}
+		return pr.ReviewDecision
 	}
-	if pr.ReviewDecision != "APPROVED" {
-		t.Fatalf("review decision = %q after an approval, want APPROVED", pr.ReviewDecision)
+	if got := decisionWith(`[{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`); got != "APPROVED" {
+		t.Fatalf("review decision = %q after a collaborator's approval, want APPROVED", got)
+	}
+	// Anyone can submit an approving review on a public repository; only
+	// people with write access count toward a required one.
+	if got := decisionWith(`[{"user":{"login":"stranger"},"author_association":"NONE","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`); got != "REVIEW_REQUIRED" {
+		t.Fatalf("review decision = %q after a non-collaborator's approval, want REVIEW_REQUIRED", got)
+	}
+	if got := decisionWith(`[{"user":{"login":"stranger"},"author_association":"NONE","state":"CHANGES_REQUESTED","submitted_at":"2026-09-12T00:00:05Z"}]`); got != "CHANGES_REQUESTED" {
+		t.Fatalf("review decision = %q after a non-collaborator's request for changes, want CHANGES_REQUESTED", got)
 	}
 
 	// The count is honored, not just the presence of an approval: two
 	// required, one given (twice, by the same reviewer) is still required;
 	// a second reviewer clears it.
 	writeFixture(t, dir, "rules.json", `[{"type":"pull_request","parameters":{"required_approving_review_count":2}}]`)
-	writeFixture(t, dir, "reviews.json", `[
-		{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
-		{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:06Z"}]`)
-	pr, err = loadPullRequest("picatz/flowstate", 7)
+	if got := decisionWith(`[
+		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
+		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:06Z"}]`); got != "REVIEW_REQUIRED" {
+		t.Fatalf("review decision = %q with one of two required approvals, want REVIEW_REQUIRED", got)
+	}
+	if got := decisionWith(`[
+		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
+		{"user":{"login":"second"},"author_association":"MEMBER","state":"APPROVED","submitted_at":"2026-09-12T00:00:06Z"}]`); got != "APPROVED" {
+		t.Fatalf("review decision = %q with two of two required approvals, want APPROVED", got)
+	}
+}
+
+// GraphQL-first, pinned: a fake gh that answers `pr view` and `api graphql`
+// and refuses every REST endpoint must still load the pull request, and
+// the fallback note must stay unset.
+const graphQLOnlyGH = `#!/bin/sh
+case "$*" in
+  "pr view"*) printf '{"state":"OPEN","baseRefName":"main","isDraft":false,"headRefOid":"HEAD","autoMergeRequest":null,"reviewDecision":"","statusCheckRollup":[],"files":[],"changedFiles":0}' ;;
+  "api graphql"*"comments(first"*) printf '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}}' ;;
+  "api graphql"*"reviews(first"*) printf '{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}}' ;;
+  "api graphql"*"reviewThreads(first"*) printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}' ;;
+  *"/pulls/7/comments -f sort=updated"*) printf '[]' ;;
+  *) echo "REST asked while GraphQL answers: gh $*" >&2; exit 3 ;;
+esac
+`
+
+func TestGraphQLIsAskedFirst(t *testing.T) {
+	installFakeGH(t, graphQLOnlyGH)
+	pr, err := loadPullRequest("picatz/flowstate", 7)
 	if err != nil {
-		t.Fatalf("loadPullRequest over REST: %v", err)
+		t.Fatalf("loadPullRequest with GraphQL answering: %v", err)
 	}
-	if pr.ReviewDecision != "REVIEW_REQUIRED" {
-		t.Fatalf("review decision = %q with one of two required approvals, want REVIEW_REQUIRED", pr.ReviewDecision)
+	if pr.HeadRefOID != testHead || pr.State != "OPEN" {
+		t.Errorf("summary = %+v, want the GraphQL document", pr)
 	}
-	writeFixture(t, dir, "reviews.json", `[
-		{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
-		{"user":{"login":"second"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:06Z"}]`)
-	pr, err = loadPullRequest("picatz/flowstate", 7)
-	if err != nil {
-		t.Fatalf("loadPullRequest over REST: %v", err)
+	unresolved, err := unresolvedReviewThreads("picatz/flowstate", 7)
+	if err != nil || unresolved != 0 {
+		t.Fatalf("unresolvedReviewThreads with GraphQL answering = %d, %v; want 0, nil", unresolved, err)
 	}
-	if pr.ReviewDecision != "APPROVED" {
-		t.Fatalf("review decision = %q with two of two required approvals, want APPROVED", pr.ReviewDecision)
+	if fallbackNoted {
+		t.Fatal("the REST fallback was noted although GraphQL answered every query")
 	}
 }
 

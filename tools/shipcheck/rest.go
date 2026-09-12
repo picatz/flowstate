@@ -301,8 +301,22 @@ type restReview struct {
 	User struct {
 		Login string `json:"login"`
 	} `json:"user"`
-	State       string `json:"state"`
-	SubmittedAt string `json:"submitted_at"`
+	AuthorAssociation string `json:"author_association"`
+	State             string `json:"state"`
+	SubmittedAt       string `json:"submitted_at"`
+}
+
+// approvalCounts reports whether an approving review from an author with
+// this association counts toward a required review, as GitHub counts only
+// approvals from people with write access. A request for changes is
+// honored from anyone: blocking on it is the safe direction.
+func approvalCounts(association string) bool {
+	switch association {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
+	}
 }
 
 func restReviews(repo string, number int) ([]restReview, error) {
@@ -330,11 +344,11 @@ func loadReviewsREST(repo string, number int) ([]review, error) {
 // reviewDecisionREST is the decision the reviews imply, in the vocabulary
 // evaluate reads: CHANGES_REQUESTED when any reviewer's latest decisive
 // review asks for changes, REVIEW_REQUIRED when the base branch's rulesets
-// require more distinct approvals than the reviewers have given, APPROVED
-// when at least one reviewer approves and that count is met, and "" when
-// nothing decides. A dismissed review has state DISMISSED and decides
-// nothing. Classic branch protection is not consulted; its required reviews
-// are enforced by the merge itself.
+// require more distinct counting approvals than the reviewers have given,
+// APPROVED when at least one counting reviewer approves and that count is
+// met, and "" when nothing decides. A dismissed review has state DISMISSED
+// and decides nothing. Classic branch protection, code-owner reviews, and
+// last-push approval are not consulted; the merge itself enforces them.
 func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	raw, err := restReviews(repo, number)
 	if err != nil {
@@ -343,8 +357,14 @@ func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	latest := map[string]string{}
 	for _, r := range raw {
 		switch r.State {
-		case "APPROVED", "CHANGES_REQUESTED":
+		case "CHANGES_REQUESTED":
 			latest[r.User.Login] = r.State
+		case "APPROVED":
+			if approvalCounts(r.AuthorAssociation) {
+				latest[r.User.Login] = r.State
+			} else {
+				delete(latest, r.User.Login)
+			}
 		}
 	}
 	approvals := 0

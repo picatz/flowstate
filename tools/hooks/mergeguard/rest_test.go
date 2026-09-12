@@ -136,4 +136,14 @@ func TestReviewThreadEvidenceFallsBackToRESTAndStillFailsClosed(t *testing.T) {
 	if requests[healthy.URL] != 1 || requests[restUntouched.URL] != 0 {
 		t.Fatalf("requests = %v, want one GraphQL request and no REST request", requests)
 	}
+
+	// A GraphQL attempt that consumed its whole context budget leaves the
+	// REST attempt its own: an already-cancelled context fails GraphQL at
+	// once and REST still answers.
+	spent, cancelSpent := context.WithCancel(context.Background())
+	cancelSpent()
+	threads, err = reviewThreadEvidence(spent, client, graphql.URL, rest.URL, "tok", "picatz", "flowstate", 488)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("spent budget: threads=%+v err=%v, want the REST thread and nil", threads, err)
+	}
 }
