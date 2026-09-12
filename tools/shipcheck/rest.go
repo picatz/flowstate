@@ -329,11 +329,12 @@ func loadReviewsREST(repo string, number int) ([]review, error) {
 
 // reviewDecisionREST is the decision the reviews imply, in the vocabulary
 // evaluate reads: CHANGES_REQUESTED when any reviewer's latest decisive
-// review asks for changes, APPROVED when one approves and none objects,
-// REVIEW_REQUIRED when the base branch's rulesets require an approval that
-// no reviewer has given, and "" when nothing decides. A dismissed review has
-// state DISMISSED and decides nothing. Classic branch protection is not
-// consulted; its required reviews are enforced by the merge itself.
+// review asks for changes, REVIEW_REQUIRED when the base branch's rulesets
+// require more distinct approvals than the reviewers have given, APPROVED
+// when at least one reviewer approves and that count is met, and "" when
+// nothing decides. A dismissed review has state DISMISSED and decides
+// nothing. Classic branch protection is not consulted; its required reviews
+// are enforced by the merge itself.
 func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	raw, err := restReviews(repo, number)
 	if err != nil {
@@ -346,29 +347,30 @@ func reviewDecisionREST(repo string, number int, base string) (string, error) {
 			latest[r.User.Login] = r.State
 		}
 	}
-	decision := ""
+	approvals := 0
 	for _, state := range latest {
 		if state == "CHANGES_REQUESTED" {
 			return state, nil
 		}
-		decision = state
-	}
-	if decision == "APPROVED" {
-		return decision, nil
+		approvals++
 	}
 	required, err := approvalsRequiredREST(repo, base)
 	if err != nil {
 		return "", err
 	}
-	if required {
+	switch {
+	case approvals < required:
 		return "REVIEW_REQUIRED", nil
+	case approvals > 0:
+		return "APPROVED", nil
+	default:
+		return "", nil
 	}
-	return "", nil
 }
 
-// approvalsRequiredREST reports whether a ruleset on base requires at least
-// one approving review.
-func approvalsRequiredREST(repo, base string) (bool, error) {
+// approvalsRequiredREST is the largest number of approving reviews any
+// ruleset on base requires, or zero when none does.
+func approvalsRequiredREST(repo, base string) (int, error) {
 	var rules []struct {
 		Type       string `json:"type"`
 		Parameters struct {
@@ -376,14 +378,15 @@ func approvalsRequiredREST(repo, base string) (bool, error) {
 		} `json:"parameters"`
 	}
 	if err := restGet(fmt.Sprintf("repos/%s/rules/branches/%s", repo, base), &rules); err != nil {
-		return false, err
+		return 0, err
 	}
+	required := 0
 	for _, rule := range rules {
-		if rule.Type == "pull_request" && rule.Parameters.RequiredApprovingReviewCount > 0 {
-			return true, nil
+		if rule.Type == "pull_request" && rule.Parameters.RequiredApprovingReviewCount > required {
+			required = rule.Parameters.RequiredApprovingReviewCount
 		}
 	}
-	return false, nil
+	return required, nil
 }
 
 func loadCommentsREST(repo string, number int) ([]comment, error) {

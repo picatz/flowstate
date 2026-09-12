@@ -189,6 +189,31 @@ func TestRESTFallbackReadsARequiredReviewRule(t *testing.T) {
 	if pr.ReviewDecision != "APPROVED" {
 		t.Fatalf("review decision = %q after an approval, want APPROVED", pr.ReviewDecision)
 	}
+
+	// The count is honored, not just the presence of an approval: two
+	// required, one given (twice, by the same reviewer) is still required;
+	// a second reviewer clears it.
+	writeFixture(t, dir, "rules.json", `[{"type":"pull_request","parameters":{"required_approving_review_count":2}}]`)
+	writeFixture(t, dir, "reviews.json", `[
+		{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
+		{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:06Z"}]`)
+	pr, err = loadPullRequest("picatz/flowstate", 7)
+	if err != nil {
+		t.Fatalf("loadPullRequest over REST: %v", err)
+	}
+	if pr.ReviewDecision != "REVIEW_REQUIRED" {
+		t.Fatalf("review decision = %q with one of two required approvals, want REVIEW_REQUIRED", pr.ReviewDecision)
+	}
+	writeFixture(t, dir, "reviews.json", `[
+		{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
+		{"user":{"login":"second"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:06Z"}]`)
+	pr, err = loadPullRequest("picatz/flowstate", 7)
+	if err != nil {
+		t.Fatalf("loadPullRequest over REST: %v", err)
+	}
+	if pr.ReviewDecision != "APPROVED" {
+		t.Fatalf("review decision = %q with two of two required approvals, want APPROVED", pr.ReviewDecision)
+	}
 }
 
 // TestBothTransportsDownFailsClosed: with GraphQL refused and REST failing
