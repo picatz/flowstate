@@ -34,6 +34,13 @@ import (
 // chosen so the total is comfortably past [v1.DefaultWorkflowSliceCost] while
 // each evaluation stays far inside [v1.DefaultCostLimit]: that gap is the whole
 // attack, an expression every existing bound admits, repeated.
+//
+// A list of 10,000 elements is the largest input the element bound admits, so
+// every environment below is built with [atABound]: a single evaluation of this
+// expression is exactly the at-a-bound work that budget exists for, and holding
+// it to the SDK's one-second default under the race detector is stricter than
+// production rather than equal to it. See
+// [conformance.BoundaryDeadlockDetectionTimeout].
 func skippedHeavyConditions(steps int) *v1.Workflow {
 	const heavy = "lists.range(10000).map(i, i + 1).size()"
 
@@ -60,7 +67,7 @@ func skippedHeavyConditions(steps int) *v1.Workflow {
 func TestASegmentOfSkippedStepsSuspendsOnTheCostItSpent(t *testing.T) {
 	t.Parallel()
 
-	env := newWaitEnv(t)
+	env := atABound(newWaitEnv(t))
 	env.OnUpsertMemo(mock.Anything).Return(nil).Maybe()
 
 	carried := carriedState(t, env, &v1.RunState{
@@ -95,6 +102,8 @@ func TestASegmentOfCheapSkippedStepsDoesNotSuspend(t *testing.T) {
 		}
 	}
 
+	// Not [atABound]: this fixture's conditions are free, so a goroutine that
+	// does not yield here is a finding rather than a bound being exercised.
 	env := newWaitEnv(t)
 	env.OnUpsertMemo(mock.Anything).Return(nil).Maybe()
 

@@ -200,16 +200,13 @@ func (e *SwitchBodyError) Record(text string) *Node_Outputs {
 	return out
 }
 
-// evalSwitchValue evaluates the discriminant to the literal that goes on the
-// record. A literal passes through, exactly as a `value:` step's does.
-func evalSwitchValue(ctx context.Context, value *Value, scope *Scope) (*expr.Value, error) {
-	observed, _, err := evalSwitchValueWithCost(ctx, value, scope)
-
-	return observed, err
-}
-
-// evalSwitchValueWithCost is [evalSwitchValue] plus the deterministic CEL cost
-// of the expression.
+// evalSwitchValueWithCost evaluates the discriminant to the literal that goes on
+// the record, and reports the deterministic CEL cost of doing so. A literal
+// passes through and costs zero, exactly as a `value:` step's does.
+//
+// No cost-free spelling beside it, unlike the exported evaluators in this
+// package: the only caller is [SelectSwitchCaseWithCost], which has a cost to
+// return, so a second entry point would be one nobody calls.
 func evalSwitchValueWithCost(ctx context.Context, value *Value, scope *Scope) (*expr.Value, uint64, error) {
 	if value == nil {
 		return nil, 0, fmt.Errorf("a `switch:` needs `value:`, the expression it dispatches on")

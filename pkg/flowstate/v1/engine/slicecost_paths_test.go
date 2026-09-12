@@ -25,6 +25,11 @@ import (
 // heavySliceExpr is an expression every existing bound admits — comfortably
 // inside [v1.DefaultCostLimit] — repeated enough times to pass
 // [v1.DefaultWorkflowSliceCost]. It is the conformance corpus's own `heavy`.
+//
+// Its 10,000 elements are the largest input the element bound admits, which is
+// why the environment below is built with [atABound]: see
+// [TestASegmentOfSkippedStepsSuspendsOnTheCostItSpent]'s fixture for the whole
+// reasoning.
 const heavySliceExpr = "lists.range(10000).map(i, i + 1).size()"
 
 // TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath is the claim, once per
@@ -102,7 +107,7 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 				nodes[i] = build(fmt.Sprintf("step-%03d", i))
 			}
 
-			env := newWaitEnv(t)
+			env := atABound(newWaitEnv(t))
 			env.OnUpsertMemo(mock.Anything).Return(nil).Maybe()
 
 			carried := carriedState(t, env, &v1.RunState{
