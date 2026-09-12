@@ -100,9 +100,9 @@ with the diff's reach. The `flowstate-verify` skill owns the selection and the
 reporting contract.
 
 ```sh
-GOMEMLIMIT=1GiB go test -timeout 120s ./pkg/flowstate/v1/...  # bounded targeted run
-go run ./tools/gate                                            # diff-scoped gate; the default before a PR
-make check                                                     # full CI-parity rehearsal
+GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...  # bounded targeted run
+go run ./tools/gate                                                  # diff-scoped gate; the default before a PR
+make check                                                           # full CI-parity rehearsal
 ```
 
 Gotchas the tree does not announce:
