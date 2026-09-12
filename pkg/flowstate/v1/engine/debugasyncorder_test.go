@@ -126,3 +126,75 @@ func laterStepRan(t *testing.T, ask bool) bool {
 	// The last step waits, so the clock says whether the run reached it.
 	return env.Now().Sub(start) >= laterStepDuration
 }
+
+// TestADebugJoinedFailureSurvivesAContinuation is the other way a held failure
+// can change what a run computes, and it is worse than the reordering above: a
+// segment that suspends past one leaves it behind in a segment that has ended,
+// so a run that must fail resumes and completes.
+//
+// The shape is exact, because the boundary is: the ask must arrive while work
+// is outstanding, the join must happen at a node with *later siblings* — the
+// continuation check declines on the last node — and the budget must run out on
+// one of those siblings. So: a failing `async:` step, a wait long enough for
+// the ask to land, and then several steps, with a budget spent partway through
+// them.
+//
+// The claim is that the run still fails. Whichever segment raises it, a
+// non-tolerated `async:` failure is not something a debugger can make vanish.
+func TestADebugJoinedFailureSurvivesAContinuation(t *testing.T) {
+	t.Parallel()
+
+	steps := []*v1.Node{
+		{
+			Id:     "failing",
+			Async:  true,
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}},
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: "http",
+				Inputs: map[string]*v1.Value{
+					"url":    v1.NewLiteral("http://127.0.0.1:1/"),
+					"method": v1.NewLiteral("GET"),
+				},
+			}},
+		},
+		// Long enough for the ask to arrive while `failing` is outstanding, so
+		// the join happens at the boundary of the step after it.
+		{Id: "slow", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+			Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Minute)},
+		}}},
+		// Siblings after the join, so the continuation check is reachable at
+		// all, and so the budget can run out with more of them left.
+		{Id: "a", Kind: &v1.Node_Value{Value: v1.NewLiteral("a")}},
+		{Id: "b", Kind: &v1.Node_Value{Value: v1.NewLiteral("b")}},
+		{Id: "c", Kind: &v1.Node_Value{Value: v1.NewLiteral("c")}},
+	}
+
+	env := newWaitEnv(t)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
+	}, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow: &v1.Workflow{
+			Name:    "async-failure-across-continuation",
+			Profile: v1.CurrentProfile,
+			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
+				{Claims: map[string]string{"role": "sre"}},
+			}},
+			Steps: steps,
+		},
+		// Spent on `slow` and `a`, so the check fires at `a` — after the join
+		// that holds the failure, and with `b` and `c` still to come.
+		StepsBudget: 2,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err,
+		"a debug ask let a failed async step vanish across a continuation: the run completed")
+
+	// And it names the step that failed, rather than being some incidental
+	// error that would satisfy the assertion above without being this defect.
+	require.Contains(t, err.Error(), "failing")
+}

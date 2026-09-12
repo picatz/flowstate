@@ -589,7 +589,8 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		v1.SpendWebhookVerificationWork(webhookHeaders(req.Header), body, r.now())
 		r.refuse(req, "no such webhook", "path", req.URL.Path)
 		writeWebhookRefusal(w)
-		r.refusedAtRoute(req.Context(), nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND)
+		r.refusedAtRoute(context.WithoutCancel(req.Context()), nil, nil,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND)
 
 		return
 	}
@@ -599,7 +600,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.refuse(req, "the delivery did not verify",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
 		writeWebhookRefusal(w)
-		r.refusedAtRoute(req.Context(), route, nil, webhookDenyCode(err))
+		r.refusedAtRoute(context.WithoutCancel(req.Context()), route, nil, webhookDenyCode(err))
 
 		return
 	}
@@ -1202,6 +1203,15 @@ func writeWebhookRefusal(w http.ResponseWriter) {
 		flusher.Flush()
 	}
 }
+
+// Answering first puts the record after a point the *sender* controls: Go arms
+// its background close-detection read before a handler runs once the body has
+// been consumed, so a client that reads the flushed refusal and closes cancels
+// the request context while the record is still being written. The ledger has
+// already spent the interval's slot by then, so an aborting prober would
+// suppress the whole window for that route and class rather than one record.
+// Both post-answer calls therefore carry the request's values without its
+// cancellation.
 
 // writeWebhookJSON answers an accepted delivery.
 func writeWebhookJSON(w http.ResponseWriter, status int, accepted AcceptedDelivery) {

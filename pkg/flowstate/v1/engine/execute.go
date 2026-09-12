@@ -383,7 +383,22 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			// The same conditions as the check after a step that ran: only at
 			// the run's own representable level, never on the last node, and
 			// never with async work this scope started still outstanding.
-			if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
+			// Behind the same version gate as every other continuation this
+			// change added, and for the reason stated at
+			// [workflowSliceCostChange]: a continuation is a history command,
+			// and emitting one a recorded history does not hold is
+			// nondeterministic. [executor.yieldWorkflow] and
+			// [executor.chargeWorkflowCost] both check this; so must the
+			// boundary they exist to reach, since two of [executor.shouldSuspend]'s
+			// arms answer regardless of the budget.
+			//
+			// And never while a failure is waiting to be raised: suspending
+			// here would carry the position forward and leave the failure
+			// behind in a segment that has ended, so a run that must fail
+			// would resume and complete. The remaining nodes are capped, so
+			// declining to suspend for the rest of this scope is bounded.
+			if e.sliceCost != nil && deferred == nil &&
+				susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 				e.setFrame(depth, i+1)
 
 				return errContinueAsNew
@@ -473,7 +488,11 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// with a coroutine still running would hand the next segment a scope
 		// whose outstanding work exists in neither of them. The scope-end join
 		// below is a few steps away at most, since the list is capped.
-		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
+		// deferred, for the reason the skipped-step boundary above states: a
+		// segment that suspended past a held failure would leave it in a
+		// segment that has ended, and the run would resume and complete.
+		if deferred == nil &&
+			susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 			e.setFrame(depth, i+1)
 
 			return errContinueAsNew

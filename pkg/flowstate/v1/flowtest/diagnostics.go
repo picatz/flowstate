@@ -338,6 +338,10 @@ type problems struct {
 	// bounds how many are positioned, so this changes nothing about a load that
 	// stays inside it; it is here so that one rule states the bound for both
 	// passes over a document. See [maxLookupSteps].
+	//
+	// Set once, where the collector is built: a lookup that runs out lands on
+	// zero as often as not, so a "refill when zero" sentinel would hand the
+	// next problem a full budget and spend nothing across the load at all.
 	lookups int
 
 	// bytes is the message text kept so far, bounded by [MaxLoadProblemBytes].
@@ -367,7 +371,7 @@ type problems struct {
 // door builds a [File] rather than parsing one, so its refusals are the same
 // refusals with no position to give them.
 func newProblems(doc *document) *problems {
-	return &problems{doc: doc}
+	return &problems{doc: doc, lookups: maxLookupSteps}
 }
 
 // wrote records that path's value came from file rather than from the document
@@ -449,9 +453,6 @@ func (p *problems) record(r site, atKey bool, message string) {
 		doc = p.elsewhereDoc
 	}
 	if doc != nil {
-		if p.lookups == 0 {
-			p.lookups = maxLookupSteps
-		}
 		locate := doc.positionOf
 		if atKey {
 			locate = doc.positionOfKey

@@ -236,13 +236,6 @@ func walkFieldPath(msg protoreflect.Message, path string) fieldWalk {
 		// panics — from a violation an author's own `labels:` produced, which is
 		// every path through validation (#1119). The value's kind is the one
 		// this step is about.
-		// A map field's own kind is the synthetic map-entry *message* protobuf
-		// generates for it, whatever the entries hold, so asking the field
-		// answers about the pair rather than about what the walk just selected.
-		// `labels["..."]` selects a string, and descending into it as a message
-		// panics — from a violation an author's own `labels:` produced, which is
-		// every path through validation (#1119). The value's kind is the one
-		// this step is about.
 		kind := fd.Kind()
 		if fd.IsMap() {
 			kind = fd.MapValue().Kind()
