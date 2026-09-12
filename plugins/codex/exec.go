@@ -81,6 +81,25 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, sdk.InvalidInput("reset_working_context requires working_context: there is nothing to reset")
 	}
 
+	// And a sandbox that permits writing, because the reset writes: it reverts
+	// tracked content to HEAD and deletes untracked files and directories
+	// outright, which is the one effect here nobody can undo.
+	//
+	// That the agent is not the one writing is true and is not the question the
+	// sandbox answers. SANDBOX_MODE_READ_ONLY is the operator's ceiling as much
+	// as the author's request — narrowSandbox exists so a Flowfile can narrow
+	// what deployment configuration allows and never widen it — so a task input
+	// that mutates the operator's checkout beneath a ceiling reading "read
+	// only" is the Flowfile widening it by another name (#1119). An author who
+	// wants the reset asks for the mode that admits its effect, and the
+	// operator's policy decides whether they may have it.
+	if resetRequested && sandbox == codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY {
+		return nil, sdk.InvalidInput(
+			"reset_working_context discards tracked and untracked changes in working_context, so it " +
+				"needs a sandbox_mode that permits writing; SANDBOX_MODE_READ_ONLY is this task's " +
+				"default, and the operator's policy decides whether a writable mode is available")
+	}
+
 	// A writable run must say where it may write. Without a working_context
 	// there is no --cd and no cmd.Dir, so the child would inherit this plugin
 	// process's own current directory - which the host sets to the private
