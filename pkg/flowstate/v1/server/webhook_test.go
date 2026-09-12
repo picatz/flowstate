@@ -363,9 +363,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 	)
 	start := make(chan struct{})
 	for range arrivals {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			<-start
 			resp := deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed)
@@ -381,7 +379,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 			mu.Lock()
 			results = append(results, accepted)
 			mu.Unlock()
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

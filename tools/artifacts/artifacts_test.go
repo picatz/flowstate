@@ -237,7 +237,7 @@ func TestEveryGoTargetsExecutableIsRecognised(t *testing.T) {
 	built := 0
 
 	var unrecognised []string
-	for _, target := range strings.Fields(string(targets)) {
+	for target := range strings.FieldsSeq(string(targets)) {
 		goos, goarch, ok := strings.Cut(target, "/")
 		if !ok {
 			continue

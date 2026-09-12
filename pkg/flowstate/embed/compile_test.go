@@ -56,8 +56,7 @@ steps:
 
 	// err wraps diags, so a caller checking only err still sees the same
 	// failure errors.As would give them from diags directly.
-	var wrapped Diagnostics
-	if !errors.As(err, &wrapped) {
+	if _, ok := errors.AsType[Diagnostics](err); !ok {
 		t.Errorf("Compile: err does not wrap Diagnostics via errors.As")
 	}
 }

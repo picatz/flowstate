@@ -64,10 +64,7 @@ func wantRetryBackoffSum(failures int) time.Duration {
 	var total time.Duration
 	for attempt := 1; attempt <= failures; attempt++ {
 		d := time.Duration(float64(v1.DefaultRetryInitialInterval) * math.Pow(v1.DefaultRetryBackoff, float64(attempt-1)))
-		if d > v1.DefaultRetryMaxInterval {
-			d = v1.DefaultRetryMaxInterval
-		}
-		total += d
+		total += min(d, v1.DefaultRetryMaxInterval)
 	}
 	return total
 }

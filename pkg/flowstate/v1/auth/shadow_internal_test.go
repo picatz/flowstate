@@ -80,7 +80,7 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 		"JWKSFile":       "entries sharing an issuer must already agree on it (Policy.Validate)",
 	}
 
-	fields := reflect.VisibleFields(reflect.TypeOf(TrustedIssuer{}))
+	fields := reflect.VisibleFields(reflect.TypeFor[TrustedIssuer]())
 	for _, field := range fields {
 		_, isCompared := compared[field.Name]
 		_, isIgnored := ignored[field.Name]
@@ -108,7 +108,7 @@ func TestClaimRuleFieldsAreAccountedFor(t *testing.T) {
 		"Claim": "claimRulesCover pairs rules by it before ruleImplies is asked anything",
 	}
 
-	fields := reflect.VisibleFields(reflect.TypeOf(ClaimRule{}))
+	fields := reflect.VisibleFields(reflect.TypeFor[ClaimRule]())
 	for _, field := range fields {
 		_, isCompared := compared[field.Name]
 		_, isIgnored := ignored[field.Name]

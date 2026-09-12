@@ -287,15 +287,13 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	// The pump drains every line regardless of the limiter below: a full pipe
 	// looks like a hung plugin, and only what gets *relayed* into the host's
 	// own log is bounded.
-	inst.pumps.Add(1)
-	go func() {
-		defer inst.pumps.Done()
+	inst.pumps.Go(func() {
 		relay, flush := stderrRelayFunc(cfg, log, inst.stderrSecrets)
 		pumpPluginLog(stderrR, cfg.MaxStderrLine, relay)
 		if summary := flush(); summary != "" {
 			log.Warn(summary)
 		}
-	}()
+	})
 
 	handshake, err := inst.handshake(cfg, stdoutR, log)
 	if err != nil {
@@ -396,9 +394,7 @@ func (i *instance) handshake(cfg Config, stdout io.Reader, log *slog.Logger) (pr
 	// anyway costs one goroutine and prevents a plugin that breaks the promise
 	// from blocking on a full pipe, which would look like a hung plugin rather
 	// than a noisy one.
-	i.pumps.Add(1)
-	go func() {
-		defer i.pumps.Done()
+	i.pumps.Go(func() {
 		var reported int
 		pumpPluginLog(reader, cfg.MaxStderrLine, func(line string, truncated bool) {
 			if reported++; reported <= 10 {
@@ -407,7 +403,7 @@ func (i *instance) handshake(cfg Config, stdout io.Reader, log *slog.Logger) (pr
 					"line", line, "truncated", truncated, "scrubbed", scrubbed)
 			}
 		})
-	}()
+	})
 
 	return handshake, nil
 }
@@ -469,8 +465,7 @@ func (i *instance) exitReason(grace time.Duration) error {
 		}
 	}
 
-	var exit *exec.ExitError
-	if errors.As(i.waitErr, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](i.waitErr); ok {
 		return fmt.Errorf("%w: %s, printing no handshake line", ErrExited, exit.ProcessState)
 	}
 	if i.waitErr != nil {

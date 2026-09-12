@@ -83,10 +83,8 @@ func resolveOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
 	}
 
 	format := OutputFormat(strings.ToLower(strings.TrimSpace(requested)))
-	for _, accepted := range outputFormats {
-		if format == accepted {
-			return format, nil
-		}
+	if slices.Contains(outputFormats, format) {
+		return format, nil
 	}
 
 	names := make([]string, 0, len(outputFormats))

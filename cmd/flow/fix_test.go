@@ -273,7 +273,7 @@ func reportsFor(t *testing.T, out, path string) []report {
 	t.Helper()
 
 	var reports []report
-	for _, text := range strings.Split(out, "\n") {
+	for text := range strings.SplitSeq(out, "\n") {
 		rest, named := strings.CutPrefix(text, path+":")
 		if !named {
 			continue

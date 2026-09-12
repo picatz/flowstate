@@ -143,9 +143,7 @@ func TestRevokeKeyDoesNotRaceInFlightSigning(t *testing.T) {
 
 	// Minters, racing the rotation below.
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -171,7 +169,7 @@ func TestRevokeKeyDoesNotRaceInFlightSigning(t *testing.T) {
 				// call t.FailNow off the test's own goroutine.
 				assert.NotEmpty(t, issuer.KeySet().Keys)
 			}
-		}()
+		})
 	}
 
 	// Rotate and immediately revoke, repeatedly, which is the incident

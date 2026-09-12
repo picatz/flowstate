@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -1545,9 +1546,7 @@ func frozen(scope *v1.Scope) *v1.Scope {
 		outputs = &v1.Workflow_StepOutputs{
 			StepValues: make(map[string]*v1.Node_Outputs, len(scope.GetOutputs().GetStepValues())),
 		}
-		for id, value := range scope.GetOutputs().GetStepValues() {
-			outputs.StepValues[id] = value
-		}
+		maps.Copy(outputs.StepValues, scope.GetOutputs().GetStepValues())
 	}
 
 	return &v1.Scope{

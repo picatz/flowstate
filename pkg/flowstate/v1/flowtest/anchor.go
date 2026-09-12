@@ -178,7 +178,7 @@ func (a caseAnchor) pathOf(field string) (loc, bool) {
 	}
 
 	path := a.source.path
-	for _, step := range strings.Split(field, ".") {
+	for step := range strings.SplitSeq(field, ".") {
 		path = path.field(step)
 	}
 
