@@ -174,3 +174,53 @@ func TestADefaultTheCompilerWritesIsNotRefusedAtSubmit(t *testing.T) {
 	assert.Contains(t, ds[0].Message, "must be greater than or equal to 1")
 	assert.Equal(t, "fetch", ds[0].Step)
 }
+
+// TestAScalarMapViolationIsPositionedRatherThanPanicking is #1119's crash, and
+// it is the whole of validation that it takes down: `labels:` is a
+// `map<string, string>`, a value over its `max_len` is a violation any author
+// can write by accident, and positioning it walked into the map expecting to
+// find a message there.
+//
+// A protobuf map field's own kind is the synthetic map-entry message generated
+// for the pair, whatever the entries hold, so the guard that was meant to stop
+// the walk at a scalar waved a string through and `Value.Message()` panicked on
+// it. Every surface that validates reaches this — `flow validate`, the LSP, the
+// Validate and Compile RPCs — so the refusal owed to the author was a crash
+// instead.
+//
+// Both halves of the map are covered because they are separate rules on
+// separate paths: a key too long is reported against `labels["…"]` as a key,
+// and a value too long against the same path as a value.
+func TestAScalarMapViolationIsPositionedRatherThanPanicking(t *testing.T) {
+	t.Parallel()
+
+	for name, label := range map[string]string{
+		"an oversized value": fmt.Sprintf("  team: %s\n", strings.Repeat("v", 257)),
+		"an oversized key":   fmt.Sprintf("  %s: platform\n", strings.Repeat("k", 129)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			src := "edition: v2026.3\nname: labelled\nlabels:\n" + label +
+				"steps:\n  - id: hello\n    log:\n      message: hi\n"
+
+			// The claim is that this returns rather than panicking; the
+			// diagnostic it returns is the second half.
+			ds, err := flowfile.ValidateSource([]byte(src))
+			require.NoError(t, err)
+
+			require.NotEmpty(t, ds, "an out-of-bounds label was accepted:\n%s", src)
+			assert.Contains(t, ds.Error(), "labels",
+				"the diagnostic must name the field the author wrote")
+		})
+	}
+
+	// The bound reached rather than merely exceeded: a label at exactly its
+	// limit is legal, so the refusals above are the rule and not the checker
+	// refusing every `labels:` it sees.
+	src := "edition: v2026.3\nname: labelled\nlabels:\n  team: " + strings.Repeat("v", 256) +
+		"\nsteps:\n  - id: hello\n    log:\n      message: hi\n"
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, ds, "a label at exactly its limit was refused:\n%s", ds.Error())
+}
