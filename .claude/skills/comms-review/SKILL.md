@@ -44,6 +44,13 @@ but outside this change; or mark it stale when the referenced code no longer
 exists. Repair the mechanism the evidence identifies rather than obeying a
 suggested patch because the diagnosis was useful.
 
+A finding is owed one disposition, on the head where it arrived. Only a
+material defect earns a new head; an advisory or out-of-scope finding is
+answered or deferred to a scoped issue and the head stands. A reviewer
+repeating a dispositioned finding on a later head is not a new finding while
+that disposition still holds; if the head reintroduced the defect or the fix
+did not cure it, it is.
+
 Two rounds that keep producing new material findings mean the change, not the
 review, needs rethinking: stop, name the recurring root cause, and ask.
 

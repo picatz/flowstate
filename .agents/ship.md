@@ -8,15 +8,15 @@ evidence because the change looks small.
 2. Push a focused branch and open a pull request **without auto-merge**. Never
    use `gh pr merge --auto` or enable GitHub auto-merge.
 3. Finish all edits before requesting review. Record the intended final
-   40-character head, request Codex and Copilot at most once each per pull
-   request and only after recording that head, and obtain at least one distinct
-   provider-neutral AI review covering both code and security on it. A later fix
-   requires another provider-neutral review, not another vendor request. The
-   independent evidence must identify the reviewer, full head SHA,
-   `code-security` scope, and PASS/no-actionable-findings verdict.
-   Codex and Copilot availability is optional: do not wait, retry, or treat
-   quota/unavailability as a project defect or as PASS. Their feedback is not
-   optional once it arrives.
+   40-character head and obtain one provider-neutral AI review covering both
+   code and security on it: a fresh-context review that carries this
+   repository's rubrics, such as the `flowstate-reviewer` subagent on Claude
+   Code. That review is the evidence, and it must identify the reviewer, full
+   head SHA, `code-security` scope, and PASS/no-actionable-findings verdict.
+   Do not request a vendor review bot. One that reviews on its own is input,
+   not a gate: read what it says, disposition it once for the head it reviewed,
+   and never wait, retry, or treat its silence, quota, or absence as either a
+   defect or a PASS.
 4. Before merging, read every response that has arrived, including suppressed
    suggestions, checks, and review threads. Give every substantive suggestion
    one visible classification: fixed with evidence, false positive with
@@ -25,16 +25,29 @@ evidence because the change looks small.
    re-reviewed. Resolve a thread only after its disposition is visible. A late
    response invalidates the final attestation below; if one arrives after merge,
    triage it promptly into a focused fix or issue rather than ignoring it.
-5. Any pushed fix invalidates prior review evidence. Obtain a new independent
-   code-and-security review on the new exact head. Post its evidence and this
-   machine-readable owner attestation in one PR comment:
+5. Only a material defect in this change earns a new head: something wrong in
+   correctness, security, durable state, or a documented claim the code does
+   not support. Fix that and review the new head. That review concentrates its
+   effort on the fix and what the fix touches, and its verdict still covers the
+   complete base-to-head diff, because the head is what gets attested and a
+   delta says nothing about unchanged code the fix now interacts with. An
+   advisory, stylistic, or out-of-scope finding is dispositioned on
+   the head where it arrived, or becomes a scoped follow-up issue; it does not
+   restart these gates, and neither does a bot repeating a finding whose
+   disposition still holds on the current head. A repetition after a push that
+   reintroduced the defect, or that the fix did not actually cure, is a finding
+   again and gets normal material-defect treatment. Post the review evidence
+   and this machine-readable owner
+   attestation in one PR comment, authored by the repository owner, since
+   `shipcheck` reads the comment's `OWNER` association and a comment posted
+   under a bot identity does not carry it:
 
    `<!-- flowstate-independent-review:v1 {"headSha":"FULL_SHA","reviewer":"REVIEWER_IDENTITY","scope":"code-security","status":"pass"} -->`
 
    Wait for every applicable check, including non-required checks—not merely
    GitHub's required checks. Run expensive CI only once per intended final
    head. A stale review, unresolved or undispositioned finding, semantic
-   uncertainty, or red/pending check still blocks. Optional-provider
+   uncertainty, or red/pending check still blocks. A vendor bot's silence or
    unavailability is never represented as PASS.
 6. Run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. It must
    pass on the unchanged final head.
