@@ -244,3 +244,67 @@ func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 		t.Fatal("a call with no deadline of its own was still running 15s in, want it bounded by CallTimeout")
 	}
 }
+
+// TestCallContextCapsACallerDeadlineAtTheHostCeiling is the other direction of
+// #1130's rule, and the one it left open (#1119).
+//
+// Passing the caller's deadline through untouched is right for the case that
+// rule was written for — a step whose `timeout:` legitimately exceeds thirty
+// seconds — and wrong as the whole answer, because the caller is not the
+// operator. A step's `timeout:` arrives inside a submitted workflow, the schema
+// checks it for being greater than zero and nothing else, and the call it
+// becomes holds a plugin RPC and the activity slot beneath it open for exactly
+// as long as it names. So the deadline the author chose governs beneath a
+// ceiling the deployment chose, rather than instead of it.
+func TestCallContextCapsACallerDeadlineAtTheHostCeiling(t *testing.T) {
+	t.Parallel()
+
+	p := &Plugin{cfg: Config{CallTimeout: DefaultCallTimeout, MaxCallTimeout: DefaultMaxCallTimeout}}
+
+	// The shape a submitted workflow can ask for today: a `timeout:` with no
+	// upper bound in the schema.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*24*time.Hour)
+	defer cancel()
+
+	callCtx, callCancel := p.callContext(ctx)
+	defer callCancel()
+
+	deadline, ok := callCtx.Deadline()
+	require.True(t, ok, "a call under a month-long caller deadline carries no deadline of its own")
+
+	remaining := time.Until(deadline)
+	require.LessOrEqual(t, remaining, DefaultMaxCallTimeout,
+		"a workflow-authored deadline outlasted the host's ceiling: the step decides within "+
+			"the deployment's bound, not instead of it")
+
+	// Reached as well as not exceeded: the ceiling is the answer here, rather
+	// than some shorter number that would also satisfy the bound.
+	require.Greater(t, remaining, DefaultMaxCallTimeout-time.Minute)
+}
+
+// TestCallContextKeepsADeadlineBeneathTheCeiling is what the ceiling must not
+// break: #1130's own case, a step allowed far more than CallTimeout and less
+// than the ceiling, still governed by the step.
+func TestCallContextKeepsADeadlineBeneathTheCeiling(t *testing.T) {
+	t.Parallel()
+
+	p := &Plugin{cfg: Config{CallTimeout: DefaultCallTimeout, MaxCallTimeout: DefaultMaxCallTimeout}}
+
+	// A codex turn: minutes, far past CallTimeout, nowhere near the ceiling.
+	const budget = 10 * time.Minute
+
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	callCtx, callCancel := p.callContext(ctx)
+	defer callCancel()
+
+	deadline, ok := callCtx.Deadline()
+	require.True(t, ok)
+
+	require.Greater(t, time.Until(deadline), DefaultCallTimeout,
+		"the host's ordinary bound is capping a step that asked for longer (#1130)")
+
+	want, _ := ctx.Deadline()
+	require.Equal(t, want, deadline, "the caller's own deadline is the one that governs beneath the ceiling")
+}
