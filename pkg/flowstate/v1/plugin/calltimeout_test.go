@@ -308,3 +308,39 @@ func TestCallContextKeepsADeadlineBeneathTheCeiling(t *testing.T) {
 	want, _ := ctx.Deadline()
 	require.Equal(t, want, deadline, "the caller's own deadline is the one that governs beneath the ceiling")
 }
+
+// TestCallContextCapsANoDeadlineCallAtTheHostCeiling is the other half of
+// [TestCallContextCapsACallerDeadlineAtTheHostCeiling], and the half that was
+// missing: a call arriving with no deadline of its own is still a call, so
+// [Config.MaxCallTimeout]'s claim to be the most any call may take has to hold
+// for it too.
+//
+// An operator who lowers the ceiling beneath [Config.CallTimeout] means the
+// lower number. Before the clamp, such a call took the no-deadline branch and
+// received CallTimeout — thirty seconds under a ceiling the deployment had set
+// to five — so a stalled plugin held its RPC and the activity slot under it
+// well past the bound its operator had written down.
+func TestCallContextCapsANoDeadlineCallAtTheHostCeiling(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = 5 * time.Second
+
+	// The ceiling deliberately beneath CallTimeout, which is the only
+	// arrangement in which the two can disagree.
+	p := &Plugin{cfg: Config{CallTimeout: DefaultCallTimeout, MaxCallTimeout: ceiling}}
+	if ceiling >= DefaultCallTimeout {
+		t.Fatalf("this fixture needs a ceiling beneath CallTimeout, got %s and %s", ceiling, DefaultCallTimeout)
+	}
+
+	callCtx, cancel := p.callContext(context.Background())
+	defer cancel()
+
+	deadline, ok := callCtx.Deadline()
+	if !ok {
+		t.Fatal("a call with no deadline of its own was left unbounded, want the host ceiling")
+	}
+
+	if remaining := time.Until(deadline); remaining > ceiling {
+		t.Errorf("the call was left %s, want no more than MaxCallTimeout (%s)", remaining, ceiling)
+	}
+}

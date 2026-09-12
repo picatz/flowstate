@@ -376,7 +376,13 @@ func (p *Plugin) callContext(ctx context.Context) (context.Context, context.Canc
 		// outlast the deployment.
 		return context.WithTimeout(ctx, p.cfg.maxCallTimeout())
 	}
-	return context.WithTimeout(ctx, p.cfg.CallTimeout)
+	// Beneath the ceiling too, for the same reason: [Config.MaxCallTimeout]
+	// says it is the most any call may take, and a call that arrived with no
+	// deadline is still a call. An operator who lowers the ceiling below
+	// [Config.CallTimeout] means the lower number — clamping here is what makes
+	// that true, rather than refusing the pair at startup and making a
+	// deployment reason about which of its two knobs is smaller.
+	return context.WithTimeout(ctx, min(p.cfg.CallTimeout, p.cfg.maxCallTimeout()))
 }
 
 // CheckHealth polls the plugin now, rather than waiting for the next scheduled
