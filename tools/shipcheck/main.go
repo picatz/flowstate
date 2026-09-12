@@ -227,6 +227,11 @@ func loadLatestReviewCommentUpdate(repo string, number int) (string, error) {
 	if err := json.Unmarshal(out, &comments); err != nil {
 		return "", fmt.Errorf("decode latest inline review comment: %w", err)
 	}
+	// A JSON null decodes into a nil slice without error; it is a missing
+	// list, not proof that no inline comment was edited.
+	if comments == nil {
+		return "", fmt.Errorf("decode latest inline review comment: the list is null, not an array")
+	}
 	if len(comments) == 0 {
 		return "", nil
 	}

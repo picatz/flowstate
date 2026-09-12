@@ -433,17 +433,22 @@ func reviewRulesREST(repo, base string) (reviewRules, error) {
 }
 
 // classicReviewRules reads classic branch protection, which rulesets did
-// not replace. The branch document says whether the branch is protected at
-// all, so an unprotected branch costs one request; a protected branch whose
-// protection document cannot be read is an error, not "no requirement".
+// not replace. The branch document's `protection.enabled` says whether
+// classic protection exists at all (its `protected` flag is also true under
+// a ruleset, so it cannot tell the two apart), so a branch without classic
+// protection costs one request that any reader may make. A branch with it
+// whose protection document cannot be read, as an integration token
+// without administration cannot, is an error, not "no requirement".
 func classicReviewRules(repo, base string) (reviewRules, error) {
 	var branch struct {
-		Protected bool `json:"protected"`
+		Protection struct {
+			Enabled bool `json:"enabled"`
+		} `json:"protection"`
 	}
 	if err := restGet(fmt.Sprintf("repos/%s/branches/%s", repo, base), &branch); err != nil {
 		return reviewRules{}, err
 	}
-	if !branch.Protected {
+	if !branch.Protection.Enabled {
 		return reviewRules{}, nil
 	}
 	var protection struct {
@@ -478,8 +483,12 @@ func rulesetReviewRules(repo, base string) (reviewRules, error) {
 			RequireLastPushApproval      bool `json:"require_last_push_approval"`
 		} `json:"parameters"`
 	}
-	if err := restGet(fmt.Sprintf("repos/%s/rules/branches/%s", repo, base), &rules); err != nil {
+	endpoint := fmt.Sprintf("repos/%s/rules/branches/%s", repo, base)
+	if err := restGet(endpoint, &rules); err != nil {
 		return reviewRules{}, err
+	}
+	if rules == nil {
+		return reviewRules{}, fmt.Errorf("decode %s: the rule list is null, not an array", endpoint)
 	}
 	var out reviewRules
 	for _, rule := range rules {

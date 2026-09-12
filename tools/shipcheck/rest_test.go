@@ -76,7 +76,11 @@ func restFixtures(t *testing.T, dir string) {
 		{"name":"CodeQL","status":"completed","conclusion":"success","started_at":"2026-09-12T00:00:01Z","completed_at":"2026-09-12T00:00:02Z","check_suite":{"id":9}}]}`)
 	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"COMMENTED","submitted_at":"2026-09-12T00:00:05Z"}]`)
 	writeFixture(t, dir, "rules.json", `[{"type":"deletion"},{"type":"non_fast_forward"}]`)
-	writeFixture(t, dir, "branch.json", `{"name":"main","protected":false}`)
+	// As picatz/flowstate reads today: protected by rulesets, classic
+	// protection off, and the protection document unreadable to an
+	// integration token.
+	writeFixture(t, dir, "branch.json", `{"name":"main","protected":true,"protection":{"enabled":false,"required_status_checks":{"enforcement_level":"off","contexts":[]}}}`)
+	writeFixture(t, dir, "protection.json", `{"message":"Resource not accessible by integration","status":"403"`)
 	writeFixture(t, dir, "comments.json", `[{"user":{"login":"picatz"},"author_association":"OWNER","created_at":"2026-09-12T00:00:09Z","updated_at":"2026-09-12T00:00:09Z","html_url":"https://github.com/picatz/flowstate/pull/7#issuecomment-1",
 		"body":"Independent AI code/security review by flowstate-reviewer for HEAD: PASS with no actionable findings.\n\n<!-- flowstate-independent-review:v1 {\"headSha\":\"HEAD\",\"reviewer\":\"flowstate-reviewer\",\"scope\":\"code-security\",\"status\":\"pass\"} -->"}]`)
 	writeFixture(t, dir, "threads.json", `[{"resolved":true,"outdated":true,"path":"AGENTS.md","line":null,"comment_ids":[1,2]}]`)
@@ -233,6 +237,7 @@ func TestRESTFallbackRejectsWhatItCannotRead(t *testing.T) {
 		{name: "null thread list", fixture: "threads.json", body: `null`, want: "no thread list", threads: true},
 		{name: "null review list", fixture: "reviews.json", body: `null`, want: "null, not an array"},
 		{name: "null check-run envelope list", fixture: "check-runs.json", body: `{"total_count":0,"check_runs":null}`, want: "null, not an array"},
+		{name: "null rule list", fixture: "rules.json", body: `null`, want: "null, not an array"},
 		{name: "decisive review without a login", fixture: "reviews.json", body: `[{"user":{},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`, want: "no reviewer login"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,12 +282,19 @@ func TestRESTFallbackFailsClosedOnPredicatesItCannotEvaluate(t *testing.T) {
 
 // TestRESTFallbackReadsClassicBranchProtection: a review requirement set
 // through classic branch protection rather than a ruleset counts the same
-// way, and a protected branch whose protection document cannot be read is
-// an error rather than a branch with no requirement.
+// way, and a branch with classic protection whose protection document
+// cannot be read is an error rather than a branch with no requirement. The
+// default fixtures pin the other direction: a branch protected only by
+// rulesets, whose protection document is unreadable, loads without ever
+// asking for that document, which is what makes the fallback usable from a
+// Claude Code session against this repository.
 func TestRESTFallbackReadsClassicBranchProtection(t *testing.T) {
 	dir := installFakeGH(t, fakeGH)
 	restFixtures(t, dir)
-	writeFixture(t, dir, "branch.json", `{"name":"main","protected":true}`)
+	if pr, err := loadPullRequest("picatz/flowstate", 7); err != nil || pr.ReviewDecision != "" {
+		t.Fatalf("ruleset-only branch with an unreadable classic document: decision=%q err=%v, want no decision and no error", pr.ReviewDecision, err)
+	}
+	writeFixture(t, dir, "branch.json", `{"name":"main","protected":true,"protection":{"enabled":true}}`)
 	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`)
 	decisionWith := func(protection string) string {
 		t.Helper()
@@ -322,12 +334,12 @@ case "$*" in
   "api graphql"*"reviews(first"*) printf '{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}}' ;;
   "api graphql"*"reviewThreads(first"*) printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}' ;;
   *"/pulls/7/comments -f sort=updated"*) printf '[]' ;;
-  *) echo "REST asked while GraphQL answers: gh $*" >&2; exit 3 ;;
+  *) echo "gh $*" >> "$SHIPCHECK_FIXTURES/rest-calls"; echo "REST asked while GraphQL answers: gh $*" >&2; exit 3 ;;
 esac
 `
 
 func TestGraphQLIsAskedFirst(t *testing.T) {
-	installFakeGH(t, graphQLOnlyGH)
+	dir := installFakeGH(t, graphQLOnlyGH)
 	pr, err := loadPullRequest("picatz/flowstate", 7)
 	if err != nil {
 		t.Fatalf("loadPullRequest with GraphQL answering: %v", err)
@@ -341,6 +353,12 @@ func TestGraphQLIsAskedFirst(t *testing.T) {
 	}
 	if fallbackNoted {
 		t.Fatal("the REST fallback was noted although GraphQL answered every query")
+	}
+	// Order, not just outcome: a wrapper that asked REST first and fell back
+	// to GraphQL would also reach this point, so the fake records every REST
+	// call it refused and there must be none.
+	if calls, err := os.ReadFile(filepath.Join(dir, "rest-calls")); err == nil {
+		t.Fatalf("REST was asked while GraphQL answered:\n%s", calls)
 	}
 }
 

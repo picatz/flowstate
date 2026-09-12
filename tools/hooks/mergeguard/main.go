@@ -50,6 +50,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -1040,7 +1041,10 @@ type restReviewThread struct {
 // as clean, matching the GraphQL walk. Each thread is named by the URL of
 // its first comment and its path:line, which is what the route exposes.
 func unresolvedThreadsREST(ctx context.Context, client *http.Client, rest, token, owner, repo string, number int) ([]thread, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/ccr/review_threads", strings.TrimRight(rest, "/"), owner, repo, number)
+	// owner and repo come from the tool call; mergeTarget keeps them free of
+	// slashes and whitespace, and escaping keeps every other byte a path
+	// segment rather than a query or fragment.
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/ccr/review_threads", strings.TrimRight(rest, "/"), neturl.PathEscape(owner), neturl.PathEscape(repo), number)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)

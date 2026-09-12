@@ -218,17 +218,21 @@ and whether a deterministic mechanism can prevent it more reliably.
   commit, or destructive one, so nothing the host would have asked about rides
   in unreviewed. Claude Code matches each subcommand of a compound command
   separately, so `go test ./... && git push` still prompts for the push. What
-  the list does pre-approve is running the repository's own code: `go test`
-  executes the checkout's tests by design, and a flag such as `go test -exec`
-  or `go build -toolexec` only changes which repository-resident binary runs,
-  while writing such a binary is not on the list.
+  the list does pre-approve is running and building the repository's own
+  code: `go test` executes the checkout's tests by design, and `go build`
+  writes binaries from it. A flag such as `go test -exec` or `go build
+  -toolexec` names another program to run, but the list creates no program
+  that was not already runnable; the surface is the one a contributor's own
+  test run has.
 - `.claude/agents/flowstate-reviewer.md` is the fresh-context reviewer: delegate
   a diff or PR head to it for the exact-head independent review, and to
   `flowstate-verifier` for a gate or full run whose output should stay out of
-  the main context. The reviewer is given no editing tool and runs in a
-  throwaway worktree (`isolation: worktree`), so a shell command it runs can
-  change only that worktree, never the checkout under review; its prompt still
-  forbids writing at all. The verifier runs on the `sonnet` alias
+  the main context. The reviewer is given no editing tool and asks for a
+  throwaway worktree (`isolation: worktree`); where the host honors that, a
+  shell command it runs can change only the worktree, never the checkout under
+  review, and where it does not the agent confirms as much with
+  `git worktree list`, restricts itself to read-only commands, and says so.
+  Its prompt forbids writing in either case. The verifier runs on the `sonnet` alias
   because running and summarizing tests needs less reasoning than reviewing
   them; the reviewer inherits the session model. `flowstate-pr-tidy`, also on
   `sonnet`, resolves

@@ -7,8 +7,9 @@ description: Use to self-review a Flowstate branch and everything it ships (code
 
 Run this over the actual base/head diff and every shipped artifact. `PASS` is
 valid; manufacturing findings creates churn and trains reviewers to ignore the
-next real one. Prefer a fresh context for the pass: on Claude Code, delegate to
-the `flowstate-reviewer` subagent, which sees only the diff and these lenses.
+next real one. Prefer a fresh context for the pass: on Claude Code, commit
+first, then delegate to the `flowstate-reviewer` subagent, which reviews the
+committed revision in its own worktree and sees only the diff and these lenses.
 
 ## Lenses
 
