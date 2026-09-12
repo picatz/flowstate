@@ -200,19 +200,31 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 // outputs, through the same function — which is what makes a workflow's answer the
 // same whether it was run directly or called.
 func CallOutputs(ctx context.Context, callee *Workflow, scope *Scope) (*Node_Outputs, error) {
-	outputs, err := EvalRunOutputs(ctx, callee, scope)
+	outputs, _, err := CallOutputsWithCost(ctx, callee, scope)
+
+	return outputs, err
+}
+
+// CallOutputsWithCost is [CallOutputs] plus the deterministic CEL cost of the
+// callee's declared `outputs:` expressions.
+//
+// Unlike a run's own outputs, a call's are evaluated once per `call:` step, so a
+// call inside a loop repeats the whole block every iteration. See
+// [engine.executor.chargeWorkflowCost].
+func CallOutputsWithCost(ctx context.Context, callee *Workflow, scope *Scope) (*Node_Outputs, uint64, error) {
+	outputs, cost, err := EvalRunOutputsWithCost(ctx, callee, scope)
 	if err != nil {
-		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
+		return nil, cost, fmt.Errorf("calling %q: %w", callee.GetName(), err)
 	}
 	if outputs == nil {
 		// Present rather than absent: the call still ran, so its step belongs in
 		// the run's outputs exactly as any other step that ran does, whether or
 		// not it had anything to say — a `log:` step is stored the identical way.
 		// Absence is reserved for a step a condition skipped, which this is not.
-		return &Node_Outputs{NamedValues: map[string]*Value{}}, nil
+		return &Node_Outputs{NamedValues: map[string]*Value{}}, cost, nil
 	}
 
-	return &Node_Outputs{NamedValues: outputs.GetValues()}, nil
+	return &Node_Outputs{NamedValues: outputs.GetValues()}, cost, nil
 }
 
 // CheckCallDepth reports whether a call at this depth may run.

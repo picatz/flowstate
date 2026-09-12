@@ -86,6 +86,25 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 				}},
 			}
 		},
+		"a callee's declared outputs": func(id string) *v1.Node {
+			return &v1.Node{
+				Id: id,
+				Kind: &v1.Node_Call{Call: &v1.Call{
+					// The callee's `outputs:` are evaluated once per call, not
+					// once per run, so a call inside a loop repeats the whole
+					// block. Its body is one literal `value:` step, so the
+					// outputs are the only work the call does.
+					Workflow: &v1.Workflow{
+						Name:    "callee-with-outputs",
+						Profile: v1.CurrentProfile,
+						DeclaredOutputs: []*v1.OutputDeclaration{
+							{Name: "size", Value: v1.NewExpr(heavySliceExpr)},
+						},
+						Steps: []*v1.Node{{Id: "inner", Kind: &v1.Node_Value{Value: v1.NewLiteral(int64(1))}}},
+					},
+				}},
+			}
+		},
 		"a for_each's items": func(id string) *v1.Node {
 			return &v1.Node{
 				Id: id,

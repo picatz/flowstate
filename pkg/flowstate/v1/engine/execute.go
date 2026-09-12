@@ -656,14 +656,23 @@ func (e *executor) chargeValueCost(cost uint64) {
 // chargeWorkflowCost records the deterministic workflow-side CEL that version 2
 // of [workflowSliceCostChange] added to the budget: a step's or a loop's
 // condition, a step's `vars:`, a `switch:`'s subject, a `for_each`'s `items:`,
-// a `call:`'s arguments, and a loop's `initial:` and `update:`.
+// a `call:`'s arguments and its callee's declared `outputs:`, and a loop's
+// `initial:` and `update:`.
 //
-// That list is every expression a loop can repeat without scheduling anything —
-// which is the whole point of the budget. A path that evaluates CEL in workflow
-// code and does not charge it here is a hole in the bound, not an omission of
-// bookkeeping. [v1.ResolveTaskInputs] is the deliberate exception: the activity
-// that consumes a task's inputs follows immediately, so that evaluation is
-// paced by a history event and a yield rather than by this budget.
+// Those are the paths audited so far that a loop can repeat without scheduling
+// anything, which is what the budget is for. The list is *not* claimed to be
+// exhaustive, and three review rounds of #1962 each found another member of it
+// — a claim of completeness in prose is not something a reader or a reviewer
+// can check. #1970 is the mechanism that would make it checkable; until then,
+// a path that evaluates CEL in workflow code and is absent here is a hole in
+// the bound rather than a decision, unless it says otherwise where it is
+// written.
+//
+// [v1.ResolveTaskInputs] and `wait.go`'s own expressions do say otherwise: each
+// is immediately followed by the activity, durable timer, or signal park that
+// consumes it, so they are paced by a history event and a yield rather than by
+// this budget. [v1.EvalRunOutputs] is charged through the `call:` boundary and
+// not at the end of a run, where it is evaluated exactly once.
 //
 // Silent below version 2, and that is the point of the split: a history
 // recorded at version 1 recorded segments that charged only `value:` steps, and
@@ -991,7 +1000,8 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		return stepFailed(err, "workflow %q", callee.GetName())
 	}
 
-	outputs, err := v1.CallOutputs(evalContext(), callee, inner)
+	outputs, cost, err := v1.CallOutputsWithCost(evalContext(), callee, inner)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
