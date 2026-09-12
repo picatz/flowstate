@@ -136,12 +136,25 @@ func TestEvaluateComparesTheHeadDateAsAnInstantNotAsText(t *testing.T) {
 	}
 }
 
-func TestEvaluateDistrustsAHeadDatedInTheFuture(t *testing.T) {
-	fixClock(t, "2026-09-10T21:00:00Z")
+// A committer who dates the head forward and then waits is the case a plain
+// "is it still in the future" test misses: by the time the gate runs, the
+// written instant has passed, and it sits after requests it would hide. The
+// clamp is what answers it, because GitHub stamped the head's checks when the
+// head really appeared.
+func TestEvaluateDistrustsAHeadDatedAfterItsOwnChecks(t *testing.T) {
+	fixClock(t, "2026-09-11T00:00:00Z")
 	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
-	pr.HeadCommittedAt = "2030-01-01T00:00:00Z"
+	pr.HeadCommittedAt = "2026-09-10T21:00:00Z"
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
-		t.Fatalf("a head dated in the future cleared the gate: %s", problems)
+		t.Fatalf("a head dated after its own checks hid the requests it postdates: %s", problems)
+	}
+}
+
+func TestEvaluateCountsEveryRequestWhenNoCheckDatesTheHead(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	stampChecks(&pr, "")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a head with no stamped check was dated by its committer alone: %s", problems)
 	}
 }
 
@@ -170,6 +183,14 @@ func TestEvaluateCountsEveryRequestWhenTheHeadDateWillNotParse(t *testing.T) {
 	}
 }
 
+// stampChecks gives every check on the fixture a GitHub-stamped start, which
+// is what the window clamps the committer-written head date against.
+func stampChecks(pr *pullRequest, at string) {
+	for i := range pr.StatusChecks {
+		pr.StatusChecks[i].StartedAt = at
+	}
+}
+
 // fixClock pins the clock the request window reads, so a test about a head
 // dated in the future does not quietly become a test about nothing once that
 // date arrives.
@@ -190,7 +211,8 @@ func fixClock(t *testing.T, instant string) {
 func requestedCodexTwice(first, second string) pullRequest {
 	pr := passingPullRequest()
 	pr.HeadCommittedAt = "2026-09-10T12:00:00Z"
-	pr.Comments[0].CreatedAt = "2026-09-10T16:00:00Z"
+	stampChecks(&pr, "2026-09-10T12:05:00Z")
+	pr.Comments[0].CreatedAt = "2026-09-10T23:00:00Z"
 	pr.Comments[0].URL = "https://example.test/attestation"
 	pr.Comments = append(pr.Comments,
 		comment{AuthorAssociation: "OWNER", Body: "@codex review", CreatedAt: first, URL: "https://example.test/first"},

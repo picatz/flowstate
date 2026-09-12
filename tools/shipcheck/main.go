@@ -453,13 +453,19 @@ func evaluate(pr pullRequest, unresolved int) []string {
 //
 // The head's date comes from the commit object, which is written by whoever
 // made the commit rather than stamped by GitHub: it carries the committer's
-// own UTC offset and can name any instant, including one in the future. A
-// gate that let the gated party pick its own cutoff would not be a gate, so
-// the window opens only for a date that parses and does not postdate the run.
-// Everything else reports false, and the caller then counts every request.
-// The parse branch states that intent rather than carrying it: a failed parse
+// own UTC offset and can name any instant. A later cutoff hides more
+// requests, so the direction that matters is forward, and refusing a date
+// that is still in the future when the gate runs does not cover it: a date
+// written a few hours ahead is simply waited out. The cutoff is therefore
+// clamped by the earliest instant GitHub itself stamped for this head, since
+// a check run cannot start before the head exists and no committer writes
+// that timestamp. A head with no stamped instant to clamp against is not
+// dated at all, which counts every request; `evaluate` separately refuses a
+// head that reported no checks.
+//
+// The parse branch states its intent rather than carrying it: a failed parse
 // yields the zero instant, which precedes every request and so counts them
-// all anyway. The future check is the one that changes an outcome.
+// all anyway.
 func requestWindow(pr pullRequest) (time.Time, bool) {
 	if pr.HeadCommittedAt == "" {
 		return time.Time{}, false
@@ -468,10 +474,39 @@ func requestWindow(pr pullRequest) (time.Time, bool) {
 	if err != nil {
 		return time.Time{}, false
 	}
-	if head.After(timeNow()) {
+	stamped, ok := earliestStampedCheck(pr.StatusChecks)
+	if !ok {
 		return time.Time{}, false
 	}
+	if stamped.Before(head) {
+		return stamped, true
+	}
 	return head, true
+}
+
+// earliestStampedCheck returns the earliest instant GitHub recorded for a
+// check on the head, which bounds when that head can have existed. Both
+// spellings are read because a check run carries startedAt where a status
+// context carries createdAt, and a check whose timestamps do not parse is
+// skipped rather than trusted.
+func earliestStampedCheck(checks []statusCheck) (time.Time, bool) {
+	var earliest time.Time
+	found := false
+	for _, check := range checks {
+		for _, stamp := range []string{check.StartedAt, check.CreatedAt} {
+			if stamp == "" {
+				continue
+			}
+			at, err := time.Parse(time.RFC3339, stamp)
+			if err != nil {
+				continue
+			}
+			if !found || at.Before(earliest) {
+				earliest, found = at, true
+			}
+		}
+	}
+	return earliest, found
 }
 
 // ownerCodexRequests counts the owner's review requests that bear on the head
