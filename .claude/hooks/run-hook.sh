@@ -76,10 +76,19 @@ warn() {
 # without running the guard. On every other path the guard is still waiting for
 # this payload.
 payload_could_merge() {
-	local payload
+	# Bytes, not characters: the bound below is a byte count, and in a UTF-8
+	# locale ${#payload} would measure a truncated payload short and let it be
+	# decided on.
+	local LC_ALL=C payload stripped
 	# Bounded like hook.Read bounds the same stdin. A payload at the bound was
 	# truncated, and a decision read off a truncated payload is not evidence.
-	payload="$(head -c 1048576)"
+	# The trailing marker survives command substitution stripping newlines, so
+	# a payload ending in one still measures its true length.
+	payload="$(
+		head -c 1048576
+		printf x
+	)"
+	payload="${payload%x}"
 	if [[ "${#payload}" -ge 1048576 ]]; then
 		return 0
 	fi
@@ -88,7 +97,14 @@ payload_could_merge() {
 	if ! printf '%s' "${payload}" | grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"Bash"'; then
 		return 0
 	fi
-	if printf '%s' "${payload}" | grep -Eqi '(^|[^[:alnum:]])merge([^[:alnum:]_]|$)|merge_pull_request'; then
+	# Also matched with shell quoting removed, because the guard tokenizes the
+	# command before recognizing it: a subcommand written with quotes or a
+	# backslash inside the word is still the word to it, and a test narrower
+	# than the guard it stands in for is the hole this exists to close.
+	# Nothing a repair needs grows the word under the same strip.
+	stripped="$(printf '%s' "${payload}" | tr -d '\\"'"'")"
+	if printf '%s\n%s' "${payload}" "${stripped}" |
+		grep -Eqi '(^|[^[:alnum:]])merge([^[:alnum:]_]|$)|merge_pull_request'; then
 		return 0
 	fi
 	return 1

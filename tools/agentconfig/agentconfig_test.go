@@ -728,6 +728,9 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		"gh pr --repo picatz/flowstate merge 1942 --match-head-commit abcdef",
 		"gh pr -R picatz/flowstate merge 1942",
 		"$GHBIN pr merge 1942",
+		`gh pr merge 1942`,
+		`gh pr m\"erge\" 1942`,
+		`gh pr m\\erge 1942`,
 	} {
 		status, output := mergeLauncher(bashPayload(refused))
 		if status != 2 {
@@ -1146,12 +1149,15 @@ func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
 }
 
 // TestClaudeHookLauncherHandsTheGuardItsPayload pins the one property the
-// launcher can break silently. It reads stdin on two paths of its own -- the
-// currency check and the rebuild -- and both take their input from /dev/null
-// so the guard downstream still receives what Claude Code piped in. If that
-// ever stops holding, hook.Read fails on empty input and genguard, pidguard
-// and gofmtcheck each return without a decision, which is three controls
-// disabled at once with an exit status of 0 and nothing written anywhere.
+// launcher can break silently: a current generation hands the guard the exact
+// bytes Claude Code piped in. The launcher reads stdin itself to decide what a
+// merge is, and the checks it runs are invoked from /dev/null, so any new read
+// added before the guard runs would take the payload with it. If that ever
+// happens, hook.Read fails on empty input and genguard, pidguard and
+// gofmtcheck each return without a decision -- three controls disabled at
+// once, at exit 0, with nothing written anywhere. (The redirects on the
+// currency check and the rebuild are belt and braces rather than what this
+// catches: neither script reads stdin today.)
 func TestClaudeHookLauncherHandsTheGuardItsPayload(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Claude hooks require Bash")
