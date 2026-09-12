@@ -26,7 +26,8 @@
       "Bash(git blame:*)",
       "Bash(git ls-files:*)",
       "Bash(git rev-parse:*)",
-      "Bash(git fetch origin:*)"
+      "Bash(git fetch origin)",
+      "Bash(git fetch origin main)"
     ]
   },
   "hooks": {

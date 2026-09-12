@@ -213,11 +213,13 @@ and whether a deterministic mechanism can prevent it more reliably.
   in skills. A command never shares a skill's name: `both-drivers.md` was
   removed because the two shadowed each other.
 - `permissions.allow` in `.claude/settings.json` pre-approves the read-only
-  git commands and the build, test, format, gate, and regeneration commands the
+  git commands, two exact fetch forms (`git fetch origin` and
+  `git fetch origin main`, since a fetch with arguments can force-move a local
+  ref), and the build, test, format, gate, and regeneration commands the
   repository prescribes, so verification does not prompt. A test pins the list
-  to exact program-and-subcommand entries and rejects a wildcard, push, merge,
-  commit, or destructive one, so nothing the host would have asked about rides
-  in unreviewed. Claude Code matches each subcommand of a compound command
+  to exact program-and-subcommand entries, says which may take arguments, and
+  rejects a wildcard, push, merge, commit, or destructive one, so nothing the
+  host would have asked about rides in unreviewed. Claude Code matches each subcommand of a compound command
   separately, so `go test ./... && git push` still prompts for the push. What
   the list does pre-approve is running and building the repository's own
   code: `go test` executes the checkout's tests by design, and `go build`

@@ -148,36 +148,44 @@ func TestClaudeRulesLoadOnlyByPath(t *testing.T) {
 
 // allowedCommands is the reviewed set of commands the allow list may carry,
 // spelled exactly as a rule's command part: program and subcommand, with
-// no wildcard before the subcommand. A denylist of verbs would let
-// `Bash(git:*)` through, and that rule pre-approves every git command,
-// push included. Adding a command here is a review decision, which is the
-// point: the allow list removes prompts from the checks the repository
-// prescribes and never from the actions AGENTS.md reserves for the host's
-// authorization contract.
+// no wildcard before the subcommand. The value says whether the rule may
+// end in `:*` and so accept arguments: a test or build takes packages and
+// flags, while `git fetch origin` must stay exact, because with arguments
+// it accepts a forced refspec and `--update-head-ok` that move the
+// checked-out ref. A denylist of verbs would let `Bash(git:*)` through, and
+// that rule pre-approves every git command, push included. Adding a command
+// here is a review decision, which is the point: the allow list removes
+// prompts from the checks the repository prescribes and never from the
+// actions AGENTS.md reserves for the host's authorization contract.
 var allowedCommands = map[string]bool{
 	"go build": true, "go vet": true, "go test": true, "go list": true, "go doc": true,
-	"go env": true, "go version": true,
+	"go env": false, "go version": false,
 	"go run ./tools/gate": true, "go run ./tools/testsum": true, "go run ./tools/shipcheck": true,
 	"go run ./cmd/flow validate": true, "go run ./cmd/flow lint": true,
-	"make gate": true, "make check": true, "make fmt": true, "make test": true,
-	"make test-fast": true, "make docs": true,
+	"make gate": false, "make check": false, "make fmt": false, "make test": false,
+	"make test-fast": false, "make docs": false,
 	"git status": true, "git diff": true, "git log": true, "git show": true, "git blame": true,
-	"git ls-files": true, "git rev-parse": true, "git fetch origin": true,
+	"git ls-files": true, "git rev-parse": true,
+	"git fetch origin": false, "git fetch origin main": false,
 }
 
 // allowRuleCommand reads the command an allow rule pre-approves and reports
-// whether it is one of the reviewed commands. A rule that is not a Bash
-// rule, that carries a wildcard or shell metacharacter anywhere but the
-// trailing `:*`, or whose command is not in allowedCommands is not ok.
+// whether it is one of the reviewed commands in a permitted form. A rule
+// that is not a Bash rule, that carries a wildcard or shell metacharacter
+// anywhere but the trailing `:*`, whose command is not in allowedCommands,
+// or that accepts arguments where the command must stay exact is not ok.
 func allowRuleCommand(entry string) (string, bool) {
 	if !strings.HasPrefix(entry, "Bash(") || !strings.HasSuffix(entry, ")") {
 		return "", false
 	}
-	command := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(entry, "Bash("), ")"), ":*")
+	command := strings.TrimSuffix(strings.TrimPrefix(entry, "Bash("), ")")
+	arguments := strings.HasSuffix(command, ":*")
+	command = strings.TrimSuffix(command, ":*")
 	if command == "" || strings.ContainsAny(command, "*$`;|&<>") {
 		return command, false
 	}
-	return command, allowedCommands[command]
+	argumentsAllowed, known := allowedCommands[command]
+	return command, known && (!arguments || argumentsAllowed)
 }
 
 // TestClaudePermissionsOnlyRemovePromptsFromVerification parses the checked-in
@@ -219,6 +227,8 @@ func TestClaudePermissionsOnlyRemovePromptsFromVerification(t *testing.T) {
 		"Bash(*)", "Bash(git:*)", "Bash(go:*)", "Bash(make:*)", "Bash(git push:*)",
 		"Bash(git commit:*)", "Bash(git reset --hard)", "Bash(bash -c:*)",
 		"Bash(go test ./... && git push)", "Bash(gh pr merge:*)", "Bash(rm -rf:*)",
+		"Bash(git fetch origin:*)", "Bash(git fetch origin +main:work --update-head-ok)",
+		"Bash(go env:*)", "Bash(make gate:*)",
 		"Edit", "mcp__github__merge_pull_request",
 	} {
 		if _, ok := allowRuleCommand(rejected); ok {
