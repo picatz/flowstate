@@ -293,6 +293,47 @@ func CheckSignalPayloadDepth(payload *Node_Outputs) error {
 	return nil
 }
 
+// CheckTaskOutputDepth reports whether a task's result nests within
+// [MaxStructureDepth], field by field, in the sentence
+// [taskOutputConstraintBoundError] words for a task's own result rather than
+// the one [CheckValueDepth] words for a caller's submitted value.
+//
+// [CheckSignalPayloadDepth]'s sibling, for the fourth door #1770 named: a
+// task's own result is a value an outside party (a plugin, or a service an
+// `http` task called) chose the shape of, evaluated by exactly the
+// expressions the input door's refusal names — the step's `outputs:` and
+// every later `${steps.<id>.<output>}`. [checkTaskOutputElementBound],
+// called alongside this at the same seam, already walks a Literal-kind
+// value for depth as well as element count; what it does not see is a
+// Structure-kind value, since it reads `values[name].GetLiteral()` and skips
+// a name that is not one. [Node_Outputs] does not forbid a task from
+// returning one, so this closes that gap by sharing [valueDepthViolation]'s
+// walk with [CheckValueDepth] rather than adding a second one that only
+// half-agrees with it — but wording the refusal with
+// [taskOutputConstraintBoundError], not [CheckValueDepth]'s own formatter:
+// this is the task's own result, not a value the workflow submitted, the
+// same distinction [checkTaskOutputElementBound] already draws from
+// [inputSideConstraintBoundError] for the element bound. That formatter also
+// never names the field, only the task — sidestepping the field name
+// entirely rather than bounding its length before interpolating it, since a
+// plugin's response can carry that name up to the transport limit.
+//
+// Called from [Task.EvalInScope], the one choke point every task's result
+// returns through on both drivers — see [checkTaskOutputElementBound]'s own
+// doc for why that placement is what makes the built-in and plugin bridges
+// agree by construction. Fields are walked in name order so a result
+// tripping this on more than one field refuses for the same one every time.
+func CheckTaskOutputDepth(taskName string, out *Node_Outputs) error {
+	values := out.GetNamedValues()
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if violation := valueDepthViolation(values[name], 0); violation != nil {
+			return taskOutputConstraintBoundError(taskName, violation)
+		}
+	}
+
+	return nil
+}
+
 // encodedPayloadSize reports a ProtoJSON byte length for m — deliberately not
 // proto.Size's binary estimate, and, since #911, deliberately not the encoding
 // flowstate now writes either.
