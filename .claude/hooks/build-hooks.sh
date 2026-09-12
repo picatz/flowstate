@@ -31,10 +31,36 @@ install -d -m 0700 "${cache_dir}"
 readonly not_buildable=3
 
 # One builder at a time: the guards run on every matching tool call, so two
-# launchers can find the same generation stale at once. The lock makes the
-# second wait for the first and then find a current build rather than race it.
-exec 9>"${cache_dir}/build.lock"
-flock 9
+# launchers can find the same generation stale at once. `mkdir` is the mutex
+# because it is atomic on every POSIX filesystem and needs no `flock`, which
+# a stock macOS install does not ship.
+lock_dir="${cache_dir}/build.lock"
+lock_held=""
+for _ in $(seq 1 600); do
+	if mkdir "${lock_dir}" 2>/dev/null; then
+		lock_held=1
+		break
+	fi
+	# A lock older than ten minutes belonged to a build its session killed.
+	if [[ -n "$(find "${lock_dir}" -maxdepth 0 -mmin +10 2>/dev/null)" ]]; then
+		rm -rf "${lock_dir}"
+		continue
+	fi
+	sleep 0.5
+done
+if [[ -z "${lock_held}" ]]; then
+	printf 'another build of the Flowstate Claude hooks holds the lock.\n' >&2
+	exit 2
+fi
+trap 'rm -rf "${lock_dir}"' EXIT
+
+# The waiter that just took the lock may be looking at the generation the
+# previous holder published, in which case there is nothing left to build.
+if [[ -f "${hook_dir}/.ready" && -s "${hook_dir}/.source-dirs" && -f "${hook_dir}/.source-id" ]] &&
+	current_id="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/source-id.sh" "${hook_dir}/.source-dirs" 2>/dev/null)" &&
+	[[ "$(<"${hook_dir}/.source-id")" == "${current_id}" ]]; then
+	exit 0
+fi
 
 # Stale builds leave their staging directories behind when a hook timeout
 # kills the build, and nothing else prunes them.
@@ -70,7 +96,7 @@ list_source_dirs() {
 
 rm -f "${hook_dir}/.ready"
 stage_dir="$(mktemp -d "${cache_dir}/build.XXXXXX")"
-trap 'rm -rf "${stage_dir}"' EXIT
+trap 'rm -rf "${stage_dir}" "${lock_dir}"' EXIT
 
 if ! list_source_dirs > "${stage_dir}/.source-dirs" || [[ ! -s "${stage_dir}/.source-dirs" ]]; then
 	printf 'could not determine what the Flowstate Claude hooks are built from.\n' >&2
@@ -98,7 +124,7 @@ fi
 # running compiles a package the manifest does not name, and re-hashing the old
 # manifest would agree with itself while missing exactly that package.
 post_build_dirs="$(mktemp "${cache_dir}/dirs.XXXXXX")"
-trap 'rm -rf "${stage_dir}" "${post_build_dirs}"' EXIT
+trap 'rm -rf "${stage_dir}" "${post_build_dirs}" "${lock_dir}"' EXIT
 if ! list_source_dirs > "${post_build_dirs}"; then
 	printf 'could not verify what the Flowstate Claude hooks were built from.\n' >&2
 	exit "${not_buildable}"
@@ -120,4 +146,4 @@ printf '%s\n' "${source_id}" > "${stage_dir}/.source-id"
 touch "${stage_dir}/.ready"
 rm -rf "${hook_dir}"
 mv "${stage_dir}" "${hook_dir}"
-trap 'rm -f "${post_build_dirs}"' EXIT
+trap 'rm -f "${post_build_dirs}"; rm -rf "${lock_dir}"' EXIT

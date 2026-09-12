@@ -21,7 +21,14 @@ if [[ -z "${source_dirs}" || ! -s "${source_dirs}" ]]; then
 	printf 'the Flowstate Claude hook build manifest is unavailable.\n' >&2
 	exit 2
 fi
-mapfile -t directories < "${source_dirs}"
+directories=()
+while IFS= read -r directory || [[ -n "${directory}" ]]; do
+	[[ -n "${directory}" ]] && directories+=("${directory}")
+done < "${source_dirs}"
+if [[ ${#directories[@]} -eq 0 ]]; then
+	printf 'the Flowstate Claude hook build manifest is empty.\n' >&2
+	exit 2
+fi
 
 build_paths="$(mktemp)"
 trap 'rm -f "${build_paths}"' EXIT
@@ -30,7 +37,7 @@ trap 'rm -f "${build_paths}"' EXIT
 # either compiles different code from the same package sources.
 for manifest in go.mod go.sum; do
 	if [[ -f "${project_dir}/${manifest}" ]]; then
-		printf '%s\0' "${manifest}" >> "${build_paths}"
+		printf '%s\n' "${manifest}" >> "${build_paths}"
 	fi
 done
 for directory in "${directories[@]}"; do
@@ -50,7 +57,12 @@ for directory in "${directories[@]}"; do
 	# fall behind what is compiled. Symbolic links count, because the
 	# compiler follows them.
 	while IFS= read -r -d '' path; do
-		printf '%s\0' "${path#"${project_dir}/"}" >> "${build_paths}"
+		relative="${path#"${project_dir}/"}"
+		if [[ "${relative}" == *$'\n'* ]]; then
+			printf 'a Flowstate Claude hook source name contains a newline.\n' >&2
+			exit 2
+		fi
+		printf '%s\n' "${relative}" >> "${build_paths}"
 	done < <(find "${package_dir}" -maxdepth 1 \( -type f -o -type l \) \
 		\( -name '*.go' -o -name '*.s' -o -name '*.c' -o -name '*.h' -o -name '*.syso' \) \
 		! -name '*_test.go' -print0)
@@ -61,9 +73,9 @@ if [[ ! -s "${build_paths}" ]]; then
 fi
 
 {
-	printf '%s\0' "${directories[@]}"
-	while IFS= read -r -d '' path; do
-		printf '%s\0' "${path}"
+	printf '%s\n' "${directories[@]}"
+	while IFS= read -r path; do
+		printf '%s\n' "${path}"
 		git -C "${project_dir}" hash-object -- "${path}"
-	done < <(LC_ALL=C sort -z "${build_paths}")
+	done < <(LC_ALL=C sort "${build_paths}")
 } | git -C "${project_dir}" hash-object --stdin

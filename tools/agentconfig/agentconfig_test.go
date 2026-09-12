@@ -964,6 +964,13 @@ func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
 		if !published(project) {
 			t.Fatal("seed build published nothing")
 		}
+		// The generation has to be stale for the build to do anything: a
+		// current one short-circuits after the lock, which is the point of
+		// that check.
+		if err := os.WriteFile(filepath.Join(project, "internal", "commitcheck", "check.go"),
+			[]byte("package commitcheck\n\nconst Name = \"changed\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		bin := filepath.Join(project, "double")
 		if err := os.Mkdir(bin, 0o700); err != nil {
 			t.Fatal(err)
