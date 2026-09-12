@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/cel-go/cel"
+	celconfig "github.com/google/cel-go/common/env"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
@@ -792,6 +793,53 @@ func profileNames() []string {
 // over every profile even while there is only one to loop over.
 func ProfileNames() []string {
 	return profileNames()
+}
+
+// ProfileConfig serializes env — an environment built for the named profile —
+// as a YAML-serializable [env.Config] document.
+//
+// google/cel-go v0.31.0's Env.ToConfig reconstructs every registered singleton
+// library on a bare environment to diff its overloads against the configured
+// ones, discarding the reconstruction error (cel-go cel/env.go:219-227). The
+// profile's "regex" library enables ext.Regex() together with
+// cel.OptionalTypes(), but cel-go tracks them as two independent singleton
+// libraries and reconstructs "cel.lib.ext.regex" alone — which ext.Regex()
+// itself refuses ("regex library requires the optional library") — so
+// ToConfig panics on a nil environment instead of returning that error. This
+// performs the same isolated construction with its error checked, so the
+// known gap is reported rather than crashing the caller, and recovers any
+// other library's reconstruction panic generically. See #1854 and the
+// upstream row tracked in #1862.
+func ProfileConfig(env *cel.Env, name string) (*celconfig.Config, error) {
+	if _, regexErr := cel.NewCustomEnv(ext.Regex()); regexErr != nil {
+		if slices.Contains(env.Libraries(), "cel.lib.ext.regex") {
+			return nil, fmt.Errorf("cel: profile %q cannot be serialized: library %q does not "+
+				"construct on cel-go's isolated bare environment (%w); see #1854", name, "cel.lib.ext.regex", regexErr)
+		}
+	}
+
+	return recoverToConfig(name, func() (*celconfig.Config, error) { return env.ToConfig(name) })
+}
+
+// recoverToConfig calls fn — env.ToConfig for every caller but a test — and
+// converts a panic into an error.
+//
+// The second line of defense: the regex/optional check above names the one
+// dependency gap this cel-go version is known to hit, but env.ToConfig's own
+// bug is "any registered library whose isolated reconstruction panics", not
+// "regex specifically", and there is no way to enumerate every library that
+// could develop the same problem in a future cel-go bump. A separate function
+// rather than an inline defer so a test can drive a synthetic panic through
+// this exact recovery without needing a second real cel-go dependency gap to
+// exist.
+func recoverToConfig(name string, fn func() (*celconfig.Config, error)) (cfg *celconfig.Config, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cfg, err = nil, fmt.Errorf("cel: profile %q: env.ToConfig panicked reconstructing a "+
+				"registered library in isolation (%v); see #1854", name, r)
+		}
+	}()
+	return fn()
 }
 
 // buildEnv constructs a CEL environment enabling the named extension libraries.

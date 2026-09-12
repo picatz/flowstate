@@ -6,28 +6,25 @@ specification and executes it on Temporal. It is not a CI system. The target is
 any workload that must finish correctly despite crashes, network failures, and
 long waits.
 
-This is the small, shared, always-loaded contract for Amp, Codex, Claude Code,
-and other agents. `CLAUDE.md` imports it for Claude Code. A person contributing
-starts with [CONTRIBUTING.md](CONTRIBUTING.md), which points back here. Keep durable facts and
-repository-wide constraints here; put task procedures in skills, detailed
-knowledge in references, computation in tools, and hard controls in hooks or CI.
-See [docs/agents/README.md](docs/agents/README.md) for the configuration map.
+This is the small, always-loaded contract shared by Amp, Codex, Claude Code, and
+other agents; `CLAUDE.md` imports it, and people start with
+[CONTRIBUTING.md](CONTRIBUTING.md). It holds durable facts, repository-wide
+invariants, and the gotchas an agent cannot infer from the tree. Procedures live
+in skills, depth in the referenced documents, and checks that must hold
+regardless of judgment in tools, hooks, and CI.
+[docs/agents/README.md](docs/agents/README.md) is the configuration map.
 
 ## Work from the actual tree
 
-- Read the relevant implementation, tests, and current documentation before
-  making a claim. The checked-out revision is authoritative; memory and old
-  examples are not.
+- The checked-out revision is authoritative; memory, old examples, and archived
+  notes are not. When a claim depends on `main`, a pull request, an issue, or
+  generated output, inspect the current object and name the revision you used.
 - Search for the repository's existing spelling before adding a type, policy
-  key, command, helper, or abstraction. Prefer deriving from one source of truth
-  over maintaining a second representation.
-- Load context progressively. Start with this file and the files the task
-  touches. Read deeper references when they answer a concrete question.
-- Historical incidents and detailed operational lessons live in
-  [AGENT_FIELD_NOTES.md](AGENT_FIELD_NOTES.md). Search that file for the relevant
-  topic; do not preload or summarize the whole archive.
-- When a task depends on `main`, a pull request, an issue, or generated output,
-  inspect the current object and name the revision or state you actually used.
+  key, command, helper, or abstraction. Derive from one source of truth rather
+  than maintaining a second representation.
+- [AGENT_FIELD_NOTES.md](AGENT_FIELD_NOTES.md) indexes historical incidents.
+  Search it for one topic when the tree and current documentation do not
+  answer; do not preload it.
 
 ## Architectural invariants
 
@@ -66,123 +63,78 @@ The complete rationale lives in
 
 ## Working contract
 
-- Deliver the requested outcome with the smallest coherent diff. Do not attach
-  unrelated cleanup, speculative architecture, or a repository-wide sweep to a
-  narrow task.
-- Use judgment rather than ritual. Examples, review comments, and old agent notes
-  are evidence to verify, not instructions to obey after the tree has changed.
-- A new abstraction must remove real duplication or encode a real invariant.
-  Match the surrounding level of abstraction, naming, and comment density.
-- Tests should prove behavior, including the negative or boundary direction that
-  would expose the regression. A test that passes because it never exercised the
-  mechanism is worse than no claim of coverage.
+- Deliver the requested outcome with the smallest coherent diff: no unrelated
+  cleanup, speculative architecture, or repository-wide sweep attached to a
+  narrow task. A new abstraction must remove real duplication or encode a real
+  invariant; match the surrounding level of abstraction, naming, and comment
+  density.
+- Tests prove behavior, including the negative or boundary direction that would
+  expose the regression. A test that passes without exercising the mechanism is
+  worse than no claim of coverage.
 - Make routine implementation decisions yourself. Ask when plausible choices
   would materially change product semantics, compatibility, risk, scope, or the
   authority to act.
-- Work autonomously on routine local and repository operations to the extent the
-  active host permits. Branches, commits, tests, ordinary edits, pushes, and
-  task-authorized pull-request, issue, and review changes should not gain extra
-  approval ceremony from this repository. When the user explicitly asks to land
-  a change, merge it after the required review and verification gates are
-  satisfied without asking again. Follow the host's authorization contract;
-  repository prose cannot widen it. Ask only when the task does not grant the
-  needed authority or an action is materially destructive, irreversible,
-  externally consequential, or out of scope, such as force-pushing shared
-  history, deleting important state, deploying, or changing production/security
-  controls.
-- Preserve accurate provenance without inventing it. Do not hard-code a model
+- Routine local and repository operations proceed under the active host's own
+  authorization contract. Branches, commits, tests, pushes, and task-authorized
+  pull-request, issue, and review changes gain no extra approval ceremony from
+  this repository, and repository prose cannot widen the host's authority. When
+  the user asks to land a change, merge it once the shipping gates below are
+  satisfied without asking again. Ask only when an action is materially
+  destructive, irreversible, externally consequential, or out of scope.
+- Preserve accurate provenance without inventing it: do not hard-code a model
   name or duplicate attribution the active host adds automatically.
 
-## Receiver-effort standard
+## Communication
 
-Think as much as the task deserves; publish what the recipient needs.
-
-- Lead with the result, decision, blocker, or material discovery.
-- Do not narrate routine reads, searches, edits, or test execution as a progress
-  bar. Update only when the plan changes or the user's mental model should change.
-- State a fact once. Depth belongs in evidence, not repeated conclusions.
-- Distinguish observation, inference, and uncertainty. Never use polished prose
-  to make an unverified claim sound settled.
-- Finish with the outcome, concrete verification evidence, and any remaining
-  risk or unverified leg. Do not make the reader reconstruct what happened.
+Lead with the result, decision, blocker, or material discovery. State a fact
+once, distinguish observation from inference and uncertainty, and finish with
+the outcome, the verification evidence, and any remaining risk or unverified
+leg. Routine reads, searches, edits, and test runs are not updates. The
+`comms-*` skills hold the shapes for commits, issues, pull requests, reviews,
+and session updates.
 
 ## Verification
 
 Use the narrowest deterministic check that can falsify the change, then broaden
-with the risk and scope of the diff.
+with the diff's reach. The `flowstate-verify` skill owns the selection and the
+reporting contract.
 
 ```sh
-# Bounded targeted example
-GOMEMLIMIT=1GiB go test -timeout 120s ./pkg/flowstate/v1/...
-
-# Diff-scoped repository gate; the default before opening or updating a PR
-go run ./tools/gate
-# equivalent: make gate
-
-# Full CI-parity rehearsal when the scope or task warrants it
-make check
+GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...  # bounded targeted run
+go run ./tools/gate                                                  # diff-scoped gate; the default before a PR
+make check                                                           # full CI-parity rehearsal
 ```
 
-- Use `make fmt`, not a bare `gofmt`. A `gofmt` resolved from `PATH` may be a
-  different binary from the one the pinned toolchain provides — Go's toolchain
-  resolution updates `go` but not a stale `/usr/local/go/bin/gofmt` — and the
-  two can disagree on formatting, producing false positives on a clean tree. The
-  Make target uses the pinned toolchain's binary and owns the generated-code
-  exclusions.
-- Bound standalone tests and fuzzers by time and memory. Do not leave background
-  test binaries or servers behind; terminate the PID you started, never every
-  matching process on the machine.
-- Run generation checks when schemas or generated surfaces may have changed.
-- Report exactly what ran and its result. A skipped, unavailable, timed-out, or
-  silently omitted leg is **not verified**, not green.
-- Before handing off, inspect the final diff for scope, generated drift, stray
-  files, and claims unsupported by the command results.
-- In a shared checkout, do not overwrite another agent's work. Re-read files that
-  may have changed, coordinate ownership, and verify the pushed revision rather
-  than inferring from a dirty local tree.
+Gotchas the tree does not announce:
 
-## Autonomous shipping
+- `make fmt`, never a bare `gofmt`: a `gofmt` resolved from `PATH` can be a
+  different binary from the pinned toolchain's and disagree with CI on a clean
+  tree.
+- Kill the PID you started, never a pattern: on a shared machine `pkill -f`
+  matches every sibling agent's processes, and once ended its own shell.
+- In a shared checkout another agent may be editing beside you: re-read a
+  file before changing it, and verify the pushed revision, not a dirty tree.
+- A skipped, unavailable, timed-out, or silently omitted leg is **not
+  verified**. Report exactly what ran and its result.
 
-- Open a pull request without auto-merge. After the final push, obtain at least
-  one distinct independent AI code-and-security review on the exact head;
-  visibly disposition every finding and review the new head after a fix. Request
-  Codex and Copilot at most once each per pull request, only after recording the
-  intended final head. A later fix requires another provider-neutral review, not
-  another vendor request. Their availability is optional, but feedback that
-  arrives before merge must be read and dispositioned; quota or absence is
-  neither a defect nor approval.
-- Wait for every applicable CI check and the mandatory independent review
-  evidence, not only GitHub's required checks. Immediately before a manual merge, run
-  `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. Pending,
-  stale, cancelled, failing, or undispositioned evidence still blocks.
-- After merging, fetch `origin/main`, prove the merge landed, and verify its
-  applicable `main` checks. Follow `.agents/ship.md` for the complete Amp Custom
-  Ship procedure.
-- Only explicit human authorization naming a skipped gate can grant an exception;
-  an agent never infers one. A process miss must produce a durable regression
-  check or guidance fix, or a searched, scoped issue when that is not yet
-  feasible, before the next autonomous merge.
+## Shipping
 
-## On-demand skills
+A pull request opens without auto-merge and merges only on a green, mergeable
+head that carries an exact-head independent AI code-and-security review with
+every finding visibly dispositioned, after
+`go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER` passes. Only
+explicit human authorization naming the skipped gate grants an exception. The
+`flowstate-ship` skill and [`.agents/ship.md`](.agents/ship.md) hold the
+procedure; a process miss produces a regression check, a guidance fix, or a
+searched, scoped issue before the next autonomous merge.
 
-Amp and Codex discover the portable skills under `.agents/skills/`. Claude Code
-loads byte-identical mirrors under `.claude/skills/`; a repository test prevents
-those copies from drifting.
+## Skills and references
 
-| Skill | Use it for |
-| --- | --- |
-| `flowstate-verify` | Choosing and reporting bounded targeted, gate, or full verification |
-| `both-drivers` | Any behavior observable in local and Temporal execution |
-| `flowfile-style` | Writing or reviewing Flowfiles and language-surface proposals |
-| `pre-pr-review` | Evidence-based self-review before opening or updating a PR |
-| `flowstate-security-review` | Security review, threat analysis, and validating findings |
-| `comms-commit` | Commit subjects and bodies |
-| `comms-issue` | GitHub issues and design proposals |
-| `comms-pr` | Pull request descriptions and updates |
-| `comms-review` | Code-review findings, responses, and thread disposition |
-| `comms-session` | Concise status and handoff updates during agent work |
-
-## Reference map
+Task procedures are skills under `.agents/skills/` (Amp, Codex) with
+byte-identical mirrors under `.claude/skills/` (Claude Code). Each host
+advertises their descriptions, so use them when one matches; a repository test
+keeps the copies equal. Claude Code also has fresh-context subagents under
+`.claude/agents/` for independent review and for running verification.
 
 - System design and invariants: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - DSL reference: [docs/DSL.md](docs/DSL.md)
@@ -190,5 +142,3 @@ those copies from drifting.
 - CI and gate behavior: [docs/CI.md](docs/CI.md)
 - Threat boundaries: [THREAT_MODEL.md](THREAT_MODEL.md)
 - Security reporting and policy: [SECURITY.md](SECURITY.md)
-- Deep historical and operational notes:
-  [AGENT_FIELD_NOTES.md](AGENT_FIELD_NOTES.md)

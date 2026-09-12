@@ -1678,6 +1678,43 @@ func runTaskOutputElementBoundCases(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputDepth is the durable half of #1947 — see the
+// local driver's identically-named test. A task's result is bounded at
+// [v1.Task.EvalInScope], which the durable driver reaches through the `Task`
+// activity exactly as the local driver reaches it through `runStepAttempt`,
+// so a Structure-kind result nested past [v1.MaxStructureDepth] has to be
+// refused the same way here.
+func TestRunWorkflowTaskOutputDepth(t *testing.T) {
+	conformance.RegisterDeepStructureOutputTask(t)
+
+	for _, test := range conformance.TaskOutputDepthCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "a task result past the depth bound must be refused")
+				require.Contains(t, err.Error(), "levels deep",
+					"the refusal must name the resource it reached")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+		})
+	}
+}
+
 // TestRunWorkflowTaskOutputSizeBound is the durable half of #787: a single
 // task's result weighing more than Temporal will store as an activity result.
 // Without the shared check the server refuses the oversized completion, the

@@ -38,6 +38,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 			Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
 			Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			Memo:      mineMemo(t),
 		},
 	}
 
@@ -93,10 +94,12 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 	t.Run("a run belonging to another tenant", func(t *testing.T) {
 		t.Parallel()
 
-		// No memo on the described run, so [FlowstateServer.ownedBy] treats it
-		// as reachable only from the empty namespace — and this caller is in
-		// acme. The refusal the caller receives is identical to the one above,
-		// which is exactly why the record must distinguish them.
+		// running's memo positively records the default (empty-string) tenant
+		// as its owner (mineMemo(t), above), and this caller is in acme —
+		// a genuine tenant mismatch, not the no-memo case "a run that cannot
+		// be read" above covers. The refusal the caller receives is
+		// identical to that one, which is exactly why the record must
+		// distinguish them.
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: running},
 			WithNamespace("acme"), WithAudit(recorderFor(t, sink)))
@@ -224,6 +227,7 @@ func TestSignalWalkingAChainRecordsOneDecision(t *testing.T) {
 					Type:       &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 					FirstRunId: "r-first",
 					Status:     enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+					Memo:       mineMemo(t),
 				},
 			},
 		},
@@ -260,6 +264,7 @@ func TestARequiredRecordThatCannotBeWrittenStopsTheMutation(t *testing.T) {
 				Execution: &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-1"},
 				Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
 				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+				Memo:      mineMemo(t),
 			},
 		},
 	}
@@ -300,6 +305,9 @@ func TestASignalPolicyDenialIsAuditedAsADenial(t *testing.T) {
 	protocol, err := converter.GetDefaultDataConverter().ToPayload(currentSignalProtocol)
 	require.NoError(t, err)
 
+	namespace, err := converter.GetDefaultDataConverter().ToPayload("")
+	require.NoError(t, err)
+
 	fake := &fakeRunClient{
 		describe: &workflowservice.DescribeWorkflowExecutionResponse{
 			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
@@ -308,6 +316,7 @@ func TestASignalPolicyDenialIsAuditedAsADenial(t *testing.T) {
 				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 				Memo: &commonpb.Memo{Fields: map[string]*commonpb.Payload{
 					signalProtocolMemoKey: protocol,
+					namespaceMemoKey:      namespace,
 				}},
 			},
 		},

@@ -149,6 +149,7 @@ func mcpToolDocs() []docsgen.MCPTool {
 			Name:        flowmcp.ToolName(method.Name),
 			Description: flowmcp.ToolDescription(method.Name),
 			Request:     string(method.Input.FullName()),
+			Response:    string(method.Output.FullName()),
 			Local:       flowmcp.LocalTools[method.Name],
 		})
 	}

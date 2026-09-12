@@ -8,7 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	common "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -199,6 +201,13 @@ func (c fakeTemporalClient) ScheduleClient() client.ScheduleClient {
 func TestDescribeScheduleReportsMissedAndSkippedCounts(t *testing.T) {
 	t.Parallel()
 
+	// #1896 made this positive: describeSchedule's ownedBy check refuses a
+	// schedule with no recorded tenant outright, so the empty-string tenant
+	// this test addresses as has to be recorded, not merely absent, exactly
+	// as [FlowstateServer.prepareCreate]'s scheduleMemo always records it.
+	namespace, err := converter.GetDefaultDataConverter().ToPayload("")
+	require.NoError(t, err)
+
 	temporal := fakeTemporalClient{
 		scheduleClient: fakeScheduleClient{
 			handle: fakeScheduleHandle{
@@ -208,9 +217,7 @@ func TestDescribeScheduleReportsMissedAndSkippedCounts(t *testing.T) {
 						NumActionsMissedCatchupWindow: 3,
 						NumActionsSkippedOverlap:      2,
 					},
-					// No memo, so ownedBy's errNoTenantRecorded path applies: the
-					// namespace argument below must be "" to be treated as the owner,
-					// same as a pre-tenancy run.
+					Memo: &common.Memo{Fields: map[string]*common.Payload{namespaceMemoKey: namespace}},
 				},
 			},
 		},

@@ -10,13 +10,13 @@ Flowstate is intentionally super-alpha (#1216). There is no release, no tag, and
 
 ```sh
 go build ./...                                   # the module
-GOMEMLIMIT=1GiB go test -timeout 120s ./pkg/...  # a bounded targeted run
+GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/...  # a bounded targeted run
 go run ./tools/gate                              # the diff-scoped gate: run this before opening or updating a PR
 make check                                       # full CI parity, when the scope warrants it
 make fmt                                         # never a bare gofmt; the Makefile uses the pinned toolchain
 ```
 
-Four packages boot a Temporal dev server in their tests (`engine`, `server`, `temporalclient`, `cmd/flow`); that is expected and takes about ten seconds each. `docs/CI.md` explains what CI runs and why.
+Without `-short`, as in `make check` and the gate, four packages boot a Temporal dev server in their tests (`engine`, `server`, `temporalclient`, `cmd/flow`); that is expected and takes about ten seconds each. The bounded run above passes `-short`, so no server boots: the three under `./pkg/...` run everything that does not need one and skip only the tests that do. `cmd/flow` is outside that path and does not run at all, so the gate, not the bounded run, is what covers the CLI and is the bar before a pull request. `docs/CI.md` explains what CI runs and why.
 
 Never kill test processes by name or pattern. Stop the PID you started.
 
@@ -44,7 +44,7 @@ after exact-head review completes.
 
 ## Bringing an agent
 
-Coding agents are first-class contributors here. The repository ships their configuration: `AGENTS.md`, Amp's Custom Ship procedure at `.agents/ship.md`, the skills under `.agents/skills/` and `.claude/skills/`, and hooks under `.claude/settings.json` that refuse edits to generated files, check formatting, and guard merges. Point your agent at `AGENTS.md`; the same rules, gate, and PR shape apply to its work as to yours, and you own what it opens.
+Coding agents are first-class contributors here. The repository ships their configuration: `AGENTS.md`, Amp's Custom Ship procedure at `.agents/ship.md`, the skills under `.agents/skills/` and `.claude/skills/`, the Claude Code subagents under `.claude/agents/` that review and verify in a fresh context, and hooks under `.claude/settings.json` that refuse edits to generated files, check formatting, and guard merges. Point your agent at `AGENTS.md`; the same rules, gate, and PR shape apply to its work as to yours, and you own what it opens.
 
 ## Maintainers and decisions
 

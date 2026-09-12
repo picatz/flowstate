@@ -103,6 +103,17 @@ func TestTheAuditSeamIsNotBypassed(t *testing.T) {
 			"CreateSchedule":   "describes what it has just created and been audited for",
 			"DescribeSchedule": "the describe is this verb's decision, and it audits the outcome itself",
 		},
+		// v1.CheckManualStart is not this package's own un-audited decision
+		// function, but the shape of the risk is identical: a second
+		// authorization question with no record of its own if a caller
+		// reaches it directly. authorizeManualStart is the one place that
+		// calls it and audits the refusal (#1889); a future handler calling
+		// v1.CheckManualStart itself, the way Run and SignalWithStart used
+		// to, would return PermissionDenied with no DENY and this test
+		// would be the thing that catches it.
+		"v1.CheckManualStart": {
+			"authorizeManualStart": "the audited wrapper: this is where the DENY is written",
+		},
 	}
 
 	calls, _ := analyzeServerSource(t)
@@ -185,16 +196,45 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 		// appear to reach it through a function it never calls. That is a
 		// coverage test that passes by accident, which is the failure mode
 		// CLAUDE.md names.
-		imported := map[string]bool{}
+		//
+		// Maps the local alias to the import path itself, not merely to
+		// "yes, this is an import" — a qualified call is recorded keyed by
+		// path, below, so a handler importing the tracked package under a
+		// different local name (`flowv1 "…/v1"` instead of `v1`) still
+		// resolves to the same callee the allowlist names, rather than
+		// silently reading as a different, unrecognized one.
+		imported := map[string]string{}
+		var ambiguous []string
 		for _, spec := range file.Imports {
-			alias := ""
-			if spec.Name != nil {
-				alias = spec.Name.Name
-			} else if path, err := strconv.Unquote(spec.Path.Value); err == nil {
-				alias = path[strings.LastIndex(path, "/")+1:]
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				continue
 			}
-			if alias != "" {
-				imported[alias] = true
+			switch {
+			case spec.Name != nil && spec.Name.Name == ".":
+				// A dot import puts the package's exported names directly into
+				// this file's scope, so a call to one of them parses as a bare
+				// *ast.Ident indistinguishable from a call to a function this
+				// package declares itself. There is no syntactic way to tell
+				// which without type information, so below, this file's bare
+				// calls and unresolved selector calls are both recorded under
+				// the qualified form too, for every import in this list.
+				ambiguous = append(ambiguous, path)
+			case spec.Name != nil:
+				imported[spec.Name.Name] = path
+			default:
+				// An unaliased import's in-file identifier is the imported
+				// package's own declared name, which this syntactic pass never
+				// sees — only its import path. The path's last segment is
+				// usually that name, but not always (this repo's own
+				// pkg/flowstate/v1 declares "package flowstatev1", not "v1").
+				// The guess still seeds the common case below, and the same
+				// path is also tracked as ambiguous so a selector whose
+				// receiver identifier doesn't match the guess is not silently
+				// dropped instead of recorded.
+				alias := path[strings.LastIndex(path, "/")+1:]
+				imported[alias] = path
+				ambiguous = append(ambiguous, path)
 			}
 		}
 
@@ -218,14 +258,61 @@ func analyzeServerSource(t *testing.T) (calls map[string]map[string]bool, litera
 				case *ast.CallExpr:
 					switch callee := n.Fun.(type) {
 					case *ast.Ident:
+						// A bare call is only ambiguous with a dot import; an
+						// aliased or unaliased import always needs a selector.
 						calls[declared][callee.Name] = true
-					case *ast.SelectorExpr:
-						if pkg, ok := callee.X.(*ast.Ident); ok && imported[pkg.Name] {
-							// Another package's function, named here only by
-							// coincidence of spelling.
-							break
+						for _, path := range ambiguous {
+							canonical := path[strings.LastIndex(path, "/")+1:]
+							calls[declared][canonical+"."+callee.Name] = true
 						}
+					case *ast.SelectorExpr:
+						if pkg, ok := callee.X.(*ast.Ident); ok {
+							if path, ok := imported[pkg.Name]; ok {
+								// Recorded qualified by the import path's own
+								// last segment — "v1.CheckManualStart", not
+								// "CheckManualStart" — so it reads as another
+								// package's function and is never mistaken
+								// for a coincidentally-named method of this
+								// package's own, the same confusion the
+								// alias map above exists to avoid for the
+								// unqualified map. Keyed by path rather than
+								// by whatever local alias this file happens
+								// to spell it with, so a handler importing
+								// the tracked package under a different name
+								// still resolves to the one callee the
+								// allowlist names.
+								//
+								// The unqualified edge below is deliberately not also
+								// recorded here: pkg.Name matching a known import means
+								// this selector is that import's, never a coincidentally
+								// named method of this package's own, so adding both
+								// edges would let a caller's real v1.CheckManualStart
+								// call also read as reaching this package's own
+								// Validate handler through the coincidence of a shared
+								// method name — a bypass this test would then miss.
+								canonical := path[strings.LastIndex(path, "/")+1:]
+								calls[declared][canonical+"."+callee.Sel.Name] = true
+								break
+							}
+						}
+						// The receiver either matched no import at all (a method
+						// call on this package's own receiver, most calls here) or
+						// its name simply isn't a known import alias.
 						calls[declared][callee.Sel.Name] = true
+						// It also matched no import specifically because the guess
+						// this analysis makes for an unaliased import (the path's own
+						// last segment) is not necessarily the package's real
+						// declared name (see the ambiguous-import comment above), so
+						// this pass cannot rule out that the call is actually
+						// reaching one of the ambiguous imports under a name the
+						// guess didn't predict. Recorded under all of their canonical
+						// forms too, alongside the unqualified edge above rather than
+						// instead of it: unlike a resolved import, this receiver is
+						// still also a real candidate for a same-named local method.
+						for _, path := range ambiguous {
+							canonical := path[strings.LastIndex(path, "/")+1:]
+							calls[declared][canonical+"."+callee.Sel.Name] = true
+						}
 					}
 				case *ast.BasicLit:
 					if n.Kind == token.STRING {

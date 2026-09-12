@@ -107,9 +107,9 @@ func (s *FlowstateServer) authorizeRunDecision(ctx context.Context, workflowID, 
 
 	// A Temporal namespace may be shared with applications other than
 	// Flowstate. Listing asks Temporal for only this engine's workflow type;
-	// direct addressing must answer the same membership question before the
-	// legacy no-memo rule below can treat an execution as belonging to the
-	// default tenant.
+	// direct addressing must answer the same membership question before
+	// ownedBy's positive-provenance check below decides whether the caller
+	// may see this execution at all.
 	if resp.GetWorkflowExecutionInfo().GetType().GetName() != flowstateRunWorkflowType {
 		return nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND, notFound(workflowID)
 	}
@@ -128,22 +128,38 @@ func (s *FlowstateServer) authorizeRunDecision(ctx context.Context, workflowID, 
 // different problems, but they are the same question asked once or asked in a
 // loop, and two copies of it would eventually disagree — at which point a run
 // hidden from Get would still appear in List, which is the whole of the breach.
+//
+// # Positive provenance, not a type name alone (#1896)
+//
+// [authorizeRunDecision] narrows to executions of [flowstateRunWorkflowType]
+// before this is ever reached, but a Temporal namespace is not necessarily
+// Flowstate's alone, and a type name is a string another application in the
+// same namespace can register too. This function used to treat any execution
+// with no tenant memo as belonging to the default tenant — reachable, one
+// deployment's actual incident showed, by that application's own
+// credentials, on the strength of nothing but the coincidence of a type
+// name and a namespace this engine does not control.
+//
+// A memo-less execution and a genuinely pre-tenancy Flowstate run are not
+// distinguishable from the data recorded on either — see the reopening
+// comment on #1896 — so there is no rule that admits one without admitting
+// the other. This deployment's answer is to admit neither: [namespaceMemoKey]
+// is written by every run this server has ever started (see
+// [FlowstateServer.prepareCreate]), so its absence is refused rather than
+// resolved into the empty namespace. Nothing has ever been released
+// (CONTRIBUTING.md), so there is no run this can orphan that this build
+// itself did not write a tenant onto.
 func (s *FlowstateServer) ownedBy(caller string, memo *common.Memo) bool {
 	recorded, err := s.memoTenant(memo)
-	switch {
-	case errors.Is(err, errNoTenantRecorded):
-		// A run started before tenants were recorded. It is reachable only from
-		// the empty namespace, which is what a single-tenant deployment resolves
-		// in — so such a deployment keeps working, and a multi-tenant one cannot
-		// reach a run whose tenant was never established.
-		return caller == ""
-	case err != nil:
-		// The memo is there and unreadable. Nothing can be concluded about who
-		// owns this run, so nobody may act on it.
+	if err != nil {
+		// No tenant recorded, or a memo present and unreadable: nothing can be
+		// concluded about who owns this run, so nobody may act on it. See this
+		// function's own doc for why an absent memo is refused rather than
+		// treated as evidence of ownership.
 		return false
-	default:
-		return recorded == caller
 	}
+
+	return recorded == caller
 }
 
 // notFound is the one answer every unauthorized or absent run gets.
@@ -212,6 +228,29 @@ func (s *FlowstateServer) signalPolicies(memo *common.Memo) (map[string]*v1.Sign
 	}
 
 	return declared, true, nil
+}
+
+// authorizeManualStart decides whether wf's `manual:` block permits this
+// caller to bring a run into existence, and records the refusal — coded the
+// same way authorizeSignal's name-level refusal is — when it does not.
+//
+// [v1.CheckManualStart] is a second authorization question the admission
+// record does not answer: "may this caller start work in their own
+// namespace" (the admission ALLOW) is not "may this caller start *this*
+// workflow, which has its own opinion about who may". Run and
+// SignalWithStart both write the admission ALLOW before reaching this, and
+// both are held to the same rule they call it for: a caller `manual:
+// denied` refused, or refused for lacking a required reason or an
+// allowed_principals match, must leave a DENY under the RPC's own name — not
+// an unaudited PermissionDenied, which reads in the trail as a request that
+// never made a second decision at all. See #1883 and #1889.
+func (s *FlowstateServer) authorizeManualStart(ctx context.Context, rpc string, resourceKind v1.AuditResourceKind, resourceKey string, wf *v1.Workflow, reason string) error {
+	if err := v1.CheckManualStart(wf, manualStartPrincipal(ctx), reason); err != nil {
+		return s.auditDeny(ctx, rpc, resourceKind, resourceKey,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, connect.NewError(connect.CodePermissionDenied, err))
+	}
+
+	return nil
 }
 
 // authorizeSignal reports whether sender may deliver a signal named name to
@@ -771,7 +810,8 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		temporal, resp, _, existingErr := s.authorizeRunDecision(ctx, workflowID, "")
 		if existingErr == nil {
 			if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
-				return nil, err
+				return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+					v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 			}
 			runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
 			if err := temporal.SignalWorkflow(ctx, workflowID, runID, req.Msg.GetName(), &v1.SignalDelivery{
@@ -840,8 +880,8 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// through `Run` and not through here — which is the fail-closed direction:
 	// a requirement nothing can satisfy refuses, rather than being waived by the
 	// path that has nowhere to put it.
-	if err := v1.CheckManualStart(workflow, manualStartPrincipal(ctx), ""); err != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	if err := s.authorizeManualStart(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, ""); err != nil {
+		return nil, err
 	}
 
 	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
@@ -910,7 +950,8 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 		if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
-			return nil, err
+			return nil, s.auditDeny(ctx, "SignalWithStart", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
+				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, err)
 		}
 
 		// From the execution that was just described and authorized, rather than

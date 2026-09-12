@@ -11,14 +11,14 @@ import (
 // docs/DSL.md decided this before the surface existed: "MCP is generated, not
 // written — `flow mcp` serves the same services as MCP tools with schemas
 // derived from the protos, so there is no hand-maintained tool list to fall
-// behind the engine." This file is that derivation: a request message's
+// behind the engine." This file is that derivation: a request or response message's
 // descriptor rendered as the JSON Schema of its protojson encoding, which is
-// the encoding the handler feeds the arguments to.
+// the encoding the handler reads from arguments and writes to structuredContent.
 //
-// Derivation is what makes the surface honest. A field added to a request
-// appears in the tool the day it is generated; a hand-kept schema would be the
-// README task table before the test that pinned it to the registry — right
-// until the first change, then quietly wrong for everyone.
+// Derivation is what makes the surface honest. A field added to a request or
+// response appears in the tool the day it is generated; a hand-kept schema
+// would be the README task table before the test that pinned it to the registry
+// — right until the first change, then quietly wrong for everyone.
 
 // runLocalInputSchema is the one schema on this surface that is written rather
 // than derived, because the tool it describes is the one that is not an RPC.
@@ -153,18 +153,18 @@ func testInputSchema() map[string]any {
 // the returned artifact disagreed with a budget that believed it was holding.
 // A bound only its own accounting can see is not one anybody else can check.
 //
-// The number is read off what real input needs, the way the catalog bounds in
+// The number is read off what real messages need, the way the catalog bounds in
 // [plugin.Config] are. The largest schema this surface advertises today is
 // SignalWithStart's request at 5,068 nodes, and
 // [TestTheAdvertisedSchemasStayWellUnderTheNodeBound] fails once any advertised
 // schema passes a quarter of the bound. That is the direction the failure has
 // to point: exhausting the budget truncates, so a *real* schema growing into
 // the bound must break a test here rather than quietly ship a tool whose
-// arguments are half described.
+// contract is half described.
 //
 // Descriptors reaching [SchemaForMessage] are this binary's own today — the
 // service methods in [WorkflowServiceMethods] — and the bound is here anyway,
-// because "the input is trusted" is a property of today's callers rather than
+// because "the descriptor is trusted" is a property of today's callers rather than
 // of this function, and the neighbouring surface that already admits
 // third-party descriptors under bounds ([plugin.TaskDefsFromCatalog], #854) is
 // one call away from being one of them.
@@ -306,7 +306,20 @@ func fieldSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 		}
 	}
 
-	return valueSchema(fd, budget)
+	value := valueSchema(fd, budget)
+	if value == nil {
+		return nil
+	}
+
+	// EmitUnpopulated protojson writes an absent singular message as null, and
+	// protojson accepts null as unset on input. Required message fields stay
+	// non-nullable because protovalidate rejects them when unset.
+	if (fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind) &&
+		!v1.RequiredInput(fd) {
+		value["type"] = []any{value["type"], "null"}
+	}
+
+	return value
 }
 
 func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[string]any {
@@ -340,9 +353,21 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 		return map[string]any{"type": "string", "pattern": "^-?[0-9]+$"}
 
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
-		return map[string]any{"type": "number"}
+		// Non-finite values are strings in protojson. `pattern` applies only to
+		// strings, so ordinary JSON numbers remain accepted without opening the
+		// string arm beyond the encoder's three spellings.
+		return map[string]any{
+			"type":    []any{"number", "string"},
+			"pattern": "^(NaN|Infinity|-Infinity)$",
+		}
 
 	case protoreflect.EnumKind:
+		// NullValue is the one enum protojson does not spell by name: its only
+		// value is the JSON null literal.
+		if fd.Enum().FullName() == "google.protobuf.NullValue" {
+			return map[string]any{"type": "null"}
+		}
+
 		// The proto names, since this schema describes protojson; a value the
 		// schema marks test-only is left out the way every other surface
 		// leaves it out (#1692).
@@ -358,6 +383,17 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 		return map[string]any{"type": "string", "enum": names}
 
 	case protoreflect.MessageKind, protoreflect.GroupKind:
+		// Any is an intentionally dynamic boundary: protojson emits @type plus
+		// fields from the packed message rather than Any's storage fields. Its
+		// concrete shape cannot be derived from this descriptor, so advertise
+		// the object honestly without inventing a closed set of properties.
+		if fd.Message().FullName() == "google.protobuf.Any" {
+			if !budget.take(1) {
+				return nil
+			}
+			return map[string]any{"type": "object"}
+		}
+
 		// The two well-known types protojson spells as strings, and the cycle
 		// cut below, are each one object of their own.
 		wellKnown := fd.Message().FullName() == "google.protobuf.Timestamp" ||

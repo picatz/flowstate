@@ -295,7 +295,7 @@ func TestARejectedPositionIsTheCallersToRestart(t *testing.T) {
 	temporal.On("ListWorkflow", mock.Anything, mock.MatchedBy(func(request *workflowservice.ListWorkflowExecutionsRequest) bool {
 		return len(request.GetNextPageToken()) == 0
 	})).Return(&workflowservice.ListWorkflowExecutionsResponse{
-		Executions:    []*workflow.WorkflowExecutionInfo{{Execution: &common.WorkflowExecution{WorkflowId: "mine"}}},
+		Executions:    []*workflow.WorkflowExecutionInfo{mineExecution(t, "mine")},
 		NextPageToken: []byte("a position the store then forgot"),
 	}, nil)
 	temporal.On("ListWorkflow", mock.Anything, mock.MatchedBy(func(request *workflowservice.ListWorkflowExecutionsRequest) bool {
@@ -371,7 +371,7 @@ func TestAnOversizePositionIsRefusedAtIssue(t *testing.T) {
 	temporal := &mocks.Client{}
 	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
 		&workflowservice.ListWorkflowExecutionsResponse{
-			Executions:    []*workflow.WorkflowExecutionInfo{{Execution: &common.WorkflowExecution{WorkflowId: "mine"}}},
+			Executions:    []*workflow.WorkflowExecutionInfo{mineExecution(t, "mine")},
 			NextPageToken: bytes.Repeat([]byte{0xff}, maxListPositionBytes+1),
 		}, nil)
 

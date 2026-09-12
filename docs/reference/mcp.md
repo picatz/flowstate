@@ -12,37 +12,40 @@ regenerated.
 stood up. The rest address durable runs, which only a server has, and say so
 rather than failing opaquely when `--address` was not given.
 
-Every tool answers with two forms of one document. The text block is the
-document `--output json` prints, so a `jq` expression written against the CLI
-reads an agent's answer unchanged: a run's outputs are `steps.<id>.<output>`
-and a value is the value, not CEL's tagged encoding of one. `structuredContent`
-carries the same answer in the schema's own protojson, for a client generated
-against `flowstate.v1`. Both are counted against the surface's size limit,
-because both leave the process.
+Every proto-derived RPC tool advertises an `outputSchema` for its response and
+answers with two forms of one document. The text block is the document
+`--output json` prints, so a `jq` expression written against the CLI reads an
+agent's answer unchanged: a run's outputs are `steps.<id>.<output>` and a value
+is the value, not CEL's tagged encoding of one. `structuredContent` carries the
+same answer in the schema's own protojson. A schema-aware client can therefore
+pass a successful `flowstate_compile` `workflow` result directly to
+`flowstate_run`. Both forms are counted against the surface's size limit
+because both leave the process. Local-only tools keep their purpose-built text
+contracts and do not advertise a schema-owned result message.
 
-| Tool | Answers | Request message |
-|---|---|---|
-| `flowstate_validate` | locally | `flowstate.v1.ValidateRequest` |
-| `flowstate_compile` | locally | `flowstate.v1.CompileRequest` |
-| `flowstate_get_catalog` | locally | `flowstate.v1.GetCatalogRequest` |
-| `flowstate_run` | via a server | `flowstate.v1.RunRequest` |
-| `flowstate_get` | via a server | `flowstate.v1.GetRequest` |
-| `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` |
-| `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` |
-| `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` |
-| `flowstate_list` | via a server | `flowstate.v1.ListRequest` |
-| `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` |
-| `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` |
-| `flowstate_create_schedule` | via a server | `flowstate.v1.CreateScheduleRequest` |
-| `flowstate_list_schedules` | via a server | `flowstate.v1.ListSchedulesRequest` |
-| `flowstate_describe_schedule` | via a server | `flowstate.v1.DescribeScheduleRequest` |
-| `flowstate_delete_schedule` | via a server | `flowstate.v1.DeleteScheduleRequest` |
-| `flowstate_pause_schedule` | via a server | `flowstate.v1.PauseScheduleRequest` |
-| `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` |
-| `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` |
-| `flowstate_run_local` | locally | — |
-| `flowstate_test` | locally | — |
-| `flowstate_debug` | locally | — |
+| Tool | Answers | Request message | Response message |
+|---|---|---|---|
+| `flowstate_validate` | locally | `flowstate.v1.ValidateRequest` | `flowstate.v1.ValidateResponse` |
+| `flowstate_compile` | locally | `flowstate.v1.CompileRequest` | `flowstate.v1.CompileResponse` |
+| `flowstate_get_catalog` | locally | `flowstate.v1.GetCatalogRequest` | `flowstate.v1.GetCatalogResponse` |
+| `flowstate_run` | via a server | `flowstate.v1.RunRequest` | `flowstate.v1.RunResponse` |
+| `flowstate_get` | via a server | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
+| `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
+| `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
+| `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
+| `flowstate_list` | via a server | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
+| `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
+| `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` | `flowstate.v1.TerminateResponse` |
+| `flowstate_create_schedule` | via a server | `flowstate.v1.CreateScheduleRequest` | `flowstate.v1.CreateScheduleResponse` |
+| `flowstate_list_schedules` | via a server | `flowstate.v1.ListSchedulesRequest` | `flowstate.v1.ListSchedulesResponse` |
+| `flowstate_describe_schedule` | via a server | `flowstate.v1.DescribeScheduleRequest` | `flowstate.v1.DescribeScheduleResponse` |
+| `flowstate_delete_schedule` | via a server | `flowstate.v1.DeleteScheduleRequest` | `flowstate.v1.DeleteScheduleResponse` |
+| `flowstate_pause_schedule` | via a server | `flowstate.v1.PauseScheduleRequest` | `flowstate.v1.PauseScheduleResponse` |
+| `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` | `flowstate.v1.ResumeScheduleResponse` |
+| `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` | `flowstate.v1.TriggerScheduleResponse` |
+| `flowstate_run_local` | locally | — | — |
+| `flowstate_test` | locally | — | — |
+| `flowstate_debug` | locally | — | — |
 
 ## `flowstate_validate`
 

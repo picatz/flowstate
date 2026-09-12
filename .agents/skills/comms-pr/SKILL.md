@@ -1,17 +1,14 @@
 ---
 name: comms-pr
-description: Draft or update a Flowstate pull request from the actual diff and verification.
+description: Use when drafting or updating a Flowstate pull request title and body; the body follows the template's six sections and the commit-conventions check reads it.
 ---
 
 # Pull request communication
 
-A PR body should make the change reviewable without restating the diff.
-
-## Gather evidence
-
-Inspect the base/head diff, commits, linked issue or design decision, generated
-artifacts, and command results. Treat these as authoritative over conversational
-recollection. If the branch moved, refresh them before editing the body.
+A PR body makes the change reviewable without restating the diff. Gather the
+base/head diff, commits, the linked issue or decision, generated artifacts, and
+the command results, and treat them as authoritative over recollection. If the
+branch moved, refresh them before editing the body.
 
 ## Default shape
 
@@ -26,23 +23,30 @@ recollection. If the branch moved, refresh them before editing the body.
 6. **Remaining uncertainty** — checks not run, known limitations, or follow-up
    work that is intentionally outside this PR.
 
-Use tables, examples, or mutation evidence only when they materially reduce the
-reviewer's work. A small change should have a small body.
+These are the `##` headings of `.github/PULL_REQUEST_TEMPLATE.md`; a test keeps
+the two lists equal. A small change has a small body; use tables, examples, or
+mutation evidence only when they materially reduce the reviewer's work.
 
-## Guardrails
+## What the conventions check reads
 
-- Do not hard-wrap GitHub prose; keep each paragraph and list item on one
-  source line and let the browser wrap it.
-- Do not narrate every changed file or repeat the linked issue's full history.
-- Do not say “fully tested,” “safe,” “backward-compatible,” or “no impact” unless
-  the available evidence supports the exact claim.
-- Distinguish a local pass from CI, and a targeted check from the full gate.
-- Do not hide a skipped or unavailable check behind silence.
-- Do not include internal agent mechanics, reasoning transcripts, or decorative
-  structure that carries no review decision.
-- Draft by default. Open or update the PR only when the user has asked for it.
-- Preserve platform-generated attribution and avoid duplicate model footers.
+`tools/commitcheck` runs on the title and body (warning-only until 2026-09-21,
+then strict) and on the squash message at merge time:
 
-## Historical field notes
+- Title: `scope: lowercase imperative`.
+- Body: an issue reference (`Refs #N`, `Closes #N`) or a `No-Issue: <reason>`
+  trailer, and a `## Verification` heading or `Verification:` line, or an
+  `Unverified: <reason>` trailer.
+- "fully tested", "safe", "backward-compatible", and "no impact" must sit on a
+  line that also carries their evidence.
 
-Read [the archived comms-pr guidance](../../../.agent-history/skills/comms-pr/SKILL.md) only when a prior incident, exemplar, or host-specific rationale is relevant. It is evidence and history, not a second current procedure.
+## Repository specifics
+
+- Do not hard-wrap GitHub prose; keep each paragraph and list item on one source
+  line and let the browser wrap it.
+- Distinguish a local pass from CI, and a targeted check from the full gate. A
+  skipped or unavailable check is named as such, not omitted.
+
+## History
+
+[Archived comms-pr guidance](../../../.agent-history/skills/comms-pr/SKILL.md)
+is evidence and history, not a second current procedure.

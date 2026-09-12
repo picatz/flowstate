@@ -1,13 +1,14 @@
 ---
 name: flowstate-verify
-description: Choose and report targeted, gate, or full Flowstate verification.
+description: Use when choosing, running, or reporting Flowstate verification (a bounded targeted test, the diff-scoped gate, or the full CI-parity rehearsal) before a handoff, a pull request, or a merge.
+argument-hint: "[targeted|gate|full] [package or test pattern]"
 ---
 
 # Flowstate verification
 
 Verification is evidence, not a ritual. Select the cheapest check that can
 falsify the changed behavior, then broaden according to the diff's reach and the
-handoff being prepared.
+handoff being prepared. Requested scope, if any: $ARGUMENTS.
 
 ## 1. Determine the affected surface
 
@@ -27,7 +28,10 @@ For one package or test, narrow the package and `-run` pattern further.
 
 The packages that share a Temporal dev server (`engine`, `server`,
 `temporalclient`, `cmd/flow`) each boot one in `TestMain`, about eleven seconds
-before the first test runs. When iterating on one of them, start a server once
+before the first test runs. Without `-short`, `engine`'s own suite alone runs
+about 264s on two CPUs — well past a 120s bound — which is why the always-loaded
+example in `AGENTS.md` and `CONTRIBUTING.md` carries `-short`; `engine` honors
+it and drops to about 20s. When iterating on one of them, start a server once
 and let every run attach to it:
 
 ```sh
@@ -36,7 +40,8 @@ export FLOWSTATE_TEST_TEMPORAL_ADDRESS=127.0.0.1:PORT
 GOMEMLIMIT=1GiB go test -timeout 120s -run TestOne ./pkg/flowstate/v1/engine/
 ```
 
-Unset, nothing changes. Stop the server you started when you are done.
+Unset, nothing changes. Stop the server you started, by its PID, when you are
+done; never kill by pattern on a shared machine.
 
 Bound a fuzzer by time, memory, and parallelism:
 
@@ -47,10 +52,11 @@ GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 \
 
 ## 3. Normalize and derive
 
-Use `make fmt`, not a bare `gofmt` — a `gofmt` from `PATH` may be a different
+Use `make fmt`, not a bare `gofmt`: a `gofmt` from `PATH` may be a different
 binary from the pinned toolchain's and can disagree on formatting. Run
-generation and drift checks when schemas or generated surfaces may have
-changed. Do not edit generated files directly.
+generation and drift checks (`buf generate`, `make docs`, `go generate`) when
+schemas or generated surfaces may have changed; never edit generated files
+directly.
 
 ## 4. Before a PR handoff
 
@@ -63,7 +69,8 @@ go run ./tools/gate
 ```
 
 Use `make check` for a full CI-parity rehearsal when the task, risk, or requested
-handoff warrants the full repository cost.
+handoff warrants the full repository cost. On Claude Code, the
+`flowstate-verifier` subagent runs either and returns only the evidence.
 
 ## 5. Report honestly
 
@@ -78,6 +85,8 @@ shuffle seed to rerun them when `-shuffle` is on, and a count of what passed.
 Quote that block rather than the log; for one package,
 `go test -json ./path/ | go run ./tools/testsum` prints the same shape.
 
-## Historical field notes
+## History
 
-Read the archived [full CI](../../../.agent-history/commands/ci-check.md) or [fast test](../../../.agent-history/commands/test-fast.md) command only when a prior rationale is relevant. They are evidence and history, not a second current procedure.
+The archived [full CI](../../../.agent-history/commands/ci-check.md) and
+[fast test](../../../.agent-history/commands/test-fast.md) commands are evidence
+and history, not a second current procedure.

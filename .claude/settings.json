@@ -1,4 +1,35 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(go test:*)",
+      "Bash(go list:*)",
+      "Bash(go doc:*)",
+      "Bash(go env)",
+      "Bash(go version)",
+      "Bash(go run ./tools/gate:*)",
+      "Bash(go run ./tools/testsum:*)",
+      "Bash(go run ./tools/shipcheck:*)",
+      "Bash(go run ./cmd/flow validate:*)",
+      "Bash(go run ./cmd/flow lint:*)",
+      "Bash(make gate)",
+      "Bash(make check)",
+      "Bash(make fmt)",
+      "Bash(make test)",
+      "Bash(make test-fast)",
+      "Bash(make docs)",
+      "Bash(git status:*)",
+      "Bash(git diff)",
+      "Bash(git log)",
+      "Bash(git show)",
+      "Bash(git blame)",
+      "Bash(git ls-files:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git fetch origin)",
+      "Bash(git fetch origin main)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
