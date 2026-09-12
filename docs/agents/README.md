@@ -80,7 +80,10 @@ bound is the difference between review as evidence and review as a treadmill.
 review, or inline-comment update follows, an edited attestation, unresolved
 threads, nonterminal or failing checks, enabled auto-merge, and more than one
 owner comment asking `@codex` for a review, which is the only request shape it
-recognizes. A late artifact therefore forces explicit re-attestation without
+recognizes, counted from when the head under review was committed: the control
+is against re-rolling a vendor review on one head until it goes quiet, and a
+request made before that head existed was aimed at a revision the attestation
+does not cover. A late artifact therefore forces explicit re-attestation without
 requiring any vendor to answer. Two things it does not cover: a request to a
 different vendor, which it never reads and which this repository's automatic
 Copilot review would make ambiguous anyway, and, on the REST fallback, a review

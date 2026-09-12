@@ -83,6 +83,11 @@ type pullRequest struct {
 	Files                        []changedFile `json:"files"`
 	ChangedFiles                 int           `json:"changedFiles"`
 	LatestReviewCommentUpdatedAt string
+	// HeadCommittedAt is when the current head commit was authored, which
+	// dates the head the attestation covers. Empty when it could not be
+	// read, which the repeated-request check treats as "cannot tell" and
+	// answers by counting every request.
+	HeadCommittedAt string
 }
 
 type changedFile struct {
@@ -196,6 +201,11 @@ func loadPullRequest(repo string, number int) (pullRequest, error) {
 		return pullRequest{}, err
 	}
 	pr.LatestReviewCommentUpdatedAt = latestReviewComment
+	headPushed, err := loadHeadCommitTime(repo, pr.HeadRefOID)
+	if err != nil {
+		return pullRequest{}, err
+	}
+	pr.HeadCommittedAt = headPushed
 	return pr, nil
 }
 
@@ -213,6 +223,35 @@ func loadPullRequestGraphQL(repo string, number int) (pullRequest, error) {
 		return pullRequest{}, fmt.Errorf("decode pull request: %w", err)
 	}
 	return pr, nil
+}
+
+// loadHeadCommitTime reads when the head commit was committed, over REST on
+// either transport, since the commit document is small and exact where a
+// commit list is neither. The timestamp dates the head, which is what lets
+// the repeated-request check tell a request aimed at the head under review
+// from one made before that head existed. An empty SHA or an unreadable
+// document returns the empty string rather than an error: the caller then
+// counts every request, which is the stricter answer.
+func loadHeadCommitTime(repo, sha string) (string, error) {
+	if sha == "" {
+		return "", nil
+	}
+	endpoint := fmt.Sprintf("repos/%s/commits/%s", repo, sha)
+	out, err := runGH("api", "--method", "GET", endpoint)
+	if err != nil {
+		return "", nil
+	}
+	var commit struct {
+		Commit struct {
+			Committer struct {
+				Date string `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(out, &commit); err != nil {
+		return "", fmt.Errorf("decode head commit: %w", err)
+	}
+	return commit.Commit.Committer.Date, nil
 }
 
 func loadLatestReviewCommentUpdate(repo string, number int) (string, error) {
@@ -398,7 +437,7 @@ func evaluate(pr pullRequest, unresolved int) []string {
 		problems = append(problems, "independent code/security review has not passed on the exact final head")
 	}
 	if requests := ownerCodexRequests(pr); requests > 1 {
-		problems = append(problems, fmt.Sprintf("Codex was requested %d times on this pull request; a vendor review bot is not requested at all", requests))
+		problems = append(problems, fmt.Sprintf("Codex was requested %d times on the head under review; a vendor review bot is not requested at all", requests))
 	}
 	if unresolved != 0 {
 		problems = append(problems, fmt.Sprintf("%d review thread(s) remain unresolved", unresolved))
@@ -406,10 +445,23 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	return problems
 }
 
+// ownerCodexRequests counts the owner's review requests that bear on the head
+// being merged. The control exists to stop a vendor review being re-rolled
+// until it goes quiet, so what matters is repetition against one head: a
+// request made before the current head was committed was aimed at a revision
+// this attestation does not cover and cannot have shopped for its verdict,
+// while requests after it can. When the head's commit time is unknown every
+// request counts, because failing to date the head is a reason to be stricter
+// rather than more permissive; the empty-string check states that intent,
+// which the comparison would also give, since an empty time sorts before
+// every timestamp.
 func ownerCodexRequests(pr pullRequest) int {
 	requests := 0
 	for _, comment := range pr.Comments {
 		if comment.AuthorAssociation != "OWNER" {
+			continue
+		}
+		if pr.HeadCommittedAt != "" && comment.CreatedAt < pr.HeadCommittedAt {
 			continue
 		}
 		for _, line := range strings.Split(strings.ToLower(comment.Body), "\n") {

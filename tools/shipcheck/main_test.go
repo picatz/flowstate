@@ -94,9 +94,46 @@ func TestEvaluateRejectsRepeatedCodexRequestsWithoutDependingOnSHAAnnotations(t 
 		comment{AuthorAssociation: "OWNER", Body: "@codex review"},
 		comment{AuthorAssociation: "OWNER", Body: "@codex security review"},
 	)
+	// With no head commit time the window is empty, so every request counts:
+	// a head this check cannot date is a reason to be stricter, not laxer.
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
 		t.Fatalf("repeated requests without SHA annotations were accepted: %s", problems)
 	}
+}
+
+// The control is against re-rolling a vendor review on one head until it goes
+// quiet, so it counts requests that could have shopped for the verdict being
+// attested. These two tests are the same pull request either side of the head
+// it is merging: requests made before that commit existed were aimed at a
+// revision this attestation does not cover, and requests made after it were
+// not.
+func TestEvaluateIgnoresCodexRequestsAimedAtAnEarlierHead(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("requests predating the head under review blocked shipping: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsRepeatedCodexRequestsOnTheHeadUnderReview(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T13:00:00Z", "2026-09-10T14:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("repeated requests on the head under review were accepted: %s", problems)
+	}
+}
+
+// requestedCodexTwice builds an otherwise shippable pull request whose head
+// was committed at 2026-09-10T12:00:00Z, carrying two owner requests at the
+// given times and an attestation after both.
+func requestedCodexTwice(first, second string) pullRequest {
+	pr := passingPullRequest()
+	pr.HeadCommittedAt = "2026-09-10T12:00:00Z"
+	pr.Comments[0].CreatedAt = "2026-09-10T16:00:00Z"
+	pr.Comments[0].URL = "https://example.test/attestation"
+	pr.Comments = append(pr.Comments,
+		comment{AuthorAssociation: "OWNER", Body: "@codex review", CreatedAt: first, URL: "https://example.test/first"},
+		comment{AuthorAssociation: "OWNER", Body: "@codex security review", CreatedAt: second, URL: "https://example.test/second"},
+	)
+	return pr
 }
 
 func TestEvaluateDoesNotRequireCodexAvailability(t *testing.T) {
