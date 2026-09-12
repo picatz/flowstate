@@ -15,11 +15,14 @@ import (
 // only when both fail: the fallback adds a way for a check to run without
 // adding a way for a failed check to read as clean.
 //
-// Two facts the REST spelling cannot recover are derived or named rather
-// than faked. A review's updatedAt is not exposed by REST, so an edited
-// review body after the attestation is caught by the inline-comment edit
-// check rather than here; and GitHub's computed reviewDecision is replaced
-// by the decision each reviewer's latest review implies.
+// Two facts REST spells differently are handled explicitly rather than
+// zero-filled. GitHub's computed reviewDecision is replaced by the decision
+// each reviewer's latest decisive review implies, checked against the base
+// branch's rulesets so a required-approval rule still reads as
+// REVIEW_REQUIRED. A review's updatedAt is not exposed by REST at all, so an
+// edited review body after the attestation is not detected on this path;
+// noteFallback says so, so the operator reads the reviews once more before
+// merging instead of trusting a check that could not look.
 
 // restPageSize is the page size every paged REST walk asks for; a page
 // shorter than this ends the walk.
@@ -33,7 +36,7 @@ func noteFallback(what string, graphQLErr error) {
 		return
 	}
 	fallbackNoted = true
-	fmt.Fprintf(os.Stderr, "shipcheck: GraphQL unavailable for %s (%v); reading the same evidence over REST\n", what, graphQLErr)
+	fmt.Fprintf(os.Stderr, "shipcheck: GraphQL unavailable for %s (%v); reading the evidence over REST, which cannot report a review body edited after the attestation: read the reviews once more before merging\n", what, graphQLErr)
 }
 
 func fallbackError(what string, graphQLErr, restErr error) error {
@@ -108,7 +111,7 @@ func restGet(endpoint string, out any) error {
 // A page shorter than restPageSize ends the walk; running past
 // maxThreadPages is an error rather than a partial list, the same bound
 // the GraphQL walks apply. key names the array inside an envelope document
-// (`check_runs`, `workflow_runs`); "" reads a bare array.
+// (`check_runs`, `workflow_runs`, `statuses`); "" reads a bare array.
 func restPages(endpoint, key string) ([]json.RawMessage, error) {
 	var items []json.RawMessage
 	for page := 1; page <= maxThreadPages; page++ {
@@ -157,7 +160,7 @@ func decodeEach[T any](items []json.RawMessage, what string) ([]T, error) {
 // loadPullRequestREST assembles the summary `gh pr view --json` would have
 // returned from the pull request, its files, the head commit's check runs
 // joined to their workflow runs for the workflow name, its status contexts,
-// and its reviews for the decision.
+// and its reviews and base-branch rules for the decision.
 func loadPullRequestREST(repo string, number int) (pullRequest, error) {
 	base := fmt.Sprintf("repos/%s/pulls/%d", repo, number)
 	var raw struct {
@@ -208,7 +211,7 @@ func loadPullRequestREST(repo string, number int) (pullRequest, error) {
 	}
 	pr.StatusChecks = checks
 
-	decision, err := reviewDecisionREST(repo, number)
+	decision, err := reviewDecisionREST(repo, number, pr.BaseRefName)
 	if err != nil {
 		return pullRequest{}, err
 	}
@@ -220,7 +223,7 @@ func loadPullRequestREST(repo string, number int) (pullRequest, error) {
 // (`filter=all`, so a cancelled duplicate stays visible for the duplicate
 // rules in evaluate, as it is in the GraphQL rollup) with the workflow name
 // its check suite belongs to, plus the latest status per context from the
-// combined-status document, which reports at most one page of contexts.
+// combined-status document, paged like every other list.
 func loadStatusChecksREST(repo, sha string) ([]statusCheck, error) {
 	if sha == "" {
 		return nil, fmt.Errorf("pull request has no head commit to load checks for")
@@ -271,17 +274,19 @@ func loadStatusChecksREST(repo, sha string) ([]statusCheck, error) {
 		})
 	}
 
-	var combined struct {
-		Statuses []struct {
-			Context   string `json:"context"`
-			State     string `json:"state"`
-			CreatedAt string `json:"created_at"`
-		} `json:"statuses"`
-	}
-	if err := restGet(fmt.Sprintf("repos/%s/commits/%s/status?per_page=%d", repo, sha, restPageSize), &combined); err != nil {
+	statusItems, err := restPages(fmt.Sprintf("repos/%s/commits/%s/status", repo, sha), "statuses")
+	if err != nil {
 		return nil, err
 	}
-	for _, status := range combined.Statuses {
+	statuses, err := decodeEach[struct {
+		Context   string `json:"context"`
+		State     string `json:"state"`
+		CreatedAt string `json:"created_at"`
+	}](statusItems, "status contexts")
+	if err != nil {
+		return nil, err
+	}
+	for _, status := range statuses {
 		checks = append(checks, statusCheck{
 			Type:      "StatusContext",
 			Context:   status.Context,
@@ -300,12 +305,18 @@ type restReview struct {
 	SubmittedAt string `json:"submitted_at"`
 }
 
-func loadReviewsREST(repo string, number int) ([]review, error) {
+func restReviews(repo string, number int) ([]restReview, error) {
 	items, err := restPages(fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number), "")
 	if err != nil {
 		return nil, err
 	}
-	raw, err := decodeEach[restReview](items, "reviews")
+	return decodeEach[restReview](items, "reviews")
+}
+
+// loadReviewsREST carries only submitted_at: REST does not expose a
+// review's updatedAt, which is the gap noteFallback names.
+func loadReviewsREST(repo string, number int) ([]review, error) {
+	raw, err := restReviews(repo, number)
 	if err != nil {
 		return nil, err
 	}
@@ -318,15 +329,13 @@ func loadReviewsREST(repo string, number int) ([]review, error) {
 
 // reviewDecisionREST is the decision the reviews imply, in the vocabulary
 // evaluate reads: CHANGES_REQUESTED when any reviewer's latest decisive
-// review asks for changes, APPROVED when one approves and none objects, and
-// "" when no review decides. A dismissed review has state DISMISSED and
-// decides nothing.
-func reviewDecisionREST(repo string, number int) (string, error) {
-	items, err := restPages(fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number), "")
-	if err != nil {
-		return "", err
-	}
-	raw, err := decodeEach[restReview](items, "reviews")
+// review asks for changes, APPROVED when one approves and none objects,
+// REVIEW_REQUIRED when the base branch's rulesets require an approval that
+// no reviewer has given, and "" when nothing decides. A dismissed review has
+// state DISMISSED and decides nothing. Classic branch protection is not
+// consulted; its required reviews are enforced by the merge itself.
+func reviewDecisionREST(repo string, number int, base string) (string, error) {
+	raw, err := restReviews(repo, number)
 	if err != nil {
 		return "", err
 	}
@@ -344,7 +353,37 @@ func reviewDecisionREST(repo string, number int) (string, error) {
 		}
 		decision = state
 	}
-	return decision, nil
+	if decision == "APPROVED" {
+		return decision, nil
+	}
+	required, err := approvalsRequiredREST(repo, base)
+	if err != nil {
+		return "", err
+	}
+	if required {
+		return "REVIEW_REQUIRED", nil
+	}
+	return "", nil
+}
+
+// approvalsRequiredREST reports whether a ruleset on base requires at least
+// one approving review.
+func approvalsRequiredREST(repo, base string) (bool, error) {
+	var rules []struct {
+		Type       string `json:"type"`
+		Parameters struct {
+			RequiredApprovingReviewCount int `json:"required_approving_review_count"`
+		} `json:"parameters"`
+	}
+	if err := restGet(fmt.Sprintf("repos/%s/rules/branches/%s", repo, base), &rules); err != nil {
+		return false, err
+	}
+	for _, rule := range rules {
+		if rule.Type == "pull_request" && rule.Parameters.RequiredApprovingReviewCount > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func loadCommentsREST(repo string, number int) ([]comment, error) {

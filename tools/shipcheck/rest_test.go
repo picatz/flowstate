@@ -23,8 +23,9 @@ case "$*" in
   *"/pulls/7/files?per_page=100&page=1") printf '[{"filename":"AGENTS.md"}]' ;;
   *"/actions/runs?head_sha=HEAD&per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/runs.json" ;;
   *"/commits/HEAD/check-runs?filter=all&per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/check-runs.json" ;;
-  *"/commits/HEAD/status?per_page=100") printf '{"statuses":[{"context":"external","state":"success","created_at":"2026-09-12T00:00:00Z"}]}' ;;
+  *"/commits/HEAD/status?per_page=100&page=1") printf '{"statuses":[{"context":"external","state":"success","created_at":"2026-09-12T00:00:00Z"}]}' ;;
   *"/pulls/7/reviews?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/reviews.json" ;;
+  *"/rules/branches/main") cat "$SHIPCHECK_FIXTURES/rules.json" ;;
   *"/issues/7/comments?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/comments.json" ;;
   *"/pulls/7/comments -f sort=updated"*) printf '[]' ;;
   *"/pulls/7/ccr/review_threads") cat "$SHIPCHECK_FIXTURES/threads.json" ;;
@@ -72,6 +73,7 @@ func restFixtures(t *testing.T, dir string) {
 		{"name":"Review dependency changes","status":"completed","conclusion":"success","started_at":"2026-09-12T00:00:01Z","completed_at":"2026-09-12T00:00:02Z","check_suite":{"id":4}},
 		{"name":"CodeQL","status":"completed","conclusion":"success","started_at":"2026-09-12T00:00:01Z","completed_at":"2026-09-12T00:00:02Z","check_suite":{"id":9}}]}`)
 	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"COMMENTED","submitted_at":"2026-09-12T00:00:05Z"}]`)
+	writeFixture(t, dir, "rules.json", `[{"type":"deletion"},{"type":"non_fast_forward"}]`)
 	writeFixture(t, dir, "comments.json", `[{"user":{"login":"picatz"},"author_association":"OWNER","created_at":"2026-09-12T00:00:09Z","updated_at":"2026-09-12T00:00:09Z","html_url":"https://github.com/picatz/flowstate/pull/7#issuecomment-1",
 		"body":"Independent AI code/security review by flowstate-reviewer for HEAD: PASS with no actionable findings.\n\n<!-- flowstate-independent-review:v1 {\"headSha\":\"HEAD\",\"reviewer\":\"flowstate-reviewer\",\"scope\":\"code-security\",\"status\":\"pass\"} -->"}]`)
 	writeFixture(t, dir, "threads.json", `[{"resolved":true,"outdated":true,"path":"AGENTS.md","line":null,"comment_ids":[1,2]}]`)
@@ -156,6 +158,36 @@ func TestRESTFallbackStillReportsWhatBlocks(t *testing.T) {
 		if !strings.Contains(problems, want) {
 			t.Errorf("problems %q lack %q", problems, want)
 		}
+	}
+}
+
+// TestRESTFallbackReadsARequiredReviewRule: GraphQL's reviewDecision says
+// REVIEW_REQUIRED when a ruleset wants an approval nobody gave; the REST
+// spelling derives the same word from the base branch's rules, and an
+// approval clears it.
+func TestRESTFallbackReadsARequiredReviewRule(t *testing.T) {
+	dir := installFakeGH(t, fakeGH)
+	restFixtures(t, dir)
+	writeFixture(t, dir, "rules.json", `[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]`)
+
+	pr, err := loadPullRequest("picatz/flowstate", 7)
+	if err != nil {
+		t.Fatalf("loadPullRequest over REST: %v", err)
+	}
+	if pr.ReviewDecision != "REVIEW_REQUIRED" {
+		t.Fatalf("review decision = %q, want REVIEW_REQUIRED from the ruleset", pr.ReviewDecision)
+	}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `review decision is "REVIEW_REQUIRED"`) {
+		t.Errorf("problems %q do not block on the required review", problems)
+	}
+
+	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`)
+	pr, err = loadPullRequest("picatz/flowstate", 7)
+	if err != nil {
+		t.Fatalf("loadPullRequest over REST: %v", err)
+	}
+	if pr.ReviewDecision != "APPROVED" {
+		t.Fatalf("review decision = %q after an approval, want APPROVED", pr.ReviewDecision)
 	}
 }
 

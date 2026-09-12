@@ -93,8 +93,11 @@ func TestReviewThreadEvidenceFallsBackToRESTAndStillFailsClosed(t *testing.T) {
 	// to one of them: these listen on loopback and a plain client follows
 	// each URL to its own server.
 	client := &http.Client{Timeout: requestTimeout}
+	requests := map[string]int{}
 	listening := func(status int, body string) *httptest.Server {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var srv *httptest.Server
+		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests[srv.URL]++
 			w.WriteHeader(status)
 			w.Write([]byte(body))
 		}))
@@ -122,9 +125,15 @@ func TestReviewThreadEvidenceFallsBackToRESTAndStillFailsClosed(t *testing.T) {
 		}
 	}
 
+	// GraphQL first: a healthy GraphQL answer is the whole check, and the
+	// REST route is never asked.
 	healthy := listening(http.StatusOK, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`)
-	threads, err = reviewThreadEvidence(context.Background(), client, healthy.URL, restDown.URL, "tok", "picatz", "flowstate", 488)
+	restUntouched := listening(http.StatusOK, `[{"resolved": false, "path": "AGENTS.md", "line": 1, "comment_ids": [9]}]`)
+	threads, err = reviewThreadEvidence(context.Background(), client, healthy.URL, restUntouched.URL, "tok", "picatz", "flowstate", 488)
 	if err != nil || len(threads) != 0 {
 		t.Fatalf("GraphQL healthy: threads=%+v err=%v, want none and nil", threads, err)
+	}
+	if requests[healthy.URL] != 1 || requests[restUntouched.URL] != 0 {
+		t.Fatalf("requests = %v, want one GraphQL request and no REST request", requests)
 	}
 }

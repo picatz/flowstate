@@ -29,11 +29,14 @@
 //
 // # Fail closed on merge evidence
 //
-// Review threads live behind GitHub's GraphQL API, not REST, and GraphQL and
-// REST exhaust independently — CLAUDE.md, and the outage that motivated this
+// Review threads live behind GitHub's GraphQL API, and GraphQL and REST
+// exhaust independently — CLAUDE.md, and the outage that motivated this
 // hook (two API failures in one session on 2026-08-12). A session that has
 // burned its GraphQL budget can still merge through REST while this hook is
-// blind to threads. On any failure to identify the target or query GraphQL —
+// blind to threads. GraphQL is asked first; when it fails for any reason
+// (that outage, or the Claude Code proxy, which refuses GraphQL outright
+// and serves a REST review-thread route instead) the same evidence is read
+// over REST. On any failure to identify the target, or of both transports —
 // network, auth, rate limit, or a malformed response — the hook denies the
 // merge. A reviewer can retry after evidence is available; absence of evidence
 // is not approval. Auto-merge is denied because it can execute later without a
@@ -1009,7 +1012,11 @@ func reviewThreadEvidence(ctx context.Context, client *http.Client, graphql, res
 	if graphQLErr == nil {
 		return threads, nil
 	}
-	threads, restErr := unresolvedThreadsREST(ctx, client, rest, token, owner, repo, number)
+	// A GraphQL failure that spent the whole budget (a hang, not a 403) must
+	// not leave REST with none: the fallback gets its own requestTimeout.
+	restCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), requestTimeout)
+	defer cancel()
+	threads, restErr := unresolvedThreadsREST(restCtx, client, rest, token, owner, repo, number)
 	if restErr != nil {
 		return nil, fmt.Errorf("GraphQL: %v; REST: %v", graphQLErr, restErr)
 	}
