@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -542,7 +543,8 @@ func (c Config) withDefaults() Config {
 // setDuration replaces a zero duration with a default. A negative value is left
 // alone, since some fields give it a meaning of its own.
 // maxCallTimeout is [Config.MaxCallTimeout] with zero read as
-// [DefaultMaxCallTimeout].
+// [DefaultMaxCallTimeout], the same rule [setDuration] applies when a Config is
+// normalized.
 //
 // Normalization already fills the field in for every Config this package
 // builds, and this is read at the point of use anyway: the ceiling is the one
@@ -550,11 +552,7 @@ func (c Config) withDefaults() Config {
 // a test's, an embedder's — must not be the way to remove it. Zero means the
 // default here exactly as the field's own documentation says it does.
 func (c Config) maxCallTimeout() time.Duration {
-	if c.MaxCallTimeout <= 0 {
-		return DefaultMaxCallTimeout
-	}
-
-	return c.MaxCallTimeout
+	return cmp.Or(c.MaxCallTimeout, DefaultMaxCallTimeout)
 }
 
 func setDuration(field *time.Duration, def time.Duration) {

@@ -263,7 +263,7 @@ func TestCallContextCapsACallerDeadlineAtTheHostCeiling(t *testing.T) {
 
 	// The shape a submitted workflow can ask for today: a `timeout:` with no
 	// upper bound in the schema.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*24*time.Hour)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*24*time.Hour)
 	defer cancel()
 
 	callCtx, callCancel := p.callContext(ctx)
@@ -293,7 +293,7 @@ func TestCallContextKeepsADeadlineBeneathTheCeiling(t *testing.T) {
 	// A codex turn: minutes, far past CallTimeout, nowhere near the ceiling.
 	const budget = 10 * time.Minute
 
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	ctx, cancel := context.WithTimeout(t.Context(), budget)
 	defer cancel()
 
 	callCtx, callCancel := p.callContext(ctx)

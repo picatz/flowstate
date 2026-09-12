@@ -112,7 +112,7 @@ func Name(got string, known []string) (string, bool) {
 		// sized: an unknown key or function a megabyte long is measured against
 		// each candidate and refused, instead of building a dynamic-programming
 		// table a megabyte wide for every one of them (#1119).
-		if abs(length-utf8.RuneCountInString(name)) > Limit(name) {
+		if difference := length - utf8.RuneCountInString(name); max(difference, -difference) > Limit(name) {
 			continue
 		}
 
@@ -125,14 +125,6 @@ func Name(got string, known []string) (string, bool) {
 		}
 	}
 	return best, best != ""
-}
-
-// abs returns the absolute difference between a and b.
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
 }
 
 // Distance returns the Levenshtein distance between a and b: the fewest single
