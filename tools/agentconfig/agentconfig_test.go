@@ -978,6 +978,38 @@ func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
 		}
 	})
 
+	t.Run("an embedded input that appears while compiling", func(t *testing.T) {
+		project := newProject(t)
+		for _, name := range []string{"table.txt", "late.txt"} {
+			if err := os.WriteFile(filepath.Join(project, "internal", "commitcheck", name), []byte(name), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		bin := filepath.Join(project, "double")
+		if err := os.Mkdir(bin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// Names one more embedded file the second time it is asked, which is
+		// what a file matching an existing `//go:embed` glob looks like when it
+		// lands mid-build. No Go source changes, so the two identities agree:
+		// only comparing the input manifests notices, and an identity that
+		// omitted the file would keep accepting the guard after it changed.
+		double := "#!/bin/sh\nembed=\nfor arg do\n  case \"$arg\" in *EmbedFiles*) embed=1 ;; esac\ndone\nif [ -n \"$embed\" ]; then\n  count=$(cat \"$CLAUDE_PROJECT_DIR/embed-count\" 2>/dev/null || echo 0)\n  count=$((count + 1))\n  printf '%s\\n' \"$count\" > \"$CLAUDE_PROJECT_DIR/embed-count\"\n  printf '%s\\n' \"$CLAUDE_PROJECT_DIR/internal/commitcheck/table.txt\"\n  if [ \"$count\" -gt 1 ]; then printf '%s\\n' \"$CLAUDE_PROJECT_DIR/internal/commitcheck/late.txt\"; fi\n  exit 0\nfi\nexec " + strconv.Quote(realGo) + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "go"), []byte(double), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		status, output := build(t, project, bin+":"+os.Getenv("PATH"))
+		if status != 2 {
+			t.Fatalf("build with a changing input set = %d, want 2; output:\n%s", status, output)
+		}
+		if !strings.Contains(output, "inputs changed while they were compiling") {
+			t.Fatalf("build did not say the inputs changed:\n%s", output)
+		}
+		if published(project) {
+			t.Fatal("a build whose embedded inputs changed published a ready generation")
+		}
+	})
+
 	t.Run("an identity that changes while compiling", func(t *testing.T) {
 		project := newProject(t)
 		bin := filepath.Join(project, "double")

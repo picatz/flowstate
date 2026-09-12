@@ -33,10 +33,11 @@ readonly not_buildable=3
 # One builder at a time: the guards run on every matching tool call, so two
 # launchers can find the same generation stale at once. `mkdir` is the mutex
 # because it is atomic on every POSIX filesystem and needs no `flock`, which
-# a stock macOS install does not ship.
+# a stock macOS install does not ship; the wait is counted in the shell for
+# the same reason, so the lock depends on no command outside it.
 lock_dir="${cache_dir}/build.lock"
 lock_held=""
-for _ in $(seq 1 600); do
+for ((attempt = 0; attempt < 600; attempt++)); do
 	if mkdir "${lock_dir}" 2>/dev/null; then
 		lock_held=1
 		break
@@ -102,6 +103,28 @@ list_source_dirs() {
 		done | sort -u
 }
 
+# The walk in source-id.sh covers the source extensions a package directory
+# holds, but the compiler also reads embedded files, assembly, and cgo sources,
+# which can sit anywhere the package names. Those paths are recorded so the
+# identity hashes them too. Refusing them instead would lock the session out of
+# every tool the moment a shared package embedded a template, which is the
+# failure this launcher exists to prevent.
+list_extra_inputs() {
+	GOTOOLCHAIN="go${go_version}" go -C "${project_dir}" list -deps \
+		-f '{{if .Module}}{{if .Module.Main}}{{$dir := .Dir}}{{range .EmbedFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{range .SFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{range .CgoFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{end}}{{end}}' \
+		"${packages[@]}" |
+		while IFS= read -r input; do
+			case "${input}" in
+				"") ;;
+				"${project_dir}"/*) printf '%s\n' "${input#"${project_dir}"/}" ;;
+				*)
+					printf 'a Flowstate Claude hook input %q is outside the checkout.\n' "${input}" >&2
+					exit 2
+					;;
+			esac
+		done | LC_ALL=C sort -u
+}
+
 rm -f "${hook_dir}/.ready"
 stage_dir="$(mktemp -d "${cache_dir}/build.XXXXXX")"
 trap 'rm -rf "${stage_dir}" "${lock_dir}"' EXIT
@@ -118,24 +141,7 @@ if ! list_source_dirs > "${stage_dir}/.source-dirs" || [[ ! -s "${stage_dir}/.so
 	exit "${not_buildable}"
 fi
 
-# The walk covers the source extensions a package directory holds, but the
-# compiler also reads embedded files, assembly, and cgo sources, which can sit
-# anywhere the package names. Those paths are recorded so the identity hashes
-# them too. Refusing them instead would lock the session out of every tool the
-# moment a shared package embedded a template, which is the failure this
-# launcher exists to prevent.
-if ! GOTOOLCHAIN="go${go_version}" go -C "${project_dir}" list -deps \
-	-f '{{if .Module}}{{if .Module.Main}}{{$dir := .Dir}}{{range .EmbedFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{range .SFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{range .CgoFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{end}}{{end}}' \
-	"${packages[@]}" | while IFS= read -r input; do
-		case "${input}" in
-			"") ;;
-			"${project_dir}"/*) printf '%s\n' "${input#"${project_dir}"/}" ;;
-			*)
-				printf 'a Flowstate Claude hook input %q is outside the checkout.\n' "${input}" >&2
-				exit 2
-				;;
-		esac
-	done | LC_ALL=C sort -u > "${stage_dir}/.source-extra"; then
+if ! list_extra_inputs > "${stage_dir}/.source-extra"; then
 	printf 'could not determine the other inputs the Flowstate Claude hooks compile.\n' >&2
 	exit 2
 fi
@@ -161,13 +167,28 @@ fi
 # running compiles a package the manifest does not name, and re-hashing the old
 # manifest would agree with itself while missing exactly that package.
 post_build_dirs="$(mktemp "${cache_dir}/dirs.XXXXXX")"
-trap 'rm -rf "${stage_dir}" "${post_build_dirs}" "${lock_dir}"' EXIT
+post_build_extra="$(mktemp "${cache_dir}/dirs.XXXXXX")"
+trap 'rm -rf "${stage_dir}" "${post_build_dirs}" "${post_build_extra}" "${lock_dir}"' EXIT
 if ! list_source_dirs > "${post_build_dirs}"; then
 	printf 'could not verify what the Flowstate Claude hooks were built from.\n' >&2
 	exit "${not_buildable}"
 fi
 if ! cmp -s "${stage_dir}/.source-dirs" "${post_build_dirs}"; then
 	printf 'the Flowstate Claude hook dependencies changed while they were compiling.\n' >&2
+	exit 2
+fi
+# The extra inputs are asked again for the same reason the directories are, and
+# separately from the identity: a file that matches an existing `//go:embed`
+# glob and appears mid-build is compiled in, while no listed path changed, so
+# the two identities agree over a manifest that never named it. Comparing the
+# manifests is what notices, and an identity that omits an input keeps
+# accepting a stale guard every time that input changes afterwards.
+if ! list_extra_inputs > "${post_build_extra}"; then
+	printf 'could not verify the other inputs the Flowstate Claude hooks compiled.\n' >&2
+	exit "${not_buildable}"
+fi
+if ! cmp -s "${stage_dir}/.source-extra" "${post_build_extra}"; then
+	printf 'the Flowstate Claude hook inputs changed while they were compiling.\n' >&2
 	exit 2
 fi
 if ! post_build_source_id="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/source-id.sh" "${stage_dir}/.source-dirs")"; then
@@ -183,4 +204,4 @@ printf '%s\n' "${source_id}" > "${stage_dir}/.source-id"
 touch "${stage_dir}/.ready"
 rm -rf "${hook_dir}"
 mv "${stage_dir}" "${hook_dir}"
-trap 'rm -f "${post_build_dirs}"; rm -rf "${lock_dir}"' EXIT
+trap 'rm -f "${post_build_dirs}" "${post_build_extra}"; rm -rf "${lock_dir}"' EXIT
