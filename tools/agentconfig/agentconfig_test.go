@@ -365,6 +365,7 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher := filepath.Join(root, ".claude", "hooks", "run-hook.sh")
+	sentinel := filepath.Join(project, "stale-hook-ran")
 	for _, script := range []string{launcher, filepath.Join(root, ".claude", "hooks", "session-env.sh")} {
 		cmd := exec.Command("bash", script)
 		cmd.Env = []string{"PATH=/usr/bin:/bin"}
@@ -372,6 +373,40 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 || !strings.Contains(string(output), "CLAUDE_PROJECT_DIR") {
 			t.Fatalf("%s without CLAUDE_PROJECT_DIR = %v, want explained exit 2; output:\n%s", script, err, output)
+		}
+	}
+	// The launcher answers a stale build in one of two ways, and which one is
+	// the policy under test here. A tree that will not compile has not refused
+	// anything, so it warns and lets the call through, in the neutral shape the
+	// guards themselves use: a systemMessage and no permission decision, which
+	// would otherwise skip the prompt rather than stay neutral. Anything else
+	// denies. Neither may run the stale binary.
+	runLauncherWarns := func(wantMessage string, paths ...string) {
+		t.Helper()
+		path := os.Getenv("PATH")
+		if len(paths) != 0 {
+			path = paths[0]
+		}
+		cmd := exec.Command("bash", launcher, "mergeguard")
+		cmd.Env = []string{"CLAUDE_PROJECT_DIR=" + project, "HOME=" + os.Getenv("HOME"), "PATH=" + path}
+		output, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("launcher with an uncompilable tree = %v, want a neutral warning; output:\n%s", err, output)
+		}
+		var warning struct {
+			SystemMessage string `json:"systemMessage"`
+		}
+		if err := json.Unmarshal(output, &warning); err != nil {
+			t.Fatalf("launcher warning is not the hook JSON shape: %v\n%s", err, output)
+		}
+		if !strings.Contains(warning.SystemMessage, wantMessage) {
+			t.Fatalf("launcher warning = %q, want it to mention %q", warning.SystemMessage, wantMessage)
+		}
+		if strings.Contains(string(output), "permissionDecision") {
+			t.Fatalf("a blind check decided the permission rather than staying neutral:\n%s", output)
+		}
+		if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale hook ran while its sources did not compile: %v", err)
 		}
 	}
 	runLauncher := func(wantMessage string, paths ...string) {
@@ -393,12 +428,11 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	}
 
 	// A missing build denies instead of returning the shell's non-blocking
-	// 127. The launcher tries to rebuild first; this fixture has no module to
-	// build, so the attempt fails and the denial reports that rather than
-	// telling the operator to restart.
+	// 127. The launcher rebuilds first; with no module here at all the build
+	// cannot even name a toolchain, which is incoherent rather than a tree
+	// mid-edit, so it denies and says why.
 	runLauncher("could not be rebuilt")
 
-	sentinel := filepath.Join(project, "stale-hook-ran")
 	stale := []byte("#!/bin/sh\ntouch " + strconv.Quote(sentinel) + "\n")
 	writeStaleBuild := func() {
 		t.Helper()
@@ -412,31 +446,44 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	runFailedSession := func(path string, extraEnv ...string) {
+	// A SessionStart that fails must leave no usable generation behind. What
+	// the next tool call then sees depends on why the build failed, so each
+	// case says which policy it expects; what none of them may do is run the
+	// binary the failed build invalidated.
+	runFailedSession := func(thenTheLauncher func(), path string, extraEnv ...string) {
 		t.Helper()
 		session := exec.Command("bash", filepath.Join(root, ".claude", "hooks", "session-env.sh"))
 		session.Env = append(os.Environ(), append([]string{"CLAUDE_PROJECT_DIR=" + project, "PATH=" + path}, extraEnv...)...)
 		if output, err := session.CombinedOutput(); err == nil {
 			t.Fatalf("SessionStart unexpectedly accepted a failed hook build; output:\n%s", output)
 		}
-		runLauncher("could not be rebuilt")
+		thenTheLauncher()
 		if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("invalidated stale hook executed: %v", err)
 		}
 	}
+	deniesTheCall := func() { t.Helper(); runLauncher("could not be rebuilt") }
+	warnsAndContinues := func() { t.Helper(); runLauncherWarns("do not compile right now") }
 
 	// Even setup failures before compilation must invalidate an older build.
 	writeStaleBuild()
-	runFailedSession("/usr/bin:/bin") // go.mod is deliberately absent.
+	// No module at all: the build cannot name a toolchain, which is incoherent.
+	runFailedSession(deniesTheCall, "/usr/bin:/bin") // go.mod is deliberately absent.
 
+	// Every script the hooks call each other through has to exist in the
+	// fixture. A missing one dies at 127 inside the launcher, which looks
+	// exactly like the denial each case below means to assert while proving
+	// nothing about the mechanism under test.
+	for _, script := range []string{"source-id.sh", "build-hooks.sh"} {
+		data, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(project, ".claude", "hooks", script), data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	sourceIDScript := filepath.Join(project, ".claude", "hooks", "source-id.sh")
-	sourceIDData, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", "source-id.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(sourceIDScript, sourceIDData, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/hooks\n\ngo 1.27.0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +595,8 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(cachePath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runFailedSession("/usr/bin:/bin")
+	// The cache path is a file, so the build cannot even stage: incoherent.
+	runFailedSession(deniesTheCall, "/usr/bin:/bin")
 	if err := os.Remove(cachePath); err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +610,8 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runFailedSession(fakeBin + ":/usr/bin:/bin")
+	// The compiler itself refuses, which is the tree-does-not-compile case.
+	runFailedSession(warnsAndContinues, fakeBin+":/usr/bin:/bin")
 
 	// An identity command that fails only after compilation must not publish the
 	// hash it happened to print as a ready generation.
@@ -575,16 +624,22 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gitCount := filepath.Join(project, "git-ls-files-count")
-	postBuildGit := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = ls-files ]; then\n    count=$(cat \"$FLOWSTATE_TEST_GIT_COUNT\" 2>/dev/null || echo 0)\n    count=$((count + 1))\n    printf '%s\\n' \"$count\" > \"$FLOWSTATE_TEST_GIT_COUNT\"\n    if [ \"$count\" -gt 1 ]; then exit 1; fi\n  fi\ndone\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
+	gitCount := filepath.Join(project, "git-identity-count")
+	// Each identity check ends in one `git hash-object --stdin` that folds the
+	// per-file hashes together. Failing the second one is an identity that
+	// succeeds before the build and fails after it, which must not publish the
+	// hash it printed the first time.
+	postBuildGit := "#!/bin/sh\nstdin=\nfor arg do\n  case \"$arg\" in --stdin) stdin=1 ;; esac\ndone\nif [ -n \"$stdin\" ]; then\n  count=$(cat \"$FLOWSTATE_TEST_GIT_COUNT\" 2>/dev/null || echo 0)\n  count=$((count + 1))\n  printf '%s\\n' \"$count\" > \"$FLOWSTATE_TEST_GIT_COUNT\"\n  if [ \"$count\" -gt 1 ]; then exit 1; fi\nfi\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(postBuildBin, "git"), []byte(postBuildGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	postBuildGo := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = list ]; then\n    printf '%s\\n' \"$CLAUDE_PROJECT_DIR/tools/hooks\" \"$CLAUDE_PROJECT_DIR/internal/commitcheck\" \"$CLAUDE_PROJECT_DIR/internal/textbound\"\n    exit 0\n  fi\ndone\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then shift; out=$1; break; fi\n  shift\ndone\nfor name in genguard gofmtcheck pidguard mergeguard; do\n  printf '#!/bin/sh\\nexit 0\\n' > \"$out/$name\"\n  chmod 700 \"$out/$name\"\ndone\n"
+	postBuildGo := "#!/bin/sh\nfor arg do\n  case \"$arg\" in *EmbedFiles*) exit 0 ;; esac\ndone\nfor arg do\n  if [ \"$arg\" = list ]; then\n    printf '%s\\n' \"$CLAUDE_PROJECT_DIR/tools/hooks\" \"$CLAUDE_PROJECT_DIR/internal/commitcheck\" \"$CLAUDE_PROJECT_DIR/internal/textbound\"\n    exit 0\n  fi\ndone\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = -o ]; then shift; out=$1; break; fi\n  shift\ndone\nfor name in genguard gofmtcheck pidguard mergeguard; do\n  printf '#!/bin/sh\\nexit 0\\n' > \"$out/$name\"\n  chmod 700 \"$out/$name\"\ndone\n"
 	if err := os.WriteFile(filepath.Join(postBuildBin, "go"), []byte(postBuildGo), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runFailedSession(postBuildBin+":/usr/bin:/bin", "FLOWSTATE_TEST_GIT_COUNT="+gitCount)
+	// The identity fails only after a successful compile, so SessionStart
+	// publishes nothing; the next call then finds no generation to trust.
+	runFailedSession(warnsAndContinues, postBuildBin+":/usr/bin:/bin", "FLOWSTATE_TEST_GIT_COUNT="+gitCount)
 
 	// A source change after SessionStart invalidates an otherwise ready binary.
 	writeStaleBuild()
@@ -594,10 +649,10 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(dependencySource, []byte("package hooks\n\nconst changed = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runLauncher("could not be rebuilt")
-	if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stale hook ran after its sources changed: %v", err)
-	}
+	// The fixture module has no hook commands to build, so this is the tree
+	// that does not compile: the guard warns, the call proceeds, and the
+	// stale binary still does not run.
+	runLauncherWarns("do not compile right now")
 
 	// Failure to enumerate untracked sources is an identity failure, not an
 	// empty untracked-file set that can accidentally trust the old binary.
@@ -616,10 +671,7 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fakeGitBin, "git"), []byte(fakeGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runLauncher("could not be rebuilt", fakeGitBin+":/usr/bin:/bin")
-	if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stale hook ran after source enumeration failed: %v", err)
-	}
+	runLauncherWarns("do not compile right now", fakeGitBin+":/usr/bin:/bin")
 
 	// A ready executable that cannot launch after the readiness check is still
 	// converted to Claude's blocking exit status.
@@ -761,6 +813,186 @@ func TestFrontmatterRejectsWhatAHostWouldReject(t *testing.T) {
 // so neither drifts from the other unnoticed (#1728). It lives here rather
 // than beside tools/commitcheck because this package is the one the gate runs
 // for a diff to the agent configuration, which the template now counts as.
+// TestClaudeHookBuildRefusesAnIncoherentGeneration drives build-hooks.sh
+// directly, because the launcher tests reach it only through failures that
+// stop earlier. What is asserted here is the part that decides whether a
+// compiled generation may be trusted: the build asks the compiler what it
+// depends on before and after compiling, re-derives the identity afterwards,
+// and publishes only when both answers still agree. Each case removes one of
+// those and must fail, since a published generation that was not built from
+// the sources it names is exactly how a stale guard keeps running.
+func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude hooks require Bash")
+	}
+	root := repoRoot(t)
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A fixture the real toolchain can build, so only the double under test
+	// makes a case fail.
+	newProject := func(t *testing.T) string {
+		t.Helper()
+		project := t.TempDir()
+		for _, dir := range []string{".claude/hooks", "internal/commitcheck"} {
+			if err := os.MkdirAll(filepath.Join(project, filepath.FromSlash(dir)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, script := range []string{"source-id.sh", "build-hooks.sh"} {
+			data, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", script))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(project, ".claude", "hooks", script), data, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write := func(path, body string) {
+			t.Helper()
+			full := filepath.Join(project, filepath.FromSlash(path))
+			if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("go.mod", "module example.com/hooks\n\ngo "+goDirective(t, root)+"\n")
+		write("go.sum", "")
+		write("internal/commitcheck/check.go", "package commitcheck\n\n// Shared so the manifest holds more than the commands.\nconst Name = \"commitcheck\"\n")
+		for _, hook := range []string{"genguard", "gofmtcheck", "pidguard", "mergeguard"} {
+			write("tools/hooks/"+hook+"/main.go",
+				"package main\n\nimport _ \"example.com/hooks/internal/commitcheck\"\n\nfunc main() {}\n")
+		}
+		if output, err := exec.Command("git", "-C", project, "init", "--quiet").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v\n%s", err, output)
+		}
+		return project
+	}
+
+	build := func(t *testing.T, project, path string) (int, string) {
+		t.Helper()
+		cmd := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "build-hooks.sh"))
+		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project, "PATH="+path)
+		output, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+			return 0, string(output)
+		case errors.As(err, &exitErr):
+			return exitErr.ExitCode(), string(output)
+		default:
+			t.Fatalf("run build-hooks.sh: %v\n%s", err, output)
+			return 0, ""
+		}
+	}
+	published := func(project string) bool {
+		_, err := os.Stat(filepath.Join(project, ".claude", "hooks", ".bin", ".ready"))
+		return err == nil
+	}
+
+	t.Run("a healthy tree publishes", func(t *testing.T) {
+		project := newProject(t)
+		if status, output := build(t, project, os.Getenv("PATH")); status != 0 {
+			t.Fatalf("build = %d, want 0; output:\n%s", status, output)
+		}
+		if !published(project) {
+			t.Fatal("a successful build published no ready generation")
+		}
+	})
+
+	t.Run("a dependency set that changes while compiling", func(t *testing.T) {
+		project := newProject(t)
+		bin := filepath.Join(project, "double")
+		if err := os.Mkdir(bin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// Answers the package-directory query with one more directory the
+		// second time, which is what an import added mid-build looks like.
+		double := "#!/bin/sh\nfor arg do\n  case \"$arg\" in *EmbedFiles*) exit 0 ;; esac\ndone\nfor arg do\n  if [ \"$arg\" = list ]; then\n    count=$(cat \"$CLAUDE_PROJECT_DIR/list-count\" 2>/dev/null || echo 0)\n    count=$((count + 1))\n    printf '%s\\n' \"$count\" > \"$CLAUDE_PROJECT_DIR/list-count\"\n    printf '%s\\n' \"$CLAUDE_PROJECT_DIR/tools/hooks/genguard\" \"$CLAUDE_PROJECT_DIR/internal/commitcheck\"\n    if [ \"$count\" -gt 1 ]; then printf '%s\\n' \"$CLAUDE_PROJECT_DIR/tools/hooks/pidguard\"; fi\n    exit 0\n  fi\ndone\nexec " + strconv.Quote(realGo) + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "go"), []byte(double), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		status, output := build(t, project, bin+":"+os.Getenv("PATH"))
+		if status != 2 {
+			t.Fatalf("build with a changing dependency set = %d, want 2; output:\n%s", status, output)
+		}
+		if !strings.Contains(output, "changed while they were compiling") {
+			t.Fatalf("build did not say the dependencies changed:\n%s", output)
+		}
+		if published(project) {
+			t.Fatal("a build whose dependency set changed published a ready generation")
+		}
+	})
+
+	t.Run("an identity that changes while compiling", func(t *testing.T) {
+		project := newProject(t)
+		bin := filepath.Join(project, "double")
+		if err := os.Mkdir(bin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// Each identity check ends in one `hash-object --stdin`; answering the
+		// second with a different hash is a source edited mid-build.
+		double := "#!/bin/sh\nstdin=\nfor arg do\n  case \"$arg\" in --stdin) stdin=1 ;; esac\ndone\nif [ -n \"$stdin\" ]; then\n  count=$(cat \"$CLAUDE_PROJECT_DIR/id-count\" 2>/dev/null || echo 0)\n  count=$((count + 1))\n  printf '%s\\n' \"$count\" > \"$CLAUDE_PROJECT_DIR/id-count\"\n  cat > /dev/null\n  printf 'identity%s\\n' \"$count\"\n  exit 0\nfi\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "git"), []byte(double), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		status, output := build(t, project, bin+":"+os.Getenv("PATH"))
+		if status != 2 {
+			t.Fatalf("build with a changing identity = %d, want 2; output:\n%s", status, output)
+		}
+		if !strings.Contains(output, "sources changed while they were compiling") {
+			t.Fatalf("build did not say the sources changed:\n%s", output)
+		}
+		if published(project) {
+			t.Fatal("a build whose identity changed published a ready generation")
+		}
+	})
+
+	t.Run("a failed build invalidates the generation it replaces", func(t *testing.T) {
+		project := newProject(t)
+		if status, output := build(t, project, os.Getenv("PATH")); status != 0 {
+			t.Fatalf("seed build = %d; output:\n%s", status, output)
+		}
+		if !published(project) {
+			t.Fatal("seed build published nothing")
+		}
+		bin := filepath.Join(project, "double")
+		if err := os.Mkdir(bin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if status, _ := build(t, project, bin+":"+os.Getenv("PATH")); status == 0 {
+			t.Fatal("a build whose compiler refuses reported success")
+		}
+		if published(project) {
+			t.Fatal("a failed build left the previous generation marked ready")
+		}
+	})
+}
+
+// goDirective reads the Go version the repository pins, so a fixture module
+// resolves the same toolchain the hooks are built with.
+func goDirective(t *testing.T, root string) string {
+	t.Helper()
+	for _, line := range strings.Split(string(read(t, filepath.Join(root, "go.mod"))), "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "go" {
+			return fields[1]
+		}
+	}
+	t.Fatal("go.mod has no go directive")
+	return ""
+}
+
 func TestThePullRequestTemplateCarriesTheSkillsHeadings(t *testing.T) {
 	root := repoRoot(t)
 

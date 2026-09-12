@@ -30,16 +30,44 @@ hooks_are_current() {
 	[[ -f "${hook_dir}/.source-id" && "$(<"${hook_dir}/.source-id")" == "${source_id}" ]]
 }
 
+# Emits the neutral fail-open shape the guards themselves use for a check that
+# could not run: the reason on stderr and a systemMessage on stdout, with no
+# permission decision, because a blind check must not silently approve either.
+warn() {
+	local reason="$1" escaped
+	escaped="$(printf '%s' "${reason}" | tr '\t\n\r' '   ' | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"
+	printf '%s\n' "${reason}" >&2
+	printf '{"systemMessage":"%s"}\n' "${escaped}"
+	exit 0
+}
+
 # A stale generation is rebuilt here rather than deferred to a restart. Editing
 # a guard's source is ordinary work, and a session that answers it by refusing
 # every tool call until Claude Code restarts cannot be used to do that work.
-# The rebuild is what must succeed: if it does not, this denies, so a guard
-# whose sources have changed never runs from the previous build.
+#
+# A rebuild that fails because the tree does not compile is the ordinary state
+# between two edits of a refactor, and it is the one failure that must not
+# block: the guards match Edit, Write and Bash, so denying here would take away
+# the tools needed to repair the very file that broke, and a restart would
+# rebuild and fail identically. That case warns loudly and lets the call
+# through, which is what these hooks did before they were prebuilt and what
+# `hook.Warn` exists for. Every other failure denies, because it means the
+# build is incoherent rather than merely unfinished.
 if ! hooks_are_current; then
-	if ! rebuild="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/build-hooks.sh" 2>&1 < /dev/null)"; then
-		printf 'Flowstate Claude hook %q is out of date and could not be rebuilt:\n%s\n' "${name}" "${rebuild}" >&2
-		exit 2
-	fi
+	# Captured with `|| status=$?` because `set -e` would otherwise end this
+	# script at the failing assignment, before the policy below can tell a
+	# tree that does not compile from a build that is incoherent.
+	rebuild=""
+	rebuild_status=0
+	rebuild="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/build-hooks.sh" 2>&1 < /dev/null)" || rebuild_status=$?
+	case "${rebuild_status}" in
+		0) ;;
+		3) warn "Flowstate Claude hook ${name} did not run: its sources do not compile right now. ${rebuild}" ;;
+		*)
+			printf 'Flowstate Claude hook %q is out of date and could not be rebuilt:\n%s\n' "${name}" "${rebuild}" >&2
+			exit 2
+			;;
+	esac
 	if ! hooks_are_current; then
 		printf 'Flowstate Claude hook %q is still not current after a rebuild; restart Claude Code.\n' "${name}" >&2
 		exit 2

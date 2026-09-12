@@ -229,10 +229,16 @@ and whether a deterministic mechanism can prevent it more reliably.
 - The repository's `.claude/settings.json` hooks guard generated files, process
   cleanup, merge review state, and formatting. SessionStart builds those four
   existing commands once in the checkout-local ignored `.claude/hooks/.bin`
-  directory; per-tool hooks use a fail-closed launcher to execute the ready
-  binaries instead of recompiling through `go run`. The launcher rejects stale
-  binaries after hook sources or their Go module change. Other hosts do not run
-  these Claude-native tool events.
+  directory; per-tool hooks use a launcher to execute the ready binaries
+  instead of recompiling through `go run`. The identity that decides whether a
+  binary is current walks each package directory the compiler reaches, so a
+  source Git ignores counts and a test file does not, and the build re-asks the
+  compiler afterwards so an import added mid-build cannot be missed. A stale
+  generation is rebuilt on the spot rather than deferred to a restart. A
+  rebuild that fails because the tree does not compile warns and lets the call
+  through, since the guards match the very tools needed to repair it and a
+  guard that could not be built has refused nothing; every other failure
+  denies. Other hosts do not run these Claude-native tool events.
 - Legacy `.claude/commands/ci-check.md` and `test-fast.md` remain only as short
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
   in skills. A command never shares a skill's name: `both-drivers.md` was

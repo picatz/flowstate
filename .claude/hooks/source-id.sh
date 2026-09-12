@@ -44,10 +44,16 @@ for directory in "${directories[@]}"; do
 	fi
 	# Only this directory's own files: a package does not compile its
 	# subdirectories, and each package the hooks import is listed in its own
-	# right by the manifest.
+	# right by the manifest. The extensions are the ones the Go build reads
+	# from a package directory; `build-hooks.sh` refuses to publish when the
+	# compiler reports an input outside them, so this list cannot silently
+	# fall behind what is compiled. Symbolic links count, because the
+	# compiler follows them.
 	while IFS= read -r -d '' path; do
 		printf '%s\0' "${path#"${project_dir}/"}" >> "${build_paths}"
-	done < <(find "${package_dir}" -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' -print0)
+	done < <(find "${package_dir}" -maxdepth 1 \( -type f -o -type l \) \
+		\( -name '*.go' -o -name '*.s' -o -name '*.c' -o -name '*.h' -o -name '*.syso' \) \
+		! -name '*_test.go' -print0)
 done
 if [[ ! -s "${build_paths}" ]]; then
 	printf 'could not find the Flowstate Claude hook build inputs.\n' >&2
@@ -59,5 +65,5 @@ fi
 	while IFS= read -r -d '' path; do
 		printf '%s\0' "${path}"
 		git -C "${project_dir}" hash-object -- "${path}"
-	done < <(sort -z "${build_paths}")
+	done < <(LC_ALL=C sort -z "${build_paths}")
 } | git -C "${project_dir}" hash-object --stdin
