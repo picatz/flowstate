@@ -103,14 +103,16 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: running},
 			WithNamespace("acme"), WithAudit(recorderFor(t, sink)))
+		// A caller who holds the action, so the refusal below is the tenant
+		// comparison rather than the action check that now runs ahead of it.
 		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
-			Issuer: "https://issuer.example", Subject: "under-authorized", Actions: auth.ActionScopes{},
+			Issuer: "https://issuer.example", Subject: "reader", Actions: auth.ActionScopes{"workload.read"},
 		})
 
 		_, err := s.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
 		require.Error(t, err)
 		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
-			"an action denial disclosed that a run exists in another tenant")
+			"a run in another tenant was distinguishable from one that does not exist")
 
 		record := sink.only(t)
 		require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
@@ -131,7 +133,7 @@ func TestADecisionEmitsExactlyOneRecord(t *testing.T) {
 		sink := &recordingEmitter{}
 		s := mustNew(t, &fakeRunClient{describe: foreign}, WithAudit(recorderFor(t, sink)))
 		ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
-			Issuer: "https://issuer.example", Subject: "under-authorized", Actions: auth.ActionScopes{},
+			Issuer: "https://issuer.example", Subject: "reader", Actions: auth.ActionScopes{"workload.read"},
 		})
 
 		_, err := s.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
@@ -382,9 +384,15 @@ type fakeRunClient struct {
 	describeErr   error
 
 	signals int
+
+	// describes counts the lookups a request actually spent, which is what
+	// makes "the run was never addressed" assertable rather than inferred from
+	// a status code that has more than one reason to be what it is.
+	describes int
 }
 
 func (c *fakeRunClient) DescribeWorkflowExecution(_ context.Context, _, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+	c.describes++
 	if resp, ok := c.describeByRun[runID]; ok {
 		return resp, nil
 	}
@@ -407,4 +415,97 @@ func (c *fakeRunClient) SignalWorkflow(context.Context, string, string, string, 
 	c.signals++
 
 	return nil
+}
+
+// TestAnActionRefusalNeverAddressesTheResource is #1119's oracle.
+//
+// The per-action check sat at the allow seam, which for every verb that
+// addresses an existing resource is reached only after a Describe and a tenant
+// comparison have already decided the answer. The two refusals differ: a run
+// that exists in the caller's own tenant reached the action check and came back
+// permission denied, while an absent, foreign, or non-Flowstate id had already
+// come back not found. A caller holding no action at all could therefore sort
+// guessed ids into "names something in my tenant" and "does not" from the
+// status alone — without holding the action that reads one, and with the same
+// answer for every id being the whole point of the not-found refusal.
+//
+// The assertion is the lookup count as well as the status, because a uniform
+// status reached by two different routes is still two routes: the timing and
+// the audit record would separate them even where the code does not.
+func TestAnActionRefusalNeverAddressesTheResource(t *testing.T) {
+	t.Parallel()
+
+	// The three run shapes whose refusals used to differ, plus the absent one.
+	// Every row is the same caller, holding no action, probing one id.
+	owned := &workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+			Execution: &commonpb.WorkflowExecution{WorkflowId: "candidate", RunId: "r-1"},
+			Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
+			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			Memo:      mineMemo(t),
+		},
+	}
+
+	for name, temporal := range map[string]*fakeRunClient{
+		"a run in the caller's own tenant": {describe: owned},
+		"a run that cannot be read":        {describeErr: errors.New("no such workflow execution")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &recordingEmitter{}
+			s := mustNew(t, temporal, WithAudit(recorderFor(t, sink)))
+			ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+				Issuer: "https://issuer.example", Subject: "disabled", Actions: auth.ActionScopes{},
+			})
+
+			_, err := s.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: "candidate"}))
+			require.Error(t, err)
+			require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+				"the answer has to be the same whatever the id names")
+			require.Zero(t, temporal.describes,
+				"a caller with no action addressed the run, so the refusal is still about what it found")
+
+			record := sink.only(t)
+			require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, record.GetDecision())
+			require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, record.GetDenyCode())
+		})
+	}
+}
+
+// TestSignalRefusesAnUnheldActionBeforeResolvingTheRun is the same claim for
+// the verb that resolves twice.
+//
+// Signal walks the Continue-As-New chain, so a caller holding `workload.read`
+// but not `workload.signal` spent two lookups on this server before being told
+// they may not signal at all — and learned from the ordering whether the id
+// named a live run.
+func TestSignalRefusesAnUnheldActionBeforeResolvingTheRun(t *testing.T) {
+	t.Parallel()
+
+	owned := &workflowservice.DescribeWorkflowExecutionResponse{
+		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+			Execution: &commonpb.WorkflowExecution{WorkflowId: "candidate", RunId: "r-1"},
+			Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
+			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			Memo:      mineMemo(t),
+		},
+	}
+
+	sink := &recordingEmitter{}
+	temporal := &fakeRunClient{describe: owned}
+	s := mustNew(t, temporal, WithAudit(recorderFor(t, sink)))
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer: "https://issuer.example", Subject: "reader", Actions: auth.ActionScopes{"workload.read"},
+	})
+
+	_, err := s.Signal(ctx, connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: "candidate", Name: "approval",
+	}))
+	require.Error(t, err)
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	require.Zero(t, temporal.describes, "a caller who may not signal resolved the run anyway")
+	require.Zero(t, temporal.signals, "a caller who may not signal delivered one")
+
+	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, sink.only(t).GetDenyCode())
 }
