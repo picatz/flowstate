@@ -24,6 +24,7 @@ case "$*" in
   *"/actions/runs?head_sha=HEAD&per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/runs.json" ;;
   *"/commits/HEAD/check-runs?filter=all&per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/check-runs.json" ;;
   *"/commits/HEAD/status?per_page=100&page=1") printf '{"statuses":[{"context":"external","state":"success","created_at":"2026-09-12T00:00:00Z"}]}' ;;
+  *"/git/commits/HEAD") printf '{"committer":{"date":"2026-09-10T12:00:00Z"}}' ;;
   *"/pulls/7/reviews?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/reviews.json" ;;
   *"/rules/branches/main?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/rules.json" ;;
   *"/branches/main/protection") cat "$SHIPCHECK_FIXTURES/protection.json" ;;
@@ -105,6 +106,12 @@ func TestRESTFallbackAssemblesTheSameEvidence(t *testing.T) {
 	}
 	if len(pr.Files) != 1 || pr.Files[0].Path != "AGENTS.md" || pr.ChangedFiles != 1 {
 		t.Errorf("files = %+v (changed %d)", pr.Files, pr.ChangedFiles)
+	}
+	// The head's date decides which review requests the repeated-request
+	// check can see, and an unread one silently counts every request, so the
+	// fallback path asserts it rather than leaving it to the GraphQL test.
+	if pr.HeadCommittedAt != "2026-09-10T12:00:00Z" {
+		t.Errorf("head commit time = %q, wanted the commit object's date", pr.HeadCommittedAt)
 	}
 	byName := map[string]statusCheck{}
 	for _, check := range pr.StatusChecks {
@@ -336,6 +343,7 @@ case "$*" in
   "api graphql"*"reviews(first"*) printf '{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}}' ;;
   "api graphql"*"reviewThreads(first"*) printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}' ;;
   *"/pulls/7/comments -f sort=updated"*) printf '[]' ;;
+  *"/git/commits/HEAD") printf '{"committer":{"date":"2026-09-10T12:00:00Z"}}' ;;
   *) echo "gh $*" >> "$SHIPCHECK_FIXTURES/rest-calls"; echo "REST asked while GraphQL answers: gh $*" >&2; exit 3 ;;
 esac
 `
@@ -348,6 +356,12 @@ func TestGraphQLIsAskedFirst(t *testing.T) {
 	}
 	if pr.HeadRefOID != testHead || pr.State != "OPEN" {
 		t.Errorf("summary = %+v, want the GraphQL document", pr)
+	}
+	// The head commit's date has no GraphQL spelling here, so it is read over
+	// REST on either transport, like the inline-comment sweep above it. Both
+	// are named in the fake rather than counted as a fallback.
+	if pr.HeadCommittedAt != "2026-09-10T12:00:00Z" {
+		t.Errorf("head commit time = %q, want the commit document's date", pr.HeadCommittedAt)
 	}
 	unresolved, err := unresolvedReviewThreads("picatz/flowstate", 7)
 	if err != nil || unresolved != 0 {

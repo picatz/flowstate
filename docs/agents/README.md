@@ -80,7 +80,17 @@ bound is the difference between review as evidence and review as a treadmill.
 review, or inline-comment update follows, an edited attestation, unresolved
 threads, nonterminal or failing checks, enabled auto-merge, and more than one
 owner comment asking `@codex` for a review, which is the only request shape it
-recognizes. A late artifact therefore forces explicit re-attestation without
+recognizes, counted from when the head under review was committed: the control
+is against re-rolling a vendor review on one head until it goes quiet, and a
+request made before that head existed was aimed at a revision the attestation
+does not cover. The bound is therefore per head rather than per pull request,
+and a new head clears the count, which is why the rule that only a material
+defect earns a new head is what keeps the reset from being free. The head's
+date comes from the commit object, which the committer writes rather than
+GitHub stamping it, and a later cutoff hides more requests, so the date is
+clamped by the earliest instant GitHub stamped for that head: a check run
+cannot start before the head exists. A head whose date will not parse, or
+that no stamped check can bound, counts every request. A late artifact therefore forces explicit re-attestation without
 requiring any vendor to answer. Two things it does not cover: a request to a
 different vendor, which it never reads and which this repository's automatic
 Copilot review would make ambiguous anyway, and, on the REST fallback, a review

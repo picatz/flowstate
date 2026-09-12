@@ -39,6 +39,13 @@ go.work
 # above for exactly the same reason.
 /vacuity
 
+# `go build ./tools/shipcheck` writes the binary here, and a `git add -A` on
+# the branch that added this line committed 4.6 MB of it. Caught in review
+# before merging, unlike #1125. The name is the hazard on top of the size: a
+# checked-in `./shipcheck` sits next to a `go run ./tools/shipcheck` in the
+# shipping procedure, so a reader could run an executable no build reproduces.
+/shipcheck
+
 # The embedding example's binary, for the same reason: `go build
 # ./examples/embedding` from the repo root writes it here. A 46 MB copy was
 # committed exactly this way in ff6131b and removed by #922.

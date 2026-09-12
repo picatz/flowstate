@@ -94,9 +94,142 @@ func TestEvaluateRejectsRepeatedCodexRequestsWithoutDependingOnSHAAnnotations(t 
 		comment{AuthorAssociation: "OWNER", Body: "@codex review"},
 		comment{AuthorAssociation: "OWNER", Body: "@codex security review"},
 	)
+	// With no head commit time the window is empty, so every request counts:
+	// a head this check cannot date is a reason to be stricter, not laxer.
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
 		t.Fatalf("repeated requests without SHA annotations were accepted: %s", problems)
 	}
+}
+
+// The control is against re-rolling a vendor review on one head until it goes
+// quiet, so it counts requests that could have shopped for the verdict being
+// attested. These two tests are the same pull request either side of the head
+// it is merging: requests made before that commit existed were aimed at a
+// revision this attestation does not cover, and requests made after it were
+// not.
+func TestEvaluateIgnoresCodexRequestsAimedAtAnEarlierHead(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("requests predating the head under review blocked shipping: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsRepeatedCodexRequestsOnTheHeadUnderReview(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T13:00:00Z", "2026-09-10T14:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("repeated requests on the head under review were accepted: %s", problems)
+	}
+}
+
+// The head's date is written by whoever made the commit, not stamped by
+// GitHub, so it arrives in the committer's own offset and can name any
+// instant. These are the shapes that a text comparison gets wrong: an offset
+// spelling of the same moment, and a date the committer put in the future.
+// Both must count every request rather than silently opening the window.
+func TestEvaluateComparesTheHeadDateAsAnInstantNotAsText(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
+	// 22:00+09:00 is 13:00Z, so both requests land after the head and count.
+	// Read as wall-clock digits it is 22:00, which postdates both and would
+	// clear the gate. The checks are stamped later than that naive reading,
+	// so the clamp cannot rescue the comparison and the offset is what the
+	// assertion rests on.
+	pr.HeadCommittedAt = "2026-09-10T22:00:00+09:00"
+	stampChecks(&pr, "2026-09-10T23:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("an offset head date hid requests made on this head: %s", problems)
+	}
+}
+
+// A committer who dates the head forward and then waits is the case a plain
+// "is it still in the future" test misses: by the time the gate runs, the
+// written instant has passed, and it sits after requests it would hide. The
+// clamp is what answers it, because GitHub stamped the head's checks when the
+// head really appeared.
+func TestEvaluateDistrustsAHeadDatedAfterItsOwnChecks(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
+	pr.HeadCommittedAt = "2026-09-10T21:00:00Z"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a head dated after its own checks hid the requests it postdates: %s", problems)
+	}
+}
+
+func TestEvaluateCountsEveryRequestWhenNoCheckDatesTheHead(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	stampChecks(&pr, "")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a head with no stamped check was dated by its committer alone: %s", problems)
+	}
+}
+
+func TestEvaluateCountsARequestMadeAtTheHeadsOwnInstant(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T12:00:00Z", "2026-09-10T13:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a request made at the head's own instant was excused: %s", problems)
+	}
+}
+
+func TestEvaluateCountsARequestItCannotDate(t *testing.T) {
+	// One request lands after the head and one carries a timestamp that will
+	// not parse. Dropping the second would leave a single request and clear
+	// the gate, so what is asserted is that both count.
+	pr := requestedCodexTwice("2026-09-10T13:00:00Z", "not a timestamp")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a request with an unreadable timestamp was dropped: %s", problems)
+	}
+}
+
+func TestEvaluateCountsEveryRequestWhenTheHeadDateWillNotParse(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	pr.HeadCommittedAt = "last Tuesday"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("an unparseable head date opened the window: %s", problems)
+	}
+}
+
+// The floor is the earliest instant GitHub stamped for the head, across both
+// spellings: a check run carries a start where a status context carries a
+// creation time. Taking the latest instead, or reading only one spelling,
+// raises the floor and hides requests made before it, which is the direction
+// this window exists to close. The fixture therefore spreads its stamps, so
+// that only the earliest-across-both rule counts the request between them.
+func TestEvaluateClampsToTheEarliestStampAcrossBothSpellings(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T12:20:00Z", "2026-09-10T12:45:00Z")
+	pr.HeadCommittedAt = "2026-09-10T12:50:00Z"
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "late", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-10T12:40:00Z"},
+		{Type: "StatusContext", Context: "early", State: "SUCCESS", CreatedAt: "2026-09-10T12:05:00Z"},
+	}
+	pr.StatusChecks = append(pr.StatusChecks, passingRequiredChecks()...)
+	stampChecks(&pr, "2026-09-10T12:40:00Z")
+	pr.StatusChecks[1].StartedAt = ""
+	pr.StatusChecks[1].CreatedAt = "2026-09-10T12:05:00Z"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("the floor was taken from something later than the earliest stamp: %s", problems)
+	}
+}
+
+// stampChecks gives every check on the fixture a GitHub-stamped start, which
+// is what the window clamps the committer-written head date against.
+func stampChecks(pr *pullRequest, at string) {
+	for i := range pr.StatusChecks {
+		pr.StatusChecks[i].StartedAt = at
+	}
+}
+
+// requestedCodexTwice builds an otherwise shippable pull request whose head
+// was committed at 2026-09-10T12:00:00Z, carrying two owner requests at the
+// given times and an attestation after both.
+func requestedCodexTwice(first, second string) pullRequest {
+	pr := passingPullRequest()
+	pr.HeadCommittedAt = "2026-09-10T12:00:00Z"
+	stampChecks(&pr, "2026-09-10T12:05:00Z")
+	pr.Comments[0].CreatedAt = "2026-09-10T23:00:00Z"
+	pr.Comments[0].URL = "https://example.test/attestation"
+	pr.Comments = append(pr.Comments,
+		comment{AuthorAssociation: "OWNER", Body: "@codex review", CreatedAt: first, URL: "https://example.test/first"},
+		comment{AuthorAssociation: "OWNER", Body: "@codex security review", CreatedAt: second, URL: "https://example.test/second"},
+	)
+	return pr
 }
 
 func TestEvaluateDoesNotRequireCodexAvailability(t *testing.T) {
