@@ -234,8 +234,9 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// A Temporal namespace is not necessarily Flowstate's alone, and the
 			// tenant check cannot tell "a Flowstate run from before tenants were
 			// recorded" from "not a Flowstate run at all" — both arrive with no
-			// memo, and both therefore read as belonging to the default tenant.
-			// Unscoped, a listing would enumerate whatever else shares the
+			// memo, and both are refused by the same positive-provenance check
+			// (see ownedBy in lifecycle.go) rather than admitted as belonging to
+			// any tenant. Unscoped, a listing would enumerate whatever else shares the
 			// namespace, and every id it returned would then be a live argument to
 			// `flow cancel` and `flow terminate`.
 			//
