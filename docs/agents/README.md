@@ -245,10 +245,14 @@ and whether a deterministic mechanism can prevent it more reliably.
   the launcher refuses a payload that could be a merge while letting every
   other command through, since it is wired on all of Bash but ignores
   everything that is not a merge, and denying `go build` to guard a `go build`
-  would take away the repair itself. That test is a deliberate
-  over-approximation and not a second recognizer: `tools/hooks/mergeguard`
-  stays the only thing that decides which merge. Every other failure denies.
-  Other hosts do not run these Claude-native tool events.
+  would take away the repair itself. That test is a coarse over-approximation,
+  not a second recognizer, and it does not claim to be complete: the guard
+  decides what a merge is by tokenizing the command, and a text test cannot
+  equal a tokenizer. It covers the spellings a caller writes without trying to
+  evade it, it is strictly narrower than the behaviour it replaced, and the
+  gates that decide whether a change may land are `tools/shipcheck` and the
+  exact-head review evidence, not this. Every other failure denies. Other hosts
+  do not run these Claude-native tool events.
 - Legacy `.claude/commands/ci-check.md` and `test-fast.md` remain only as short
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
   in skills. A command never shares a skill's name: `both-drivers.md` was

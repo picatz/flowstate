@@ -62,15 +62,25 @@ warn() {
 # on a tree that does not compile exits 1, which Claude Code does not treat as
 # a block.
 #
-# This is deliberately a coarse over-approximation, not a second recognizer:
-# tools/hooks/mergeguard/main.go remains the only thing that decides what a
-# merge is and which one. It has to be at least as wide as that guard, which
-# recognizes flags between `pr` and the subcommand and an executable that comes
-# from a shell expansion, so the test is the bare word rather than a spelling
-# of the invocation. `./tools/hooks/mergeguard` is not the word, which is what
-# keeps the repair of this very guard runnable; `git merge` is the word, and
-# refusing it during the seconds this guard cannot be built costs nothing a
-# repair needs.
+# This is a coarse over-approximation, not a second recognizer, and its
+# completeness is deliberately not claimed. tools/hooks/mergeguard/main.go
+# decides what a merge is by tokenizing the command the way a shell would; a
+# text test here cannot equal a tokenizer, so some spelling will always reach
+# further than this does. What it covers is every spelling a caller writes
+# without trying to evade it: the bare word, flags between `pr` and the
+# subcommand, an executable from a shell expansion, and a word broken up by
+# quoting, backslashes, or a line continuation. `./tools/hooks/mergeguard` is
+# not the word, which keeps the repair of this very guard runnable; `git merge`
+# is, and refusing it for the seconds this guard cannot be built costs a repair
+# nothing.
+#
+# The residual is bounded and known. This path exists only while mergeguard
+# cannot be compiled, it is strictly narrower than the previous behaviour --
+# `go run` on a tree that does not compile exits 1, so every spelling passed --
+# and the merge gates that decide whether a change may land are tools/shipcheck
+# and the exact-head review evidence, which this does not stand in for.
+# Widening it further is tracked in #1967 rather than pursued by matching one
+# more spelling at a time.
 #
 # Reading stdin is safe only because every path that consults this exits
 # without running the guard. On every other path the guard is still waiting for
@@ -80,7 +90,8 @@ payload_could_merge() {
 	# locale ${#payload} would measure a truncated payload short and let it be
 	# decided on.
 	local LC_ALL=C payload stripped
-	# Bounded like hook.Read bounds the same stdin. A payload at the bound was
+	# Bounded, as hook.Read bounds the same stdin, though tighter than its
+	# 16 MiB: no tool call this decides on is a megabyte. A payload at the bound was
 	# truncated, and a decision read off a truncated payload is not evidence.
 	# The trailing marker survives command substitution stripping newlines, so
 	# a payload ending in one still measures its true length.
@@ -97,12 +108,13 @@ payload_could_merge() {
 	if ! printf '%s' "${payload}" | grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"Bash"'; then
 		return 0
 	fi
-	# Also matched with shell quoting removed, because the guard tokenizes the
-	# command before recognizing it: a subcommand written with quotes or a
-	# backslash inside the word is still the word to it, and a test narrower
-	# than the guard it stands in for is the hole this exists to close.
-	# Nothing a repair needs grows the word under the same strip.
-	stripped="$(printf '%s' "${payload}" | tr -d '\\"'"'")"
+	# Also matched with the things the guard's tokenizer drops removed: the JSON
+	# escapes that carry a line continuation, then quoting and backslashes. A
+	# word split by any of them is one word to the guard. The strip can only
+	# join characters that were already adjacent, so it cannot manufacture the
+	# word across two JSON fields, and none of the commands a repair needs grows
+	# it -- both directions are pinned by the tables in the launcher's test.
+	stripped="$(printf '%s' "${payload}" | sed 's/\\\\[nrt]//g' | tr -d '\\"'"'")"
 	if printf '%s\n%s' "${payload}" "${stripped}" |
 		grep -Eqi '(^|[^[:alnum:]])merge([^[:alnum:]_]|$)|merge_pull_request'; then
 		return 0

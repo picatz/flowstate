@@ -728,9 +728,10 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		"gh pr --repo picatz/flowstate merge 1942 --match-head-commit abcdef",
 		"gh pr -R picatz/flowstate merge 1942",
 		"$GHBIN pr merge 1942",
-		`gh pr merge 1942`,
+		`gh pr m''erge 1942`,
 		`gh pr m\"erge\" 1942`,
 		`gh pr m\\erge 1942`,
+		`gh pr mer\\\nge 1942 -R picatz/flowstate`,
 	} {
 		status, output := mergeLauncher(bashPayload(refused))
 		if status != 2 {
