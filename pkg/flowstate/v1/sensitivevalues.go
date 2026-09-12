@@ -647,7 +647,25 @@ func (m *sensitiveSubstringMatcher) next(state int, value byte) (int, bool) {
 func (m *sensitiveSubstringMatcher) markMatches(redacted []bool, text string) bool {
 	state := 0
 	found := false
-	coveredEnd := 0
+
+	// The union is accumulated one span at a time rather than marked as each
+	// match arrives, because matches arrive in increasing *end* offset and say
+	// nothing about where they start. A later-ending match can begin earlier
+	// than one already seen — `aa` inside `topsecret-aaa` ends first and starts
+	// last — so a high-water mark of what is already covered skips exactly the
+	// bytes the longer secret added in front of it, printing `topsecret-` in the
+	// clear (#1119). Only a match that cannot touch the open span closes it.
+	//
+	// Still one pass over the text: the spans written are disjoint by
+	// construction, so the marking below costs the length of the union rather
+	// than the sum of every match's length.
+	pendingStart, pendingEnd := 0, 0
+	mark := func() {
+		for j := pendingStart; j < pendingEnd; j++ {
+			redacted[j] = true
+		}
+	}
+
 	for i := 0; i < len(text); i++ {
 		for state != 0 {
 			if _, ok := m.next(state, text[i]); ok {
@@ -663,11 +681,26 @@ func (m *sensitiveSubstringMatcher) markMatches(redacted []bool, text string) bo
 			continue
 		}
 		start, end := i+1-length, i+1
-		for j := max(start, coveredEnd); j < end; j++ {
-			redacted[j] = true
+
+		switch {
+		case !found:
+			pendingStart = start
+		case start > pendingEnd:
+			// Disjoint: nothing later can reach back over the gap, because a
+			// match starting before this one would have to end before it too.
+			mark()
+			pendingStart = start
+		case start < pendingStart:
+			// Overlapping and reaching further back than anything so far.
+			pendingStart = start
 		}
-		coveredEnd = max(coveredEnd, end)
+		pendingEnd = end
 		found = true
 	}
+
+	if found {
+		mark()
+	}
+
 	return found
 }

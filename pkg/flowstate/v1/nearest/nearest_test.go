@@ -116,3 +116,43 @@ func TestNameTieGoesToTheEarlierCandidate(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "hat", got)
 }
+
+// TestNameRefusesAnImpossibleLengthBeforeMeasuringIt is the bound #1119 asked
+// for by name, and it is asserted in allocations rather than in seconds because
+// that is the difference the fix makes: [nearest.Distance] allocates two rows
+// the width of the candidate on every call, so a scan that never happened is a
+// scan that never allocated. A timing assertion would be the same claim, worse
+// — slow enough to notice on an idle machine and flaky on a loaded one.
+//
+// The unknown key here is the shape both callers meet: `flowtest`'s unknown
+// YAML key and `flowfile`'s undeclared CEL function both arrive sized by
+// whoever wrote the file, and both were measured against every candidate in
+// full.
+// Not parallel: [testing.AllocsPerRun] measures this process's allocations and
+// refuses to run beside another test doing the same.
+func TestNameRefusesAnImpossibleLengthBeforeMeasuringIt(t *testing.T) {
+	got := strings.Repeat("x", 100_000)
+	known := []string{"steps", "vars", "timeout", "retry"}
+
+	allocations := testing.AllocsPerRun(2, func() {
+		_, _ = nearest.Name(got, known)
+	})
+
+	assert.Zero(t, allocations,
+		"a name no candidate can be within must be refused on its length alone, "+
+			"without building a distance table for each of them")
+
+	// The half that keeps the assertion above honest: refusing on length must
+	// not refuse anything that was being suggested before. A candidate is
+	// reachable exactly while its length is within its own limit.
+	suggestion, ok := nearest.Name("timeou", known)
+	require.True(t, ok, "a one-deletion miss is still within `timeout`'s limit")
+	assert.Equal(t, "timeout", suggestion)
+
+	suggestion, ok = nearest.Name("timeoutxx", known)
+	require.True(t, ok, "two insertions is exactly `timeout`'s limit, and a bound must be reachable")
+	assert.Equal(t, "timeout", suggestion)
+
+	_, ok = nearest.Name("timeoutxxx", known)
+	assert.False(t, ok, "three insertions is past every candidate's limit")
+}

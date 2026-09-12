@@ -80,6 +80,44 @@ func asyncIDs(started []*asyncStep) []string {
 	return ids
 }
 
+// heldFailure is an async step a debug ask joined early whose failure has not
+// been raised yet: the id it was written under, and what the join heard.
+//
+// It exists because joining early removes the step from the outstanding set,
+// and that set is what [v1.AsyncJoinTargets] consults to decide which steps a
+// node's references have to wait for. A failure the walk is holding therefore
+// has to stay *addressable* under its own id, or a later node that mentions it
+// would find nothing to join and run — which is the debugger changing what the
+// run computes, the thing the holding was introduced to prevent.
+type heldFailure struct {
+	id  string
+	err error
+}
+
+// heldIDs names the steps whose failures are held, in the order they were
+// joined, so a reference to one is found exactly as a reference to an
+// outstanding step is. Order is written order, since map iteration is not
+// something workflow code may depend on.
+func heldIDs(held []heldFailure) []string {
+	ids := make([]string, 0, len(held))
+	for _, failure := range held {
+		ids = append(ids, failure.id)
+	}
+
+	return ids
+}
+
+// takeHeld reports the failure held under id, if any.
+func takeHeld(held []heldFailure, id string) (error, bool) {
+	for _, failure := range held {
+		if failure.id == id {
+			return failure.err, true
+		}
+	}
+
+	return nil, false
+}
+
 // takeAsync removes one outstanding step from the set and returns it with the
 // rest, preserving the order of what is left.
 func takeAsync(started []*asyncStep, id string) (*asyncStep, []*asyncStep) {
@@ -131,15 +169,16 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			// The *same* position, not a nested one: an async step is a step of
 			// this level that happens to run alongside the ones after it, so its
 			// commands are labelled exactly as they would be run in order.
-			path:      e.path,
-			budget:    e.budget,
-			sliceCost: e.sliceCost,
-			signals:   e.signals,
-			debug:     e.debug,
-			undo:      e.undo,
-			undoSlot:  &slot,
-			undoScope: e.undoScope,
-			callDepth: e.callDepth,
+			path:                   e.path,
+			budget:                 e.budget,
+			sliceCost:              e.sliceCost,
+			everyExpressionCharged: e.everyExpressionCharged,
+			signals:                e.signals,
+			debug:                  e.debug,
+			undo:                   e.undo,
+			undoSlot:               &slot,
+			undoScope:              e.undoScope,
+			callDepth:              e.callDepth,
 
 			// Not carried, for the reason a parallel branch does not carry it:
 			// no one outstanding step is the position of the run, and a query

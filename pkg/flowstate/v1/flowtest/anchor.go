@@ -75,6 +75,12 @@ func (f *File) HasPositions() bool { return f != nil && f.doc != nil }
 // rather than a failure says how loudly to report it, not whether it has a
 // place in the file.
 func (a caseAnchor) place(findings []*v1.Diagnostic) {
+	// One budget for the whole pass. How many findings arrive here is decided
+	// by the same document the lookups walk — `compareOutputs` reports one per
+	// expected output — so a budget granted per finding bounds the individual
+	// scan and nothing about their sum. See [maxLookupSteps].
+	budget := maxLookupSteps
+
 	for _, finding := range findings {
 		if finding == nil {
 			continue
@@ -87,7 +93,7 @@ func (a caseAnchor) place(findings []*v1.Diagnostic) {
 		if a.doc == nil || finding.GetLine() != 0 {
 			continue
 		}
-		if position, known := a.locate(finding); known {
+		if position, known := a.locate(finding, &budget); known {
 			finding.Line, finding.Column = uint32(position.line), uint32(position.column)
 		}
 	}
@@ -103,7 +109,7 @@ func (a caseAnchor) place(findings []*v1.Diagnostic) {
 // document decides which of those a finding is, so the two classes are told
 // apart by what the author wrote rather than by this package parsing its own
 // messages.
-func (a caseAnchor) locate(finding *v1.Diagnostic) (position, bool) {
+func (a caseAnchor) locate(finding *v1.Diagnostic, budget *int) (position, bool) {
 	field := finding.GetField()
 	if field == "" {
 		return position{}, false
@@ -116,7 +122,7 @@ func (a caseAnchor) locate(finding *v1.Diagnostic) (position, bool) {
 
 	// The entry, when the finding names one and the author wrote it.
 	if value := finding.GetValue(); value != "" {
-		if position, known := a.doc.positionOf(path.field(value)); known {
+		if position, known := a.doc.positionOf(path.field(value), budget); known {
 			return position, true
 		}
 	}
@@ -124,7 +130,7 @@ func (a caseAnchor) locate(finding *v1.Diagnostic) (position, bool) {
 	// Otherwise the key the claim is written under. positionOfKey rather than
 	// positionOf: the subject is the name the author wrote, and underlining the
 	// whole mapping that follows it would cover a screen of correct lines.
-	if position, known := a.doc.positionOfKey(path); known {
+	if position, known := a.doc.positionOfKey(path, budget); known {
 		return position, true
 	}
 
@@ -132,7 +138,7 @@ func (a caseAnchor) locate(finding *v1.Diagnostic) (position, bool) {
 	// point at — one entry of `expect.check:` is a bare expression in a
 	// sequence, so there is no `check[0]:` to underline and the expression is
 	// the thing the author would fix.
-	if position, known := a.doc.positionOf(path); known {
+	if position, known := a.doc.positionOf(path, budget); known {
 		return position, true
 	}
 

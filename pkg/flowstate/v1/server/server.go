@@ -1453,7 +1453,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// that has ended has released the resource, so the next submission naming the
 	// same key is a new run rather than a duplicate of the old one.
 	if workflow.GetConcurrency() != nil {
-		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER && submission == nil {
 			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
 		} else {
 			// Both of the other two, `join` included — see
@@ -1483,6 +1483,24 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		if workflowID == submission.workflowID {
 			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
 			options.WorkflowIDReusePolicy = enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
+		}
+
+		// `terminate_other` is the one address whose own rule *destroys* what it
+		// collides with, and a request id says this submission may already be
+		// running. Resolving the collision first would answer the retry
+		// question by killing the run that is the answer: the incumbent gets no
+		// chance to compensate, the caller is handed a new run with `reused`
+		// false, and whatever the first attempt had already done is done again
+		// — from a request the contract promises is the same one submission,
+		// answered with the same run (#1119).
+		//
+		// So the first attempt refuses instead, and the terminate is re-issued
+		// below only once the incumbent has been read and found to be a
+		// *different* submission. A run that is this submission is returned as
+		// the retry it is; a run that is not is replaced exactly as
+		// `on_conflict:` says.
+		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
 		}
 
 		// Asked for the error under every address, for the reason
@@ -1532,7 +1550,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// semantic decision here, preserving the fail-closed direction.
 	asSubmitted := specificationAsSubmitted(submitted, workflow)
 
-	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
+	state := &v1.RunState{
 		Workflow:           workflow,
 		StepsBudget:        int32(s.maxStepsPerRun),
 		Identity:           identity,
@@ -1548,7 +1566,9 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// are. Carried in state rather than derived, which is what makes
 		// `${trigger.kind}` the same value on every replay.
 		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
-	})
+	}
+
+	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
 	if err != nil {
 		// A conflict on the id, which is the one failure here that is not this
 		// server failing. Every arm that can produce it is answered from the
@@ -1605,6 +1625,28 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		}
 
 		if workflow.GetConcurrency() != nil && errors.As(err, &already) {
+			if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+				// Reachable only with a request id, since without one the
+				// terminate was already applied above and no conflict reached
+				// here. The retry question has been asked and answered by now —
+				// an exact retry returned the incumbent above — so this
+				// collision is a genuinely different submission, and
+				// `on_conflict:` says it replaces what it found.
+				options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
+
+				run, err = temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+				if err != nil {
+					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
+				}
+
+				return connect.NewResponse(&v1.RunResponse{
+					WorkflowId:               workflowID,
+					RunId:                    run.GetRunID(),
+					Status:                   v1.RunResponse_STATUS_RUNNING,
+					SpecificationAsSubmitted: proto.Bool(asSubmitted),
+				}), nil
+			}
+
 			if onConflict == v1.Concurrency_ON_CONFLICT_JOIN {
 				// The incumbent, returned as this request's answer, with the join
 				// stated rather than left for the caller to deduce — see

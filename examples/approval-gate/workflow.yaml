@@ -22,16 +22,36 @@ inputs:
     description: who this run expects to approve it
     example: sre-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
+
+  # Accepted and ignored, which is the honest shape for taking authority out of
+  # a request that callers already send. This used to compose the issuer half of
+  # the subject below; it does not any more, for the reason written there. It
+  # stays declared because removing a declared input breaks every caller passing
+  # it — `flow breaking` reports exactly that — and because a deployment fixing
+  # this mistake in its own file wants the fix to land without a coordinated
+  # release. Its type and default are unchanged on purpose: a loosening is not a
+  # break, and this is neither.
   expected_approver_issuer:
     type: string
     default: https://issuer.example.com
-    description: issuer that must have attested the expected approver
+    description: not read; the issuer is written in `signals:` below
     example: https://issuer.example.com
     must: this.startsWith("https://")
 signals:
   deploy-approved:
+    # The issuer is written here rather than taken as an input, and that is the
+    # half that makes `expected_approver` a narrowing. A subject is only unique
+    # within the issuer that attested it, and claims are issuer-specific: a
+    # deployment trusting two issuers has two unrelated populations who can each
+    # carry `team: release-managers`. An issuer the requester supplies would let
+    # them choose which population the gate asks, which is the run picking its
+    # own authority rather than narrowing the one this file grants.
+    #
+    # So a deployment edits this line to name its own issuer, the same way it
+    # edits any other policy it owns. The walkthrough in README.md substitutes
+    # its local issuer into a copy of this file for exactly that reason.
     allow:
-      - subject: ${inputs.expected_approver_issuer + "#" + inputs.expected_approver}
+      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
         claims:
           team: release-managers
     distinct_from_starter: true

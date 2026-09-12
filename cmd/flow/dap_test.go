@@ -606,3 +606,38 @@ func TestFlowDAPAtATerminalSaysWhatItIs(t *testing.T) {
 	writeStdioBanner(&interactive, true, dapBanner)
 	assert.Equal(t, dapBanner, interactive.String())
 }
+
+// TestFlowDAPRefusesAPolicyItCannotLoad is the fail-closed half of giving this
+// adapter the deployment policy flags (#1119).
+//
+// `flow dap` runs the workflow its client names, with this operator's secret
+// providers and plugins behind it, so it is a real local execution surface. It
+// took neither --egress-policy nor --task-policy, which meant a rehearsal here
+// ran under the permissive defaults while the worker it is rehearsing enforced
+// an operator's file — a Flowfile could resolve an allowed secret and send it
+// to a public endpoint an egress policy would have refused.
+//
+// The claim is the order as much as the refusal: both policies load before any
+// plugin process starts and before a client can name a program, so a policy
+// that cannot be read refuses the adapter rather than leaving it serving under
+// the defaults.
+func TestFlowDAPRefusesAPolicyItCannotLoad(t *testing.T) {
+	t.Parallel()
+
+	for _, flag := range []string{"egress-policy", "task-policy"} {
+		t.Run(flag, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := newDAPCommand()
+			missing := filepath.Join(t.TempDir(), "absent.yaml")
+			require.NoError(t, cmd.Flags().Set(flag, missing))
+
+			// No stdin is wired, so reaching the protocol server at all would
+			// block rather than return: an error naming the file is therefore
+			// also evidence that nothing was served.
+			err := runDAP(cmd, nil)
+			require.Error(t, err, "a policy file that cannot be read was accepted")
+			require.Contains(t, err.Error(), missing)
+		})
+	}
+}

@@ -1,6 +1,5 @@
 {
   "version": "v1.4.2",
   "environment": "production",
-  "expected_approver": "sre-lead@example.com",
-  "expected_approver_issuer": "https://issuer.example.com"
+  "expected_approver": "sre-lead@example.com"
 }

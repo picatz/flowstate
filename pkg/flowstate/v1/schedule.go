@@ -1116,8 +1116,23 @@ func expandCronField(field string, position cronField) (values []int, modelled b
 	}
 
 	for _, span := range spans {
-		for v := span.low; v <= span.high; v += span.step {
+		// The step is a count rather than a value in the field's range, so it is
+		// bounded only by what [strconv.Atoi] accepts — which is to say by the
+		// width of an int. Advancing first and comparing afterwards would wrap a
+		// step near that width into a negative value, and those land in `values`
+		// looking like months and weekdays: `daysInMonth[m]` with a negative m is
+		// an index out of range, reached from a cron expression a caller writes
+		// (#1119).
+		//
+		// So the comparison is made on the distance still to go, before the
+		// addition that would cross it. v is never past high inside the loop, so
+		// `span.high - v` cannot overflow either.
+		for v := span.low; v <= span.high; {
 			values = append(values, v)
+			if span.step > span.high-v {
+				break
+			}
+			v += span.step
 		}
 	}
 	slices.Sort(values)

@@ -51,10 +51,36 @@ import (
 // [Run], which converts it using the frames recorded along the way.
 var errContinueAsNew = errors.New("engine: continue as new")
 
-// workflowSliceCostChange gates cost-triggered Continue-As-New for histories
-// recorded before #1882. Adding a new continuation command while replaying one
-// of those histories would be nondeterministic; new executions record version 1
-// and later segments inherit the new behavior as fresh histories.
+// workflowSliceCostChange gates cost-triggered Continue-As-New. Adding a new
+// continuation command while replaying a history recorded without it would be
+// nondeterministic, so each set of reasons to emit one takes its own version and
+// a replay keeps the set its history recorded.
+//
+//   - Default: recorded before #1882, and charges nothing.
+//   - Version 1: #1919. Charges a `value:` step's expression, and suspends on
+//     the budget at a step or loop boundary.
+//   - Version 2: charges every other workflow-side expression a loop can repeat
+//     without scheduling anything — a condition, a step's `vars:`, a `switch:`'s
+//     subject, a `for_each`'s `items:`, a `call:`'s arguments, a loop's
+//     `initial:` and `update:` — and makes a step skipped by a false `if:` a
+//     suspension boundary, which is the only boundary a segment of nothing but
+//     skipped steps has.
+//
+// The name keeps its `-v1` suffix: it is the marker's identity in recorded
+// history, and renaming it would make every open execution take the default
+// path.
+//
+// What it does not cover, and cannot: the *price* the estimator puts on an
+// expression. A version is a set of reasons to emit a continuation, and every
+// version reads one cost model — CEL's estimator is built once per program
+// (`celenv.go`), not per execution, and giving a replay its own would be the
+// second evaluator invariant 2 refuses. So a change to what an expression costs
+// reaches a replaying version 1 history the same way it reaches a fresh one, and
+// a build that re-prices an expression can cross this budget at a different node
+// than the history recorded, or refuse at [v1.DefaultCostLimit] something the
+// history admitted. docs/ARCHITECTURE.md names that class — an evolving
+// evaluator inside the replay path — and it is a deploy-window exposure to be
+// stated and bounded, not something a marker can gate.
 const workflowSliceCostChange = "workflow-slice-cost-v1"
 
 // executor carries the state of one workflow execution.
@@ -106,6 +132,44 @@ type executor struct {
 	// expression cost here makes the history-producing continuation a function
 	// of recorded work rather than wall time or loop trip count.
 	sliceCost *uint64
+
+	// everyExpressionCharged is version 2 of [workflowSliceCostChange]: whether
+	// this execution's recorded history is one that charges every workflow-side
+	// expression rather than a `value:` step alone, and one where a skipped step
+	// is a suspension boundary.
+	//
+	// Carried alongside sliceCost rather than folded into it because the two
+	// answer different questions — sliceCost says whether a budget exists at
+	// all, this says which expressions fill it — and version 1 histories,
+	// recorded by #1919 before either of those paths existed, must keep
+	// answering the first yes and the second no.
+	everyExpressionCharged bool
+
+	// holdingFailure reports whether a scope at the run's own representable
+	// level is holding a failure it heard early on a debugger's behalf and has
+	// not raised. Registered by [executor.runNodes] at `susp == 0`, composed
+	// with whatever an enclosing registration answered, and read by
+	// [executor.shouldSuspend].
+	//
+	// It exists because that state is a local of one runNodes frame, and the
+	// boundaries that can strand it are not all inside that frame: a
+	// `for_each`'s iteration boundary, a `loop:`'s, and a called workflow's own
+	// next-step boundary each emit a continuation of their own while the scope
+	// holding the failure sits above them on the stack. Answering at
+	// [executor.shouldSuspend] is what gives every one of them the same answer
+	// the scope gives itself.
+	//
+	// Deliberately *only* the held failure, never the scope's outstanding
+	// `async:` work, though a continuation strands that too. Outstanding work is
+	// refused inline at the two boundaries runNodes owns, where it always has
+	// been, and nowhere else: [v1.MaxAtomicBlockActivities] exempts a sequential
+	// top-level `for_each` from its activity ceiling precisely because its
+	// iteration boundary is a Continue-As-New seam, so refusing there for the
+	// whole life of one unjoined `async:` step would remove the pacing that
+	// exemption is written against and let a large loop run as one segment into
+	// Temporal's history cap. A held failure means the scope is already failing,
+	// and is only ever set under a debug ask. #1968 tracks both residuals.
+	holdingFailure func() bool
 
 	// callDepth counts calls nested so far, zero at the top-level workflow. It
 	// is unaffected by descending into a loop body or a parallel branch — only
@@ -269,6 +333,26 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 	// written order, since a scope starts a step where it is written.
 	var started []*asyncStep
 
+	// held are failures an early join heard on a debugger's behalf. They are
+	// raised where the join that owed them would have raised them — at a later
+	// node's reference, or at the scope-end join — rather than where they were
+	// heard. See the debug-ask branch in the walk.
+	var held []heldFailure
+
+	// Published for every suspension decision taken while this scope is on the
+	// stack, including the ones taken beneath it — see
+	// [executor.holdingFailure]. Only at the run's own representable level,
+	// because that is the only depth a continuation can be emitted from at all,
+	// and composed with the enclosing answer so a called workflow's scope speaks
+	// for its caller's too.
+	if susp == 0 {
+		outer := e.holdingFailure
+		e.holdingFailure = func() bool {
+			return len(held) > 0 || (outer != nil && outer())
+		}
+		defer func() { e.holdingFailure = outer }()
+	}
+
 	// A scope's end joins everything it started, and *every* way out of the loop
 	// below is an end: the successful one, the failing one, and the
 	// Continue-As-New one. Draining here rather than at the successful exit is
@@ -309,7 +393,20 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// it and may then still skip the step. That is the honest outcome — the
 		// data decided the skip — and the local driver joins at the identical
 		// point.
-		for _, id := range v1.AsyncJoinTargets(node, asyncIDs(started), e.scope.GetOutputs()) {
+		// Held failures are offered alongside the outstanding steps, so a node
+		// that mentions one is answered by it: joining early on a debugger's
+		// behalf must not make a failed step unaddressable, or the reference
+		// that would have waited for it finds nothing and the node runs.
+		// Held first, then outstanding, which is written order: the debug drain
+		// empties `started` completely, so everything held was started before
+		// anything still outstanding. [v1.AsyncJoinTargets] answers in the order
+		// of the slice it is handed, and says why — a scope must not report a
+		// different failure first because of when work happened to finish, or
+		// because somebody was debugging.
+		for _, id := range v1.AsyncJoinTargets(node, append(heldIDs(held), asyncIDs(started)...), e.scope.GetOutputs()) {
+			if err, ok := takeHeld(held, id); ok {
+				return err
+			}
 			joined, remaining := takeAsync(started, id)
 			started = remaining
 			if err := e.joinAsync(joined); err != nil {
@@ -353,13 +450,48 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// saved position; everything after it starts fresh.
 		descend := resuming && i == start
 
-		run, err := v1.EvalConditionInScope(evalContext(), node.GetCondition(), e.scope)
+		// Charged before the answer is read, and whether or not it is true: a
+		// condition is the one expression whose whole purpose is to be thrown
+		// away, so a false one leaves no output, no history event and no step
+		// counted to say it ran. See [executor.chargeWorkflowCost].
+		run, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), node.GetCondition(), e.scope)
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return stepFailed(err, "step %q", node.GetId())
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
 			e.yieldWorkflow()
+
+			// A skipped step is still a boundary, and it has to be one: the
+			// position is representable here for the same reason it is after a
+			// step that ran, and this is the only place a segment made
+			// entirely of skipped steps could ever suspend. Without it a loop
+			// whose body is all false conditions spends the budget it is now
+			// charged for and never reaches the check that would spend it
+			// (#1119) — the yield above keeps the deadlock detector from
+			// noticing, so nothing else would end the segment either.
+			//
+			// The same conditions as the check after a step that ran: only at
+			// the run's own representable level and never on the last node,
+			// with async work this scope started and failures it is holding
+			// refused by [executor.shouldSuspend] for both.
+			// Behind the same version gate as every other continuation this
+			// change added, and for the reason stated at
+			// [workflowSliceCostChange]: a continuation is a history command,
+			// and emitting one a recorded history does not hold is
+			// nondeterministic. [executor.yieldWorkflow] and
+			// [executor.chargeWorkflowCost] both check this; so must the
+			// boundary they exist to reach, since two of [executor.shouldSuspend]'s
+			// arms answer regardless of the budget.
+			//
+			if e.everyExpressionCharged && susp == 0 && i < len(nodes)-1 &&
+				len(started) == 0 && e.shouldSuspend() {
+				e.setFrame(depth, i+1)
+
+				return errContinueAsNew
+			}
+
 			continue
 		}
 
@@ -381,7 +513,25 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 					joined := started[0]
 					started = started[1:]
 					if err := e.joinAsync(joined); err != nil {
-						return err
+						// Held, not raised. A debugger may hold a run and may
+						// end it, and may never change what it computes — the
+						// claim `conformance/debugger.go` names as the one
+						// thing a debugger must never break. Raising here does
+						// change it: an `async:` step nothing after it reads is
+						// heard at the scope-end join, so the steps written
+						// between its failure and that join still run. Joining
+						// early to make the hold honest, and then propagating
+						// early, skips exactly those steps — so whether a
+						// side-effecting step ran came to depend on whether
+						// somebody was debugging, and on when their ask
+						// happened to arrive (#1119).
+						//
+						// The failure is carried to the point that join would
+						// have reached instead. [executor.recordOutcome] has
+						// already run, so a *tolerated* failure is recorded
+						// exactly as it would have been; what waits is only the
+						// propagation this scope owes its caller.
+						held = append(held, heldFailure{id: joined.node.GetId(), err: err})
 					}
 				}
 			}
@@ -423,7 +573,9 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// does async work this scope started: a segment that continued as new
 		// with a coroutine still running would hand the next segment a scope
 		// whose outstanding work exists in neither of them. The scope-end join
-		// below is a few steps away at most, since the list is capped.
+		// below is a few steps away at most, since the list is capped. A failure
+		// this scope is holding is refused by [executor.shouldSuspend] instead,
+		// because the boundaries nested inside a later step have to refuse it too.
 		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 			e.setFrame(depth, i+1)
 
@@ -431,8 +583,19 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 	}
 
-	// This level finished, so it joins what it started, in written order, before
-	// it contributes nothing to a resume path.
+	// A failure a debug ask made this scope hear early that no later node
+	// referenced, raised where the join below would have raised it — which is
+	// ahead of that join, not after it: everything held was started before
+	// anything still outstanding, and written order is what decides which
+	// failure a scope reports. The deferred wait at the top of this function
+	// still waits out the coroutines this abandons, exactly as it does when the
+	// join below raises on its own first element.
+	if len(held) > 0 {
+		return held[0].err
+	}
+
+	// Then this level joins what it started, in written order, before it
+	// contributes nothing to a resume path.
 	for len(started) > 0 {
 		joined := started[0]
 		started = started[1:]
@@ -474,15 +637,55 @@ func (e *executor) yieldWorkflow() {
 	done.Receive(e.ctx, &signal)
 }
 
-// chargeWorkflowCost records deterministic value-expression CEL work.
-// [shouldSuspend] turns a spent budget into Continue-As-New at the next
-// representable step or loop boundary, so replay of a later segment does not
-// repeat an ever-growing prefix.
-func (e *executor) chargeWorkflowCost(cost uint64) {
+// chargeValueCost records a `value:` step's expression against the segment's
+// deterministic workflow-side CEL budget, and is the accumulator every other
+// charge reaches. [shouldSuspend] turns a spent budget into Continue-As-New at
+// the next representable step or loop boundary, so replay of a later segment
+// does not repeat an ever-growing prefix.
+//
+// Version 1 of [workflowSliceCostChange] charged this expression and no other,
+// which is why it has its own entry point rather than being one more caller of
+// [executor.chargeWorkflowCost].
+func (e *executor) chargeValueCost(cost uint64) {
 	if cost == 0 || e.sliceCost == nil {
 		return
 	}
 	*e.sliceCost += cost
+}
+
+// chargeWorkflowCost records the deterministic workflow-side CEL that version 2
+// of [workflowSliceCostChange] added to the budget: a step's or a loop's
+// condition, a step's `vars:`, a `switch:`'s subject, a `for_each`'s `items:`,
+// a `call:`'s arguments and its callee's declared `outputs:`, and a loop's
+// `initial:` and `update:`.
+//
+// Those are the paths audited so far that a loop can repeat without scheduling
+// anything, which is what the budget is for. The list is *not* claimed to be
+// exhaustive, and three review rounds of #1962 each found another member of it
+// — a claim of completeness in prose is not something a reader or a reviewer
+// can check. #1970 is the mechanism that would make it checkable; until then,
+// a path that evaluates CEL in workflow code and is absent here is a hole in
+// the bound rather than a decision, unless it says otherwise where it is
+// written.
+//
+// [v1.ResolveTaskInputs] and `wait.go`'s own expressions do say otherwise: each
+// is immediately followed by the activity, durable timer, or signal park that
+// consumes it, so they are paced by a history event and a yield rather than by
+// this budget. [v1.EvalRunOutputs] is charged through the `call:` boundary and
+// not at the end of a run, where it is evaluated exactly once.
+//
+// Silent below version 2, and that is the point of the split: a history
+// recorded at version 1 recorded segments that charged only `value:` steps, and
+// a replay charging more could cross the threshold — and emit a
+// Continue-As-New — at a boundary where the recorded history holds an activity.
+//
+// The split covers which expressions are charged, not what any one of them
+// costs; see [workflowSliceCostChange] for the half no version can gate.
+func (e *executor) chargeWorkflowCost(cost uint64) {
+	if !e.everyExpressionCharged {
+		return
+	}
+	e.chargeValueCost(cost)
 }
 
 // recordOutcome applies one finished step's failure to the scope and reports the
@@ -553,7 +756,8 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 // Evaluated after the condition, matching the local driver and the validator: a var
 // whose expression fails must not fail a step that was going to be skipped.
 func (e *executor) runNodeWithVars(node *v1.Node, depth, susp int, descend bool) error {
-	inner, err := v1.EvalStepVars(evalContext(), node, e.scope)
+	inner, cost, err := v1.EvalStepVarsWithCost(evalContext(), node, e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -651,7 +855,8 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 
 	callee := call.GetWorkflow()
 
-	arguments, err := v1.ResolveCallArguments(evalContext(), call.GetArguments(), e.scope)
+	arguments, cost, err := v1.ResolveCallArgumentsWithCost(evalContext(), call.GetArguments(), e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -737,10 +942,17 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// keeps two call sites of one workflow apart in history.
 		path: e.within(node),
 
-		budget:    e.budget,
-		processed: e.processed,
-		sliceCost: e.sliceCost,
-		frames:    e.frames,
+		budget:                 e.budget,
+		processed:              e.processed,
+		sliceCost:              e.sliceCost,
+		everyExpressionCharged: e.everyExpressionCharged,
+		frames:                 e.frames,
+
+		// A call leaves the suspend depth unchanged, so the callee's own scope
+		// is a representable level too and its boundaries can continue as new.
+		// Inherited so one of them cannot strand a failure the caller's scope is
+		// still holding.
+		holdingFailure: e.holdingFailure,
 
 		// Shared by pointer with the caller, for the same reasons the top-level
 		// executor shares them with every nested one: a signal or a compensation
@@ -788,7 +1000,8 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		return stepFailed(err, "workflow %q", callee.GetName())
 	}
 
-	outputs, err := v1.CallOutputs(evalContext(), callee, inner)
+	outputs, cost, err := v1.CallOutputsWithCost(evalContext(), callee, inner)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -841,7 +1054,7 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 // one that computes it.
 func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
 	outputs, cost, err := v1.EvalValueNodeWithCost(evalContext(), value, e.scope)
-	e.chargeWorkflowCost(cost)
+	e.chargeValueCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -869,7 +1082,8 @@ func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
 // into the enclosing namespace the way parallel branches merge theirs; exactly
 // one body ran, so there is nothing to collide with.
 func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) error {
-	body, outputs, err := v1.SelectSwitchCase(evalContext(), sw, e.scope)
+	body, outputs, cost, err := v1.SelectSwitchCaseWithCost(evalContext(), sw, e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -1317,7 +1531,8 @@ func isUndoActivityTimeout(err error) bool {
 // runForEach runs a loop body once per item, sequentially or with bounded
 // concurrency.
 func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, descend bool) error {
-	items, err := v1.ResolveItems(evalContext(), loop, e.scope)
+	items, cost, err := v1.ResolveItemsWithCost(evalContext(), loop, e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -1509,7 +1724,9 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		state = e.resume[inner].GetLoopState()
 	} else {
 		var err error
-		state, err = v1.LoopInitialState(evalContext(), loop, e.scope)
+		var cost uint64
+		state, cost, err = v1.LoopInitialStateWithCost(evalContext(), loop, e.scope)
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -1612,17 +1829,18 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 	}
 
 	nested := &executor{
-		ctx:       e.ctx,
-		spec:      e.spec,
-		curSpec:   e.curSpec,
-		identity:  e.identity,
-		runID:     e.runID,
-		scope:     scope,
-		path:      body,
-		budget:    e.budget,
-		processed: e.processed,
-		sliceCost: e.sliceCost,
-		frames:    e.frames,
+		ctx:                    e.ctx,
+		spec:                   e.spec,
+		curSpec:                e.curSpec,
+		identity:               e.identity,
+		runID:                  e.runID,
+		scope:                  scope,
+		path:                   body,
+		budget:                 e.budget,
+		processed:              e.processed,
+		sliceCost:              e.sliceCost,
+		everyExpressionCharged: e.everyExpressionCharged,
+		frames:                 e.frames,
 
 		signals:    e.signals,
 		debug:      e.debug,
@@ -1658,7 +1876,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 
 	// `until:` and `update:` see the body's outputs and the current state, so they
 	// are evaluated against the scope the body finished in.
-	stop, err := v1.EvalLoopUntil(evalContext(), loop, nested.scope)
+	stop, cost, err := v1.EvalLoopUntilWithCost(evalContext(), loop, nested.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -1679,7 +1898,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), true, nil, nil
 	}
 
-	next, err := v1.LoopNextState(evalContext(), loop, nested.scope)
+	next, cost, err := v1.LoopNextStateWithCost(evalContext(), loop, nested.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -1703,12 +1923,13 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		runID:    e.runID,
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
-		scope:     e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
-		path:      body,
-		budget:    e.budget,
-		processed: e.processed,
-		sliceCost: e.sliceCost,
-		frames:    e.frames,
+		scope:                  e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
+		path:                   body,
+		budget:                 e.budget,
+		processed:              e.processed,
+		sliceCost:              e.sliceCost,
+		everyExpressionCharged: e.everyExpressionCharged,
+		frames:                 e.frames,
 
 		// The run's carry, by pointer. A wait in a loop body consumes from the
 		// same place a top-level one does, and consuming it here has to remove it
@@ -1785,20 +2006,21 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 
 				iterationUndo := v1.NewUndoLog(nil)
 				worker := &executor{
-					ctx:       gctx,
-					spec:      e.spec,
-					curSpec:   e.curSpec,
-					identity:  e.identity,
-					runID:     e.runID,
-					scope:     e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
-					path:      body,
-					budget:    e.budget,
-					sliceCost: e.sliceCost,
-					signals:   e.signals,
-					debug:     e.debug,
-					undo:      iterationUndo,
-					undoScope: v1.UndoScopeConcurrent,
-					callDepth: e.callDepth,
+					ctx:                    gctx,
+					spec:                   e.spec,
+					curSpec:                e.curSpec,
+					identity:               e.identity,
+					runID:                  e.runID,
+					scope:                  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					path:                   body,
+					budget:                 e.budget,
+					sliceCost:              e.sliceCost,
+					everyExpressionCharged: e.everyExpressionCharged,
+					signals:                e.signals,
+					debug:                  e.debug,
+					undo:                   iterationUndo,
+					undoScope:              v1.UndoScopeConcurrent,
+					callDepth:              e.callDepth,
 
 					// Deliberately not carried. Iterations run at once, so a
 					// worker writing its own step in would be reporting a
@@ -1904,14 +2126,15 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				// single *position* while branches are in flight, and a
 				// *label* has no such difficulty — each branch's commands know
 				// exactly which `parallel:` step they were written under.
-				path:      branchPath,
-				budget:    e.budget,
-				sliceCost: e.sliceCost,
-				signals:   e.signals,
-				debug:     e.debug,
-				undo:      branchUndo,
-				undoScope: v1.UndoScopeConcurrent,
-				callDepth: e.callDepth,
+				path:                   branchPath,
+				budget:                 e.budget,
+				sliceCost:              e.sliceCost,
+				everyExpressionCharged: e.everyExpressionCharged,
+				signals:                e.signals,
+				debug:                  e.debug,
+				undo:                   branchUndo,
+				undoScope:              v1.UndoScopeConcurrent,
+				callDepth:              e.callDepth,
 
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.
@@ -1965,7 +2188,17 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 }
 
 // shouldSuspend reports whether the run should be continued as new.
+//
+// Asked closed first: a continuation emitted while a scope on the stack holds a
+// failure heard early on a debugger's behalf would leave that failure in a
+// segment that has ended, and the next segment would resume past it and
+// complete — so a run that must fail would succeed because somebody was
+// debugging. See [executor.holdingFailure] for why only that state is asked
+// here, and for the residual the refusal carries.
 func (e *executor) shouldSuspend() bool {
+	if e.holdingFailure != nil && e.holdingFailure() {
+		return false
+	}
 	if e.processed >= e.budget {
 		return true
 	}

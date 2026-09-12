@@ -363,12 +363,26 @@ func (p *Plugin) ready() (*instance, error) {
 // second deadline invented here to shorten it with.
 func (p *Plugin) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
-		// WithCancel, not the bare ctx: every caller in this package owns the
-		// returned cancel and the streaming one relies on cancelling to release
-		// the call, so both shapes have to be a context this call can end.
-		return context.WithCancel(ctx)
+		// Beneath [Config.MaxCallTimeout], not instead of it. The paragraphs
+		// above are why the host's ordinary bound no longer shortens a deadline
+		// the author chose — but "the author chose it" is the reason it needs a
+		// ceiling of its own rather than none at all: the author is whoever
+		// submitted the workflow, `timeout:` is checked only for being
+		// positive, and this call holds a plugin RPC and the activity slot
+		// under it for exactly as long as it says (#1119).
+		//
+		// [context.WithTimeout] keeps whichever deadline is earlier, so the
+		// step's own `timeout:` still governs every call that is not trying to
+		// outlast the deployment.
+		return context.WithTimeout(ctx, p.cfg.maxCallTimeout())
 	}
-	return context.WithTimeout(ctx, p.cfg.CallTimeout)
+	// Beneath the ceiling too, for the same reason: [Config.MaxCallTimeout]
+	// says it is the most any call may take, and a call that arrived with no
+	// deadline is still a call. An operator who lowers the ceiling below
+	// [Config.CallTimeout] means the lower number — clamping here is what makes
+	// that true, rather than refusing the pair at startup and making a
+	// deployment reason about which of its two knobs is smaller.
+	return context.WithTimeout(ctx, min(p.cfg.CallTimeout, p.cfg.maxCallTimeout()))
 }
 
 // CheckHealth polls the plugin now, rather than waiting for the next scheduled

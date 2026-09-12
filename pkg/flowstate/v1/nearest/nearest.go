@@ -46,6 +46,13 @@
 // handed input an outside party sizes has to bound it before calling, at the
 // edge where the input arrives, rather than trusting a bound buried in here to
 // have guessed the right resource.
+//
+// [Name] does refuse a candidate whose length alone puts it out of reach before
+// measuring the distance to it, which is the difference between scanning a
+// megabyte-long name once per candidate and building a table that wide for each
+// one. That is the same answer arrived at for less work, not a bound: a name the
+// length of a candidate is still measured in full, so a caller holding input an
+// outside party sizes still owes its own limit.
 package nearest
 
 import "unicode/utf8"
@@ -87,7 +94,28 @@ func Within(name string, distance int) bool {
 // or a document-ordered list gets an answer that does not move between runs.
 func Name(got string, known []string) (string, bool) {
 	best, bestDistance := "", 0
+
+	// Counted once, outside the loop, because the check below needs it for
+	// every candidate and it costs a pass over got to answer.
+	length := utf8.RuneCountInString(got)
+
 	for _, name := range known {
+		// Two strings whose lengths differ by more than one name's limit cannot
+		// be within it: every edit changes the length by at most one, so the
+		// difference in lengths is itself a lower bound on the distance. Asked
+		// before [Distance] rather than after, because that lower bound is two
+		// counts while the distance is the product of the two lengths — and the
+		// answer is the same either way, so this is the scan being skipped
+		// rather than the threshold being changed.
+		//
+		// What it bounds is the caller that was handed a name an outside party
+		// sized: an unknown key or function a megabyte long is measured against
+		// each candidate and refused, instead of building a dynamic-programming
+		// table a megabyte wide for every one of them (#1119).
+		if difference := length - utf8.RuneCountInString(name); max(difference, -difference) > Limit(name) {
+			continue
+		}
+
 		distance := Distance(got, name)
 		if !Within(name, distance) {
 			continue

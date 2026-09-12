@@ -678,6 +678,14 @@ func (s *FlowstateServer) DescribeSchedule(ctx context.Context, req *connect.Req
 
 	name := req.Msg.GetName()
 
+	// This verb resolves the schedule itself rather than through
+	// [FlowstateServer.authorizeSchedule], so it asks for the action itself
+	// too, and in the same place: before anything is addressed. See
+	// [FlowstateServer.authorizeAction].
+	if err := s.authorizeAction(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
+		return nil, err
+	}
+
 	temporal, namespace, err := s.scheduleClientFor(ctx)
 	if err != nil {
 		return nil, s.auditDeny(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name,
@@ -804,6 +812,13 @@ func (s *FlowstateServer) scheduleClientFor(ctx context.Context) (client.Client,
 // rpc is the WorkflowService method whose decision this is; the audit record is
 // keyed to an authorization action through it — see audit.go.
 func (s *FlowstateServer) authorizeSchedule(ctx context.Context, rpc, name string) (client.ScheduleHandle, error) {
+	// Before the schedule is described, for [FlowstateServer.authorizeRun]'s
+	// reason: a name is a name the caller chose, and a caller holding none of
+	// this RPC's action must not learn which of their guesses exist.
+	if err := s.authorizeAction(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
+		return nil, err
+	}
+
 	handle, code, err := s.authorizeScheduleDecision(ctx, name)
 	if err != nil {
 		return nil, s.auditDeny(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name, code, err)

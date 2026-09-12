@@ -51,6 +51,13 @@ var errNoTenantRecorded = errors.New("server: run has no recorded tenant")
 // [FlowstateServer.authorizeRunDecision] directly and audits once itself.
 // [FlowstateServer.Signal] is the only one, and its comment says why.
 func (s *FlowstateServer) authorizeRun(ctx context.Context, rpc, workflowID, runID string) (client.Client, *workflowservice.DescribeWorkflowExecutionResponse, error) {
+	// Before the run is addressed, not at the allow seam below: a caller
+	// holding none of this RPC's action must be refused for that, rather than
+	// for what a Describe then found. See [FlowstateServer.authorizeAction].
+	if err := s.authorizeAction(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, nil, err
+	}
+
 	temporal, resp, code, err := s.authorizeRunDecision(ctx, workflowID, runID)
 	if err != nil {
 		if code == v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED {
@@ -649,6 +656,18 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	}
 
 	workflowID, runID := req.Msg.GetWorkflowId(), req.Msg.GetRunId()
+
+	// This verb resolves the run itself rather than through
+	// [FlowstateServer.authorizeRun], so it asks for the action itself too, and
+	// in the same place: before anything is addressed. Without it a caller
+	// holding `workload.read` but not `workload.signal` could tell an existing
+	// run from an absent one by whether the refusal arrived before or after the
+	// signal policy — and the chain walk below resolves twice, so this verb
+	// spent two lookups on a caller who may not signal at all. See
+	// [FlowstateServer.authorizeAction].
+	if err := s.authorizeAction(ctx, "Signal", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, err
+	}
 
 	// Acted on through the client authorization used, so the run signalled is the
 	// run that was checked. resp is the same DescribeWorkflowExecution response

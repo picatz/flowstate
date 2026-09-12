@@ -51,10 +51,26 @@ const MaxCallDepth = 8
 // literal — the same shape [ResolveTaskInputs] hands a task, for the same
 // reason.
 func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scope *Scope) (map[string]*Value, error) {
+	resolved, _, err := ResolveCallArgumentsWithCost(ctx, arguments, scope)
+
+	return resolved, err
+}
+
+// ResolveCallArgumentsWithCost is [ResolveCallArguments] plus the deterministic
+// CEL cost of every expression under `with:`. Literal arguments cost zero.
+//
+// A call's arguments are resolved in workflow code, and a call is the one step
+// whose body may write no history at all — a callee of `value:` steps schedules
+// nothing — so a loop over a call repeats them with nothing to bound it.
+// [ResolveTaskInputs] needs no equivalent: resolving a task's inputs is
+// immediately followed by the activity that consumes them, which is both a
+// history event and a yield.
+func ResolveCallArgumentsWithCost(ctx context.Context, arguments map[string]*Value, scope *Scope) (map[string]*Value, uint64, error) {
 	if len(arguments) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
+	var spent uint64
 	resolved := make(map[string]*Value, len(arguments))
 	ev := DefaultEvaluator()
 	// Sorted because the first failure is observable and may enter durable
@@ -67,18 +83,19 @@ func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scop
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
+		spent += cost
 		if err != nil {
-			return nil, fmt.Errorf("argument %q: %w", name, err)
+			return nil, spent, fmt.Errorf("argument %q: %w", name, err)
 		}
 		literal, err := cel.RefValueToValue(out)
 		if err != nil {
-			return nil, fmt.Errorf("argument %q: converting result: %w", name, err)
+			return nil, spent, fmt.Errorf("argument %q: converting result: %w", name, err)
 		}
 		resolved[name] = &Value{Kind: &Value_Literal{Literal: literal}}
 	}
 
-	return resolved, nil
+	return resolved, spent, nil
 }
 
 // CalleeProfile returns the profile a callee's own expressions are evaluated
@@ -183,19 +200,31 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 // outputs, through the same function — which is what makes a workflow's answer the
 // same whether it was run directly or called.
 func CallOutputs(ctx context.Context, callee *Workflow, scope *Scope) (*Node_Outputs, error) {
-	outputs, err := EvalRunOutputs(ctx, callee, scope)
+	outputs, _, err := CallOutputsWithCost(ctx, callee, scope)
+
+	return outputs, err
+}
+
+// CallOutputsWithCost is [CallOutputs] plus the deterministic CEL cost of the
+// callee's declared `outputs:` expressions.
+//
+// Unlike a run's own outputs, a call's are evaluated once per `call:` step, so a
+// call inside a loop repeats the whole block every iteration. See
+// [engine.executor.chargeWorkflowCost].
+func CallOutputsWithCost(ctx context.Context, callee *Workflow, scope *Scope) (*Node_Outputs, uint64, error) {
+	outputs, cost, err := EvalRunOutputsWithCost(ctx, callee, scope)
 	if err != nil {
-		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
+		return nil, cost, fmt.Errorf("calling %q: %w", callee.GetName(), err)
 	}
 	if outputs == nil {
 		// Present rather than absent: the call still ran, so its step belongs in
 		// the run's outputs exactly as any other step that ran does, whether or
 		// not it had anything to say — a `log:` step is stored the identical way.
 		// Absence is reserved for a step a condition skipped, which this is not.
-		return &Node_Outputs{NamedValues: map[string]*Value{}}, nil
+		return &Node_Outputs{NamedValues: map[string]*Value{}}, cost, nil
 	}
 
-	return &Node_Outputs{NamedValues: outputs.GetValues()}, nil
+	return &Node_Outputs{NamedValues: outputs.GetValues()}, cost, nil
 }
 
 // CheckCallDepth reports whether a call at this depth may run.

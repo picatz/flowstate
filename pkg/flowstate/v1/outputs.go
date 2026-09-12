@@ -31,11 +31,25 @@ import (
 // asked for, so a run whose answer cannot be computed has not succeeded. It is the
 // same rule a step's `vars:` follows, one level out.
 func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutputs, error) {
+	outputs, _, err := EvalRunOutputsWithCost(ctx, wf, scope)
+
+	return outputs, err
+}
+
+// EvalRunOutputsWithCost is [EvalRunOutputs] plus the deterministic CEL cost of
+// every declared output's expression. Literal outputs cost zero.
+//
+// A run's own outputs are evaluated once, at its end, and need no accounting.
+// A *call's* do not: [CallOutputs] reaches this function once per `call:` step,
+// so a call inside a loop re-evaluates the callee's whole `outputs:` block every
+// iteration. See [engine.executor.chargeWorkflowCost].
+func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutputs, uint64, error) {
 	declared := wf.GetDeclaredOutputs()
 	if len(declared) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
+	var spent uint64
 	ev := DefaultEvaluator()
 	values := make(map[string]*Value, len(declared))
 
@@ -65,16 +79,16 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 			if _, isStructure := value.GetKind().(*Value_Structure_); isStructure {
 				literal, err := structureLiteral(value)
 				if err != nil {
-					return nil, fmt.Errorf("output %q: %w", name, err)
+					return nil, spent, fmt.Errorf("output %q: %w", name, err)
 				}
 				value = &Value{Kind: &Value_Literal{Literal: literal}}
 			}
 
 			if err := CheckOutputValue(declaration, value); err != nil {
-				return nil, err
+				return nil, spent, err
 			}
 			if err := CheckOutputConstraint(scope.GetProfile(), declaration, value); err != nil {
-				return nil, err
+				return nil, spent, err
 			}
 
 			values[name] = value
@@ -82,13 +96,14 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), value.GetExpr(), scope.Activation(ctx))
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), value.GetExpr(), scope.Activation(ctx))
+		spent += cost
 		if err != nil {
-			return nil, fmt.Errorf("output %q: %w", name, err)
+			return nil, spent, fmt.Errorf("output %q: %w", name, err)
 		}
 		literal, err := cel.RefValueToValue(out)
 		if err != nil {
-			return nil, fmt.Errorf("output %q: converting result: %w", name, err)
+			return nil, spent, fmt.Errorf("output %q: converting result: %w", name, err)
 		}
 		computed := &Value{Kind: &Value_Literal{Literal: literal}}
 
@@ -98,7 +113,7 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 			// it broke rather than being told a predicate over `this` did not
 			// evaluate. The two are one contract read in order: the shape
 			// first, then the rule over a value of that shape.
-			return nil, err
+			return nil, spent, err
 		}
 
 		if err := CheckOutputConstraint(scope.GetProfile(), declaration, computed); err != nil {
@@ -107,13 +122,13 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 			// gets, pointed the other way: a run that cannot produce a value
 			// satisfying its own declaration has not succeeded, per this
 			// function's own doc comment.
-			return nil, err
+			return nil, spent, err
 		}
 
 		values[name] = computed
 	}
 
-	return &RunOutputs{Values: values}, nil
+	return &RunOutputs{Values: values}, spent, nil
 }
 
 // structureLiteral flattens a literal [Value_Structure] into the plain

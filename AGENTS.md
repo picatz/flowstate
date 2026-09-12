@@ -68,6 +68,10 @@ The complete rationale lives in
   narrow task. A new abstraction must remove real duplication or encode a real
   invariant; match the surrounding level of abstraction, naming, and comment
   density.
+- New Go takes the standard library's current vocabulary — `cmp.Or`, `maps`,
+  `slices`, `iter`, the `min`/`max` builtins — even where neighbouring code
+  still spells it by hand. `go run ./tools/modernize <pkg>` names a package's
+  own sites; #521 forbids applying them as a sweep.
 - Tests prove behavior, including the negative or boundary direction that would
   expose the regression. A test that passes without exercising the mechanism is
   worse than no claim of coverage.

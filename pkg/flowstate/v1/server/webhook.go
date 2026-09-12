@@ -565,8 +565,19 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// which is a map lookup the sender cannot observe: the answer is
 			// this same 413 either way.
 			route, _ := r.route(req.URL.Path)
-			r.refusedAtRoute(req.Context(), route, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE)
 			http.Error(w, "the delivery body is too large", http.StatusRequestEntityTooLarge)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			// Answered first and recorded through [recordContext], for the
+			// reasons [writeWebhookRefusal] gives: this record is keyed by
+			// route and class too, so its cost is one a sender could otherwise
+			// time, and a sender who closes after reading the answer could
+			// otherwise spend the window without filling it.
+			recordCtx, cancelRecord := recordContext(req)
+			r.refusedAtRoute(recordCtx, route, nil,
+				v1.AuditDenyCode_AUDIT_DENY_CODE_PAYLOAD_TOO_LARGE)
+			cancelRecord()
 
 			return
 		}
@@ -588,8 +599,11 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// Then the same refusal, so neither is the answer that stands out.
 		v1.SpendWebhookVerificationWork(webhookHeaders(req.Header), body, r.now())
 		r.refuse(req, "no such webhook", "path", req.URL.Path)
-		r.refusedAtRoute(req.Context(), nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND)
 		writeWebhookRefusal(w)
+		unroutedCtx, cancelUnrouted := recordContext(req)
+		r.refusedAtRoute(unroutedCtx, nil, nil,
+			v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND)
+		cancelUnrouted()
 
 		return
 	}
@@ -598,8 +612,10 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := v1.VerifyWebhookDelivery(route.trigger, route.keys, headers, body, r.now()); err != nil {
 		r.refuse(req, "the delivery did not verify",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
-		r.refusedAtRoute(req.Context(), route, nil, webhookDenyCode(err))
 		writeWebhookRefusal(w)
+		unverifiedCtx, cancelUnverified := recordContext(req)
+		r.refusedAtRoute(unverifiedCtx, route, nil, webhookDenyCode(err))
+		cancelUnverified()
 
 		return
 	}
@@ -1183,6 +1199,48 @@ func (r *WebhookReceiver) refuse(req *http.Request, reason string, args ...any) 
 // sign for it.
 func writeWebhookRefusal(w http.ResponseWriter) {
 	http.Error(w, "the delivery was not accepted", http.StatusNotFound)
+
+	// Flushed, so the sender has its answer before this handler does anything
+	// else. What follows a pre-verification refusal is its audit record, and
+	// how long that takes is not the same for every refusal: the ledger writes
+	// one record per route and class per interval, so a path naming a route
+	// this deployment serves can reach a sink an already-primed unknown path
+	// does not — synchronously, under a required recorder, with an exporter's
+	// round trip in it.
+	//
+	// This handler spends equal verification work on an unrouted path and a
+	// routed one, and answers both with the same status and the same sentence,
+	// so that the two are indistinguishable *including by timing* (see this
+	// file's own doc). Recording after the answer is what keeps the record's
+	// own cost out of that measurement, without making the trail coarser than
+	// the operator reading it needs (#1119).
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// webhookRecordTimeout bounds an audit record written after the answer has gone
+// out, since dropping the sender's cancellation drops the only bound that work
+// had. Generous against an exporter's round trip and short against a handler
+// goroutine held by a sink that never answers.
+const webhookRecordTimeout = 5 * time.Second
+
+// recordContext returns the context a post-answer audit record is written
+// under: the request's values, without its cancellation, under a bound of this
+// server's own.
+//
+// Answering first puts the record after a point the *sender* controls: Go arms
+// its background close-detection read before a handler runs once the body has
+// been consumed, so a client that reads the flushed refusal and closes cancels
+// the request context while the record is still being written. The ledger has
+// already spent the interval's slot by then, so an aborting prober would
+// suppress the whole window for that route and class rather than one record.
+//
+// The deadline is what keeps that from trading one unbounded thing for
+// another: [audit.Recorder] emits synchronously, so a processor that blocks
+// would pin this handler's goroutine with nothing left to end it.
+func recordContext(req *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(req.Context()), webhookRecordTimeout)
 }
 
 // writeWebhookJSON answers an accepted delivery.

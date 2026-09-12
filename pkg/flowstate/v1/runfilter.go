@@ -178,10 +178,19 @@ func NewRunFilter(expression string) (*RunFilter, error) {
 		return nil, err
 	}
 
-	program, err := env.Program(ast,
-		cel.CostLimit(maxFilterCost),
-		cel.InterruptCheckFrequency(DefaultInterruptCheckFrequency),
-	)
+	// The evaluator's own program options, with this path's tighter budget,
+	// rather than a second hand-built pair. A filter speaks the workflow
+	// profile's language — that is what [runFilterEnv] settled — and the
+	// controls that bound what that language may spend are not separable from
+	// it: the byte-aware estimator is what decides a unit of budget buys a
+	// bounded number of bytes rather than one call of any size, and the element
+	// bound is what refuses a list an expression manufactured past it. Built
+	// here from [cel.CostLimit] alone, a filter compiled the same vocabulary
+	// under weaker enforcement than either driver applies to it (#1119).
+	program, err := env.Program(ast, Limits{
+		Cost:                    maxFilterCost,
+		InterruptCheckFrequency: DefaultInterruptCheckFrequency,
+	}.programOptions()...)
 	if err != nil {
 		return nil, fmt.Errorf("filter: %w", err)
 	}

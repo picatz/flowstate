@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -37,6 +38,22 @@ const (
 	// the older "shorter of the two wins" rule was wrong in the direction a
 	// step's `timeout:` takes.
 	DefaultCallTimeout = 30 * time.Second
+
+	// DefaultMaxCallTimeout is the ceiling a caller's own deadline is held
+	// beneath, for a call that brought one.
+	//
+	// [DefaultCallTimeout] cannot serve as that ceiling: a step's `timeout:`
+	// legitimately exceeds it — a codex turn takes minutes — which is why
+	// #1130 stopped stacking it beneath the caller's deadline. But a deadline
+	// that is *only* the caller's is a host resource bound the workflow author
+	// sets, and `StepPolicy.timeout` is constrained to be positive and nothing
+	// else, so a submitted workflow could hold a plugin call and the activity
+	// slot under it open for as long as it liked (#1119).
+	//
+	// So the ceiling is its own number, far above any real step and far below
+	// forever. An operator whose plugin legitimately runs longer raises
+	// [Config.MaxCallTimeout]; nobody submitting a workflow can.
+	DefaultMaxCallTimeout = time.Hour
 
 	// DefaultHealthTimeout bounds one health poll. It is short because a health
 	// check that needs a long time to answer has already answered.
@@ -369,7 +386,7 @@ type Config struct {
 	//     per attempt, the durable driver as the activity's StartToClose), and
 	//     a step that declares none still gets
 	//     [flowstatev1.DefaultStartToCloseTimeout]. That deadline is the
-	//     author's answer and is passed through untouched.
+	//     author's answer, and it is honored up to [Config.MaxCallTimeout].
 	//   - This bounds a call that arrived with no deadline at all — a direct
 	//     [Plugin.TaskService] or [Plugin.SecretService] caller using
 	//     context.Background(), where nothing else would ever end the call.
@@ -379,6 +396,19 @@ type Config struct {
 	// It was applied on top of the caller's deadline until #1130, which capped
 	// every plugin task at thirty seconds however long the step allowed.
 	CallTimeout time.Duration
+
+	// MaxCallTimeout is the ceiling a caller's own deadline is held beneath.
+	// Zero selects [DefaultMaxCallTimeout].
+	//
+	// The layering above gives the author's `timeout:` the say over how long
+	// one attempt runs, which is right — and would be the *whole* answer if
+	// the author were the operator. They are not: a workflow arrives from
+	// outside, `StepPolicy.timeout` is checked only for being positive, and the
+	// call it becomes holds a plugin RPC and the activity slot beneath it for
+	// as long as it names. This is the number that is the host's regardless, so
+	// that the step decides within the deployment's bound rather than instead
+	// of it (#1119).
+	MaxCallTimeout time.Duration
 
 	HealthTimeout  time.Duration
 	HealthInterval time.Duration
@@ -477,6 +507,7 @@ func (c Config) withDefaults() Config {
 	setDuration(&c.HandshakeTimeout, DefaultHandshakeTimeout)
 	setDuration(&c.DescribeTimeout, DefaultDescribeTimeout)
 	setDuration(&c.CallTimeout, DefaultCallTimeout)
+	setDuration(&c.MaxCallTimeout, DefaultMaxCallTimeout)
 	setDuration(&c.HealthTimeout, DefaultHealthTimeout)
 	setDuration(&c.HealthInterval, DefaultHealthInterval)
 	setDuration(&c.ShutdownGrace, DefaultShutdownGrace)
@@ -507,6 +538,19 @@ func (c Config) withDefaults() Config {
 	c.EgressPolicy = slices.Clone(c.EgressPolicy)
 
 	return c
+}
+
+// maxCallTimeout is [Config.MaxCallTimeout] with zero read as
+// [DefaultMaxCallTimeout], the same rule [setDuration] applies when a Config is
+// normalized.
+//
+// Normalization already fills the field in for every Config this package
+// builds, and this is read at the point of use anyway: the ceiling is the one
+// bound a caller's own deadline cannot raise, so a Config assembled by hand —
+// a test's, an embedder's — must not be the way to remove it. Zero means the
+// default here exactly as the field's own documentation says it does.
+func (c Config) maxCallTimeout() time.Duration {
+	return cmp.Or(c.MaxCallTimeout, DefaultMaxCallTimeout)
 }
 
 // setDuration replaces a zero duration with a default. A negative value is left

@@ -2541,8 +2541,25 @@ func EvalCondition(ctx context.Context, condition *Value, prev *Workflow_StepOut
 // EvalConditionInScope evaluates a condition against a scope, so a loop body can
 // guard on its own item as well as on earlier steps' outputs.
 func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (bool, error) {
+	run, _, err := EvalConditionInScopeWithCost(ctx, condition, scope)
+
+	return run, err
+}
+
+// EvalConditionInScopeWithCost is [EvalConditionInScope] plus the deterministic
+// CEL cost of evaluating the condition. An absent or literal condition costs
+// zero.
+//
+// The cost is what lets the durable driver charge a condition to the segment it
+// ran in ([engine.executor.chargeWorkflowCost]). A condition decides whether a
+// step runs and is then thrown away, so a false one leaves nothing behind that
+// says it was evaluated — no output, no history event, no step counted — while
+// having spent whatever `lists.range(10000).map(...)` spends. Every workflow-
+// side expression a segment evaluates has to be charged to it, or a loop whose
+// body is entirely skipped is unbounded work the budget never sees (#1119).
+func EvalConditionInScopeWithCost(ctx context.Context, condition *Value, scope *Scope) (bool, uint64, error) {
 	if condition == nil {
-		return true, nil
+		return true, 0, nil
 	}
 
 	ev := DefaultEvaluator()
@@ -2550,23 +2567,27 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 	case *Value_Literal:
 		b, ok := kind.Literal.GetKind().(*expr.Value_BoolValue)
 		if !ok {
-			return false, fmt.Errorf("condition must be a boolean, got %s", literalKindName(kind.Literal))
+			return false, 0, fmt.Errorf("condition must be a boolean, got %s", literalKindName(kind.Literal))
 		}
-		return b.BoolValue, nil
+		return b.BoolValue, 0, nil
 
 	case *Value_Expr:
-		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
+		// The cost travels with the error too: an expression that exhausted its
+		// own budget spent every unit of it, and a segment that forgot the
+		// spending of a failed evaluation would let a tolerated failure be the
+		// way to evaluate for free.
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 		if err != nil {
-			return false, fmt.Errorf("evaluating condition: %w", err)
+			return false, cost, fmt.Errorf("evaluating condition: %w", err)
 		}
 		b, ok := out.Value().(bool)
 		if !ok {
-			return false, fmt.Errorf("condition must evaluate to a boolean, got %s", out.Type())
+			return false, cost, fmt.Errorf("condition must evaluate to a boolean, got %s", out.Type())
 		}
-		return b, nil
+		return b, cost, nil
 
 	default:
-		return false, fmt.Errorf("unsupported condition kind %T", condition.GetKind())
+		return false, 0, fmt.Errorf("unsupported condition kind %T", condition.GetKind())
 	}
 }
 

@@ -3,6 +3,7 @@ package flowstatev1_test
 import (
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1034,6 +1035,13 @@ func TestCronExpressionsThatMustBeAccepted(t *testing.T) {
 		"0 0 30-31 * *",
 		"0 0 31 2 MON",
 		"0 0 L 2 *",
+		// A step is a count, not a value in the field's range, so even the
+		// largest int is legal syntax. Expanding it must terminate rather than
+		// wrap into negative months that index `daysInMonth` out of range
+		// (#1119) — the panic reached from an ordinary CreateSchedule request.
+		"0 0 * */" + strconv.Itoa(math.MaxInt) + " *",
+		"*/" + strconv.Itoa(math.MaxInt) + " * * * *",
+		"0 0 * * */" + strconv.Itoa(math.MaxInt),
 	} {
 		t.Run(cron, func(t *testing.T) {
 			t.Parallel()

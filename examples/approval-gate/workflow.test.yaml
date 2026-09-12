@@ -38,9 +38,13 @@
 # whole-value `${...}` fence is an expression over the block's other vars,
 # evaluated once when the file loads, in dependency order. The addresses and
 # the issuer then agree with each other by construction rather than by
-# everyone remembering to edit eight lines — and the workflow's own
-# `signals:` rule reads this issuer through `expected_approver_issuer`, so the
-# two halves of that comparison are stated in one place here.
+# everyone remembering to edit eight lines.
+#
+# The issuer here is the one the workflow's own `signals:` rule writes. It is
+# not an input: a subject is only unique within the issuer that attested it, so
+# a run that chose its own issuer would be choosing which population of
+# `team: release-managers` the gate asks rather than narrowing the one the file
+# grants. A deployment edits that line; a case here states the same literal.
 vars:
   domain: example.com
   issuer: "${'https://issuer.' + vars.domain}"
@@ -57,7 +61,6 @@ defaults:
     version: v1.4.2
     environment: production
     expected_approver: "${vars.approver}"
-    expected_approver_issuer: "${vars.issuer}"
   # The approver most cases name. A case that names its own `sender:` overrides
   # this (explicit beats inherited); the "without an attested sender" case opts
   # out with an explicit empty `sender: {}`, which is refused exactly as an

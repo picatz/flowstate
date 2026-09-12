@@ -352,6 +352,14 @@ func TestSensitiveSubstringMatcherPreservesTheUnionOfEveryMatch(t *testing.T) {
 		{"ab", "abc"},
 		{"aba", "bab", "bc"},
 		{"", "ab", "ab"},
+		// Backward-extending overlaps: a short pattern that ends before a long
+		// one which started earlier. Every set above happens to be one where
+		// the matcher's end-offset order is also its start-offset order, which
+		// is why the corpus agreed with the reference while the prefix of a
+		// longer secret was printing in the clear (#1119).
+		{"aa", "baaa"},
+		{"c", "abc"},
+		{"bc", "aabc"},
 	}
 	for _, patterns := range patternSets {
 		for length := range 7 {
@@ -494,4 +502,36 @@ func TestOnlyDeclaredInputsEnterTheSet(t *testing.T) {
 	require.False(t, set.IsSensitive("shown-value"))
 	require.Equal(t, "shown-value", set.RedactSubstrings("shown-value"))
 	require.False(t, strings.Contains(set.RedactSubstrings("hidden-value"), "hidden-value"))
+}
+
+// TestABackwardOverlapRedactsTheWholeSecret is #1119's leak in the shape it
+// reaches a person: two sensitive values where the short one is a substring of
+// the long one but does not start where it starts.
+//
+// The matcher reports a match at the position it *ends*, so `aa` is announced
+// before the `topsecret-aaa` containing it, and a high-water mark of what is
+// already covered then treats the longer secret as having only its final byte
+// left to redact. What printed was `topsecret-[redacted]` — the whole
+// distinguishing part of the value, in a failure message on a terminal, in CI
+// output, or in a test report an agent reads back.
+//
+// The single-pattern case is the control: it is what makes this a claim about
+// the overlap rather than about the long value being in the set at all.
+func TestABackwardOverlapRedactsTheWholeSecret(t *testing.T) {
+	t.Parallel()
+
+	const text = "failure: topsecret-aaa"
+
+	alone := SensitiveValues{}.WithValues("topsecret-aaa")
+	require.Equal(t, "failure: [redacted]", alone.RedactSubstrings(text),
+		"the long value alone must redact whole; if this fails the case below proves nothing")
+
+	both := SensitiveValues{}.WithValues("aa", "topsecret-aaa")
+	require.Equal(t, "failure: [redacted]", both.RedactSubstrings(text),
+		"adding a shorter sensitive value must not expose the longer one's prefix")
+
+	// The order the values were added in is not what decides it: the matcher
+	// walks the text, not the list.
+	reversed := SensitiveValues{}.WithValues("topsecret-aaa", "aa")
+	require.Equal(t, "failure: [redacted]", reversed.RedactSubstrings(text))
 }

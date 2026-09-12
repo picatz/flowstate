@@ -561,6 +561,14 @@ Run by hand it prints a banner saying so and waits — like `flow lsp`, it is me
 to be launched by an editor rather than typed. For a terminal debugger, use
 `flow run local --debug`, which is the same session behind the same commands.
 
+This *runs* the workflow, so it takes the same deployment policy flags the
+worker and `flow run local` take. Pass `--egress-policy` and `--task-policy` in
+the editor's adapter arguments whenever the worker being rehearsed uses them: a
+rehearsal under a different policy rehearses a different production, and this
+adapter has the operator's secret providers behind it. Both are loaded before
+any plugin starts and before a client can name a program, so a file that cannot
+be read refuses the adapter rather than leaving it serving under the defaults.
+
 Plugin-backed workflows use the same explicit launch posture as the language
 server. Pass an absolute plugin directory in the editor's adapter arguments:
 

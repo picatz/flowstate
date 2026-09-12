@@ -216,6 +216,34 @@ func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, r
 	// charged it had an overload ID been resolved.
 	cost := uint64(math.Ceil(float64(chars) * common.StringTraversalCostFactor))
 
+	// A list concatenation that actually copied is charged for the elements it
+	// copied, whatever those elements hold.
+	//
+	// The bytes-entering rule above prices what a list *carries*, which is the
+	// right question for the allocation those bytes fund and the wrong one for
+	// the traversal. `[1] + [2]` moves no characters at all, so a fold building
+	// a list an element at a time — `lists.range(n).map(i, [i]).sum()` — was
+	// charged the one-unit floor for each of its n concatenations while copying
+	// 1, then 2, then 3 elements. The work is quadratic in n and the charge was
+	// linear, so an expression well inside every bound spent hundreds of
+	// megabytes and most of a second, and converting the result afterwards
+	// walked the same chain again (#1119).
+	//
+	// Only a concrete result is charged this way. cel-go accumulates a
+	// comprehension into a mutable list and appends in place, so the growing
+	// result an ordinary `map` or `filter` reports is one list being built
+	// rather than n copies of it; charging that by size would make
+	// `lists.range(10000).map(i, i + 1)` quadratic to price and refuse the
+	// comprehensions the profile exists to offer. The distinction is exactly
+	// whether a copy happened, which is what [traits.MutableLister] answers.
+	if result.Type() == types.ListType {
+		if _, mutable := result.(traits.MutableLister); !mutable {
+			if n := sizeOf(result); n > 0 && uint64(n) > cost {
+				cost = uint64(n)
+			}
+		}
+	}
+
 	// Never cheaper than the 1 unit cel-go charges a call it treats as O(1):
 	// pricing by size must not make a call free just because it moved few
 	// bytes, or an expression could loop on short results forever.

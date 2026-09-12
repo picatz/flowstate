@@ -197,7 +197,12 @@ plugin's design:
   read out of it. Setting this input discards those edits (tracked and
   untracked alike) before this run's own baseline is read, restoring
   `working_context` to the commit it is already checked out at - not a
-  different one; there is no ref or sha to name here. It reuses the same
+  different one; there is no ref or sha to name here. Because that discarding
+  is a write, the request has to select a `sandbox_mode` that permits writing
+  and stay inside the operator's own ceiling: `SANDBOX_MODE_READ_ONLY` is that
+  ceiling as much as it is the author's request, and a task input that mutates
+  the checkout beneath it would be a Flowfile widening a grant deployment
+  configuration did not give. It reuses the same
   hardened git invocation and the same `gitWorktreeIsPlain` containment
   check `computePatch` and `observeWorkspace` already run, so a
   `working_context` that fails that check (a subdirectory of a larger

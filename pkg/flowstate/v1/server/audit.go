@@ -58,21 +58,56 @@ import (
 // exact scope bound to this RPC. The check is outside the recorder so disabling
 // audit output cannot disable authorization.
 func (s *FlowstateServer) auditAllow(ctx context.Context, rpc string, kind v1.AuditResourceKind, key string) error {
-	if principal, ok := auth.PrincipalFromContext(ctx); ok && principal.Actions != nil {
-		action, err := v1.AuthorizationActionForRPC(rpc)
-		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
-		}
-		scope := v1.AuthorizationActionScope(action)
-		if !slices.Contains(principal.Actions, scope) {
-			refusal := connect.NewError(connect.CodePermissionDenied,
-				fmt.Errorf("the caller is not authorized for required action %q", scope))
-			refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
-			return s.auditDeny(ctx, rpc, kind, key, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
-		}
+	if err := s.authorizeAction(ctx, rpc, kind, key); err != nil {
+		return err
 	}
 
 	return s.audit.Allow(ctx, s.auditSubject(ctx, rpc, kind, key))
+}
+
+// authorizeAction refuses a caller whose policy-assigned actions do not include
+// the one this RPC requires, and records that refusal.
+//
+// Separate from [FlowstateServer.auditAllow] so that a verb which addresses an
+// existing resource can ask it *before* resolving that resource. Asked only at
+// the allow seam, the check runs after a Describe and a tenant comparison have
+// already decided the answer, and the two refusals are different: a run that
+// exists in the caller's own tenant reaches the action check and is refused as
+// permission denied, while an absent, foreign, or non-Flowstate id was refused
+// as not found on the way there. A caller holding no action at all could
+// therefore learn which guessed ids name a resource in their tenant, from the
+// status alone, without holding the action that reads one (#1119).
+//
+// The order this restores is the one the refusals were written for: a caller
+// who may not act at all is told so before anything is addressed, and a caller
+// who may act keeps the uniform "no such run" for everything they cannot see.
+// It costs no round trip — the decision is the principal and the RPC, both
+// already in hand.
+//
+// The check is outside the recorder so that disabling audit output cannot
+// disable authorization.
+func (s *FlowstateServer) authorizeAction(ctx context.Context, rpc string, kind v1.AuditResourceKind, key string) error {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.Actions == nil {
+		// A policy entry with no action list preserves legacy behavior.
+		return nil
+	}
+
+	action, err := v1.AuthorizationActionForRPC(rpc)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+
+	scope := v1.AuthorizationActionScope(action)
+	if slices.Contains(principal.Actions, scope) {
+		return nil
+	}
+
+	refusal := connect.NewError(connect.CodePermissionDenied,
+		fmt.Errorf("the caller is not authorized for required action %q", scope))
+	refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
+
+	return s.auditDeny(ctx, rpc, kind, key, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
 }
 
 // ValidateAuthorizationPolicy checks every policy-assigned action against the

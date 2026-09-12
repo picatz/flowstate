@@ -74,13 +74,26 @@ func SwitchBodies(sw *Switch) [][]*Node {
 // compute the value" — an evaluation failure flowing into the default path
 // would make `default:` swallow bugs, the opposite of what the slot is for.
 func SelectSwitchCase(ctx context.Context, sw *Switch, scope *Scope) ([]*Node, *Node_Outputs, error) {
+	body, outputs, _, err := SelectSwitchCaseWithCost(ctx, sw, scope)
+
+	return body, outputs, err
+}
+
+// SelectSwitchCaseWithCost is [SelectSwitchCase] plus the deterministic CEL
+// cost of the dispatched-on expression. A literal `value:` costs zero; the
+// cases themselves are literals and cost nothing to compare.
+//
+// A `switch:` is evaluated in workflow code and may take a case whose body
+// schedules nothing, so a loop over one repeats the expression with no history
+// to bound it. See [engine.executor.chargeWorkflowCost].
+func SelectSwitchCaseWithCost(ctx context.Context, sw *Switch, scope *Scope) ([]*Node, *Node_Outputs, uint64, error) {
 	if sw == nil {
-		return nil, nil, fmt.Errorf("a `switch:` step must hold a value and cases, and this one holds nothing")
+		return nil, nil, 0, fmt.Errorf("a `switch:` step must hold a value and cases, and this one holds nothing")
 	}
 
-	observed, err := evalSwitchValue(ctx, sw.GetValue(), scope)
+	observed, cost, err := evalSwitchValueWithCost(ctx, sw.GetValue(), scope)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, cost, err
 	}
 
 	record := func(matched *expr.Value) *Node_Outputs {
@@ -103,23 +116,23 @@ func SelectSwitchCase(ctx context.Context, sw *Switch, scope *Scope) ([]*Node, *
 				// passed through a parser. Erroring rather than skipping,
 				// because a case that silently never matches is the exact
 				// silent-nothing failure the construct exists to prevent.
-				return nil, nil, fmt.Errorf(
+				return nil, nil, cost, fmt.Errorf(
 					"switch case %d value %d is not a literal; cases are literals, and a computed comparison is what `if:` is for",
 					i+1, j+1)
 			}
 			if SwitchLiteralsEqual(observed, literal.Literal) {
-				return c.GetSteps(), record(literal.Literal), nil
+				return c.GetSteps(), record(literal.Literal), cost, nil
 			}
 		}
 	}
 
 	if def := sw.GetDefault(); def != nil {
-		return def.GetSteps(), record(nil), nil
+		return def.GetSteps(), record(nil), cost, nil
 	}
 
 	// No case matched and no default exists: nothing runs, and the record says
 	// so — an observable, greppable account rather than a failure or silence.
-	return nil, record(nil), nil
+	return nil, record(nil), cost, nil
 }
 
 // SwitchBodyError is the failure a switch raises when the body it selected
@@ -187,29 +200,34 @@ func (e *SwitchBodyError) Record(text string) *Node_Outputs {
 	return out
 }
 
-// evalSwitchValue evaluates the discriminant to the literal that goes on the
-// record. A literal passes through, exactly as a `value:` step's does.
-func evalSwitchValue(ctx context.Context, value *Value, scope *Scope) (*expr.Value, error) {
+// evalSwitchValueWithCost evaluates the discriminant to the literal that goes on
+// the record, and reports the deterministic CEL cost of doing so. A literal
+// passes through and costs zero, exactly as a `value:` step's does.
+//
+// No cost-free spelling beside it, unlike the exported evaluators in this
+// package: the only caller is [SelectSwitchCaseWithCost], which has a cost to
+// return, so a second entry point would be one nobody calls.
+func evalSwitchValueWithCost(ctx context.Context, value *Value, scope *Scope) (*expr.Value, uint64, error) {
 	if value == nil {
-		return nil, fmt.Errorf("a `switch:` needs `value:`, the expression it dispatches on")
+		return nil, 0, fmt.Errorf("a `switch:` needs `value:`, the expression it dispatches on")
 	}
 
 	if literal, ok := value.GetKind().(*Value_Literal); ok {
-		return literal.Literal, nil
+		return literal.Literal, 0, nil
 	}
 	if _, isExpr := value.GetKind().(*Value_Expr); !isExpr {
-		return nil, fmt.Errorf("a `switch:` dispatches on an expression or a literal, not a %T", value.GetKind())
+		return nil, 0, fmt.Errorf("a `switch:` dispatches on an expression or a literal, not a %T", value.GetKind())
 	}
 
-	out, err := DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), value.GetExpr(), scope.Activation(ctx))
+	out, cost, err := DefaultEvaluator().EvalParsedBaseWithCost(ctx, scope.GetProfile(), value.GetExpr(), scope.Activation(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("evaluating switch value: %w", err)
+		return nil, cost, fmt.Errorf("evaluating switch value: %w", err)
 	}
 	literal, err := cel.RefValueToValue(out)
 	if err != nil {
-		return nil, fmt.Errorf("evaluating switch value: converting result: %w", err)
+		return nil, cost, fmt.Errorf("evaluating switch value: converting result: %w", err)
 	}
-	return literal, nil
+	return literal, cost, nil
 }
 
 // SwitchLiteralsEqual is the one spelling of case matching: CEL's equality for

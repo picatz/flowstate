@@ -257,3 +257,56 @@ func TestReduceRefusesWhatCannotWork(t *testing.T) {
 		})
 	}
 }
+
+// TestAListValuedFoldIsChargedForWhatItCopies is the cost model meeting the one
+// fold that is quadratic in what it builds (#1119).
+//
+// `sum` folds every type `+` accepts, concatenation included, so
+// `lists.range(n).map(i, [i]).sum()` concatenates a list an element at a time:
+// the fold copies 1, then 2, then 3 elements, which is quadratic in n while the
+// charge was linear. A list concatenation moves no *characters*, so the rule
+// that prices a list by the bytes entering it charged the one-unit floor for
+// every one of those copies. A 36-byte expression every other bound admits
+// therefore spent hundreds of megabytes and most of a second, and the result
+// was walked again converting it to a literal afterwards.
+//
+// The fold is charged for the elements it copies now, so the budget refuses it
+// at a size the budget can state.
+func TestAListValuedFoldIsChargedForWhatItCopies(t *testing.T) {
+	t.Parallel()
+
+	// Small enough to remain inside the budget, and charged far above the
+	// one-unit-per-concatenation floor that let this run unbounded.
+	out, err := evalInProfile(t, `lists.range(200).map(i, [i]).sum().size()`, map[string]any{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(200), out.Value())
+
+	// And the size at which the quadratic copying is what exhausts the budget:
+	// every individual concatenation is legal, and the sum of them is not.
+	_, err = evalInProfile(t, `lists.range(4000).map(i, [i]).sum().size()`, map[string]any{})
+	require.Error(t, err, "a fold copying eight million elements was admitted")
+	assert.Contains(t, err.Error(), "cost limit exceeded")
+}
+
+// TestAComprehensionIsNotChargedAsThoughItCopied is what the charge above must
+// not break, and the reason it is written against a mutable result rather than
+// against every list.
+//
+// cel-go accumulates a comprehension into a mutable list and appends in place,
+// so the growing result an ordinary `map` or `filter` reports is one list being
+// built rather than n copies of it. Charging those by size would make every
+// comprehension quadratic to price and refuse the list bound's own maximum,
+// which is the vocabulary the profile exists to offer.
+func TestAComprehensionIsNotChargedAsThoughItCopied(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		`lists.range(10000).map(i, i + 1).size()`,
+		`lists.range(10000).filter(i, i % 2 == 0).size()`,
+		`lists.range(10000).map(i, i * 2).sum()`,
+	} {
+		out, err := evalInProfile(t, expr, map[string]any{})
+		require.NoErrorf(t, err, "%s is the element bound's own maximum and must evaluate", expr)
+		require.NotNil(t, out)
+	}
+}

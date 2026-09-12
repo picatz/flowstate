@@ -47,11 +47,11 @@ import (
 // instead of exhausting the worker.
 const DefaultCostLimit uint64 = 1_000_000
 
-// DefaultWorkflowSliceCost is the accumulated value-expression CEL cost a
+// DefaultWorkflowSliceCost is the accumulated workflow-side CEL cost a
 // durable workflow segment may spend before it continues as new at the next
 // representable boundary. It is deliberately below [DefaultCostLimit]: that
 // limit bounds one expression, while this one keeps a sequence of individually
-// valid value expressions inside Temporal's workflow-task and deadlock budgets.
+// valid expressions inside Temporal's workflow-task and deadlock budgets.
 const DefaultWorkflowSliceCost uint64 = 500_000
 
 // DefaultInterruptCheckFrequency is how many evaluation steps elapse between
@@ -70,7 +70,7 @@ type Limits struct {
 	// which should be used only in tests.
 	Cost uint64
 
-	// WorkflowSliceCost is the accumulated value-expression CEL cost between
+	// WorkflowSliceCost is the accumulated workflow-side CEL cost between
 	// durable segments. Zero disables cost-triggered segmentation and should be
 	// used only in evaluator tests that do not execute a workflow.
 	WorkflowSliceCost uint64

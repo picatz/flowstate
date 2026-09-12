@@ -580,11 +580,29 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	// A continuation is a history command, so introducing a new reason to emit
 	// one must be versioned. Old histories take the pre-#1882 path until they
 	// complete or cross an already-recorded Continue-As-New boundary; new
-	// executions accumulate deterministic value-expression CEL cost from their
+	// executions accumulate deterministic workflow-side CEL cost from their
 	// first segment.
-	var sliceCost *uint64
-	if workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+	//
+	// Version 2 is a second set of reasons rather than a second implementation
+	// of the first, which is why it bumps rather than reusing version 1: #1919
+	// shipped version 1, so open executions recorded it, and those segments
+	// charged a `value:` step and nothing else and never suspended at a skipped
+	// step. A worker running this build replays them and must reach the same
+	// commands — charging a condition or a `for_each`'s `items:` in a replayed
+	// prefix could cross the threshold at a boundary the history has an
+	// activity at, and the run would wedge on a nondeterminism error rather
+	// than fail visibly.
+	var (
+		sliceCost              *uint64
+		everyExpressionCharged bool
+	)
+	switch workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 2) {
+	case workflow.DefaultVersion:
+	case 1:
 		sliceCost = new(uint64)
+	default:
+		sliceCost = new(uint64)
+		everyExpressionCharged = true
 	}
 
 	// Execute through the recursive executor, which handles nested control flow
@@ -600,10 +618,11 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:     varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
-		budget:    stepsBudget,
-		resume:    resumeFrames(st),
-		sliceCost: sliceCost,
+		scope:                  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
+		budget:                 stepsBudget,
+		resume:                 resumeFrames(st),
+		sliceCost:              sliceCost,
+		everyExpressionCharged: everyExpressionCharged,
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
