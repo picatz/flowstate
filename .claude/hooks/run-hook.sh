@@ -8,6 +8,9 @@ if [[ -z "${project_dir}" || ! -d "${project_dir}" ]]; then
 fi
 
 name="${1:-}"
+# The merge tool passes `strict`: refusing a merge does not stand between
+# anyone and repairing a broken tree, so that call site never fails open.
+strict="${2:-}"
 case "${name}" in
 	genguard | gofmtcheck | pidguard | mergeguard) ;;
 	*)
@@ -59,16 +62,28 @@ if ! hooks_are_current; then
 	# tree that does not compile from a build that is incoherent.
 	rebuild=""
 	rebuild_status=0
-	rebuild="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/build-hooks.sh" 2>&1 < /dev/null)" || rebuild_status=$?
+	rebuild="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/build-hooks.sh" 2>&1 < /dev/null | tail -c 4096)" || rebuild_status=$?
 	case "${rebuild_status}" in
 		0) ;;
-		3) warn "Flowstate Claude hook ${name} did not run: its sources do not compile right now. ${rebuild}" ;;
+		3)
+			if [[ -n "${strict}" ]]; then
+				printf 'Flowstate Claude hook %q could not be rebuilt and this call does not fail open:\n%s\n' "${name}" "${rebuild}" >&2
+				exit 2
+			fi
+			warn "Flowstate Claude hook ${name} did not run: its sources do not compile right now. ${rebuild}"
+			;;
 		*)
 			printf 'Flowstate Claude hook %q is out of date and could not be rebuilt:\n%s\n' "${name}" "${rebuild}" >&2
 			exit 2
 			;;
 	esac
 	if ! hooks_are_current; then
+		# The build published, so the other guards are current; this one did
+		# not compile. Treat it like the whole tree not compiling, for the
+		# same reason, unless this call site never fails open.
+		if [[ -z "${strict}" ]] && grep -qxF "${name}" "${hook_dir}/.unbuilt" 2>/dev/null; then
+			warn "Flowstate Claude hook ${name} did not run: its own sources do not compile right now."
+		fi
 		printf 'Flowstate Claude hook %q is still not current after a rebuild; restart Claude Code.\n' "${name}" >&2
 		exit 2
 	fi

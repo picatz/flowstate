@@ -321,8 +321,11 @@ func TestClaudeSessionPreparesPinnedToolchainAndHooks(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(hookDir, ".ready")); err != nil {
 		t.Errorf("SessionStart did not mark the complete hook build ready: %v", err)
 	}
-	// mergeguard is shared by Bash and the native GitHub merge tool.
-	wantCommands[guardedCommand(`run-hook.sh" mergeguard`)] = 2
+	// mergeguard is shared by Bash and the native GitHub merge tool, but the
+	// merge tool passes `strict`: refusing a merge never stands between anyone
+	// and repairing a broken tree, so that call site does not fail open when
+	// the guard cannot be built.
+	wantCommands[guardedCommand(`run-hook.sh" mergeguard strict`)] = 1
 
 	gotCommands := map[string]int{}
 	configuredCommands := []string{hookCommand}
@@ -512,6 +515,23 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
+	// Every configured hook needs a package that exists: a package that is
+	// absent is a removed control and denies, which would mask the cases below
+	// that are about a tree mid-edit. These compile only once repaired.
+	writeBrokenHookPackages := func() {
+		t.Helper()
+		for _, hook := range []string{"genguard", "gofmtcheck", "pidguard", "mergeguard"} {
+			dir := filepath.Join(project, "tools", "hooks", hook)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nthis is not go\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writeBrokenHookPackages()
+
 	sourceDirs := filepath.Join(hookDir, ".source-dirs")
 	if err := os.WriteFile(sourceDirs, []byte("internal/commitcheck\ninternal/textbound\ntools/hooks\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -649,10 +669,28 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(dependencySource, []byte("package hooks\n\nconst changed = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The fixture module has no hook commands to build, so this is the tree
-	// that does not compile: the guard warns, the call proceeds, and the
-	// stale binary still does not run.
 	runLauncherWarns("do not compile right now")
+
+	// The same uncompilable tree, reached through the merge tool's entry,
+	// denies: refusing a merge never stands between anyone and repairing the
+	// tree, so that call site is the one that does not fail open.
+	strictCmd := exec.Command("bash", launcher, "mergeguard", "strict")
+	strictCmd.Env = []string{"CLAUDE_PROJECT_DIR=" + project, "HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+	strictOutput, strictErr := strictCmd.CombinedOutput()
+	var strictExit *exec.ExitError
+	if !errors.As(strictErr, &strictExit) || strictExit.ExitCode() != 2 {
+		t.Fatalf("merge tool entry with an uncompilable tree = %v, want exit 2; output:\n%s", strictErr, strictOutput)
+	}
+	if !strings.Contains(string(strictOutput), "does not fail open") {
+		t.Fatalf("merge tool denial did not say why it does not fail open:\n%s", strictOutput)
+	}
+
+	// Remove one of them: a control that is gone must not fail open.
+	if err := os.RemoveAll(filepath.Join(project, "tools", "hooks", "mergeguard")); err != nil {
+		t.Fatal(err)
+	}
+	runLauncher("could not be rebuilt")
+	writeBrokenHookPackages()
 
 	// Failure to enumerate untracked sources is an identity failure, not an
 	// empty untracked-file set that can accidentally trust the old binary.

@@ -67,6 +67,21 @@ for directory in "${directories[@]}"; do
 		\( -name '*.go' -o -name '*.s' -o -name '*.c' -o -name '*.h' -o -name '*.syso' \) \
 		! -name '*_test.go' -print0)
 done
+# Inputs the compiler names rather than the directory walk finds: embedded
+# files, assembly, cgo sources. `build-hooks.sh` records them beside the
+# manifest, so an identity computed later covers the same set the build did.
+extra_manifest="${source_dirs%/*}/.source-extra"
+if [[ -f "${extra_manifest}" ]]; then
+	while IFS= read -r extra || [[ -n "${extra}" ]]; do
+		[[ -n "${extra}" ]] || continue
+		if [[ ! -e "${project_dir}/${extra}" ]]; then
+			printf 'a Flowstate Claude hook input %q is missing.\n' "${extra}" >&2
+			exit 2
+		fi
+		printf '%s\n' "${extra}" >> "${build_paths}"
+	done < "${extra_manifest}"
+fi
+
 if [[ ! -s "${build_paths}" ]]; then
 	printf 'could not find the Flowstate Claude hook build inputs.\n' >&2
 	exit 2

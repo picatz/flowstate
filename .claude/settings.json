@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh\" mergeguard; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
+            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh\" mergeguard strict; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
           }
         ]
       }

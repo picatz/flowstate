@@ -98,25 +98,51 @@ rm -f "${hook_dir}/.ready"
 stage_dir="$(mktemp -d "${cache_dir}/build.XXXXXX")"
 trap 'rm -rf "${stage_dir}" "${lock_dir}"' EXIT
 
+for hook in "${hooks[@]}"; do
+	if [[ ! -d "${project_dir}/tools/hooks/${hook}" ]]; then
+		printf 'the Flowstate Claude hook package %q is missing; it is a control, not an optional build target.\n' "${hook}" >&2
+		exit 2
+	fi
+done
+
 if ! list_source_dirs > "${stage_dir}/.source-dirs" || [[ ! -s "${stage_dir}/.source-dirs" ]]; then
 	printf 'could not determine what the Flowstate Claude hooks are built from.\n' >&2
 	exit "${not_buildable}"
 fi
 
-# The identity walks each package directory for the source extensions the
-# compiler reads there. An embedded file, assembly, or cgo source would be
-# compiled in without being hashed, so refuse loudly now rather than run a
-# stale guard quietly later.
-extra_inputs="$(GOTOOLCHAIN="go${go_version}" go -C "${project_dir}" list -deps \
-	-f '{{if .Module}}{{if .Module.Main}}{{range .EmbedFiles}}{{.}} {{end}}{{range .SFiles}}{{.}} {{end}}{{range .CgoFiles}}{{.}} {{end}}{{end}}{{end}}' \
-	"${packages[@]}" | tr -d '[:space:]')"
-if [[ -n "${extra_inputs}" ]]; then
-	printf 'a Flowstate Claude hook now compiles an embedded, assembly, or cgo input that the source identity does not cover.\n' >&2
+# The walk covers the source extensions a package directory holds, but the
+# compiler also reads embedded files, assembly, and cgo sources, which can sit
+# anywhere the package names. Those paths are recorded so the identity hashes
+# them too. Refusing them instead would lock the session out of every tool the
+# moment a shared package embedded a template, which is the failure this
+# launcher exists to prevent.
+if ! GOTOOLCHAIN="go${go_version}" go -C "${project_dir}" list -deps \
+	-f '{{if .Module}}{{if .Module.Main}}{{$dir := .Dir}}{{range .EmbedFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{range .SFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{range .CgoFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{end}}{{end}}' \
+	"${packages[@]}" | while IFS= read -r input; do
+		case "${input}" in
+			"") ;;
+			"${project_dir}"/*) printf '%s\n' "${input#"${project_dir}"/}" ;;
+			*)
+				printf 'a Flowstate Claude hook input %q is outside the checkout.\n' "${input}" >&2
+				exit 2
+				;;
+		esac
+	done | LC_ALL=C sort -u > "${stage_dir}/.source-extra"; then
+	printf 'could not determine the other inputs the Flowstate Claude hooks compile.\n' >&2
 	exit 2
 fi
 source_id="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/source-id.sh" "${stage_dir}/.source-dirs")"
 
-if ! GOTOOLCHAIN="go${go_version}" go -C "${project_dir}" build -o "${stage_dir}/" "${packages[@]}"; then
+built=0
+: > "${stage_dir}/.unbuilt"
+for hook in "${hooks[@]}"; do
+	if GOTOOLCHAIN="go${go_version}" go -C "${project_dir}" build -o "${stage_dir}/${hook}" "./tools/hooks/${hook}"; then
+		built=$((built + 1))
+	else
+		printf '%s\n' "${hook}" >> "${stage_dir}/.unbuilt"
+	fi
+done
+if [[ "${built}" -eq 0 ]]; then
 	exit "${not_buildable}"
 fi
 
