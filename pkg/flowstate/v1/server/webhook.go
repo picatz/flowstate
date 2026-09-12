@@ -588,8 +588,8 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// Then the same refusal, so neither is the answer that stands out.
 		v1.SpendWebhookVerificationWork(webhookHeaders(req.Header), body, r.now())
 		r.refuse(req, "no such webhook", "path", req.URL.Path)
-		r.refusedAtRoute(req.Context(), nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND)
 		writeWebhookRefusal(w)
+		r.refusedAtRoute(req.Context(), nil, nil, v1.AuditDenyCode_AUDIT_DENY_CODE_RESOURCE_NOT_FOUND)
 
 		return
 	}
@@ -598,8 +598,8 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := v1.VerifyWebhookDelivery(route.trigger, route.keys, headers, body, r.now()); err != nil {
 		r.refuse(req, "the delivery did not verify",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
-		r.refusedAtRoute(req.Context(), route, nil, webhookDenyCode(err))
 		writeWebhookRefusal(w)
+		r.refusedAtRoute(req.Context(), route, nil, webhookDenyCode(err))
 
 		return
 	}
@@ -1183,6 +1183,24 @@ func (r *WebhookReceiver) refuse(req *http.Request, reason string, args ...any) 
 // sign for it.
 func writeWebhookRefusal(w http.ResponseWriter) {
 	http.Error(w, "the delivery was not accepted", http.StatusNotFound)
+
+	// Flushed, so the sender has its answer before this handler does anything
+	// else. What follows a pre-verification refusal is its audit record, and
+	// how long that takes is not the same for every refusal: the ledger writes
+	// one record per route and class per interval, so a path naming a route
+	// this deployment serves can reach a sink an already-primed unknown path
+	// does not — synchronously, under a required recorder, with an exporter's
+	// round trip in it.
+	//
+	// This handler spends equal verification work on an unrouted path and a
+	// routed one, and answers both with the same status and the same sentence,
+	// so that the two are indistinguishable *including by timing* (see this
+	// file's own doc). Recording after the answer is what keeps the record's
+	// own cost out of that measurement, without making the trail coarser than
+	// the operator reading it needs (#1119).
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 // writeWebhookJSON answers an accepted delivery.
