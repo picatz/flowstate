@@ -1305,15 +1305,23 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// name flat enough for one tenant to reach another's trusted entry.
 	identity := s.identityFor(ctx)
 
-	// The decision, written down before any of the work it permits.
+	// The admission decision, written down before any of the work it permits.
 	//
 	// Here, rather than at the [FlowstateServer.clientFor] call further down,
-	// because this RPC's authorization question is "may this caller start work
-	// in their own namespace" and nothing between here and there can change the
-	// answer: what follows is the specification being checked, which is a
-	// question about the file rather than about the caller. The resource is the
-	// run that does not exist yet, so the key is empty until the id is composed
-	// — a decision about starting work is not a decision about a run.
+	// because this RPC's first authorization question is "may this caller
+	// start work in their own namespace", and nothing between here and there
+	// can change *that* answer: what follows is the specification being
+	// checked, which is a question about the file rather than about the
+	// caller. The resource is the run that does not exist yet, so the key is
+	// empty until the id is composed — a decision about starting work is not
+	// a decision about a run.
+	//
+	// A second, later decision does still exist below —
+	// [FlowstateServer.authorizeManualStart] asks whether the workflow's own
+	// `manual:` block permits this caller specifically, which this admission
+	// cannot answer without the workflow in hand — and it is audited
+	// separately, as its own DENY, rather than folded into this ALLOW. See
+	// #1889.
 	if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, identity.GetNamespace()); err != nil {
 		return nil, err
 	}
@@ -1425,8 +1433,8 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := v1.CheckManualStart(workflow, manualStartPrincipal(ctx), req.Msg.GetReason()); err != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	if err := s.authorizeManualStart(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, req.Msg.GetReason()); err != nil {
+		return nil, err
 	}
 
 	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
