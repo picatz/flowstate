@@ -149,14 +149,24 @@ func TestClaudeRulesLoadOnlyByPath(t *testing.T) {
 // allowedCommands is the reviewed set of commands the allow list may carry,
 // spelled exactly as a rule's command part: program and subcommand, with
 // no wildcard before the subcommand. The value says whether the rule may
-// end in `:*` and so accept arguments: a test or build takes packages and
-// flags, while `git fetch origin` must stay exact, because with arguments
-// it accepts a forced refspec and `--update-head-ok` that move the
-// checked-out ref. A denylist of verbs would let `Bash(git:*)` through, and
-// that rule pre-approves every git command, push included. Adding a command
-// here is a review decision, which is the point: the allow list removes
-// prompts from the checks the repository prescribes and never from the
-// actions AGENTS.md reserves for the host's authorization contract.
+// end in `:*` and so accept arguments, and the rule for that is whether the
+// command needs arguments to do its job:
+//
+//   - A build, test, or gate run takes packages and flags, and running the
+//     checkout's own code is the point. Its writes land where a contributor's
+//     own run lands (the build cache, a `-coverprofile` path), so the allow
+//     list assumes the checkout is one the operator trusts.
+//   - A command that reads must stay exact. `git fetch origin` with arguments
+//     accepts a forced refspec and `--update-head-ok` that move the
+//     checked-out ref, and `git diff`, `log`, `show`, and `blame` accept
+//     `--output=<file>`, which truncates that file and writes the report into
+//     it. Reading needs neither, so neither is pre-approved.
+//
+// A denylist of verbs would let `Bash(git:*)` through, and that rule
+// pre-approves every git command, push included. Adding a command here is a
+// review decision, which is the point: the allow list removes prompts from
+// the checks the repository prescribes and never from the actions AGENTS.md
+// reserves for the host's authorization contract.
 var allowedCommands = map[string]bool{
 	"go build": true, "go vet": true, "go test": true, "go list": true, "go doc": true,
 	"go env": false, "go version": false,
@@ -164,8 +174,8 @@ var allowedCommands = map[string]bool{
 	"go run ./cmd/flow validate": true, "go run ./cmd/flow lint": true,
 	"make gate": false, "make check": false, "make fmt": false, "make test": false,
 	"make test-fast": false, "make docs": false,
-	"git status": true, "git diff": true, "git log": true, "git show": true, "git blame": true,
-	"git ls-files": true, "git rev-parse": true,
+	"git status": true, "git ls-files": true, "git rev-parse": true,
+	"git diff": false, "git log": false, "git show": false, "git blame": false,
 	"git fetch origin": false, "git fetch origin main": false,
 }
 
@@ -228,6 +238,8 @@ func TestClaudePermissionsOnlyRemovePromptsFromVerification(t *testing.T) {
 		"Bash(git commit:*)", "Bash(git reset --hard)", "Bash(bash -c:*)",
 		"Bash(go test ./... && git push)", "Bash(gh pr merge:*)", "Bash(rm -rf:*)",
 		"Bash(git fetch origin:*)", "Bash(git fetch origin +main:work --update-head-ok)",
+		"Bash(git diff:*)", "Bash(git diff --output=AGENTS.md HEAD)",
+		"Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)",
 		"Bash(go env:*)", "Bash(make gate:*)",
 		"Edit", "mcp__github__merge_pull_request",
 	} {

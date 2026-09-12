@@ -212,21 +212,28 @@ and whether a deterministic mechanism can prevent it more reliably.
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
   in skills. A command never shares a skill's name: `both-drivers.md` was
   removed because the two shadowed each other.
-- `permissions.allow` in `.claude/settings.json` pre-approves the read-only
-  git commands, two exact fetch forms (`git fetch origin` and
-  `git fetch origin main`, since a fetch with arguments can force-move a local
-  ref), and the build, test, format, gate, and regeneration commands the
-  repository prescribes, so verification does not prompt. A test pins the list
-  to exact program-and-subcommand entries, says which may take arguments, and
-  rejects a wildcard, push, merge, commit, or destructive one, so nothing the
-  host would have asked about rides in unreviewed. Claude Code matches each subcommand of a compound command
-  separately, so `go test ./... && git push` still prompts for the push. What
-  the list does pre-approve is running and building the repository's own
-  code: `go test` executes the checkout's tests by design, and `go build`
-  writes binaries from it. A flag such as `go test -exec` or `go build
-  -toolexec` names another program to run, but the list creates no program
-  that was not already runnable; the surface is the one a contributor's own
-  test run has.
+- `permissions.allow` in `.claude/settings.json` pre-approves the build, test,
+  format, gate, and regeneration commands the repository prescribes, so
+  verification does not prompt. A test pins the list to exact
+  program-and-subcommand entries, rejects a wildcard, push, merge, commit, or
+  destructive one, and decides which entries may take arguments by whether the
+  command needs them: a test run takes packages, while a command that only
+  reads stays exact. That is why `git fetch origin` and `git fetch origin main`
+  are pre-approved but `git fetch` with arguments is not (a refspec and
+  `--update-head-ok` move the checked-out ref), and why `git diff`, `git log`,
+  `git show`, and `git blame` are pre-approved only bare: each accepts
+  `--output=<file>`, which truncates that file and writes the report into it,
+  so `git diff --output=AGENTS.md HEAD` would overwrite tracked work with no
+  prompt. Claude Code matches each subcommand of a compound command
+  separately, so `go test ./... && git push` still prompts for the push.
+- The allow list assumes the checkout is one the operator trusts. Its point is
+  running the repository's own code: `go test` executes the checkout's tests,
+  `-coverprofile` writes the path it is given, `-exec` and `-toolexec` name
+  another program to run, and `go run ./tools/gate` runs a tool from the tree.
+  The list creates no capability a contributor's own test run lacks, but it
+  does remove the prompt, so on a head you do not trust (an external
+  contributor's, say) review by reading and leave running its code to CI or a
+  sandbox. `flowstate-reviewer` says the same.
 - `.claude/agents/flowstate-reviewer.md` is the fresh-context reviewer: delegate
   a diff or PR head to it for the exact-head independent review, and to
   `flowstate-verifier` for a gate or full run whose output should stay out of

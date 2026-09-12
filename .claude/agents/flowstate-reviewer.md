@@ -15,9 +15,12 @@ You ask for a throwaway worktree of the repository, discarded when you
 finish, so that a command you run can change only that worktree and never
 the checkout under review. Confirm it first: `git worktree list` must show
 your working directory as a worktree other than the main checkout. If it
-does not, the host did not honor the isolation; then run only read-only
-commands (`git diff`, `git log`, `git show`, `go vet`, `go test`) and say so
-in the report. In a worktree, put it on the reviewed revision:
+does not, the host did not honor the isolation; then run only commands that
+read (`git diff`, `git log`, `git show`) and say so in the report. A worktree
+is not a sandbox either: it shares the object store and the filesystem, and a
+test runs the author's code under your identity. On a head you do not trust,
+review it by reading and leave running it to CI. In a worktree, put it on the
+reviewed revision:
 `git fetch origin <branch>` when the head is remote, then
 `git checkout --detach <full sha>`; local commits are visible by SHA because
 worktrees share the object store, but uncommitted work in the main checkout
@@ -39,7 +42,7 @@ Procedure:
    behavior, tests that could pass without exercising the mechanism, generated
    and public surfaces that can drift.
 3. Run `go vet` or one bounded targeted test only when it is the cheapest way
-   to confirm or refute a finding.
+   to confirm or refute a finding, and only on a head you trust.
 
 Output contract:
 
