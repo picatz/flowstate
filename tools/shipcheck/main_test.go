@@ -129,8 +129,12 @@ func TestEvaluateRejectsRepeatedCodexRequestsOnTheHeadUnderReview(t *testing.T) 
 func TestEvaluateComparesTheHeadDateAsAnInstantNotAsText(t *testing.T) {
 	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
 	// 22:00+09:00 is 13:00Z, so both requests land after the head and count.
-	// Compared as text it sorts after both, which would clear the gate.
+	// Read as wall-clock digits it is 22:00, which postdates both and would
+	// clear the gate. The checks are stamped later than that naive reading,
+	// so the clamp cannot rescue the comparison and the offset is what the
+	// assertion rests on.
 	pr.HeadCommittedAt = "2026-09-10T22:00:00+09:00"
+	stampChecks(&pr, "2026-09-10T23:00:00Z")
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
 		t.Fatalf("an offset head date hid requests made on this head: %s", problems)
 	}
@@ -142,7 +146,6 @@ func TestEvaluateComparesTheHeadDateAsAnInstantNotAsText(t *testing.T) {
 // clamp is what answers it, because GitHub stamped the head's checks when the
 // head really appeared.
 func TestEvaluateDistrustsAHeadDatedAfterItsOwnChecks(t *testing.T) {
-	fixClock(t, "2026-09-11T00:00:00Z")
 	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
 	pr.HeadCommittedAt = "2026-09-10T21:00:00Z"
 	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
@@ -189,20 +192,6 @@ func stampChecks(pr *pullRequest, at string) {
 	for i := range pr.StatusChecks {
 		pr.StatusChecks[i].StartedAt = at
 	}
-}
-
-// fixClock pins the clock the request window reads, so a test about a head
-// dated in the future does not quietly become a test about nothing once that
-// date arrives.
-func fixClock(t *testing.T, instant string) {
-	t.Helper()
-	now, err := time.Parse(time.RFC3339, instant)
-	if err != nil {
-		t.Fatalf("parse %q: %v", instant, err)
-	}
-	previous := timeNow
-	timeNow = func() time.Time { return now }
-	t.Cleanup(func() { timeNow = previous })
 }
 
 // requestedCodexTwice builds an otherwise shippable pull request whose head

@@ -37,9 +37,6 @@ var requiredChecks = []requiredCheck{
 	{"Dependency review", "Review dependency changes"},
 }
 
-// timeNow is the clock the request window reads, replaced in tests.
-var timeNow = time.Now
-
 var (
 	ghCommandTimeout = 30 * time.Second
 	ghWaitDelay      = time.Second
@@ -86,7 +83,7 @@ type pullRequest struct {
 	Files                        []changedFile `json:"files"`
 	ChangedFiles                 int           `json:"changedFiles"`
 	LatestReviewCommentUpdatedAt string
-	// HeadCommittedAt is when the current head commit was authored, which
+	// HeadCommittedAt is when the current head commit was committed, which
 	// dates the head the attestation covers. Empty when it could not be
 	// read, which the repeated-request check treats as "cannot tell" and
 	// answers by counting every request.
@@ -522,8 +519,9 @@ func earliestStampedCheck(checks []statusCheck) (time.Time, bool) {
 //
 // A new head reopens the window, so this bounds requests per head rather than
 // per pull request, and a re-push clears the count. That is the intended
-// scope, not an oversight; the shipping procedure's rule against pushing an
-// empty commit is what keeps the reset from being free.
+// scope, not an oversight: what keeps the reset from being free is the
+// shipping procedure's rule that only a material defect earns a new head,
+// since any commit at all would otherwise clear it.
 func ownerCodexRequests(pr pullRequest) int {
 	cutoff, dated := requestWindow(pr)
 	requests := 0
