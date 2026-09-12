@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -43,4 +44,54 @@ func TestTheFilterSpeaksTheProfilesLanguage(t *testing.T) {
 	// has no catalog row: the spelling the CLI's help teaches.
 	_, issues := filterEnv.Compile(`labels.?team.orValue("") == "payments"`)
 	require.NoError(t, issues.Err())
+}
+
+// TestAFilterSpendsUnderTheSameControlsTheDriversApply is the other half of
+// [TestTheFilterSpeaksTheProfilesLanguage]: a filter compiles the workflow
+// profile's whole vocabulary, so it has to be bounded the way that vocabulary
+// is bounded everywhere else.
+//
+// The filter's program was built from [cel.CostLimit] alone, which leaves out
+// the two controls [Limits.programOptions] exists to install — the byte-aware
+// estimator, which is what decides a unit of budget buys a bounded number of
+// bytes rather than one call of any size, and the element bound, which refuses
+// a list an expression manufactured past it. A filter could therefore spend the
+// profile's own amplifying calls under weaker enforcement than either driver
+// applies to them, once per run scanned (#1119).
+//
+// Refusal is the assertion rather than a measurement: both of these are the
+// shapes the missing controls exist to stop.
+func TestAFilterSpendsUnderTheSameControlsTheDriversApply(t *testing.T) {
+	t.Parallel()
+
+	for name, filter := range map[string]string{
+		// Manufactured elements, which the element bound answers.
+		"a list built past the element bound": `size(lists.range(9000).map(i, [i])) > 0`,
+		// Manufactured bytes, which the estimator prices by size.
+		"a string amplified by replacement": `size("` + strings.Repeat("x", 1400) +
+			`".replace("x", "` + strings.Repeat("y", 1400) + `")) > 0`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			compiled, err := NewRunFilter(filter)
+			require.NoError(t, err, "the filter must compile, or the refusal below proves nothing about evaluation")
+
+			_, err = compiled.Match(t.Context(), &RunSummary{WorkflowId: "orders-1"})
+			require.Error(t, err, "a filter spent past its budget and was answered anyway")
+		})
+	}
+
+	// The bound reached rather than merely exceeded: an ordinary filter over
+	// the same vocabulary still answers, so the refusals above are the budget
+	// rather than the controls refusing everything they are now installed for.
+	compiled, err := NewRunFilter(`labels.?team.orValue("") == "platform" && lists.range(10).size() == 10`)
+	require.NoError(t, err)
+
+	matched, err := compiled.Match(t.Context(), &RunSummary{
+		WorkflowId: "orders-1",
+		Labels:     map[string]string{"team": "platform"},
+	})
+	require.NoError(t, err)
+	require.True(t, matched)
 }
