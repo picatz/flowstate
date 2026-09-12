@@ -27,7 +27,8 @@ the current branch when empty).
    scoped issue. Resolve a thread only after its disposition is visible on it.
    A material defect (correctness, security, durable state, or a documented
    claim the code does not support) blocks until fixed, and the fix is a new
-   head: return to gate 1. Everything else is dispositioned here and does not
+   head: return to gate 1, where the review concentrates on the fix but
+   verdicts the whole base-to-head diff, since that head is what is attested. Everything else is dispositioned here and does not
    restart the gates, so a round that yields only advisory findings ends the
    review. Do not answer an AI reviewer with AI prose; the disposition is the
    reply. On Claude Code, delegate the thread resolution and the hiding of

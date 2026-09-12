@@ -27,9 +27,11 @@ evidence because the change looks small.
    triage it promptly into a focused fix or issue rather than ignoring it.
 5. Only a material defect in this change earns a new head: something wrong in
    correctness, security, durable state, or a documented claim the code does
-   not support. Fix that and review the new head, where the review covers the
-   fix rather than auditing the whole diff again unless the fix changed the
-   design. An advisory, stylistic, or out-of-scope finding is dispositioned on
+   not support. Fix that and review the new head. That review concentrates its
+   effort on the fix and what the fix touches, and its verdict still covers the
+   complete base-to-head diff, because the head is what gets attested and a
+   delta says nothing about unchanged code the fix now interacts with. An
+   advisory, stylistic, or out-of-scope finding is dispositioned on
    the head where it arrived, or becomes a scoped follow-up issue; it does not
    restart these gates, and neither does a bot repeating a finding whose
    disposition still holds on the current head. A repetition after a push that
