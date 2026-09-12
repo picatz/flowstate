@@ -69,12 +69,14 @@ chmod 600 "$TOKEN_DIR/requester.jwt" "$TOKEN_DIR/approver.jwt"
 ```
 
 The workflow's `signals:` rule names `https://issuer.example.com`, which is the
-deployment's own line to edit and deliberately not an input: a subject is only
-unique within the issuer that attested it, so a run that chose its own issuer
-would be choosing which population of `team: release-managers` the gate asks
-rather than narrowing the one the file grants. This walkthrough therefore does
-what a deployment does, to a copy — substituting the local issuer this dev stack
-actually attests with:
+deployment's own line to edit and deliberately not read from the request: a
+subject is only unique within the issuer that attested it, so a run that chose
+its own issuer would be choosing which population of `team: release-managers`
+the gate asks rather than narrowing the one the file grants. The file still
+*declares* `expected_approver_issuer`, because removing a declared input breaks
+every caller passing it, and ignores whatever arrives in it. This walkthrough
+therefore does what a deployment does, to a copy — substituting the local issuer
+this dev stack actually attests with:
 
 ```sh
 GATE=$(mktemp -d)/workflow.yaml
