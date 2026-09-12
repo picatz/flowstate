@@ -30,6 +30,12 @@ type countingProvider struct {
 	// [synctest.Wait] reports every other goroutine durably blocked — so the
 	// pile-up the assertion is about has already happened when the provider is
 	// released, rather than being hoped for. Left nil, a provider never blocks.
+	//
+	// Arm it before any caller is in flight, as both tests below do: the field
+	// is read under p.mu but written without it, and what makes that safe is
+	// the ordering — the write happens-before the goroutines that read it are
+	// started. A test that armed the gate while callers were already running
+	// would be a data race, which -race would catch.
 	gate chan struct{}
 }
 

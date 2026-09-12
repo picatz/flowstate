@@ -26,7 +26,13 @@ import (
 //   - engine/deadlock_budget_test.go — a workflow task deliberately running
 //     past the deadlock budget on a real Temporal worker; workflow_slice_test.go
 //     is the child process that deliberately outlives its replay deadline.
-//   - netpolicy, secrets/vault — a sleep inside an httptest handler, reached
+//   - netpolicy — a hold in the *test body*, not in the handler, which parks on
+//     a channel instead: it keeps the response body back so that the exported
+//     span is measurably longer than the moment its headers arrived, which is
+//     the bound the assertion reads. Unbubblable all the same, because the span
+//     it measures is timed across a real loopback socket and neither end of one
+//     is ever durably blocked.
+//   - secrets/vault — a sleep inside the fake vault's login handler, reached
 //     over a real loopback socket.
 //   - plugin — the fake plugin subprocesses in helper_test.go sleep in the
 //     *plugin* to stay alive for the host, and host_test.go and
@@ -35,17 +41,21 @@ import (
 //     request, in that process rather than this one.
 //   - server — the run's completion on a real dev server.
 //
-// Every remaining entry therefore waits on something outside any bubble — a
-// process, or a socket. That is the whole of the list now: the category this
-// doc used to carry beside them, of tests merely measuring a wall-clock bound
-// they could take from a bubble instead, is empty. A cache TTL, a wait's
-// deadline and a parked reader were the three, and each turned out to be
-// making a *weaker* claim for spending real time — a stampede hoped for
-// rather than guaranteed, a gate assumed reached after 100ms, a goroutine
-// census with slack — so each became an assertion the bubble makes exactly.
-// A new entry here is very likely a test that wants [synctest.Test] and not
-// an exemption: prefer the bubble unless a process or a socket is genuinely
-// on the other side of the wait.
+// Every remaining entry waits on something no bubble can advance past: a
+// process, or a socket. Three that did not — a cache TTL, a wait's deadline
+// and a parked reader — became bubbles instead, because each turned out to be
+// making a *weaker* claim in exchange for the real time it spent: a stampede
+// hoped for rather than guaranteed, a gate assumed reached after 100ms, a
+// goroutine census carrying slack. Each is now an assertion the bubble makes
+// exactly.
+//
+// Netpolicy is the one that measures a wall-clock bound and still belongs
+// here, so "the test is timing something" is not by itself the reason to stay
+// out of a bubble — what keeps a test out is a real process or socket inside
+// the thing it times. A new entry is more likely a test that wants
+// [synctest.Test] than one that needs an exemption; reach for the exemption
+// only when something outside the bubble is genuinely on the other side of
+// the wait.
 var wallClockSleeps = map[string]int{
 	"cmd/flow/browser_test.go":                        1,
 	"cmd/flow/serverdev_test.go":                      1,
