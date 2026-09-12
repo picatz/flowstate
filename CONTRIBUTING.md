@@ -16,7 +16,7 @@ make check                                       # full CI parity, when the scop
 make fmt                                         # never a bare gofmt; the Makefile uses the pinned toolchain
 ```
 
-Four packages boot a Temporal dev server in their tests (`engine`, `server`, `temporalclient`, `cmd/flow`); that is expected and takes about ten seconds each. `docs/CI.md` explains what CI runs and why.
+Without `-short`, as in `make check` and the gate, four packages boot a Temporal dev server in their tests (`engine`, `server`, `temporalclient`, `cmd/flow`); that is expected and takes about ten seconds each. The bounded run above passes `-short`, so it skips those suites rather than booting anything, which is why it finishes quickly and why the gate, not that run, is the bar before a pull request. `docs/CI.md` explains what CI runs and why.
 
 Never kill test processes by name or pattern. Stop the PID you started.
 

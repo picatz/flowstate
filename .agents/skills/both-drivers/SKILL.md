@@ -57,9 +57,11 @@ behavior observable through both `flow run local` and Temporal.
    unmatched package still prints "no tests to run" followed by its own
    package-level `PASS`.
 
-   If the durable test does dial a live server, the engine package's
-   `TestMain` boots and tears one down automatically for the run above, at a
-   cost of roughly eleven seconds. For faster iteration across several runs,
+   The engine package's `TestMain` boots a dev server and tears it down for
+   any run without `-short`, at a cost of roughly eleven seconds. It starts
+   before the tests run and does not know which ones `-run` selected, so the
+   command above pays that cost even when the durable test it names never
+   dials, and a server booting is not evidence that it did. For faster iteration across several runs,
    `make dev-temporal` starts a server that stays up and prints an `export`
    line; paste that into the terminal running `go test` first and the same
    package's tests start in about a second instead:
