@@ -25,7 +25,7 @@ case "$*" in
   *"/commits/HEAD/check-runs?filter=all&per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/check-runs.json" ;;
   *"/commits/HEAD/status?per_page=100&page=1") printf '{"statuses":[{"context":"external","state":"success","created_at":"2026-09-12T00:00:00Z"}]}' ;;
   *"/pulls/7/reviews?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/reviews.json" ;;
-  *"/rules/branches/main") cat "$SHIPCHECK_FIXTURES/rules.json" ;;
+  *"/rules/branches/main?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/rules.json" ;;
   *"/branches/main/protection") cat "$SHIPCHECK_FIXTURES/protection.json" ;;
   *"/branches/main") cat "$SHIPCHECK_FIXTURES/branch.json" ;;
   *"/issues/7/comments?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/comments.json" ;;

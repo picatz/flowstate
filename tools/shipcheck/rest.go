@@ -480,21 +480,23 @@ func classicReviewRules(repo, base string) (reviewRules, error) {
 	return out, nil
 }
 
+// rulesetReviewRules walks the rules that apply to base, paged like every
+// other list: a pull_request rule past the first page is still a rule.
 func rulesetReviewRules(repo, base string) (reviewRules, error) {
-	var rules []struct {
+	items, err := restPages(fmt.Sprintf("repos/%s/rules/branches/%s", repo, base), "")
+	if err != nil {
+		return reviewRules{}, err
+	}
+	rules, err := decodeEach[struct {
 		Type       string `json:"type"`
 		Parameters struct {
 			RequiredApprovingReviewCount int  `json:"required_approving_review_count"`
 			RequireCodeOwnerReview       bool `json:"require_code_owner_review"`
 			RequireLastPushApproval      bool `json:"require_last_push_approval"`
 		} `json:"parameters"`
-	}
-	endpoint := fmt.Sprintf("repos/%s/rules/branches/%s", repo, base)
-	if err := restGet(endpoint, &rules); err != nil {
+	}](items, "branch rules")
+	if err != nil {
 		return reviewRules{}, err
-	}
-	if rules == nil {
-		return reviewRules{}, fmt.Errorf("decode %s: the rule list is null, not an array", endpoint)
 	}
 	var out reviewRules
 	for _, rule := range rules {
