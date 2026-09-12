@@ -33,7 +33,8 @@ fi
 # A template, not a bare `mktemp`: BSD `mktemp` requires one, and this script
 # stands under every guard, so failing here would deny every tool at once.
 build_paths="$(mktemp "${TMPDIR:-/tmp}/flowstate-hook-source-id.XXXXXX")"
-trap 'rm -f "${build_paths}"' EXIT
+walk_output="$(mktemp "${TMPDIR:-/tmp}/flowstate-hook-source-walk.XXXXXX")"
+trap 'rm -f "${build_paths}" "${walk_output}"' EXIT
 
 # go.mod and go.sum select the toolchain and the module versions, so a change to
 # either compiles different code from the same package sources.
@@ -60,6 +61,18 @@ for directory in "${directories[@]}"; do
 	# source would need both files widened, since `go list` reports those
 	# kinds separately and neither this walk nor that query names them
 	# (#1967). Symbolic links count, because the compiler follows them.
+	# Into a file, not a process substitution: a `find` that fails there is
+	# invisible to `set -e`, the loop reads nothing, and this returns a hash of
+	# the manifests alone. That hash is stable, so it keeps matching while the
+	# sources change underneath it -- a silently narrowed identity is how a
+	# stale guard goes on being trusted, which is the failure this file exists
+	# to prevent.
+	if ! find "${package_dir}" -maxdepth 1 \( -type f -o -type l \) \
+		\( -name '*.go' -o -name '*.s' -o -name '*.c' -o -name '*.h' -o -name '*.syso' \) \
+		! -name '*_test.go' -print0 > "${walk_output}"; then
+		printf 'could not enumerate the Flowstate Claude hook sources in %q.\n' "${directory}" >&2
+		exit 2
+	fi
 	while IFS= read -r -d '' path; do
 		relative="${path#"${project_dir}/"}"
 		if [[ "${relative}" == *$'\n'* ]]; then
@@ -67,9 +80,7 @@ for directory in "${directories[@]}"; do
 			exit 2
 		fi
 		printf '%s\n' "${relative}" >> "${build_paths}"
-	done < <(find "${package_dir}" -maxdepth 1 \( -type f -o -type l \) \
-		\( -name '*.go' -o -name '*.s' -o -name '*.c' -o -name '*.h' -o -name '*.syso' \) \
-		! -name '*_test.go' -print0)
+	done < "${walk_output}"
 done
 # Inputs the compiler names rather than the directory walk finds: embedded
 # files, assembly, cgo sources. `build-hooks.sh` records them beside the

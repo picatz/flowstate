@@ -1240,6 +1240,39 @@ func TestClaudeHookBuildRunsOnAnOrdinaryCheckout(t *testing.T) {
 		}
 	})
 
+	t.Run("a walk that cannot enumerate a package", func(t *testing.T) {
+		// The walk ran in a process substitution, where a failure is invisible
+		// to `set -e`: the loop read nothing and the identity came back as a
+		// hash of the manifests alone. That hash is stable, so it went on
+		// matching while the sources changed underneath it, and a stale guard
+		// went on being trusted -- the one failure this identity exists to
+		// prevent. Any reason `find` can fail reaches it, so the assertion is
+		// that the identity refuses rather than narrows.
+		project := t.TempDir()
+		writeHookFixture(t, root, project)
+		if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+			t.Fatalf("seed build: %v\n%s", err, output)
+		}
+		bin := filepath.Join(project, "double")
+		if err := os.Mkdir(bin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, "find"),
+			[]byte("#!/bin/sh\nprintf 'find: unknown primary\\n' >&2\nexit 1\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		manifest := filepath.Join(project, ".claude", "hooks", ".bin", ".source-dirs")
+		cmd := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "source-id.sh"), manifest)
+		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project, "PATH="+bin+":"+os.Getenv("PATH"))
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("a walk that enumerated nothing still produced an identity:\n%s", output)
+		}
+		if !strings.Contains(string(output), "could not enumerate") {
+			t.Fatalf("the identity did not say the walk failed:\n%s", output)
+		}
+	})
+
 	t.Run("a mktemp that requires a template", func(t *testing.T) {
 		// BSD `mktemp` -- macOS -- is a usage error without one, where GNU
 		// coreutils defaults. source-id.sh stands under every guard, so the
@@ -1299,6 +1332,15 @@ func TestClaudeHookBuildRunsOnAnOrdinaryCheckout(t *testing.T) {
 			t.Fatalf("the session was left without a pinned toolchain: %q", pin)
 		}
 	})
+}
+
+// runBuild compiles a fixture's guard hooks the way SessionStart does.
+func runBuild(t *testing.T, project, path string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "build-hooks.sh"))
+	cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project, "PATH="+path)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 // writeHookFixture lays down a module the real toolchain can build the four
