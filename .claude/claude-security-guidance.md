@@ -36,9 +36,13 @@ resolution rather than once per run.
 Nondeterministic, I/O-bound, or version-sensitive work belongs in an activity.
 In workflow-side code the wall clock, random sources, environment reads, network
 calls, and map iteration order are defects: a replay that diverges corrupts a run
-that already committed. The engine threads a deterministic clock; `time.Now` is
-the wrong one. A change to workflow-side logic that alters the sequence of
-recorded commands needs a version gate rather than a silent edit.
+that already committed. The drivers read time from different places: the durable
+driver from Temporal's `workflow.Now`, the local driver from an injected `Clock`
+whose production implementation is `time.Now`. So a bare `time.Now` in
+workflow-side code is the defect, and so is a `Clock` read there, because it
+resolves to the real clock — the type is not part of the durable path at all. A
+change to workflow-side logic that alters the sequence of recorded commands needs
+a version gate rather than a silent edit.
 
 ## Bound work where it is spent
 

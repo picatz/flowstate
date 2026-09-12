@@ -53,10 +53,14 @@ to its hook code without a reviewed Flowstate change, unlike the SHA-pinned
 actions in `.github/workflows/`. What the pin does buy is that the plugin names
 resolve only from the Anthropic-owned repository, which `tools/agentconfig`
 asserts, so a later settings edit cannot keep these names and serve them from a
-fork. The residual risk is accepted deliberately, bounded by the plugins being
-advisory — no layer blocks a write, a commit, or a merge — and revocable through
-the per-layer environment switches that
-[security guidance](https://code.claude.com/docs/en/security-guidance) documents.
+fork. The residual risk is accepted deliberately. No layer of either plugin
+blocks a write, a commit, or a merge today, but that is upstream behavior rather
+than something this repository enforces — a plugin-contributed hook could block,
+and the repository's own blocking controls are the hooks in
+`.claude/settings.json`. What is durable is the revocation: the per-layer
+environment switches that
+[security guidance](https://code.claude.com/docs/en/security-guidance) documents,
+and removing the `enabledPlugins` entry.
 
 ## One contract, native controls
 
