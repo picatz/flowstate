@@ -146,7 +146,34 @@ func bareKeyContinue(b byte) bool {
 // yamlStringScalar decodes one complete scalar through the same AST value the
 // Flowfile loader reads for mapping keys. The bool distinguishes legal `""`
 // from a parse failure.
+//
+// A quoted scalar with nothing in it to decode is answered without starting a
+// parser. Both quoting styles have exactly one escape — `\` inside double
+// quotes, `”` inside single ones — so a key containing neither is its own
+// contents, and that is the answer the parser would return after building a
+// document, a body node and a token stream to reach it.
+//
+// The fast path is here rather than in the caller because the equivalence is a
+// fact about YAML's quoting rather than about outlines, and because the cost is
+// paid per *key*: the whole-document scans this feeds call it once per line, so
+// a file of short quoted keys — which a megabyte holds a couple of hundred
+// thousand of — started that many parsers for one completion or one document
+// symbol request (#1119). Anything with an escape in it still goes to the
+// decoder, so the semantics are the decoder's either way.
 func yamlStringScalar(src string) (string, bool) {
+	if len(src) >= 2 {
+		switch src[0] {
+		case '"':
+			if src[len(src)-1] == '"' && !strings.Contains(src, `\`) {
+				return src[1 : len(src)-1], true
+			}
+		case '\'':
+			if src[len(src)-1] == '\'' && !strings.Contains(src[1:len(src)-1], `''`) {
+				return src[1 : len(src)-1], true
+			}
+		}
+	}
+
 	f, err := parser.ParseBytes([]byte(src), 0)
 	if err != nil || len(f.Docs) != 1 || f.Docs[0].Body == nil {
 		return "", false
