@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -362,6 +363,11 @@ func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// "Latest per reviewer" needs submission order; sort rather than trust
+	// the list's order, which GitHub documents but this tool need not rely on.
+	slices.SortStableFunc(raw, func(a, b restReview) int {
+		return strings.Compare(a.SubmittedAt, b.SubmittedAt)
+	})
 	latest := map[string]string{}
 	for _, r := range raw {
 		switch r.State {

@@ -142,9 +142,11 @@ func TestRESTFallbackStillReportsWhatBlocks(t *testing.T) {
 	dir := installFakeGH(t, fakeGH)
 	restFixtures(t, dir)
 	writeFixture(t, dir, "threads.json", `[{"resolved":false,"path":"AGENTS.md","line":3,"comment_ids":[1]}]`)
+	// Listed newest first on purpose: the later request for changes must
+	// win by submission time, not by position.
 	writeFixture(t, dir, "reviews.json", `[
-		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"},
-		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"CHANGES_REQUESTED","submitted_at":"2026-09-12T00:00:06Z"}]`)
+		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"CHANGES_REQUESTED","submitted_at":"2026-09-12T00:00:06Z"},
+		{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`)
 
 	pr, err := loadPullRequest("picatz/flowstate", 7)
 	if err != nil {

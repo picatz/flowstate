@@ -105,8 +105,9 @@ for after a model upgrade was this one.
   the words the model acts on (`make fmt`, kill by PID), and the skills that
   carried example prose now state what an artifact must contain.
 - **Rich references and verifier agents.** The review rubrics are preloaded
-  into `flowstate-reviewer`, a read-only subagent whose fresh context is the
-  provider-neutral independent review the ship procedure requires;
+  into `flowstate-reviewer`, a subagent with no editing tool whose fresh
+  context is the provider-neutral independent review the ship procedure
+  requires;
   `flowstate-verifier` runs the bounded legs and returns evidence instead of
   logs, so a long session's context is not spent on test output.
 - **Auto memory over guidance files.** A learning from one session goes to the
