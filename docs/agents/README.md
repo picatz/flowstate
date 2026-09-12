@@ -13,9 +13,11 @@ software rather than prose for checks that can be deterministic.
 | `CLAUDE.md` | Thin Claude Code adapter | Always loaded by Claude Code |
 | `.agents/skills/*/SKILL.md` | Portable task workflows for Amp and Codex | Name and description are advertised; the body loads when selected |
 | `.claude/skills/*/SKILL.md` | Claude Code mirrors of the portable skills | The body loads when selected |
-| `.claude/settings.json` | Claude-specific hooks, and the allow list that stops the repository's own verification commands from prompting | Enforced by Claude Code |
+| `.claude/settings.json` | Claude-specific hooks, the allow list that stops the repository's own verification commands from prompting, and the two official security plugins the repository enables for every clone and cloud session, pinned to the Anthropic-owned marketplace they resolve from | Enforced by Claude Code |
 | `.claude/agents/*.md` | Fresh-context subagents carrying the review, verification, and review-hygiene rubrics (`flowstate-reviewer`, `flowstate-verifier`, `flowstate-pr-tidy`) | Claude Code delegates on the description; the body and preloaded skills load in the subagent's own context |
 | `.claude/rules/*.md` | Path-scoped procedures, currently only the agent-configuration maintenance rule | Loaded when Claude Code reads or edits a file matching the rule's `paths` |
+| `REVIEW.md` | The `comms-review` rubric in the one form Anthropic's hosted Code Review can read: what Important means here, the nit cap, the generated surfaces to skip, and the disposition rule that keeps a re-review from relitigating | Read by Code Review on a pull request |
+| `.claude/claude-security-guidance.md` | Flowstate's trust boundaries and the four invariants a security reviewer most often gets wrong here, for the `security-guidance` plugin's model-backed reviews | Loaded by the plugin's model-backed reviews |
 | `.amp/settings.json` | Amp workspace skill selection; no repository-specific permission prompts | Applied by Amp in this repository |
 | `.agents/ship.md` | Versioned Amp Custom Ship procedure | Copied into the Amp project setting; it is not read automatically after edits |
 | `.agents/setup` / `.agents/resume` | Amp Orb provisioning and wake behavior | Run by the Orb lifecycle |
@@ -37,6 +39,28 @@ This follows each host's current discovery contract:
   Anthropic recommends keeping always-loaded instructions concise and moving
   procedures to skills. See [Claude memory](https://code.claude.com/docs/en/memory)
   and [Claude skills](https://code.claude.com/docs/en/skills).
+- Anthropic's managed Code Review reads `CLAUDE.md` and a root `REVIEW.md` on a
+  pull request and loads no skill, so `REVIEW.md` is the only place the
+  `comms-review` rubric reaches it. The `security-guidance` plugin reads
+  `.claude/claude-security-guidance.md` on each model-backed review. See
+  [Code Review](https://code.claude.com/docs/en/code-review) and
+  [security guidance](https://code.claude.com/docs/en/security-guidance).
+
+An enabled plugin is the one dependency here that runs code without a pinned
+revision. A marketplace source takes `ref`, a branch or tag, and not `sha`, so
+there is no immutable pin to express: enabling a plugin accepts upstream changes
+to its hook code without a reviewed Flowstate change, unlike the SHA-pinned
+actions in `.github/workflows/`. What the pin does buy is that the plugin names
+resolve only from the Anthropic-owned repository, which `tools/agentconfig`
+asserts, so a later settings edit cannot keep these names and serve them from a
+fork. The residual risk is accepted deliberately. No layer of either plugin
+blocks a write, a commit, or a merge today, but that is upstream behavior rather
+than something this repository enforces — a plugin-contributed hook could block,
+and the repository's own blocking controls are the hooks in
+`.claude/settings.json`. What is durable is the revocation: the per-layer
+environment switches that
+[security guidance](https://code.claude.com/docs/en/security-guidance) documents,
+and removing the `enabledPlugins` entry.
 
 ## One contract, native controls
 

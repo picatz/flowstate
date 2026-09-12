@@ -548,7 +548,12 @@ func isAgentConfigData(f string) bool {
 	// The pull request template is part of the same contract: its headings
 	// are the comms-pr skill's sections, and tools/agentconfig holds the two
 	// together, so a diff to either has to reach that package (#1728).
+	// REVIEW.md is in for the same reason one step further out: it carries the
+	// comms-review rubric to Anthropic's hosted reviewer, which reads CLAUDE.md
+	// and that file and loads no skill, and tools/agentconfig is what bounds it
+	// and pins the rules it must keep saying.
 	return f == ".github/PULL_REQUEST_TEMPLATE.md" ||
+		f == "REVIEW.md" ||
 		strings.HasPrefix(f, ".agents/") ||
 		strings.HasPrefix(f, ".claude/") ||
 		strings.HasPrefix(f, ".amp/") ||
