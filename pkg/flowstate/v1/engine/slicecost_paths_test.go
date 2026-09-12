@@ -62,6 +62,25 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 				}},
 			}
 		},
+		"a call's arguments": func(id string) *v1.Node {
+			return &v1.Node{
+				Id: id,
+				Kind: &v1.Node_Call{Call: &v1.Call{
+					Arguments: map[string]*v1.Value{"size": v1.NewExpr(heavySliceExpr)},
+					// A callee of one literal `value:` step, which is a call
+					// whose whole body writes no history and costs nothing:
+					// the arguments are then the only work the step does.
+					Workflow: &v1.Workflow{
+						Name:    "callee",
+						Profile: v1.CurrentProfile,
+						DeclaredInputs: []*v1.InputDeclaration{
+							{Name: "size", Type: v1.InputDeclaration_TYPE_INT, Required: true},
+						},
+						Steps: []*v1.Node{{Id: "inner", Kind: &v1.Node_Value{Value: v1.NewLiteral(int64(1))}}},
+					},
+				}},
+			}
+		},
 		"a for_each's items": func(id string) *v1.Node {
 			return &v1.Node{
 				Id: id,

@@ -576,8 +576,8 @@ func (e *executor) yieldWorkflow() {
 
 // chargeWorkflowCost records deterministic workflow-side CEL work: a `value:`
 // step's expression, a step's or a loop's condition, a step's `vars:`, a
-// `switch:`'s subject, a `for_each`'s `items:`, and a loop's `initial:` and
-// `update:`.
+// `switch:`'s subject, a `for_each`'s `items:`, a `call:`'s arguments, and a
+// loop's `initial:` and `update:`.
 //
 // The list is every expression a loop can repeat without scheduling anything —
 // which is the whole point of the budget. A path that evaluates CEL in workflow
@@ -760,7 +760,8 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 
 	callee := call.GetWorkflow()
 
-	arguments, err := v1.ResolveCallArguments(evalContext(), call.GetArguments(), e.scope)
+	arguments, cost, err := v1.ResolveCallArgumentsWithCost(evalContext(), call.GetArguments(), e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}

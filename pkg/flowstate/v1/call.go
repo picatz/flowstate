@@ -51,10 +51,26 @@ const MaxCallDepth = 8
 // literal — the same shape [ResolveTaskInputs] hands a task, for the same
 // reason.
 func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scope *Scope) (map[string]*Value, error) {
+	resolved, _, err := ResolveCallArgumentsWithCost(ctx, arguments, scope)
+
+	return resolved, err
+}
+
+// ResolveCallArgumentsWithCost is [ResolveCallArguments] plus the deterministic
+// CEL cost of every expression under `with:`. Literal arguments cost zero.
+//
+// A call's arguments are resolved in workflow code, and a call is the one step
+// whose body may write no history at all — a callee of `value:` steps schedules
+// nothing — so a loop over a call repeats them with nothing to bound it.
+// [ResolveTaskInputs] needs no equivalent: resolving a task's inputs is
+// immediately followed by the activity that consumes them, which is both a
+// history event and a yield.
+func ResolveCallArgumentsWithCost(ctx context.Context, arguments map[string]*Value, scope *Scope) (map[string]*Value, uint64, error) {
 	if len(arguments) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
+	var spent uint64
 	resolved := make(map[string]*Value, len(arguments))
 	ev := DefaultEvaluator()
 	// Sorted because the first failure is observable and may enter durable
@@ -67,18 +83,19 @@ func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scop
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
+		spent += cost
 		if err != nil {
-			return nil, fmt.Errorf("argument %q: %w", name, err)
+			return nil, spent, fmt.Errorf("argument %q: %w", name, err)
 		}
 		literal, err := cel.RefValueToValue(out)
 		if err != nil {
-			return nil, fmt.Errorf("argument %q: converting result: %w", name, err)
+			return nil, spent, fmt.Errorf("argument %q: converting result: %w", name, err)
 		}
 		resolved[name] = &Value{Kind: &Value_Literal{Literal: literal}}
 	}
 
-	return resolved, nil
+	return resolved, spent, nil
 }
 
 // CalleeProfile returns the profile a callee's own expressions are evaluated
