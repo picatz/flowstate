@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -198,23 +199,35 @@ func TestLocalSignalWithNoWaiterIsAnError(t *testing.T) {
 func TestLocalSignalCancellationIsNotATimeout(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := v1.Run(ctx, gatedLocalWorkflow(time.Hour))
-		done <- err
-	}()
+		done := make(chan error, 1)
+		go func() {
+			_, err := v1.Run(ctx, gatedLocalWorkflow(time.Hour))
+			done <- err
+		}()
 
-	time.Sleep(100 * time.Millisecond)
-	cancel()
+		// Wait returns once the run is durably blocked, which for this
+		// workflow is the gate: the state a cancellation has to be told
+		// apart from a lapsed timeout. The 100ms sleep this replaces was a
+		// guess at how long reaching the gate takes, so it was both slower
+		// than the test needed and wrong on a runner slower than the guess.
+		synctest.Wait()
+		cancel()
 
-	select {
-	case err := <-done:
-		require.Error(t, err, "a cancelled run reported success")
-		require.True(t, errors.Is(err, context.Canceled),
-			"a cancelled run was not reported as cancelled: %v", err)
-	case <-time.After(15 * time.Second):
-		t.Fatal("a cancelled run did not stop")
-	}
+		select {
+		case err := <-done:
+			require.Error(t, err, "a cancelled run reported success")
+			require.True(t, errors.Is(err, context.Canceled),
+				"a cancelled run was not reported as cancelled: %v", err)
+		case <-time.After(15 * time.Second):
+			// Bubble time, so this costs nothing and still reports a run
+			// that ignored the cancellation as a failure rather than as a
+			// deadlocked bubble. It is reached only if the run stays blocked,
+			// since the clock advances just when nothing else can run — and
+			// it is sooner than the hour the gate itself would wait.
+			t.Fatal("a cancelled run did not stop")
+		}
+	})
 }

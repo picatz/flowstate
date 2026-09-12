@@ -26,14 +26,26 @@ import (
 //   - engine/deadlock_budget_test.go — a workflow task deliberately running
 //     past the deadlock budget on a real Temporal worker; workflow_slice_test.go
 //     is the child process that deliberately outlives its replay deadline.
-//   - flowdebug, netpolicy, secrets, wait_local — a wall-clock bound the test
-//     is measuring (a cache TTL, a span's duration, a command's runtime, a
-//     wait's deadline); candidates for a bubble once the code under test
-//     takes its clock from the bubble.
+//   - netpolicy, secrets/vault — a sleep inside an httptest handler, reached
+//     over a real loopback socket.
 //   - plugin — the fake plugin subprocesses in helper_test.go sleep in the
 //     *plugin* to stay alive for the host, and host_test.go and
 //     launch_test.go wait on those processes.
+//   - secrets/command_test.go — the hang a helper subprocess performs on
+//     request, in that process rather than this one.
 //   - server — the run's completion on a real dev server.
+//
+// Every remaining entry therefore waits on something outside any bubble — a
+// process, or a socket. That is the whole of the list now: the category this
+// doc used to carry beside them, of tests merely measuring a wall-clock bound
+// they could take from a bubble instead, is empty. A cache TTL, a wait's
+// deadline and a parked reader were the three, and each turned out to be
+// making a *weaker* claim for spending real time — a stampede hoped for
+// rather than guaranteed, a gate assumed reached after 100ms, a goroutine
+// census with slack — so each became an assertion the bubble makes exactly.
+// A new entry here is very likely a test that wants [synctest.Test] and not
+// an exemption: prefer the bubble unless a process or a socket is genuinely
+// on the other side of the wait.
 var wallClockSleeps = map[string]int{
 	"cmd/flow/browser_test.go":                        1,
 	"cmd/flow/serverdev_test.go":                      1,
@@ -42,17 +54,14 @@ var wallClockSleeps = map[string]int{
 	"internal/temporaltest/supervisor_linux_test.go":  1,
 	"pkg/flowstate/v1/engine/deadlock_budget_test.go": 1,
 	"pkg/flowstate/v1/engine/workflow_slice_test.go":  1,
-	"pkg/flowstate/v1/flowdebug/session_test.go":      1,
 	"pkg/flowstate/v1/netpolicy/tracing_test.go":      1,
 	"pkg/flowstate/v1/plugin/helper_test.go":          12,
 	"pkg/flowstate/v1/plugin/host_test.go":            3,
 	"pkg/flowstate/v1/plugin/launch_test.go":          2,
 	"pkg/flowstate/v1/plugin/sdk/serve_test.go":       1,
-	"pkg/flowstate/v1/secrets/cache_test.go":          1,
 	"pkg/flowstate/v1/secrets/command_test.go":        1,
 	"pkg/flowstate/v1/secrets/vault/fake_test.go":     1,
 	"pkg/flowstate/v1/server/server_test.go":          1,
-	"pkg/flowstate/v1/wait_local_test.go":             1,
 }
 
 // TestTheRepositoryWallClockSleepsOnlyGoDown holds the count in both
