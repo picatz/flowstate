@@ -186,6 +186,28 @@ func TestEvaluateCountsEveryRequestWhenTheHeadDateWillNotParse(t *testing.T) {
 	}
 }
 
+// The floor is the earliest instant GitHub stamped for the head, across both
+// spellings: a check run carries a start where a status context carries a
+// creation time. Taking the latest instead, or reading only one spelling,
+// raises the floor and hides requests made before it, which is the direction
+// this window exists to close. The fixture therefore spreads its stamps, so
+// that only the earliest-across-both rule counts the request between them.
+func TestEvaluateClampsToTheEarliestStampAcrossBothSpellings(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T12:20:00Z", "2026-09-10T12:45:00Z")
+	pr.HeadCommittedAt = "2026-09-10T12:50:00Z"
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "late", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-10T12:40:00Z"},
+		{Type: "StatusContext", Context: "early", State: "SUCCESS", CreatedAt: "2026-09-10T12:05:00Z"},
+	}
+	pr.StatusChecks = append(pr.StatusChecks, passingRequiredChecks()...)
+	stampChecks(&pr, "2026-09-10T12:40:00Z")
+	pr.StatusChecks[1].StartedAt = ""
+	pr.StatusChecks[1].CreatedAt = "2026-09-10T12:05:00Z"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("the floor was taken from something later than the earliest stamp: %s", problems)
+	}
+}
+
 // stampChecks gives every check on the fixture a GitHub-stamped start, which
 // is what the window clamps the committer-written head date against.
 func stampChecks(pr *pullRequest, at string) {
