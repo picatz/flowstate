@@ -26,7 +26,13 @@ import (
 // where no cost is charged at all.
 //
 // So the split between the two charge entry points is the guard, and these
-// tests are about that split rather than about any one expression's price.
+// tests are about that split rather than about any one expression's price —
+// which is deliberate, and is also the limit of what they prove. A version is a
+// set of reasons to emit a continuation; the estimator that prices an expression
+// is built once per program and read by every version alike, so re-pricing one
+// reaches a replaying version 1 history too. See [workflowSliceCostChange] for
+// why that half cannot be gated and is stated as a deploy-window exposure
+// instead.
 
 // TestVersionOneChargesAValueStepAndNothingElse pins the accumulator's two
 // entry points against the versions they belong to.

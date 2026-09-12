@@ -482,3 +482,79 @@ func failureReportedByTwoFailingAsyncSteps(t *testing.T, ask, reader bool) strin
 		return ""
 	}
 }
+
+// TestADebugHeldFailureSurvivesAContinuationFromInsideACall is the fourth
+// continuation exit, and the only one whose plumbing differs.
+//
+// The other three ask [executor.shouldSuspend] on the same executor whose
+// runNodes registered the scope's answer. A `call:` builds a *new* executor for
+// the callee, and a call leaves the suspend depth unchanged — so the callee's
+// own scope is a representable level too, registers its own answer, and can emit
+// a continuation of its own. The caller's answer reaches it only because the
+// field is copied into that literal and composed with the callee's.
+//
+// Drop that one line and no other test notices: the shared closure covers the
+// other three exits, and every existing case reaches one of them. So this one
+// puts the loop inside a called workflow.
+func TestADebugHeldFailureSurvivesAContinuationFromInsideACall(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
+	}, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow: &v1.Workflow{
+			Name:    "async-failure-across-a-call's-continuation",
+			Profile: v1.CurrentProfile,
+			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
+				{Claims: map[string]string{"role": "sre"}},
+			}},
+			Steps: []*v1.Node{
+				{
+					Id:     "failing",
+					Async:  true,
+					Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}},
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url":    v1.NewLiteral("http://127.0.0.1:1/"),
+							"method": v1.NewLiteral("GET"),
+						},
+					}},
+				},
+				// Long enough for the ask to arrive while `failing` is
+				// outstanding, so the join happens at the next step's boundary.
+				{Id: "slow", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Minute)},
+				}}},
+				// The last node of the caller's scope, so the caller's own
+				// boundary declines and the callee's is the only exit left.
+				{
+					Id: "delegate",
+					Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{
+						Name:    "callee",
+						Profile: v1.CurrentProfile,
+						Steps: []*v1.Node{
+							{Id: "one", Kind: &v1.Node_Value{Value: v1.NewLiteral("one")}},
+							{Id: "two", Kind: &v1.Node_Value{Value: v1.NewLiteral("two")}},
+							{Id: "three", Kind: &v1.Node_Value{Value: v1.NewLiteral("three")}},
+						},
+					}}},
+				},
+			},
+		},
+		// Spent on `slow` and the callee's first step, so the callee's own
+		// next-step boundary is asked with siblings still to come.
+		StepsBudget: 2,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err,
+		"a continuation from inside a called workflow let a held async failure vanish: the run completed")
+	require.Contains(t, err.Error(), "failing",
+		"the run failed, but not for the held async step this test is about")
+}

@@ -69,6 +69,18 @@ var errContinueAsNew = errors.New("engine: continue as new")
 // The name keeps its `-v1` suffix: it is the marker's identity in recorded
 // history, and renaming it would make every open execution take the default
 // path.
+//
+// What it does not cover, and cannot: the *price* the estimator puts on an
+// expression. A version is a set of reasons to emit a continuation, and every
+// version reads one cost model — CEL's estimator is built once per program
+// (`celenv.go`), not per execution, and giving a replay its own would be the
+// second evaluator invariant 2 refuses. So a change to what an expression costs
+// reaches a replaying version 1 history the same way it reaches a fresh one, and
+// a build that re-prices an expression can cross this budget at a different node
+// than the history recorded, or refuse at [v1.DefaultCostLimit] something the
+// history admitted. docs/ARCHITECTURE.md names that class — an evolving
+// evaluator inside the replay path — and it is a deploy-window exposure to be
+// stated and bounded, not something a marker can gate.
 const workflowSliceCostChange = "workflow-slice-cost-v1"
 
 // executor carries the state of one workflow execution.
@@ -657,6 +669,9 @@ func (e *executor) chargeValueCost(cost uint64) {
 // recorded at version 1 recorded segments that charged only `value:` steps, and
 // a replay charging more could cross the threshold — and emit a
 // Continue-As-New — at a boundary where the recorded history holds an activity.
+//
+// The split covers which expressions are charged, not what any one of them
+// costs; see [workflowSliceCostChange] for the half no version can gate.
 func (e *executor) chargeWorkflowCost(cost uint64) {
 	if !e.everyExpressionCharged {
 		return

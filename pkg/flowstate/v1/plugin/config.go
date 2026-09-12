@@ -540,8 +540,6 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// setDuration replaces a zero duration with a default. A negative value is left
-// alone, since some fields give it a meaning of its own.
 // maxCallTimeout is [Config.MaxCallTimeout] with zero read as
 // [DefaultMaxCallTimeout], the same rule [setDuration] applies when a Config is
 // normalized.
@@ -555,6 +553,8 @@ func (c Config) maxCallTimeout() time.Duration {
 	return cmp.Or(c.MaxCallTimeout, DefaultMaxCallTimeout)
 }
 
+// setDuration replaces a zero duration with a default. A negative value is left
+// alone, since some fields give it a meaning of its own.
 func setDuration(field *time.Duration, def time.Duration) {
 	if *field == 0 {
 		*field = def
