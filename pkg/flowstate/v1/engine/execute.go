@@ -107,6 +107,22 @@ type executor struct {
 	// of recorded work rather than wall time or loop trip count.
 	sliceCost *uint64
 
+	// stranded reports whether a scope at the run's own representable level is
+	// holding work a continuation would leave behind: an `async:` step it
+	// started and has not joined, or a failure it heard early on a debugger's
+	// behalf and has not raised. Registered by [executor.runNodes] at
+	// `susp == 0`, composed with whatever an enclosing registration answered,
+	// and read by [executor.shouldSuspend].
+	//
+	// It exists because that state is a local of one runNodes frame, and the
+	// boundaries that can strand it are not all inside that frame: a
+	// `for_each`'s iteration boundary, a `loop:`'s, and a called workflow's own
+	// next-step boundary each emit a continuation of their own while the scope
+	// holding the work sits above them on the stack. Answering at
+	// [executor.shouldSuspend] is what gives every one of them the same answer
+	// the scope gives itself.
+	stranded func() bool
+
 	// callDepth counts calls nested so far, zero at the top-level workflow. It
 	// is unaffected by descending into a loop body or a parallel branch — only
 	// a call advances it — and bounds recursion via [v1.CheckCallDepth] for a
@@ -269,10 +285,24 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 	// written order, since a scope starts a step where it is written.
 	var started []*asyncStep
 
-	// deferred holds a failure an early join heard on a debugger's behalf,
-	// raised at the scope-end join below rather than where it was heard. See
-	// the debug-ask branch in the walk.
-	var deferred error
+	// held are failures an early join heard on a debugger's behalf. They are
+	// raised where the join that owed them would have raised them — at a later
+	// node's reference, or at the scope-end join — rather than where they were
+	// heard. See the debug-ask branch in the walk.
+	var held []heldFailure
+
+	// Published for every suspension decision taken while this scope is on the
+	// stack, including the ones taken beneath it — see [executor.stranded].
+	// Only at the run's own representable level, because that is the only depth
+	// a continuation can be emitted from at all, and composed with the
+	// enclosing answer so a called workflow's scope speaks for its caller's too.
+	if susp == 0 {
+		outer := e.stranded
+		e.stranded = func() bool {
+			return len(started) > 0 || len(held) > 0 || (outer != nil && outer())
+		}
+		defer func() { e.stranded = outer }()
+	}
 
 	// A scope's end joins everything it started, and *every* way out of the loop
 	// below is an end: the successful one, the failing one, and the
@@ -314,7 +344,14 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// it and may then still skip the step. That is the honest outcome — the
 		// data decided the skip — and the local driver joins at the identical
 		// point.
-		for _, id := range v1.AsyncJoinTargets(node, asyncIDs(started), e.scope.GetOutputs()) {
+		// Held failures are offered alongside the outstanding steps, so a node
+		// that mentions one is answered by it: joining early on a debugger's
+		// behalf must not make a failed step unaddressable, or the reference
+		// that would have waited for it finds nothing and the node runs.
+		for _, id := range v1.AsyncJoinTargets(node, append(asyncIDs(started), heldIDs(held)...), e.scope.GetOutputs()) {
+			if err, ok := takeHeld(held, id); ok {
+				return err
+			}
 			joined, remaining := takeAsync(started, id)
 			started = remaining
 			if err := e.joinAsync(joined); err != nil {
@@ -381,8 +418,9 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			// noticing, so nothing else would end the segment either.
 			//
 			// The same conditions as the check after a step that ran: only at
-			// the run's own representable level, never on the last node, and
-			// never with async work this scope started still outstanding.
+			// the run's own representable level and never on the last node,
+			// with async work this scope started and failures it is holding
+			// refused by [executor.shouldSuspend] for both.
 			// Behind the same version gate as every other continuation this
 			// change added, and for the reason stated at
 			// [workflowSliceCostChange]: a continuation is a history command,
@@ -392,13 +430,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			// boundary they exist to reach, since two of [executor.shouldSuspend]'s
 			// arms answer regardless of the budget.
 			//
-			// And never while a failure is waiting to be raised: suspending
-			// here would carry the position forward and leave the failure
-			// behind in a segment that has ended, so a run that must fail
-			// would resume and complete. The remaining nodes are capped, so
-			// declining to suspend for the rest of this scope is bounded.
-			if e.sliceCost != nil && deferred == nil &&
-				susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
+			if e.sliceCost != nil && susp == 0 && i < len(nodes)-1 && e.shouldSuspend() {
 				e.setFrame(depth, i+1)
 
 				return errContinueAsNew
@@ -443,9 +475,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// already run, so a *tolerated* failure is recorded
 						// exactly as it would have been; what waits is only the
 						// propagation this scope owes its caller.
-						if deferred == nil {
-							deferred = err
-						}
+						held = append(held, heldFailure{id: joined.node.GetId(), err: err})
 					}
 				}
 			}
@@ -483,16 +513,11 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 
 		// Suspending is only possible where the position is representable, and
 		// only between steps that a call cannot make opaque. A deeper suspend
-		// level (a for_each body, a parallel branch) completes first — and so
-		// does async work this scope started: a segment that continued as new
-		// with a coroutine still running would hand the next segment a scope
-		// whose outstanding work exists in neither of them. The scope-end join
-		// below is a few steps away at most, since the list is capped.
-		// deferred, for the reason the skipped-step boundary above states: a
-		// segment that suspended past a held failure would leave it in a
-		// segment that has ended, and the run would resume and complete.
-		if deferred == nil &&
-			susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
+		// level (a for_each body, a parallel branch) completes first. Async work
+		// this scope started, and a failure it is holding, are refused by
+		// [executor.shouldSuspend] rather than here, because the boundaries
+		// nested inside a step of this scope have to refuse them too.
+		if susp == 0 && i < len(nodes)-1 && e.shouldSuspend() {
 			e.setFrame(depth, i+1)
 
 			return errContinueAsNew
@@ -509,11 +534,11 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 	}
 
-	// And the failure a debug ask made this scope hear early, raised where the
-	// join above would have raised it. Nothing outlives this scope: a deferred
-	// failure is the propagation the loop above would have returned.
-	if deferred != nil {
-		return deferred
+	// And a failure a debug ask made this scope hear early that no later node
+	// referenced, raised where the join above would have raised it. In written
+	// order, which is the order the join above raises them in.
+	if len(held) > 0 {
+		return held[0].err
 	}
 
 	e.truncateFrames(depth)
@@ -825,6 +850,12 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		processed: e.processed,
 		sliceCost: e.sliceCost,
 		frames:    e.frames,
+
+		// A call leaves the suspend depth unchanged, so the callee's own scope
+		// is a representable level too and its boundaries can continue as new.
+		// Inherited so one of them cannot strand work the caller's scope is
+		// still holding.
+		stranded: e.stranded,
 
 		// Shared by pointer with the caller, for the same reasons the top-level
 		// executor shares them with every nested one: a signal or a compensation
@@ -2055,7 +2086,17 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 }
 
 // shouldSuspend reports whether the run should be continued as new.
+//
+// Asked closed first: a continuation emitted while a scope on the stack holds
+// unjoined async work or a failure heard early leaves that work in a segment
+// that has ended, and the next segment resumes past it — so a run that must
+// fail completes, and an async step's outputs exist in neither segment. The
+// scope clears within a few nodes at most, since a step list is capped, so
+// declining here defers a continuation rather than forgoing it.
 func (e *executor) shouldSuspend() bool {
+	if e.stranded != nil && e.stranded() {
+		return false
+	}
 	if e.processed >= e.budget {
 		return true
 	}

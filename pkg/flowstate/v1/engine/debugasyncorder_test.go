@@ -198,3 +198,167 @@ func TestADebugJoinedFailureSurvivesAContinuation(t *testing.T) {
 	// error that would satisfy the assertion above without being this defect.
 	require.Contains(t, err.Error(), "failing")
 }
+
+// TestADebugHeldFailureIsRaisedAtTheReferenceThatWouldHaveJoinedIt is the third
+// way a held failure can change what a run computes, and the subtlest.
+//
+// Joining early removes the step from the outstanding set, and that set is what
+// decides which steps a node's references wait for. A node mentioning the
+// failed step therefore found nothing to join and ran — reading the failure
+// outputs the early join had already recorded — where an undebugged run would
+// have raised the failure before reaching it.
+//
+// So the held failure stays addressable under its own id, and a reference to it
+// raises it exactly where the join would have. Asserted by comparing the two
+// runs, as above: the debugger changes nothing.
+func TestADebugHeldFailureIsRaisedAtTheReferenceThatWouldHaveJoinedIt(t *testing.T) {
+	t.Parallel()
+
+	// `reader` mentions the failed step, so an undebugged run joins it there
+	// and never reaches `after`.
+	workflow := func() *v1.Workflow {
+		return &v1.Workflow{
+			Name:    "async-failure-reference",
+			Profile: v1.CurrentProfile,
+			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
+				{Claims: map[string]string{"role": "sre"}},
+			}},
+			Steps: []*v1.Node{
+				{
+					Id:     "failing",
+					Async:  true,
+					Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}},
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url":    v1.NewLiteral("http://127.0.0.1:1/"),
+							"method": v1.NewLiteral("GET"),
+						},
+					}},
+				},
+				{Id: "slow", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Minute)},
+				}}},
+				// The ask is observed here, at the first boundary after it
+				// arrives. It has to be a node that mentions nothing: the
+				// reference join runs *before* the debug join in the same
+				// iteration, so a node that mentions the async step joins it
+				// itself and the early join never sees it.
+				{Id: "filler", Kind: &v1.Node_Value{Value: v1.NewLiteral("filler")}},
+				// And the mention comes after, where the early join has
+				// already taken the step. It is a mention that *succeeds* when
+				// evaluated: reading an output of the failed step would fail
+				// the run at this node instead, which ends the run either way
+				// and so could not tell the join from its absence.
+				{Id: "reader", Kind: &v1.Node_Value{Value: v1.NewExpr("has(steps.failing)")}},
+				{Id: "after", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind: &v1.Wait_Duration{Duration: durationpb.New(laterStepDuration)},
+				}}},
+			},
+		}
+	}
+
+	reached := func(ask bool) bool {
+		env := newWaitEnv(t)
+		start := env.Now()
+
+		if ask {
+			env.RegisterDelayedCallback(func() {
+				env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
+			}, 30*time.Second)
+		}
+
+		env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: workflow()})
+
+		require.True(t, env.IsWorkflowCompleted())
+		require.Error(t, env.GetWorkflowError(), "the async step's failure must still end the run")
+
+		return env.Now().Sub(start) >= laterStepDuration
+	}
+
+	without, with := reached(false), reached(true)
+
+	assert.Equal(t, without, with,
+		"a debug ask changed whether the step after a reference to a failed async step ran: "+
+			"without an ask it ran=%v, with one it ran=%v", without, with)
+	assert.False(t, without,
+		"the reference did not join the failed step, so this fixture is not the shape it claims")
+}
+
+// TestADebugHeldFailureSurvivesAContinuationFromInsideAStep is the same claim as
+// [TestADebugJoinedFailureSurvivesAContinuation] at the boundary the scope does
+// not own.
+//
+// A continuation does not only leave a scope from the walk's own two checks; a
+// `for_each`'s iteration boundary, a `loop:`'s, and a called workflow's own
+// next-step boundary each emit one while the scope holding the failure sits
+// above them on the stack, and [executor.recordOutcome] passes it back up
+// unchanged. Guarding the walk's checks alone therefore closed two of the four
+// exits: a run whose remaining work is a loop rather than plain siblings still
+// suspended past the held failure and completed.
+//
+// So the fixture is that one, with the trailing siblings replaced by a loop:
+// the ask lands while `slow` runs, the join at `fan` holds the failure, and the
+// budget runs out between the loop's iterations.
+func TestADebugHeldFailureSurvivesAContinuationFromInsideAStep(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
+	}, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow: &v1.Workflow{
+			Name:    "async-failure-across-a-nested-continuation",
+			Profile: v1.CurrentProfile,
+			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
+				{Claims: map[string]string{"role": "sre"}},
+			}},
+			Steps: []*v1.Node{
+				{
+					Id:     "failing",
+					Async:  true,
+					Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}},
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url":    v1.NewLiteral("http://127.0.0.1:1/"),
+							"method": v1.NewLiteral("GET"),
+						},
+					}},
+				},
+				// Long enough for the ask to arrive while `failing` is
+				// outstanding, so the join happens at the next step's boundary.
+				{Id: "slow", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+					Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Minute)},
+				}}},
+				// Several iterations, so the loop's own boundary is reachable
+				// with more of them still to come. It is the last node of the
+				// scope on purpose: the walk's own check declines there, which
+				// leaves the loop's boundary as the only exit.
+				{
+					Id: "fan",
+					Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+						Items:    v1.NewLiteralList("one", "two", "three", "four"),
+						Iterator: "item",
+						Body: []*v1.Node{
+							{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("item")}},
+						},
+					}},
+				},
+			},
+		},
+		// Spent on `slow` and the loop's first iteration, so the loop's
+		// boundary is asked with three iterations left.
+		StepsBudget: 2,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err,
+		"a continuation from inside a later step let a held async failure vanish: the run completed")
+	require.Contains(t, err.Error(), "failing",
+		"the run failed, but not for the held async step this test is about")
+}
