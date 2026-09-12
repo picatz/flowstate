@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -361,4 +362,123 @@ func TestADebugHeldFailureSurvivesAContinuationFromInsideAStep(t *testing.T) {
 		"a continuation from inside a later step let a held async failure vanish: the run completed")
 	require.Contains(t, err.Error(), "failing",
 		"the run failed, but not for the held async step this test is about")
+}
+
+// TestAHeldFailureIsRaisedAheadOfALaterAsyncFailure is the fourth way a held
+// failure can change what a run computes, and the one the other three miss by
+// having only a single failing step.
+//
+// A scope reports the *first* failure in written order, which is a property
+// [v1.AsyncJoinTargets] states and exists to keep: which failure a run records
+// must not depend on which coroutine finished first. Joining early moves a
+// failure out of the outstanding set and into the held one, so an
+// implementation that consults the two in the wrong order — or drains the
+// outstanding one before raising what it holds — reports the *later* failure,
+// and only when somebody was debugging.
+//
+// So: an earlier async step that fails, an ask that lands while a wait runs, a
+// filler step for the drain to happen at, and then a second async step that
+// also fails. Both runs must report the first.
+func TestAHeldFailureIsRaisedAheadOfALaterAsyncFailure(t *testing.T) {
+	t.Parallel()
+
+	// Both places the two sets are consulted, because they are separate
+	// orderings and a fixture reaching one cannot speak for the other: a node
+	// mentioning both steps is answered at its own join, and a scope mentioning
+	// neither is answered at its end. Each case must leave the other's path
+	// unreached to be evidence about its own.
+	for name, reader := range map[string]bool{
+		"at a node that mentions both": true,
+		"at the scope's end":           false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t,
+				failureReportedByTwoFailingAsyncSteps(t, false, reader),
+				failureReportedByTwoFailingAsyncSteps(t, true, reader),
+				"a debug ask changed which of two failed async steps the run reported")
+		})
+	}
+}
+
+// failureReportedByTwoFailingAsyncSteps runs the shape above and reports which
+// step's id the run's failure names. reader adds a final step mentioning both
+// async steps, which moves the answer from the scope-end join to that step's.
+func failureReportedByTwoFailingAsyncSteps(t *testing.T, ask, reader bool) string {
+	t.Helper()
+
+	failing := func(id string) *v1.Node {
+		return &v1.Node{
+			Id:     id,
+			Async:  true,
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}},
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: "http",
+				Inputs: map[string]*v1.Value{
+					"url":    v1.NewLiteral("http://127.0.0.1:1/"),
+					"method": v1.NewLiteral("GET"),
+				},
+			}},
+		}
+	}
+
+	steps := []*v1.Node{
+		failing("first"),
+		// Long enough for the ask to arrive while `first` is outstanding.
+		{Id: "slow", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+			Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Minute)},
+		}}},
+		// The boundary the drain happens at: an ask is read at the step *after*
+		// the one that was running when it arrived.
+		{Id: "filler", Kind: &v1.Node_Value{Value: v1.NewLiteral("filler")}},
+		// Started after the drain, so it is outstanding while `first` is held —
+		// which is the ordering this test is about.
+		failing("second"),
+	}
+	if reader {
+		// Mentions both, so both are join targets at this one boundary and the
+		// order they are offered in decides which failure the run reports.
+		// `has()` rather than a read: it succeeds when evaluated, so the answer
+		// comes from the join ahead of it rather than from the condition.
+		steps = append(steps, &v1.Node{
+			Id:        "reader",
+			Condition: v1.NewExpr("has(steps.first) && has(steps.second)"),
+			Kind:      &v1.Node_Value{Value: v1.NewLiteral("read")},
+		})
+	}
+
+	env := newWaitEnv(t)
+	if ask {
+		env.RegisterDelayedCallback(func() {
+			env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
+		}, 30*time.Second)
+	}
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow: &v1.Workflow{
+			Name:    "two-failing-async-steps",
+			Profile: v1.CurrentProfile,
+			Debug: &v1.SignalPolicy{Allow: []*v1.SignalPolicyRule{
+				{Claims: map[string]string{"role": "sre"}},
+			}},
+			Steps: steps,
+		},
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err, "neither failing async step ended the run")
+
+	switch {
+	case strings.Contains(err.Error(), `"first"`):
+		return "first"
+	case strings.Contains(err.Error(), `"second"`):
+		return "second"
+	default:
+		t.Fatalf("the run failed for neither async step: %v", err)
+
+		return ""
+	}
 }
