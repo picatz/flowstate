@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -453,4 +454,43 @@ func TestPluginCatalogRendersTheClaimsWithSecurityWeight(t *testing.T) {
 	quietSection := rendered[strings.Index(rendered, "quiet_task"):]
 	assert.NotContains(t, quietSection, "accepts a secret in:",
 		"quiet_task declares no secret_inputs and the rendering invented one")
+}
+
+// TestPluginMaxCallTimeoutIsReachableFromAShippedBinary is the claim
+// [plugin.Config.MaxCallTimeout] makes, held to: the ceiling is one this
+// deployment imposes on work an author asked for, and its documentation says an
+// operator may raise it. Read nowhere by the shipped host, that sentence would
+// be false and an operator whose plugin legitimately runs longer than the
+// default would have nothing to do about it.
+//
+// The refusals are the other half. An operator who wrote this meant to change
+// the ceiling, so a value that cannot mean one is refused rather than ignored:
+// silently keeping the default would leave them believing a longer call is
+// allowed when it is not.
+func TestPluginMaxCallTimeoutIsReachableFromAShippedBinary(t *testing.T) {
+	dir := t.TempDir()
+
+	for name, raw := range map[string]string{
+		"not a duration": "soon",
+		"zero":           "0s",
+		"negative":       "-1m",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(pluginMaxCallTimeoutEnv, raw)
+
+			_, err := pluginFlags{dirs: []string{dir}}.host(slog.New(slog.DiscardHandler))
+			require.Error(t, err, "a value that cannot mean a ceiling was accepted")
+			require.Contains(t, err.Error(), pluginMaxCallTimeoutEnv,
+				"the refusal must name the variable an operator has to fix")
+		})
+	}
+
+	// And a value that does mean one is taken, rather than refused or ignored.
+	t.Run("a raised ceiling", func(t *testing.T) {
+		t.Setenv(pluginMaxCallTimeoutEnv, "4h")
+
+		host, err := pluginFlags{dirs: []string{dir}}.host(slog.New(slog.DiscardHandler))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = host.Close(t.Context()) })
+	})
 }

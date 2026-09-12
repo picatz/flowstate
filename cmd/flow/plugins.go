@@ -49,6 +49,17 @@ const pluginSearchPathEnv = "FLOWSTATE_PLUGIN_DIR"
 // environment rather than into every command line.
 const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 
+// pluginMaxCallTimeoutEnv raises the host's ceiling on one plugin call, in the
+// same env-var shape the two above take, for the same reason: a container image
+// bakes it in rather than repeating it on every command line.
+//
+// It exists because the ceiling is a bound this deployment imposes on work an
+// author asked for, and [plugin.Config.MaxCallTimeout] says an operator may
+// raise it. A shipped binary that read it nowhere would make that sentence
+// false and leave an operator whose plugin legitimately runs longer than the
+// default with nothing to do about it. Unset keeps [plugin.DefaultMaxCallTimeout].
+const pluginMaxCallTimeoutEnv = "FLOWSTATE_PLUGIN_MAX_CALL_TIMEOUT"
+
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
@@ -363,6 +374,21 @@ func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 
 // host builds a host for these flags. The caller owns closing it.
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
+	// Refused rather than ignored: an operator who wrote this meant to change
+	// the ceiling, and silently keeping the default would leave them believing
+	// a longer call is allowed when it is not.
+	var maxCallTimeout time.Duration
+	if raw := strings.TrimSpace(os.Getenv(pluginMaxCallTimeoutEnv)); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s=%q is not a duration: %w", pluginMaxCallTimeoutEnv, raw, err)
+		}
+		if parsed <= 0 {
+			return nil, fmt.Errorf("%s=%q must be greater than zero", pluginMaxCallTimeoutEnv, raw)
+		}
+		maxCallTimeout = parsed
+	}
+
 	return plugin.NewHost(plugin.Config{
 		SearchPath:              f.dirs,
 		AllowInsecureSearchPath: f.allowInsecureDirs,
@@ -371,6 +397,10 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		PermittedSchemes:        f.schemes,
 		HostVersion:             version,
 		Logger:                  logger,
+
+		// Zero keeps plugin.DefaultMaxCallTimeout; see the constant above for
+		// why this is reachable from a shipped binary at all.
+		MaxCallTimeout: maxCallTimeout,
 		// Every plugin, not the ones this file can name. The host encodes it
 		// into the launch environment under one variable, and a plugin reads it
 		// back through sdk.EgressPolicy — so a third-party plugin inherits the

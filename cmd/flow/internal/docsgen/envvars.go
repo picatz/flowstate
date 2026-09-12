@@ -238,6 +238,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
+			name:    "FLOWSTATE_PLUGIN_MAX_CALL_TIMEOUT",
+			value:   "1h",
+			purpose: "Ceiling on the deadline a plugin call may inherit from its caller. `--plugin-call-timeout` is the default a call with no deadline of its own gets; this is the most any call may take, so a caller that arrives with a long deadline cannot hold a plugin worker past it. An unparseable or non-positive value is refused at startup.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
 			name:    "FLOWSTATE_PLUGIN_PINS",
 			value:   "unset",
 			purpose: "Default for `--plugin-pins`: a YAML file mapping plugin names to the digest the binary answering to each must have, merged with any --plugin-pin (#1010). Unset means no pins file; a deployment with neither this nor --plugin-pin configures no digest pins, and every plugin name launches exactly as it always has.",

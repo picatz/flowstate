@@ -149,9 +149,9 @@ func bareKeyContinue(b byte) bool {
 //
 // A quoted scalar with nothing in it to decode is answered without starting a
 // parser. Both quoting styles have exactly one escape — `\` inside double
-// quotes, `”` inside single ones — so a key containing neither is its own
-// contents, and that is the answer the parser would return after building a
-// document, a body node and a token stream to reach it.
+// quotes, a doubled quote inside single ones — so a key containing neither is
+// its own contents, and that is the answer the parser would return after
+// building a document, a body node and a token stream to reach it.
 //
 // The fast path is here rather than in the caller because the equivalence is a
 // fact about YAML's quoting rather than about outlines, and because the cost is
