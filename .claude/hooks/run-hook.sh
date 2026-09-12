@@ -8,9 +8,15 @@ if [[ -z "${project_dir}" || ! -d "${project_dir}" ]]; then
 fi
 
 name="${1:-}"
-# The merge tool passes `strict`: refusing a merge does not stand between
-# anyone and repairing a broken tree, so that call site never fails open.
+# Refusing a merge never stands between anyone and repairing a broken tree, on
+# any call site, so the merge guard never fails open: not on the merge tool,
+# which passes `strict`, and not on the shell, where a merge command would
+# otherwise run unguarded while this guard's own sources were mid-edit. The
+# other guards match the tools a repair needs, which is why they may warn.
 strict="${2:-}"
+if [[ "${name}" == "mergeguard" ]]; then
+	strict="always"
+fi
 case "${name}" in
 	genguard | gofmtcheck | pidguard | mergeguard) ;;
 	*)

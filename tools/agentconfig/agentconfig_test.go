@@ -321,10 +321,11 @@ func TestClaudeSessionPreparesPinnedToolchainAndHooks(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(hookDir, ".ready")); err != nil {
 		t.Errorf("SessionStart did not mark the complete hook build ready: %v", err)
 	}
-	// mergeguard is shared by Bash and the native GitHub merge tool, but the
-	// merge tool passes `strict`: refusing a merge never stands between anyone
-	// and repairing a broken tree, so that call site does not fail open when
-	// the guard cannot be built.
+	// mergeguard is shared by Bash and the native GitHub merge tool. Neither
+	// call site fails open when the guard cannot be built, because refusing a
+	// merge stands between nobody and repairing a broken tree; the merge
+	// tool's entry keeps saying `strict` so the policy reads at the call site
+	// as well as in the launcher.
 	wantCommands[guardedCommand(`run-hook.sh" mergeguard strict`)] = 1
 
 	gotCommands := map[string]int{}
@@ -390,7 +391,7 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		if len(paths) != 0 {
 			path = paths[0]
 		}
-		cmd := exec.Command("bash", launcher, "mergeguard")
+		cmd := exec.Command("bash", launcher, "genguard")
 		cmd.Env = []string{"CLAUDE_PROJECT_DIR=" + project, "HOME=" + os.Getenv("HOME"), "PATH=" + path}
 		output, err := cmd.Output()
 		if err != nil {
@@ -442,8 +443,10 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		if err := os.Remove(sentinel); err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(hookDir, "mergeguard"), stale, 0o700); err != nil {
-			t.Fatal(err)
+		for _, hook := range []string{"mergeguard", "genguard"} {
+			if err := os.WriteFile(filepath.Join(hookDir, hook), stale, 0o700); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := os.WriteFile(filepath.Join(hookDir, ".ready"), nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -671,10 +674,11 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	}
 	runLauncherWarns("do not compile right now")
 
-	// The same uncompilable tree, reached through the merge tool's entry,
-	// denies: refusing a merge never stands between anyone and repairing the
-	// tree, so that call site is the one that does not fail open.
-	strictCmd := exec.Command("bash", launcher, "mergeguard", "strict")
+	// The merge guard never fails open, on either call site: refusing a merge
+	// stands between nobody and a repair, while the guards that match the
+	// tools a repair needs may warn. Asserted here without the argument, so
+	// the shell path is covered too.
+	strictCmd := exec.Command("bash", launcher, "mergeguard")
 	strictCmd.Env = []string{"CLAUDE_PROJECT_DIR=" + project, "HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	strictOutput, strictErr := strictCmd.CombinedOutput()
 	var strictExit *exec.ExitError
