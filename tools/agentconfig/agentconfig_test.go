@@ -926,12 +926,6 @@ func TestFrontmatterRejectsWhatAHostWouldReject(t *testing.T) {
 	}
 }
 
-// TestThePullRequestTemplateCarriesTheSkillsHeadings keeps the template a
-// web-opened PR starts from and the comms-pr skill's default shape one list:
-// the skill's numbered sections are the template's `##` headings, in order,
-// so neither drifts from the other unnoticed (#1728). It lives here rather
-// than beside tools/commitcheck because this package is the one the gate runs
-// for a diff to the agent configuration, which the template now counts as.
 // TestClaudeHookBuildRefusesAnIncoherentGeneration drives build-hooks.sh
 // directly, because the launcher tests reach it only through failures that
 // stop earlier. What is asserted here is the part that decides whether a
@@ -1359,6 +1353,12 @@ func goDirective(t *testing.T, root string) string {
 	return ""
 }
 
+// TestThePullRequestTemplateCarriesTheSkillsHeadings keeps the template a
+// web-opened PR starts from and the comms-pr skill's default shape one list:
+// the skill's numbered sections are the template's `##` headings, in order,
+// so neither drifts from the other unnoticed (#1728). It lives here rather
+// than beside tools/commitcheck because this package is the one the gate runs
+// for a diff to the agent configuration, which the template now counts as.
 func TestThePullRequestTemplateCarriesTheSkillsHeadings(t *testing.T) {
 	root := repoRoot(t)
 
