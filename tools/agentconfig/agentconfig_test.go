@@ -375,8 +375,11 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		}
 	}
 
-	// A missing build denies instead of returning the shell's non-blocking 127.
-	runLauncher("is not ready")
+	// A missing build denies instead of returning the shell's non-blocking
+	// 127. The launcher tries to rebuild first; this fixture has no module to
+	// build, so the attempt fails and the denial reports that rather than
+	// telling the operator to restart.
+	runLauncher("could not be rebuilt")
 
 	sentinel := filepath.Join(project, "stale-hook-ran")
 	stale := []byte("#!/bin/sh\ntouch " + strconv.Quote(sentinel) + "\n")
@@ -399,7 +402,7 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 		if output, err := session.CombinedOutput(); err == nil {
 			t.Fatalf("SessionStart unexpectedly accepted a failed hook build; output:\n%s", output)
 		}
-		runLauncher("is not ready")
+		runLauncher("could not be rebuilt")
 		if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("invalidated stale hook executed: %v", err)
 		}
@@ -478,6 +481,40 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if output, err := exec.Command("git", "-C", project, "checkout", "--", "tools/hooks/règle.go").CombinedOutput(); err != nil {
 		t.Fatalf("restore fixture Unicode source: %v\n%s", err, output)
 	}
+	// `go build` does not read .gitignore, so a Go source the repository
+	// ignores is compiled like any other. An identity that enumerated tracked
+	// and merely-untracked files would skip it and keep accepting a guard
+	// built before it changed.
+	ignoredSource := filepath.Join(project, "tools", "hooks", "ignored.go")
+	if err := os.WriteFile(filepath.Join(project, ".gitignore"), []byte("/tools/hooks/ignored.go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ignoredSource, []byte("package hooks\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", project, "check-ignore", "-q", "tools/hooks/ignored.go").CombinedOutput(); err != nil {
+		t.Fatalf("fixture source is not ignored by git: %v\n%s", err, output)
+	}
+	withIgnored := sourceID()
+	if withIgnored == baselineSourceID {
+		t.Fatal("a git-ignored Go source the compiler reads did not change the hook build identity")
+	}
+	if err := os.WriteFile(ignoredSource, []byte("package hooks\n\nconst ignoredChange = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if sourceID() == withIgnored {
+		t.Fatal("editing a git-ignored Go source did not change the hook build identity")
+	}
+	if err := os.Remove(ignoredSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(project, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	if sourceID() != baselineSourceID {
+		t.Fatal("removing the ignored source did not restore the hook build identity")
+	}
+
 	untrackedUnicodeSource := filepath.Join(project, "tools", "hooks", "nøuveau.go")
 	if err := os.WriteFile(untrackedUnicodeSource, []byte("package hooks\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -540,7 +577,7 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(dependencySource, []byte("package hooks\n\nconst changed = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runLauncher("sources changed")
+	runLauncher("could not be rebuilt")
 	if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale hook ran after its sources changed: %v", err)
 	}
@@ -558,11 +595,11 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.Mkdir(fakeGitBin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	fakeGit := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = ls-files ]; then exit 1; fi\ndone\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
+	fakeGit := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = hash-object ]; then exit 1; fi\ndone\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(fakeGitBin, "git"), []byte(fakeGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runLauncher("sources changed", fakeGitBin+":/usr/bin:/bin")
+	runLauncher("could not be rebuilt", fakeGitBin+":/usr/bin:/bin")
 	if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale hook ran after source enumeration failed: %v", err)
 	}
