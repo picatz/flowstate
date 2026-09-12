@@ -398,7 +398,7 @@ func evaluate(pr pullRequest, unresolved int) []string {
 		problems = append(problems, "independent code/security review has not passed on the exact final head")
 	}
 	if requests := ownerCodexRequests(pr); requests > 1 {
-		problems = append(problems, fmt.Sprintf("Codex was requested %d times on this pull request; request an optional provider at most once", requests))
+		problems = append(problems, fmt.Sprintf("Codex was requested %d times on this pull request; a vendor review bot is not requested at all", requests))
 	}
 	if unresolved != 0 {
 		problems = append(problems, fmt.Sprintf("%d review thread(s) remain unresolved", unresolved))

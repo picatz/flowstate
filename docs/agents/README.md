@@ -82,10 +82,10 @@ threads, nonterminal or failing checks, enabled auto-merge, and more than one
 owner comment asking `@codex` for a review, which is the only request shape it
 recognizes. A late artifact therefore forces explicit re-attestation without
 requiring any vendor to answer. Two things it does not cover: a request to a
-different vendor, since nothing in a pull request records one, and, on the REST
-fallback, a review body edited after the attestation, which REST cannot report;
-the tool says so and asks the operator to read the reviews once more before
-merging.
+different vendor, which it never reads and which this repository's automatic
+Copilot review would make ambiguous anyway, and, on the REST fallback, a review
+body edited after the attestation, which REST cannot report; the tool says so
+and asks the operator to read the reviews once more before merging.
 
 ## Rightsized for the Claude 5 generation
 
