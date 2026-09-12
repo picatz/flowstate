@@ -50,6 +50,6 @@ func main() {
 		return // does not parse; the build reports that, not this hook
 	}
 	if !bytes.Equal(src, formatted) {
-		hook.Advise(fmt.Sprintf("gofmt: %s is not gofmt formatted; run `gofmt -w %s` (CI fails on unformatted files)", path, path))
+		hook.Advise(fmt.Sprintf("gofmt: %s is not gofmt formatted; run `make fmt`, which uses the pinned toolchain's formatter (CI fails on unformatted files)", path))
 	}
 }

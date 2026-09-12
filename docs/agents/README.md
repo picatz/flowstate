@@ -13,7 +13,9 @@ software rather than prose for checks that can be deterministic.
 | `CLAUDE.md` | Thin Claude Code adapter | Always loaded by Claude Code |
 | `.agents/skills/*/SKILL.md` | Portable task workflows for Amp and Codex | Name and description are advertised; the body loads when selected |
 | `.claude/skills/*/SKILL.md` | Claude Code mirrors of the portable skills | The body loads when selected |
-| `.claude/settings.json` | Claude-specific hooks and permission-time controls | Enforced by Claude Code |
+| `.claude/settings.json` | Claude-specific hooks, and the allow list that stops the repository's own verification commands from prompting | Enforced by Claude Code |
+| `.claude/agents/*.md` | Fresh-context subagents carrying the review, verification, and review-hygiene rubrics (`flowstate-reviewer`, `flowstate-verifier`, `flowstate-pr-tidy`) | Claude Code delegates on the description; the body and preloaded skills load in the subagent's own context |
+| `.claude/rules/*.md` | Path-scoped procedures, currently only the agent-configuration maintenance rule | Loaded when Claude Code reads or edits a file matching the rule's `paths` |
 | `.amp/settings.json` | Amp workspace skill selection; no repository-specific permission prompts | Applied by Amp in this repository |
 | `.agents/ship.md` | Versioned Amp Custom Ship procedure | Copied into the Amp project setting; it is not read automatically after edits |
 | `.agents/setup` / `.agents/resume` | Amp Orb provisioning and wake behavior | Run by the Orb lifecycle |
@@ -56,9 +58,10 @@ skill mirrors, while `.amp/settings.json` prevents Amp from loading both mirror
 trees. A host-specific control is added only when that host can test its tool
 input and blocking behavior end to end.
 
-At this revision, the always-loaded shared contract is 10.5 KB and Claude adds
-989 bytes. The portable skill corpus is 24.4 KB per discovery tree but only the
-selected skill body enters a task; Amp's disabled Claude fallback avoids loading
+`tools/agentconfig` bounds the always-loaded contract at 8 KB and the Claude
+adapter at 2 KB, so a new always-loaded line has to displace an old one. The
+portable skill corpus is about 27 KB per discovery tree, but only the selected
+skill body enters a task, and Amp's disabled Claude fallback avoids loading
 both. The 72.6 KB legacy manual is indexed rather than imported. The mirror
 therefore costs repository bytes and one drift test, not duplicate model tokens
 or an extra runtime read; replacing it with forwarding files would save storage
@@ -73,6 +76,43 @@ than another vendor request. Feedback that arrives is still mandatory work.
 artifact newer than the owner attestation, unresolved threads, stale evidence,
 and nonterminal or failing checks. A late artifact thus forces explicit
 re-attestation without requiring either vendor to answer.
+
+## Rightsized for the Claude 5 generation
+
+Anthropic removed most of Claude Code's own system prompt for the Claude 5
+models and published the rules it applied in
+[The new rules of context engineering for Claude 5 generation models](https://claude.com/blog/the-new-rules-of-context-engineering-for-claude-5-generation-models)
+(July 2026), alongside the
+[Claude Code best practices](https://code.claude.com/docs/en/best-practices).
+This configuration applies them as follows; the audit that step 7 below asks
+for after a model upgrade was this one.
+
+- **Judgment over rules.** `AGENTS.md` keeps the invariants and the gotchas the
+  tree cannot announce; guardrails that a current model applies unprompted
+  (no generic praise, no invented priority, no file-by-file tours) were
+  deleted from the skills, and conflicting instructions (a skill saying "draft
+  by default" beside a contract that grants task-authorized actions) were
+  collapsed to the one statement in `AGENTS.md`.
+- **Single instructions.** Verification, shipping, and attribution each have
+  one home: the `flowstate-verify` and `flowstate-ship` skills, `.agents/ship.md`,
+  and one line of `AGENTS.md`. The always-loaded contract points at them and
+  keeps the commands an agent needs in nearly every task.
+- **Progressive disclosure.** Procedures are skills whose descriptions say when
+  they apply; `.claude/rules/agent-config.md` loads the maintenance procedure
+  only while agent-configuration files are open; the legacy manual is indexed,
+  never imported.
+- **Interfaces over examples.** Hook messages name the rule and the repair in
+  the words the model acts on (`make fmt`, kill by PID), and the skills that
+  carried example prose now state what an artifact must contain.
+- **Rich references and verifier agents.** The review rubrics are preloaded
+  into `flowstate-reviewer`, a subagent with no editing tool whose fresh
+  context is the provider-neutral independent review the ship procedure
+  requires;
+  `flowstate-verifier` runs the bounded legs and returns evidence instead of
+  logs, so a long session's context is not spent on test output.
+- **Auto memory over guidance files.** A learning from one session goes to the
+  host's auto memory; a repository rule needs a recurring failure or a
+  mechanism, per the decision table below.
 
 ## Why skills are mirrored
 
@@ -113,6 +153,9 @@ Use this decision rule when an agent or reviewer proposes another instruction:
 | Detailed architecture, examples, or historical incident | A referenced document |
 | Exact parsing, discovery, validation, or transformation | A script or typed tool |
 | Action that must be blocked or checked regardless of model judgment | Hook, permission rule, sandbox, or CI |
+| An independent judgment, or a procedure whose output should not share the main context | A Claude subagent under `.claude/agents/` preloading the relevant skill; other hosts run the skill inline |
+| A procedure that matters only while particular files are open, and only on Claude Code | `.claude/rules/*.md` with `paths:`; a portable equivalent is a nested `AGENTS.md` |
+| A learning from one session that is not repository policy | The host's auto memory, not a repository file |
 | One task's outcome, scope, and acceptance criteria | The current prompt |
 | Personal tone, model, verbosity, or account preference | User-level host configuration, not this repository |
 
@@ -167,7 +210,50 @@ and whether a deterministic mechanism can prevent it more reliably.
   cleanup, merge review state, and formatting. Other hosts do not run them.
 - Legacy `.claude/commands/ci-check.md` and `test-fast.md` remain only as short
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
-  in skills.
+  in skills. A command never shares a skill's name: `both-drivers.md` was
+  removed because the two shadowed each other.
+- `permissions.allow` in `.claude/settings.json` pre-approves the build, test,
+  format, gate, and regeneration commands the repository prescribes, so
+  verification does not prompt. A test pins the list to exact
+  program-and-subcommand entries, rejects a wildcard, push, merge, commit, or
+  destructive one, and decides which entries may take arguments by whether the
+  command needs them: a test run takes packages, while a command that only
+  reads stays exact. That is why `git fetch origin` and `git fetch origin main`
+  are pre-approved but `git fetch` with arguments is not (a refspec and
+  `--update-head-ok` move the checked-out ref), and why `git diff`, `git log`,
+  `git show`, and `git blame` are pre-approved only bare: each accepts
+  `--output=<file>`, which truncates that file and writes the report into it,
+  so `git diff --output=AGENTS.md HEAD` would overwrite tracked work with no
+  prompt. Claude Code matches each subcommand of a compound command
+  separately, so `go test ./... && git push` still prompts for the push.
+- The allow list assumes the checkout is one the operator trusts. Its point is
+  running the repository's own code: `go test` executes the checkout's tests,
+  `-coverprofile` writes the path it is given, `-exec` and `-toolexec` name
+  another program to run, and `go run ./tools/gate` runs a tool from the tree.
+  The list creates no capability a contributor's own test run lacks, but it
+  does remove the prompt, so on a head you do not trust (an external
+  contributor's, say) review by reading and leave running its code to CI or a
+  sandbox. `flowstate-reviewer` says the same.
+- `.claude/agents/flowstate-reviewer.md` is the fresh-context reviewer: delegate
+  a diff or PR head to it for the exact-head independent review, and to
+  `flowstate-verifier` for a gate or full run whose output should stay out of
+  the main context. The reviewer is given no editing tool and asks for a
+  throwaway worktree (`isolation: worktree`); where the host honors that, a
+  shell command it runs can change only the worktree, never the checkout under
+  review, and where it does not the agent confirms as much with
+  `git worktree list`, restricts itself to read-only commands, and says so.
+  Its prompt forbids writing in either case. The verifier runs on the `sonnet` alias
+  because running and summarizing tests needs less reasoning than reviewing
+  them; the reviewer inherits the session model. `flowstate-pr-tidy`, also on
+  `sonnet`, resolves
+  review threads whose disposition is visible and hides decision-free bot
+  comments so human reviewers see decisions rather than AI traffic; it never
+  replies to an AI reviewer and runs before the attestation. All three are
+  bounded and checked by `tools/agentconfig`.
+- Auto memory is on by default and lives outside the repository. Session
+  learnings go there; do not add them to `CLAUDE.md`. `/skill-doctor` reports
+  which skills cost context and are never invoked; `/doctor` proposes cuts to
+  a checked-in `CLAUDE.md`.
 
 ### Codex
 
@@ -195,7 +281,9 @@ and whether a deterministic mechanism can prevent it more reliably.
 6. Test the behavior on representative coding, review, and communication tasks.
 7. After a major model or harness upgrade, audit old instructions for ritualized
    verification, mandatory narration, fixed reasoning sequences, and assumptions
-   the new host no longer needs.
+   the new host no longer needs. The Claude 5 audit above is the most recent;
+   repeat it against Anthropic's current guidance rather than this document's
+   summary of it.
 
 The migration preserves the former root `CLAUDE.md` as
 `AGENT_FIELD_NOTES_LEGACY.md` and the replaced Claude skills and commands under

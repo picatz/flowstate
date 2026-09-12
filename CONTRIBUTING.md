@@ -44,7 +44,7 @@ after exact-head review completes.
 
 ## Bringing an agent
 
-Coding agents are first-class contributors here. The repository ships their configuration: `AGENTS.md`, Amp's Custom Ship procedure at `.agents/ship.md`, the skills under `.agents/skills/` and `.claude/skills/`, and hooks under `.claude/settings.json` that refuse edits to generated files, check formatting, and guard merges. Point your agent at `AGENTS.md`; the same rules, gate, and PR shape apply to its work as to yours, and you own what it opens.
+Coding agents are first-class contributors here. The repository ships their configuration: `AGENTS.md`, Amp's Custom Ship procedure at `.agents/ship.md`, the skills under `.agents/skills/` and `.claude/skills/`, the Claude Code subagents under `.claude/agents/` that review and verify in a fresh context, and hooks under `.claude/settings.json` that refuse edits to generated files, check formatting, and guard merges. Point your agent at `AGENTS.md`; the same rules, gate, and PR shape apply to its work as to yours, and you own what it opens.
 
 ## Maintainers and decisions
 

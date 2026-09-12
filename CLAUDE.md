@@ -2,18 +2,23 @@
 
 # Claude Code adapter
 
-The shared repository contract is `AGENTS.md`. Keep this file as a thin Claude
-Code adapter rather than a second instruction manual.
+`AGENTS.md` is the contract. This file names only what Claude Code adds.
 
-- Project workflows live in `.claude/skills/`. They are byte-identical mirrors
-  of the portable skills in `.agents/skills/` so Claude, Amp, and Codex receive
-  the same task-specific guidance.
-- `.claude/settings.json` contains Claude-specific hooks. Treat those hooks as
-  controls and their output as evidence; do not replace them with prose or assume
-  another host ran them.
-- Use the receiver-effort standard from `AGENTS.md`: no routine progress
-  narration, no repeated recap, and no inflated certainty.
-- Existing source comments that cite a detailed rule in `CLAUDE.md` predate this
-  split; follow those citations through to `AGENT_FIELD_NOTES.md`. Do not import
-  that archive wholesale. Search and read only the relevant section when the
-  current tree and primary documentation do not answer the question.
+- Skills under `.claude/skills/` mirror `.agents/skills/` byte for byte; edit
+  the portable copy first. `.claude/rules/agent-config.md` loads the
+  maintenance procedure when you touch either tree.
+- Subagents under `.claude/agents/`: delegate to `flowstate-reviewer` for a
+  fresh-context code-and-security review of a diff or pull request head (the
+  provider-neutral review the shipping gate needs), to `flowstate-verifier`
+  to run verification legs without their output filling this context, and to
+  `flowstate-pr-tidy` to resolve dispositioned AI review threads and hide
+  decision-free bot comments before the attestation.
+- Hooks in `.claude/settings.json` are controls, not advice: they refuse edits
+  to generated files, pattern kills, and merges without thread evidence, and
+  report formatting drift. Treat their output as evidence; other hosts do not
+  run them.
+- A learning about this codebase that is not repository policy belongs in auto
+  memory, not in this file or `AGENTS.md`; a repository rule needs a recurring
+  failure or a mechanism (`docs/agents/README.md` has the decision table).
+- Source comments that cite a rule in `CLAUDE.md` predate the split into
+  `AGENTS.md`; the archived text is indexed by `AGENT_FIELD_NOTES.md`.
