@@ -145,7 +145,7 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 
 	entryPoints := evaluatorEntryPoints(t)
 	require.NotEmpty(t, entryPoints, "no v1 call passes evalContext(); the derivation is broken, not the tree")
-	require.Contains(t, entryPoints, "EvalLoopUntil", "the derivation missed a known entry point")
+	require.Contains(t, entryPoints, "EvalLoopUntilWithCost", "the derivation missed a known entry point")
 
 	// The v1 package, type-checked, so a call resolves to the one function or
 	// method it names rather than to every method sharing the name: without

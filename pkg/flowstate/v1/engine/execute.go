@@ -353,13 +353,37 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// saved position; everything after it starts fresh.
 		descend := resuming && i == start
 
-		run, err := v1.EvalConditionInScope(evalContext(), node.GetCondition(), e.scope)
+		// Charged before the answer is read, and whether or not it is true: a
+		// condition is the one expression whose whole purpose is to be thrown
+		// away, so a false one leaves no output, no history event and no step
+		// counted to say it ran. See [executor.chargeWorkflowCost].
+		run, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), node.GetCondition(), e.scope)
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return stepFailed(err, "step %q", node.GetId())
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
 			e.yieldWorkflow()
+
+			// A skipped step is still a boundary, and it has to be one: the
+			// position is representable here for the same reason it is after a
+			// step that ran, and this is the only place a segment made
+			// entirely of skipped steps could ever suspend. Without it a loop
+			// whose body is all false conditions spends the budget it is now
+			// charged for and never reaches the check that would spend it
+			// (#1119) — the yield above keeps the deadlock detector from
+			// noticing, so nothing else would end the segment either.
+			//
+			// The same conditions as the check after a step that ran: only at
+			// the run's own representable level, never on the last node, and
+			// never with async work this scope started still outstanding.
+			if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
+				e.setFrame(depth, i+1)
+
+				return errContinueAsNew
+			}
+
 			continue
 		}
 
@@ -474,7 +498,9 @@ func (e *executor) yieldWorkflow() {
 	done.Receive(e.ctx, &signal)
 }
 
-// chargeWorkflowCost records deterministic value-expression CEL work.
+// chargeWorkflowCost records deterministic workflow-side CEL work: a `value:`
+// step's expression, a step's or a loop's condition, and a loop's `initial:`
+// and `update:`.
 // [shouldSuspend] turns a spent budget into Continue-As-New at the next
 // representable step or loop boundary, so replay of a later segment does not
 // repeat an ever-growing prefix.
@@ -1509,7 +1535,9 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		state = e.resume[inner].GetLoopState()
 	} else {
 		var err error
-		state, err = v1.LoopInitialState(evalContext(), loop, e.scope)
+		var cost uint64
+		state, cost, err = v1.LoopInitialStateWithCost(evalContext(), loop, e.scope)
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -1658,7 +1686,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 
 	// `until:` and `update:` see the body's outputs and the current state, so they
 	// are evaluated against the scope the body finished in.
-	stop, err := v1.EvalLoopUntil(evalContext(), loop, nested.scope)
+	stop, cost, err := v1.EvalLoopUntilWithCost(evalContext(), loop, nested.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -1679,7 +1708,8 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), true, nil, nil
 	}
 
-	next, err := v1.LoopNextState(evalContext(), loop, nested.scope)
+	next, cost, err := v1.LoopNextStateWithCost(evalContext(), loop, nested.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, false, nil, err
 	}
