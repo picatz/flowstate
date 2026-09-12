@@ -709,7 +709,11 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fakeGitBin, "git"), []byte(fakeGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	runLauncherWarns("do not compile right now", fakeGitBin+":/usr/bin:/bin")
+	// An identity that cannot be computed is not a tree mid-edit: nothing is
+	// known about what the binaries were built from, so this denies. The PATH
+	// keeps the real toolchain, because a PATH without it would fail earlier
+	// for a different reason and make the assertion depend on the host.
+	runLauncher("could not identify", fakeGitBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	// A ready executable that cannot launch after the readiness check is still
 	// converted to Claude's blocking exit status.
@@ -991,6 +995,54 @@ func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
 		}
 		if published(project) {
 			t.Fatal("a build whose identity changed published a ready generation")
+		}
+	})
+
+	// The point of building each guard on its own: one that does not compile
+	// must not decide anything about the others, which is what the single
+	// build it replaced did.
+	t.Run("one guard that does not compile leaves the others published", func(t *testing.T) {
+		project := newProject(t)
+		broken := filepath.Join(project, "tools", "hooks", "genguard", "main.go")
+		if err := os.WriteFile(broken, []byte("package main\n\nthis is not go\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if status, output := build(t, project, os.Getenv("PATH")); status != 0 {
+			t.Fatalf("build with one broken guard = %d, want 0; output:\n%s", status, output)
+		}
+		bin := filepath.Join(project, ".claude", "hooks", ".bin")
+		for _, hook := range []string{"gofmtcheck", "pidguard", "mergeguard"} {
+			if _, err := os.Stat(filepath.Join(bin, hook)); err != nil {
+				t.Errorf("guard %s was not published although it compiles: %v", hook, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(bin, "genguard")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the guard that does not compile was published: %v", err)
+		}
+		unbuilt, err := os.ReadFile(filepath.Join(bin, ".unbuilt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(unbuilt)) != "genguard" {
+			t.Fatalf(".unbuilt = %q, want only the guard that failed", unbuilt)
+		}
+	})
+
+	t.Run("a generation missing a binary is rebuilt rather than trusted", func(t *testing.T) {
+		project := newProject(t)
+		if status, output := build(t, project, os.Getenv("PATH")); status != 0 {
+			t.Fatalf("seed build = %d; output:\n%s", status, output)
+		}
+		missing := filepath.Join(project, ".claude", "hooks", ".bin", "mergeguard")
+		if err := os.Remove(missing); err != nil {
+			t.Fatal(err)
+		}
+		// The identity still matches, so only the binary check can notice.
+		if status, output := build(t, project, os.Getenv("PATH")); status != 0 {
+			t.Fatalf("rebuild = %d; output:\n%s", status, output)
+		}
+		if _, err := os.Stat(missing); err != nil {
+			t.Fatalf("a generation missing a guard was accepted as current: %v", err)
 		}
 	})
 

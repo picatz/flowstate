@@ -56,7 +56,15 @@ trap 'rm -rf "${lock_dir}"' EXIT
 
 # The waiter that just took the lock may be looking at the generation the
 # previous holder published, in which case there is nothing left to build.
-if [[ -f "${hook_dir}/.ready" && -s "${hook_dir}/.source-dirs" && -f "${hook_dir}/.source-id" ]] &&
+generation_complete=1
+for hook in "${hooks[@]}"; do
+	if [[ ! -x "${hook_dir}/${hook}" ]] && ! grep -qxF "${hook}" "${hook_dir}/.unbuilt" 2>/dev/null; then
+		generation_complete=""
+		break
+	fi
+done
+if [[ -n "${generation_complete}" ]] &&
+	[[ -f "${hook_dir}/.ready" && -s "${hook_dir}/.source-dirs" && -f "${hook_dir}/.source-id" ]] &&
 	current_id="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/source-id.sh" "${hook_dir}/.source-dirs" 2>/dev/null)" &&
 	[[ "$(<"${hook_dir}/.source-id")" == "${current_id}" ]]; then
 	exit 0
@@ -131,7 +139,10 @@ if ! GOTOOLCHAIN="go${go_version}" go -C "${project_dir}" list -deps \
 	printf 'could not determine the other inputs the Flowstate Claude hooks compile.\n' >&2
 	exit 2
 fi
-source_id="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/source-id.sh" "${stage_dir}/.source-dirs")"
+if ! source_id="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/source-id.sh" "${stage_dir}/.source-dirs")"; then
+	printf 'could not identify the Flowstate Claude hook sources before compiling them.\n' >&2
+	exit 2
+fi
 
 built=0
 : > "${stage_dir}/.unbuilt"
