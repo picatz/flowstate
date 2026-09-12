@@ -21,13 +21,22 @@ import (
 type blockingEmitter struct {
 	arrived chan struct{}
 	release chan struct{}
+
+	// contexts carries the context each record was written under, so a test can
+	// assert what happened to it while the record was still in the sink.
+	contexts chan context.Context
 }
 
 func newBlockingEmitter() *blockingEmitter {
-	return &blockingEmitter{arrived: make(chan struct{}, 16), release: make(chan struct{})}
+	return &blockingEmitter{
+		arrived:  make(chan struct{}, 16),
+		release:  make(chan struct{}),
+		contexts: make(chan context.Context, 16),
+	}
 }
 
-func (e *blockingEmitter) Emit(context.Context, *v1.AuditRecord) error {
+func (e *blockingEmitter) Emit(ctx context.Context, _ *v1.AuditRecord) error {
+	e.contexts <- ctx
 	e.arrived <- struct{}{}
 	<-e.release
 
@@ -106,4 +115,90 @@ func TestARefusalIsAnsweredBeforeItIsRecorded(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAPostAnswerRecordSurvivesTheSenderClosing is the other half of the
+// ordering above, and the reason answering first is safe.
+//
+// Answering first moves the record after a point the *sender* controls: Go arms
+// its background close-detection read once the body has been consumed, so a
+// client that reads the flushed refusal and closes cancels the request context
+// while the record is still on its way to the sink. The ledger has already
+// spent the interval's slot by then, so a prober who aborts every delivery
+// would suppress the whole window for that route and class rather than one
+// record — a refusal trail the prober switches off by probing.
+//
+// So the record is written under a context carrying the request's values and
+// not its cancellation. Asserted at the sink, on the context the record is
+// actually written under, after the server has been *seen* to notice the close:
+// a wall-clock wait would prove nothing about a race it happened to win.
+func TestAPostAnswerRecordSurvivesTheSenderClosing(t *testing.T) {
+	t.Parallel()
+
+	emitter := newBlockingEmitter()
+
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(emitter))
+	require.NoError(t, err)
+
+	receiver, err := mustNew(t, nil, server.WithAudit(recorder)).NewWebhookReceiver(t.Context(),
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	// The handler's own request context, watched from outside it: this is the
+	// positive signal that the server has observed the sender close, which is
+	// what makes the assertion below an ordering rather than a race.
+	closed := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		go func() {
+			<-req.Context().Done()
+			close(closed)
+		}()
+		receiver.ServeHTTP(w, req)
+	}))
+	defer srv.Close()
+
+	// Released before the server is closed, since defers unwind in reverse.
+	defer close(emitter.release)
+
+	body := deliveryBody("evt_abort")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		srv.URL+"/webhooks/no-such-workflow/nope", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(v1.WebhookSignatureHeader, forged(body))
+
+	client := srv.Client()
+	client.Timeout = 15 * time.Second
+
+	// Returns when the flushed refusal's headers arrive, which is the sender
+	// having its answer — the handler is still inside the record.
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	var recordCtx context.Context
+	select {
+	case recordCtx = <-emitter.contexts:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the refusal was answered but never reached the sink")
+	}
+
+	// The sender closes, and the server is seen to notice.
+	cancel()
+	_ = resp.Body.Close()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server never noticed the sender close, so this fixture proves nothing")
+	}
+
+	// Not cancelled, rather than not errored: the record carries a deadline of
+	// this server's own, and the claim is only that the sender is not the one
+	// who ends it.
+	require.NotErrorIs(t, recordCtx.Err(), context.Canceled,
+		"a sender who read the refusal and closed cancelled the record written about them")
 }
