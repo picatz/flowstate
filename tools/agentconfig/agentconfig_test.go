@@ -707,16 +707,27 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 	}
 	for _, allowed := range []string{
 		"go build ./tools/hooks/mergeguard",
+		"go test ./tools/hooks/mergeguard/...",
 		"git status --short",
+		"git diff --stat",
 		"make fmt",
+		"gofmt -l .",
 	} {
 		if status, output := mergeLauncher(bashPayload(allowed)); status != 0 {
 			t.Fatalf("a broken merge guard blocked %q with exit %d; the repair it needs must still run:\n%s", allowed, status, output)
 		}
 	}
+	// Every spelling mergeguard itself recognizes, because the launcher's test
+	// stands in for that guard and must be at least as wide as it: flags are
+	// inherited and may sit between `pr` and the subcommand, and the
+	// executable may come from an expansion.
 	for _, refused := range []string{
 		"gh pr merge 1942 -R picatz/flowstate --squash",
 		"gh pr merge https://github.com/picatz/flowstate/pull/1942",
+		"gh --repo picatz/flowstate pr merge 1942",
+		"gh pr --repo picatz/flowstate merge 1942 --match-head-commit abcdef",
+		"gh pr -R picatz/flowstate merge 1942",
+		"$GHBIN pr merge 1942",
 	} {
 		status, output := mergeLauncher(bashPayload(refused))
 		if status != 2 {
@@ -1132,6 +1143,57 @@ func TestClaudeHookBuildRefusesAnIncoherentGeneration(t *testing.T) {
 			t.Fatal("a failed build left the previous generation marked ready")
 		}
 	})
+}
+
+// TestClaudeHookLauncherHandsTheGuardItsPayload pins the one property the
+// launcher can break silently. It reads stdin on two paths of its own -- the
+// currency check and the rebuild -- and both take their input from /dev/null
+// so the guard downstream still receives what Claude Code piped in. If that
+// ever stops holding, hook.Read fails on empty input and genguard, pidguard
+// and gofmtcheck each return without a decision, which is three controls
+// disabled at once with an exit status of 0 and nothing written anywhere.
+func TestClaudeHookLauncherHandsTheGuardItsPayload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude hooks require Bash")
+	}
+	root := repoRoot(t)
+	project := t.TempDir()
+	writeHookFixture(t, root, project)
+	launcher := filepath.Join(project, ".claude", "hooks", "run-hook.sh")
+	data, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", "run-hook.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launcher, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "build-hooks.sh"))
+	build.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the fixture hooks: %v\n%s", err, output)
+	}
+
+	// The published guard is replaced by one that records what it was given,
+	// which is the only way to observe the payload actually arriving.
+	received := filepath.Join(project, "received")
+	recorder := "#!/bin/sh\ncat > " + strconv.Quote(received) + "\n"
+	if err := os.WriteFile(filepath.Join(project, ".claude", "hooks", ".bin", "genguard"), []byte(recorder), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"x.go"}}`
+	cmd := exec.Command("bash", launcher, "genguard")
+	cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project)
+	cmd.Stdin = strings.NewReader(payload)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("launcher with a current generation: %v\n%s", err, output)
+	}
+	got, err := os.ReadFile(received)
+	if err != nil {
+		t.Fatalf("the guard read no payload at all: %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("the guard received %q, want the tool call %q", got, payload)
+	}
 }
 
 // TestClaudeHookBuildRunsOnAnOrdinaryCheckout covers the two properties that

@@ -187,10 +187,16 @@ fi
 # Ask again after compiling. A source that gained an import while the build was
 # running compiles a package the manifest does not name, and re-hashing the old
 # manifest would agree with itself while missing exactly that package.
+rm -f "${incoherent}"
 post_build_dirs="$(mktemp "${cache_dir}/dirs.XXXXXX")"
 post_build_extra="$(mktemp "${cache_dir}/dirs.XXXXXX")"
 trap 'rm -rf "${stage_dir}" "${post_build_dirs}" "${post_build_extra}" "${lock_dir}"' EXIT
 if ! list_source_dirs > "${post_build_dirs}"; then
+	if [[ -f "${incoherent}" ]]; then
+		rm -f "${incoherent}"
+		printf 'the Flowstate Claude hook dependencies are not coherent.\n' >&2
+		exit 2
+	fi
 	printf 'could not verify what the Flowstate Claude hooks were built from.\n' >&2
 	exit "${not_buildable}"
 fi
@@ -221,6 +227,7 @@ if [[ "${source_id}" != "${post_build_source_id}" ]]; then
 	exit 2
 fi
 
+rm -f "${incoherent}"
 printf '%s\n' "${source_id}" > "${stage_dir}/.source-id"
 touch "${stage_dir}/.ready"
 rm -rf "${hook_dir}"

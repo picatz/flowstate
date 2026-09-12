@@ -6,6 +6,14 @@ if [[ -z "${project_dir}" || ! -d "${project_dir}" ]]; then
 	printf 'CLAUDE_PROJECT_DIR does not name a checkout directory; restart Claude Code before using tools.\n' >&2
 	exit 2
 fi
+# Resolved the same way build-hooks.sh resolves it, so both hand source-id.sh
+# the same root. A package directory named "." is walked from the root itself,
+# and a walk rooted at a symbolic link finds none of its files, so disagreeing
+# here would mean the two never compute the same identity.
+if ! project_dir="$(cd "${project_dir}" && pwd -P)"; then
+	printf 'CLAUDE_PROJECT_DIR could not be resolved; restart Claude Code before using tools.\n' >&2
+	exit 2
+fi
 
 name="${1:-}"
 # The merge tool's entry passes `strict`, because refusing a merge there stands
@@ -56,21 +64,31 @@ warn() {
 #
 # This is deliberately a coarse over-approximation, not a second recognizer:
 # tools/hooks/mergeguard/main.go remains the only thing that decides what a
-# merge is and which one. Anything that could reach that decision is refused
-# here; only a payload that provably cannot is let through.
+# merge is and which one. It has to be at least as wide as that guard, which
+# recognizes flags between `pr` and the subcommand and an executable that comes
+# from a shell expansion, so the test is the bare word rather than a spelling
+# of the invocation. `./tools/hooks/mergeguard` is not the word, which is what
+# keeps the repair of this very guard runnable; `git merge` is the word, and
+# refusing it during the seconds this guard cannot be built costs nothing a
+# repair needs.
 #
 # Reading stdin is safe only because every path that consults this exits
 # without running the guard. On every other path the guard is still waiting for
 # this payload.
 payload_could_merge() {
 	local payload
-	payload="$(cat)"
+	# Bounded like hook.Read bounds the same stdin. A payload at the bound was
+	# truncated, and a decision read off a truncated payload is not evidence.
+	payload="$(head -c 1048576)"
+	if [[ "${#payload}" -ge 1048576 ]]; then
+		return 0
+	fi
 	# Not provably an ordinary shell call — the merge tool's own entry, or a
 	# payload this could not read. Neither may fail open.
 	if ! printf '%s' "${payload}" | grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"Bash"'; then
 		return 0
 	fi
-	if printf '%s' "${payload}" | grep -Eq 'gh[^"]*[[:space:]]pr[[:space:]]+merge|merge_pull_request'; then
+	if printf '%s' "${payload}" | grep -Eqi '(^|[^[:alnum:]])merge([^[:alnum:]_]|$)|merge_pull_request'; then
 		return 0
 	fi
 	return 1
