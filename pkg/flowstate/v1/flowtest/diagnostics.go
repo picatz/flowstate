@@ -333,6 +333,13 @@ type problems struct {
 	found []Diagnostic
 	total int
 
+	// lookups is the position-lookup budget for this load, spent across every
+	// problem rather than granted afresh to each. [MaxLoadProblems] already
+	// bounds how many are positioned, so this changes nothing about a load that
+	// stays inside it; it is here so that one rule states the bound for both
+	// passes over a document. See [maxLookupSteps].
+	lookups int
+
 	// bytes is the message text kept so far, bounded by [MaxLoadProblemBytes].
 	bytes int
 
@@ -442,11 +449,14 @@ func (p *problems) record(r site, atKey bool, message string) {
 		doc = p.elsewhereDoc
 	}
 	if doc != nil {
+		if p.lookups == 0 {
+			p.lookups = maxLookupSteps
+		}
 		locate := doc.positionOf
 		if atKey {
 			locate = doc.positionOfKey
 		}
-		if position, known := locate(r.at); known {
+		if position, known := locate(r.at, &p.lookups); known {
 			d.Line, d.Column = position.line, position.column
 		}
 	}
