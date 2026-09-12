@@ -71,6 +71,12 @@ const maxResponseBytes = 4 << 20
 
 const graphQLEndpoint = "https://api.github.com/graphql"
 
+// restEndpoint is the REST API root the fallback below reads when GraphQL
+// is refused. A Claude Code session reaches GitHub through a proxy that
+// answers every GraphQL request with 403 and serves REST only; the proxy's
+// CCR review-thread route is the REST spelling of the same evidence.
+const restEndpoint = "https://api.github.com"
+
 func main() {
 	in, err := hook.Read(os.Stdin)
 	if err != nil {
@@ -131,7 +137,7 @@ func main() {
 	defer cancel()
 
 	client := &http.Client{Timeout: requestTimeout}
-	threads, err := unresolvedThreads(ctx, client, graphQLEndpoint, tok, owner, repo, number)
+	threads, err := reviewThreadEvidence(ctx, client, graphQLEndpoint, restEndpoint, tok, owner, repo, number)
 	if err != nil {
 		hook.Deny(joinNotes(conventions, fmt.Sprintf(
 			"mergeguard: could not query review threads on %s/%s#%d (%v). Merge blocked until the evidence is available.",
@@ -990,6 +996,88 @@ func fetchReviewThreadsPage(ctx context.Context, client *http.Client, endpoint, 
 	}
 
 	return gr.Data.Repository.PullRequest.ReviewThreads, nil
+}
+
+// reviewThreadEvidence is the unresolved-thread check with two transports:
+// GraphQL first, and when that fails for any reason (a proxy that refuses
+// GraphQL, an exhausted GraphQL budget while REST still answers), the REST
+// review-thread route at rest. It errors only when both are unavailable, so
+// the fallback adds a way for the check to run without adding a way for a
+// failed check to read as clean.
+func reviewThreadEvidence(ctx context.Context, client *http.Client, graphql, rest, token, owner, repo string, number int) ([]thread, error) {
+	threads, graphQLErr := unresolvedThreads(ctx, client, graphql, token, owner, repo, number)
+	if graphQLErr == nil {
+		return threads, nil
+	}
+	threads, restErr := unresolvedThreadsREST(ctx, client, rest, token, owner, repo, number)
+	if restErr != nil {
+		return nil, fmt.Errorf("GraphQL: %v; REST: %v", graphQLErr, restErr)
+	}
+	return threads, nil
+}
+
+// restReviewThread is one thread as the REST review-thread route reports
+// it: resolution state and location, but no comment body.
+type restReviewThread struct {
+	Resolved   bool    `json:"resolved"`
+	Path       string  `json:"path"`
+	Line       *int    `json:"line"`
+	CommentIDs []int64 `json:"comment_ids"`
+}
+
+// unresolvedThreadsREST reads owner/repo#number's review threads from the
+// REST route GET {rest}/repos/{owner}/{repo}/pulls/{number}/ccr/review_threads
+// and returns the unresolved ones. The route returns every thread in one
+// response, so the walk bound is on threads read rather than pages; more
+// than maxReviewThreadsScanned is reported as incomplete rather than read
+// as clean, matching the GraphQL walk. Each thread is named by the URL of
+// its first comment and its path:line, which is what the route exposes.
+func unresolvedThreadsREST(ctx context.Context, client *http.Client, rest, token, owner, repo string, number int) ([]thread, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/ccr/review_threads", strings.TrimRight(rest, "/"), owner, repo, number)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, textbound.Truncate(string(respBody), 300))
+	}
+
+	var page []restReviewThread
+	if err := json.Unmarshal(respBody, &page); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	if len(page) > maxReviewThreadsScanned {
+		return nil, fmt.Errorf("the route returned %d review threads, more than the %d this check reads; treating the check as incomplete rather than resolved", len(page), maxReviewThreadsScanned)
+	}
+
+	var threads []thread
+	for _, rt := range page {
+		if rt.Resolved {
+			continue
+		}
+		t := thread{Body: rt.Path}
+		if rt.Line != nil {
+			t.Body = fmt.Sprintf("%s:%d", rt.Path, *rt.Line)
+		}
+		if len(rt.CommentIDs) > 0 {
+			t.URL = fmt.Sprintf("https://github.com/%s/%s/pull/%d#discussion_r%d", owner, repo, number, rt.CommentIDs[0])
+		}
+		threads = append(threads, t)
+	}
+	return threads, nil
 }
 
 // denyMessage names every unresolved thread, so the operator knows exactly

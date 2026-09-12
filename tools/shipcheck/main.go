@@ -173,14 +173,9 @@ func validRepo(repo string) bool {
 }
 
 func loadPullRequest(repo string, number int) (pullRequest, error) {
-	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,files,changedFiles"
-	out, err := runGH("pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields)
+	pr, err := loadPullRequestSummary(repo, number)
 	if err != nil {
-		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, errorSnippet(out))
-	}
-	var pr pullRequest
-	if err := json.Unmarshal(out, &pr); err != nil {
-		return pullRequest{}, fmt.Errorf("decode pull request: %w", err)
+		return pullRequest{}, err
 	}
 	comments, err := loadComments(repo, number)
 	if err != nil {
@@ -197,6 +192,22 @@ func loadPullRequest(repo string, number int) (pullRequest, error) {
 		return pullRequest{}, err
 	}
 	pr.LatestReviewCommentUpdatedAt = latestReviewComment
+	return pr, nil
+}
+
+// loadPullRequestGraphQL reads the pull request's state, head, auto-merge
+// request, review decision, check rollup and files through `gh pr view`,
+// which is GraphQL underneath; rest.go holds the REST spelling.
+func loadPullRequestGraphQL(repo string, number int) (pullRequest, error) {
+	fields := "state,baseRefName,isDraft,headRefOid,autoMergeRequest,reviewDecision,statusCheckRollup,files,changedFiles"
+	out, err := runGH("pr", "view", strconv.Itoa(number), "--repo", repo, "--json", fields)
+	if err != nil {
+		return pullRequest{}, fmt.Errorf("query pull request: %w: %s", err, errorSnippet(out))
+	}
+	var pr pullRequest
+	if err := json.Unmarshal(out, &pr); err != nil {
+		return pullRequest{}, fmt.Errorf("decode pull request: %w", err)
+	}
 	return pr, nil
 }
 
@@ -220,7 +231,7 @@ func loadLatestReviewCommentUpdate(repo string, number int) (string, error) {
 
 const commentsQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{author{login} authorAssociation body createdAt updatedAt url}}}}}`
 
-func loadComments(repo string, number int) ([]comment, error) {
+func loadCommentsGraphQL(repo string, number int) ([]comment, error) {
 	parts := strings.Split(repo, "/")
 	var comments []comment
 	var cursor string
@@ -266,7 +277,7 @@ func loadComments(repo string, number int) ([]comment, error) {
 
 const reviewsQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviews(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{submittedAt updatedAt}}}}}`
 
-func loadReviews(repo string, number int) ([]review, error) {
+func loadReviewsGraphQL(repo string, number int) ([]review, error) {
 	parts := strings.Split(repo, "/")
 	var reviews []review
 	var cursor string
@@ -606,7 +617,7 @@ type threadPage struct {
 	} `json:"errors"`
 }
 
-func unresolvedReviewThreads(repo string, number int) (int, error) {
+func unresolvedReviewThreadsGraphQL(repo string, number int) (int, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	const query = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}`
 	cursor := ""
