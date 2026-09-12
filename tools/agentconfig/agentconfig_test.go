@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	maxAgentsBytes     = 12 << 10
+	maxAgentsBytes     = 8 << 10
 	maxClaudeBytes     = 2 << 10
 	maxFieldIndexBytes = 4 << 10
 )
@@ -146,11 +146,23 @@ func TestReplacedGuidanceKeepsFieldNotes(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, ".agent-history", "commands", name+".md")); err != nil {
 				t.Fatalf("missing archived command: %v", err)
 			}
+		})
+	}
+
+	// The two verification aliases keep their old names; both-drivers has no
+	// alias because a command and a skill with one name shadow each other.
+	for _, name := range []string{"ci-check", "test-fast"} {
+		t.Run("alias/"+name, func(t *testing.T) {
 			alias := read(t, filepath.Join(root, ".claude", "commands", name+".md"))
 			if len(alias) > 1024 {
 				t.Fatalf("compatibility command is %d bytes; keep procedure in a skill", len(alias))
 			}
 		})
+	}
+	for _, name := range skillNames(t, filepath.Join(root, ".claude", "skills")) {
+		if _, err := os.Stat(filepath.Join(root, ".claude", "commands", name+".md")); err == nil {
+			t.Errorf("command %s.md duplicates the skill of the same name; one of them is shadowed", name)
+		}
 	}
 }
 
@@ -344,7 +356,7 @@ func frontmatter(t *testing.T, source []byte) map[string]string {
 	t.Helper()
 	lines := strings.Split(string(source), "\n")
 	if len(lines) < 3 || strings.TrimSpace(lines[0]) != "---" {
-		t.Fatal("SKILL.md must begin with YAML frontmatter")
+		t.Fatal("the file must begin with YAML frontmatter")
 	}
 	values := map[string]string{}
 	for _, line := range lines[1:] {
@@ -356,7 +368,7 @@ func frontmatter(t *testing.T, source []byte) map[string]string {
 			values[strings.TrimSpace(key)] = strings.TrimSpace(value)
 		}
 	}
-	t.Fatal("SKILL.md frontmatter is not closed")
+	t.Fatal("the frontmatter is not closed")
 	return nil
 }
 

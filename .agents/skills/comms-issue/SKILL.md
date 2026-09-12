@@ -1,6 +1,6 @@
 ---
 name: comms-issue
-description: Draft or update a Flowstate GitHub issue or design proposal.
+description: Use when drafting or updating a Flowstate GitHub issue or design proposal, so it lands as a durable problem statement with evidence and acceptance criteria rather than a transcript.
 ---
 
 # Issue communication
@@ -11,8 +11,9 @@ transcript of the investigation.
 ## Before writing
 
 Read the current issue when one exists. Verify claims against the current tree,
-linked incidents, and relevant documentation. Search for duplicate issues and
-for the repository's existing spelling of the concept.
+linked incidents, and documentation. Search for duplicate issues and for the
+repository's existing spelling of the concept; `docs/DSL.md` records most
+language decisions and why they were taken.
 
 ## Default shape
 
@@ -26,24 +27,21 @@ for the repository's existing spelling of the concept.
    or sequencing facts that materially constrain the solution.
 6. **Open questions** — only decisions that are genuinely unresolved.
 
-For a design issue, show the smallest concrete sketch needed to expose the API or
-language shape, then compare alternatives against existing invariants. Cite the
-current source or documentation that makes a constraint real.
+For a design issue, show the smallest concrete sketch that exposes the API or
+language shape, then compare alternatives against the existing invariants. Cite
+the current source or documentation that makes a constraint real.
 
-## Guardrails
+## Repository specifics
 
-- Do not hard-wrap GitHub prose; keep each paragraph and list item on one
-  source line and let the browser wrap it.
-- Separate observation, hypothesis, proposal, and decision. Do not turn a likely
-  explanation into a recorded fact.
-- Do not invent priority, customer impact, ownership, dates, consensus, or scope.
-- Do not turn a narrow defect into a strategy memo or attach unrelated cleanup.
-- Prefer acceptance criteria over phrases such as “fully support” or “handle all
-  cases.”
-- Draft by default. Create, edit, close, label, or comment on the issue only when
-  the user has authorized that external action.
-- Preserve host-supplied attribution; never guess or duplicate a model footer.
+- Do not hard-wrap GitHub prose; keep each paragraph and list item on one source
+  line and let the browser wrap it.
+- Keep observation, hypothesis, proposal, and decision separate; a likely
+  explanation is not a recorded fact.
+- Labels: `kind/bug` needs a reproducer, `kind/design-record` records a decision
+  before code, `kind/decision` is the maintainer's call, `kind/umbrella` groups
+  slices; area labels say where.
 
-## Historical field notes
+## History
 
-Read [the archived comms-issue guidance](../../../.agent-history/skills/comms-issue/SKILL.md) only when a prior incident, exemplar, or host-specific rationale is relevant. It is evidence and history, not a second current procedure.
+[Archived comms-issue guidance](../../../.agent-history/skills/comms-issue/SKILL.md)
+is evidence and history, not a second current procedure.

@@ -1,6 +1,6 @@
 ---
 name: flowstate-security-review
-description: Review a Flowstate change or suspected vulnerability across trust boundaries.
+description: Use when reviewing a Flowstate change for security, triaging a suspected vulnerability or scanner finding, or judging a change to authentication, authorization, egress, secrets, tenancy, or bounds.
 ---
 
 # Flowstate security review

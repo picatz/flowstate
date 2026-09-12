@@ -1,14 +1,14 @@
 ---
 name: pre-pr-review
-description: Self-review a Flowstate branch and its shipped artifacts before a pull request.
+description: Use to self-review a Flowstate branch and everything it ships (code, tests, generated output, docs, commit messages, PR body) before opening or updating a pull request.
 ---
 
 # Pre-PR review
 
-Run this over the actual base/head diff and every shipped artifact: code, tests,
-generated output, documentation, commit messages, and the proposed PR body.
-`PASS` is valid; manufacturing findings creates churn and trains reviewers to
-ignore the next real one.
+Run this over the actual base/head diff and every shipped artifact. `PASS` is
+valid; manufacturing findings creates churn and trains reviewers to ignore the
+next real one. Prefer a fresh context for the pass: on Claude Code, delegate to
+the `flowstate-reviewer` subagent, which sees only the diff and these lenses.
 
 ## Lenses
 
@@ -32,19 +32,9 @@ ignore the next real one.
 9. **Receiver effort** — remove repetition, file tours, unsupported absolutes,
    and context the reviewer already has in the issue or diff.
 
-Use the `flowstate-verify` skill to select the appropriate checks. Inspect the
-resulting diff again after formatting or generation.
-
-Before an autonomous merge, follow `.agents/ship.md`: leave auto-merge disabled,
-obtain a distinct independent AI code-and-security review on the exact final
-head, visibly disposition all findings, review again after any push, and require
-`go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER` to pass. Codex and
-Copilot are requested at most once each per pull request, only after recording
-the intended final head; a later fix gets provider-neutral re-review, not another
-vendor request. Do not wait or retry on quota or absence, but read and visibly
-classify every substantive suggestion that arrives before merge; provider
-unavailability is neither a project defect nor approval and does not replace
-provider-neutral evidence.
+Use the `flowstate-verify` skill to select the checks, and inspect the resulting
+diff again after formatting or generation. The merge gates themselves belong to
+the `flowstate-ship` skill.
 
 ## Output
 
@@ -52,6 +42,7 @@ Return only material findings with location, consequence, evidence, and a
 concrete fix. If none remain, return `PASS` followed by the checks that support
 that conclusion and any explicitly unverified leg.
 
-## Historical field notes
+## History
 
-Read [the archived pre-pr-review guidance](../../../.agent-history/skills/pre-pr-review/SKILL.md) only when a prior incident, exemplar, or host-specific rationale is relevant. It is evidence and history, not a second current procedure.
+[Archived pre-pr-review guidance](../../../.agent-history/skills/pre-pr-review/SKILL.md)
+is evidence and history, not a second current procedure.

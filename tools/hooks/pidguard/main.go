@@ -34,7 +34,7 @@ func main() {
 	}
 	if word := patternKill(in.Command()); word != "" {
 		hook.Deny(fmt.Sprintf(
-			"`%s` kills by pattern, and CLAUDE.md's discipline is to kill by PID, never by pattern: on this shared machine a pattern matches every sibling agent's processes, and one pattern kill once matched the compound command that contained it and ended its own shell. Record the PIDs of what you start ($!, a pidfile, or `ps -Ao pid,args` filtered by your own worktree path) and kill exactly those.",
+			"`%s` kills by pattern, and AGENTS.md's discipline is to kill by PID, never by pattern: on this shared machine a pattern matches every sibling agent's processes, and one pattern kill once matched the compound command that contained it and ended its own shell. Record the PIDs of what you start ($!, a pidfile, or `ps -Ao pid,args` filtered by your own worktree path) and kill exactly those.",
 			word))
 	}
 }

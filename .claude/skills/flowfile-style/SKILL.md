@@ -1,6 +1,6 @@
 ---
 name: flowfile-style
-description: Write and review Flowfiles in the canonical style and route language proposals to the rule that decides them.
+description: Use when writing or reviewing a Flowfile (examples, tests, docs, issue sketches) or when a keyword, step property, policy key, or spelling is proposed; routes each question to the docs/STYLE.md rule that decides it.
 ---
 
 # Flowfile style
@@ -66,8 +66,7 @@ that reference rather than a new parallel argument.
 `### R<n>.` headings in the same change; the repository test checks that coupling.
 Do not duplicate the full rules here.
 
-## Historical field notes
+## History
 
-Read [the archived flowfile-style guidance](../../../.agent-history/skills/flowfile-style/SKILL.md)
-only when a prior incident, exemplar, or detailed rationale is relevant. It is
-history and evidence, not a second current charter.
+[Archived flowfile-style guidance](../../../.agent-history/skills/flowfile-style/SKILL.md)
+is evidence and history, not a second current charter.

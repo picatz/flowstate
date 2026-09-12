@@ -1,48 +1,34 @@
 ---
 name: comms-session
-description: Write concise discovery, blocker, status, and handoff updates during agent work.
+description: Use when deciding whether and how to interrupt the owner during agent work with a discovery, blocker, status, or handoff update.
 ---
 
 # Session communication
 
-The owner's attention is the scarcest resource. Every update must change what
-they know, decide, or need to do.
+The owner's attention is the scarcest resource. An update earns its place only
+when it changes what they know, decide, or must do; if removing it would not
+force a worse decision or a status question, remove it.
 
 ## When to speak
 
-- At the start, state the approach in one sentence only when it is not obvious.
-- Interrupt for a material discovery, a new constraint, a blocker, a risk, or a
-  change of direction.
-- At the end, state the outcome, verification evidence, remaining uncertainty,
-  and any action the owner must take.
+- At the start, one sentence on the approach, only when it is not obvious.
+- Mid-task, for a material discovery, a new constraint, a blocker, a risk, or a
+  change of direction. Routine reads, searches, edits, test starts, and tool
+  mechanics are silent, and a subagent report the owner already saw is not
+  repeated.
+- At the end: the outcome, the verification evidence, the remaining
+  uncertainty, and any action the owner must take.
 
-Stay silent for routine reads, searches, edits, test starts, and tool mechanics.
-Do not restate a subagent report the owner already saw or summarize the same
-result twice.
+## What each update carries
 
-## Target shapes
+- Discovery: the fact, the revision it was observed at, and what it changes
+  about the plan.
+- Blocker: the single decision needed and the consequence of each option, so the
+  owner can answer without scrolling back.
+- Handoff: what is done, what ran and what it proved, what was unavailable or
+  not run, and whether anything needs the owner before review lands.
 
-Discovery:
+## History
 
-> The shared conformance suite has only one caller, so the existing test proves
-> local behavior but not driver agreement. I am adding the durable call site
-> before changing semantics.
-
-Blocker:
-
-> Blocked on one product decision: preserving the old spelling keeps wire
-> compatibility but creates a second canonical form. Which contract should win?
-
-Handoff:
-
-> PR open; the diff-scoped gate passed. The appearance leg was unavailable
-> locally and remains for CI. Nothing else needs you until review lands.
-
-## Self-check
-
-Would removing this update force the owner to make a worse decision or ask for
-status? If not, remove it.
-
-## Historical field notes
-
-Read [the archived comms-session guidance](../../../.agent-history/skills/comms-session/SKILL.md) only when a prior incident, exemplar, or host-specific rationale is relevant. It is evidence and history, not a second current procedure.
+[Archived comms-session guidance](../../../.agent-history/skills/comms-session/SKILL.md)
+is evidence and history, not a second current procedure.
