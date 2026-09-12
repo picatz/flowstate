@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-yaml"
 )
 
 const (
@@ -354,22 +357,64 @@ func skillNames(t *testing.T, root string) []string {
 
 func frontmatter(t *testing.T, source []byte) map[string]string {
 	t.Helper()
-	lines := strings.Split(string(source), "\n")
+	values, err := parseFrontmatter(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return values
+}
+
+// parseFrontmatter reads the `key: value` lines of a file's YAML frontmatter
+// as text, after checking with a real YAML parser that the block is YAML
+// at all: a description with an unquoted `: ` inside it reads fine line by
+// line and is rejected by every host that parses the block to advertise
+// the skill, which the line reader alone would never notice.
+func parseFrontmatter(source []byte) (map[string]string, error) {
+	lines := strings.Split(strings.ReplaceAll(string(source), "\r\n", "\n"), "\n")
 	if len(lines) < 3 || strings.TrimSpace(lines[0]) != "---" {
-		t.Fatal("the file must begin with YAML frontmatter")
+		return nil, errors.New("the file must begin with YAML frontmatter")
+	}
+	end := -1
+	for i, line := range lines[1:] {
+		if strings.TrimSpace(line) == "---" {
+			end = i + 1
+			break
+		}
+	}
+	if end < 0 {
+		return nil, errors.New("the frontmatter is not closed")
+	}
+	block := strings.Join(lines[1:end], "\n")
+	var parsed map[string]any
+	if err := yaml.Unmarshal([]byte(block), &parsed); err != nil {
+		return nil, fmt.Errorf("the frontmatter is not valid YAML: %v", err)
 	}
 	values := map[string]string{}
-	for _, line := range lines[1:] {
-		if strings.TrimSpace(line) == "---" {
-			return values
-		}
+	for _, line := range lines[1:end] {
 		key, value, ok := strings.Cut(line, ":")
 		if ok {
 			values[strings.TrimSpace(key)] = strings.TrimSpace(value)
 		}
 	}
-	t.Fatal("the frontmatter is not closed")
-	return nil
+	return values, nil
+}
+
+// TestFrontmatterRejectsWhatAHostWouldReject pins the YAML check with the
+// shape that slipped past the line reader once: a plain-scalar description
+// carrying `: ` inside backticks.
+func TestFrontmatterRejectsWhatAHostWouldReject(t *testing.T) {
+	bad := "---\nname: x\ndescription: the shape is `scope: lowercase imperative` with a body\n---\nbody\n"
+	if _, err := parseFrontmatter([]byte(bad)); err == nil {
+		t.Fatal("an unquoted `: ` inside a plain scalar was accepted")
+	}
+	good := "---\nname: x\ndescription: \"the shape is `scope: lowercase imperative`\"\npaths: [\"a/**\", \"b.md\"]\n---\nbody\n"
+	values, err := parseFrontmatter([]byte(good))
+	if err != nil {
+		t.Fatalf("quoted scalar rejected: %v", err)
+	}
+	if values["name"] != "x" || !strings.HasPrefix(values["paths"], "[") {
+		t.Fatalf("values = %v", values)
+	}
 }
 
 // TestThePullRequestTemplateCarriesTheSkillsHeadings keeps the template a

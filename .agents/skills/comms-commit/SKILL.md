@@ -1,6 +1,6 @@
 ---
 name: comms-commit
-description: Use when writing or reviewing a Flowstate commit message or squash subject; the shape is `scope: lowercase imperative` with a body that says why, and tools/commitcheck holds it to that shape.
+description: Use when writing or reviewing a Flowstate commit message or squash subject; the shape is a scope prefix, a colon, and a lowercase imperative, with a body that says why, and tools/commitcheck holds it to that shape.
 ---
 
 # Commit communication
