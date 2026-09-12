@@ -53,11 +53,13 @@ for directory in "${directories[@]}"; do
 	fi
 	# Only this directory's own files: a package does not compile its
 	# subdirectories, and each package the hooks import is listed in its own
-	# right by the manifest. The extensions are the ones the Go build reads
-	# from a package directory; `build-hooks.sh` refuses to publish when the
-	# compiler reports an input outside them, so this list cannot silently
-	# fall behind what is compiled. Symbolic links count, because the
-	# compiler follows them.
+	# right by the manifest. The extensions are the ones these packages use,
+	# together with the embedded, assembly and cgo inputs `build-hooks.sh`
+	# records beside the manifest. That covers what the hooks compile today,
+	# which is pure Go; a dependency that gained a C++, Objective-C or SWIG
+	# source would need both files widened, since `go list` reports those
+	# kinds separately and neither this walk nor that query names them
+	# (#1967). Symbolic links count, because the compiler follows them.
 	while IFS= read -r -d '' path; do
 		relative="${path#"${project_dir}/"}"
 		if [[ "${relative}" == *$'\n'* ]]; then

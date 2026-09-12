@@ -717,10 +717,14 @@ func TestClaudeHookLauncherFailsClosedWithoutACompleteBuild(t *testing.T) {
 			t.Fatalf("a broken merge guard blocked %q with exit %d; the repair it needs must still run:\n%s", allowed, status, output)
 		}
 	}
-	// Every spelling mergeguard itself recognizes, because the launcher's test
-	// stands in for that guard and must be at least as wide as it: flags are
-	// inherited and may sit between `pr` and the subcommand, and the
-	// executable may come from an expansion.
+	// The spellings the over-approximation is pinned to cover, not every
+	// spelling the guard recognizes: flags are inherited and may sit between
+	// `pr` and the subcommand, the executable may come from an expansion, and
+	// the word may be split by quoting, a backslash, or a line continuation.
+	// Completeness is not claimed and cannot be -- the guard tokenizes, this
+	// matches text -- so a spelling found outside this table is the known
+	// residual tracked in #1967, not a contradiction. tools/hooks/mergeguard
+	// stays the only recognizer; every row here must hold.
 	for _, refused := range []string{
 		"gh pr merge 1942 -R picatz/flowstate --squash",
 		"gh pr merge https://github.com/picatz/flowstate/pull/1942",
