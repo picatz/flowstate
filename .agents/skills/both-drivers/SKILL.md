@@ -1,6 +1,6 @@
 ---
 name: both-drivers
-description: Use for behavior that must agree between local and Temporal execution.
+description: Use when a change touches behavior observable through both `flow run local` and Temporal execution (step execution, expression timing, retries, timeouts, tolerance, loops, compensation, cancellation, run results), so shared conformance cases prove the drivers agree.
 ---
 
 # Both execution drivers
@@ -78,6 +78,7 @@ behavior observable through both `flow run local` and Temporal.
 Report which two call sites exercised the shared case and which observable result
 the test forces to agree.
 
-## Historical field notes
+## History
 
-Read [the archived both-drivers command](../../../.agent-history/commands/both-drivers.md) only when a prior incident or rationale is relevant. It is evidence and history, not a second current procedure.
+[The archived both-drivers command](../../../.agent-history/commands/both-drivers.md)
+is evidence and history, not a second current procedure.
