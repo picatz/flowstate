@@ -191,12 +191,12 @@ func TestAmpShipProcedurePinsFinalHeadEvidence(t *testing.T) {
 	ship := strings.Join(strings.Fields(raw), " ")
 	for _, required := range []string{
 		"without auto-merge",
-		"distinct provider-neutral AI review",
+		"provider-neutral AI review",
 		"code-security",
 		"PASS/no-actionable-findings",
-		"availability is optional",
-		"at most once",
-		"feedback is not optional once it arrives",
+		"Do not request a vendor review bot",
+		"Only a material defect in this change earns a new head",
+		"does not restart these gates",
 		"false positive with evidence",
 		"searched, non-duplicate scoped issue",
 		"if one arrives after merge",

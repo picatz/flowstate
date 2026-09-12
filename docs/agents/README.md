@@ -68,14 +68,18 @@ or an extra runtime read; replacing it with forwarding files would save storage
 while adding latency and another host-specific resolution failure.
 
 The shared shipping semantics are deliberately provider-neutral: one exact-head
-code-and-security review is mandatory, while Codex and Copilot are each requested
-at most once per pull request, only after recording the intended final head, and
-are not availability gates. A later fix gets provider-neutral re-review rather
-than another vendor request. Feedback that arrives is still mandatory work.
-`shipcheck` rejects repeated Codex requests across the pull request, any review
-artifact newer than the owner attestation, unresolved threads, stale evidence,
-and nonterminal or failing checks. A late artifact thus forces explicit
-re-attestation without requiring either vendor to answer.
+code-and-security review is mandatory, and a fresh-context review carrying this
+repository's rubrics is what satisfies it. Vendor review bots are not requested.
+One that reviews on its own is input rather than a gate: its findings are read
+and dispositioned once for the head they arrived on, and its silence, quota, or
+absence is neither a defect nor a PASS. Only a material defect earns a new head;
+an advisory finding is answered or deferred to a scoped issue, so a bot that
+re-reviews each push cannot turn a finished change into an endless loop. That
+bound is the difference between review as evidence and review as a treadmill.
+`shipcheck` still rejects repeated vendor requests across the pull request, any
+review artifact newer than the owner attestation, unresolved threads, stale
+evidence, and nonterminal or failing checks, so a late artifact forces explicit
+re-attestation without requiring any vendor to answer.
 
 ## Rightsized for the Claude 5 generation
 

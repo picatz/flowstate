@@ -16,27 +16,31 @@ the current branch when empty).
 1. **Final head.** Finish every edit, push, and record the full 40-character
    head SHA on the pull request before requesting review. Any later push
    restarts from here.
-2. **Independent review on that head.** At least one distinct, provider-neutral
-   AI code-and-security review. On Claude Code, delegate to the
-   `flowstate-reviewer` subagent with the PR number or base/head; its fresh
-   context is the independence. Codex and Copilot are requested at most once
-   each per pull request, only after the head is recorded; their availability
-   is optional, their findings are not. (A Codex review triggered by opening
-   the PR is not a request.)
+2. **Independent review on that head.** One provider-neutral AI
+   code-and-security review, and it is the evidence. On Claude Code, delegate
+   to the `flowstate-reviewer` subagent with the PR number or base/head; its
+   fresh context is the independence. Do not request a vendor review bot. One
+   that reviews on its own is input: read it, disposition it once for the head
+   it reviewed, and never wait on it.
 3. **Disposition.** Give every finding one visible disposition: fixed with
    evidence, false positive with evidence, obsolete, or deferred to a searched,
    scoped issue. Resolve a thread only after its disposition is visible on it.
-   Correctness and security findings block until fixed and re-reviewed. A fix
-   is a new head: return to gate 1, and re-review provider-neutrally rather than
-   requesting a vendor again. Do not answer an AI reviewer with AI prose; the
-   disposition is the reply. On Claude Code, delegate the thread resolution
-   and the hiding of decision-free bot comments to the `flowstate-pr-tidy`
-   subagent so human reviewers see only decisions.
+   A material defect (correctness, security, durable state, or a documented
+   claim the code does not support) blocks until fixed, and the fix is a new
+   head: return to gate 1. Everything else is dispositioned here and does not
+   restart the gates, so a round that yields only advisory findings ends the
+   review. Do not answer an AI reviewer with AI prose; the disposition is the
+   reply. On Claude Code, delegate the thread resolution and the hiding of
+   decision-free bot comments to the `flowstate-pr-tidy` subagent so human
+   reviewers see only decisions.
 4. **Attestation.** After the last review activity, post one owner comment that
    states the reviewer, the full head SHA, the `code-security` scope, and
    "PASS: no actionable findings", carrying the machine-readable line from
    `.agents/ship.md`. `tools/shipcheck` rejects an attestation that any later
-   comment, review, or thread update follows, so post it last.
+   comment, review, or thread update follows, so post it last, and it reads the
+   comment's `OWNER` association, so post it as the owner: on Claude Code the
+   GitHub tools carry that identity, while `gh` with the session token posts as
+   a bot and the attestation will not count.
 5. **Checks.** Every applicable check terminal and acceptable on that head,
    including non-required ones; run expensive CI once per intended final head.
 6. **Shipcheck.** `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`
@@ -57,6 +61,10 @@ permissions, or a green subset of checks.
 ## Where the loop stops
 
 Fix material findings; classify the rest visibly and move on. A round that
-yields only optional or stylistic findings is a passing round. Two rounds that
-keep producing new material findings mean the change needs rethinking: stop,
-summarize the recurring root cause, and ask rather than iterate.
+yields only optional or stylistic findings is a passing round, and its findings
+become follow-ups rather than another head. Review is bounded per head, not per
+reviewer: a bot that re-reviews a new head does not reopen a gate already
+satisfied, and a finding already dispositioned does not become new by being
+repeated. Two rounds that keep producing new material findings mean the change
+needs rethinking: stop, summarize the recurring root cause, and ask rather than
+iterate.
