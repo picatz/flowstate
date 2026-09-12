@@ -550,8 +550,14 @@ func (e *executor) yieldWorkflow() {
 }
 
 // chargeWorkflowCost records deterministic workflow-side CEL work: a `value:`
-// step's expression, a step's or a loop's condition, and a loop's `initial:`
-// and `update:`.
+// step's expression, a step's or a loop's condition, a step's `vars:`, a
+// `switch:`'s subject, a `for_each`'s `items:`, and a loop's `initial:` and
+// `update:`.
+//
+// The list is every expression a loop can repeat without scheduling anything —
+// which is the whole point of the budget. A path that evaluates CEL in workflow
+// code and does not charge it here is a hole in the bound, not an omission of
+// bookkeeping.
 // [shouldSuspend] turns a spent budget into Continue-As-New at the next
 // representable step or loop boundary, so replay of a later segment does not
 // repeat an ever-growing prefix.
@@ -630,7 +636,8 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 // Evaluated after the condition, matching the local driver and the validator: a var
 // whose expression fails must not fail a step that was going to be skipped.
 func (e *executor) runNodeWithVars(node *v1.Node, depth, susp int, descend bool) error {
-	inner, err := v1.EvalStepVars(evalContext(), node, e.scope)
+	inner, cost, err := v1.EvalStepVarsWithCost(evalContext(), node, e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -946,7 +953,8 @@ func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
 // into the enclosing namespace the way parallel branches merge theirs; exactly
 // one body ran, so there is nothing to collide with.
 func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) error {
-	body, outputs, err := v1.SelectSwitchCase(evalContext(), sw, e.scope)
+	body, outputs, cost, err := v1.SelectSwitchCaseWithCost(evalContext(), sw, e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -1394,7 +1402,8 @@ func isUndoActivityTimeout(err error) bool {
 // runForEach runs a loop body once per item, sequentially or with bounded
 // concurrency.
 func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, descend bool) error {
-	items, err := v1.ResolveItems(evalContext(), loop, e.scope)
+	items, cost, err := v1.ResolveItemsWithCost(evalContext(), loop, e.scope)
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}

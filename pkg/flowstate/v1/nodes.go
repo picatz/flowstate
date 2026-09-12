@@ -365,32 +365,52 @@ func CheckForEachItems(items []*Value) error {
 // likely a mistake than an intent, and silently treating it as a one-element list
 // would hide the mistake.
 func ResolveItems(ctx context.Context, loop *ForEach, scope *Scope) ([]*Value, error) {
+	elements, _, err := ResolveItemsWithCost(ctx, loop, scope)
+
+	return elements, err
+}
+
+// ResolveItemsWithCost is [ResolveItems] plus the deterministic CEL cost of the
+// list expression. A literal list costs zero.
+//
+// A `for_each` nested inside another loop re-evaluates its `items:` on every
+// outer iteration, so the expression repeats with no history to bound it. See
+// [engine.executor.chargeWorkflowCost].
+func ResolveItemsWithCost(ctx context.Context, loop *ForEach, scope *Scope) ([]*Value, uint64, error) {
 	items := loop.GetItems()
 	if items == nil {
-		return nil, fmt.Errorf("for_each has no items")
+		return nil, 0, fmt.Errorf("for_each has no items")
 	}
 
 	ev := DefaultEvaluator()
-	var out ref.Val
+	var (
+		out  ref.Val
+		cost uint64
+	)
 
 	switch kind := items.GetKind().(type) {
 	case *Value_Expr:
 		var err error
-		out, err = ev.EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
+		out, cost, err = ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 		if err != nil {
-			return nil, fmt.Errorf("evaluating items: %w", err)
+			return nil, cost, fmt.Errorf("evaluating items: %w", err)
 		}
 	case *Value_Literal:
 		var err error
 		out, err = cel.ValueToRefValue(TypeAdapter, kind.Literal)
 		if err != nil {
-			return nil, fmt.Errorf("converting items: %w", err)
+			return nil, 0, fmt.Errorf("converting items: %w", err)
 		}
 	default:
-		return nil, fmt.Errorf("unsupported items kind %T", items.GetKind())
+		return nil, 0, fmt.Errorf("unsupported items kind %T", items.GetKind())
 	}
 
-	return listElements(out)
+	elements, err := listElements(out)
+	if err != nil {
+		return nil, cost, err
+	}
+
+	return elements, cost, nil
 }
 
 // listElements returns the elements of a CEL list value as Values.
@@ -621,17 +641,30 @@ func EvalVars(ctx context.Context, profile string, declared map[string]*Value) (
 // them, for the reason [EvalWorkflowVars] gives: a protobuf map has no order, so "the
 // one declared above" is not something the file can mean.
 func EvalStepVars(ctx context.Context, node *Node, scope *Scope) (*Scope, error) {
+	inner, _, err := EvalStepVarsWithCost(ctx, node, scope)
+
+	return inner, err
+}
+
+// EvalStepVarsWithCost is [EvalStepVars] plus the deterministic CEL cost of the
+// block. A step that declares no vars, or only literal ones, costs zero.
+//
+// A step's `vars:` are evaluated in workflow code like its condition, and a
+// step may declare them without scheduling anything — so a loop over such a
+// step repeats them with no history to bound it. See
+// [engine.executor.chargeWorkflowCost].
+func EvalStepVarsWithCost(ctx context.Context, node *Node, scope *Scope) (*Scope, uint64, error) {
 	declared := node.GetVars()
 	if len(declared) == 0 {
-		return scope, nil
+		return scope, 0, nil
 	}
 
-	vars, err := evalVarsAgainst(ctx, scope.GetProfile(), declared, scope)
+	vars, cost, err := evalVarsAgainstWithCost(ctx, scope.GetProfile(), declared, scope)
 	if err != nil {
-		return nil, err
+		return nil, cost, err
 	}
 
-	return scope.WithLocals(vars), nil
+	return scope.WithLocals(vars), cost, nil
 }
 
 // evalVarsAgainst evaluates a `vars:` block against a scope, returning literals.
@@ -641,10 +674,19 @@ func EvalStepVars(ctx context.Context, node *Node, scope *Scope) (*Scope, error)
 // disagree about a detail — which errors are fatal, whether a literal is passed
 // through, what order failures are reported in — that no author ever asked to differ.
 func evalVarsAgainst(ctx context.Context, profile string, declared map[string]*Value, base *Scope) (map[string]*Value, error) {
+	vars, _, err := evalVarsAgainstWithCost(ctx, profile, declared, base)
+
+	return vars, err
+}
+
+// evalVarsAgainstWithCost is [evalVarsAgainst] plus the deterministic CEL cost
+// of every expression in the block. Literal vars cost zero.
+func evalVarsAgainstWithCost(ctx context.Context, profile string, declared map[string]*Value, base *Scope) (map[string]*Value, uint64, error) {
 	if len(declared) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
+	var spent uint64
 	ev := DefaultEvaluator()
 	vars := make(map[string]*Value, len(declared))
 
@@ -658,18 +700,19 @@ func evalVarsAgainst(ctx context.Context, profile string, declared map[string]*V
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, profile, v.GetExpr(), base.Activation(ctx))
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, profile, v.GetExpr(), base.Activation(ctx))
+		spent += cost
 		if err != nil {
-			return nil, fmt.Errorf("var %q: %w", name, err)
+			return nil, spent, fmt.Errorf("var %q: %w", name, err)
 		}
 		literal, err := cel.RefValueToValue(out)
 		if err != nil {
-			return nil, fmt.Errorf("var %q: converting result: %w", name, err)
+			return nil, spent, fmt.Errorf("var %q: converting result: %w", name, err)
 		}
 		vars[name] = &Value{Kind: &Value_Literal{Literal: literal}}
 	}
 
-	return vars, nil
+	return vars, spent, nil
 }
 
 // Activation returns the CEL activation for evaluating an expression against step
