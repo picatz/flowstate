@@ -102,10 +102,18 @@ if [[ ! -s "${build_paths}" ]]; then
 	exit 2
 fi
 
+# Ordered into a file for the same reason the walk is enumerated into one: a
+# process substitution's failure reaches neither `set -e` nor `pipefail`, the
+# loop reads nothing, and the fold below would hash the directory names alone
+# -- an identity that then matches forever, whatever the sources do.
+if ! LC_ALL=C sort "${build_paths}" > "${walk_output}"; then
+	printf 'could not order the Flowstate Claude hook build inputs.\n' >&2
+	exit 2
+fi
 {
 	printf '%s\n' "${directories[@]}"
 	while IFS= read -r path; do
 		printf '%s\n' "${path}"
 		git -C "${project_dir}" hash-object -- "${path}"
-	done < <(LC_ALL=C sort "${build_paths}")
+	done < "${walk_output}"
 } | git -C "${project_dir}" hash-object --stdin

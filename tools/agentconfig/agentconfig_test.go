@@ -1240,38 +1240,48 @@ func TestClaudeHookBuildRunsOnAnOrdinaryCheckout(t *testing.T) {
 		}
 	})
 
-	t.Run("a walk that cannot enumerate a package", func(t *testing.T) {
-		// The walk ran in a process substitution, where a failure is invisible
-		// to `set -e`: the loop read nothing and the identity came back as a
-		// hash of the manifests alone. That hash is stable, so it went on
-		// matching while the sources changed underneath it, and a stale guard
-		// went on being trusted -- the one failure this identity exists to
-		// prevent. Any reason `find` can fail reaches it, so the assertion is
-		// that the identity refuses rather than narrows.
-		project := t.TempDir()
-		writeHookFixture(t, root, project)
-		if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
-			t.Fatalf("seed build: %v\n%s", err, output)
-		}
-		bin := filepath.Join(project, "double")
-		if err := os.Mkdir(bin, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(bin, "find"),
-			[]byte("#!/bin/sh\nprintf 'find: unknown primary\\n' >&2\nexit 1\n"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		manifest := filepath.Join(project, ".claude", "hooks", ".bin", ".source-dirs")
-		cmd := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "source-id.sh"), manifest)
-		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project, "PATH="+bin+":"+os.Getenv("PATH"))
-		output, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatalf("a walk that enumerated nothing still produced an identity:\n%s", output)
-		}
-		if !strings.Contains(string(output), "could not enumerate") {
-			t.Fatalf("the identity did not say the walk failed:\n%s", output)
-		}
-	})
+	// Both loops that read a command's output through a file: a process
+	// substitution's failure reaches neither `set -e` nor `pipefail`, so the
+	// loop reads nothing and the identity comes back narrowed at exit 0 --
+	// over the manifests alone, or over the directory names alone. Either is
+	// stable, so it goes on matching while the sources change underneath it,
+	// and the launcher goes on running a guard built from code that no longer
+	// exists. That is the one failure this identity exists to prevent, and it
+	// is the quietest way to get one, so each must refuse rather than narrow.
+	for _, blind := range []struct {
+		name    string
+		command string
+		refusal string
+	}{
+		{"a walk that cannot enumerate a package", "find", "could not enumerate"},
+		{"an order that cannot be established", "sort", "could not order"},
+	} {
+		t.Run(blind.name, func(t *testing.T) {
+			project := t.TempDir()
+			writeHookFixture(t, root, project)
+			if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+				t.Fatalf("seed build: %v\n%s", err, output)
+			}
+			bin := filepath.Join(project, "double")
+			if err := os.Mkdir(bin, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, blind.command),
+				[]byte("#!/bin/sh\nprintf '"+blind.command+": broken\\n' >&2\nexit 1\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			manifest := filepath.Join(project, ".claude", "hooks", ".bin", ".source-dirs")
+			cmd := exec.Command("bash", filepath.Join(project, ".claude", "hooks", "source-id.sh"), manifest)
+			cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project, "PATH="+bin+":"+os.Getenv("PATH"))
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("a blind %s still produced an identity:\n%s", blind.command, output)
+			}
+			if !strings.Contains(string(output), blind.refusal) {
+				t.Fatalf("the identity did not say %s failed:\n%s", blind.command, output)
+			}
+		})
+	}
 
 	t.Run("a mktemp that requires a template", func(t *testing.T) {
 		// BSD `mktemp` -- macOS -- is a usage error without one, where GNU
