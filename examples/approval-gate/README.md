@@ -68,14 +68,25 @@ flow jwt sign --key "$KEY" --id flowstate-dev --issuer "$ISSUER" \
 chmod 600 "$TOKEN_DIR/requester.jwt" "$TOKEN_DIR/approver.jwt"
 ```
 
-Start as the requester and detach while the run waits. The explicit issuer
-input binds this run to the local issuer that actually attested the approver;
-production supplies its organizational issuer instead.
+The workflow's `signals:` rule names `https://issuer.example.com`, which is the
+deployment's own line to edit and deliberately not an input: a subject is only
+unique within the issuer that attested it, so a run that chose its own issuer
+would be choosing which population of `team: release-managers` the gate asks
+rather than narrowing the one the file grants. This walkthrough therefore does
+what a deployment does, to a copy — substituting the local issuer this dev stack
+actually attests with:
 
 ```sh
-RUN=$(flow run --detach examples/approval-gate/workflow.yaml \
+GATE=$(mktemp -d)/workflow.yaml
+sed "s|https://issuer.example.com|$ISSUER|" \
+  examples/approval-gate/workflow.yaml > "$GATE"
+```
+
+Start as the requester and detach while the run waits.
+
+```sh
+RUN=$(flow run --detach "$GATE" \
   --input-file examples/approval-gate/inputs.json \
-  --input expected_approver_issuer="$ISSUER" \
   --address "$ADDRESS" --token-file "$TOKEN_DIR/requester.jwt" -o json)
 WORKFLOW_ID=$(printf '%s\n' "$RUN" | jq -r .workflowId)
 flow get "$WORKFLOW_ID" --address "$ADDRESS" \

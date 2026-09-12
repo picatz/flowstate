@@ -511,9 +511,6 @@ func TestServerDevAuthCompletesAnAuthenticatedApprovalJourney(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	workflow := filepath.Join("..", "..", "examples", "approval-gate", "workflow.yaml")
-	inputs := filepath.Join("..", "..", "examples", "approval-gate", "inputs.json")
-
 	out, errOut := &syncWriter{}, &syncWriter{}
 	root := newRootCommand()
 	root.SetOut(out)
@@ -536,6 +533,18 @@ func TestServerDevAuthCompletesAnAuthenticatedApprovalJourney(t *testing.T) {
 		t.Skipf("SKIPPING the authenticated dev gate: this environment cannot start a Temporal dev server (%v)", err)
 	}
 
+	// The gate's `signals:` rule names its issuer rather than taking one as an
+	// input, because a subject is only unique within the issuer that attested
+	// it. This stack mints its own issuer, so the test does what a deployment
+	// does, and what README.md's walkthrough does: substitutes it into a copy.
+	inputs := filepath.Join("..", "..", "examples", "approval-gate", "inputs.json")
+	source, err := os.ReadFile(filepath.Join("..", "..", "examples", "approval-gate", "workflow.yaml"))
+	require.NoError(t, err)
+
+	workflow := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow,
+		[]byte(strings.ReplaceAll(string(source), "https://issuer.example.com", stack.AuthIssuer)), 0o600))
+
 	require.False(t, stack.AnonymousAuth)
 	require.Equal(t, "http://"+stack.FlowstateAddress, stack.AuthResource)
 	require.Equal(t, devAuthIssuer, stack.AuthIssuer)
@@ -555,7 +564,6 @@ func TestServerDevAuthCompletesAnAuthenticatedApprovalJourney(t *testing.T) {
 	anonymous := runFlow(t,
 		"run", workflow,
 		"--input-file", inputs,
-		"--input", "expected_approver_issuer="+stack.AuthIssuer,
 		"--address", stack.FlowstateAddress,
 	)
 	require.Error(t, anonymous.Err)
@@ -587,7 +595,6 @@ func TestServerDevAuthCompletesAnAuthenticatedApprovalJourney(t *testing.T) {
 	started := runFlow(t,
 		"run", "--detach", workflow,
 		"--input-file", inputs,
-		"--input", "expected_approver_issuer="+stack.AuthIssuer,
 		"--address", stack.FlowstateAddress,
 		"--token-file", requesterToken,
 		"-o", "json",
