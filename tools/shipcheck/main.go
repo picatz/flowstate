@@ -37,6 +37,9 @@ var requiredChecks = []requiredCheck{
 	{"Dependency review", "Review dependency changes"},
 }
 
+// timeNow is the clock the request window reads, replaced in tests.
+var timeNow = time.Now
+
 var (
 	ghCommandTimeout = 30 * time.Second
 	ghWaitDelay      = time.Second
@@ -226,32 +229,32 @@ func loadPullRequestGraphQL(repo string, number int) (pullRequest, error) {
 }
 
 // loadHeadCommitTime reads when the head commit was committed, over REST on
-// either transport, since the commit document is small and exact where a
-// commit list is neither. The timestamp dates the head, which is what lets
-// the repeated-request check tell a request aimed at the head under review
-// from one made before that head existed. An empty SHA or an unreadable
-// document returns the empty string rather than an error: the caller then
-// counts every request, which is the stricter answer.
+// either transport. It asks the Git database endpoint, which returns the
+// commit object alone: the repository endpoint of the same name embeds the
+// commit's files with their patches, which would make this the largest
+// document the tool fetches. The timestamp dates the head, which is what
+// lets the repeated-request check tell a request aimed at the head under
+// review from one made before that head existed. An empty SHA or an
+// unreadable document returns the empty string rather than an error: the
+// caller then counts every request, which is the stricter answer.
 func loadHeadCommitTime(repo, sha string) (string, error) {
 	if sha == "" {
 		return "", nil
 	}
-	endpoint := fmt.Sprintf("repos/%s/commits/%s", repo, sha)
+	endpoint := fmt.Sprintf("repos/%s/git/commits/%s", repo, sha)
 	out, err := runGH("api", "--method", "GET", endpoint)
 	if err != nil {
 		return "", nil
 	}
 	var commit struct {
-		Commit struct {
-			Committer struct {
-				Date string `json:"date"`
-			} `json:"committer"`
-		} `json:"commit"`
+		Committer struct {
+			Date string `json:"date"`
+		} `json:"committer"`
 	}
 	if err := json.Unmarshal(out, &commit); err != nil {
 		return "", fmt.Errorf("decode head commit: %w", err)
 	}
-	return commit.Commit.Committer.Date, nil
+	return commit.Committer.Date, nil
 }
 
 func loadLatestReviewCommentUpdate(repo string, number int) (string, error) {
@@ -445,24 +448,59 @@ func evaluate(pr pullRequest, unresolved int) []string {
 	return problems
 }
 
+// requestWindow reports the instant before which a review request was aimed
+// at some earlier head, and whether that instant can be trusted at all.
+//
+// The head's date comes from the commit object, which is written by whoever
+// made the commit rather than stamped by GitHub: it carries the committer's
+// own UTC offset and can name any instant, including one in the future. A
+// gate that let the gated party pick its own cutoff would not be a gate, so
+// the window opens only for a date that parses and does not postdate the run.
+// Everything else reports false, and the caller then counts every request.
+// The parse branch states that intent rather than carrying it: a failed parse
+// yields the zero instant, which precedes every request and so counts them
+// all anyway. The future check is the one that changes an outcome.
+func requestWindow(pr pullRequest) (time.Time, bool) {
+	if pr.HeadCommittedAt == "" {
+		return time.Time{}, false
+	}
+	head, err := time.Parse(time.RFC3339, pr.HeadCommittedAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if head.After(timeNow()) {
+		return time.Time{}, false
+	}
+	return head, true
+}
+
 // ownerCodexRequests counts the owner's review requests that bear on the head
 // being merged. The control exists to stop a vendor review being re-rolled
 // until it goes quiet, so what matters is repetition against one head: a
 // request made before the current head was committed was aimed at a revision
 // this attestation does not cover and cannot have shopped for its verdict,
-// while requests after it can. When the head's commit time is unknown every
-// request counts, because failing to date the head is a reason to be stricter
-// rather than more permissive; the empty-string check states that intent,
-// which the comparison would also give, since an empty time sorts before
-// every timestamp.
+// while requests at or after it can. Both sides are compared as instants
+// rather than as text, since the head's offset and GitHub's Z are the same
+// moment written two ways. A request whose own timestamp will not parse
+// counts, for the same reason an undated head counts everything: what cannot
+// be placed is not assumed harmless.
+//
+// A new head reopens the window, so this bounds requests per head rather than
+// per pull request, and a re-push clears the count. That is the intended
+// scope, not an oversight; the shipping procedure's rule against pushing an
+// empty commit is what keeps the reset from being free.
 func ownerCodexRequests(pr pullRequest) int {
+	cutoff, dated := requestWindow(pr)
 	requests := 0
 	for _, comment := range pr.Comments {
 		if comment.AuthorAssociation != "OWNER" {
 			continue
 		}
-		if pr.HeadCommittedAt != "" && comment.CreatedAt < pr.HeadCommittedAt {
-			continue
+		if dated {
+			created, err := time.Parse(time.RFC3339, comment.CreatedAt)
+			if err == nil && created.Before(cutoff) {
+				continue
+			}
 		}
 		for _, line := range strings.Split(strings.ToLower(comment.Body), "\n") {
 			line = strings.TrimSpace(line)

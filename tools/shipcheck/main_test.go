@@ -121,6 +121,69 @@ func TestEvaluateRejectsRepeatedCodexRequestsOnTheHeadUnderReview(t *testing.T) 
 	}
 }
 
+// The head's date is written by whoever made the commit, not stamped by
+// GitHub, so it arrives in the committer's own offset and can name any
+// instant. These are the shapes that a text comparison gets wrong: an offset
+// spelling of the same moment, and a date the committer put in the future.
+// Both must count every request rather than silently opening the window.
+func TestEvaluateComparesTheHeadDateAsAnInstantNotAsText(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
+	// 22:00+09:00 is 13:00Z, so both requests land after the head and count.
+	// Compared as text it sorts after both, which would clear the gate.
+	pr.HeadCommittedAt = "2026-09-10T22:00:00+09:00"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("an offset head date hid requests made on this head: %s", problems)
+	}
+}
+
+func TestEvaluateDistrustsAHeadDatedInTheFuture(t *testing.T) {
+	fixClock(t, "2026-09-10T21:00:00Z")
+	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
+	pr.HeadCommittedAt = "2030-01-01T00:00:00Z"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a head dated in the future cleared the gate: %s", problems)
+	}
+}
+
+func TestEvaluateCountsARequestMadeAtTheHeadsOwnInstant(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T12:00:00Z", "2026-09-10T13:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a request made at the head's own instant was excused: %s", problems)
+	}
+}
+
+func TestEvaluateCountsARequestItCannotDate(t *testing.T) {
+	// One request lands after the head and one carries a timestamp that will
+	// not parse. Dropping the second would leave a single request and clear
+	// the gate, so what is asserted is that both count.
+	pr := requestedCodexTwice("2026-09-10T13:00:00Z", "not a timestamp")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a request with an unreadable timestamp was dropped: %s", problems)
+	}
+}
+
+func TestEvaluateCountsEveryRequestWhenTheHeadDateWillNotParse(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	pr.HeadCommittedAt = "last Tuesday"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("an unparseable head date opened the window: %s", problems)
+	}
+}
+
+// fixClock pins the clock the request window reads, so a test about a head
+// dated in the future does not quietly become a test about nothing once that
+// date arrives.
+func fixClock(t *testing.T, instant string) {
+	t.Helper()
+	now, err := time.Parse(time.RFC3339, instant)
+	if err != nil {
+		t.Fatalf("parse %q: %v", instant, err)
+	}
+	previous := timeNow
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = previous })
+}
+
 // requestedCodexTwice builds an otherwise shippable pull request whose head
 // was committed at 2026-09-10T12:00:00Z, carrying two owner requests at the
 // given times and an attestation after both.
