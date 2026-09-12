@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -459,4 +460,91 @@ func TestConcurrencyWorkflowIDIsTenantScopedAndItsOwnNamespace(t *testing.T) {
 	require.NotContains(t, teamA, "prod-eu",
 		"the key is digested rather than interpolated: a workflow id is durable and broadly "+
 			"readable, and a key is frequently a customer's or a cluster's name")
+}
+
+// TestATerminateOtherRetryFindsTheIncumbentRatherThanKillingIt is the request
+// id contract meeting the one address whose own rule destroys what it collides
+// with (#1119).
+//
+// `request_id` promises that two calls carrying it produce one run, and that
+// where `concurrency:` supplies the address the id still distinguishes a retry
+// — answered with the run, reused — from a second submission. Under
+// `terminate_other` the collision was resolved before that question was ever
+// asked: Temporal terminated the incumbent and started a replacement, so a
+// transport retry of one submission killed the run that was its own answer,
+// gave the incumbent no chance to compensate, reported `reused` false, and did
+// again whatever the first attempt had already done.
+func TestATerminateOtherRetryFindsTheIncumbentRatherThanKillingIt(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	requestID := proto.String("deploy-checkout-2f9c1b")
+
+	first, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: requestID,
+	}))
+	require.NoError(t, err)
+	waitUntilParkedAtTheGate(t, fixture.temporal, first.Msg.GetWorkflowId())
+
+	// The same submission again, as a client that never heard the first answer
+	// would send it.
+	retry, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: requestID,
+	}))
+	require.NoError(t, err)
+	require.True(t, retry.Msg.GetReused(), "a retry of one submission started a second run")
+	require.Equal(t, first.Msg.GetRunId(), retry.Msg.GetRunId(),
+		"the retry was answered with a different run than the one it started")
+
+	// And the incumbent is still the run it was, rather than a terminated one
+	// beside a replacement.
+	live, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+		WorkflowId: first.Msg.GetWorkflowId(),
+	}))
+	require.NoError(t, err)
+	require.Equal(t, first.Msg.GetRunId(), live.Msg.GetRunId())
+	require.Equal(t, v1.RunResponse_STATUS_RUNNING, live.Msg.GetStatus(),
+		"the retry terminated the run it was supposed to be answered with")
+}
+
+// TestATerminateOtherSubmissionStillReplacesADifferentOne is what the deferral
+// above must not break: a request id makes a retry recognizable, and changes
+// nothing about what `on_conflict:` does to a submission that is genuinely
+// different. The terminate is re-issued once the incumbent has been read and
+// found to be somebody else's.
+func TestATerminateOtherSubmissionStillReplacesADifferentOne(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	first, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: proto.String("deploy-checkout-first"),
+	}))
+	require.NoError(t, err)
+	waitUntilParkedAtTheGate(t, fixture.temporal, first.Msg.GetWorkflowId())
+
+	second, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: proto.String("deploy-checkout-second"),
+	}))
+	require.NoError(t, err)
+	require.False(t, second.Msg.GetReused(), "a different submission was answered as a retry")
+	require.NotEqual(t, first.Msg.GetRunId(), second.Msg.GetRunId())
+
+	incumbent := first.Msg.GetRunId()
+	stopped, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+		WorkflowId: first.Msg.GetWorkflowId(),
+		RunId:      &incumbent,
+	}))
+	require.NoError(t, err)
+	require.Equal(t, v1.RunResponse_STATUS_TERMINATED, stopped.Msg.GetStatus(),
+		"a genuinely different submission no longer replaces the incumbent")
 }
