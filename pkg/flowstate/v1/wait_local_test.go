@@ -202,6 +202,12 @@ func TestLocalSignalCancellationIsNotATimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
 
+		// Belt and braces for the safety-net branch below, which exits this
+		// goroutine with the run still parked. Idempotent after the explicit
+		// cancel, and it fires too late to spare a run that ignored that one,
+		// so it does not blunt what the test is asking.
+		defer cancel()
+
 		done := make(chan error, 1)
 		go func() {
 			_, err := v1.Run(ctx, gatedLocalWorkflow(time.Hour))

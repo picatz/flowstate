@@ -642,6 +642,14 @@ func TestCloseReleasesTheReaderGoroutine(t *testing.T) {
 			})
 			require.NoError(t, err)
 
+			// A BeforeStep that fails exits this goroutine before the Close
+			// below, leaving a reader parked and turning the assertion that
+			// actually failed into a deadlock panic. Close is idempotent, so
+			// registering it here costs the success path nothing and does not
+			// blunt the leak claim: a Close that stops releasing the reader
+			// still leaves it parked, whichever call makes it.
+			t.Cleanup(func() { _ = session.Close() })
+
 			// One read, then abandon it exactly as a finished call does.
 			require.NoError(t, session.BeforeStep(t.Context(), markStep("only"), &v1.Scope{}))
 			require.NoError(t, session.Close())
