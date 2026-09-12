@@ -2,8 +2,10 @@ package agentconfig
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -246,6 +248,194 @@ func TestClaudePermissionsOnlyRemovePromptsFromVerification(t *testing.T) {
 		if _, ok := allowRuleCommand(rejected); ok {
 			t.Errorf("%q would be accepted into the allow list", rejected)
 		}
+	}
+}
+
+// Anthropic's hosted review surfaces sit beside the CLI's own layers. The
+// managed Code Review reads CLAUDE.md and a root REVIEW.md on a pull request
+// and loads no skill, so REVIEW.md is where the comms-review rubric reaches it;
+// the security-guidance plugin reads its own guidance file on every model-backed
+// review. Both are prose a reviewer acts on, so both are bounded for the reason
+// the layers above are: a long file's real cost is paid by the rules in it that
+// matter most. The plugin's own 8 KiB cap is combined across the user, project,
+// and project-local guidance files it concatenates, so this bounds only the copy
+// the repository controls; a contributor's user-scope file spends the rest.
+const (
+	maxReviewBytes           = 4 << 10
+	maxSecurityGuidanceBytes = 8 << 10
+)
+
+// officialMarketplace is the only plugin source this repository enables for
+// everyone, and officialMarketplaceRepo is the GitHub repository it must resolve
+// to. A plugin named here runs in every clone and every cloud session, including
+// for a contributor who never chose it, so both halves are pinned: the name a
+// plugin key is spelled with, and the repository that name fetches from. Without
+// the second, a settings edit could keep these plugin names and serve them from
+// a fork.
+//
+// Claude Code registers the official marketplace on its own, but not on a
+// machine whose first launch is non-interactive — a cloud session is exactly
+// that — so extraKnownMarketplaces is what makes the checked-in enablement
+// resolve there rather than silently doing nothing.
+const (
+	officialMarketplace     = "claude-plugins-official"
+	officialMarketplaceRepo = "anthropics/claude-plugins-official"
+)
+
+// reviewedPlugins is the set .claude/settings.json may enable, each spelled
+// exactly as Claude Code resolves it. Both are defense in depth around the
+// review the shipping gate already requires, not a replacement for it:
+// security-guidance reviews a change as it is written, and claude-security is
+// an on-demand deep scan that costs nothing until it is invoked. Adding an entry
+// is a review decision, which is the point — an enabled plugin can add hooks
+// and commands to every session in this repository.
+var reviewedPlugins = []string{
+	"claude-security@" + officialMarketplace,
+	"security-guidance@" + officialMarketplace,
+}
+
+// reviewedPlugin reports whether an enabledPlugins key names one of the
+// reviewed plugins from the official marketplace. The marketplace is checked
+// separately from the list so the negative direction below proves the rule
+// rather than only the spelling.
+func reviewedPlugin(key string) bool {
+	name, marketplace, ok := strings.Cut(key, "@")
+	if !ok || name == "" || marketplace != officialMarketplace {
+		return false
+	}
+	return slices.Contains(reviewedPlugins, key)
+}
+
+// TestClaudeEnabledPluginsAreTheReviewedOfficialOnes parses the checked-in
+// enabledPlugins block, holds every entry to reviewedPlugins, and proves the
+// negative direction on the shapes an unpinned marketplace would let through.
+// It also couples security-guidance to its guidance file: with the plugin
+// enabled and the file missing, the model-backed reviews read this repository as
+// generic Go and spend tokens rediscovering its invariants.
+func TestClaudeEnabledPluginsAreTheReviewedOfficialOnes(t *testing.T) {
+	root := repoRoot(t)
+	var settings struct {
+		EnabledPlugins         map[string]bool `json:"enabledPlugins"`
+		ExtraKnownMarketplaces map[string]struct {
+			Source struct {
+				Source string `json:"source"`
+				Repo   string `json:"repo"`
+			} `json:"source"`
+		} `json:"extraKnownMarketplaces"`
+	}
+	if err := json.Unmarshal(read(t, filepath.Join(root, ".claude", "settings.json")), &settings); err != nil {
+		t.Fatalf("parse .claude/settings.json: %v", err)
+	}
+	for _, key := range slices.Sorted(maps.Keys(settings.EnabledPlugins)) {
+		enabled := settings.EnabledPlugins[key]
+		if !reviewedPlugin(key) {
+			t.Errorf("enabledPlugins carries %q, which is not a reviewed plugin from the %s marketplace", key, officialMarketplace)
+		}
+		if !enabled {
+			t.Errorf("enabledPlugins sets %q to false; remove the entry instead of shipping a disabled one", key)
+		}
+	}
+	for _, required := range reviewedPlugins {
+		if !settings.EnabledPlugins[required] {
+			t.Errorf("enabledPlugins lacks %q; a user-scoped install does not carry into a cloud session", required)
+		}
+	}
+	for _, rejected := range []string{
+		"security-guidance", "@" + officialMarketplace, "security-guidance@",
+		"security-guidance@community-marketplace",
+		"claude-security@" + officialMarketplace + "-fork",
+		"unreviewed-plugin@" + officialMarketplace,
+	} {
+		if reviewedPlugin(rejected) {
+			t.Errorf("%q would be accepted into enabledPlugins", rejected)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(settings.ExtraKnownMarketplaces)) {
+		source := settings.ExtraKnownMarketplaces[name].Source
+		if name != officialMarketplace || source.Source != "github" || source.Repo != officialMarketplaceRepo {
+			t.Errorf("extraKnownMarketplaces registers %q from %+v; this repository pins only %q from the github repo %q", name, source, officialMarketplace, officialMarketplaceRepo)
+		}
+	}
+	if _, ok := settings.ExtraKnownMarketplaces[officialMarketplace]; !ok {
+		t.Errorf("extraKnownMarketplaces does not register %q; a cloud session may not have it and the enabled plugins would resolve to nothing", officialMarketplace)
+	}
+	if settings.EnabledPlugins["security-guidance@"+officialMarketplace] {
+		if _, err := os.Stat(filepath.Join(root, ".claude", "claude-security-guidance.md")); err != nil {
+			t.Errorf("security-guidance is enabled without .claude/claude-security-guidance.md: %v", err)
+		}
+	}
+}
+
+// driftingCitation matches a `path.go:123` citation. tools/citations checks
+// those against the tree for docs/ and a fixed list of root documents that
+// includes neither file checked below, so a line number in one of them goes
+// stale silently. Instructions to a reviewer have no reason to cite a line
+// anyway, so this refuses them rather than widening that checker.
+var driftingCitation = regexp.MustCompile(`\.go:\d+`)
+
+// TestHostedReviewGuidanceStaysBoundedAndSelfContained checks the two files a
+// hosted reviewer reads as instructions. Both are bounded, neither may use the
+// `@import` syntax — Code Review reads REVIEW.md as-is and does not expand an
+// import, and the plugin concatenates its guidance files without expanding one
+// either, so an import is a silently missing rule rather than an error — and
+// neither may carry a line-numbered citation that nothing checks. The required
+// substrings pin the rules each file exists to deliver, so a rewrite that drops
+// one fails here rather than quietly changing what reviewers are told.
+func TestHostedReviewGuidanceStaysBoundedAndSelfContained(t *testing.T) {
+	root := repoRoot(t)
+	for _, tc := range []struct {
+		path     string
+		max      int
+		required []string
+	}{
+		{
+			path: "REVIEW.md",
+			max:  maxReviewBytes,
+			required: []string{
+				"no findings is a valid",
+				"at most five nits",
+				"cmd/flow/internal/reference/mirror/",
+				"is not a new finding",
+				"fails closed",
+				"shared conformance",
+				"one-line tally",
+			},
+		},
+		{
+			path: filepath.Join(".claude", "claude-security-guidance.md"),
+			max:  maxSecurityGuidanceBytes,
+			required: []string{
+				"on missing state and on evaluation error",
+				"belongs to nobody and is refused",
+				"only as a reference",
+				"deterministic",
+				"does not bound the walk that produced",
+				"textContent",
+			},
+		},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			data := read(t, filepath.Join(root, tc.path))
+			if len(data) == 0 {
+				t.Fatal("file is empty; a hosted reviewer would read no instructions")
+			}
+			if len(data) > tc.max {
+				t.Fatalf("file is %d bytes; keep it under %d, because length dilutes the rules that matter", len(data), tc.max)
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "@") {
+					t.Errorf("line %q uses the @import syntax, which a hosted review does not expand; inline the rule", line)
+				}
+			}
+			if match := driftingCitation.FindString(string(data)); match != "" {
+				t.Errorf("carries the line-numbered citation %q, which nothing checks against the tree", match)
+			}
+			for _, required := range tc.required {
+				if !strings.Contains(string(data), required) {
+					t.Errorf("does not contain required guidance %q", required)
+				}
+			}
+		})
 	}
 }
 

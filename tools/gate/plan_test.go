@@ -339,6 +339,7 @@ func TestAgentConfigurationPathsReachStructuralTests(t *testing.T) {
 		".amp/settings.json",
 		"CLAUDE.md",
 		".agent-history/skills/comms-review/SKILL.md",
+		"REVIEW.md",
 	} {
 		t.Run(changed, func(t *testing.T) {
 			p := buildPlan([]string{changed})
