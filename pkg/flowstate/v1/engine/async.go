@@ -169,15 +169,16 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			// The *same* position, not a nested one: an async step is a step of
 			// this level that happens to run alongside the ones after it, so its
 			// commands are labelled exactly as they would be run in order.
-			path:      e.path,
-			budget:    e.budget,
-			sliceCost: e.sliceCost,
-			signals:   e.signals,
-			debug:     e.debug,
-			undo:      e.undo,
-			undoSlot:  &slot,
-			undoScope: e.undoScope,
-			callDepth: e.callDepth,
+			path:                   e.path,
+			budget:                 e.budget,
+			sliceCost:              e.sliceCost,
+			everyExpressionCharged: e.everyExpressionCharged,
+			signals:                e.signals,
+			debug:                  e.debug,
+			undo:                   e.undo,
+			undoSlot:               &slot,
+			undoScope:              e.undoScope,
+			callDepth:              e.callDepth,
 
 			// Not carried, for the reason a parallel branch does not carry it:
 			// no one outstanding step is the position of the run, and a query

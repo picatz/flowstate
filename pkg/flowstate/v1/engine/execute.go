@@ -51,10 +51,24 @@ import (
 // [Run], which converts it using the frames recorded along the way.
 var errContinueAsNew = errors.New("engine: continue as new")
 
-// workflowSliceCostChange gates cost-triggered Continue-As-New for histories
-// recorded before #1882. Adding a new continuation command while replaying one
-// of those histories would be nondeterministic; new executions record version 1
-// and later segments inherit the new behavior as fresh histories.
+// workflowSliceCostChange gates cost-triggered Continue-As-New. Adding a new
+// continuation command while replaying a history recorded without it would be
+// nondeterministic, so each set of reasons to emit one takes its own version and
+// a replay keeps the set its history recorded.
+//
+//   - Default: recorded before #1882, and charges nothing.
+//   - Version 1: #1919. Charges a `value:` step's expression, and suspends on
+//     the budget at a step or loop boundary.
+//   - Version 2: charges every other workflow-side expression a loop can repeat
+//     without scheduling anything — a condition, a step's `vars:`, a `switch:`'s
+//     subject, a `for_each`'s `items:`, a `call:`'s arguments, a loop's
+//     `initial:` and `update:` — and makes a step skipped by a false `if:` a
+//     suspension boundary, which is the only boundary a segment of nothing but
+//     skipped steps has.
+//
+// The name keeps its `-v1` suffix: it is the marker's identity in recorded
+// history, and renaming it would make every open execution take the default
+// path.
 const workflowSliceCostChange = "workflow-slice-cost-v1"
 
 // executor carries the state of one workflow execution.
@@ -106,6 +120,18 @@ type executor struct {
 	// expression cost here makes the history-producing continuation a function
 	// of recorded work rather than wall time or loop trip count.
 	sliceCost *uint64
+
+	// everyExpressionCharged is version 2 of [workflowSliceCostChange]: whether
+	// this execution's recorded history is one that charges every workflow-side
+	// expression rather than a `value:` step alone, and one where a skipped step
+	// is a suspension boundary.
+	//
+	// Carried alongside sliceCost rather than folded into it because the two
+	// answer different questions — sliceCost says whether a budget exists at
+	// all, this says which expressions fill it — and version 1 histories,
+	// recorded by #1919 before either of those paths existed, must keep
+	// answering the first yes and the second no.
+	everyExpressionCharged bool
 
 	// stranded reports whether a scope at the run's own representable level is
 	// holding work a continuation would leave behind: an `async:` step it
@@ -430,7 +456,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			// boundary they exist to reach, since two of [executor.shouldSuspend]'s
 			// arms answer regardless of the budget.
 			//
-			if e.sliceCost != nil && susp == 0 && i < len(nodes)-1 && e.shouldSuspend() {
+			if e.everyExpressionCharged && susp == 0 && i < len(nodes)-1 && e.shouldSuspend() {
 				e.setFrame(depth, i+1)
 
 				return errContinueAsNew
@@ -574,23 +600,43 @@ func (e *executor) yieldWorkflow() {
 	done.Receive(e.ctx, &signal)
 }
 
-// chargeWorkflowCost records deterministic workflow-side CEL work: a `value:`
-// step's expression, a step's or a loop's condition, a step's `vars:`, a
-// `switch:`'s subject, a `for_each`'s `items:`, a `call:`'s arguments, and a
-// loop's `initial:` and `update:`.
+// chargeValueCost records a `value:` step's expression against the segment's
+// deterministic workflow-side CEL budget, and is the accumulator every other
+// charge reaches. [shouldSuspend] turns a spent budget into Continue-As-New at
+// the next representable step or loop boundary, so replay of a later segment
+// does not repeat an ever-growing prefix.
 //
-// The list is every expression a loop can repeat without scheduling anything —
-// which is the whole point of the budget. A path that evaluates CEL in workflow
-// code and does not charge it here is a hole in the bound, not an omission of
-// bookkeeping.
-// [shouldSuspend] turns a spent budget into Continue-As-New at the next
-// representable step or loop boundary, so replay of a later segment does not
-// repeat an ever-growing prefix.
-func (e *executor) chargeWorkflowCost(cost uint64) {
+// Version 1 of [workflowSliceCostChange] charged this expression and no other,
+// which is why it has its own entry point rather than being one more caller of
+// [executor.chargeWorkflowCost].
+func (e *executor) chargeValueCost(cost uint64) {
 	if cost == 0 || e.sliceCost == nil {
 		return
 	}
 	*e.sliceCost += cost
+}
+
+// chargeWorkflowCost records the deterministic workflow-side CEL that version 2
+// of [workflowSliceCostChange] added to the budget: a step's or a loop's
+// condition, a step's `vars:`, a `switch:`'s subject, a `for_each`'s `items:`,
+// a `call:`'s arguments, and a loop's `initial:` and `update:`.
+//
+// That list is every expression a loop can repeat without scheduling anything —
+// which is the whole point of the budget. A path that evaluates CEL in workflow
+// code and does not charge it here is a hole in the bound, not an omission of
+// bookkeeping. [v1.ResolveTaskInputs] is the deliberate exception: the activity
+// that consumes a task's inputs follows immediately, so that evaluation is
+// paced by a history event and a yield rather than by this budget.
+//
+// Silent below version 2, and that is the point of the split: a history
+// recorded at version 1 recorded segments that charged only `value:` steps, and
+// a replay charging more could cross the threshold — and emit a
+// Continue-As-New — at a boundary where the recorded history holds an activity.
+func (e *executor) chargeWorkflowCost(cost uint64) {
+	if !e.everyExpressionCharged {
+		return
+	}
+	e.chargeValueCost(cost)
 }
 
 // recordOutcome applies one finished step's failure to the scope and reports the
@@ -847,10 +893,11 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// keeps two call sites of one workflow apart in history.
 		path: e.within(node),
 
-		budget:    e.budget,
-		processed: e.processed,
-		sliceCost: e.sliceCost,
-		frames:    e.frames,
+		budget:                 e.budget,
+		processed:              e.processed,
+		sliceCost:              e.sliceCost,
+		everyExpressionCharged: e.everyExpressionCharged,
+		frames:                 e.frames,
 
 		// A call leaves the suspend depth unchanged, so the callee's own scope
 		// is a representable level too and its boundaries can continue as new.
@@ -957,7 +1004,7 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 // one that computes it.
 func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
 	outputs, cost, err := v1.EvalValueNodeWithCost(evalContext(), value, e.scope)
-	e.chargeWorkflowCost(cost)
+	e.chargeValueCost(cost)
 	if err != nil {
 		return nodeFailed(err)
 	}
@@ -1732,17 +1779,18 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 	}
 
 	nested := &executor{
-		ctx:       e.ctx,
-		spec:      e.spec,
-		curSpec:   e.curSpec,
-		identity:  e.identity,
-		runID:     e.runID,
-		scope:     scope,
-		path:      body,
-		budget:    e.budget,
-		processed: e.processed,
-		sliceCost: e.sliceCost,
-		frames:    e.frames,
+		ctx:                    e.ctx,
+		spec:                   e.spec,
+		curSpec:                e.curSpec,
+		identity:               e.identity,
+		runID:                  e.runID,
+		scope:                  scope,
+		path:                   body,
+		budget:                 e.budget,
+		processed:              e.processed,
+		sliceCost:              e.sliceCost,
+		everyExpressionCharged: e.everyExpressionCharged,
+		frames:                 e.frames,
 
 		signals:    e.signals,
 		debug:      e.debug,
@@ -1825,12 +1873,13 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		runID:    e.runID,
 		// The iteration's scope: outputs visible before the loop, plus the
 		// current item bound to the iterator's name.
-		scope:     e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
-		path:      body,
-		budget:    e.budget,
-		processed: e.processed,
-		sliceCost: e.sliceCost,
-		frames:    e.frames,
+		scope:                  e.scope.WithLocal(iterator, item).WithOutputs(iterationOutputs),
+		path:                   body,
+		budget:                 e.budget,
+		processed:              e.processed,
+		sliceCost:              e.sliceCost,
+		everyExpressionCharged: e.everyExpressionCharged,
+		frames:                 e.frames,
 
 		// The run's carry, by pointer. A wait in a loop body consumes from the
 		// same place a top-level one does, and consuming it here has to remove it
@@ -1907,20 +1956,21 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 
 				iterationUndo := v1.NewUndoLog(nil)
 				worker := &executor{
-					ctx:       gctx,
-					spec:      e.spec,
-					curSpec:   e.curSpec,
-					identity:  e.identity,
-					runID:     e.runID,
-					scope:     e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
-					path:      body,
-					budget:    e.budget,
-					sliceCost: e.sliceCost,
-					signals:   e.signals,
-					debug:     e.debug,
-					undo:      iterationUndo,
-					undoScope: v1.UndoScopeConcurrent,
-					callDepth: e.callDepth,
+					ctx:                    gctx,
+					spec:                   e.spec,
+					curSpec:                e.curSpec,
+					identity:               e.identity,
+					runID:                  e.runID,
+					scope:                  e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
+					path:                   body,
+					budget:                 e.budget,
+					sliceCost:              e.sliceCost,
+					everyExpressionCharged: e.everyExpressionCharged,
+					signals:                e.signals,
+					debug:                  e.debug,
+					undo:                   iterationUndo,
+					undoScope:              v1.UndoScopeConcurrent,
+					callDepth:              e.callDepth,
 
 					// Deliberately not carried. Iterations run at once, so a
 					// worker writing its own step in would be reporting a
@@ -2026,14 +2076,15 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				// single *position* while branches are in flight, and a
 				// *label* has no such difficulty — each branch's commands know
 				// exactly which `parallel:` step they were written under.
-				path:      branchPath,
-				budget:    e.budget,
-				sliceCost: e.sliceCost,
-				signals:   e.signals,
-				debug:     e.debug,
-				undo:      branchUndo,
-				undoScope: v1.UndoScopeConcurrent,
-				callDepth: e.callDepth,
+				path:                   branchPath,
+				budget:                 e.budget,
+				sliceCost:              e.sliceCost,
+				everyExpressionCharged: e.everyExpressionCharged,
+				signals:                e.signals,
+				debug:                  e.debug,
+				undo:                   branchUndo,
+				undoScope:              v1.UndoScopeConcurrent,
+				callDepth:              e.callDepth,
 
 				// Not carried, for the same reason a concurrent iteration does
 				// not carry it: no one branch is the run's position.
