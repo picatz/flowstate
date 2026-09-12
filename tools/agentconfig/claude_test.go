@@ -90,12 +90,16 @@ func TestClaudeSubagentsCarryRepositoryRubrics(t *testing.T) {
 	}
 }
 
-// TestClaudeReviewerCannotEdit pins what the tool list can enforce of the
-// reviewer's independence: the dedicated editing tools are withheld, so a
-// fix can only happen through a shell command the prompt forbids. A
-// reviewer that fixes what it finds is reviewing its own work.
+// TestClaudeReviewerCannotEdit pins the two mechanisms behind the reviewer's
+// independence: the dedicated editing tools are withheld, and the agent runs
+// in a throwaway worktree, so a shell command it runs can change only that
+// worktree and never the checkout under review. A reviewer that fixes what
+// it finds is reviewing its own work.
 func TestClaudeReviewerCannotEdit(t *testing.T) {
 	meta := frontmatter(t, read(t, filepath.Join(repoRoot(t), ".claude", "agents", "flowstate-reviewer.md")))
+	if meta["isolation"] != "worktree" {
+		t.Errorf("isolation = %q, want worktree: with a shell available, the worktree is what keeps the reviewer from changing the checkout under review", meta["isolation"])
+	}
 	tools := splitList(meta["tools"])
 	if len(tools) == 0 {
 		t.Fatal("the reviewer must list its tools explicitly; an omitted list inherits every tool, including the editing ones")

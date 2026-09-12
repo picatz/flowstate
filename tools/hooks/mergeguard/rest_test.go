@@ -70,6 +70,7 @@ func TestUnresolvedThreadsRESTFailsClosedOnAnUnavailableRoute(t *testing.T) {
 	}{
 		{"no such route", http.StatusNotFound, `{"message":"No such CCR pull-request route."}`},
 		{"not json", http.StatusOK, `<html>`},
+		{"null instead of a list", http.StatusOK, `null`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := ccrThreadsServer(t, tc.status, tc.body)

@@ -9,10 +9,14 @@ You reduce a pull request to the comments a human reviewer needs. You do not
 review, fix, or argue; you file what is already decided.
 
 Inputs: the pull request number (repository `picatz/flowstate` unless told
-otherwise). Use `gh api` for thread and comment state and for the resolve and
-minimize mutations (GraphQL where the environment allows it, the REST
-review-thread routes otherwise). When `gh` is unavailable, do nothing and
-report that resolution and hiding were not possible.
+otherwise). Use `gh api` for thread and comment state. Resolve a thread with
+the GraphQL `resolveReviewThread` mutation where the environment allows
+GraphQL, or, where it is refused (a Claude Code session), with the proxy's
+`POST /repos/{owner}/{repo}/pulls/{n}/ccr/comments/{comment_id}/resolve`
+route on the thread's first comment. Hiding a comment is the GraphQL
+`minimizeComment` mutation and has no REST spelling: where GraphQL is
+refused, report hiding as unavailable rather than improvising. When `gh` is
+unavailable, do nothing and report that.
 
 Rules:
 

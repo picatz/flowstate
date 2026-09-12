@@ -218,6 +218,60 @@ func TestRESTFallbackReadsARequiredReviewRule(t *testing.T) {
 	}
 }
 
+// TestRESTFallbackRejectsWhatItCannotRead: a JSON null where a list belongs
+// is a missing document, not an empty one, and a decisive review without a
+// reviewer cannot be placed; each fails the load rather than reading as
+// clean evidence.
+func TestRESTFallbackRejectsWhatItCannotRead(t *testing.T) {
+	for _, tc := range []struct {
+		name, fixture, body, want string
+		threads                   bool
+	}{
+		{name: "null thread list", fixture: "threads.json", body: `null`, want: "no thread list", threads: true},
+		{name: "null review list", fixture: "reviews.json", body: `null`, want: "null, not an array"},
+		{name: "null check-run envelope list", fixture: "check-runs.json", body: `{"total_count":0,"check_runs":null}`, want: "null, not an array"},
+		{name: "decisive review without a login", fixture: "reviews.json", body: `[{"user":{},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`, want: "no reviewer login"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := installFakeGH(t, fakeGH)
+			restFixtures(t, dir)
+			writeFixture(t, dir, tc.fixture, tc.body)
+			var err error
+			if tc.threads {
+				_, err = unresolvedReviewThreads("picatz/flowstate", 7)
+			} else {
+				_, err = loadPullRequest("picatz/flowstate", 7)
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestRESTFallbackFailsClosedOnPredicatesItCannotEvaluate: a ruleset that
+// asks for a code-owner review or an approval after the last push is one
+// REST cannot check, so the decision reads REVIEW_REQUIRED even with an
+// approval in hand, exactly the direction the GraphQL decision would err.
+func TestRESTFallbackFailsClosedOnPredicatesItCannotEvaluate(t *testing.T) {
+	dir := installFakeGH(t, fakeGH)
+	restFixtures(t, dir)
+	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`)
+	for _, rules := range []string{
+		`[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]`,
+		`[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_last_push_approval":true}}]`,
+	} {
+		writeFixture(t, dir, "rules.json", rules)
+		pr, err := loadPullRequest("picatz/flowstate", 7)
+		if err != nil {
+			t.Fatalf("loadPullRequest over REST: %v", err)
+		}
+		if pr.ReviewDecision != "REVIEW_REQUIRED" {
+			t.Errorf("review decision = %q under %s, want REVIEW_REQUIRED", pr.ReviewDecision, rules)
+		}
+	}
+}
+
 // GraphQL-first, pinned: a fake gh that answers `pr view` and `api graphql`
 // and refuses every REST endpoint must still load the pull request, and
 // the fallback note must stay unset.

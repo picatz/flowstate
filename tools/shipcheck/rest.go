@@ -130,6 +130,11 @@ func restPages(endpoint, key string) ([]json.RawMessage, error) {
 				return nil, fmt.Errorf("decode %s.%s: %w", paged, key, err)
 			}
 		}
+		// A JSON null decodes into a nil slice without error; it is a
+		// missing list, not a complete empty page.
+		if batch == nil {
+			return nil, fmt.Errorf("decode %s: the list is null, not an array", paged)
+		}
 		items = append(items, batch...)
 		if len(batch) < restPageSize {
 			return items, nil
@@ -344,11 +349,14 @@ func loadReviewsREST(repo string, number int) ([]review, error) {
 // reviewDecisionREST is the decision the reviews imply, in the vocabulary
 // evaluate reads: CHANGES_REQUESTED when any reviewer's latest decisive
 // review asks for changes, REVIEW_REQUIRED when the base branch's rulesets
-// require more distinct counting approvals than the reviewers have given,
-// APPROVED when at least one counting reviewer approves and that count is
-// met, and "" when nothing decides. A dismissed review has state DISMISSED
-// and decides nothing. Classic branch protection, code-owner reviews, and
-// last-push approval are not consulted; the merge itself enforces them.
+// require more distinct counting approvals than the reviewers have given
+// or a review predicate REST cannot evaluate (a code-owner review, a
+// last-push approval), APPROVED when at least one counting reviewer
+// approves and every requirement is met, and "" when nothing decides. A
+// dismissed review has state DISMISSED and decides nothing; a decisive
+// review without a reviewer login is an error, since the latest review per
+// reviewer cannot be established without the reviewer. Classic branch
+// protection is not consulted; the merge itself enforces it.
 func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	raw, err := restReviews(repo, number)
 	if err != nil {
@@ -357,14 +365,20 @@ func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	latest := map[string]string{}
 	for _, r := range raw {
 		switch r.State {
-		case "CHANGES_REQUESTED":
+		case "CHANGES_REQUESTED", "APPROVED":
+		default:
+			continue
+		}
+		if r.User.Login == "" {
+			return "", fmt.Errorf("a %s review carries no reviewer login, so the review decision cannot be established", r.State)
+		}
+		switch {
+		case r.State == "CHANGES_REQUESTED":
 			latest[r.User.Login] = r.State
-		case "APPROVED":
-			if approvalCounts(r.AuthorAssociation) {
-				latest[r.User.Login] = r.State
-			} else {
-				delete(latest, r.User.Login)
-			}
+		case approvalCounts(r.AuthorAssociation):
+			latest[r.User.Login] = r.State
+		default:
+			delete(latest, r.User.Login)
 		}
 	}
 	approvals := 0
@@ -374,12 +388,15 @@ func reviewDecisionREST(repo string, number int, base string) (string, error) {
 		}
 		approvals++
 	}
-	required, err := approvalsRequiredREST(repo, base)
+	rules, err := reviewRulesREST(repo, base)
 	if err != nil {
 		return "", err
 	}
 	switch {
-	case approvals < required:
+	case rules.opaque != "":
+		fmt.Fprintf(os.Stderr, "shipcheck: the base branch requires %s, which REST cannot evaluate; treating the review decision as REVIEW_REQUIRED\n", rules.opaque)
+		return "REVIEW_REQUIRED", nil
+	case approvals < rules.required:
 		return "REVIEW_REQUIRED", nil
 	case approvals > 0:
 		return "APPROVED", nil
@@ -388,25 +405,42 @@ func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	}
 }
 
-// approvalsRequiredREST is the largest number of approving reviews any
-// ruleset on base requires, or zero when none does.
-func approvalsRequiredREST(repo, base string) (int, error) {
+// reviewRules is what the base branch's rulesets ask of reviews: the
+// largest number of approving reviews any pull_request rule requires, and
+// the name of a predicate this tool cannot evaluate over REST, if any.
+type reviewRules struct {
+	required int
+	opaque   string
+}
+
+func reviewRulesREST(repo, base string) (reviewRules, error) {
 	var rules []struct {
 		Type       string `json:"type"`
 		Parameters struct {
-			RequiredApprovingReviewCount int `json:"required_approving_review_count"`
+			RequiredApprovingReviewCount int  `json:"required_approving_review_count"`
+			RequireCodeOwnerReview       bool `json:"require_code_owner_review"`
+			RequireLastPushApproval      bool `json:"require_last_push_approval"`
 		} `json:"parameters"`
 	}
 	if err := restGet(fmt.Sprintf("repos/%s/rules/branches/%s", repo, base), &rules); err != nil {
-		return 0, err
+		return reviewRules{}, err
 	}
-	required := 0
+	var out reviewRules
 	for _, rule := range rules {
-		if rule.Type == "pull_request" && rule.Parameters.RequiredApprovingReviewCount > required {
-			required = rule.Parameters.RequiredApprovingReviewCount
+		if rule.Type != "pull_request" {
+			continue
+		}
+		if rule.Parameters.RequiredApprovingReviewCount > out.required {
+			out.required = rule.Parameters.RequiredApprovingReviewCount
+		}
+		switch {
+		case rule.Parameters.RequireCodeOwnerReview:
+			out.opaque = "a code-owner review"
+		case rule.Parameters.RequireLastPushApproval:
+			out.opaque = "an approval after the last push"
 		}
 	}
-	return required, nil
+	return out, nil
 }
 
 func loadCommentsREST(repo string, number int) ([]comment, error) {
@@ -451,6 +485,11 @@ func unresolvedReviewThreadsREST(repo string, number int) (int, error) {
 	}
 	if err := restGet(fmt.Sprintf("repos/%s/pulls/%d/ccr/review_threads", repo, number), &threads); err != nil {
 		return 0, err
+	}
+	// A JSON null decodes into a nil slice without error; it is a missing
+	// thread list, not an empty one, and must not read as "all resolved".
+	if threads == nil {
+		return 0, fmt.Errorf("review-thread route returned no thread list")
 	}
 	if len(threads) > maxThreadPages*restPageSize {
 		return 0, fmt.Errorf("review-thread route returned %d threads, more than the %d this check reads", len(threads), maxThreadPages*restPageSize)

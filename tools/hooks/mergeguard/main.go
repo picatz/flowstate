@@ -1066,6 +1066,11 @@ func unresolvedThreadsREST(ctx context.Context, client *http.Client, rest, token
 	if err := json.Unmarshal(respBody, &page); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
+	// A JSON null decodes into a nil slice without error; it is a missing
+	// thread list, not an empty one, and must not read as "all resolved".
+	if page == nil {
+		return nil, fmt.Errorf("decode response: the route returned no thread list")
+	}
 	if len(page) > maxReviewThreadsScanned {
 		return nil, fmt.Errorf("the route returned %d review threads, more than the %d this check reads; treating the check as incomplete rather than resolved", len(page), maxReviewThreadsScanned)
 	}
