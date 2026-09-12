@@ -51,6 +51,7 @@ func TestFlowTestTakesNoDeploymentPolicyFlags(t *testing.T) {
 	for _, path := range [][]string{
 		{"worker"},
 		{"run", "local"},
+		{"dap"},
 		{"mcp"},
 		{"server", "dev"},
 		{"task", "run"},

@@ -52,6 +52,16 @@ flow run local --debug examples/hello-world/workflow.yaml`,
 	}
 
 	addEditorPluginFlags(cmd)
+
+	// The same two the worker and `flow run local` take. This adapter runs the
+	// workflow its client points it at, with this operator's secret providers
+	// and plugins behind it, so it is a real local execution surface and not a
+	// reader — a rehearsal under a different egress or task-shape policy
+	// rehearses a different production, and an operator who set those for the
+	// worker had no way to set them here (#1119).
+	addEgressPolicyFlag(cmd)
+	addTaskPolicyFlag(cmd)
+
 	addSecretFlags(cmd)
 	addLocalRehearsalFlags(cmd)
 	addRevealSensitiveFlag(cmd)
@@ -61,6 +71,18 @@ flow run local --debug examples/hello-world/workflow.yaml`,
 
 // runDAP serves one debug session.
 func runDAP(cmd *cobra.Command, _ []string) error {
+	// Before the plugins launch and before a client can name a workflow, for
+	// the reason `flow run local` applies them in that order: these read files
+	// this process was pointed at, and a policy that cannot load must refuse
+	// the command rather than start somebody else's programs and then run under
+	// the permissive defaults.
+	if err := applyEgressPolicy(cmd); err != nil {
+		return err
+	}
+	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+
 	// Build the provider registry before the plugin host, as the worker and
 	// `flow run local` do. A plugin can contribute both a task and a secrets
 	// backend, and the runtime below must resolve through the registry that host
