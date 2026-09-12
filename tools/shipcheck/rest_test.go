@@ -26,6 +26,8 @@ case "$*" in
   *"/commits/HEAD/status?per_page=100&page=1") printf '{"statuses":[{"context":"external","state":"success","created_at":"2026-09-12T00:00:00Z"}]}' ;;
   *"/pulls/7/reviews?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/reviews.json" ;;
   *"/rules/branches/main") cat "$SHIPCHECK_FIXTURES/rules.json" ;;
+  *"/branches/main/protection") cat "$SHIPCHECK_FIXTURES/protection.json" ;;
+  *"/branches/main") cat "$SHIPCHECK_FIXTURES/branch.json" ;;
   *"/issues/7/comments?per_page=100&page=1") cat "$SHIPCHECK_FIXTURES/comments.json" ;;
   *"/pulls/7/comments -f sort=updated"*) printf '[]' ;;
   *"/pulls/7/ccr/review_threads") cat "$SHIPCHECK_FIXTURES/threads.json" ;;
@@ -74,6 +76,7 @@ func restFixtures(t *testing.T, dir string) {
 		{"name":"CodeQL","status":"completed","conclusion":"success","started_at":"2026-09-12T00:00:01Z","completed_at":"2026-09-12T00:00:02Z","check_suite":{"id":9}}]}`)
 	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"COMMENTED","submitted_at":"2026-09-12T00:00:05Z"}]`)
 	writeFixture(t, dir, "rules.json", `[{"type":"deletion"},{"type":"non_fast_forward"}]`)
+	writeFixture(t, dir, "branch.json", `{"name":"main","protected":false}`)
 	writeFixture(t, dir, "comments.json", `[{"user":{"login":"picatz"},"author_association":"OWNER","created_at":"2026-09-12T00:00:09Z","updated_at":"2026-09-12T00:00:09Z","html_url":"https://github.com/picatz/flowstate/pull/7#issuecomment-1",
 		"body":"Independent AI code/security review by flowstate-reviewer for HEAD: PASS with no actionable findings.\n\n<!-- flowstate-independent-review:v1 {\"headSha\":\"HEAD\",\"reviewer\":\"flowstate-reviewer\",\"scope\":\"code-security\",\"status\":\"pass\"} -->"}]`)
 	writeFixture(t, dir, "threads.json", `[{"resolved":true,"outdated":true,"path":"AGENTS.md","line":null,"comment_ids":[1,2]}]`)
@@ -269,6 +272,43 @@ func TestRESTFallbackFailsClosedOnPredicatesItCannotEvaluate(t *testing.T) {
 		if pr.ReviewDecision != "REVIEW_REQUIRED" {
 			t.Errorf("review decision = %q under %s, want REVIEW_REQUIRED", pr.ReviewDecision, rules)
 		}
+	}
+}
+
+// TestRESTFallbackReadsClassicBranchProtection: a review requirement set
+// through classic branch protection rather than a ruleset counts the same
+// way, and a protected branch whose protection document cannot be read is
+// an error rather than a branch with no requirement.
+func TestRESTFallbackReadsClassicBranchProtection(t *testing.T) {
+	dir := installFakeGH(t, fakeGH)
+	restFixtures(t, dir)
+	writeFixture(t, dir, "branch.json", `{"name":"main","protected":true}`)
+	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"reviewer"},"author_association":"COLLABORATOR","state":"APPROVED","submitted_at":"2026-09-12T00:00:05Z"}]`)
+	decisionWith := func(protection string) string {
+		t.Helper()
+		writeFixture(t, dir, "protection.json", protection)
+		pr, err := loadPullRequest("picatz/flowstate", 7)
+		if err != nil {
+			t.Fatalf("loadPullRequest over REST: %v", err)
+		}
+		return pr.ReviewDecision
+	}
+	if got := decisionWith(`{"required_pull_request_reviews":{"required_approving_review_count":2}}`); got != "REVIEW_REQUIRED" {
+		t.Errorf("review decision = %q with one of two approvals classic protection requires, want REVIEW_REQUIRED", got)
+	}
+	if got := decisionWith(`{"required_pull_request_reviews":{"required_approving_review_count":1}}`); got != "APPROVED" {
+		t.Errorf("review decision = %q with the one approval classic protection requires, want APPROVED", got)
+	}
+	if got := decisionWith(`{"required_pull_request_reviews":{"required_approving_review_count":1,"require_code_owner_reviews":true}}`); got != "REVIEW_REQUIRED" {
+		t.Errorf("review decision = %q under a classic code-owner requirement, want REVIEW_REQUIRED", got)
+	}
+	if got := decisionWith(`{"required_status_checks":{"strict":false}}`); got != "APPROVED" {
+		t.Errorf("review decision = %q under classic protection without review requirements, want APPROVED", got)
+	}
+
+	writeFixture(t, dir, "protection.json", `{"message":"Not Found"`)
+	if _, err := loadPullRequest("picatz/flowstate", 7); err == nil {
+		t.Fatal("a protected branch whose protection document cannot be read loaded as if unprotected")
 	}
 }
 

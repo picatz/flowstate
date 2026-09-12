@@ -18,8 +18,8 @@ import (
 // Two facts REST spells differently are handled explicitly rather than
 // zero-filled. GitHub's computed reviewDecision is replaced by the decision
 // each reviewer's latest decisive review implies, checked against the base
-// branch's rulesets so a required-approval rule still reads as
-// REVIEW_REQUIRED. A review's updatedAt is not exposed by REST at all, so an
+// branch's rulesets and classic branch protection so a required-approval
+// rule still reads as REVIEW_REQUIRED. A review's updatedAt is not exposed by REST at all, so an
 // edited review body after the attestation is not detected on this path;
 // noteFallback says so, so the operator reads the reviews once more before
 // merging instead of trusting a check that could not look.
@@ -349,14 +349,14 @@ func loadReviewsREST(repo string, number int) ([]review, error) {
 // reviewDecisionREST is the decision the reviews imply, in the vocabulary
 // evaluate reads: CHANGES_REQUESTED when any reviewer's latest decisive
 // review asks for changes, REVIEW_REQUIRED when the base branch's rulesets
-// require more distinct counting approvals than the reviewers have given
-// or a review predicate REST cannot evaluate (a code-owner review, a
-// last-push approval), APPROVED when at least one counting reviewer
-// approves and every requirement is met, and "" when nothing decides. A
-// dismissed review has state DISMISSED and decides nothing; a decisive
-// review without a reviewer login is an error, since the latest review per
-// reviewer cannot be established without the reviewer. Classic branch
-// protection is not consulted; the merge itself enforces it.
+// or classic protection require more distinct counting approvals than the
+// reviewers have given or a review predicate REST cannot evaluate (a
+// code-owner review, a last-push approval), APPROVED when at least one
+// counting reviewer approves and every requirement is met, and "" when
+// nothing decides. A dismissed review has state DISMISSED and decides
+// nothing; a decisive review without a reviewer login is an error, since
+// the latest review per reviewer cannot be established without the
+// reviewer.
 func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	raw, err := restReviews(repo, number)
 	if err != nil {
@@ -405,15 +405,71 @@ func reviewDecisionREST(repo string, number int, base string) (string, error) {
 	}
 }
 
-// reviewRules is what the base branch's rulesets ask of reviews: the
-// largest number of approving reviews any pull_request rule requires, and
-// the name of a predicate this tool cannot evaluate over REST, if any.
+// reviewRules is what the base branch asks of reviews, from its rulesets
+// and its classic branch protection together: the largest number of
+// approving reviews either requires, and the name of a predicate this tool
+// cannot evaluate over REST, if any.
 type reviewRules struct {
 	required int
 	opaque   string
 }
 
 func reviewRulesREST(repo, base string) (reviewRules, error) {
+	out, err := rulesetReviewRules(repo, base)
+	if err != nil {
+		return reviewRules{}, err
+	}
+	classic, err := classicReviewRules(repo, base)
+	if err != nil {
+		return reviewRules{}, err
+	}
+	if classic.required > out.required {
+		out.required = classic.required
+	}
+	if out.opaque == "" {
+		out.opaque = classic.opaque
+	}
+	return out, nil
+}
+
+// classicReviewRules reads classic branch protection, which rulesets did
+// not replace. The branch document says whether the branch is protected at
+// all, so an unprotected branch costs one request; a protected branch whose
+// protection document cannot be read is an error, not "no requirement".
+func classicReviewRules(repo, base string) (reviewRules, error) {
+	var branch struct {
+		Protected bool `json:"protected"`
+	}
+	if err := restGet(fmt.Sprintf("repos/%s/branches/%s", repo, base), &branch); err != nil {
+		return reviewRules{}, err
+	}
+	if !branch.Protected {
+		return reviewRules{}, nil
+	}
+	var protection struct {
+		RequiredPullRequestReviews *struct {
+			RequiredApprovingReviewCount int  `json:"required_approving_review_count"`
+			RequireCodeOwnerReviews      bool `json:"require_code_owner_reviews"`
+			RequireLastPushApproval      bool `json:"require_last_push_approval"`
+		} `json:"required_pull_request_reviews"`
+	}
+	if err := restGet(fmt.Sprintf("repos/%s/branches/%s/protection", repo, base), &protection); err != nil {
+		return reviewRules{}, err
+	}
+	var out reviewRules
+	if reviews := protection.RequiredPullRequestReviews; reviews != nil {
+		out.required = reviews.RequiredApprovingReviewCount
+		switch {
+		case reviews.RequireCodeOwnerReviews:
+			out.opaque = "a code-owner review"
+		case reviews.RequireLastPushApproval:
+			out.opaque = "an approval after the last push"
+		}
+	}
+	return out, nil
+}
+
+func rulesetReviewRules(repo, base string) (reviewRules, error) {
 	var rules []struct {
 		Type       string `json:"type"`
 		Parameters struct {
