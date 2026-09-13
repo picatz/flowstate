@@ -77,10 +77,14 @@ trap 'rm -rf "${lock_dir}"' EXIT
 # A function, called with `|| true`, because that is what actually contains a
 # failure: `set -e` is suppressed for the command in an `if` condition but not
 # for the commands in its body, and it is suppressed through a whole function
-# body invoked this way. The generation above is already published, so a build
-# that succeeded must not report failure because it could not also keep a copy
-# -- the launcher reads any status but 0 and 3 as an incoherent build and
-# denies the call.
+# body invoked this way. Both call sites run after a generation is current, so
+# a build that succeeded must not report failure because it could not also keep
+# a copy -- the launcher reads any status but 0 and 3 as an incoherent build
+# and denies the call.
+#
+# Called on both exits: after a compile, and on the fast path a checkout takes
+# when its generation is already current -- otherwise an existing checkout
+# would never retain anything at all.
 #
 # Staged under the cache directory the stale-build sweep already prunes, then
 # moved in by renaming each file over its predecessor. The directory itself is
@@ -289,14 +293,7 @@ touch "${stage_dir}/.ready"
 rm -rf "${hook_dir}"
 mv "${stage_dir}" "${hook_dir}"
 
-# Retain the merge guard that just compiled, so the next build that cannot
-# compile one still has a real recognizer to consult. Only this guard: it is
-# the only one whose answer to being unbuildable is a refusal rather than a
-# warning, so it is the only one where deciding precisely beats failing open --
-# and a retained genguard could refuse the very edit that repairs it, which is
-# the lockout these hooks exist to avoid.
-#
-# Copied through a temporary name and renamed, so a reader never opens a
-# half-written binary, and written only when this build produced one.
+# Retained after a compile as well as on the fast path above, so a build that
+# produced a new guard replaces the one kept from the previous build.
 retain_merge_guard || true
 trap 'rm -f "${post_build_dirs}" "${post_build_extra}"; rm -rf "${lock_dir}"' EXIT
