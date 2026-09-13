@@ -62,7 +62,7 @@ func TestEvalRunOutputsBoundsARejectedValueInItsRefusal(t *testing.T) {
 			name: "an output that fails its own must",
 			declaration: &v1.OutputDeclaration{
 				Name: "channel",
-				Must: strPtr(`this == "expected"`),
+				Must: new(`this == "expected"`),
 			},
 			contains: []string{`output "channel"`, "must satisfy"},
 		},
