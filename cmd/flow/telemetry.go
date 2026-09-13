@@ -240,7 +240,7 @@ func telemetryConfigFromEnv() (telemetryConfig, error) {
 // for as long as the process lives and distinct from every other copy.
 //
 // Stability within the process is the whole requirement, and it is why this is
-// a [sync.OnceValues] rather than a call per resource. A process builds more than
+// a [sync.OnceValue] rather than a call per resource. A process builds more than
 // one provider — traces, metrics and logs each take a resource — and an id that
 // differed between them would split one process into three services in the
 // backend, which is worse than having no instance id at all.

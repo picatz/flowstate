@@ -298,7 +298,7 @@ func CollectRefsFromParsedExpr(pe *expr.ParsedExpr, prev *Workflow_StepOutputs, 
 // Past the bound, this fails closed rather than silently stopping: every step
 // [prev] carries is marked as needed whole (see [MarkWholeStep]), because an
 // expression this walk cannot see the bottom of might reference any of them.
-// The alternative — CLAUDE.md's [secretRefs] shape, answering "may hold a
+// The alternative — CLAUDE.md's `secretRefs` shape, answering "may hold a
 // reference" rather than "holds none" — is exactly this question asked by
 // Continue-As-New compaction instead of by secret authority: dropping an
 // output a live expression still needs fails a run after compaction, so the

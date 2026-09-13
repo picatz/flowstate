@@ -213,7 +213,22 @@ func TestDistanceObeysTheMetricLaws(t *testing.T) {
 	require.NoError(t, quick.Check(symmetric, checkConfig()),
 		"the distance between two names must not depend on which one was typed")
 
+	// Both directions, and the identity half is asked of every draw rather than
+	// only of the pairs that happen to come up equal — two independent draws from
+	// [nameAlphabet] agree outright about one time in eighty, so left to the
+	// biconditional alone this law would be almost entirely the "different names
+	// cost an edit" direction.
+	//
+	// Scoped to valid UTF-8, which is what the generator emits: two distinct
+	// strings of invalid bytes both decode to one [utf8.RuneError] and are zero
+	// apart by this function's rune-wise definition. That is [nearest.Distance]'s
+	// documented behaviour rather than a gap, since its callers compare names a
+	// parser already accepted.
 	zeroOnlyWhenEqual := func(a, b generatedName) bool {
+		if nearest.Distance(string(a), string(a)) != 0 {
+			return false
+		}
+
 		return (nearest.Distance(string(a), string(b)) == 0) == (a == b)
 	}
 	require.NoError(t, quick.Check(zeroOnlyWhenEqual, checkConfig()),

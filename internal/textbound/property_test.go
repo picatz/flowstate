@@ -202,19 +202,35 @@ func TestCutIsIdempotentForEveryInput(t *testing.T) {
 // Written out here rather than derived from [Cut]'s answer, because a counter
 // that asked the function under test whether it reached its own interesting case
 // would agree with any implementation, including a broken one.
+//
+// The width comes from [utf8.DecodeRuneInString] and not from
+// [utf8.RuneLen] of a ranged rune, which is the shape this was first written in
+// and which does not work: `range` over a string yields [utf8.RuneError] for an
+// invalid byte while advancing one byte, but `utf8.RuneLen(utf8.RuneError)` is 3,
+// because U+FFFD is a three-byte rune. Every invalid byte was therefore measured
+// as three bytes wide and counted as a straddle, and the guard meant to skip
+// those — `width <= 1` — could never be true. The counter it fed then reported
+// 680 straddles where 499 were real, and stayed above its floor with the
+// generator's multi-byte branch removed entirely, which is the one regression it
+// exists to catch. A decoded size is the width of what is actually there.
 func straddlesLimit(s string, limit int) bool {
 	if limit <= 0 {
 		return false
 	}
 
-	for at, r := range s {
-		width := utf8.RuneLen(r)
-		if r == utf8.RuneError && width <= 1 {
-			continue // an invalid byte, not a rune the input holds
+	for at := 0; at < len(s); {
+		r, size := utf8.DecodeRuneInString(s[at:])
+		if r == utf8.RuneError && size <= 1 {
+			at++ // an invalid byte, not a rune the input holds
+			continue
 		}
-		if at < limit && at+width > limit {
+		// A single-byte rune cannot straddle: at < limit and at+1 > limit have no
+		// common solution. Stated anyway, because it is what "multi-byte" means
+		// in this function's name.
+		if size > 1 && at < limit && at+size > limit {
 			return true
 		}
+		at += size
 	}
 
 	return false
