@@ -48,8 +48,16 @@ func sshRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowst
 	}
 
 	out, runErr := run(ctx, host, command, commandLine)
-	if out == nil {
+	if runErr != nil {
+		// Only the classification travels on this path: the SDK's Execute
+		// returns the error alone, so outputs encoded here would be dropped
+		// before they reached the host. What the command said reaches the
+		// runbook in the failure message instead, which is why run puts a
+		// bounded excerpt of it there.
 		return nil, runErr
+	}
+	if out == nil {
+		return nil, sdk.Failed("the session reported neither a result nor a failure")
 	}
 
 	outputs, encodeErr := sdk.EncodeOutputs(&sshv1.RunOutputs{
@@ -62,12 +70,6 @@ func sshRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowst
 	})
 	if encodeErr != nil {
 		return nil, encodeErr
-	}
-	// A non-zero exit the grant does not count as success is a failure that
-	// still carries what the command said; the host keeps the outputs on the
-	// error path, so a runbook debugging one is not left guessing.
-	if runErr != nil {
-		return outputs, runErr
 	}
 	return outputs, nil
 }

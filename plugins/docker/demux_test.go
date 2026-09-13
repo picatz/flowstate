@@ -146,3 +146,24 @@ func TestAnUnknownStreamIsMixedIntoNeitherResult(t *testing.T) {
 		t.Error("truncated is true, but no stream this result reports lost anything")
 	}
 }
+
+// TestAHeaderCutPartwayThroughIsNotACompleteResult is the other half of the
+// cut-stream refusal: the connection can end inside the eight-byte header as
+// easily as inside a frame's body, and both leave the same question — what the
+// container wrote that this call did not receive.
+func TestAHeaderCutPartwayThroughIsNotACompleteResult(t *testing.T) {
+	var body bytes.Buffer
+	body.Write(frame(streamStdout, "kept\n"))
+
+	// Three bytes of an eight-byte header, then nothing.
+	body.Write([]byte{streamStderr, 0, 0})
+
+	stdout, stderr, truncated, err := demultiplex(&body, 1<<10)
+	if err == nil {
+		t.Fatalf("a header cut partway through was returned as a complete result (stdout %q, stderr %q, truncated %v)",
+			stdout, stderr, truncated)
+	}
+	if stdout != "" || stderr != "" {
+		t.Errorf("stdout = %q and stderr = %q; a refusal carries no partial output to be mistaken for the whole", stdout, stderr)
+	}
+}

@@ -63,8 +63,16 @@ func dockerRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	defer runtime.close()
 
 	out, runErr := execute(ctx, runtime, grant, in.GetRun(), argv)
-	if out == nil {
+	if runErr != nil {
+		// Only the classification travels on this path: the SDK's Execute
+		// returns the error alone, so outputs encoded here would be dropped
+		// before they reached the host. What the container said reaches the
+		// author in the failure message instead, which is why execute puts a
+		// bounded excerpt of it there.
 		return nil, runErr
+	}
+	if out == nil {
+		return nil, sdk.Failed("the container runtime reported neither a result nor a failure")
 	}
 
 	outputs, encodeErr := sdk.EncodeOutputs(&dockerv1.RunOutputs{
@@ -78,10 +86,7 @@ func dockerRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	if encodeErr != nil {
 		return nil, encodeErr
 	}
-	// A non-zero exit the grant does not count as success is a failure that
-	// still carries what the container said, so a workflow debugging one is not
-	// left guessing.
-	return outputs, runErr
+	return outputs, nil
 }
 
 // selectRun resolves the grant name a call carries.
