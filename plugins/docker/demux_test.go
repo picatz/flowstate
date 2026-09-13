@@ -89,10 +89,14 @@ func TestReadingOneEndlessStreamIsStillBounded(t *testing.T) {
 	}
 }
 
-// TestAnUnknownStreamCutMidFrameIsNotFatal covers the frame this plugin does
-// not keep: an unknown stream contributes to neither result, and one whose body
-// ends short of its declared length ends the read rather than anything worse.
-func TestAnUnknownStreamCutMidFrameIsNotFatal(t *testing.T) {
+// TestAStreamCutMidFrameIsNotACompleteResult is the difference between a bound
+// this plugin chose and a connection somebody else ended.
+//
+// Truncation is this plugin deciding it has read enough, and it is reported as
+// truncated. A frame the daemon began and did not finish is neither: what the
+// container wrote is not knowable from here, and returning what arrived as a
+// finished result is how a check passes on evidence cut off in transit.
+func TestAStreamCutMidFrameIsNotACompleteResult(t *testing.T) {
 	var body bytes.Buffer
 	body.Write(frame(streamStdout, "kept\n"))
 
@@ -105,14 +109,38 @@ func TestAnUnknownStreamCutMidFrameIsNotFatal(t *testing.T) {
 	body.WriteString("short")
 
 	stdout, stderr, truncated, err := demultiplex(&body, 1<<10)
+	if err == nil {
+		t.Fatalf("a stream cut mid-frame was returned as a complete result (stdout %q, stderr %q, truncated %v)",
+			stdout, stderr, truncated)
+	}
+	if stdout != "" || stderr != "" {
+		t.Errorf("stdout = %q and stderr = %q; a refusal carries no partial output to be mistaken for the whole", stdout, stderr)
+	}
+}
+
+// TestAnUnknownStreamIsMixedIntoNeitherResult covers the frame kind this plugin
+// does not keep: stdin echoed back, or a stream a future runtime adds.
+func TestAnUnknownStreamIsMixedIntoNeitherResult(t *testing.T) {
+	var body bytes.Buffer
+	body.Write(frame(streamStdout, "kept\n"))
+
+	unknown := make([]byte, frameHeaderBytes)
+	unknown[0] = 9
+	binary.BigEndian.PutUint32(unknown[4:8], 7)
+	body.Write(unknown)
+	body.WriteString("ignored")
+
+	body.Write(frame(streamStderr, "warned\n"))
+
+	stdout, stderr, truncated, err := demultiplex(&body, 1<<10)
 	if err != nil {
 		t.Fatalf("demultiplex: %v", err)
 	}
 	if stdout != "kept\n" {
-		t.Errorf("stdout = %q, want what was read before the cut", stdout)
+		t.Errorf("stdout = %q, want the stdout frames only", stdout)
 	}
-	if stderr != "" {
-		t.Errorf("stderr = %q, want an unknown stream mixed into neither", stderr)
+	if stderr != "warned\n" {
+		t.Errorf("stderr = %q, want the frame after the unknown one to still arrive", stderr)
 	}
 	if truncated {
 		t.Error("truncated is true, but no stream this result reports lost anything")

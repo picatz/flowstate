@@ -24,6 +24,7 @@ pkg/flowstate/v1/netpolicy                 ParseConfig                  FuzzPars
 pkg/flowstate/v1/netpolicy                 ParseByteSize                FuzzParseConfig
 pkg/flowstate/v1/netpolicy                 ByteSize.UnmarshalText       FuzzParseConfig
 pkg/flowstate/v1/plugin                    ParsePinsConfig              FuzzParsePinsConfig
+pkg/flowstate/v1/plugin                    ParseEnvConfig               FuzzParseEnvConfig
 pkg/flowstate/v1                           BindRunInputs                FuzzBindRunInputs
 pkg/flowstate/v1                           ParseTaskPolicyConfig        FuzzRootParsers
 pkg/flowstate/v1                           ParseDescriptorProse         FuzzRootParsers

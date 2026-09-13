@@ -55,20 +55,21 @@ func installVerifier() {
 		return
 	}
 
-	options := []auth.Option{}
-	if egress, err := sdk.EgressPolicy(); err == nil {
-		options = append(options, auth.WithEgressPolicy(egress))
-	} else {
-		// A grant this process cannot use is not a reason to verify nothing:
-		// a policy whose issuers are all JWKSFile entries needs no network at
-		// all. What it must not do is fetch under no policy, so the verifier is
-		// built with an empty one, which denies by default.
-		denying, buildErr := netpolicy.New()
-		if buildErr != nil {
-			trustRefusal = fmt.Errorf("no usable egress policy (%v) and no deny-by-default to fall back on: %w", err, buildErr)
+	// The trust policy's own egress section is the file spelling of
+	// auth.WithEgressPolicy, and auth.NewOIDCVerifier refuses both at once. An
+	// operator who pointed this plugin at the same complete document
+	// `flow server --auth-policy` reads has therefore already decided where
+	// identity fetches may go, and the deployment's grant does not get a
+	// second, contradictory say.
+	var options []auth.Option
+	if policy.Egress == nil {
+		egress, err := verifierEgress()
+		if err != nil {
+			trustRefusal = err
+			fmt.Fprintf(os.Stderr, "jose: %v\n", err)
 			return
 		}
-		options = append(options, auth.WithEgressPolicy(denying))
+		options = append(options, auth.WithEgressPolicy(egress))
 	}
 
 	built, err := auth.NewOIDCVerifier(policy, options...)
@@ -78,6 +79,27 @@ func installVerifier() {
 		return
 	}
 	verifier = built
+}
+
+// verifierEgress is the policy an issuer's key set is fetched under.
+//
+// A grant this process cannot use is not a reason to verify nothing: a policy
+// whose issuers are all JWKSFile entries needs no network at all. What it must
+// not do is fetch under no policy - and an empty netpolicy.New() is not that,
+// because its defaults permit public HTTP and HTTPS, which is every JWKS URL on
+// the internet. A deny rule matching every request is what actually denies one,
+// which is what a missing grant has to mean here.
+func verifierEgress() (*netpolicy.Policy, error) {
+	granted, err := sdk.EgressPolicy()
+	if err == nil {
+		return granted, nil
+	}
+
+	denying, buildErr := netpolicy.New(netpolicy.WithDenyRules("true"))
+	if buildErr != nil {
+		return nil, fmt.Errorf("no usable egress policy (%v) and no deny-by-default to fall back on: %w", err, buildErr)
+	}
+	return denying, nil
 }
 
 // checkHealth reports whether this plugin could verify anything at all. Without

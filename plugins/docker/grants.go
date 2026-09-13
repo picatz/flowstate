@@ -30,13 +30,25 @@ const maxGrantsBytes = 1 << 20
 // plugin's own: an operator delegates authority with a grants file, and these
 // are what one call may spend whatever the file says.
 const (
-	maxRunTimeout      = 30 * time.Minute
-	maxOutputByteLimit = 4 << 20
-	maxMemoryBytes     = 16 << 30
-	maxNanoCPUs        = 8_000_000_000 // eight cores, in the daemon's units
-	maxPidsLimit       = 4096
-	maxMounts          = 8
-	maxEnvironment     = 32
+	maxRunTimeout = 30 * time.Minute
+
+	// outputEnvelopeReserve is what a result costs beside its two streams: the
+	// exit code, the image reference, the run name, the truncated flag, and the
+	// framing around them.
+	outputEnvelopeReserve = 64 << 10
+
+	// maxOutputByteLimit bounds each stream a grant may ask for, derived from
+	// the host's own ceiling rather than chosen. Both streams travel in one
+	// task result, and a result over flowstatev1.MaxTaskOutputBytes is refused
+	// by the engine - so a higher grant would let the container run and its
+	// output be read only for the answer to be thrown away.
+	maxOutputByteLimit = (flowstatev1.MaxTaskOutputBytes - outputEnvelopeReserve) / 2
+
+	maxMemoryBytes = 16 << 30
+	maxNanoCPUs    = 8_000_000_000 // eight cores, in the daemon's units
+	maxPidsLimit   = 4096
+	maxMounts      = 8
+	maxEnvironment = 32
 
 	defaultRunTimeout  = 5 * time.Minute
 	defaultOutputLimit = 256 << 10
@@ -312,6 +324,17 @@ func (m mountGrant) check(name string) error {
 
 // check validates one run grant and compiles its patterns.
 func (r *runGrant) check(name string, mounts map[string]mountGrant) error {
+	if !imageNamePattern.MatchString(r.Image) {
+		// The digest alone is not the guarantee: `sha256:…` with no name in
+		// front of it has a valid digest suffix and names a local image the
+		// daemon already holds, which is not the registry/repository bytes an
+		// operator reviewed.
+		return fmt.Errorf(
+			"run %q names the image %q, which is not digest-pinned as registry/repository@sha256:…; "+
+				"the registry and repository are half of what makes the digest a guarantee, because a bare "+
+				"digest names whatever image a host already holds",
+			name, truncate(r.Image, 128))
+	}
 	if err := flowstatev1.ValidateContentDigest(digestOf(r.Image)); err != nil {
 		return fmt.Errorf(
 			"run %q names the image %q, which is not digest-pinned; write registry/repository@sha256:… so that what an "+
@@ -324,8 +347,12 @@ func (r *runGrant) check(name string, mounts map[string]mountGrant) error {
 	if r.NanoCPUs <= 0 || r.NanoCPUs > maxNanoCPUs {
 		return fmt.Errorf("run %q needs nano_cpus between 1 and %d", name, maxNanoCPUs)
 	}
-	if r.PidsLimit < 0 || r.PidsLimit > maxPidsLimit {
-		return fmt.Errorf("run %q has a pids_limit over this plugin's ceiling of %d", name, maxPidsLimit)
+	if r.PidsLimit <= 0 || r.PidsLimit > maxPidsLimit {
+		// Required rather than defaulted, like memory_bytes and nano_cpus above:
+		// an omitted PidsLimit is not a small limit to the daemon, it is no
+		// limit, and a grant that states every other bound and not this one
+		// reads as bounded when it is not.
+		return fmt.Errorf("run %q needs a pids_limit between 1 and %d; an omitted one is unlimited to the daemon", name, maxPidsLimit)
 	}
 	if time.Duration(r.Timeout) < 0 || r.Timeout.duration(defaultRunTimeout) > maxRunTimeout {
 		return fmt.Errorf("run %q has a timeout over this plugin's ceiling of %s", name, maxRunTimeout)
@@ -354,12 +381,6 @@ func (r *runGrant) check(name string, mounts map[string]mountGrant) error {
 	}
 	if r.User != "" && !userPattern.MatchString(r.User) {
 		return fmt.Errorf("run %q has a user %q that is not uid:gid", name, truncate(r.User, 64))
-	}
-	if r.User == "0:0" || r.User == "0" {
-		// Allowed, and written out: a reviewer reading the file sees it.
-		// Refusing it outright would send operators to a plugin that does not
-		// check anything at all.
-		_ = r.User
 	}
 	if r.Network != "" && r.Network != "none" && !networkPattern.MatchString(r.Network) {
 		return fmt.Errorf("run %q names a network %q that is not a name the daemon could have", name, truncate(r.Network, 64))
@@ -460,6 +481,13 @@ var (
 	apiVersionPattern    = regexp.MustCompile(`^v[0-9]+\.[0-9]+$`)
 	userPattern          = regexp.MustCompile(`^[0-9]+(:[0-9]+)?$`)
 	networkPattern       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
+
+	// imageNamePattern is a canonical reference: a registry host, at least one
+	// repository path segment, and a digest. No implicit registry, no tag, and
+	// no bare digest - each of those is a name that can mean something else on
+	// a different host.
+	imageNamePattern = regexp.MustCompile(
+		`^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?(:[0-9]{1,5})?(/[a-z0-9]+([._-][a-z0-9]+)*)+@[a-z0-9]+:[a-zA-Z0-9]+$`)
 )
 
 // truncate bounds a value before it is interpolated into a message.

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
@@ -107,8 +108,18 @@ var httpsScheme = "https"
 // classification and the credential handling are written once: a second request
 // path is a second set of answers to keep correct.
 func (c *client) do(ctx context.Context, method, path string, query url.Values, body any, limit int64, headers map[string]string) (*http.Response, []byte, error) {
+	// The callers escape an opaque identifier into one path segment, so what
+	// arrives here is already escaped. url.URL.String escapes Path again unless
+	// RawPath says what the escaping was, which would send an id holding "/" as
+	// %252F and address a different user - so both halves are set, and net/url
+	// then encodes exactly once.
 	endpoint := *c.base
-	endpoint.Path = c.base.Path + path
+	endpoint.RawPath = c.base.EscapedPath() + path
+	unescaped, unescapeErr := url.PathUnescape(endpoint.RawPath)
+	if unescapeErr != nil {
+		return nil, nil, sdk.InvalidInput("the identifier in this request is not a usable path segment")
+	}
+	endpoint.Path = unescaped
 	if len(query) > 0 {
 		endpoint.RawQuery = query.Encode()
 	}
@@ -271,7 +282,16 @@ func truncate(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit] + "…"
+	// Cut on a rune boundary, not a byte offset. Everything bounded here was
+	// chosen by the provider, and a multibyte name cut through the middle is
+	// invalid UTF-8 - which a protobuf string field refuses, so a group name
+	// crossing the limit would fail the encoding of the whole user result
+	// rather than arrive shortened.
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut] + "…"
 }
 
 // tokenFrom reads the resolved bearer credential this call acts as.

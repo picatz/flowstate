@@ -53,7 +53,10 @@ func installEgressPolicy() {
 		return
 	}
 
-	denying, buildErr := netpolicy.New()
+	// Deny-by-default means a rule that matches every request: an empty
+	// netpolicy.New() permits public HTTP and HTTPS by default, which for this
+	// plugin would be every token endpoint on the internet.
+	denying, buildErr := netpolicy.New(netpolicy.WithDenyRules("true"))
 	if buildErr != nil {
 		// Unreachable in practice, and fatal if it happened: with no policy at
 		// all the exchanger would be unbounded.

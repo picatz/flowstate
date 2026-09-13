@@ -284,6 +284,15 @@ func deactivate(ctx context.Context, client *client, id, expectedVersion string)
 		return nil, err
 	}
 	if !current.GetActive() {
+		// A compare-and-swap the caller asked for still has to hold on the path
+		// that writes nothing. Without this, `expected_version` would be checked
+		// only when a write happened, and a reviewer who read version X would be
+		// told their condition held against whatever version the account is at
+		// now.
+		if expectedVersion != "" && current.GetVersion() != expectedVersion {
+			return nil, sdk.Conflict(
+				"the account is already inactive, and not at the version this step required; somebody else changed it since it was read")
+		}
 		return &scimv1.UserDeactivateOutputs{
 			Id:              current.GetId(),
 			Active:          false,

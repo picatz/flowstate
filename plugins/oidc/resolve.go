@@ -103,7 +103,12 @@ func resolveSecret(ctx context.Context, req sdk.SecretRequest) (sdk.SecretRespon
 func lifetime(credential auth.Credential) time.Duration {
 	remaining := time.Until(credential.ExpiresAt) - auth.DefaultRefreshMargin
 	if remaining <= 0 {
-		return 0
+		// Not zero: zero is the wire spelling of "the provider did not say",
+		// and the engine's cache reads that as permission to keep the value for
+		// its own default lifetime - so a token with a second left would be
+		// handed out for an hour. The smallest positive lifetime says the
+		// opposite, and says it in the same field.
+		return time.Nanosecond
 	}
 	return remaining
 }

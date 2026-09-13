@@ -290,3 +290,32 @@ func TestARefusedCredentialIsPermanent(t *testing.T) {
 		t.Errorf("error is %v, want permission denied", err)
 	}
 }
+
+// TestAnAlreadyInactiveAccountStillHonorsTheExpectedVersion is the half of the
+// compare-and-swap that writes nothing.
+//
+// A reviewer reads a user, supplies the version they read, and asks for the
+// account to be turned off. If somebody else changed it in between, the answer
+// is a conflict whether or not this task ends up writing - otherwise the
+// condition would hold exactly when it did not matter.
+func TestAnAlreadyInactiveAccountStillHonorsTheExpectedVersion(t *testing.T) {
+	provider := newFakeProvider(t)
+	provider.addUser("2819c224", "dana@example.com", false)
+
+	client := provider.client(t)
+
+	if _, err := deactivate(t.Context(), client, "2819c224", provider.version); err != nil {
+		t.Fatalf("the version the reviewer read was refused on an already-inactive account: %v", err)
+	}
+
+	_, err := deactivate(t.Context(), client, "2819c224", `W/"stale"`)
+	if err == nil {
+		t.Fatal("a stale expected_version was accepted because no write was needed")
+	}
+	if !sdk.IsConflict(err) {
+		t.Errorf("error is %v, want the conflict classification", err)
+	}
+	if provider.patches != 0 {
+		t.Errorf("%d writes happened on an account that was already inactive", provider.patches)
+	}
+}

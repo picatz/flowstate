@@ -147,6 +147,15 @@ func IsUnavailable(err error) bool { return hasCode(err, connect.CodeUnavailable
 // is not the code but the verdict on retrying, so this asks about the verdict.
 func IsOutcomeUnknown(err error) bool { return hasCode(err, connect.CodeUnknown, true) }
 
+// IsFailed reports whether err is (or wraps) a [Failed] classification: the
+// step did not succeed, the outcome is known, and retrying spends an attempt on
+// the same answer.
+//
+// The other half of [IsOutcomeUnknown]. The two share a connect code, so a
+// caller reading the code alone cannot tell them apart, and reading the message
+// is what this family exists to stop.
+func IsFailed(err error) bool { return hasCode(err, connect.CodeUnknown, false) }
+
 // hasCode is the one place the classification is read out of an error.
 func hasCode(err error, code connect.Code, unknownOutcome bool) bool {
 	var c *classified

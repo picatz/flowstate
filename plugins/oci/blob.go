@@ -17,10 +17,19 @@ const (
 	// in-toto attestation or a small SBOM fits; a layer does not, on purpose.
 	defaultBlobBytes = 1 << 20
 
-	// maxBlobBytes is the ceiling a workflow cannot raise past. What this task
-	// reads becomes a step output, so the ceiling bounds durable history as
-	// much as it bounds this process's memory.
-	maxBlobBytes = 8 << 20
+	// blobEnvelopeReserve is what a result costs beside the blob's own bytes:
+	// the digest, the media type, the size, the parsed form when one is asked
+	// for, and the framing around them. Sized for parse_json, which is the
+	// output that can hold the payload a second time.
+	blobEnvelopeReserve = 128 << 10
+
+	// maxBlobBytes is the ceiling a workflow cannot raise past, derived from
+	// the host's own rather than chosen. What this task reads becomes a step
+	// output, and an output over flowstatev1.MaxTaskOutputBytes is refused by
+	// the engine - so a higher ceiling here would let a registry read succeed
+	// and its answer be thrown away, which spends the bytes and returns
+	// nothing.
+	maxBlobBytes = (flowstatev1.MaxTaskOutputBytes - blobEnvelopeReserve) / 2
 )
 
 func ociBlob(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {

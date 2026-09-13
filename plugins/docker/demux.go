@@ -62,8 +62,16 @@ func demultiplex(body io.Reader, limit int64) (stdout, stderr string, truncated 
 	var read int64
 	for {
 		if _, readErr := io.ReadFull(body, header); readErr != nil {
-			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+			if errors.Is(readErr, io.EOF) {
+				// The stream ended where a frame ended, which is what a
+				// complete one looks like.
 				break
+			}
+			if errors.Is(readErr, io.ErrUnexpectedEOF) {
+				// It ended partway through a header. What was read is real and
+				// incomplete, and returning it as a finished result is how a
+				// check passes on evidence that was cut off in transit.
+				return "", "", false, errIncompleteStream
 			}
 			return "", "", false, sdk.Unavailable("reading the container's output: %v", readErr)
 		}
@@ -105,7 +113,7 @@ func demultiplex(body io.Reader, limit int64) (stdout, stderr string, truncated 
 			read += kept
 			*written += kept
 			if copyErr != nil {
-				break
+				return "", "", false, errIncompleteStream
 			}
 		}
 		if toKeep < length {
@@ -118,13 +126,19 @@ func demultiplex(body io.Reader, limit int64) (stdout, stderr string, truncated 
 			skipped, copyErr := io.CopyN(io.Discard, body, length-toKeep)
 			read += skipped
 			if copyErr != nil {
-				break
+				return "", "", false, errIncompleteStream
 			}
 		}
 	}
 
 	return text(out.String()), text(errOut.String()), truncated, nil
 }
+
+// errIncompleteStream is what a frame the daemon began and did not finish
+// earns. It is not truncation: truncation is this plugin deciding it has read
+// enough, and this is the other party's connection ending mid-frame, which
+// leaves no way to say what the container actually wrote.
+var errIncompleteStream = sdk.Unavailable("the container's output ended partway through a frame; what it wrote is not known")
 
 // text is a stream as a string, empty when it is not valid UTF-8: a step output
 // is not where arbitrary binary belongs, and a cut at the byte limit can leave

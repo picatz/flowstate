@@ -99,6 +99,12 @@ func TestATagIsRefusedWhereADigestIsRequired(t *testing.T) {
 		"ghcr.io/acme/tools",
 		"ghcr.io/acme/tools@sha256:short",
 		"ghcr.io/acme/tools@md5:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a",
+		// A valid digest with no name in front of it: the suffix checks out,
+		// and it names a local image rather than reviewed registry bytes.
+		"sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21",
+		// A repository with no registry, which is an implicit Docker Hub this
+		// plugin does not supply.
+		"alpine@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21",
 	} {
 		writeGrants(t, strings.Replace(validDocument,
 			"    image: ghcr.io/acme/tools@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21",

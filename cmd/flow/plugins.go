@@ -278,6 +278,25 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 		return pluginFlags{}, err
 	}
 
+	// Environment with nowhere to look is refused for the reason a --plugin
+	// pin and a digest pin are, just above: [pluginFlags.configured] never sees
+	// a directory, [startPlugins] returns early, and nothing is launched or
+	// configured. An operator who wrote a grants path for a plugin would
+	// otherwise get a worker that read it, said nothing, and ran none of it -
+	// which for `docker` and `ssh` is the difference between configured
+	// authority and no plugin at all.
+	if len(absolute) == 0 && len(env) > 0 {
+		remedy := "pass --plugin-dir <directory> as well, or set $" + pluginSearchPathEnv
+		if editorOnly {
+			remedy = "pass --plugin-dir <absolute directory> as well"
+		}
+
+		return pluginFlags{}, newUsageError(fmt.Errorf(
+			"a plugin environment is configured for %s, and there is nowhere to look for the plugin it configures: "+
+				"%s. A configured plugin is never quietly skipped",
+			strings.Join(slices.Sorted(maps.Keys(env)), ", "), remedy))
+	}
+
 	return pluginFlags{
 		dirs:              absolute,
 		only:              only,

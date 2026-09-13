@@ -288,7 +288,14 @@ func execute(ctx context.Context, runtime *daemon, grant runGrant, name string, 
 
 	stdout, stderr, truncated, err := runtime.logs(logCtx, id, grant.outputLimit())
 	if err != nil {
-		return nil, err
+		// The container has already run. Whatever went wrong reading its output
+		// - a cut stream, a stalled daemon, a refusal - a retry would run it
+		// again, including everything it did through a writable mount or a
+		// granted network. So this is never the retryable classification the
+		// transport would otherwise suggest.
+		return nil, sdk.OutcomeUnknown(
+			"the container ran and exited %d, and its output could not be read (%s); it is not retried automatically because retrying would run it again",
+			exitCode, truncate(err.Error(), maxErrorBytes))
 	}
 
 	out := &result{exitCode: exitCode, stdout: stdout, stderr: stderr, truncated: truncated}
