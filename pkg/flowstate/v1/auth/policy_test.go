@@ -411,9 +411,10 @@ func TestRequireClaimHelpers(t *testing.T) {
 // accepts a URL that names no host at all — see #971.
 func TestValidateHTTPSURL(t *testing.T) {
 	tests := []struct {
-		name    string
-		url     string
-		wantErr string // substring expected in the error, "" if no error expected
+		name       string
+		url        string
+		wantErr    string   // substring expected in the error, "" if no error expected
+		wantAbsent []string // substrings the error must NOT carry, for a URL holding a credential
 	}{
 		{
 			name: "a normal https URL",
@@ -437,9 +438,10 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantErr: "must name a host",
 		},
 		{
-			name:    "a host-free URL with credentials and a bare port",
-			url:     "https://user@:443/x",
-			wantErr: "must name a host",
+			name:       "a host-free URL with credentials and a bare port",
+			url:        "https://acct9@:443/x",
+			wantErr:    "must name a host",
+			wantAbsent: []string{"acct9"},
 		},
 		{
 			name:    "no host at all",
@@ -452,9 +454,232 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantErr: "must use https",
 		},
 		{
-			name:    "credentials in the URL",
-			url:     "https://user:pass@issuer.example.com",
-			wantErr: "must not include credentials",
+			name:       "credentials in the URL",
+			url:        "https://acct9:s3cr3t@issuer.example.com",
+			wantErr:    "must not include credentials",
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// Both halves of the credential are gone and the host stays, so
+			// the operator can still find the entry this is about.
+			name:       "the refusal names the host it redacted the credentials out of",
+			url:        "https://acct9:s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The shape with nothing to call url.URL.Redacted on: url.Parse
+			// refuses a space in the userinfo, and its own error renders the
+			// whole URL in front of the reason.
+			name:       "credentials in a URL url.Parse will not read",
+			url:        "https://acct9:s3c r3t@issuer.example.com",
+			wantErr:    "is not a valid URL",
+			wantAbsent: []string{"acct9", "s3c r3t"},
+		},
+		{
+			// url.Parse's own reason quotes a piece of what it refused: a bad
+			// percent escape in the password renders as `invalid URL escape
+			// "%zz"`, which is three characters of that password arriving
+			// after the URL around them was cleaned. So the reason is dropped
+			// whenever anything was redacted.
+			name:       "a credential holding a bad percent escape",
+			url:        "https://acct9:hunter%zz@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" is not a valid URL`,
+			wantAbsent: []string{"acct9", "hunter", "%zz"},
+		},
+		{
+			// And the credential-free direction: with nothing redacted there
+			// is nothing for the reason to be a fragment of, so it survives
+			// and the diagnostic keeps saying what is actually wrong.
+			name:    "a malformed URL with no credentials keeps its reason",
+			url:     "https://issuer.example.com/%zz",
+			wantErr: `invalid URL escape "%zz"`,
+		},
+		{
+			// A mistyped authority delimiter. url.Parse reads both of these as
+			// a URL with no host, so they are refused by the branch above the
+			// credentials check — and a search for a literal `//` finds no
+			// authority in the first and an empty one in the second.
+			name:       "credentials after a single-slash delimiter",
+			url:        "https:/acct9:s3cr3t@issuer.example.com",
+			wantErr:    "must name a host",
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			name:       "credentials after a three-slash delimiter",
+			url:        "https:///acct9:s3cr3t@issuer.example.com",
+			wantErr:    "must name a host",
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// What holds isURLScheme up. Here the first colon is inside the
+			// userinfo rather than after a scheme, and a guard that took
+			// whatever precedes it as one would consume `//acct9:`, find no
+			// slashes left, and hand the whole credential back — while
+			// url.Parse reads the same string as an authority and refuses it
+			// for carrying one. That is the fail-open direction, and without
+			// this case deleting the validation from the guard leaves the
+			// suite green (flowstate-reviewer).
+			name:       "credentials after a scheme-relative delimiter",
+			url:        "//acct9:s3cr3t@issuer.example.com",
+			wantErr:    `issuer "//[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// A password holding an unescaped URL delimiter. The strict
+			// reading stops the authority at the first `/`, `?` or `#`, so
+			// `acct9:s3c` holds no `@` and the whole credential survived into
+			// the refusal — which is why a string url.Parse has rejected is
+			// searched to its end instead (Codex).
+			name:       "a credential holding an unescaped slash",
+			url:        "https://acct9:s3c/r3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" is not a valid URL`,
+			wantAbsent: []string{"acct9", "s3c", "r3t"},
+		},
+		{
+			name:       "a credential holding an unescaped question mark",
+			url:        "https://acct9:s3c?r3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" is not a valid URL`,
+			wantAbsent: []string{"acct9", "s3c", "r3t"},
+		},
+		{
+			name:       "a credential holding an unescaped hash",
+			url:        "https://acct9:s3c#r3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" is not a valid URL`,
+			wantAbsent: []string{"acct9", "s3c", "r3t"},
+		},
+		{
+			// A password whose leading run is all digits: url.Parse calls it a
+			// *port*, so the URL is well formed and there is no userinfo, and
+			// the rest of the credential lands past the delimiter where the
+			// strict reading stopped. Under https this
+			// function accepts it and validateIssuerURL refuses the query —
+			// see TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL,
+			// which drives that path end to end. Here it is refused a step
+			// earlier, for its scheme, on one of the lines this change touches.
+			name:       "a credential read as a port under plain http",
+			url:        "http://acct9:2024?s3cr3t@issuer.example.com",
+			wantErr:    "must use https",
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The delimiter percent-encoded, which templating produces. Only a
+			// malformed string reaches this: url.Parse refuses the port, the
+			// greedy search finds no literal `@`, and without the encoded
+			// spelling the credential stayed whole *and* the parse reason
+			// quoted it a second time.
+			name:       "a credential whose at sign is percent-encoded",
+			url:        "https://acct9:s3cr3t%40issuer.example.com",
+			wantErr:    `issuer "https://[redacted]%40issuer.example.com" is not a valid URL`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// Both misreads at once, which is the shape that slipped between
+			// two searches looking for one spelling each: a digit-leading
+			// password makes this well formed, so the greedy branch never
+			// runs, and the delimiter is encoded, so the strict one found no
+			// `@`. Refused a layer up for its query —
+			// see the cmd/flow test for that path — and here for its scheme.
+			name:       "a percent-encoded delimiter behind a port misread",
+			url:        "http://acct9:2024?s3cr3t%40issuer.example.com",
+			wantErr:    "must use https",
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// A username carrying an unescaped `@` moves url.Parse's split:
+			// this is userinfo `ac`, host `t9`, port 2024, query. A search that
+			// stopped at the authority found that first `@`, was satisfied, and
+			// left the password behind (flowstate-reviewer). One region past
+			// the authority is what closes it.
+			name:       "a username holding an at sign in front of a port misread",
+			url:        "https://ac@t9:2024?s3cr3t@issuer.example.com",
+			wantErr:    "must not include credentials",
+			wantAbsent: []string{"s3cr3t"},
+		},
+		{
+			// The cost of reading past the authority, with a real credential
+			// present: the later `@` is the one cut at, so the host goes too.
+			// Pinned so that narrowing the region later is a decision.
+			name:       "a credential and a later at sign lose the host together",
+			url:        "http://acct9:s3cr3t@issuer.example.com?cb=a@b",
+			wantErr:    `issuer "http://[redacted]@b" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The residual this deliberately does not close, pinned so it is a
+			// decision on the record: the port misread with the rest of the
+			// credential in what url.Parse calls the path. It is textually
+			// identical to `https://host:8443/path@thing`, an ordinary URL
+			// whose host a refusal must keep, so redacting past the slash
+			// would erase the host from every one of those. picatz/flowstate#2038
+			// holds the repair, which is to stop reading this as host, port
+			// and path at all.
+			name:    "a credential in what url.Parse calls the path is left alone",
+			url:     "http://acct9:2024/s3cr3t@issuer.example.com",
+			wantErr: `issuer "http://acct9:2024/s3cr3t@issuer.example.com" must use https`,
+		},
+		{
+			// The cost of the before-first-slash fallback, pinned so that
+			// narrowing it later is a decision rather than an accident: this
+			// URL carries no credential, and it is redacted anyway, because it
+			// is textually the same shape as the port misread above.
+			name:    "a credential-free query holding an at sign is redacted too",
+			url:     "http://issuer.example.com?tenant=a@b",
+			wantErr: `issuer "http://[redacted]@b" must use https`,
+		},
+		{
+			// No scheme at all, which an unexpanded `${SCHEME}` leaves behind.
+			// The leading colon used to stop the slash count before it began.
+			name:       "credentials after an empty scheme",
+			url:        "://acct9:s3cr3t@issuer.example.com",
+			wantErr:    "is not a valid URL",
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The other direction: a well-formed URL whose *path* holds an
+			// `@` keeps the strict reading, so the host an operator needs in
+			// order to find the entry is still in the sentence.
+			name:    "an at sign in the path of a valid URL is not a credential",
+			url:     "http://issuer.example.com/a@b",
+			wantErr: `issuer "http://issuer.example.com/a@b" must use https`,
+		},
+		{
+			// What holds isURLScheme's *character set* up, which is the
+			// symmetric half of the case above: a scheme may carry digits and
+			// `+`, `-`, `.` after its first letter, and accepting only letters
+			// would stop `s3://` being read as a scheme at all — so the colon
+			// would look like a password's, nothing would be redacted, and the
+			// credentials branch would print it. Every other scheme in this
+			// table is pure letters, so without this case that clause can be
+			// deleted with the suite still green.
+			name:       "credentials under a scheme holding a digit",
+			url:        "s3://acct9:s3cr3t@issuer.example.com",
+			wantErr:    `issuer "s3://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The opaque URL the redaction deliberately leaves alone, so that
+			// `mailto:a@b` keeps its meaning. Asserted so the exemption is a
+			// decision on the record rather than an oversight; picatz/flowstate#2028
+			// holds the judgement about closing it.
+			name:    "an opaque URL keeps its at sign",
+			url:     "mailto:someone@example.com",
+			wantErr: `issuer "mailto:someone@example.com" must name a host`,
+		},
+		{
+			// A second `@` in the authority: the host is what follows the
+			// last one, so a cut at the first would leave `r3t@` behind.
+			//
+			// The whole sentence rather than a fragment of it, and `r3t` in
+			// wantAbsent beside the whole password, because neither of those
+			// alone can fail: cutting at the first `@` yields
+			// `https://[redacted]@r3t@issuer.example.com`, which still
+			// contains "must not include credentials" and still contains
+			// neither `acct9` nor `s3c@r3t`.
+			name:       "credentials holding an at sign",
+			url:        "https://acct9:s3c@r3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3c@r3t", "r3t"},
 		},
 		{
 			name:    "an unsupported scheme",
@@ -484,6 +709,16 @@ func TestValidateHTTPSURL(t *testing.T) {
 			// The diagnostic names the field the operator configured, in the
 			// caller's own vocabulary, not the function's name.
 			require.ErrorContains(t, err, "issuer")
+
+			// And it does not repeat the credential the URL carried. Every
+			// refusal here quotes the URL, this one is reached *because* the
+			// URL holds a credential, and the caller printing the sentence is
+			// `flow auth check`, whose stderr a CI or support transcript
+			// keeps (Codex).
+			for _, secret := range tt.wantAbsent {
+				require.NotContains(t, err.Error(), secret,
+					"the refusal repeats the credential it was given")
+			}
 		})
 	}
 }
