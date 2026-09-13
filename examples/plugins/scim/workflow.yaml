@@ -1,0 +1,110 @@
+edition: v2026.3
+name: scim-access-review
+description: Reads a page of directory accounts in scope for a quarterly access review, puts the evidence in front of a compliance reviewer, and deactivates the account only after an attested, authorized human says to - or times out having changed nothing.
+# The access review is the recurring compliance workload every audited
+# organization runs, and it is three things most engines make an author stitch
+# together by hand: a bounded read of a directory, a durable wait for a person,
+# and a write that is conditional on what that person actually looked at.
+#
+#   scim.user_list        - the accounts in scope, as a SCIM filter the provider
+#                           evaluates under the review credential. Bounded: a
+#                           count over the task's ceiling is refused, so a
+#                           review of a directory with fifty thousand accounts
+#                           pages rather than loading them.
+#
+#   scim.user_get         - the one account under review, read again for its
+#                           current state and, importantly, its `version`. That
+#                           ETag is what makes the write below a
+#                           compare-and-swap rather than a blind overwrite.
+#
+#   wait_for_signal       - the reviewer. Bounded by `signals:` to someone
+#                           holding a compliance-reviewer claim and distinct
+#                           from whoever started the run, so the person who
+#                           requested the review cannot approve it.
+#
+#   scim.user_deactivate  - the write, carrying expected_version. If the user
+#                           changed between the read and the approval - a
+#                           manager transfer, a name change, another review -
+#                           the step fails as a conflict rather than acting on
+#                           evidence that is no longer current.
+#
+# Nothing here deletes anything. A deactivated account is the auditable record
+# that access was removed on a date; a deleted one is an absence.
+plugins:
+  scim: v0.1.0
+inputs:
+  directory:
+    type: string
+    required: true
+    description: the provider's SCIM base URL, up to and including /v2
+    example: https://example.okta.com/scim/v2
+    must: this.startsWith("https://")
+  scope_filter:
+    type: string
+    required: false
+    default: active eq true
+    description: SCIM filter naming the accounts in scope for this review
+  user_id:
+    type: string
+    required: true
+    description: the provider id of the account under review
+    example: 2819c223-7f76-453a-919d-413861904646
+  expected_approver:
+    type: string
+    required: true
+    description: attested subject allowed to answer the review signal
+    example: compliance-lead@example.com
+signals:
+  review-decided:
+    allow:
+      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
+        claims:
+          team: compliance-reviewers
+    distinct_from_starter: true
+steps:
+  - id: in_scope
+    scim.user_list:
+      base_url: ${inputs.directory}
+      filter: ${inputs.scope_filter}
+      count: 50
+      token: ${secret('env:SCIM_TOKEN')}
+
+  - id: under_review
+    scim.user_get:
+      base_url: ${inputs.directory}
+      id: ${inputs.user_id}
+      token: ${secret('env:SCIM_TOKEN')}
+
+  - id: decision
+    wait_for_signal:
+      name: review-decided
+      prompt: '${"Keep access for %s (%s), in %d group(s)? %d account(s) in scope.".format([steps.under_review.display_name, steps.under_review.primary_email, size(steps.under_review.groups), steps.in_scope.total_results])}'
+      timeout: 168h
+      outputs:
+        keep: ${payload.?keep.orValue(false)}
+        timed_out: ${timed_out}
+
+  - id: revoke
+    # Only on an explicit refusal. A timeout changes nothing: an access review
+    # nobody answered is an unanswered review, not a decision to revoke.
+    if: ${!steps.decision.keep && !steps.decision.timed_out}
+    scim.user_deactivate:
+      base_url: ${inputs.directory}
+      id: ${steps.under_review.id}
+      # The version the reviewer's evidence was read at. A user who changed
+      # since then fails as a conflict rather than being overwritten.
+      expected_version: ${steps.under_review.version}
+      token: ${secret('env:SCIM_TOKEN')}
+outputs:
+  accounts_in_scope:
+    value: ${steps.in_scope.total_results}
+    description: how many accounts the review's filter matched
+  reviewed:
+    value: ${steps.under_review.user_name}
+    description: the account this run put in front of a reviewer
+  revoked:
+    value: ${!steps.decision.keep && !steps.decision.timed_out}
+    description: true only when an attested reviewer refused the access and the write ran
+  timed_out:
+    value: ${steps.decision.timed_out}
+    description: true when nobody answered, in which case nothing was changed

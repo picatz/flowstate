@@ -1,0 +1,90 @@
+edition: v2026.3
+tests:
+  - name: a reviewer who refuses access deactivates the account at the version they reviewed
+    workflow: ./workflow.yaml
+    inputs:
+      directory: https://example.okta.com/scim/v2
+      user_id: 2819c223-7f76-453a-919d-413861904646
+      expected_approver: compliance-lead@example.com
+    secrets:
+      env:SCIM_TOKEN: not-a-real-directory-token
+    starter:
+      subject: access-review-bot@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: review-decided
+        payload:
+          keep: false
+        sender:
+          subject: compliance-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: compliance-reviewers
+    stubs:
+      - step: in_scope
+        returns:
+          users: []
+          total_results: 128
+          next_start_index: 51
+      - step: under_review
+        returns:
+          id: 2819c223-7f76-453a-919d-413861904646
+          user_name: alice@example.com
+          display_name: Alice Example
+          active: true
+          primary_email: alice@example.com
+          external_id: hr-4471
+          version: W/"3694e05e9dff590"
+          groups: [engineering, oncall]
+          resource: {}
+      - step: revoke
+        returns:
+          id: 2819c223-7f76-453a-919d-413861904646
+          active: false
+          already_inactive: false
+          version: W/"3694e05e9dff591"
+    expect:
+      ran: [in_scope, under_review, decision, revoke]
+      outputs:
+        accounts_in_scope: 128
+        reviewed: alice@example.com
+        revoked: true
+        timed_out: false
+
+  - name: a review nobody answers changes nothing
+    workflow: ./workflow.yaml
+    inputs:
+      directory: https://example.okta.com/scim/v2
+      user_id: 2819c223-7f76-453a-919d-413861904646
+      expected_approver: compliance-lead@example.com
+    secrets:
+      env:SCIM_TOKEN: not-a-real-directory-token
+    starter:
+      subject: access-review-bot@example.com
+      issuer: https://issuer.example.com
+    stubs:
+      - step: in_scope
+        returns:
+          users: []
+          total_results: 128
+          next_start_index: 51
+      - step: under_review
+        returns:
+          id: 2819c223-7f76-453a-919d-413861904646
+          user_name: alice@example.com
+          display_name: Alice Example
+          active: true
+          primary_email: alice@example.com
+          external_id: hr-4471
+          version: W/"3694e05e9dff590"
+          groups: [engineering, oncall]
+          resource: {}
+    expect:
+      # The write does not run, and the run still completes: an unanswered
+      # review is an unanswered review, not a revocation.
+      ran: [in_scope, under_review, decision]
+      outputs:
+        accounts_in_scope: 128
+        reviewed: alice@example.com
+        revoked: false
+        timed_out: true

@@ -1622,6 +1622,292 @@
       "claimsDigest": "sha256:2a2abcbe1cd1956825b51cf9b6b949669a208437d68de744513b34c9701945e2"
     },
     {
+      "name": "scim",
+      "version": "0.1.0",
+      "description": "Reads and deactivates identity-provider users over SCIM 2.0 (RFC 7643, RFC 7644), for access reviews and joiner-mover-leaver workloads.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "scim.user_deactivate",
+          "summary": "Turn one account off, optionally only if it has not changed since the reviewer read it.",
+          "inputs": [
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "id",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "expected_version",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "active",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "already_inactive",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChJzY2ltL3YxL3NjaW0ucHJvdG8SB3NjaW0udjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIoIBCg1Vc2VyR2V0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIOCgJpZBgDIAEoCVICaWQSGwoJdXNlcl9uYW1lGAQgASgJUgh1c2VyTmFtZSKtAgoOVXNlckdldE91dHB1dHMSDgoCaWQYASABKAlSAmlkEhsKCXVzZXJfbmFtZRgCIAEoCVIIdXNlck5hbWUSIQoMZGlzcGxheV9uYW1lGAMgASgJUgtkaXNwbGF5TmFtZRIWCgZhY3RpdmUYBCABKAhSBmFjdGl2ZRIjCg1wcmltYXJ5X2VtYWlsGAUgASgJUgxwcmltYXJ5RW1haWwSHwoLZXh0ZXJuYWxfaWQYBiABKAlSCmV4dGVybmFsSWQSGAoHdmVyc2lvbhgHIAEoCVIHdmVyc2lvbhIWCgZncm91cHMYCCADKAlSBmdyb3VwcxI7CghyZXNvdXJjZRgJIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIIcmVzb3VyY2UipQEKDlVzZXJMaXN0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIWCgZmaWx0ZXIYAyABKAlSBmZpbHRlchIUCgVjb3VudBgEIAEoBVIFY291bnQSHwoLc3RhcnRfaW5kZXgYBSABKAVSCnN0YXJ0SW5kZXgilwEKD1VzZXJMaXN0T3V0cHV0cxI1CgV1c2VycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIFdXNlcnMSIwoNdG90YWxfcmVzdWx0cxgCIAEoA1IMdG90YWxSZXN1bHRzEigKEG5leHRfc3RhcnRfaW5kZXgYAyABKAVSDm5leHRTdGFydEluZGV4IpcBChRVc2VyRGVhY3RpdmF0ZUlucHV0cxIZCghiYXNlX3VybBgBIAEoCVIHYmFzZVVybBIpCgV0b2tlbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SDgoCaWQYAyABKAlSAmlkEikKEGV4cGVjdGVkX3ZlcnNpb24YBCABKAlSD2V4cGVjdGVkVmVyc2lvbiKEAQoVVXNlckRlYWN0aXZhdGVPdXRwdXRzEg4KAmlkGAEgASgJUgJpZBIWCgZhY3RpdmUYAiABKAhSBmFjdGl2ZRIpChBhbHJlYWR5X2luYWN0aXZlGAMgASgIUg9hbHJlYWR5SW5hY3RpdmUSGAoHdmVyc2lvbhgEIAEoCVIHdmVyc2lvbkKSAQoLY29tLnNjaW0udjFCCVNjaW1Qcm90b1ABWjtnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zY2ltL2dlbi9zY2ltL3YxO3NjaW12MaICA1NYWKoCB1NjaW0uVjHKAgdTY2ltXFYx4gITU2NpbVxWMVxHUEJNZXRhZGF0YeoCCFNjaW06OlYxYgZwcm90bzM=",
+          "inputMessage": "scim.v1.UserDeactivateInputs",
+          "outputDescriptor": "ChJzY2ltL3YxL3NjaW0ucHJvdG8SB3NjaW0udjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIoIBCg1Vc2VyR2V0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIOCgJpZBgDIAEoCVICaWQSGwoJdXNlcl9uYW1lGAQgASgJUgh1c2VyTmFtZSKtAgoOVXNlckdldE91dHB1dHMSDgoCaWQYASABKAlSAmlkEhsKCXVzZXJfbmFtZRgCIAEoCVIIdXNlck5hbWUSIQoMZGlzcGxheV9uYW1lGAMgASgJUgtkaXNwbGF5TmFtZRIWCgZhY3RpdmUYBCABKAhSBmFjdGl2ZRIjCg1wcmltYXJ5X2VtYWlsGAUgASgJUgxwcmltYXJ5RW1haWwSHwoLZXh0ZXJuYWxfaWQYBiABKAlSCmV4dGVybmFsSWQSGAoHdmVyc2lvbhgHIAEoCVIHdmVyc2lvbhIWCgZncm91cHMYCCADKAlSBmdyb3VwcxI7CghyZXNvdXJjZRgJIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIIcmVzb3VyY2UipQEKDlVzZXJMaXN0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIWCgZmaWx0ZXIYAyABKAlSBmZpbHRlchIUCgVjb3VudBgEIAEoBVIFY291bnQSHwoLc3RhcnRfaW5kZXgYBSABKAVSCnN0YXJ0SW5kZXgilwEKD1VzZXJMaXN0T3V0cHV0cxI1CgV1c2VycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIFdXNlcnMSIwoNdG90YWxfcmVzdWx0cxgCIAEoA1IMdG90YWxSZXN1bHRzEigKEG5leHRfc3RhcnRfaW5kZXgYAyABKAVSDm5leHRTdGFydEluZGV4IpcBChRVc2VyRGVhY3RpdmF0ZUlucHV0cxIZCghiYXNlX3VybBgBIAEoCVIHYmFzZVVybBIpCgV0b2tlbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SDgoCaWQYAyABKAlSAmlkEikKEGV4cGVjdGVkX3ZlcnNpb24YBCABKAlSD2V4cGVjdGVkVmVyc2lvbiKEAQoVVXNlckRlYWN0aXZhdGVPdXRwdXRzEg4KAmlkGAEgASgJUgJpZBIWCgZhY3RpdmUYAiABKAhSBmFjdGl2ZRIpChBhbHJlYWR5X2luYWN0aXZlGAMgASgIUg9hbHJlYWR5SW5hY3RpdmUSGAoHdmVyc2lvbhgEIAEoCVIHdmVyc2lvbkKSAQoLY29tLnNjaW0udjFCCVNjaW1Qcm90b1ABWjtnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zY2ltL2dlbi9zY2ltL3YxO3NjaW12MaICA1NYWKoCB1NjaW0uVjHKAgdTY2ltXFYx4gITU2NpbVxWMVxHUEJNZXRhZGF0YeoCCFNjaW06OlYxYgZwcm90bzM=",
+          "outputMessage": "scim.v1.UserDeactivateOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "scim.user_get",
+          "summary": "Read one user by provider id or by exact user name, with the attributes an access review acts on.",
+          "inputs": [
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "id",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "user_name",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "id",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "user_name",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "display_name",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "active",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "primary_email",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "external_id",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "version",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "groups",
+              "type": "list[string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "resource",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChJzY2ltL3YxL3NjaW0ucHJvdG8SB3NjaW0udjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIoIBCg1Vc2VyR2V0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIOCgJpZBgDIAEoCVICaWQSGwoJdXNlcl9uYW1lGAQgASgJUgh1c2VyTmFtZSKtAgoOVXNlckdldE91dHB1dHMSDgoCaWQYASABKAlSAmlkEhsKCXVzZXJfbmFtZRgCIAEoCVIIdXNlck5hbWUSIQoMZGlzcGxheV9uYW1lGAMgASgJUgtkaXNwbGF5TmFtZRIWCgZhY3RpdmUYBCABKAhSBmFjdGl2ZRIjCg1wcmltYXJ5X2VtYWlsGAUgASgJUgxwcmltYXJ5RW1haWwSHwoLZXh0ZXJuYWxfaWQYBiABKAlSCmV4dGVybmFsSWQSGAoHdmVyc2lvbhgHIAEoCVIHdmVyc2lvbhIWCgZncm91cHMYCCADKAlSBmdyb3VwcxI7CghyZXNvdXJjZRgJIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIIcmVzb3VyY2UipQEKDlVzZXJMaXN0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIWCgZmaWx0ZXIYAyABKAlSBmZpbHRlchIUCgVjb3VudBgEIAEoBVIFY291bnQSHwoLc3RhcnRfaW5kZXgYBSABKAVSCnN0YXJ0SW5kZXgilwEKD1VzZXJMaXN0T3V0cHV0cxI1CgV1c2VycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIFdXNlcnMSIwoNdG90YWxfcmVzdWx0cxgCIAEoA1IMdG90YWxSZXN1bHRzEigKEG5leHRfc3RhcnRfaW5kZXgYAyABKAVSDm5leHRTdGFydEluZGV4IpcBChRVc2VyRGVhY3RpdmF0ZUlucHV0cxIZCghiYXNlX3VybBgBIAEoCVIHYmFzZVVybBIpCgV0b2tlbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SDgoCaWQYAyABKAlSAmlkEikKEGV4cGVjdGVkX3ZlcnNpb24YBCABKAlSD2V4cGVjdGVkVmVyc2lvbiKEAQoVVXNlckRlYWN0aXZhdGVPdXRwdXRzEg4KAmlkGAEgASgJUgJpZBIWCgZhY3RpdmUYAiABKAhSBmFjdGl2ZRIpChBhbHJlYWR5X2luYWN0aXZlGAMgASgIUg9hbHJlYWR5SW5hY3RpdmUSGAoHdmVyc2lvbhgEIAEoCVIHdmVyc2lvbkKSAQoLY29tLnNjaW0udjFCCVNjaW1Qcm90b1ABWjtnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zY2ltL2dlbi9zY2ltL3YxO3NjaW12MaICA1NYWKoCB1NjaW0uVjHKAgdTY2ltXFYx4gITU2NpbVxWMVxHUEJNZXRhZGF0YeoCCFNjaW06OlYxYgZwcm90bzM=",
+          "inputMessage": "scim.v1.UserGetInputs",
+          "outputDescriptor": "ChJzY2ltL3YxL3NjaW0ucHJvdG8SB3NjaW0udjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIoIBCg1Vc2VyR2V0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIOCgJpZBgDIAEoCVICaWQSGwoJdXNlcl9uYW1lGAQgASgJUgh1c2VyTmFtZSKtAgoOVXNlckdldE91dHB1dHMSDgoCaWQYASABKAlSAmlkEhsKCXVzZXJfbmFtZRgCIAEoCVIIdXNlck5hbWUSIQoMZGlzcGxheV9uYW1lGAMgASgJUgtkaXNwbGF5TmFtZRIWCgZhY3RpdmUYBCABKAhSBmFjdGl2ZRIjCg1wcmltYXJ5X2VtYWlsGAUgASgJUgxwcmltYXJ5RW1haWwSHwoLZXh0ZXJuYWxfaWQYBiABKAlSCmV4dGVybmFsSWQSGAoHdmVyc2lvbhgHIAEoCVIHdmVyc2lvbhIWCgZncm91cHMYCCADKAlSBmdyb3VwcxI7CghyZXNvdXJjZRgJIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIIcmVzb3VyY2UipQEKDlVzZXJMaXN0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIWCgZmaWx0ZXIYAyABKAlSBmZpbHRlchIUCgVjb3VudBgEIAEoBVIFY291bnQSHwoLc3RhcnRfaW5kZXgYBSABKAVSCnN0YXJ0SW5kZXgilwEKD1VzZXJMaXN0T3V0cHV0cxI1CgV1c2VycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIFdXNlcnMSIwoNdG90YWxfcmVzdWx0cxgCIAEoA1IMdG90YWxSZXN1bHRzEigKEG5leHRfc3RhcnRfaW5kZXgYAyABKAVSDm5leHRTdGFydEluZGV4IpcBChRVc2VyRGVhY3RpdmF0ZUlucHV0cxIZCghiYXNlX3VybBgBIAEoCVIHYmFzZVVybBIpCgV0b2tlbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SDgoCaWQYAyABKAlSAmlkEikKEGV4cGVjdGVkX3ZlcnNpb24YBCABKAlSD2V4cGVjdGVkVmVyc2lvbiKEAQoVVXNlckRlYWN0aXZhdGVPdXRwdXRzEg4KAmlkGAEgASgJUgJpZBIWCgZhY3RpdmUYAiABKAhSBmFjdGl2ZRIpChBhbHJlYWR5X2luYWN0aXZlGAMgASgIUg9hbHJlYWR5SW5hY3RpdmUSGAoHdmVyc2lvbhgEIAEoCVIHdmVyc2lvbkKSAQoLY29tLnNjaW0udjFCCVNjaW1Qcm90b1ABWjtnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zY2ltL2dlbi9zY2ltL3YxO3NjaW12MaICA1NYWKoCB1NjaW0uVjHKAgdTY2ltXFYx4gITU2NpbVxWMVxHUEJNZXRhZGF0YeoCCFNjaW06OlYxYgZwcm90bzM=",
+          "outputMessage": "scim.v1.UserGetOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        },
+        {
+          "name": "scim.user_list",
+          "summary": "Read a bounded page of users matching a SCIM filter, resumable through next_start_index.",
+          "inputs": [
+            {
+              "name": "base_url",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "filter",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "count",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "start_index",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "users",
+              "type": "list[any]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "total_results",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "next_start_index",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChJzY2ltL3YxL3NjaW0ucHJvdG8SB3NjaW0udjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIoIBCg1Vc2VyR2V0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIOCgJpZBgDIAEoCVICaWQSGwoJdXNlcl9uYW1lGAQgASgJUgh1c2VyTmFtZSKtAgoOVXNlckdldE91dHB1dHMSDgoCaWQYASABKAlSAmlkEhsKCXVzZXJfbmFtZRgCIAEoCVIIdXNlck5hbWUSIQoMZGlzcGxheV9uYW1lGAMgASgJUgtkaXNwbGF5TmFtZRIWCgZhY3RpdmUYBCABKAhSBmFjdGl2ZRIjCg1wcmltYXJ5X2VtYWlsGAUgASgJUgxwcmltYXJ5RW1haWwSHwoLZXh0ZXJuYWxfaWQYBiABKAlSCmV4dGVybmFsSWQSGAoHdmVyc2lvbhgHIAEoCVIHdmVyc2lvbhIWCgZncm91cHMYCCADKAlSBmdyb3VwcxI7CghyZXNvdXJjZRgJIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIIcmVzb3VyY2UipQEKDlVzZXJMaXN0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIWCgZmaWx0ZXIYAyABKAlSBmZpbHRlchIUCgVjb3VudBgEIAEoBVIFY291bnQSHwoLc3RhcnRfaW5kZXgYBSABKAVSCnN0YXJ0SW5kZXgilwEKD1VzZXJMaXN0T3V0cHV0cxI1CgV1c2VycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIFdXNlcnMSIwoNdG90YWxfcmVzdWx0cxgCIAEoA1IMdG90YWxSZXN1bHRzEigKEG5leHRfc3RhcnRfaW5kZXgYAyABKAVSDm5leHRTdGFydEluZGV4IpcBChRVc2VyRGVhY3RpdmF0ZUlucHV0cxIZCghiYXNlX3VybBgBIAEoCVIHYmFzZVVybBIpCgV0b2tlbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SDgoCaWQYAyABKAlSAmlkEikKEGV4cGVjdGVkX3ZlcnNpb24YBCABKAlSD2V4cGVjdGVkVmVyc2lvbiKEAQoVVXNlckRlYWN0aXZhdGVPdXRwdXRzEg4KAmlkGAEgASgJUgJpZBIWCgZhY3RpdmUYAiABKAhSBmFjdGl2ZRIpChBhbHJlYWR5X2luYWN0aXZlGAMgASgIUg9hbHJlYWR5SW5hY3RpdmUSGAoHdmVyc2lvbhgEIAEoCVIHdmVyc2lvbkKSAQoLY29tLnNjaW0udjFCCVNjaW1Qcm90b1ABWjtnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zY2ltL2dlbi9zY2ltL3YxO3NjaW12MaICA1NYWKoCB1NjaW0uVjHKAgdTY2ltXFYx4gITU2NpbVxWMVxHUEJNZXRhZGF0YeoCCFNjaW06OlYxYgZwcm90bzM=",
+          "inputMessage": "scim.v1.UserListInputs",
+          "outputDescriptor": "ChJzY2ltL3YxL3NjaW0ucHJvdG8SB3NjaW0udjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIoIBCg1Vc2VyR2V0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIOCgJpZBgDIAEoCVICaWQSGwoJdXNlcl9uYW1lGAQgASgJUgh1c2VyTmFtZSKtAgoOVXNlckdldE91dHB1dHMSDgoCaWQYASABKAlSAmlkEhsKCXVzZXJfbmFtZRgCIAEoCVIIdXNlck5hbWUSIQoMZGlzcGxheV9uYW1lGAMgASgJUgtkaXNwbGF5TmFtZRIWCgZhY3RpdmUYBCABKAhSBmFjdGl2ZRIjCg1wcmltYXJ5X2VtYWlsGAUgASgJUgxwcmltYXJ5RW1haWwSHwoLZXh0ZXJuYWxfaWQYBiABKAlSCmV4dGVybmFsSWQSGAoHdmVyc2lvbhgHIAEoCVIHdmVyc2lvbhIWCgZncm91cHMYCCADKAlSBmdyb3VwcxI7CghyZXNvdXJjZRgJIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIIcmVzb3VyY2UipQEKDlVzZXJMaXN0SW5wdXRzEhkKCGJhc2VfdXJsGAEgASgJUgdiYXNlVXJsEikKBXRva2VuGAIgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgV0b2tlbhIWCgZmaWx0ZXIYAyABKAlSBmZpbHRlchIUCgVjb3VudBgEIAEoBVIFY291bnQSHwoLc3RhcnRfaW5kZXgYBSABKAVSCnN0YXJ0SW5kZXgilwEKD1VzZXJMaXN0T3V0cHV0cxI1CgV1c2VycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIFdXNlcnMSIwoNdG90YWxfcmVzdWx0cxgCIAEoA1IMdG90YWxSZXN1bHRzEigKEG5leHRfc3RhcnRfaW5kZXgYAyABKAVSDm5leHRTdGFydEluZGV4IpcBChRVc2VyRGVhY3RpdmF0ZUlucHV0cxIZCghiYXNlX3VybBgBIAEoCVIHYmFzZVVybBIpCgV0b2tlbhgCIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SDgoCaWQYAyABKAlSAmlkEikKEGV4cGVjdGVkX3ZlcnNpb24YBCABKAlSD2V4cGVjdGVkVmVyc2lvbiKEAQoVVXNlckRlYWN0aXZhdGVPdXRwdXRzEg4KAmlkGAEgASgJUgJpZBIWCgZhY3RpdmUYAiABKAhSBmFjdGl2ZRIpChBhbHJlYWR5X2luYWN0aXZlGAMgASgIUg9hbHJlYWR5SW5hY3RpdmUSGAoHdmVyc2lvbhgEIAEoCVIHdmVyc2lvbkKSAQoLY29tLnNjaW0udjFCCVNjaW1Qcm90b1ABWjtnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zY2ltL2dlbi9zY2ltL3YxO3NjaW12MaICA1NYWKoCB1NjaW0uVjHKAgdTY2ltXFYx4gITU2NpbVxWMVxHUEJNZXRhZGF0YeoCCFNjaW06OlYxYgZwcm90bzM=",
+          "outputMessage": "scim.v1.UserListOutputs",
+          "requiredSecretInputs": [
+            "token"
+          ]
+        }
+      ],
+      "protocolVersion": 7,
+      "taskSchemaDigest": "sha256:cad73e422e6cecb48056cf18eeb1db1865e0bdc6a1170cf9e77896be83088886",
+      "claimsDigest": "sha256:1abeaf62ceac05e137bd86493593a62f9cfd32f05ed2c7a9212d85562392a07a"
+    },
+    {
       "name": "slack",
       "version": "0.1.0",
       "description": "Posts bounded accessible text to Slack for approval and human-in-the-loop notifications; outbound only.",

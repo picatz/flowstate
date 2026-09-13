@@ -1,0 +1,19 @@
+# The operator's half of this example: which identity provider a worker may
+# call.
+#
+# The scim plugin has no allowlist of its own. It takes the deployment's grant
+# and applies it on its real dial path, so this file is the whole of the
+# answer - for the plugin, and for the worker's own built-in http task.
+#
+#   flow worker --plugin-dir ./plugins --egress-policy examples/plugins/scim/egress-policy.yaml
+#
+# Written as an allow list, so a directory that is not named here is denied
+# rather than reachable by omission. A review credential is among the most
+# powerful a deployment holds - it can turn accounts off - and the host it may
+# be sent to is worth naming exactly.
+egress:
+  allow:
+    - host == "example.okta.com"
+  # A page of users is read under this ceiling as well as from a permitted host;
+  # the plugin's own bounds are tighter, and the lower of the two wins.
+  max_response_bytes: 4194304
