@@ -78,9 +78,14 @@ func TestVersionOneChargesAValueStepAndNothingElse(t *testing.T) {
 // is the one a later change is most likely to break: a nested executor that
 // inherited `sliceCost` but not the version fields beside it answers a recorded
 // history with another history's behavior — silently cheaper and silently later
-// to suspend without `everyExpressionCharged`, and refusing a seam the recorded
-// history took without `carriesHeld` — for everything inside a call, a loop
-// body, a parallel branch or an async step.
+// to suspend without `everyExpressionCharged`, refusing a seam the recorded
+// history took without `carriesHeld`, and taking one it refused without
+// `holdingFailure` — for everything inside a call, a loop body, a parallel
+// branch or an async step.
+//
+// Every nested literal carries all of them, including levels that cannot read
+// one at the suspend depth they run at, so that "which levels need this" is
+// never a judgement the next literal has to repeat correctly.
 //
 // Read off the source rather than exercised, because the claim is about every
 // executor literal in the package including ones no test reaches.
@@ -113,6 +118,7 @@ func TestEveryNestedExecutorCarriesTheCostVersion(t *testing.T) {
 			}
 
 			set := map[string]bool{}
+			nested := false
 			for _, elt := range lit.Elts {
 				kv, ok := elt.(*ast.KeyValueExpr)
 				if !ok {
@@ -121,8 +127,18 @@ func TestEveryNestedExecutorCarriesTheCostVersion(t *testing.T) {
 				if key, ok := kv.Key.(*ast.Ident); ok {
 					set[key.Name] = true
 				}
+				// A literal that reads a field off an enclosing executor is a
+				// nested one. The run's own executor builds every field from
+				// locals instead, and legitimately leaves the markers below at
+				// their zero value: there is no enclosing scope to inherit a
+				// hold from, and `runNodes` registers the first one itself.
+				if selector, ok := kv.Value.(*ast.SelectorExpr); ok {
+					if ident, ok := selector.X.(*ast.Ident); ok && ident.Name == "e" {
+						nested = true
+					}
+				}
 			}
-			if !set["sliceCost"] {
+			if !set["sliceCost"] || !nested {
 				return true
 			}
 
@@ -160,5 +176,10 @@ var versionMarkerFields = []struct {
 		field: "carriesHeld",
 		consequence: "refuses a suspension seam the recorded history took, " +
 			"so a called workflow holding a debug-joined failure stops pacing at all",
+	},
+	{
+		field: "holdingFailure",
+		consequence: "takes a suspension seam a pre-marker history refused, " +
+			"stranding a failure an enclosing scope is holding — which replays as nondeterminism",
 	},
 }

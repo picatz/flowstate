@@ -1744,8 +1744,9 @@ type Frame struct {
 	// started and a debug drain joined, so it is bounded by how many `async:`
 	// steps the scope contains rather than by `MaxAsyncInFlight` — that caps how
 	// many may be outstanding at once, and a drain empties the outstanding set so
-	// the scope may fill it again. Each entry carries one step id and two
-	// sentences already bounded where they were produced.
+	// the scope may fill it again. Each entry carries one step id and two failure
+	// sentences, which have no byte bound of their own — `CheckRunStateSize` is
+	// the bound, and it refuses the continuation rather than truncating.
 	//
 	// # Rolling back a worker fleet across this field
 	//

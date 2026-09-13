@@ -181,6 +181,25 @@ func heldFrom(carried []*v1.HeldFailure) []heldFailure {
 	return held
 }
 
+// holdingWith composes one scope's hold with whatever an enclosing scope
+// published, for [executor.holdingFailure].
+//
+// A function rather than a closure written at the registration site because the
+// composition is the whole of the claim: a boundary inside a `for_each`, a
+// `loop:` or a called workflow emits its continuation while the scope holding
+// the failure sits above it on the stack and its own hold is empty, so an answer
+// that reported only the innermost scope would let exactly those boundaries
+// through. Written out, it can be exercised without a workflow context.
+//
+// The hold is taken by pointer because the scope keeps appending to it after
+// this is registered: the debug drain hears failures as the walk goes on, and a
+// predicate over a copy would answer for the scope as it was at its first step.
+func holdingWith(outer func() bool, held *[]heldFailure) func() bool {
+	return func() bool {
+		return len(*held) > 0 || (outer != nil && outer())
+	}
+}
+
 // takeHeld reports the failure held under id, if any.
 func takeHeld(held []heldFailure, id string) (error, bool) {
 	for _, failure := range held {
@@ -248,6 +267,7 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			sliceCost:              e.sliceCost,
 			everyExpressionCharged: e.everyExpressionCharged,
 			carriesHeld:            e.carriesHeld,
+			holdingFailure:         e.holdingFailure,
 			signals:                e.signals,
 			debug:                  e.debug,
 			undo:                   e.undo,

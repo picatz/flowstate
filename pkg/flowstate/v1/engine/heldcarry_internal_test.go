@@ -24,8 +24,9 @@ import (
 // shows up as itself rather than as a run that finished differently:
 //
 //   - what crosses is what comes back ([heldAcross], [heldFrom]),
-//   - a history recorded before the marker still refuses the seam
-//     ([executor.canSuspendHolding]),
+//   - a history recorded before the marker still refuses the seam, at every
+//     boundary that can emit a continuation and not only the two written where
+//     a scope's held failures are in scope ([executor.shouldSuspend]),
 //   - and the record of a held step survives the compaction the seam performs
 //     ([keepHeldOutputs]).
 
@@ -133,7 +134,7 @@ func TestAHeldFailureCrossesWithEverythingItsRaiseNeeds(t *testing.T) {
 func TestAHistoryWithoutTheMarkerStillRefusesTheSeam(t *testing.T) {
 	t.Parallel()
 
-	held := []heldFailure{{id: "failing", err: &ErrRunFailed{Message: "boom"}}}
+	holding := func() bool { return true }
 
 	t.Run("before the marker", func(t *testing.T) {
 		t.Parallel()
@@ -142,31 +143,185 @@ func TestAHistoryWithoutTheMarkerStillRefusesTheSeam(t *testing.T) {
 		e := &executor{processed: 5, budget: 1}
 		require.True(t, e.shouldSuspend(), "the fixture does not reach the arm under test")
 
-		assert.False(t, e.canSuspendHolding(held),
+		e.holdingFailure = holding
+		assert.False(t, e.shouldSuspend(),
 			"a history recorded before the marker suspended while holding a failure, which replays as nondeterminism")
-		assert.True(t, e.canSuspendHolding(nil),
-			"a history recorded before the marker stopped suspending when it was holding nothing")
 	})
 
 	t.Run("with the marker", func(t *testing.T) {
 		t.Parallel()
 
-		e := &executor{processed: 5, budget: 1, carriesHeld: true}
-		assert.True(t, e.canSuspendHolding(held),
+		e := &executor{processed: 5, budget: 1, carriesHeld: true, holdingFailure: holding}
+		assert.True(t, e.shouldSuspend(),
 			"the failure crosses in the frame, so holding one is no longer a reason to refuse")
 	})
 
 	t.Run("the refusal is decided before the reasons", func(t *testing.T) {
 		t.Parallel()
 
-		// A version 1 history refuses the seam whatever [executor.shouldSuspend]
-		// would have said, so the refusal is answered first — which is why this
-		// executor, with no workflow context for shouldSuspend's own
-		// `ContinueAsNewSuggested` arm to read, answers rather than panics.
-		e := &executor{budget: 1}
-		assert.False(t, e.canSuspendHolding(held),
-			"the version 1 refusal is reached only after the reasons, so a held failure suspends where the recorded history did not")
+		// A pre-marker history refuses whatever the reasons would have said, so
+		// the refusal is answered first — which is why this executor, with no
+		// workflow context for the `ContinueAsNewSuggested` arm to read, answers
+		// rather than panics.
+		e := &executor{budget: 1, holdingFailure: holding}
+		assert.False(t, e.shouldSuspend(),
+			"the pre-marker refusal is reached only after the reasons, so a held failure suspends where the recorded history did not")
 	})
+
+	t.Run("a scope speaks for the ones above it", func(t *testing.T) {
+		t.Parallel()
+
+		// What a boundary inside a `for_each`, a `loop:` or a callee reads. Each
+		// of those emits a continuation while the scope holding the failure sits
+		// above it on the stack and its own hold is empty, so an answer built
+		// from the innermost scope alone would let exactly those through.
+		var none []heldFailure
+		outer := holdingWith(nil, &[]heldFailure{{id: "failing", err: &ErrRunFailed{Message: "boom"}}})
+
+		e := &executor{processed: 5, budget: 1, holdingFailure: holdingWith(outer, &none)}
+		assert.False(t, e.shouldSuspend(),
+			"a nested boundary suspended past a failure an enclosing scope was holding")
+	})
+}
+
+// TestAScopesHoldIsComposedWithTheOnesAboveIt pins [holdingWith] on its own.
+//
+// Four combinations, and three of them are the claim: a scope answers for
+// itself, for anything enclosing it, and for a hold that arrives *after* it
+// registered — the debug drain hears failures as the walk goes on, so a
+// predicate over a copy of the slice would answer for the scope as it was at
+// its first step.
+func TestAScopesHoldIsComposedWithTheOnesAboveIt(t *testing.T) {
+	t.Parallel()
+
+	failure := heldFailure{id: "failing", err: &ErrRunFailed{Message: "boom"}}
+
+	t.Run("nothing anywhere", func(t *testing.T) {
+		t.Parallel()
+
+		var outer, inner []heldFailure
+		assert.False(t, holdingWith(holdingWith(nil, &outer), &inner)())
+	})
+
+	t.Run("this scope", func(t *testing.T) {
+		t.Parallel()
+
+		var outer []heldFailure
+		inner := []heldFailure{failure}
+		assert.True(t, holdingWith(holdingWith(nil, &outer), &inner)())
+	})
+
+	t.Run("an enclosing scope", func(t *testing.T) {
+		t.Parallel()
+
+		outer := []heldFailure{failure}
+		var inner []heldFailure
+		assert.True(t, holdingWith(holdingWith(nil, &outer), &inner)(),
+			"a scope answered only for itself, so a boundary beneath a holding scope suspends past its failure")
+	})
+
+	t.Run("a hold that arrives later", func(t *testing.T) {
+		t.Parallel()
+
+		var held []heldFailure
+		holding := holdingWith(nil, &held)
+		require.False(t, holding(), "the fixture starts out holding something")
+
+		held = append(held, failure)
+		assert.True(t, holding(),
+			"the predicate answered for the slice as it was at registration, so a failure the drain heard later is invisible to every boundary")
+	})
+
+	t.Run("no enclosing scope", func(t *testing.T) {
+		t.Parallel()
+
+		// The top-level registration passes a nil outer, which must not panic.
+		var held []heldFailure
+		assert.False(t, holdingWith(nil, &held)())
+	})
+}
+
+// TestEveryContinuationExitAsksTheOneSuspensionPredicate is the check that would
+// have caught #1968's first shipped attempt.
+//
+// That change gated the two boundaries written inside `runNodes` and left the
+// `for_each` and `loop:` iteration boundaries asking an ungated predicate, so a
+// pre-marker history refused two of its four exits and suspended at the other
+// two — which replays as a Continue-As-New where history holds an activity, and
+// wedges the run rather than failing it.
+//
+// Structural, because the property is about every emission site including one a
+// later change adds, and because the fixture that would exercise a fifth exit
+// does not exist until that exit does.
+func TestEveryContinuationExitAsksTheOneSuspensionPredicate(t *testing.T) {
+	t.Parallel()
+
+	fset := token.NewFileSet()
+	sources, err := filepath.Glob("*.go")
+	require.NoError(t, err)
+
+	emitted := 0
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+
+		file, err := parser.ParseFile(fset, source, nil, 0)
+		require.NoError(t, err)
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			guard, ok := n.(*ast.IfStmt)
+			if !ok || !returnsContinueAsNew(guard.Body) {
+				return true
+			}
+			emitted++
+			assert.Truef(t, callsShouldSuspend(guard.Cond),
+				"%s: a continuation is emitted from a boundary that does not ask [executor.shouldSuspend], so a history whose version refuses this boundary suspends at it anyway",
+				fset.Position(guard.Pos()))
+
+			return true
+		})
+	}
+
+	// Four today: two in runNodes, the `for_each` iteration boundary and the
+	// `loop:` one. A fifth is fine and is exactly what this is here for; zero
+	// means the walk stopped matching and proves nothing.
+	require.Equalf(t, 4, emitted,
+		"the engine emits %d gated continuations, not the 4 this test was written against — if a boundary was added or removed, update this count deliberately", emitted)
+}
+
+// returnsContinueAsNew reports whether a block's own statements return the
+// suspension sentinel, without descending into a nested block.
+func returnsContinueAsNew(block *ast.BlockStmt) bool {
+	for _, stmt := range block.List {
+		ret, ok := stmt.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			continue
+		}
+		if ident, ok := ret.Results[0].(*ast.Ident); ok && ident.Name == "errContinueAsNew" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// callsShouldSuspend reports whether an expression calls [executor.shouldSuspend].
+func callsShouldSuspend(cond ast.Expr) bool {
+	asked := false
+	ast.Inspect(cond, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "shouldSuspend" {
+			asked = true
+		}
+
+		return true
+	})
+
+	return asked
 }
 
 // TestHoldingIsStampedOntoTheFrameThatSuspends pins where the hold is written.
@@ -177,7 +332,7 @@ func TestAHistoryWithoutTheMarkerStillRefusesTheSeam(t *testing.T) {
 func TestHoldingIsStampedOntoTheFrameThatSuspends(t *testing.T) {
 	t.Parallel()
 
-	e := &executor{}
+	e := &executor{carriesHeld: true}
 	e.setFrame(0, 3)
 	e.holdInFrame(0, []heldFailure{{id: "failing", err: &ErrRunFailed{Message: "boom"}}})
 
@@ -194,6 +349,17 @@ func TestHoldingIsStampedOntoTheFrameThatSuspends(t *testing.T) {
 	// A depth with no frame is not a panic and not an invention.
 	e.holdInFrame(7, []heldFailure{{id: "failing", err: errors.New("boom")}})
 	assert.Len(t, e.frames, 1)
+
+	// And a history recorded before the marker writes nothing at all. It cannot
+	// reach here with a non-empty hold — [executor.shouldSuspend] refuses every
+	// boundary for such a run — but a field its own readers do not know about is
+	// one it has no license to write, so the refusal is written down rather than
+	// left as a claim about an unreachable path.
+	before := &executor{}
+	before.setFrame(0, 3)
+	before.holdInFrame(0, []heldFailure{{id: "failing", err: &ErrRunFailed{Message: "boom"}}})
+	assert.Empty(t, before.frames[0].GetHeldFailures(),
+		"a pre-marker segment wrote a field no reader of its own history knows about")
 }
 
 // TestAHeldStepsRecordSurvivesTheSeamsCompaction is the transcript half.

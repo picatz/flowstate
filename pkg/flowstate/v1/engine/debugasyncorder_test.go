@@ -480,9 +480,11 @@ func failureReportedByTwoFailingAsyncSteps(t *testing.T, ask, reader bool) strin
 // a continuation of its own. The caller's answer reaches it only because the
 // field is copied into that literal and composed with the callee's.
 //
-// Drop that one line and no other test notices: the shared closure covers the
-// other three exits, and every existing case reaches one of them. So this one
-// puts the loop inside a called workflow.
+// Drop that one line and no behavioural case notices: the registration covers
+// the other three exits, and every existing case reaches one of them. The
+// structural check in slicecostversion_internal_test.go catches it by name now,
+// and this case is what proves the exit is real rather than only declared — so
+// it puts the loop inside a called workflow.
 func TestADebugHeldFailureSurvivesAContinuationFromInsideACall(t *testing.T) {
 	t.Parallel()
 

@@ -171,6 +171,32 @@ type executor struct {
 	// because it crosses the seam in the frame.
 	carriesHeld bool
 
+	// holdingFailure reports whether any scope at the run's own representable
+	// level is holding a failure it heard early on a debugger's behalf and has
+	// not raised. Registered by [executor.runNodes] at `susp == 0`, composed with
+	// whatever an enclosing registration answered, inherited by a callee's
+	// executor, and read by [executor.shouldSuspend].
+	//
+	// It exists for histories recorded before [heldFailureCarryChange], and only
+	// for those. Such a history refused every boundary while a failure was held,
+	// and a replay has to reach the commands it recorded rather than the ones
+	// this build would prefer — so the refusal cannot simply be deleted along
+	// with the reason for it.
+	//
+	// It has to be a published predicate rather than a check written at each
+	// boundary because the state it reports is a local of one runNodes frame and
+	// the boundaries that read it are not all in that frame: a `for_each`'s
+	// iteration boundary, a `loop:`'s, and a called workflow's own next-step
+	// boundary each emit a continuation while the scope holding the failure sits
+	// above them on the stack. Answering inside [executor.shouldSuspend] is what
+	// gives all four the same answer the scope gives itself, which is the
+	// property #1968's first shipped attempt lost by gating only the two.
+	//
+	// Read-only: it reports, drains nothing and mutates no scope. That is what
+	// separates it from the two-phase settlement shape #1968's remaining half
+	// needs, and why this one is safe as a closure.
+	holdingFailure func() bool
+
 	// callDepth counts calls nested so far, zero at the top-level workflow. It
 	// is unaffected by descending into a loop body or a parallel branch — only
 	// a call advances it — and bounds recursion via [v1.CheckCallDepth] for a
@@ -347,6 +373,24 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		held = heldFrom(e.resume[depth].GetHeldFailures())
 	}
 
+	// Published for every suspension decision taken while this scope is on the
+	// stack, including the ones taken beneath it — see [executor.holdingFailure].
+	// Only at the run's own representable level, because that is the only depth a
+	// continuation can be emitted from at all, and composed with the enclosing
+	// answer so a called workflow's scope speaks for its caller's too.
+	//
+	// Read only by a history recorded before [heldFailureCarryChange], which
+	// refused every boundary while any scope on the stack held a failure. Four
+	// boundaries can emit a continuation and only two of them are written in this
+	// function, so a predicate the scope publishes is how the other two reach the
+	// same answer — the callee's own next-step boundary, a `for_each`'s iteration
+	// boundary and a `loop:`'s cannot see this frame's locals.
+	if susp == 0 {
+		outer := e.holdingFailure
+		e.holdingFailure = holdingWith(outer, &held)
+		defer func() { e.holdingFailure = outer }()
+	}
+
 	// A scope's end joins everything it started, and *every* way out of the loop
 	// below is an end: the successful one, the failing one, and the
 	// Continue-As-New one. Draining here rather than at the successful exit is
@@ -469,7 +513,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			// The same conditions as the check after a step that ran: only at
 			// the run's own representable level and never on the last node,
 			// with async work this scope started refusing the boundary for
-			// both, and a held failure refused by [executor.canSuspendHolding]
+			// both, and a held failure refused inside [executor.shouldSuspend]
 			// on a history recorded before it could cross one.
 			// Behind the same version gate as every other continuation this
 			// change added, and for the reason stated at
@@ -481,7 +525,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			// arms answer regardless of the budget.
 			//
 			if e.everyExpressionCharged && susp == 0 && i < len(nodes)-1 &&
-				len(started) == 0 && e.canSuspendHolding(held) {
+				len(started) == 0 && e.shouldSuspend() {
 				e.setFrame(depth, i+1)
 				e.holdInFrame(depth, held)
 
@@ -594,8 +638,9 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// below is a few steps away at most, since the list is capped. A failure
 		// this scope is holding crosses in the frame ([executor.holdInFrame]),
 		// so it is no reason to refuse — except on a history recorded before
-		// [heldFailureCarryChange], which [executor.canSuspendHolding] answers.
-		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.canSuspendHolding(held) {
+		// [heldFailureCarryChange], which [executor.shouldSuspend] refuses for
+		// all four boundaries at once.
+		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 			// The frame first, because the stamp below writes onto the frame at
 			// this depth and [executor.setFrame] replaces it wholesale.
 			e.setFrame(depth, i+1)
@@ -974,7 +1019,13 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// is a representable level too: it may hold a failure of its own, it may
 		// continue as new, and the version that decides whether the two can
 		// happen together is the run's, not the level's.
-		carriesHeld: e.carriesHeld,
+		// Inherited so that a callee's own boundary cannot suspend past a failure
+		// the caller's scope is still holding, on a history recorded before that
+		// could cross the seam. Every nested executor carries it, not only this
+		// one, so that "which levels need it" is never a judgement a later
+		// literal has to repeat.
+		carriesHeld:    e.carriesHeld,
+		holdingFailure: e.holdingFailure,
 
 		// Shared by pointer with the caller, for the same reasons the top-level
 		// executor shares them with every nested one: a signal or a compensation
@@ -1863,6 +1914,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		sliceCost:              e.sliceCost,
 		everyExpressionCharged: e.everyExpressionCharged,
 		carriesHeld:            e.carriesHeld,
+		holdingFailure:         e.holdingFailure,
 		frames:                 e.frames,
 
 		signals:    e.signals,
@@ -1953,6 +2005,7 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 		sliceCost:              e.sliceCost,
 		everyExpressionCharged: e.everyExpressionCharged,
 		carriesHeld:            e.carriesHeld,
+		holdingFailure:         e.holdingFailure,
 		frames:                 e.frames,
 
 		// The run's carry, by pointer. A wait in a loop body consumes from the
@@ -2041,6 +2094,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 					sliceCost:              e.sliceCost,
 					everyExpressionCharged: e.everyExpressionCharged,
 					carriesHeld:            e.carriesHeld,
+					holdingFailure:         e.holdingFailure,
 					signals:                e.signals,
 					debug:                  e.debug,
 					undo:                   iterationUndo,
@@ -2156,6 +2210,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				sliceCost:              e.sliceCost,
 				everyExpressionCharged: e.everyExpressionCharged,
 				carriesHeld:            e.carriesHeld,
+				holdingFailure:         e.holdingFailure,
 				signals:                e.signals,
 				debug:                  e.debug,
 				undo:                   branchUndo,
@@ -2213,29 +2268,27 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 	return nil
 }
 
-// canSuspendHolding reports whether this boundary may suspend given what its
-// scope is holding.
-//
-// A held failure crosses the seam in the frame, so it is no reason to refuse —
-// except on a history recorded before [heldFailureCarryChange], which refused
-// every boundary while one was held and has to replay to the commands it
-// recorded rather than the ones this build would prefer.
-func (e *executor) canSuspendHolding(held []heldFailure) bool {
-	if len(held) > 0 && !e.carriesHeld {
-		return false
-	}
-
-	return e.shouldSuspend()
-}
-
 // shouldSuspend reports whether the run should be continued as new.
 //
-// All three reasons answer: a scope holding a failure heard early on a
-// debugger's behalf used to suppress every one of them until it cleared, which
-// is how a debugged run could hold a workflow-task slot and lose its
-// compensation log to the history cap (#1968). The failure crosses the seam
-// now, so Temporal's own history pressure is heard again.
+// Asked closed first, and only for a history recorded before
+// [heldFailureCarryChange]. Such a run refused every boundary while a scope on
+// the stack held a failure heard early on a debugger's behalf, because that
+// failure would have been left in a segment that had ended; a replay has to
+// reach the commands it recorded, so the refusal stays for exactly those
+// histories and no others.
+//
+// Under the marker the failure crosses in [v1.Frame.held_failures], so all
+// three reasons answer again — including Temporal's own `ContinueAsNewSuggested`,
+// whose suppression is how a debugged run could hold a workflow-task slot and
+// lose its compensation log to the history cap (#1968).
+//
+// The refusal lives here rather than at each boundary because all four
+// boundaries that can emit a continuation reach this one function, and only two
+// of them are written where a scope's held failures are in scope.
 func (e *executor) shouldSuspend() bool {
+	if !e.carriesHeld && e.holdingFailure != nil && e.holdingFailure() {
+		return false
+	}
 	if e.processed >= e.budget {
 		return true
 	}
@@ -2259,6 +2312,13 @@ func (e *executor) shouldSuspend() bool {
 // position, silently and only sometimes.
 func (e *executor) holdInFrame(depth int, held []heldFailure) {
 	if len(held) == 0 || depth >= len(e.frames) || e.frames[depth] == nil {
+		return
+	}
+	if !e.carriesHeld {
+		// Unreachable with a non-empty hold, because [executor.shouldSuspend]
+		// refuses every boundary for such a history. Written as a refusal rather
+		// than as a comment saying so, because a field this version's readers do
+		// not know about is one it has no license to write.
 		return
 	}
 	e.frames[depth].HeldFailures = heldAcross(held)
