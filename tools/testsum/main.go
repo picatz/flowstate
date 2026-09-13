@@ -94,7 +94,7 @@ func modulePath(dir string) string {
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
 			return strings.TrimSpace(rest)
 		}
@@ -549,8 +549,8 @@ func (s *summarizer) frameIn(pkg, test string, out []line) (string, int, string)
 	// A subtest's function is a closure inside its parent's, so the frame
 	// that matters is the parent's.
 	top := test
-	if i := strings.Index(test, "/"); i >= 0 {
-		top = test[:i]
+	if before, _, ok := strings.Cut(test, "/"); ok {
+		top = before
 	}
 	prefix := pkg + "." + top
 	for i := 0; i+1 < len(out); i++ {

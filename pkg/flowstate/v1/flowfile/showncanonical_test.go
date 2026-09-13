@@ -242,7 +242,7 @@ func shownWorkflows(t *testing.T, doc string) []shownWorkflow {
 		source := block[1]
 
 		name := "unnamed"
-		for _, line := range strings.Split(source, "\n") {
+		for line := range strings.SplitSeq(source, "\n") {
 			if rest, found := strings.CutPrefix(line, "name:"); found {
 				name = strings.TrimSpace(rest)
 				break

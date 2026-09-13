@@ -178,8 +178,7 @@ func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper, logger *sl
 		pool.byNamespace[namespace] = cl
 
 		if err := verifyNamespaceExists(ctx, cl, namespace); err != nil {
-			var notFound *serviceerror.NamespaceNotFound
-			if errors.As(err, &notFound) {
+			if _, ok := errors.AsType[*serviceerror.NamespaceNotFound](err); ok {
 				pool.Close()
 				return nil, fmt.Errorf(
 					"the tenancy mapping routes tenant(s) %s to Temporal namespace %q, which this cluster "+

@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -435,15 +436,13 @@ type interruptReader struct {
 // Read implements [io.Reader].
 func (r *interruptReader) Read(p []byte) (int, error) {
 	n, err := r.from.Read(p)
-	for _, b := range p[:n] {
-		if b == 0x03 {
-			r.saw.Store(true)
+	if slices.Contains(p[:n], 0x03) {
+		r.saw.Store(true)
 
-			// Ended here rather than passed along: the editor is about to be
-			// told the input is over, and everything after the interrupt in
-			// this buffer is input for a prompt that is not coming back.
-			return 0, io.EOF
-		}
+		// Ended here rather than passed along: the editor is about to be
+		// told the input is over, and everything after the interrupt in
+		// this buffer is input for a prompt that is not coming back.
+		return 0, io.EOF
 	}
 
 	return n, err

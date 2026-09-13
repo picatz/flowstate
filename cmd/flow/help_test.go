@@ -116,7 +116,7 @@ func TestAFlagWithNoShorthandStillLinesUp(t *testing.T) {
 	t.Parallel()
 
 	var short, long int
-	for _, line := range strings.Split(helpOf(t), "\n") {
+	for line := range strings.SplitSeq(helpOf(t), "\n") {
 		switch {
 		case strings.Contains(line, "--help"):
 			short = strings.Index(line, "--help")
@@ -160,7 +160,7 @@ func TestTheHelpPageHasOneNameColumn(t *testing.T) {
 	t.Parallel()
 
 	var lsp, signal int
-	for _, line := range strings.Split(helpOf(t), "\n") {
+	for line := range strings.SplitSeq(helpOf(t), "\n") {
 		switch {
 		case strings.HasPrefix(line, "  lsp "):
 			lsp = strings.Index(line, "Start a Flowfile")

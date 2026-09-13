@@ -167,7 +167,7 @@ func TestWrappingStillHappensBetweenWords(t *testing.T) {
 
 	long := strings.Repeat("word ", 40)
 
-	for _, line := range strings.Split(wrap(long, 40), "\n") {
+	for line := range strings.SplitSeq(wrap(long, 40), "\n") {
 		assert.LessOrEqual(t, len(line), 40,
 			"a line of ordinary words was not wrapped to the measure")
 	}

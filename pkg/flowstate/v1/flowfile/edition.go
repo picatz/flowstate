@@ -111,8 +111,8 @@ func checkEdition(declared string) error {
 // absence of a "v" prefix, or "" if no such near-miss exists.
 func nearestEdition(declared string) string {
 	var candidate string
-	if strings.HasPrefix(declared, "v") {
-		candidate = strings.TrimPrefix(declared, "v")
+	if after, ok := strings.CutPrefix(declared, "v"); ok {
+		candidate = after
 	} else {
 		candidate = "v" + declared
 	}

@@ -3,6 +3,7 @@ package flowfile
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -240,15 +241,13 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
-	for _, prior := range ancestors {
-		if prior == resolved {
-			chain := append(append([]string{}, ancestors...), resolved)
-			c.report(spanOfNode(pathNode), callRef,
-				"calls itself through a chain of files rather than directly, which the parser "+
-					"catches the same way it catches an anchor referring to its own value: %s",
-				strings.Join(chain, " -> "))
-			return nil
-		}
+	if slices.Contains(ancestors, resolved) {
+		chain := append(append([]string{}, ancestors...), resolved)
+		c.report(spanOfNode(pathNode), callRef,
+			"calls itself through a chain of files rather than directly, which the parser "+
+				"catches the same way it catches an anchor referring to its own value: %s",
+			strings.Join(chain, " -> "))
+		return nil
 	}
 
 	data, err := readBoundedSource(resolved)

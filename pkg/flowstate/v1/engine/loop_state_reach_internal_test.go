@@ -248,7 +248,6 @@ func TestTheSubmissionPathRefusesEveryShapeThatWouldStackLoopState(t *testing.T)
 		{"loop reaches a looping call through a switch", loopSwitchCallLoop},
 		{"loop and callee loop share an id", collision},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := v1.CheckLoopNesting(tc.wf)

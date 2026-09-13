@@ -694,8 +694,7 @@ var httpStatusInExportError = regexp.MustCompile(`failed to send to \S+: ([1-5])
 //     text for the untyped errors the standard library builds, because two
 //     of those with different text are genuinely different.
 func telemetryErrorClass(err error) string {
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok {
 		return "url." + urlErr.Op + ": " + netErrorClass(urlErr.Err)
 	}
 
@@ -732,13 +731,11 @@ func netErrorClass(err error) string {
 		return "deadline exceeded"
 	}
 
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return "dns"
 	}
 
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
+	if errno, ok := errors.AsType[syscall.Errno](err); ok {
 		return errno.Error()
 	}
 
@@ -747,8 +744,7 @@ func netErrorClass(err error) string {
 		return "timeout"
 	}
 
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if opErr, ok := errors.AsType[*net.OpError](err); ok {
 		return opErr.Op + " " + fmt.Sprintf("%T", opErr.Err)
 	}
 
@@ -794,8 +790,7 @@ func (h *telemetryErrorHandler) Handle(err error) {
 	key := class
 	var attrs []any
 
-	var failure *exportFailure
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*exportFailure](err); ok {
 		message = "telemetry export failed"
 		key = failure.signal + "\x00" + failure.endpoint + "\x00" + class
 		attrs = append(attrs, "signal", failure.signal)

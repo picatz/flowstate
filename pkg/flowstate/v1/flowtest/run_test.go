@@ -179,7 +179,7 @@ func TestLoadEnforcesBounds(t *testing.T) {
 
 	var sb []byte
 	sb = append(sb, "tests:\n  - name: too many stubs\n    workflow: ./workflow.yaml\n    stubs:\n"...)
-	for i := 0; i < flowtest.MaxStubsPerTest+1; i++ {
+	for range flowtest.MaxStubsPerTest + 1 {
 		sb = append(sb, "      - task: http\n        returns: {}\n"...)
 	}
 	path := dir + "/too-many-stubs.test.yaml"

@@ -383,7 +383,7 @@ func TestACarriedNameShadowsAFunctionOnlyWhereItIsBound(t *testing.T) {
 // second copy of it.
 func lineValueOf(t *testing.T, src, key string) string {
 	t.Helper()
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if rest, ok := strings.CutPrefix(trimmed, key+": "); ok {
 			return rest

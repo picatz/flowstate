@@ -197,7 +197,7 @@ func browserProfile(t *testing.T) string {
 	// Registered before the cleanup that kills the browser, so it runs after it:
 	// cleanups run in reverse.
 	t.Cleanup(func() {
-		for attempt := 0; attempt < 40; attempt++ {
+		for range 40 {
 			if os.RemoveAll(profile) == nil {
 				return
 			}

@@ -232,10 +232,8 @@ func (c *lspClient) complete(uri string, line, char int) lsp.CompletionList {
 
 	var result lsp.CompletionList
 	require.NoError(c.t, c.conn.Call(c.t.Context(), "textDocument/completion", lsp.CompletionParams{
-		TextDocumentPositionParams: lsp.TextDocumentPositionParams{
-			TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)},
-			Position:     lsp.Position{Line: line, Character: char},
-		},
+		TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)},
+		Position:     lsp.Position{Line: line, Character: char},
 	}, &result))
 
 	return result

@@ -585,10 +585,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: socket directory %q is relative", ErrSearchPath, c.SocketDir)
 	}
 
-	for _, scheme := range c.PermittedSchemes {
-		if scheme == "" {
-			return fmt.Errorf("plugin: PermittedSchemes contains an empty scheme")
-		}
+	if slices.Contains(c.PermittedSchemes, "") {
+		return fmt.Errorf("plugin: PermittedSchemes contains an empty scheme")
 	}
 
 	// Sorted, so that a configuration with several bad pins reports the same one

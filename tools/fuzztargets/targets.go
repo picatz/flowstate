@@ -15,6 +15,7 @@ package fuzztargets
 import (
 	_ "embed"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -47,12 +48,7 @@ type Target struct {
 
 // InTier reports whether this target runs in the named tier.
 func (t Target) InTier(tier string) bool {
-	for _, have := range t.Tiers {
-		if have == tier {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(t.Tiers, tier)
 }
 
 // ImportPath is the target's package as Go names it. modulePath is the module

@@ -113,8 +113,7 @@ func (r execRunner) run(ctx context.Context, name string, args ...string) ([]byt
 	}
 
 	if runErr != nil {
-		var exit *exec.ExitError
-		if errors.As(runErr, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			if r.redactStderr {
 				return nil, fmt.Errorf("%w: %s exited %d (stderr redacted)",
 					ErrNotFound, name, exit.ExitCode())

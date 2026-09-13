@@ -652,7 +652,7 @@ func TestFmtKeepsEveryCommentInTheScaffoldItWasGiven(t *testing.T) {
 	scaffold := string(readFixture(t, path))
 
 	var comments []string
-	for _, line := range strings.Split(scaffold, "\n") {
+	for line := range strings.SplitSeq(scaffold, "\n") {
 		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "#") {
 			comments = append(comments, trimmed)
 		}

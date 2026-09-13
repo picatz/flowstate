@@ -271,14 +271,13 @@ func exportLookup(t *testing.T) func(path string) (io.ReadCloser, error) {
 	cmd.Dir = ".."
 	out, err := cmd.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			err = fmt.Errorf("%w: %s", err, exit.Stderr)
 		}
 		require.NoError(t, err, "go list -export over the v1 package")
 	}
 	exports := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		path, export, ok := strings.Cut(line, "=")
 		if ok && export != "" {
 			exports[path] = export
@@ -318,8 +317,8 @@ func methodObjects(pkg *types.Package, fn *ast.FuncDecl) []types.Object {
 	var objs []types.Object
 	for _, typ := range []types.Type{named.Type(), types.NewPointer(named.Type())} {
 		set := types.NewMethodSet(typ)
-		for i := 0; i < set.Len(); i++ {
-			if m := set.At(i).Obj(); m.Name() == fn.Name.Name && m.Pos() == fn.Name.Pos() {
+		for method := range set.Methods() {
+			if m := method.Obj(); m.Name() == fn.Name.Name && m.Pos() == fn.Name.Pos() {
 				objs = append(objs, m)
 			}
 		}

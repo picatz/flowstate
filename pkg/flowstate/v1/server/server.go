@@ -1981,9 +1981,7 @@ func (s *FlowstateServer) prepareCreate(
 	// `distinct_from_starter` will need to compare an authorized sender
 	// against.
 	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
-	for k, v := range starterMemoEntry(identity) {
-		memo[k] = v
-	}
+	maps.Copy(memo, starterMemoEntry(identity))
 	signalEntry, err := policyMemoEntries(ctx, wf, inputs)
 	if err != nil {
 		// Two different failures share this one call, and they get the same
@@ -2000,23 +1998,17 @@ func (s *FlowstateServer) prepareCreate(
 		// itself could not finish establishing.
 		return nil, nil, client.StartWorkflowOptions{}, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	for k, v := range signalEntry {
-		memo[k] = v
-	}
+	maps.Copy(memo, signalEntry)
 
 	// Unconditional, unlike the search attribute below: see
 	// [workflowNameMemoEntry] for why `flow list --filter 'name == ...'` must
 	// not depend on whether registration succeeded.
-	for k, v := range workflowNameMemoEntry(wf.GetName()) {
-		memo[k] = v
-	}
+	maps.Copy(memo, workflowNameMemoEntry(wf.GetName()))
 
 	// The author's labels, on the same terms and through the same one function
 	// [FlowstateServer.CreateSchedule] uses — see [labelsMemoEntry]. Nothing is
 	// added when the workflow declared none.
-	for k, v := range labelsMemoEntry(wf.GetLabels()) {
-		memo[k] = v
-	}
+	maps.Copy(memo, labelsMemoEntry(wf.GetLabels()))
 
 	// Derived from the authenticated tenant, never from the request — the same
 	// rule the memo above and the fairness key below already follow. Refused
@@ -2435,8 +2427,7 @@ func failureError(
 	// could read nothing structural from. It must not reuse the retryable
 	// [v1.ErrorKindTimeout] that engine.recordedStepKind answers for a step:
 	// restarting a whole run can repeat effects from steps that already finished.
-	var timeoutErr *temporal.TimeoutError
-	if errors.As(err, &timeoutErr) {
+	if timeoutErr, ok := errors.AsType[*temporal.TimeoutError](err); ok {
 		return timeoutFailure(status, timeoutErr.TimeoutType())
 	}
 

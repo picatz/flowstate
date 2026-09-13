@@ -657,8 +657,8 @@ func mergeHeadPinned(in *hook.Input) bool {
 			i++
 			continue
 		}
-		if strings.HasPrefix(arg, "--match-head-commit=") {
-			heads = append(heads, strings.TrimPrefix(arg, "--match-head-commit="))
+		if after, ok0 := strings.CutPrefix(arg, "--match-head-commit="); ok0 {
+			heads = append(heads, after)
 			continue
 		}
 		if ghMergeValueFlags[arg] || arg == "-R" || arg == "--repo" {
@@ -864,7 +864,7 @@ func ghPRMergeInvocations(s string) [][]string {
 
 	var invocations [][]string
 	for _, command := range commands {
-		for i := 0; i < len(command); i++ {
+		for i := range command {
 			if command[i] != "gh" && !strings.HasSuffix(command[i], "/gh") {
 				continue
 			}

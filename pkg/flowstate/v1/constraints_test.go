@@ -695,7 +695,7 @@ func manyItems(n int) []any {
 // other's dimension.
 func nestedStruct(depth int, leaf any) any {
 	v := leaf
-	for i := 0; i < depth; i++ {
+	for range depth {
 		v = map[string]any{"child": v}
 	}
 	return v
@@ -747,7 +747,7 @@ func TestBindRunInputsRefusesManySmallListsSummingOverTheBound(t *testing.T) {
 	wf := constrainedWorkflow(decl)
 
 	fields := map[string]any{}
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		fields[fmt.Sprintf("list%d", i)] = manyItems(600) // 20 * 600 = 12,000 > 10,000
 	}
 	value := v1.NewLiteralMap(fields)
@@ -902,7 +902,7 @@ func TestBindRunInputsRefusesManyUnconstrainedListsSummingOverTheBound(t *testin
 	wf := constrainedWorkflow(decl)
 
 	fields := map[string]any{}
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		fields[fmt.Sprintf("list%d", i)] = manyItems(600) // 20 * 600 = 12,000 > 10,000
 	}
 	value := v1.NewLiteralMap(fields)

@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -210,8 +211,8 @@ func indexOfCall(calls []string, name string) int {
 // earlier Stop on a startup-error path; shutdown ordering is proved by its
 // final Stop, immediately before the sinks flush.
 func lastIndexOfCall(calls []string, name string) int {
-	for i := len(calls) - 1; i >= 0; i-- {
-		if calls[i] == name {
+	for i, call := range slices.Backward(calls) {
+		if call == name {
 			return i
 		}
 	}

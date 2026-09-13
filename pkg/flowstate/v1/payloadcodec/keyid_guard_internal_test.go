@@ -96,7 +96,7 @@ func TestTheKeyIDMetadataKeyHasOneSpellingAndOneWriter(t *testing.T) {
 			return relErr
 		}
 
-		for _, line := range strings.Split(string(source), "\n") {
+		for line := range strings.SplitSeq(string(source), "\n") {
 			trimmed := strings.TrimSpace(line)
 			// A comment naming the key is documentation, not a use of it.
 			if strings.HasPrefix(trimmed, "//") {

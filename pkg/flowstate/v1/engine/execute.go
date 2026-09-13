@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -1296,8 +1297,7 @@ func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
 // non-retryable, and unrelated application failures under their own
 // classifications.
 func durableStepTimeoutType(err error) (enumspb.TimeoutType, bool) {
-	var timeoutErr *temporal.TimeoutError
-	if errors.As(err, &timeoutErr) {
+	if timeoutErr, ok := errors.AsType[*temporal.TimeoutError](err); ok {
 		return timeoutErr.TimeoutType(), true
 	}
 
@@ -1973,10 +1973,7 @@ func (e *executor) runIteration(body []string, loop *v1.ForEach, iterator string
 // Results keep the order of the input list rather than the order iterations
 // finished, so a loop's results do not depend on scheduling.
 func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, iterator string, items []*v1.Value, depth, susp int) ([]*v1.Workflow_StepOutputs, error) {
-	limit := int(loop.GetMaxParallel())
-	if limit > len(items) {
-		limit = len(items)
-	}
+	limit := min(int(loop.GetMaxParallel()), len(items))
 
 	results := make([]*v1.Workflow_StepOutputs, len(items))
 	errs := make([]error, len(items))
@@ -1995,7 +1992,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 	next := 0
 	done := workflow.NewChannel(e.ctx)
 
-	for w := 0; w < limit; w++ {
+	for range limit {
 		workflow.Go(e.ctx, func(gctx workflow.Context) {
 			for {
 				i := next
@@ -2061,7 +2058,7 @@ func (e *executor) runIterationsConcurrently(body []string, loop *v1.ForEach, it
 		})
 	}
 
-	for w := 0; w < limit; w++ {
+	for range limit {
 		done.Receive(e.ctx, nil)
 	}
 	// Iteration index, followed by registration position within the iteration,
@@ -2107,7 +2104,6 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 	done := workflow.NewChannel(e.ctx)
 
 	for i, branch := range branches {
-		i, branch := i, branch
 		workflow.Go(e.ctx, func(gctx workflow.Context) {
 			branchUndo := v1.NewUndoLog(nil)
 			// Every branch sees the outputs that existed before the block, never
@@ -2266,9 +2262,7 @@ func cloneOutputs(src *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
 	out := &v1.Workflow_StepOutputs{
 		StepValues: make(map[string]*v1.Node_Outputs, len(src.GetStepValues())),
 	}
-	for k, v := range src.GetStepValues() {
-		out.StepValues[k] = v
-	}
+	maps.Copy(out.StepValues, src.GetStepValues())
 	return out
 }
 

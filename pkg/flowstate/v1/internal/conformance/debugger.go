@@ -91,21 +91,19 @@ func DebuggerCases() []DebuggerCase {
 		{
 			// The ordinary path, and the baseline the other two are read
 			// against: a debugger sees each step where its author wrote it.
-			Case: Case{
-				Name: "steps are offered in the order they are written",
-				Workflow: &v1.Workflow{
-					Name:    "debug-order",
-					Profile: v1.CurrentProfile,
-					Steps: []*v1.Node{
-						says("first", "one"),
-						says("second", "two"),
-						says("third", "three"),
-					},
+			Name: "steps are offered in the order they are written",
+			Workflow: &v1.Workflow{
+				Name:    "debug-order",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("first", "one"),
+					says("second", "two"),
+					says("third", "three"),
 				},
-				ExpectedOutputs: held("first", "second", "third"),
 			},
-			Offered: []string{"first", "second", "third"},
-			Held:    []string{"first", "second", "third"},
+			ExpectedOutputs: held("first", "second", "third"),
+			Offered:         []string{"first", "second", "third"},
+			Held:            []string{"first", "second", "third"},
 		},
 		{
 			// The sharp one. [v1.Debugger.BeforeStep] is documented as being
@@ -118,22 +116,20 @@ func DebuggerCases() []DebuggerCase {
 			// about a scope no work will ever be done in. It is also the
 			// difference between "the debugger shows the workflow" and "the
 			// debugger shows the run", and only the second is useful.
-			Case: Case{
-				Name: "a step the condition skipped is never offered",
-				Workflow: &v1.Workflow{
-					Name:    "debug-skip",
-					Profile: v1.CurrentProfile,
-					Steps: []*v1.Node{
-						says("before", "one"),
-						guarded("skipped", "false", "never"),
-						says("after", "two"),
-					},
+			Name: "a step the condition skipped is never offered",
+			Workflow: &v1.Workflow{
+				Name:    "debug-skip",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("before", "one"),
+					guarded("skipped", "false", "never"),
+					says("after", "two"),
 				},
-				// Absent rather than present and empty, which is the ordinary
-				// `if:` rule this corpus inherits rather than restates.
-				ExpectedOutputs: held("before", "after"),
 			},
-			Offered: []string{"before", "after"},
+			// Absent rather than present and empty, which is the ordinary
+			// `if:` rule this corpus inherits rather than restates.
+			ExpectedOutputs: held("before", "after"),
+			Offered:         []string{"before", "after"},
 
 			// The same two, because a skipped step is not a boundary on either
 			// driver: the condition decides first, and only a step that is
@@ -150,40 +146,38 @@ func DebuggerCases() []DebuggerCase {
 			//
 			// `max_parallel: 1` so the sequence is deterministic; see
 			// [DebuggerCase.Offered].
-			Case: Case{
-				Name: "a loop is offered once and its body once per iteration",
-				Workflow: &v1.Workflow{
-					Name:    "debug-loop",
-					Profile: v1.CurrentProfile,
-					Steps: []*v1.Node{
-						{
-							Id: "each",
-							Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-								Items:       v1.NewExpr(`["a", "b", "c"]`),
-								MaxParallel: 1,
-								Body:        []*v1.Node{says("touch", "visited")},
-							}},
-						},
+			Name: "a loop is offered once and its body once per iteration",
+			Workflow: &v1.Workflow{
+				Name:    "debug-loop",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "each",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:       v1.NewExpr(`["a", "b", "c"]`),
+							MaxParallel: 1,
+							Body:        []*v1.Node{says("touch", "visited")},
+						}},
 					},
 				},
-				// A loop records one entry per iteration under
-				// [v1.LoopResultsField], each holding that iteration's own step
-				// outputs — so a three-item loop over one `log:` step is three
-				// maps of one empty entry.
-				//
-				// Stated exactly rather than loosely, even though this corpus is
-				// about boundaries and not about loop encoding. The encoding is a
-				// cross-driver contract like any other, and a case in this package
-				// that declined to pin it would be the one place the two drivers
-				// could quietly diverge while a test watched.
-				ExpectedOutputs: withStep(held(), "each", map[string]*v1.Value{
-					v1.LoopResultsField: v1.NewLiteralList(
-						map[string]any{"touch": map[string]any{}},
-						map[string]any{"touch": map[string]any{}},
-						map[string]any{"touch": map[string]any{}},
-					),
-				}),
 			},
+			// A loop records one entry per iteration under
+			// [v1.LoopResultsField], each holding that iteration's own step
+			// outputs — so a three-item loop over one `log:` step is three
+			// maps of one empty entry.
+			//
+			// Stated exactly rather than loosely, even though this corpus is
+			// about boundaries and not about loop encoding. The encoding is a
+			// cross-driver contract like any other, and a case in this package
+			// that declined to pin it would be the one place the two drivers
+			// could quietly diverge while a test watched.
+			ExpectedOutputs: withStep(held(), "each", map[string]*v1.Value{
+				v1.LoopResultsField: v1.NewLiteralList(
+					map[string]any{"touch": map[string]any{}},
+					map[string]any{"touch": map[string]any{}},
+					map[string]any{"touch": map[string]any{}},
+				),
+			}),
 			Offered: []string{"each", "touch", "touch", "touch"},
 
 			// The loop, and not its body. A `for_each:` body runs at a deeper
@@ -205,37 +199,35 @@ func DebuggerCases() []DebuggerCase {
 			// loop's is. Written with a `parallel:` this case could not state
 			// an order at all; written with a `for_each:` it would repeat the
 			// one above.
-			Case: Case{
-				Name: "a switch is a boundary and the arm it takes is not",
-				Workflow: &v1.Workflow{
-					Name:    "debug-switch",
-					Profile: v1.CurrentProfile,
-					Steps: []*v1.Node{
-						says("before", "one"),
-						{
-							Id: "route",
-							Kind: &v1.Node_Switch{Switch: &v1.Switch{
-								Value: v1.NewLiteral("go"),
-								Cases: []*v1.Switch_Case{{
-									Values: []*v1.Value{v1.NewLiteral("go")},
-									Steps:  []*v1.Node{says("chosen", "two")},
-								}},
+			Name: "a switch is a boundary and the arm it takes is not",
+			Workflow: &v1.Workflow{
+				Name:    "debug-switch",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					says("before", "one"),
+					{
+						Id: "route",
+						Kind: &v1.Node_Switch{Switch: &v1.Switch{
+							Value: v1.NewLiteral("go"),
+							Cases: []*v1.Switch_Case{{
+								Values: []*v1.Value{v1.NewLiteral("go")},
+								Steps:  []*v1.Node{says("chosen", "two")},
 							}},
-						},
+						}},
 					},
 				},
-				// A `switch:` records which arm it took beside the value it
-				// matched, so the step that is not a pause point still has
-				// outputs. Stated exactly rather than loosely, for the reason
-				// the loop case above states its encoding: this corpus is
-				// about boundaries, and a case that declined to pin what a
-				// step produced would be a place the two drivers could
-				// quietly diverge while a test watched.
-				ExpectedOutputs: withStep(held("before", "chosen"), "route", map[string]*v1.Value{
-					"value": v1.NewLiteral("go"),
-					"case":  v1.NewLiteral("go"),
-				}),
 			},
+			// A `switch:` records which arm it took beside the value it
+			// matched, so the step that is not a pause point still has
+			// outputs. Stated exactly rather than loosely, for the reason
+			// the loop case above states its encoding: this corpus is
+			// about boundaries, and a case that declined to pin what a
+			// step produced would be a place the two drivers could
+			// quietly diverge while a test watched.
+			ExpectedOutputs: withStep(held("before", "chosen"), "route", map[string]*v1.Value{
+				"value": v1.NewLiteral("go"),
+				"case":  v1.NewLiteral("go"),
+			}),
 			Offered: []string{"before", "route", "chosen"},
 			Held:    []string{"before", "route"},
 		},
