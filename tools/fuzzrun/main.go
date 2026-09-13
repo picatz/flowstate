@@ -22,11 +22,11 @@
 // cost thirteen consecutive thirty-second budgets.
 //
 // Spending those idle cores on other targets is not the same as giving a target
-// less. `-fuzztime` bounds wall clock rather than executions, so the question
-// this design turns on is whether a target sharing the machine still gets
-// through as many inputs. Measured against this tree on four cores, with the
-// fuzz corpus cache cleared before each run: the smoke tier took 448s serially
-// and 139s four-at-a-time. The wall clock is the settled part.
+// less — but it is not free either, and how much it costs is measured rather
+// than assumed here. `-fuzztime` bounds wall clock rather than executions, so a
+// target sharing the machine stops after thirty seconds having done whatever it
+// managed in a contended thirty seconds. [defaultWorkers] carries the numbers
+// and is why the default is half the CPUs rather than all of them.
 //
 // Whether the targets fuzzed as hard is not settled, and the first version of
 // this comment said it was. Total executions went 456,000 to 467,519, which
@@ -105,7 +105,7 @@ func runWith(args []string, stdin io.Reader, stdout io.Writer, fuzz func(context
 		fuzztime = flags.Duration("fuzztime", 30*time.Second, "how long to fuzz each target")
 		timeout  = flags.Duration("timeout", 120*time.Second, "`go test -timeout` for each target")
 		memlimit = flags.String("memlimit", "512MiB", "GOMEMLIMIT for each target's process")
-		jobs     = flags.Int("jobs", 0, "targets to fuzz at once (0: one per CPU, never more than there are targets)")
+		jobs     = flags.Int("jobs", 0, "targets to fuzz at once (0: one per two CPUs, never more than there are targets)")
 	)
 	flags.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] < <target> <dir> lines\n\n", flags.Name())
@@ -132,10 +132,7 @@ func runWith(args []string, stdin io.Reader, stdout io.Writer, fuzz func(context
 		return errors.New("no fuzz targets on standard input")
 	}
 
-	// Each target's process is capped at -memlimit, so the run's ceiling is
-	// that times the worker count: one per CPU keeps a runner's ceiling in
-	// proportion to the machine rather than to the length of the target list.
-	workers := min(cmp.Or(*jobs, runtime.NumCPU()), len(targets))
+	workers := min(cmp.Or(*jobs, defaultWorkers()), len(targets))
 
 	fmt.Fprintf(stdout, "fuzzing %d target(s), %d at a time, %s each\n", len(targets), workers, *fuzztime)
 
@@ -155,6 +152,39 @@ func runWith(args []string, stdin io.Reader, stdout io.Writer, fuzz func(context
 	}
 	fmt.Fprintf(stdout, "all %d target(s) passed\n", len(targets))
 	return nil
+}
+
+// defaultWorkers is half the CPUs, not all of them, and the halving is the
+// measured part of this command rather than caution.
+//
+// A fuzzing target is two processes, not one: `go test -fuzz` runs a
+// coordinator that mutates and dispatches inputs and a worker that executes
+// them, and `-parallel 1` bounds the workers. So N targets at once is 2N
+// processes, and on a four-core runner four targets is eight — which the cores
+// do not absorb, whatever the process count suggests about how idle they look.
+//
+// Measured on four cores over the smoke tier, with the fuzz corpus cache
+// cleared before each arm and the test binaries compiled first so build
+// contention was not counted as fuzzing. Per-target CPU seconds against the
+// same target run alone, which is what asks whether a target still gets its
+// share of the machine — unlike execution counts, which depend on the corpus a
+// run happened to grow and move by large factors between runs of one
+// configuration:
+//
+//	workers   wall   per-target CPU (median, range)
+//	1         423s   1.00
+//	NumCPU/2  224s   0.92 (0.88-0.95)
+//	NumCPU    151s   0.66 (0.49-0.89)
+//
+// At one worker per CPU a target keeps about two thirds of the CPU it would
+// have had to itself, and the worst keeps half: that is a third of the tier's
+// fuzzing traded for the last 73 seconds, which is not a trade a smoke tier
+// should make silently. At half the CPUs the loss is within a few points of
+// noise and the wall clock is still nearly halved, so that is the default.
+//
+// -jobs overrides it, including upwards, for a machine that is not a runner.
+func defaultWorkers() int {
+	return max(runtime.NumCPU()/2, 1)
 }
 
 // options are the per-target bounds, identical for every target in a tier.

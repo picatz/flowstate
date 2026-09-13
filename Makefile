@@ -137,16 +137,19 @@ check:
 # themselves one after another was never that bound — one worker is about one
 # core, so on a four-core runner three idled for every target's whole budget.
 #
-# Spending those cores on other targets is not obviously free, because
-# `-fuzztime` bounds wall clock rather than executions. With the fuzz corpus
-# cache cleared before each run this tier took 448s serially and 139s
-# four-at-a-time; the wall clock is settled, and whether the targets fuzzed as
-# hard is not. tools/fuzzrun carries the numbers and says why the execution
-# counts that look like an answer are not one.
+# Spending those cores on other targets is not free, because `-fuzztime` bounds
+# wall clock rather than executions: a target sharing the machine stops after
+# thirty seconds having done whatever a contended thirty seconds allowed. How
+# much that costs is measured in tools/fuzzrun, and it is why the default is
+# half the CPUs rather than all of them — a fuzzing target is a coordinator
+# process and a worker process, so one per CPU is twice as many processes as
+# cores and leaves each target about two thirds of the CPU it would have had
+# alone. Half the CPUs holds at 0.92 and still nearly halves the wall clock.
 #
-# FUZZ_SMOKE_JOBS sets how many at once; unset, the runner uses one per CPU and
-# never more than there are targets. FUZZ_SMOKE_JOBS=1 is the serial loop back,
-# for a machine that wants its cores for something else.
+# FUZZ_SMOKE_JOBS sets how many at once; unset, the runner uses one per two CPUs
+# and never more than there are targets. FUZZ_SMOKE_JOBS=1 is the serial loop
+# back, for a machine that wants its cores for something else, and a larger
+# value is available for a machine that is not a runner.
 #
 # FUZZ_SMOKE_TARGETS, when set, is a space-separated list of target names that
 # narrows the run to those (#1726):
@@ -160,7 +163,7 @@ check:
 # seven targets it can move rather than all thirteen. The narrowing is list.sh's
 # and not a second filter here: a name that is not in the smoke tier is a
 # refusal from the one reader, not a silently shorter run.
-# 0 is the runner's own default — one job per CPU — spelled here so that an
+# 0 is the runner's own default — one job per two CPUs — spelled here so that an
 # unset variable expands to something the flag can parse rather than to nothing.
 FUZZ_SMOKE_JOBS ?= 0
 

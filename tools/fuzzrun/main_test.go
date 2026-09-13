@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -302,5 +303,22 @@ func TestRunFailsWhenOnlyOneOfSeveralTargetsFails(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "target(s) passed") {
 		t.Errorf("a run with a failing target still reported a pass:\n%s", out.String())
+	}
+}
+
+// Half the CPUs, not all of them. A fuzzing target is a coordinator process
+// and a worker process, so N at once is 2N processes; measured on four cores,
+// one worker per CPU left each target about two thirds of the CPU it had to
+// itself and the worst half, while one per two CPUs held at 0.92. The default
+// is a measured number and a test keeps it from drifting back.
+func TestDefaultWorkersIsHalfTheCPUs(t *testing.T) {
+	if got, want := defaultWorkers(), max(runtime.NumCPU()/2, 1); got != want {
+		t.Errorf("defaultWorkers() = %d, want %d", got, want)
+	}
+	if defaultWorkers() < 1 {
+		t.Error("defaultWorkers() must never be zero: fuzzAll would have nothing to run with")
+	}
+	if defaultWorkers() > runtime.NumCPU() {
+		t.Errorf("defaultWorkers() = %d oversubscribes %d CPU(s)", defaultWorkers(), runtime.NumCPU())
 	}
 }

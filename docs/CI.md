@@ -298,36 +298,51 @@ it is not obviously free: `-fuzztime` bounds wall clock rather than executions,
 so a target sharing a machine could simply explore less in its thirty seconds
 and the tier would get weaker while looking faster.
 
-The wall clock is settled: with the fuzz corpus cache cleared before each run,
-the tier took 448s serially and 139s four-at-a-time. `tools/fuzzrun` is the
-loop now — it reads `list.sh`'s output, so selection is still the one reader's
-job, and runs one job per CPU by default, capped at the number of targets so
-the memory ceiling stays in proportion to the machine.
+`tools/fuzzrun` is the loop now — it reads `list.sh`'s output, so selection is
+still the one reader's job — and it runs **half the CPUs' worth of targets at
+once, not one per CPU**. That halving is the measured part.
 
-Whether the same fuzzing happened in that third of the wall clock is **not**
-settled by that run, and the first version of this section claimed it was.
-Totals went 456,000 to 467,519, which reads as flat until the per-target
-numbers are opened: one target contributed +107,183 of it, so the other twelve
-netted −95,664, or −21%. A single outlier was hiding exactly the decline this
-design has to rule out, and a paired run with one sample per arm cannot tell
-"same fuzzing" from "one target masking a broad loss".
+The first version of this section claimed one worker per CPU cost nothing,
+on totals that went 456,000 to 467,519 executions and read as flat. They were
+not. One target contributed +107,183 of that, so the other twelve netted
+−95,664, or −21% — a single outlier hiding exactly the decline the design has
+to rule out.
 
-Execution counts are a poor instrument here and this measurement has now been
-misled by them twice. They depend on the corpus a run happened to grow, so they
-move by large factors between runs of the same configuration — and summing them
-does not fix it, because the sum inherits whichever target swung hardest. An
-early A/B compared per-target counts across runs with a warm corpus and appeared
-to show a 57% coverage loss that was not there; the replacement summed them and
-appeared to show no loss at all, which the paragraph above takes apart.
+The reason is that a fuzzing target is *two* processes: `go test -fuzz` runs a
+coordinator that mutates and dispatches inputs and a worker that executes them,
+and `-parallel 1` bounds the workers. N targets at once is 2N processes, so
+four targets on a four-core runner is eight, and the cores do not absorb it.
 
-What a target *is* owed under concurrency is its share of the machine, and CPU
-seconds per target measures that without asking what its corpus found. That is
-the measurement this claim should rest on, and it is the open item here.
+Execution counts are a poor instrument here and this measurement was misled by
+them twice, in opposite directions. They depend on the corpus a run happened to
+grow, so they move by large factors between runs of one configuration, and
+summing them does not fix it because the sum inherits whichever target swung
+hardest. An early A/B compared them per target across warm-corpus runs and
+reported a 57% loss that was not there; its replacement summed them and
+reported no loss at all.
+
+What a target is owed under concurrency is its share of the machine, and CPU
+seconds per target measures that without asking what its corpus found. Measured
+over the smoke tier with the corpus cleared before each arm and the test
+binaries compiled first, so build contention was not counted as fuzzing:
+
+| workers | wall | per-target CPU, median (range) |
+|---|---|---|
+| 1 | 423s | 1.00 |
+| `NumCPU/2` | 224s | 0.92 (0.88–0.95) |
+| `NumCPU` | 151s | 0.66 (0.49–0.89) |
+
+At one worker per CPU a target keeps about two thirds of the CPU it would have
+had alone and the worst keeps half — a third of the tier's fuzzing traded for
+the last 73 seconds, which is not a trade a smoke tier should make silently. At
+half the CPUs the loss is within a few points of noise and the wall clock is
+still nearly halved. `FUZZ_SMOKE_JOBS` overrides it either way.
 
 On the runner the same thirteen targets went from 9m13s to 5m48s (`main` run
 `34726074939` against pull request run `34735407267`, both forced-wide, both
-reporting every target passed). That is 37%, against 69% locally, and the
-difference is not the fuzzing: thirteen targets at 30s across four workers is a
+reporting every target passed) — that measurement predates the halving above,
+so the shipped default will land between it and the 9m13s baseline. The
+difference from the local ratio is not the fuzzing: thirteen targets at 30s across four workers is a
 two-minute floor, so about 228s of that step is building test binaries — more
 than the ~163s the serial job spent building, because four concurrent `go test`
 invocations each drive their own build over overlapping dependency graphs and
