@@ -12,6 +12,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -975,4 +976,45 @@ func TestCredentialNeverRevealsItself(t *testing.T) {
 	require.ErrorIs(t, err, auth.ErrCredentialUnresolved,
 		"a credential that lost its secret must fail closed, not send an empty header")
 	require.Empty(t, request.Header.Get("Authorization"))
+}
+
+// TestAnEgressDenialDuringExchangeIsPermanentAndTyped covers the classification
+// a caller's retry policy turns on.
+//
+// A relying party that cannot be reached is transient and worth another
+// attempt; a destination the deployment's own policy refuses is a decision, and
+// retrying it spends a step's attempt budget on an answer that cannot change.
+// The typed [netpolicy.DenyError] survives the wrapping so a caller can report
+// "denied" rather than "failed" — which is what plugins/oidc does when it
+// resolves a credential reference.
+func TestAnEgressDenialDuringExchangeIsPermanentAndTyped(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the token endpoint was reached under a policy that denies it")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	// The default posture: loopback denied, which is what a deployment does to
+	// every internal address it has not permitted.
+	denying, err := netpolicy.New()
+	require.NoError(t, err)
+
+	exchanger, err := auth.NewClientCredentialsExchanger(auth.ClientCredentialsConfig{
+		TokenURL:     server.URL + "/token",
+		ClientID:     "flowstate",
+		ClientSecret: "not-a-real-client-secret",
+		EgressPolicy: denying,
+	})
+	require.NoError(t, err)
+
+	_, err = exchanger.Exchange(t.Context(), auth.Assertion{})
+	require.Error(t, err)
+
+	var denied *netpolicy.DenyError
+	require.ErrorAs(t, err, &denied, "the policy's own refusal did not survive the wrapping")
+	require.ErrorIs(t, err, auth.ErrExchangeFailed, "a denial is still an exchange failure")
+	require.False(t, auth.Retryable(err),
+		"a destination the deployment's policy refuses was reported as worth retrying")
 }

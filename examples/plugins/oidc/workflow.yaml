@@ -1,0 +1,48 @@
+edition: v2026.3
+name: oidc-minted-credential
+description: Calls a partner API with an access token minted for this call and never written down - the credential is a reference in the file and in history, and a value only inside the step that presents it.
+# The point of this example is what is *not* here.
+#
+# There is no step that fetches a token, and no output holding one. The
+# credential is `${secret('oidc:billing-api')}` - a reference in the Flowfile
+# and a reference in durable history. The host resolves it worker-side, at the
+# moment this step runs, under this run's own namespace, and hands the value to
+# the http task alone.
+#
+# A task that returned a token would put a bearer credential into every run's
+# record, where it outlives its usefulness and reaches everyone who can read a
+# run. That is why the oidc plugin has no tasks at all: minting belongs behind
+# the secret boundary, not in front of it.
+plugins:
+  oidc: v0.1.0
+inputs:
+  invoice_id:
+    type: string
+    required: true
+    description: the invoice to read from the partner API
+    example: inv_2026_0917
+    must: this.matches(r'^[a-z0-9_]{1,64}$')
+steps:
+  - id: invoice
+    http:
+      method: GET
+      url: ${"https://billing.example.com/v1/invoices/" + inputs.invoice_id}
+      # `bearer:` is the input built to take a reference whole: the worker
+      # resolves it inside the activity and sends Authorization: Bearer <value>.
+      # A reference cannot be concatenated with anything workflow-side, because
+      # the value does not exist until the worker running this step asks for it.
+      bearer: ${secret('oidc:billing-api')}
+      parse_json: true
+      outputs:
+        status: ${response.json.status}
+        total: ${response.json.total}
+
+  - id: settled
+    value: ${steps.invoice.status == "paid"}
+outputs:
+  status:
+    value: ${steps.invoice.status}
+    description: what the partner API says about this invoice
+  settled:
+    value: ${steps.settled.value}
+    description: whether the invoice is paid

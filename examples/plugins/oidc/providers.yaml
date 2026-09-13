@@ -1,0 +1,38 @@
+# The operator's half: which systems this worker may mint tokens for, and as
+# which client.
+#
+#   flow worker --plugin-dir ./plugins \
+#     --plugin-env oidc=FLOWSTATE_OIDC_PROVIDERS=$PWD/examples/plugins/oidc/providers.yaml
+#
+# The name of each entry is what a Flowfile writes: `${secret('oidc:billing-api')}`.
+providers:
+  billing-api:
+    # The token endpoint, not the issuer: discovery is a second fetch whose only
+    # purpose is to find this URL, and an operator who can write one can write
+    # the other. https, because a client secret is not sent in cleartext.
+    token_url: https://idp.example.com/oauth2/token
+
+    # The client this deployment is. Not a secret - it is in the request either
+    # way, and naming it here is how a reviewer sees which client a workflow
+    # acts as.
+    client_id: flowstate-worker
+
+    # A path, not a value. The document you diff in review should not be one you
+    # have to redact, and the secret is read at the moment it is needed rather
+    # than held for the life of the process.
+    client_secret_file: /etc/flowstate/secrets/billing-client
+
+    # What a token may do is the authorization server's decision; asking for
+    # less than everything is this deployment's.
+    scopes: [invoices.read]
+
+    # A ceiling on how long the engine may cache a token, never a claim that it
+    # stops working earlier. The authorization server's own expires_in wins when
+    # it is shorter.
+    max_lifetime: 1h
+    timeout: 10s
+
+    # Optional: the tenants whose workflows may mint from this provider. The
+    # namespace compared is the one the server established for the workload,
+    # never one the workload declared.
+    # namespaces: [billing]

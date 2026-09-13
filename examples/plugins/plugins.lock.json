@@ -1810,6 +1810,18 @@
       "claimsDigest": "sha256:2a2abcbe1cd1956825b51cf9b6b949669a208437d68de744513b34c9701945e2"
     },
     {
+      "name": "oidc",
+      "version": "0.1.0",
+      "description": "Mints short-lived access tokens through the OAuth 2.0 client credentials grant and resolves them as ${secret('oidc:<provider>')} at the point of use.",
+      "secretSchemes": [
+        "oidc"
+      ],
+      "tasks": [],
+      "protocolVersion": 7,
+      "taskSchemaDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "claimsDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
       "name": "scim",
       "version": "0.1.0",
       "description": "Reads and deactivates identity-provider users over SCIM 2.0 (RFC 7643, RFC 7644), for access reviews and joiner-mover-leaver workloads.",

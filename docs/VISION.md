@@ -30,8 +30,8 @@ operate.
 ## The plugin ecosystem
 
 The built-in registry stays small — the admission test in DSL.md holds — so the
-breadth lives in plugins, spelled `<plugin>.<task>:`. Eleven ship in-tree and so are
-no longer listed here — `codex`, `docker`, `git`, `github`, `jose`, `oci`, `scim`, `slack`, `sql`, `ssh`, `vcs`; the
+breadth lives in plugins, spelled `<plugin>.<task>:`. Twelve ship in-tree and so are
+no longer listed here — `codex`, `docker`, `git`, `github`, `jose`, `oci`, `oidc`, `scim`, `slack`, `sql`, `ssh`, `vcs`; the
 README's *Extend* row and [PLUGINS.md](PLUGINS.md) are the record. Still wanted,
 each landing with a worked example verified in CI:
 
@@ -40,8 +40,10 @@ each landing with a worked example verified in CI:
   question was asked.
 - **grpc** — the generic caller for the unary row of the interaction-shape table;
   the streaming rows stay refused until they have an execution model.
-- **vault / openbao** — the canonical *secrets* plugin example (the in-tree
-  `secrets/vault` package is the in-process ancestor).
+- **vault / openbao** — a secrets plugin over a secret *store* (the in-tree
+  `secrets/vault` package is the in-process ancestor). The canonical
+  secrets-plugin example is now `oidc`, which mints rather than stores; what a
+  vault plugin adds is the other half, reading a value somebody put there.
 - **1password** — exists in-tree as a provider; needs local verification against
   the real agent before it is claimed.
 - **a sandbox-provider plugin** (Modal or similar) — a place to run untrusted

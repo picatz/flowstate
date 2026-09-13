@@ -675,7 +675,18 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 
 	response, err := e.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w: %s at %q: %v", ErrExchangeFailed, ErrExchangeUnavailable, provider, endpoint, err)
+		// A policy denial is a decision, not a transient condition: the same
+		// destination is refused by the same policy on the next attempt, and
+		// marking it [ErrExchangeUnavailable] would spend a caller's retry
+		// budget on an answer that cannot change. It is wrapped with %w so the
+		// [netpolicy.DenyError] survives for a caller that wants to say
+		// "denied" rather than "failed" — the same distinction
+		// [IssuerBlockedError] draws on the verifier's side of this package.
+		var denied *netpolicy.DenyError
+		if errors.As(err, &denied) {
+			return nil, fmt.Errorf("%w: %s at %q: %w", ErrExchangeFailed, provider, endpoint, err)
+		}
+		return nil, fmt.Errorf("%w: %w: %s at %q: %w", ErrExchangeFailed, ErrExchangeUnavailable, provider, endpoint, err)
 	}
 	defer response.Body.Close()
 
