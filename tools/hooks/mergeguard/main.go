@@ -551,12 +551,28 @@ var (
 func shellExpansionDenial(cmd string) string {
 	const explicit = "If it is a merge, use one fully explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes."
 
-	// Recognized means recognized by text, not proven to be a merge: the words are
-	// matched wherever they appear, a quoted heredoc body included, so prose that
-	// merely documents a merge invocation lands here too and needs a remedy of its
-	// own rather than only the advice for merging.
+	// Recognized means recognized by text, not proven to be a merge. The words have
+	// to be separate tokens, so a single-quoted `-m "… gh pr merge …"` is one word
+	// and is not recognized, but the tokenizer has no heredoc state, so words in a
+	// quoted heredoc body are separate words and prose written that way does land
+	// here. It needs a remedy of its own rather than only the advice for merging.
+	//
+	// A legitimate pinned merge lands here too when its own arguments carry a
+	// trigger, and the explicit invocation the message asks for is what that caller
+	// already ran, so it needs something else to try (#1981).
+	//
+	// The sentence below says only that an argument can trigger this on its own and
+	// where the body text can go, deliberately without enumerating which characters
+	// or quotings match. Two drafts tried to state that rule and both were wrong,
+	// because the paths reaching here disagree: `braceExpansion` is a raw substring
+	// test, so a brace pair counts even inside single quotes, while the trailing
+	// lexer skips a `$` or backtick that is single-quoted *or* backslash-escaped.
+	// The measured rule lives in the test beside this, pinned against the decision
+	// rather than against this prose, which is the only form of it that cannot go
+	// stale.
 	if isGHPRMergeInvocation(cmd) || expandedMergeExecutable.MatchString(cmd) {
 		return "mergeguard: shell expansion in a merge invocation can hide auto-merge or change its target and head. " + explicit +
+			" This check reads the whole command, a `--body` value and a file name included, so one argument can trigger it on its own: `--body-file` moves body text out of the command, though a file name that carries a trigger is matched the same way." +
 			" If this command only quotes or documents a merge invocation, the words were still matched: pass that text through a file, the way `git commit -F FILE` does, rather than through the command line."
 	}
 
@@ -573,8 +589,10 @@ func shellExpansionDenial(cmd string) string {
 	// measurement: `dynamicGHExecutable` can fire on an obfuscated executable that
 	// `\bgh\b` does not match, so a named ingredient is not always the one that
 	// matched; and `gh api "repos/o/r/pulls/$PR/merge"`, GitHub's own endpoint for
-	// checking whether a pull request is merged, is refused with no remedy
-	// available short of inlining the value. Stating what matched is checkable.
+	// checking whether a pull request is merged, is refused with no legitimate
+	// remedy — inlining the value clears it, and so does moving the word before the
+	// token, but only because the pattern is ordered, which is the gap #1973
+	// tracks rather than advice worth giving. Stating what matched is checkable.
 	// Stating what clears it is a claim about a five-way disjunction, which this
 	// text is the wrong place to make; #1972 carries it instead.
 	var saw []string

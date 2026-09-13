@@ -626,8 +626,26 @@ func TestShellExpansionDenialSaysWhatToDo(t *testing.T) {
 	for _, command := range []string{
 		"gh pr merge 498 -R picatz/flowstate --match-head-commit $HEAD",
 		`cmd=gh; "$cmd" pr merge 498 -R picatz/flowstate --auto`,
+		// A legitimate pinned merge whose own `--body` carries literal braces. The
+		// explicit invocation the message asks for is what this caller already ran,
+		// so the branch has to name `--body-file`, the remedy that does move it off
+		// this check (#1981).
+		"gh pr merge 498 -R picatz/flowstate --body '{x}' --match-head-commit " + sha,
 	} {
 		reason := shellExpansionDenial(command)
+		if !strings.Contains(reason, "`--body-file` moves body text out of the command") {
+			t.Errorf("the recognized branch does not name the --body-file remedy: %q", reason)
+		}
+		if !strings.Contains(reason, "a file name that carries a trigger is matched the same way") {
+			t.Errorf("the recognized branch does not state the remedy's limit: %q", reason)
+		}
+		// The message must not try to enumerate the quoting rule; that belongs in the
+		// table above, against the decision. Two drafts of this sentence got it wrong.
+		for _, overreach := range []string{"unless single-quoted", "even when the shell would treat them literally"} {
+			if strings.Contains(reason, overreach) {
+				t.Errorf("the recognized branch states a quoting rule the table owns (%q): %q", overreach, reason)
+			}
+		}
 		if !strings.Contains(reason, "shell expansion in a merge invocation") {
 			t.Errorf("a recognized merge lost its own advice: %q -> %q", command, reason)
 		}
@@ -643,6 +661,35 @@ func TestShellExpansionDenialSaysWhatToDo(t *testing.T) {
 		}
 	}
 
+	// Which argument spellings trigger the check on an otherwise valid pinned merge.
+	// This table is the measured rule the recognized branch's message deliberately
+	// does not state: two drafts tried to put it in prose and both were wrong, so it
+	// lives here, pinned against the decision, where it fails instead of going
+	// stale. Read the `shell` column next to `denied` — the two disagree in both
+	// directions, which is why no short sentence captures it.
+	for _, tc := range []struct {
+		body   string
+		shell  string // what bash does with the trigger character
+		denied bool
+	}{
+		{body: `--body '{x}'`, shell: "literal", denied: true},
+		{body: `--body "$V"`, shell: "expands", denied: true},
+		{body: `--body "costs 5$"`, shell: "literal", denied: true},
+		{body: "--body '$literal'", shell: "literal", denied: false},
+		{body: "--body 'a `b` c'", shell: "literal", denied: false},
+		{body: `--body "costs 5\$"`, shell: "literal, escaped", denied: false},
+		{body: "--body-file b.txt", shell: "no trigger", denied: false},
+		// The remedy's own limit: moving body text to a file does not help when the
+		// file name carries a trigger.
+		{body: `--body-file '{x}.txt'`, shell: "literal", denied: true},
+	} {
+		command := "gh pr merge 498 -R picatz/flowstate " + tc.body + " --match-head-commit " + sha
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if got := mergeUsesShellExpansion(in); got != tc.denied {
+			t.Errorf("mergeUsesShellExpansion(%q) = %v, want %v (bash treats the trigger as %s)", tc.body, got, tc.denied, tc.shell)
+		}
+	}
+
 	// The #1972 reproduction: a status query. The message must not assert this is
 	// a merge invocation, must name what actually matched, and must give the
 	// remedy for a command that is not merging anything.
@@ -652,9 +699,11 @@ func TestShellExpansionDenialSaysWhatToDo(t *testing.T) {
 		`gh api repos/picatz/flowstate/commits/$(git rev-parse origin/main)/check-runs --jq .total_count`
 	reason := shellExpansionDenial(repro)
 	// The ingredient clause is asserted whole, in order, and anchored to the text
-	// that follows it. Matching the ingredient names one at a time does not work:
-	// "the standalone word `merge`" also appears in the remedy sentence below, so
-	// a per-name check passes even when the ingredient list is empty.
+	// that follows it, which is stronger than checking the names one at a time. An
+	// earlier revision needed that: a remedy sentence then repeated "the standalone
+	// word `merge`", so per-name checks passed with the ingredient list empty. That
+	// sentence is gone, but the anchored form also pins order and adjacency, so it
+	// stays.
 	const clause = "it carries a `gh` token, the standalone word `merge` and an expansion character (`$` or a backtick). This hook matches text"
 	if !strings.Contains(reason, clause) {
 		t.Errorf("denial for the status query does not name what matched:\n got %q\nwant substring %q", reason, clause)
@@ -734,6 +783,7 @@ func TestShellExpansionDenialSaysWhatToDo(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		command string
+		present []string
 		absent  []string
 	}{
 		{
@@ -772,6 +822,39 @@ func TestShellExpansionDenialSaysWhatToDo(t *testing.T) {
 			command: `gh api repos/o/r/pulls/1/merge --jq '{x: .y}'`,
 			absent:  []string{"an expansion character (`$` or a backtick)"},
 		},
+		{
+			// bashCommandEvaluation is the only reason the evaluator name appears
+			// here: the command carries no `eval ` substring. Without this case the
+			// whole disjunct can be deleted and the suite stays green (#1981).
+			name:    "shell -c carries no eval substring",
+			command: `bash -c 'gh pr merge 498 -R picatz/flowstate --auto'`,
+			present: []string{"an `eval` or shell `-c` spelling"},
+			absent: []string{
+				"an expansion character (`$` or a backtick)",
+				"process-substitution syntax (`>(` or `<(`)",
+				"brace characters (`{` with `}`)",
+			},
+		},
+		{
+			// The `<(` half of the message's process-substitution indicator, which
+			// `>(` covers elsewhere. Scoped to the indicator rather than to the
+			// decision's own processSubstitution: `eval` is what makes the command
+			// reach the heuristic branch at all, since a bare `gh pr merge … < <(cat)`
+			// is a recognized merge and takes the other branch, so this case cannot
+			// isolate the decision's disjunct and does not claim to.
+			name:    "input process substitution",
+			command: `eval 'gh pr merge 498 -R picatz/flowstate --auto < <(cat)'`,
+			present: []string{"process-substitution syntax (`>(` or `<(`)"},
+		},
+		{
+			// The message's brace indicator is a conjunction, so one brace must not
+			// name it. The `$b` is what denies the command; this pins the indicator,
+			// not the decision's braceExpansion, which stays true here through
+			// mergeExpansion either way.
+			name:    "a single brace is not brace syntax",
+			command: `gh api repos/o/r/pulls/1/merge --jq .a$b{`,
+			absent:  []string{"brace characters (`{` with `}`)"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": tc.command}}
@@ -781,6 +864,11 @@ func TestShellExpansionDenialSaysWhatToDo(t *testing.T) {
 			got := shellExpansionDenial(tc.command)
 			if strings.Contains(got, "not a recognized merge invocation") == isGHPRMergeInvocation(tc.command) {
 				t.Fatalf("branch and message disagree for %q: %q", tc.command, got)
+			}
+			for _, present := range tc.present {
+				if !strings.Contains(got, present) {
+					t.Errorf("denial does not name %q for a command that carries it: %q", present, got)
+				}
 			}
 			for _, absent := range tc.absent {
 				if strings.Contains(got, absent) {
