@@ -333,9 +333,22 @@ func SecretRefsIn(task *Task) []string {
 // Past MaxStructureDepth the walk cannot see what is below, and it yields nil to
 // say so rather than walking on or staying silent: a consumer deciding an
 // authority or refusal question must treat "too deep to scan" as "may hold one",
-// because the compiler admits deeper nesting than this walk inspects and a
-// silent cutoff turned every consumer into a fail-open gate at depth 33
-// (#329 review). A consumer that only names references skips the nil.
+// because a silent cutoff turned every consumer into a fail-open gate at depth
+// 33 (#329 review). A consumer that only names references skips the nil.
+//
+// What can be that deep decides whether the nil is pedantry, and the answer is
+// the one [CollectValueRefs] already states for its own bound: no Flowfile can
+// express it. The compiler refuses a structure nested past [MaxStructureDepth],
+// and [CheckStructureDepth] refuses the same on every submit path, which
+// `pkg/flowstate/embed` and both drivers reach through [BindRunInputs].
+//
+// A plugin's outputs are the shape that does arrive without passing either.
+// `plugin`'s scrubPluginOutputs asks [ValueHoldsSecretRef] of every value an
+// out-of-process task returned, before it can become a step output in workflow
+// history, and nothing bounds how deeply that party nested what it sent. So the
+// depth here is a number the peer chooses, not one an author could write, and
+// the conservative answer is what keeps that refusal from failing open — which
+// is the same reasoning as the walk's own bound rather than a second one.
 //
 // A sequence rather than the `visit func(*SecretRef) bool` this was, for the
 // reason the fail-open history above makes sharp: both consumers below decide a
