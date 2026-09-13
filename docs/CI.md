@@ -281,6 +281,39 @@ forwards every output the plan publishes, and that the `fuzz-smoke` step reads
 `fuzz_targets` — because the Makefile's default is the whole tier, and a step
 that dropped the variable would stay green at the old cost.
 
+### The fuzz tier was slower than the fuzzing it did
+
+Narrowing the tier to what a diff reaches left the other half of `fuzz-smoke`
+untouched: on a forced run it still spent 9m13s of a ten-minute budget, and
+almost none of it on the machine. A tier gives each target `-parallel 1` — one
+fuzzing worker, which is what keeps a crash and the memory behind it
+attributable to a single input — and one worker is about one core. The targets
+then ran one after another, so on a four-core runner three cores idled for
+every target's whole thirty-second budget and thirteen targets cost thirteen
+consecutive budgets.
+
+Those are two different bounds and the loop conflated them. Spending the idle
+cores on *other* targets leaves the per-target bound exactly where it was, but
+it is not obviously free: `-fuzztime` bounds wall clock rather than executions,
+so a target sharing a machine could simply explore less in its thirty seconds
+and the tier would get weaker while looking faster.
+
+Measured rather than assumed, with the fuzz corpus cache cleared before each
+run so corpus growth could not explain the difference: the tier took 448s
+serially and 139s four-at-a-time, for 456,000 and 467,519 total executions.
+The same fuzzing in a third of the wall clock. `tools/fuzzrun` is the loop now
+— it reads `list.sh`'s output, so selection is still the one reader's job, and
+runs one job per CPU by default, capped at the number of targets so the memory
+ceiling stays in proportion to the machine.
+
+Per-target execution counts are not the metric and reading them as one is a
+trap this measurement fell into once already. They swing by orders of magnitude
+between two *identical* runs, in both directions, because what a fuzzer reaches
+depends on the corpus it happened to grow: one target went from 18 executions
+to 107,201 between the two runs above. An early A/B that compared per-target
+counts across runs with a warm corpus appeared to show a 57% coverage loss that
+was not there. Only the total is stable enough to compare.
+
 ### A failing test is an annotation, not a line in a log
 
 Until #1727, `ci.yml` emitted `::error` annotations for gofmt drift, generated

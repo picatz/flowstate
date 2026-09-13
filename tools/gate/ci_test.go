@@ -358,6 +358,10 @@ func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 		// would then first run somewhere nobody is watching.
 		{"a fuzz target list change", []string{"tools/fuzztargets/targets.txt"}, "pull_request"},
 		{"a change to how the list is read", []string{"tools/fuzztargets/list.sh"}, "pull_request"},
+		// The tier's loop, for the same reason one file up: it decides how
+		// many targets fuzz at once and how a failure is reported, and its
+		// own package tests cannot tell whether the tier still fuzzes.
+		{"a change to the fuzz tier's loop", []string{"tools/fuzzrun/main.go"}, "pull_request"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := decide(t, tc.changed, nil, tc.event)
