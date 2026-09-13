@@ -222,15 +222,32 @@ func waitsIn(file *ast.File) []found {
 
 // isPollCall reports whether expr calls one of [pollNames], however it is
 // spelled: `require.Eventually`, `r.Eventually`, `require.New(t).Eventually`,
-// `helper(t).Eventually`, or a bare `Eventually`.
+// `helper(t).Eventually`, a bare `Eventually`, or any of those in parentheses.
 func isPollCall(expr ast.Expr) bool {
-	switch fun := expr.(type) {
+	switch fun := unparen(expr).(type) {
 	case *ast.SelectorExpr:
 		return slices.Contains(pollNames, fun.Sel.Name)
 	case *ast.Ident:
 		return slices.Contains(pollNames, fun.Name)
 	default:
 		return false
+	}
+}
+
+// unparen strips the parentheses around an expression, however many there are.
+//
+// [ast.ParenExpr] is the one wrapper Go's grammar lets a caller put around a
+// callee or a receiver type without changing what it means, and gofmt keeps it
+// rather than tidying it away. Every place here that matches on an expression's
+// shape strips it first, so a shape is matched by what it is rather than by how
+// it was punctuated (#1989).
+func unparen(expr ast.Expr) ast.Expr {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			return expr
+		}
+		expr = paren.X
 	}
 }
 
@@ -344,24 +361,29 @@ func declaresName(file *ast.File, name string) bool {
 	// A method on a generic type rebinds its type parameters in the receiver's
 	// *type*, not in a name list: `func (b Box[synctest]) …` declares synctest
 	// even though the type wrote `Box[T ...]`. The binders sit inside an
-	// IndexExpr (one) or IndexListExpr (several).
+	// IndexExpr (one) or IndexListExpr (several), which a pointer receiver and
+	// any number of parentheses may wrap in either order — all legal spellings
+	// gofmt leaves alone, so the wrappers are peeled rather than pattern-matched.
 	noteReceiverTypeParams := func(recv *ast.FieldList) {
 		if recv == nil {
 			return
 		}
 		for _, field := range recv.List {
-			switch typ := field.Type.(type) {
-			case *ast.IndexExpr:
-				noteIdents(typ.Index)
-			case *ast.IndexListExpr:
-				noteIdents(typ.Indices...)
-			case *ast.StarExpr:
-				switch inner := typ.X.(type) {
-				case *ast.IndexExpr:
-					noteIdents(inner.Index)
-				case *ast.IndexListExpr:
-					noteIdents(inner.Indices...)
+			typ := field.Type
+			for {
+				typ = unparen(typ)
+				star, ok := typ.(*ast.StarExpr)
+				if !ok {
+					break
 				}
+				typ = star.X
+			}
+
+			switch indexed := typ.(type) {
+			case *ast.IndexExpr:
+				noteIdents(indexed.Index)
+			case *ast.IndexListExpr:
+				noteIdents(indexed.Indices...)
 			}
 		}
 	}

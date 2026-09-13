@@ -883,3 +883,63 @@ func TestReal(t *testing.T) {}
 	assert.Equal(t, []int{15}, lines(OfKind(waits, KindSleep)),
 		"a sleep under a receiver type parameter shadowing the import was treated as bubbled")
 }
+
+// TestParenthesizedSpellingsAreCounted covers the one wrapper Go's grammar lets
+// a caller put around a callee or a receiver type without changing its meaning.
+//
+// Both spellings are legal and gofmt keeps them, so neither is unreachable;
+// both were reported on #1989 after the shapes underneath them were already
+// handled. They are the reason every shape match here peels parentheses first
+// rather than pattern-matching the punctuation it happened to see.
+func TestParenthesizedSpellingsAreCounted(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a parenthesized poll callee", func(t *testing.T) {
+		t.Parallel()
+
+		waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestReal(t *testing.T) {
+	(require.Eventually)(t, nil, 0, 0)
+	((require.Never))(t, nil, 0, 0)
+}
+`})
+
+		assert.Equal(t, []int{10, 11}, pollLines(waits),
+			"a poll in parentheses was missed")
+	})
+
+	t.Run("a parenthesized generic receiver", func(t *testing.T) {
+		t.Parallel()
+
+		waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	"testing/synctest"
+	"time"
+)
+
+type bubbler interface{ Test(func(*testing.T)) }
+
+type Box[T bubbler] struct{ v T }
+
+func (b (Box[synctest])) run(t *testing.T) {
+	synctest.Test(b.v, func(t *testing.T) {
+		time.Sleep(time.Second)
+	})
+}
+
+func TestReal(t *testing.T) {}
+`})
+
+		assert.Equal(t, []int{15}, lines(OfKind(waits, KindSleep)),
+			"a sleep under a parenthesized receiver's type-parameter shadow was treated as bubbled")
+	})
+}
