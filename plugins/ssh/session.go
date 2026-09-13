@@ -369,13 +369,35 @@ func subtleEqual(a, b []byte) bool {
 	return diff == 0
 }
 
+// errOutputExhausted ends a session whose command has written far enough past
+// the grant's limit that nothing further can be reported. It never reaches a
+// caller: run turns it into the truncated result the limit describes.
+var errOutputExhausted = errors.New("this command has written past the output this grant will read")
+
+// discardRatio is how far past its limit a stream may go before this writer
+// stops accepting it at all.
+//
+// Some slack, because a command that ends just over the limit should produce a
+// truncated result rather than a refusal, and the far side writes in blocks it
+// chose. Past that the stream is no longer output being cut short, it is a
+// command deciding how long this call reads - which the grant's limit has to
+// bound as well as what it reports.
+const discardRatio = 4
+
 // boundedWriter collects a stream up to a limit and remembers that there was
 // more, so a truncated stream is never reported as a complete one.
 type boundedWriter struct {
 	limit      int64
 	written    int64
+	discarded  int64
 	buffer     strings.Builder
 	overflowed bool
+}
+
+// exhausted reports whether this stream has spent the reading this call will do
+// on it.
+func (w *boundedWriter) exhausted() bool {
+	return w.discarded >= w.limit*discardRatio
 }
 
 // Write implements io.Writer.
@@ -383,14 +405,21 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 	remaining := w.limit - w.written
 	if remaining <= 0 {
 		w.overflowed = true
-		// The bytes are counted as written so the remote command is not blocked
-		// on a writer that refuses them; they are simply not kept.
+		if w.exhausted() {
+			// Refusing the write is what closes the channel: the session ends,
+			// and what is kept is reported as truncated rather than as whole.
+			return 0, errOutputExhausted
+		}
+		w.discarded += int64(len(p))
+		// Otherwise counted as written so the remote command is not blocked on
+		// a writer that refuses them; they are simply not kept.
 		return len(p), nil
 	}
 	if int64(len(p)) > remaining {
 		w.buffer.Write(p[:remaining])
 		w.written = w.limit
 		w.overflowed = true
+		w.discarded += int64(len(p)) - remaining
 		return len(p), nil
 	}
 

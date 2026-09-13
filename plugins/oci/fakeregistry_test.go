@@ -52,6 +52,15 @@ type fakeRegistry struct {
 	// referrers maps "repository@digest" to the index answered for it.
 	referrers map[string]fakeContent
 
+	// challengeScope, when set, is the scope the challenge names in place of
+	// the honest one - a registry asking for authority wider than the read it
+	// is answering.
+	challengeScope string
+
+	// tokenScopes are the scopes actually requested at the token endpoint,
+	// which is where a peer-chosen scope would become a peer-chosen token.
+	tokenScopes []string
+
 	// tokenRequests counts exchanges, so a test can prove a token was reused
 	// rather than re-minted per request.
 	tokenRequests int
@@ -170,8 +179,12 @@ func (f *fakeRegistry) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if f.requireAuth && r.Header.Get("Authorization") != "Bearer minted-for-tests" {
+		scope := f.challengeScope
+		if scope == "" {
+			scope = "repository:app:pull"
+		}
 		w.Header().Set("WWW-Authenticate",
-			`Bearer realm="`+f.server.URL+`/token",service="fake",scope="repository:app:pull"`)
+			`Bearer realm="`+f.server.URL+`/token",service="fake",scope="`+scope+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}`))
 		return
@@ -196,6 +209,7 @@ func (f *fakeRegistry) serve(w http.ResponseWriter, r *http.Request) {
 // serveToken is the realm the challenge names.
 func (f *fakeRegistry) serveToken(w http.ResponseWriter, r *http.Request) {
 	f.tokenRequests++
+	f.tokenScopes = append(f.tokenScopes, r.URL.Query().Get("scope"))
 
 	if f.requireAuth {
 		username, password, ok := r.BasicAuth()

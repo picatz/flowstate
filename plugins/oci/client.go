@@ -194,14 +194,18 @@ func (c *registryClient) authenticate(ctx context.Context, ref reference, header
 	if parsed.service != "" {
 		query.Set("service", parsed.service)
 	}
-	// The registry's own scope when it named one, and the scope this call needs
-	// when it did not. Never a wider one: a token minted for more than the
-	// repository being read is authority this call has no use for.
-	if parsed.scope != "" {
-		query.Set("scope", parsed.scope)
-	} else {
-		query.Set("scope", scope)
-	}
+	// The scope this call derived, never the one the challenge named.
+	//
+	// A registry that answers 401 writes the text of its own challenge, and the
+	// `scope` in it is that registry saying what it would like the operator's
+	// credential exchanged for. Copying it into the token request lets the
+	// party being read from choose the authority minted - a wider repository,
+	// or push beside pull - and if the credential is entitled to it, the
+	// authorization server issues it and the retry hands it straight back to
+	// the registry that asked. So the scope is the one this call needs to read
+	// this repository; a registry that wanted another gets a token that does
+	// not work, which is the safe direction to be wrong in.
+	query.Set("scope", scope)
 	realm.RawQuery = query.Encode()
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, realm.String(), nil)

@@ -114,7 +114,7 @@ the principle that one of the two should be redundant.
 | grants file | 1 MiB |
 | command timeout | grant's, default 60s, ceiling 10m |
 | connect timeout | grant's, default 15s, ceiling 2m |
-| stdout and stderr, each | grant's, default 64 KiB, ceiling 1 MiB |
+| stdout and stderr, each | grant's, default 64 KiB, ceiling 960 KiB |
 | a parameter value | grant's `max_bytes`, default 256 B |
 | parameters per call | 32 |
 | addresses one host name may resolve to | 8 |
@@ -130,8 +130,10 @@ mojibake — a step output is not where arbitrary binary belongs.
 operator's call, not the workflow's: a grant's `success_exit_codes` (default
 `[0]`) decides, because "does this command exit 3 when the unit is inactive" is
 a fact about the command that whoever granted it knows. A status outside that
-set fails the step **and still returns stdout and stderr**, so a runbook
-debugging it is not left guessing.
+set fails the step, and what the command wrote reaches the runbook **in the
+failure message**, bounded — not in `stdout` and `stderr`, which a failed step
+does not return at all. The plugin protocol carries either outputs or a
+classification, never both.
 
 ## Tenancy
 

@@ -88,7 +88,7 @@ A grant narrows within these and can never raise past them:
 | What | Ceiling |
 | --- | --- |
 | run timeout | 30m (default 5m) |
-| stdout and stderr, each | 4 MiB (default 256 KiB) |
+| stdout and stderr, each | 960 KiB (default 256 KiB) |
 | memory | 16 GiB (required) |
 | CPU | 8 cores in nanocpus (required) |
 | pids | 4096 |
@@ -106,8 +106,10 @@ is not knowable from here, so it is never retried automatically.
 `exit_code` is always reported. Whether a status is a *failure* is the
 operator's call: `success_exit_codes` (default `[0]`) decides, because "does
 this image exit 1 when tests fail" is a fact about the image that whoever
-granted it knows. A status outside the set fails the step **and still returns
-stdout and stderr**.
+granted it knows. A status outside the set fails the step, and what the
+container wrote reaches the author **in the failure message**, bounded — not in
+`stdout` and `stderr`, which a failed step does not return at all. The plugin
+protocol carries either outputs or a classification, never both.
 
 ## Output framing
 

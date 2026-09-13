@@ -185,3 +185,39 @@ func mustParse(t *testing.T, raw string) reference {
 	}
 	return ref
 }
+
+// TestTheRegistryDoesNotChooseTheScopeMinted is the authority boundary at the
+// token exchange.
+//
+// A registry writes its own `WWW-Authenticate` challenge, and the `scope` in it
+// is the registry saying what token it would like the operator's credential
+// exchanged for. Copying that text into the token request lets the party being
+// read from pick the authority minted against a credential it does not hold —
+// a wider repository, or push beside pull — and the retry then hands that token
+// straight back to it. The scope sent is this call's own.
+func TestTheRegistryDoesNotChooseTheScopeMinted(t *testing.T) {
+	registry := newFakeRegistry(t)
+	registry.requireAuth = true
+	registry.username = "robot"
+	registry.password = "not-a-real-credential"
+	// A repository this call is not reading, and a permission it does not need.
+	registry.challengeScope = "repository:other-tenant/private:pull,push"
+
+	client := registry.client(t, credentials{username: "robot", password: "not-a-real-credential"})
+
+	if _, err := resolve(t.Context(), client, mustParse(t, registry.reference("app", "1.0")), platform{}); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if len(registry.tokenScopes) == 0 {
+		t.Fatal("no token was requested, so the exchange this test is about did not happen")
+	}
+	for _, requested := range registry.tokenScopes {
+		if strings.Contains(requested, "other-tenant") || strings.Contains(requested, "push") {
+			t.Errorf("the token endpoint was asked for %q, which is the scope the registry named rather than the one this read needs", requested)
+		}
+		if requested != "repository:app:pull" {
+			t.Errorf("the token endpoint was asked for %q, want the pull scope for the repository being read", requested)
+		}
+	}
+}

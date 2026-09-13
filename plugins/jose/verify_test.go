@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -270,4 +271,36 @@ type errTest struct{}
 
 func (errTest) Error() string {
 	return "FLOWSTATE_JOSE_TRUST is not set, so this plugin trusts no issuer and can verify nothing"
+}
+
+// TestAnOversizedClaimSetIsRefusedRatherThanCut is why this plugin bounds no
+// claim count of its own.
+//
+// The output schema calls `claims` the verified claim set. Returning the first
+// N of a larger one would let a workflow branch on the absence of a claim the
+// token actually carried - deciding on evidence it never saw. auth's verifier
+// already refuses an oversized set rather than returning part of it, and this
+// asserts that the refusal reaches the step rather than a shortened success.
+func TestAnOversizedClaimSetIsRefusedRatherThanCut(t *testing.T) {
+	issuer := trustedIssuer(t)
+
+	oversized := map[string]any{}
+	for i := range 128 {
+		oversized[fmt.Sprintf("claim-%03d", i)] = i
+	}
+
+	out, err := verify(t, &josev1.VerifyInputs{Token: literal(mint(t, issuer, oversized))})
+	if err == nil {
+		t.Fatalf("a claim set larger than the verifier accepts came back as a result with %d claims",
+			len(out.GetClaims().GetMapValue().GetEntries()))
+	}
+	if sdk.IsUnavailable(err) {
+		t.Errorf("error is %v, which a retry would act on; the same token is refused every time", err)
+	}
+
+	// An ordinary token still verifies, so the refusal is about the size and
+	// not about this test's shape.
+	if _, err := verify(t, &josev1.VerifyInputs{Token: literal(mint(t, issuer, map[string]any{"repository": "acme/api"}))}); err != nil {
+		t.Fatalf("an ordinary token was refused: %v", err)
+	}
 }

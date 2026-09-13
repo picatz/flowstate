@@ -26,11 +26,6 @@ const (
 
 	// maxTrustNameBytes bounds the policy entry name an input may select.
 	maxTrustNameBytes = 128
-
-	// maxClaims bounds how many claims travel into a step's outputs. A token
-	// is another party's document, and its claim set is a collection they
-	// control.
-	maxClaims = 128
 )
 
 func joseVerify(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
@@ -142,9 +137,15 @@ func classifyVerification(err error) error {
 
 // boundedClaims renders the verified claim set for a step's outputs.
 //
-// Sorted and bounded: a claim set is another party's collection, and what
-// reaches durable history should not depend on map iteration or on how many
-// groups somebody's directory put in a token.
+// Sorted, so what reaches durable history does not depend on map iteration.
+//
+// The count is not bounded here, and deliberately: auth's own verifier refuses
+// a token whose claim set is larger than it accepts rather than returning a
+// partial one, so a Principal that reached this point already carries a whole
+// set. A second, larger ceiling here would be a second answer to the same
+// question - and the dangerous kind, because cutting a claim set silently is
+// how a workflow branches on the absence of a claim the token carried. Only
+// each key's own length is bounded, which changes no claim's presence.
 func boundedClaims(claims map[string]any) *expr.Value {
 	if len(claims) == 0 {
 		return sdk.Literal(map[string]any{})
@@ -156,11 +157,8 @@ func boundedClaims(claims map[string]any) *expr.Value {
 	}
 	slices.Sort(keys)
 
-	bounded := make(map[string]any, min(len(keys), maxClaims))
+	bounded := make(map[string]any, len(keys))
 	for _, key := range keys {
-		if len(bounded) == maxClaims {
-			break
-		}
 		bounded[truncate(key, 128)] = claims[key]
 	}
 	return sdk.Literal(bounded)
