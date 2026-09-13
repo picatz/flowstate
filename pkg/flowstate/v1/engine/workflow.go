@@ -1088,21 +1088,34 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 // failure record ([v1.StepFailureRecord]), which is bounded by what
 // [failedStepOutputs] writes and is the thing being read; a reference walk's
 // field subset is the wrong shape for a reader that is not an expression.
+//
+// Only the run's own frame, because only its step ids name entries in these
+// outputs. A failure can be held at any depth whose scope is a representable
+// level, which is the top level and a callee's — a `for_each` body or a
+// `parallel` branch runs a suspend level deeper — and a callee records under
+// its own scope, carried wholesale in [v1.Frame.CallOutputs] and never
+// compacted, so its held step's entry needs no rescuing here. Step ids are
+// unique within a workflow and not across them, so walking every frame against
+// this one map would restore an unrelated top-level step that happened to share
+// a callee's id: an entry compaction correctly pruned, charged against
+// [v1.CheckRunStateSize], which refuses the continuation rather than truncating.
 func keepHeldOutputs(frames []*v1.Frame, full, trimmed *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
-	for _, frame := range frames {
-		for _, failure := range frame.GetHeldFailures() {
-			entry, ok := full.GetStepValues()[failure.GetStepId()]
-			if !ok {
-				continue
-			}
-			if trimmed == nil {
-				trimmed = &v1.Workflow_StepOutputs{}
-			}
-			if trimmed.StepValues == nil {
-				trimmed.StepValues = map[string]*v1.Node_Outputs{}
-			}
-			trimmed.StepValues[failure.GetStepId()] = entry
+	if len(frames) == 0 {
+		return trimmed
+	}
+
+	for _, failure := range frames[0].GetHeldFailures() {
+		entry, ok := full.GetStepValues()[failure.GetStepId()]
+		if !ok {
+			continue
 		}
+		if trimmed == nil {
+			trimmed = &v1.Workflow_StepOutputs{}
+		}
+		if trimmed.StepValues == nil {
+			trimmed.StepValues = map[string]*v1.Node_Outputs{}
+		}
+		trimmed.StepValues[failure.GetStepId()] = entry
 	}
 
 	return trimmed

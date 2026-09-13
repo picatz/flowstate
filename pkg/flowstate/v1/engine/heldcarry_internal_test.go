@@ -445,6 +445,24 @@ func TestAHeldStepsRecordSurvivesTheSeamsCompaction(t *testing.T) {
 			"the record survived as something other than what the step recorded")
 	})
 
+	t.Run("held by a callee", func(t *testing.T) {
+		t.Parallel()
+
+		// A callee records under its own scope, carried in Frame.CallOutputs and
+		// never compacted, so nothing here needs rescuing on its behalf. Step ids
+		// are unique within a workflow and not across them, so a callee holding a
+		// failure for its own "failing" step must not drag an unrelated top-level
+		// step of the same name back through compaction.
+		frames := []*v1.Frame{
+			{NextNode: 1},
+			{HeldFailures: []*v1.HeldFailure{{StepId: "failing", Message: "boom"}}},
+		}
+
+		carried := compactOutputsForFrames(spec, frames, outputs)
+		assert.NotContains(t, carried.GetStepValues(), "failing",
+			"a callee's held step id matched an unrelated top-level step, restoring an entry compaction had pruned and charging it against the run's state budget")
+	})
+
 	t.Run("not held", func(t *testing.T) {
 		t.Parallel()
 
