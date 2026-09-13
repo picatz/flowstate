@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"strings"
+
 	"github.com/sourcegraph/go-lsp"
 )
 
@@ -54,8 +56,14 @@ func testDocumentSymbols(doc *document) []lsp.SymbolInformation {
 		hasRows = false
 	}
 
+	// Keep the enclosing keys as the scan advances. Calling keyPath for each
+	// name would rescan every preceding sibling, making a large flat suite
+	// quadratic even though the document's byte size is bounded.
+	var path keyPathTracker
 	for i := range doc.index.lineCount() {
-		key, value, rng, ok := keyValueOnLine(doc.index.line(i), i)
+		line := doc.index.line(i)
+		enclosing := path.advance(line)
+		key, value, rng, ok := keyValueOnLine(line, i)
 		if !ok || key != "name" {
 			continue
 		}
@@ -65,12 +73,11 @@ func testDocumentSymbols(doc *document) []lsp.SymbolInformation {
 		// spelled `cases` — a fixture like `inputs: {cases: {name: bogus}}`
 		// emitted `real/bogus` and, worse, set hasRows, which suppressed the
 		// real case's own symbol (Codex, #1173).
-		path := keyPath(doc.index, i)
 		switch {
-		case pathIs(path, "tests"):
+		case trackedPathIs(enclosing, "tests"):
 			flush()
 			pending = &pendingEntry{name: value, rng: rng}
-		case pathIs(path, "tests", "cases"):
+		case trackedPathIs(enclosing, "tests", "cases"):
 			hasRows = true
 			name := value
 			if pending != nil {
@@ -88,13 +95,39 @@ func testDocumentSymbols(doc *document) []lsp.SymbolInformation {
 	return out
 }
 
-// pathIs reports whether a key chain is exactly these segments, root first.
-func pathIs(path []string, segments ...string) bool {
+type trackedKey struct {
+	indent int
+	key    string
+}
+
+// keyPathTracker maintains the same enclosing-key path as keyPath while a
+// caller walks lines forwards. Each line is visited once and each key is pushed
+// and popped at most once.
+type keyPathTracker []trackedKey
+
+func (p *keyPathTracker) advance(line string) []trackedKey {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return *p
+	}
+
+	indent := indentOf(line)
+	for len(*p) > 0 && (*p)[len(*p)-1].indent >= indent {
+		*p = (*p)[:len(*p)-1]
+	}
+	enclosing := *p
+	if match := keyLine.FindStringSubmatch(line); match != nil {
+		*p = append(*p, trackedKey{indent: indent, key: match[3]})
+	}
+	return enclosing
+}
+
+func trackedPathIs(path []trackedKey, segments ...string) bool {
 	if len(path) != len(segments) {
 		return false
 	}
 	for i, segment := range segments {
-		if path[i] != segment {
+		if path[i].key != segment {
 			return false
 		}
 	}

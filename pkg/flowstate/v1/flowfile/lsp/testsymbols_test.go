@@ -1,12 +1,35 @@
 package lsp
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestTestDocumentSymbolsHandlesManySiblingCases exercises the shape that
+// once called keyPath for every name and rescanned all earlier siblings. The
+// forward path tracker makes this linear in the number of entries.
+func TestTestDocumentSymbolsHandlesManySiblingCases(t *testing.T) {
+	t.Parallel()
+
+	const count = 10_000
+	var text strings.Builder
+	text.WriteString("tests:\n")
+	for i := range count {
+		fmt.Fprintf(&text, "  - name: c%d\n", i)
+	}
+
+	doc := newDocument("file:///large.test.yaml", 1, text.String(), nil)
+	got := testDocumentSymbols(doc)
+
+	require.Len(t, got, count)
+	assert.Equal(t, "c0", got[0].Name)
+	assert.Equal(t, "c9999", got[count-1].Name)
+}
 
 // TestTestDocumentSymbolsNamesEachCase: a suite with two independent cases
 // (no `cases:` rows) gets one symbol per `tests:` entry, named by its own
