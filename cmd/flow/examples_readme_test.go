@@ -358,10 +358,8 @@ const requestHostUnknown = "<computed>"
 func TestExamplesREADMENetworkClaims(t *testing.T) {
 	t.Parallel()
 
-	// Absolute, because five tests in this package call [testing.T.Chdir] and
-	// this one runs in parallel with none of them only by the scheduling rule
-	// that parallel tests resume after the serial phase. Resolving once removes
-	// the dependency rather than relying on it.
+	// Resolved once, so the several reads below share one root rather than
+	// re-resolving `../..` against the process working directory at each use.
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	require.NoError(t, err)
 
