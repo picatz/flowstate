@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -114,6 +115,18 @@ func runFakePlugin() int {
 	go exitWhenHostExits()
 
 	switch mode {
+	case "exit-with-child":
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := os.WriteFile(os.Getenv("FLOWSTATE_TEST_CHILD_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 3
+
 	case "exit-now", "crash-loop":
 		fmt.Fprintln(os.Stderr, "this plugin exits immediately")
 		return 3
