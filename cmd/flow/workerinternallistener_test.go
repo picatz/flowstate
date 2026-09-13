@@ -191,9 +191,12 @@ func TestWorkerServesHealthAndPprofOnTheInternalListener(t *testing.T) {
 // docs/DEPLOYMENT.md starts one — no --internal-listen, no
 // FLOWSTATE_INTERNAL_ADDRESS — opens no socket at all.
 //
-// Asserted against a worker that is confirmed to be polling (startFlowWorker
-// waits for that), so this is "it got all the way up and still bound
-// nothing", not "it had not reached the binding yet".
+// The sleep below is what separates "it got all the way up and still bound
+// nothing" from "it had not reached the binding yet". startFlowWorker returns
+// on the "starting worker" log, which runWorker emits before w.Start() and
+// before startInternalListener, so the process still has both of those to do
+// when this test resumes — without the wait the negative assertion would pass
+// against a worker that simply had not arrived yet.
 func TestWorkerBindsNoInternalListenerWithoutTheFlag(t *testing.T) {
 	namespace := registerTestNamespace(t)
 
@@ -201,9 +204,9 @@ func TestWorkerBindsNoInternalListenerWithoutTheFlag(t *testing.T) {
 		"--task-queue", "no-internal-listener-test-"+namespace,
 	)
 
-	// The worker is already polling. Give the binding, which happens
-	// immediately after that on the configured path, room to have appeared
-	// before concluding it did not.
+	// Give the process room to reach the line that would bind: startFlowWorker
+	// returned on a log that precedes both w.Start() and the listener setup, so
+	// the binding has not had its chance yet at this point.
 	time.Sleep(2 * time.Second)
 
 	got := worker.snapshot()

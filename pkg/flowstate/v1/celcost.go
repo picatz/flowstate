@@ -173,10 +173,7 @@ func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, r
 			return nil
 		}
 
-		cost := uint64(math.Ceil(float64(chars) * common.StringTraversalCostFactor))
-		if cost < 1 {
-			cost = 1
-		}
+		cost := max(uint64(math.Ceil(float64(chars)*common.StringTraversalCostFactor)), 1)
 
 		return &cost
 	}
@@ -301,7 +298,7 @@ func accumulatedChars(args []ref.Val) int64 {
 		}
 
 		var chars int64
-		for i := int64(0); i < length; i++ {
+		for i := range length {
 			element := list.Get(types.Int(i))
 			switch element.Type() {
 			case types.StringType, types.BytesType:

@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -193,9 +194,7 @@ func (e *SwitchBodyError) Unwrap() error { return e.Err }
 // [StepFailureRecord].
 func (e *SwitchBodyError) Record(text string) *Node_Outputs {
 	out := FailedStepOutputs(text)
-	for name, value := range e.Selection.GetNamedValues() {
-		out.NamedValues[name] = value
-	}
+	maps.Copy(out.NamedValues, e.Selection.GetNamedValues())
 
 	return out
 }
