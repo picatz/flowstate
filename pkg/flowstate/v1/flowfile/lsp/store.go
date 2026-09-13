@@ -494,6 +494,23 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 			return nil
 		}
 		text = prev.text
+	} else {
+		// No document to splice into. A range is computed against text the
+		// client believes the server holds, so applying one to an empty string
+		// does not produce that text — it produces the replacement alone, at
+		// the edit's version, which then looks newer than the didOpen still on
+		// its way. Ignoring it leaves the open to land the real text, and the
+		// client's next edit applies to it; fabricating a document here would
+		// outrank the open and leave the buffer truncated for good.
+		//
+		// A change carrying no range replaces the whole document and needs no
+		// base, so it is still applied — that is the sync kind this server
+		// advertises.
+		for _, c := range changes {
+			if c.Range != nil {
+				return nil
+			}
+		}
 	}
 	for _, c := range changes {
 		if c.Range == nil {
