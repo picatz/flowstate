@@ -207,6 +207,30 @@ func holdingWith(outer func() bool, held *[]heldFailure) func() bool {
 	}
 }
 
+// drainRaises decides what a debug drain propagates when one of its joins
+// reports a cancellation.
+//
+// Written order decides which failure a scope reports, and a failure already
+// held was written before the step that was cancelled — so it is the one to
+// raise, exactly as the scope-end join would have raised it. Returning the
+// cancellation instead would make a debugged run close CANCELED and take its
+// cancellation compensations where the same run without an ask closes FAILED
+// and takes its failure ones: the debugger changing what the run computes,
+// which is the one thing it may never do (#1119).
+//
+// The cancellation is discarded rather than held, and that is the asymmetry
+// worth naming: what crosses a Continue-As-New is rebuilt as an [ErrRunFailed],
+// so a held cancellation would come back a run failure. It needs no holding
+// anyway — the deferred scope drain waits the coroutine out, and a scope that
+// is leaving publishes nothing.
+func drainRaises(held []heldFailure, cancelled error) error {
+	if len(held) > 0 {
+		return held[0].err
+	}
+
+	return cancelled
+}
+
 // takeHeld reports the failure held under id, if any.
 func takeHeld(held []heldFailure, id string) (error, bool) {
 	for _, failure := range held {

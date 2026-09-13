@@ -579,7 +579,10 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// seam rebuilt as an [ErrRunFailed] — so holding one
 						// would make a cancelled run resume, report FAILED,
 						// and take its failure compensations instead of its
-						// cancellation ones.
+						// cancellation ones. A failure this scope heard
+						// earlier still outranks it, because written order is
+						// what decides which failure a scope reports — see
+						// [drainRaises].
 						//
 						// It costs a sliver of the neutrality a debugger owes
 						// the run, and the size of that sliver is why the trade
@@ -592,7 +595,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// [executor.recordOutcome] — so what differs is at most
 						// one attempt that was going to fail either way.
 						if temporal.IsCanceledError(err) {
-							return err
+							return drainRaises(held, err)
 						}
 
 						held = append(held, heldFailure{id: joined.node.GetId(), err: err})

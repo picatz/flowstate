@@ -501,6 +501,36 @@ func TestACancellationIsNeverHeld(t *testing.T) {
 			"the carry now preserves a cancellation: either the guard below stopped being load-bearing, or a cancellation became a shape [v1.HeldFailure] can hold — decide which, do not delete the guard")
 	})
 
+	t.Run("an earlier failure still outranks it", func(t *testing.T) {
+		t.Parallel()
+
+		// A drain joins in written order, so a step that failed was written
+		// before one that is cancelled. Returning the cancellation would make a
+		// debugged run close CANCELED and take its cancellation compensations
+		// where the same run without an ask joins the earlier step first, closes
+		// FAILED, and takes its failure ones — the debugger deciding which
+		// compensations execute, which is exactly what #1119 forbids.
+		earlier := &ErrRunFailed{Message: "the step that was written first"}
+		held := []heldFailure{{id: "first", err: earlier}}
+
+		raised := drainRaises(held, temporal.NewCanceledError())
+		assert.Same(t, earlier, raised,
+			"a cancellation on a later step discarded a failure this scope already heard, so a debugged run reports differently from an undebugged one")
+		assert.False(t, temporal.IsCanceledError(raised))
+	})
+
+	t.Run("nothing earlier", func(t *testing.T) {
+		t.Parallel()
+
+		// With no failure written before it, the cancellation is what the scope
+		// reports — unchanged, so Temporal still reads the run as CANCELED.
+		cancelled := temporal.NewCanceledError()
+		raised := drainRaises(nil, cancelled)
+		assert.Same(t, cancelled, raised)
+		assert.True(t, temporal.IsCanceledError(raised),
+			"a cancelled run with nothing held stopped reporting CANCELED")
+	})
+
 	t.Run("nothing holds one", func(t *testing.T) {
 		t.Parallel()
 
