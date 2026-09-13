@@ -4,9 +4,9 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -35,7 +35,7 @@ func TestDirectAddressingRejectsExecutionsListWouldHide(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	foreignID := "foreign-" + uuid.NewString()
+	foreignID := "foreign-" + uuid.New().String()
 	_, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
 		ID:        foreignID,
 		TaskQueue: "another-application",
@@ -113,7 +113,7 @@ func TestAMemoLessExecutionOfTheEnginesOwnWorkflowTypeIsRefused(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	ambiguousID := "ambiguous-" + uuid.NewString()
+	ambiguousID := "ambiguous-" + uuid.New().String()
 	_, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
 		ID:        ambiguousID,
 		TaskQueue: "no-worker-reads-this-queue",

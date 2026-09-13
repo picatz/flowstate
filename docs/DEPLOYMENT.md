@@ -1298,13 +1298,19 @@ is the API's own 429.
 ## Telemetry resource identity
 
 Every exported span, metric, and log identifies the emitting binary with
-`service.name`, `service.version`, and, when the operating system can supply
-randomness, a random `service.instance.id`. The instance ID is created once per
-process: all signal providers in one process share it, and a restart gets a new
-one. It is deliberately not derived from a hostname or PID, both of which can
-be shared or reused. If random identity generation fails, Flowstate warns and
-omits that attribute rather than failing the workload or substituting a shared
-fake identity.
+`service.name`, `service.version`, and a random `service.instance.id`. The
+instance ID is created once per process: all signal providers in one process
+share it, and a restart gets a new one. It is deliberately not derived from a
+hostname or PID, both of which can be shared or reused, and it is a version 4
+UUID — 122 bits of randomness and nothing else, rather than a version 7 whose
+leading bits would carry the process start time.
+
+The attribute is always set. Flowstate reads randomness through `crypto/rand`,
+which is documented never to return an error: if its source fails it crashes the
+program irrecoverably, and on Linux a source not yet seeded at early boot blocks
+in `getrandom(2)` instead. Either way Flowstate is never handed a failure it
+could degrade on, so there is no mode in which the attribute is omitted and a
+warning is logged.
 
 Flowstate also uses the OTel SDK's built-in detectors for `host.name`,
 `container.id` (when the platform exposes a supported cgroup container ID),

@@ -15,10 +15,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect"
 	"github.com/go-logr/logr"
-	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/assert"
@@ -518,36 +518,23 @@ func TestTheInstanceIDIsStableWithinTheProcess(t *testing.T) {
 	require.Equal(t, id, resourceAttributes(second.Attributes())["service.instance.id"])
 	parsed, err := uuid.Parse(id)
 	require.NoError(t, err)
-	require.Equal(t, uuid.Version(4), parsed.Version(),
+
+	// Read out of the bytes rather than asked of the value: the standard
+	// library's [uuid.UUID] is an array with no Version or Variant accessor, so
+	// the two fields are where RFC 9562 puts them. The version is the high
+	// nibble of octet 6 (RFC 9562 §4.2,
+	// https://www.rfc-editor.org/rfc/rfc9562#section-4.2) and the variant is the
+	// two high bits of octet 8 (§4.1,
+	// https://www.rfc-editor.org/rfc/rfc9562#section-4.1).
+	//
+	// Both halves are asserted because only together do they say "version 4".
+	// The nibble alone is satisfied by a value with the variant bits of a
+	// Microsoft-legacy or reserved layout, where octet 6 does not mean what
+	// version 4 means.
+	require.Equal(t, byte(4), parsed[6]>>4,
 		"the process instance must be a fresh random identity, not a hostname or reusable pid")
-	require.Equal(t, uuid.RFC4122, parsed.Variant())
-}
-
-// TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand covers the path a
-// container with no usable entropy source takes.
-//
-// uuid.NewString is Must(NewRandom()), so reaching for the convenient spelling
-// would panic from inside a resource builder — past telemetryResource's error
-// return and past the client path that warns and continues without telemetry.
-// Telemetry describes the work and must never be the reason the work does not
-// happen, so the failure costs one attribute and a warning, exactly as a
-// partial detector does.
-func TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand(t *testing.T) {
-	isolateTelemetry(t)
-	telemetryOff(t)
-
-	previous := instanceID
-	t.Cleanup(func() { instanceID = previous })
-	instanceID = func() (uuid.UUID, error) { return uuid.Nil, errors.New("no entropy available") }
-
-	res, err := telemetryResource(t.Context())
-	require.NoError(t, err, "an unobtainable instance id must not fail the resource")
-
-	attrs := resourceAttributes(res.Attributes())
-	require.NotContains(t, attrs, "service.instance.id",
-		"a nil UUID reported as an instance id would collide across every copy that hit this path")
-	require.Equal(t, "flowstate", attrs["service.name"],
-		"the rest of the resource is unaffected")
+	require.Equal(t, byte(0b10), parsed[8]>>6,
+		"a version read out of an identifier that does not carry the RFC 9562 variant is read out of the wrong bits")
 }
 
 // TestTelemetryResourceLetsTheEnvironmentWin is the direction that is easy to
