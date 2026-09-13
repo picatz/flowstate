@@ -7,11 +7,17 @@
 #     must be the string inside the nested map, not the map, and not a missing-key
 #     error.
 #
-# What a stub cannot assert is the round trip itself: that the header this file
-# sent is the one the far side echoed. Here the stub supplies both sides, so the
-# case proves the selection and the send, and the service proves the echo. The
-# echoed values are deliberately not the sent ones for that reason — a selection
-# that quietly read the request back would produce `Flowstate`, and fail here.
+# `response:` rather than `returns:` for the second one. `returns:` would hand the
+# step a `json` already shaped, leaving `parse_json:` — the thing that makes
+# `steps.web.json` exist — unexercised by a green case. `response:` supplies the
+# raw status, headers and body the task is handed, and the task parses it here
+# exactly as it would a live one.
+#
+# What no stub can assert is the round trip itself: that the header this file sent
+# is the one the far side echoed. The stub supplies both sides, so the case proves
+# the send and the selection, and the service proves the echo. The echoed values
+# are deliberately not the sent ones for that reason — a selection that quietly
+# read the request back would produce `Flowstate`, and fail here.
 edition: v2026.3
 tests:
   - name: both headers reach the task, and the parsed response indexes twice
@@ -23,9 +29,9 @@ tests:
           inputs.parse_json &&
           inputs.headers['X-From'] == 'Flowstate' &&
           inputs.headers['X-Env'] == 'dev'
-        returns:
+        response:
           status_code: 200
-          json:
+          body:
             headers:
               X-From: echoed-from
               X-Env: echoed-env

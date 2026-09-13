@@ -97,20 +97,65 @@ var offlineExampleHosts = map[string]string{
 	"::1":       "the same, over IPv6",
 }
 
-// reservedForDocumentation reports whether a host sits under a name RFC 2606
-// reserves — the `.example` top-level domain of [§2], or one of the three
-// second-level names in [§3] — and so resolves nowhere by design.
+// reservedForDocumentation reports whether a host is one the DNS does not answer
+// for: a name *under* one of the three second-level domains RFC 2606 [§3]
+// reserves, or a name in the `.example` top-level domain [§2] reserves.
+//
+// The three second-level names themselves are deliberately not in it, which is
+// the whole subtlety. They are reserved *and* delegated: IANA publishes address
+// records for `example.com`, `example.net` and `example.org` and serves a page
+// at each, so an example pointed at one of those apexes makes a real request,
+// while every subdomain of them is NXDOMAIN. Checked rather than assumed —
+// `example.com` resolves here and `api.example.com` does not — and pinned by
+// [TestReservedForDocumentationExcludesTheServedApexes], because the difference
+// is invisible in the name and is exactly what this predicate exists to decide.
 //
 // [§2]: https://www.rfc-editor.org/rfc/rfc2606#section-2
 // [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
 func reservedForDocumentation(host string) bool {
-	for _, reserved := range []string{"example.com", "example.net", "example.org", "example"} {
-		if host == reserved || strings.HasSuffix(host, "."+reserved) {
+	if host == "example" || strings.HasSuffix(host, ".example") {
+		return true
+	}
+	for _, reserved := range []string{"example.com", "example.net", "example.org"} {
+		if strings.HasSuffix(host, "."+reserved) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// TestReservedForDocumentationExcludesTheServedApexes pins the boundary
+// [reservedForDocumentation] turns on, since nothing in the corpus reaches an
+// apex today and so nothing else would notice it moving.
+func TestReservedForDocumentationExcludesTheServedApexes(t *testing.T) {
+	t.Parallel()
+
+	for host, reserved := range map[string]bool{
+		// Delegated and served, so a request to one leaves the machine.
+		"example.com":     false,
+		"example.net":     false,
+		"example.org":     false,
+		"www.example.com": true,
+
+		// Subdomains of the same three: NXDOMAIN, which is the property the
+		// corpus relies on.
+		"api.example.com":             true,
+		"ledger.internal.example.com": true,
+		"flowstate.peer.example.com":  true,
+
+		// The reserved top-level domain, which is not delegated at all.
+		"example":     true,
+		"foo.example": true,
+
+		// Neither reserved nor ours to permit silently.
+		"httpbin.org":      false,
+		"microsoft.com":    false,
+		"notexample.com":   false,
+		"example.com.evil": false,
+	} {
+		assert.Equal(t, reserved, reservedForDocumentation(host), "reservedForDocumentation(%q)", host)
+	}
 }
 
 // exampleInventoryNetwork reads the Network column of examples/README.md's
