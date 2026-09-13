@@ -10,8 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -2611,7 +2611,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	// calls, and parallel branches, while an audit consumer needs to collapse
 	// only the attempts that belong to this invocation.
 	if EnforcementAuditorIn(ctx) != nil {
-		ctx = NewContextWithDispatchID(ctx, uuid.NewString())
+		ctx = NewContextWithDispatchID(ctx, uuid.New().String())
 	}
 
 	// Resolved here, above the loop, because this is the position the durable

@@ -3,8 +3,7 @@ package embed
 import (
 	"context"
 	"fmt"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -213,7 +212,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 			Policy:   opts.Secrets.Policy,
 			Broker:   opts.Secrets.Broker,
 			Identity: opts.Secrets.Identity,
-			Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.NewString()},
+			Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.New().String()},
 		})
 	}
 	// Left unchanged otherwise: no [v1.TaskRuntime] on the context at all is
