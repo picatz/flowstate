@@ -58,7 +58,9 @@ less often, not to shrink the marker.
 A session link belongs to no surface at all. It resolves for the agent that
 produced it and for no other reader, so in a pull request body it is a dead
 reference, and a body pasted into a squash message carries it into `git log` for
-good — twenty-two commits here already carry one.
+good. This history already carries them; `git log
+--grep='claude.ai/code/session_'` counts how many, which is a number worth
+measuring rather than quoting, since a shallow clone sees only part of it.
 
 The check knows whose is whose: it reads a pull request body back as the forge
 stores it, discounts the one footer appended after your last line, and reports
