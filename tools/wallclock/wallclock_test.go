@@ -20,12 +20,18 @@ import (
 // the entry shrinks, so the table cannot keep an entry the tree no longer
 // has. What each of the current entries waits for:
 //
-//   - cmd/flow — serverdev and workerinternallistener wait on a server or
-//     worker subprocess. The other two spend real time without waiting on
-//     anything: browser_test.go retries removing a profile directory while the
-//     zygote, renderers and crash handler it did not launch directly finish
-//     writing into it, and workershutdown_test.go holds a window open in which
-//     the worker must still be alive.
+//   - cmd/flow/serverdev_test.go — the dev stack's addresses going quiet
+//     *after* `flow server dev` returned, retried because a listener closing
+//     and the kernel releasing the port are not the same instant. A teardown
+//     assertion, not a startup wait.
+//   - cmd/flow, the other three — windows, not waits, so all three are reason 3
+//     below rather than reason 1. browser_test.go retries removing a profile
+//     directory while the zygote, renderers and crash handler it did not launch
+//     directly finish writing into it; workershutdown_test.go holds a window
+//     open in which the worker must still be alive; and
+//     workerinternallistener_test.go gives a binding that would happen
+//     immediately room to appear before a *negative* assertion concludes it did
+//     not — its subprocess is already polling by then, so nothing is awaited.
 //   - internal/temporaltest — the supervised dev server process.
 //   - engine/deadlock_budget_test.go — a sleep inside a workflow goroutine
 //     that must *not* yield, since failing to yield is the thing the SDK's
@@ -39,9 +45,27 @@ import (
 //     is ever durably blocked.
 //   - secrets/vault — a sleep inside the fake vault's login handler, reached
 //     over a real loopback socket.
-//   - plugin — the fake plugin subprocesses in helper_test.go sleep in the
-//     *plugin* to stay alive for the host, and host_test.go and
-//     launch_test.go wait on those processes.
+//   - plugin, waits — ten of helper_test.go's twelve sleep inside the fake
+//     *plugin* subprocess, for reasons of their own: seven hold a handshake
+//     open long enough to fail it, one counts a short-lived plugin down to its
+//     own exit, one paces stdout writes and one holds a late stderr line back
+//     until after the call returns, where the scrubber must still catch it. The other two are host-side polls (waitForProcessGone,
+//     waitFor). host_test.go:102 and :153 both let a call reach the plugin
+//     before it is interrupted, but not the same way: :102 then closes the
+//     host, and :153 cancels the call the plugin must *survive* — a
+//     distinction that file's own doc calls expensive to get wrong, so it is
+//     spelled out here. launch_test.go:295 paces three health checks while the
+//     stdout-noise plugin keeps writing, and :331 gives the stderr flood time
+//     to run its course.
+//   - plugin, one window — host_test.go:670 waits on nothing: it lets several
+//     polls go by and then asserts *negatively* that the plugin was left alone
+//     (pid unchanged, zero restarts). Reason 3, the same shape as
+//     workerinternallistener_test.go, and filed here so the bullet does not
+//     say "waits" of a sleep that does not.
+//   - plugin/sdk/serve_test.go — a poll for the handshake line, which is not a
+//     subprocess at all: that plugin runs in this process, and what the poll
+//     waits on is a real pipe and the Unix socket `listen` creates. Real I/O
+//     either way, so a bubble would never see it become ready.
 //   - secrets/command_test.go — the hang a helper subprocess performs on
 //     request, in that process rather than this one.
 //   - server — the run's completion on a real dev server.
@@ -68,8 +92,9 @@ import (
 //
 // So neither "the test is timing something" nor "there is a process somewhere
 // nearby" settles it. The question to ask of a new entry is what the bubble
-// would break. Three that answered "nothing" — a cache TTL, a wait's deadline
-// and a parked reader — became bubbles, because each was paying real time for
+// would break. Three that answered "nothing" — a provider delay manufacturing a
+// stampede, a wait's deadline and a parked reader — became bubbles, because
+// each was paying real time for
 // a *weaker* claim than a bubble makes: a stampede hoped for rather than
 // guaranteed, a gate assumed reached after 100ms, a goroutine census carrying
 // slack. Each is now an assertion the bubble makes exactly, and a new entry
