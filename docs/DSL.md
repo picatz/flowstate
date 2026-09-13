@@ -752,27 +752,31 @@ The remaining option — routing every evaluation through an activity — has a 
 worth having a number for, since "a round trip per condition" is the kind of estimate
 that gets repeated without being checked.
 
-Counted at `Evaluator.Eval` (`celenv.go`), which is where a compiled program is
+Counted at `evalProgramWithCost` (`celenv.go`), which is where a compiled program is
 actually run and where every path — a condition, a loop's `items:`, a step's `vars:`,
-a task's inputs — arrives. Counting the entry points instead does not work, and the
-first version of this table did exactly that: `EvalConditionInScope` on a step with no
-`if:` returns without evaluating anything, so a call to it is not an evaluation.
-Counted that way `hello-world` reported 2 and contains no expressions at all, every
-row was inflated two- to four-fold, and `ResolveItems` — a loop's `items:`, the one
-expression whose cost multiplies — was not among the three entry points and so was
-missed entirely. A count of the places evaluation is *asked for* is not a count of
-evaluation.
+a task's inputs — arrives. This sentence named `Evaluator.Eval` until #1990 tried to
+measure through it and got zero for every row: a compiled Flowfile carries a
+`ParsedExpr`, so a run goes through `Evaluator.EvalParsedWithCost`, and `Eval` is
+reached only by an expression handed over as text. Both funnel into
+`evalProgramWithCost`, which is what makes it the one place to count.
+
+Counting the *entry points* instead does not work either, and the first version of
+this table did exactly that: `EvalConditionInScope` on a step with no `if:` returns
+without evaluating anything, so a call to it is not an evaluation. Counted that way
+`hello-world` reported 2 and contains no expressions at all, every row was inflated
+two- to four-fold, and `ResolveItems` — a loop's `items:`, the one expression whose
+cost multiplies — was not among the three entry points and so was missed entirely.
+A count of the places evaluation is *asked for* is not a count of evaluation.
 
 Over the shipped corpus, per run:
 
 | workflow | evaluations | of which workflow `vars:` |
 |---|---|---|
 | `hello-world` | 0 | 0 |
-| `http-form`, `simple-http-multi-step` | 1 | 0 |
+| `headers-and-nested`, `http-form`, `simple-http-multi-step` | 1 | 0 |
 | `hello-world-multi-step`, `http-output-shaping` | 2 | 0 |
 | `string-formatting` | 2 | 1 |
 | `conditional-and-retry`, `http-json` | 3 | 0 |
-| `headers-and-nested` | 3 | 1 |
 | `expressions`, `http-expect` | 4 | 0 |
 | `approval-gate` | 5 | 0 |
 | `wait-until-a-moment` | 5 | 1 |

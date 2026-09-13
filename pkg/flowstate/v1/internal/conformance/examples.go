@@ -293,14 +293,6 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		w.WriteHeader(code)
 	})
 
-	// A bare host with no path — `simple-http-multi-step` fetches one and reads
-	// only the status code. `{$}` matches exactly "/", leaving "/" below free to be
-	// the catch-all it has to be.
-	mux.HandleFunc("/{$}", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = io.WriteString(w, "<html><body>ok</body></html>")
-	})
-
 	// The enterprise examples name several fictional internal domains rather than
 	// httpbin.org — a real ledger, provisioning system, IAM, and observability
 	// stack are the point of those examples, and hitting a generic echo service

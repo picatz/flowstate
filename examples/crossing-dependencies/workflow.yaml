@@ -31,7 +31,15 @@
 # way, because data becomes visible only at joins, at fixed positions in the text.
 # Two runs whose steps finished in different orders record the same thing.
 #
-#   flow run local examples/crossing-dependencies/workflow.yaml
+# The five requests below go to `example.com` hosts, which resolve nowhere, so a
+# local run stops at `build` rather than showing any of this. Both claims are
+# checked where they can be:
+#
+#   flow test examples/crossing-dependencies/
+#
+# asserts the transcript is the one written order would produce, and the engine's
+# TestRunWorkflowAsyncOverlapsLaterWork asserts the overlap, which no transcript
+# can show. workflow.test.yaml says why that split is the honest one.
 edition: v2026.3
 name: crossing-dependencies
 steps:
