@@ -334,9 +334,18 @@ binaries compiled first, so build contention was not counted as fuzzing:
 
 At one worker per CPU a target keeps about two thirds of the CPU it would have
 had alone and the worst keeps half — a third of the tier's fuzzing traded for
-the last 73 seconds, which is not a trade a smoke tier should make silently. At
-half the CPUs the loss is within a few points of noise and the wall clock is
-still nearly halved. `FUZZ_SMOKE_JOBS` overrides it either way.
+the last 73 seconds, which is not a trade a smoke tier should make silently.
+Half the CPUs costs a median 8% and a worst 12%. That shortfall is systematic
+rather than noise: every one of the thirteen targets lost some, and no arm was
+repeated, so there is no measured noise floor to call it small against. It buys
+nearly half the wall clock, and that is the trade the default makes.
+`FUZZ_SMOKE_JOBS` overrides it either way.
+
+The count is `GOMAXPROCS`, not `NumCPU`, for the reason `tools/fleet` already
+gives: an affinity mask is not a quota, so a lane given two cores' worth of CPU
+on a large host reads `NumCPU` as the host's and would dispatch targets by the
+dozen — each of which would still "complete" its thirty seconds having fuzzed
+almost nothing. On a runner the two agree at 4.
 
 On the runner the same thirteen targets went from 9m13s to 5m48s (`main` run
 `34726074939` against pull request run `34735407267`, both forced-wide, both
@@ -344,10 +353,15 @@ reporting every target passed) — that measurement predates the halving above,
 so the shipped default will land between it and the 9m13s baseline. The
 difference from the local ratio is not the fuzzing: thirteen targets at 30s across four workers is a
 two-minute floor, so about 228s of that step is building test binaries — more
-than the ~163s the serial job spent building, because four concurrent `go test`
-invocations each drive their own build over overlapping dependency graphs and
-contend on one build cache. Compiling the binaries once before the fuzzing
-starts should recover most of it and has not been measured yet.
+than the ~163s the serial job spent building. The likely cause is that
+concurrent `go test` invocations each drive their own build over overlapping
+dependency graphs and contend on one build cache, but that diagnosis is
+inferred rather than measured. Compiling the binaries once before the fuzzing
+starts should recover most of it and has not been measured either.
+
+At the shipped default the step took 6m15s on run `34762432757`, between the
+5m48s and the 9m13s this section brackets, with about 3m45s of margin against
+the job's `timeout-minutes: 10`.
 
 ### A failing test is an annotation, not a line in a log
 

@@ -37,7 +37,8 @@
 // depend on the corpus a run happened to grow, so they move by large factors
 // between runs of one configuration, and a sum inherits whichever target swung
 // hardest. What concurrency owes a target is its share of the machine; CPU
-// seconds per target is what measures that, and it is the open item.
+// seconds per target is what measures that, and [defaultWorkers] carries the
+// measurement and the default it decided.
 //
 // # Output
 //
@@ -154,8 +155,8 @@ func runWith(args []string, stdin io.Reader, stdout io.Writer, fuzz func(context
 	return nil
 }
 
-// defaultWorkers is half the CPUs, not all of them, and the halving is the
-// measured part of this command rather than caution.
+// defaultWorkers is half the CPUs this process may actually spend, not half the
+// CPUs the host has, and the halving is the measured part rather than caution.
 //
 // A fuzzing target is two processes, not one: `go test -fuzz` runs a
 // coordinator that mutates and dispatches inputs and a worker that executes
@@ -179,12 +180,25 @@ func runWith(args []string, stdin io.Reader, stdout io.Writer, fuzz func(context
 // At one worker per CPU a target keeps about two thirds of the CPU it would
 // have had to itself, and the worst keeps half: that is a third of the tier's
 // fuzzing traded for the last 73 seconds, which is not a trade a smoke tier
-// should make silently. At half the CPUs the loss is within a few points of
-// noise and the wall clock is still nearly halved, so that is the default.
+// should make silently. Half the CPUs costs a median 8% and a worst 12%, and
+// that shortfall is systematic rather than noise — every one of the thirteen
+// targets lost some, and no arm was repeated, so there is no measured noise
+// floor to call it small against. It buys nearly half the wall clock, which is
+// the trade this default makes and states.
+//
+// GOMAXPROCS(0) rather than NumCPU() because an affinity mask is not a quota,
+// which tools/fleet already says in this repository's own words: a container
+// given two cores' worth of CPU time on a sixty-four-core host reads NumCPU as
+// sixty-four. Go's default GOMAXPROCS reads the cgroup limit, and a fleet lane
+// exports an explicit GOMAXPROCS besides, so this one call honours both. Under
+// NumCPU a two-core lane on a large host would have dispatched sixteen targets
+// — thirty-two processes — and every one of them would still have "completed"
+// its thirty seconds having fuzzed almost nothing, which is the failure this
+// whole function exists to prevent. On a GitHub runner the two agree at 4.
 //
 // -jobs overrides it, including upwards, for a machine that is not a runner.
 func defaultWorkers() int {
-	return max(runtime.NumCPU()/2, 1)
+	return max(runtime.GOMAXPROCS(0)/2, 1)
 }
 
 // options are the per-target bounds, identical for every target in a tier.
@@ -278,7 +292,10 @@ func fuzzCommand(ctx context.Context, t target, opts options) *exec.Cmd {
 // target prints the one it found. Reading all of it into this process would put
 // an unbounded buffer *outside* the GOMEMLIMIT that bounds each child — the one
 // memory bound this design claims — so the capture is bounded here and the
-// ceiling is stated: at most headBytes+tailBytes retained per target in flight.
+// ceiling is stated: at most headBytes+tailBytes of content per target in
+// flight, and headBytes+2*tailBytes of memory, because the append that
+// overshoots leaves the tail's capacity at twice tailBytes after the trim
+// shrinks its length.
 //
 // Head and tail rather than either alone, because a fuzz run's two useful ends
 // are both ends: the head names the seed corpus and the worker count, and the

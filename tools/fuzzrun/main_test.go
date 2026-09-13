@@ -311,14 +311,24 @@ func TestRunFailsWhenOnlyOneOfSeveralTargetsFails(t *testing.T) {
 // one worker per CPU left each target about two thirds of the CPU it had to
 // itself and the worst half, while one per two CPUs held at 0.92. The default
 // is a measured number and a test keeps it from drifting back.
-func TestDefaultWorkersIsHalfTheCPUs(t *testing.T) {
-	if got, want := defaultWorkers(), max(runtime.NumCPU()/2, 1); got != want {
-		t.Errorf("defaultWorkers() = %d, want %d", got, want)
-	}
+func TestDefaultWorkersIsHalfTheCPUsThisProcessMaySpend(t *testing.T) {
 	if defaultWorkers() < 1 {
 		t.Error("defaultWorkers() must never be zero: fuzzAll would have nothing to run with")
 	}
-	if defaultWorkers() > runtime.NumCPU() {
-		t.Errorf("defaultWorkers() = %d oversubscribes %d CPU(s)", defaultWorkers(), runtime.NumCPU())
+	if got := defaultWorkers(); got > runtime.GOMAXPROCS(0) {
+		t.Errorf("defaultWorkers() = %d oversubscribes the %d CPU(s) this process may spend", got, runtime.GOMAXPROCS(0))
+	}
+
+	// The bound follows GOMAXPROCS and not NumCPU, because an affinity mask is
+	// not a quota: a lane told it may use two cores of a sixty-four-core host
+	// reads NumCPU as sixty-four and would dispatch sixteen targets. Driving
+	// GOMAXPROCS is what distinguishes the two on any machine.
+	restore := runtime.GOMAXPROCS(0)
+	t.Cleanup(func() { runtime.GOMAXPROCS(restore) })
+	for _, procs := range []int{1, 2, 4, 8} {
+		runtime.GOMAXPROCS(procs)
+		if got, want := defaultWorkers(), max(procs/2, 1); got != want {
+			t.Errorf("at GOMAXPROCS=%d defaultWorkers() = %d, want %d", procs, got, want)
+		}
 	}
 }

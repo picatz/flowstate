@@ -144,7 +144,9 @@ check:
 # half the CPUs rather than all of them — a fuzzing target is a coordinator
 # process and a worker process, so one per CPU is twice as many processes as
 # cores and leaves each target about two thirds of the CPU it would have had
-# alone. Half the CPUs holds at 0.92 and still nearly halves the wall clock.
+# alone. Half the CPUs costs a median 8% and still nearly halves the wall clock.
+# The count is GOMAXPROCS rather than NumCPU: an affinity mask is not a quota,
+# so a lane given two cores on a large host must not dispatch by the host's.
 #
 # FUZZ_SMOKE_JOBS sets how many at once; unset, the runner uses one per two CPUs
 # and never more than there are targets. FUZZ_SMOKE_JOBS=1 is the serial loop
