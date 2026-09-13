@@ -790,3 +790,59 @@ func TestReal(t *testing.T) {
 	assert.Equal(t, []int{19}, pollLines(waits),
 		"a poll inside a range-declared shadow was treated as bubbled")
 }
+
+// TestAPollInAFileThatImportsNoTestifyIsCounted is the sixth and last miss
+// #1989's reviewer found, and the one that ended the receiver-and-import
+// approach for good.
+//
+// A package-level helper in a sibling file can return `*require.Assertions`, so
+// the file spending the wall clock imports neither testify package and a
+// per-file import gate skips it whole. No amount of receiver analysis reaches
+// that, because the fact needed is in another file. Dropping the gate does, and
+// costs nothing: every test file in this repository that calls such a method
+// imports testify anyway.
+func TestAPollInAFileThatImportsNoTestifyIsCounted(t *testing.T) {
+	t.Parallel()
+
+	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import "testing"
+
+func TestViaHelper(t *testing.T) {
+	assertions(t).Eventually(nil, 0, 0)
+}
+`})
+
+	assert.Equal(t, []int{6}, pollLines(waits),
+		"a poll through a helper from another file was missed because this one imports no testify")
+}
+
+// TestAGenericTypeParameterShadowSuppressesNoBubble is the type-parameter form
+// of the shadow check. A generic binder is a binder: `func f[synctest any]`
+// puts that name in scope, and a method expression on it would otherwise be
+// read as a bubble and swallow the waits inside.
+func TestAGenericTypeParameterShadowSuppressesNoBubble(t *testing.T) {
+	t.Parallel()
+
+	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	"testing/synctest"
+	"time"
+)
+
+type bubbler interface{ Test(func(*testing.T)) }
+
+func run[synctest bubbler](t *testing.T, v synctest) {
+	synctest.Test(v, func(t *testing.T) {
+		time.Sleep(time.Second)
+	})
+}
+
+func TestReal(t *testing.T) {}
+`})
+
+	assert.Equal(t, []int{13}, lines(OfKind(waits, KindSleep)),
+		"a sleep under a type parameter shadowing the import was treated as bubbled")
+}

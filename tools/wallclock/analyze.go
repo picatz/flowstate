@@ -158,33 +158,30 @@ type found struct {
 // not lexically inside a function literal passed to synctest.Test or
 // synctest.Run.
 //
-// A poll is matched by the method name alone, in any file that imports testify,
-// and deliberately not by what it is called on. Three rounds of review on #1989
-// found three receiver shapes an identifier-based matcher missed — the object
-// API bound to a local (`r := require.New(t); r.Eventually(…)`), the same call
-// chained (`require.New(t).Eventually(…)`), and the package's own name once a
-// local shadowed it — and each fix invited the next: a struct field holding an
-// object, a map entry, a method value, a helper's return used directly.
+// A poll is matched by the method name alone: not by what it is called on, and
+// not by whether this file imports testify. Six review rounds on #1989 found
+// six ways a narrower rule missed one — the object API bound to a local, the
+// same chained onto New, a multi-value binding, the package name once a local
+// shadowed it, the formatted spellings, and a helper in a *sibling file*
+// returning `*require.Assertions` so the caller imports nothing at all.
 //
-// The shapes are not the problem; enumerating them is. A missed poll is the one
-// defect a ratchet cannot survive, because the count stays green while the tree
-// gets worse, so the matcher takes the side that cannot miss: anything named
-// Eventually, Never or one of their variants, called in a file that imports
-// testify, is a poll. That over-counts a same-named method on some other type,
-// which is the direction every other approximation here already errs in and
-// which the table records like any other entry. It needs no type information,
-// so the plugin modules' tests stay in scope, and no receiver case is left to
-// forget.
+// Each fix invited the next, because a poll's identity is a type-level fact and
+// this is a parse. So the matcher stops approximating it. Anything named
+// Eventually, Never or one of their variants, called anywhere in a test file, is
+// a poll. There is no receiver to classify, no import to check, and no
+// cross-file knowledge to acquire — which is what makes the whole class of miss
+// unreachable rather than merely reduced.
+//
+// The cost is over-counting a same-named method on some unrelated type, which
+// is the direction every approximation here already errs in and which costs a
+// table entry with a note. Measured against this tree it costs nothing at all:
+// all 49 test files calling such a method import testify, so the gate this
+// dropped was never excluding anything.
+//
+// `time.Sleep` keeps its import check because it is a package function with no
+// object form, so none of the above can reach it.
 func waitsIn(file *ast.File) []found {
 	timeName := localName(file, "time")
-	requireName := localName(file, "github.com/stretchr/testify/require")
-	assertName := localName(file, "github.com/stretchr/testify/assert")
-	if timeName == "" && requireName == "" && assertName == "" {
-		return nil
-	}
-
-	testifyImported := requireName != "" || assertName != ""
-	dotImported := requireName == "." || assertName == "."
 
 	bubbles := bubblesIn(file)
 	inBubble := func(pos token.Pos) bool {
@@ -207,7 +204,7 @@ func waitsIn(file *ast.File) []found {
 		kind := KindSleep
 		switch {
 		case timeName != "" && isSelector(call.Fun, timeName, "Sleep"):
-		case testifyImported && isPollCall(call.Fun, dotImported):
+		case isPollCall(call.Fun):
 			kind = KindPoll
 		default:
 			return true
@@ -223,15 +220,15 @@ func waitsIn(file *ast.File) []found {
 	return out
 }
 
-// isPollCall reports whether expr calls one of [pollNames] on any receiver at
-// all — `require.Eventually`, `r.Eventually`, `require.New(t).Eventually`, or a
-// bare `Eventually` where testify is dot-imported.
-func isPollCall(expr ast.Expr, dotImported bool) bool {
+// isPollCall reports whether expr calls one of [pollNames], however it is
+// spelled: `require.Eventually`, `r.Eventually`, `require.New(t).Eventually`,
+// `helper(t).Eventually`, or a bare `Eventually`.
+func isPollCall(expr ast.Expr) bool {
 	switch fun := expr.(type) {
 	case *ast.SelectorExpr:
 		return slices.Contains(pollNames, fun.Sel.Name)
 	case *ast.Ident:
-		return dotImported && slices.Contains(pollNames, fun.Name)
+		return slices.Contains(pollNames, fun.Name)
 	default:
 		return false
 	}
@@ -308,7 +305,9 @@ func shadowsABubbleCall(file *ast.File, synctestName string) bool {
 //   - [ast.FuncDecl] — a function's own name, and its receiver.
 //   - [ast.FuncType] — parameters and results, closures included.
 //   - [ast.ValueSpec] — `var` and `const`, at any scope.
-//   - [ast.TypeSpec] — a type name.
+//   - [ast.TypeSpec] — a type name, and a generic type's own type parameters.
+//   - [ast.FuncType].TypeParams — a generic function's type parameters, which
+//     are binders like any other and were missed until #1989 asked.
 //   - [ast.AssignStmt] with `:=`, which is also how the tree spells a type
 //     switch guard (`x := y.(type)`) and a `select` receive clause.
 //   - [ast.RangeStmt] with `:=` — its key and value. Missed on the first pass
@@ -344,14 +343,16 @@ func declaresName(file *ast.File, name string) bool {
 			declared = declared || decl.Name.Name == name
 			noteField(decl.Recv)
 		case *ast.FuncType:
+			noteField(decl.TypeParams)
 			noteField(decl.Params)
 			noteField(decl.Results)
+		case *ast.TypeSpec:
+			declared = declared || decl.Name.Name == name
+			noteField(decl.TypeParams)
 		case *ast.ValueSpec:
 			for _, ident := range decl.Names {
 				declared = declared || ident.Name == name
 			}
-		case *ast.TypeSpec:
-			declared = declared || decl.Name.Name == name
 		case *ast.AssignStmt:
 			if decl.Tok != token.DEFINE {
 				return true
