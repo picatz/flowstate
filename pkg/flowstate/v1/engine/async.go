@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"errors"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
 )
@@ -107,6 +109,78 @@ func heldIDs(held []heldFailure) []string {
 	return ids
 }
 
+// heldAcross converts the failures this scope is holding into the durable shape
+// that crosses a Continue-As-New.
+//
+// Everything a resumed segment needs to raise the failure exactly as the segment
+// that heard it would have: the message a person reads at the run's own failure,
+// the classification a client reads back, the driver-independent sentence an
+// author's expression compares, and the flag that decides whether an enclosing
+// level prepends its own position to that sentence. [ErrRunFailed] flattens its
+// cause, so none of these can be re-derived from a chain on the far side.
+//
+// What is deliberately *not* carried is `ErrRunFailed.cause`, the one structured
+// inner failure #1163 retains beneath a ScheduleToClose expiry. It is reachable
+// only through `Unwrap`, the outer `Kind` that a client reads does cross, and
+// carrying an arbitrary nested error durably is a schema question of its own. A
+// held failure of that shape therefore reports its own classification and loses
+// the inner attempt's — a narrowing, recorded here rather than discovered later.
+//
+// A failure that is not an [ErrRunFailed] is carried by its text rather than
+// dropped: losing one is the defect this mechanism exists to prevent.
+func heldAcross(held []heldFailure) []*v1.HeldFailure {
+	if len(held) == 0 {
+		return nil
+	}
+
+	carried := make([]*v1.HeldFailure, 0, len(held))
+	for _, failure := range held {
+		entry := &v1.HeldFailure{StepId: failure.id, Message: failure.err.Error()}
+
+		var run *ErrRunFailed
+		if errors.As(failure.err, &run) {
+			entry.Message = run.Message
+			entry.Kind = string(run.Kind)
+			entry.Recorded = run.Recorded
+			entry.RecordedFromTask = run.recordedFromTask
+		}
+
+		carried = append(carried, entry)
+	}
+
+	return carried
+}
+
+// heldFrom rebuilds what a previous segment was holding.
+//
+// Every field is taken from the frame rather than recovered from the scope. An
+// earlier shape read the recorded sentence back out of [RunState.outputs] on the
+// grounds that it was already durable there, which was true of *a* sentence and
+// not of this one: what a step records is written without a position, and what
+// an enclosing level composes from is written with one unless it came from a
+// classified task failure. Deriving either from the other made a run that
+// suspended report differently from a run that did not.
+func heldFrom(carried []*v1.HeldFailure) []heldFailure {
+	if len(carried) == 0 {
+		return nil
+	}
+
+	held := make([]heldFailure, 0, len(carried))
+	for _, entry := range carried {
+		held = append(held, heldFailure{
+			id: entry.GetStepId(),
+			err: &ErrRunFailed{
+				Message:          entry.GetMessage(),
+				Kind:             v1.ErrorKind(entry.GetKind()),
+				Recorded:         entry.GetRecorded(),
+				recordedFromTask: entry.GetRecordedFromTask(),
+			},
+		})
+	}
+
+	return held
+}
+
 // takeHeld reports the failure held under id, if any.
 func takeHeld(held []heldFailure, id string) (error, bool) {
 	for _, failure := range held {
@@ -173,6 +247,7 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			budget:                 e.budget,
 			sliceCost:              e.sliceCost,
 			everyExpressionCharged: e.everyExpressionCharged,
+			carriesHeld:            e.carriesHeld,
 			signals:                e.signals,
 			debug:                  e.debug,
 			undo:                   e.undo,

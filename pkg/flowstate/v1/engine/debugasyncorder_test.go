@@ -1,12 +1,17 @@
 package engine_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -175,7 +180,7 @@ func TestADebugJoinedFailureSurvivesAContinuation(t *testing.T) {
 		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
 	}, 30*time.Second)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+	requireHeldFailureCrossesTheSeam(t, env, &v1.RunState{
 		Workflow: &v1.Workflow{
 			Name:    "async-failure-across-continuation",
 			Profile: v1.CurrentProfile,
@@ -187,17 +192,7 @@ func TestADebugJoinedFailureSurvivesAContinuation(t *testing.T) {
 		// Spent on `slow` and `a`, so the check fires at `a` — after the join
 		// that holds the failure, and with `b` and `c` still to come.
 		StepsBudget: 2,
-	})
-
-	require.True(t, env.IsWorkflowCompleted())
-
-	err := env.GetWorkflowError()
-	require.Error(t, err,
-		"a debug ask let a failed async step vanish across a continuation: the run completed")
-
-	// And it names the step that failed, rather than being some incidental
-	// error that would satisfy the assertion above without being this defect.
-	require.Contains(t, err.Error(), "failing")
+	}, "failing")
 }
 
 // TestADebugHeldFailureIsRaisedAtTheReferenceThatWouldHaveJoinedIt is the third
@@ -309,7 +304,7 @@ func TestADebugHeldFailureSurvivesAContinuationFromInsideAStep(t *testing.T) {
 		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
 	}, 30*time.Second)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+	requireHeldFailureCrossesTheSeam(t, env, &v1.RunState{
 		Workflow: &v1.Workflow{
 			Name:    "async-failure-across-a-nested-continuation",
 			Profile: v1.CurrentProfile,
@@ -353,15 +348,7 @@ func TestADebugHeldFailureSurvivesAContinuationFromInsideAStep(t *testing.T) {
 		// Spent on `slow` and the loop's first iteration, so the loop's
 		// boundary is asked with three iterations left.
 		StepsBudget: 2,
-	})
-
-	require.True(t, env.IsWorkflowCompleted())
-
-	err := env.GetWorkflowError()
-	require.Error(t, err,
-		"a continuation from inside a later step let a held async failure vanish: the run completed")
-	require.Contains(t, err.Error(), "failing",
-		"the run failed, but not for the held async step this test is about")
+	}, "failing")
 }
 
 // TestAHeldFailureIsRaisedAheadOfALaterAsyncFailure is the fourth way a held
@@ -504,7 +491,7 @@ func TestADebugHeldFailureSurvivesAContinuationFromInsideACall(t *testing.T) {
 		env.SignalWorkflow(v1.DebugSignal, debugAsk(v1.DebugVerbPause, "sre-1@example.com", time.Second))
 	}, 30*time.Second)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+	requireHeldFailureCrossesTheSeam(t, env, &v1.RunState{
 		Workflow: &v1.Workflow{
 			Name:    "async-failure-across-a-call's-continuation",
 			Profile: v1.CurrentProfile,
@@ -548,13 +535,93 @@ func TestADebugHeldFailureSurvivesAContinuationFromInsideACall(t *testing.T) {
 		// Spent on `slow` and the callee's first step, so the callee's own
 		// next-step boundary is asked with siblings still to come.
 		StepsBudget: 2,
-	})
+	}, "failing")
+}
 
-	require.True(t, env.IsWorkflowCompleted())
+// requireHeldFailureCrossesTheSeam is the shape the three continuation cases
+// share, and it asserts the round trip rather than the refusal that used to
+// stand in for it.
+//
+// Before #1968 a scope holding a failure declined every suspension seam until
+// it cleared, so these fixtures ended in the failure itself and "the run still
+// fails" was the whole claim — true of a carry that works and equally true of a
+// seam that never happened. The failure crosses the seam now, so the claim is
+// in two halves and both are needed: the segment that heard it suspends and
+// writes it down, and the segment that resumes raises it. A carry that recorded
+// nothing would pass the first half; a carry nothing read back would pass
+// neither.
+//
+// Segment by segment, because the test environment runs one workflow execution:
+// a Continue-As-New leaves as a [workflow.ContinueAsNewError] carrying the next
+// [v1.RunState], and the next segment is a new environment started from it —
+// which is also what makes this a real round trip rather than a continuation
+// observed from inside the executor that emitted it.
+func requireHeldFailureCrossesTheSeam(t *testing.T, env *testsuite.TestWorkflowEnvironment, state *v1.RunState, step string) {
+	t.Helper()
 
-	err := env.GetWorkflowError()
-	require.Error(t, err,
-		"a continuation from inside a called workflow let a held async failure vanish: the run completed")
-	require.Contains(t, err.Error(), "failing",
-		"the run failed, but not for the held async step this test is about")
+	// Bounded, because a fixture that never terminates should fail as this
+	// assertion rather than as the package timeout. Generously above what any
+	// of these fixtures needs: each carries its own small step budget forward,
+	// so it spends several segments getting to the end of a short workflow.
+	const maxSegments = 12
+
+	crossed := 0
+	for segment := 1; segment <= maxSegments; segment++ {
+		if segment > 1 {
+			// A different workflow execution each time: the continuation's
+			// whole point is that the segment which heard the failure has
+			// ended, and nothing but RunState survives it.
+			env = newWaitEnv(t)
+			env.OnUpsertMemo(mock.Anything).Return(nil).Maybe()
+		}
+
+		env.ExecuteWorkflow(engine.Run, state)
+		require.True(t, env.IsWorkflowCompleted())
+
+		err := env.GetWorkflowError()
+
+		var continued *workflow.ContinueAsNewError
+		if errors.As(err, &continued) {
+			var carried v1.RunState
+			require.NoError(t, converter.GetDefaultDataConverter().FromPayloads(continued.Input, &carried))
+
+			// Every fixture here holds this step's failure before its first
+			// seam, so every suspension it emits must carry it: a segment that
+			// suspended without writing it down leaves no later segment able to
+			// raise it, which is the half of the round trip an end-state
+			// assertion alone cannot see.
+			require.Contains(t, heldStepIDs(&carried), step,
+				"segment %d suspended without writing down the failure it was holding, so no later segment can raise it",
+				segment)
+
+			crossed++
+			state = &carried
+
+			continue
+		}
+
+		require.Positive(t, crossed,
+			"the run never suspended, so this fixture proves nothing about a failure crossing a seam")
+		require.Error(t, err,
+			"the run completed after %d seam(s): a run that must fail was let through by a continuation", crossed)
+		require.Contains(t, err.Error(), step,
+			"the run failed, but not for the held async step this test is about")
+
+		return
+	}
+
+	t.Fatalf("the run never raised the held failure, across %d segments", maxSegments)
+}
+
+// heldStepIDs names the steps whose failures a carried state is holding, across
+// every frame, since which depth holds one depends on the shape that suspended.
+func heldStepIDs(state *v1.RunState) []string {
+	var ids []string
+	for _, frame := range state.GetFrames() {
+		for _, failure := range frame.GetHeldFailures() {
+			ids = append(ids, failure.GetStepId())
+		}
+	}
+
+	return ids
 }

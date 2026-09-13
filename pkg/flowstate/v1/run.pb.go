@@ -448,7 +448,7 @@ func (x TimelineEntry_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TimelineEntry_Kind.Descriptor instead.
 func (TimelineEntry_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{12, 0}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{13, 0}
 }
 
 // AttemptOutcome records the independent facts established by one task attempt.
@@ -1714,7 +1714,56 @@ type Frame struct {
 	// which is the bound a *finite* loop's state needs: it is one value, carried
 	// across at most the loop's bounded iteration count. The unbounded entity loop
 	// that would need a byte bound of its own is deferred; see [Loop].
-	LoopState     *Value `protobuf:"bytes,6,opt,name=loop_state,json=loopState,proto3" json:"loop_state,omitempty"`
+	LoopState *Value `protobuf:"bytes,6,opt,name=loop_state,json=loopState,proto3" json:"loop_state,omitempty"`
+	// HeldFailures are the failures this scope heard early on a debugger's behalf
+	// and has not yet propagated, for a frame standing at the run's own
+	// representable level.
+	//
+	// A debug ask joins a scope's outstanding `async:` steps before publishing the
+	// run as held, so that a parent reported as held is not one whose child is
+	// still making progress. Joining is right; raising what the join hears is not,
+	// because an `async:` step nothing after it reads is heard at the scope-end
+	// join, and the steps written between its failure and that join still run.
+	// Propagating early skips exactly those, so whether a side-effecting step ran
+	// would depend on whether somebody was debugging (#1119). The failure is
+	// therefore carried to the join that owed it — and this is what carries it
+	// across a Continue-As-New, so that the obligation outlives the segment that
+	// heard it rather than being refused a seam until the scope ends (#1968).
+	//
+	// Present only on a frame at the depth of a scope that was holding one, which
+	// is a run's own top level or a callee's, never a `for_each` body or a
+	// `parallel` branch: those run at a suspend depth where no seam exists, so
+	// nothing there can be held across one.
+	//
+	// Absent for every frame that predates this field, which reads as "nothing
+	// held" — correct, because before it a scope holding a failure refused to
+	// suspend at all, so no recorded history can have suspended while holding one.
+	//
+	// Weighed by `CheckRunStateSize` with the rest of [RunState], which is the
+	// bound that actually holds. The count is one per `async:` step this scope
+	// started and a debug drain joined, so it is bounded by how many `async:`
+	// steps the scope contains rather than by `MaxAsyncInFlight` — that caps how
+	// many may be outstanding at once, and a drain empties the outstanding set so
+	// the scope may fill it again. Each entry carries one step id and two
+	// sentences already bounded where they were produced.
+	//
+	// # Rolling back a worker fleet across this field
+	//
+	// A worker that does not know this field is not protected by
+	// `workflow.GetVersion`, and this is the one direction that matters. A
+	// continuation starts a *fresh execution with empty history*, so the marker
+	// that gates the behaviour is decided anew by whichever worker picks the
+	// segment up — an older one never learns the changeID existed, reads no held
+	// failures because it has no field to read, walks past, and the run
+	// *completes* where it had to fail. Nothing on the new worker's side can
+	// prevent that: an unknown field is skipped silently, and nothing validates
+	// [RunState] on resume.
+	//
+	// So a fleet must not be downgraded across this field while runs are in
+	// flight. Upgrading is safe in both the senses that matter — an older frame
+	// carries no held failures, which reads as "nothing held" and is correct,
+	// since before this field a scope holding one refused to suspend at all.
+	HeldFailures  []*HeldFailure `protobuf:"bytes,7,rep,name=held_failures,json=heldFailures,proto3" json:"held_failures,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1789,6 +1838,135 @@ func (x *Frame) GetLoopState() *Value {
 		return x.LoopState
 	}
 	return nil
+}
+
+func (x *Frame) GetHeldFailures() []*HeldFailure {
+	if x != nil {
+		return x.HeldFailures
+	}
+	return nil
+}
+
+// HeldFailure is one async step's failure, heard before the join that owed it
+// and waiting to be raised there.
+//
+// It carries what a resumed segment needs to raise the failure exactly as the
+// segment that heard it would have, and nothing that segment already wrote
+// down. The step's recorded `error` output is deliberately absent: it is
+// already in [RunState.outputs] under the step's own id, put there by the same
+// record that produced this, and a second copy is a second thing to disagree.
+type HeldFailure struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// StepID is the `async:` step whose failure this is, and is what makes the
+	// failure addressable: a later node mentioning that step joins it, so a
+	// reference finds the held failure exactly where the join it replaced would
+	// have raised it.
+	StepId string `protobuf:"bytes,1,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	// Message is the whole cause as a person reads it at the run's own failure,
+	// Temporal's envelope included — `ErrRunFailed.Message`, not the step's
+	// recorded sentence. It travels because it exists nowhere else: what is
+	// written into the step's outputs is the driver-independent text an author's
+	// expression compares, which is deliberately not this.
+	Message string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	// Kind classifies the failure the way `v1.ErrorKind` does, so a run that
+	// suspended while holding this failure reports the same classification as one
+	// that raised it without suspending.
+	//
+	// A plain string rather than an enum, for the reason `RunResponse.Error.kind`
+	// gives at length: that set already lives as a Go type in the
+	// execution-independent layer because it drives retry semantics on both
+	// drivers, and restating it as a proto-owned enum would be two closed sets
+	// that could disagree.
+	Kind string `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Recorded is the driver-independent sentence an author's expression compares
+	// — what an enclosing level writes as its own `error` output when it tolerates
+	// this failure, and what `${steps.<id>.error}` reads.
+	//
+	// It is here despite the step's own recorded output already being in
+	// [RunState.outputs], because those two are not the same string and deriving
+	// one from the other is what makes them disagree: the step's output is written
+	// by `failedStepOutputs` without a position, while this is written by
+	// `failedAt`, which prepends `step "x": ` unless the sentence came from a
+	// classified task failure. Reading the output back and calling it this one
+	// produced `workflow "c": task …` where a run that did not suspend produced
+	// `task …`, so whether a segment boundary happened to fall there decided what
+	// an author's expression saw.
+	Recorded string `protobuf:"bytes,4,opt,name=recorded,proto3" json:"recorded,omitempty"`
+	// RecordedFromTask reports whether Recorded came from a classified task
+	// failure, which is what decides whether an enclosing level prepends its own
+	// position to it or lets the canonical task sentence stand.
+	//
+	// Carried rather than re-derived for the same reason Recorded is: the chain it
+	// would be re-derived from has been flattened by then, which is exactly what
+	// `ErrRunFailed` exists to do.
+	RecordedFromTask bool `protobuf:"varint,5,opt,name=recorded_from_task,json=recordedFromTask,proto3" json:"recorded_from_task,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *HeldFailure) Reset() {
+	*x = HeldFailure{}
+	mi := &file_flowstate_v1_run_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeldFailure) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeldFailure) ProtoMessage() {}
+
+func (x *HeldFailure) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_run_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeldFailure.ProtoReflect.Descriptor instead.
+func (*HeldFailure) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *HeldFailure) GetStepId() string {
+	if x != nil {
+		return x.StepId
+	}
+	return ""
+}
+
+func (x *HeldFailure) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *HeldFailure) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *HeldFailure) GetRecorded() string {
+	if x != nil {
+		return x.Recorded
+	}
+	return ""
+}
+
+func (x *HeldFailure) GetRecordedFromTask() bool {
+	if x != nil {
+		return x.RecordedFromTask
+	}
+	return false
 }
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
@@ -1953,7 +2131,7 @@ type RunState struct {
 
 func (x *RunState) Reset() {
 	*x = RunState{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[11]
+	mi := &file_flowstate_v1_run_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1965,7 +2143,7 @@ func (x *RunState) String() string {
 func (*RunState) ProtoMessage() {}
 
 func (x *RunState) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[11]
+	mi := &file_flowstate_v1_run_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1978,7 +2156,7 @@ func (x *RunState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunState.ProtoReflect.Descriptor instead.
 func (*RunState) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{11}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RunState) GetWorkflow() *Workflow {
@@ -2184,7 +2362,7 @@ type TimelineEntry struct {
 
 func (x *TimelineEntry) Reset() {
 	*x = TimelineEntry{}
-	mi := &file_flowstate_v1_run_proto_msgTypes[12]
+	mi := &file_flowstate_v1_run_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2196,7 +2374,7 @@ func (x *TimelineEntry) String() string {
 func (*TimelineEntry) ProtoMessage() {}
 
 func (x *TimelineEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_run_proto_msgTypes[12]
+	mi := &file_flowstate_v1_run_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2209,7 +2387,7 @@ func (x *TimelineEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimelineEntry.ProtoReflect.Descriptor instead.
 func (*TimelineEntry) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{12}
+	return file_flowstate_v1_run_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TimelineEntry) GetEventId() int64 {
@@ -2372,7 +2550,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\apoliced\x18\x05 \x01(\bR\apoliced\x12\x16\n" +
 	"\x06prompt\x18\x06 \x01(\tR\x06prompt\x12)\n" +
 	"\x10prompt_truncated\x18\a \x01(\bR\x0fpromptTruncatedB\v\n" +
-	"\t_deadline\"\xa8\x03\n" +
+	"\t_deadline\"\xe8\x03\n" +
 	"\x05Frame\x12$\n" +
 	"\tnext_node\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\bnextNode\x12.\n" +
 	"\x0enext_iteration\x18\x02 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\rnextIteration\x12<\n" +
@@ -2380,10 +2558,17 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\fcall_outputs\x18\x04 \x01(\v2\".flowstate.v1.Workflow.StepOutputsR\vcallOutputs\x12>\n" +
 	"\tcall_vars\x18\x05 \x03(\v2!.flowstate.v1.Frame.CallVarsEntryR\bcallVars\x122\n" +
 	"\n" +
-	"loop_state\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\tloopState\x1aP\n" +
+	"loop_state\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\tloopState\x12>\n" +
+	"\rheld_failures\x18\a \x03(\v2\x19.flowstate.v1.HeldFailureR\fheldFailures\x1aP\n" +
 	"\rCallVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xb3\b\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xae\x01\n" +
+	"\vHeldFailure\x12\x1f\n" +
+	"\astep_id\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06stepId\x12 \n" +
+	"\amessage\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
+	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x1a\n" +
+	"\brecorded\x18\x04 \x01(\tR\brecorded\x12,\n" +
+	"\x12recorded_from_task\x18\x05 \x01(\bR\x10recordedFromTask\"\xb3\b\n" +
 	"\bRunState\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bworkflow\x12\x1b\n" +
@@ -2446,7 +2631,7 @@ func file_flowstate_v1_run_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_run_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_flowstate_v1_run_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_flowstate_v1_run_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_flowstate_v1_run_proto_goTypes = []any{
 	(AttemptOutcome_Effect)(0),          // 0: flowstate.v1.AttemptOutcome.Effect
 	(AttemptOutcome_Result)(0),          // 1: flowstate.v1.AttemptOutcome.Result
@@ -2465,27 +2650,28 @@ var file_flowstate_v1_run_proto_goTypes = []any{
 	(*RunProgress)(nil),                 // 14: flowstate.v1.RunProgress
 	(*PendingWait)(nil),                 // 15: flowstate.v1.PendingWait
 	(*Frame)(nil),                       // 16: flowstate.v1.Frame
-	(*RunState)(nil),                    // 17: flowstate.v1.RunState
-	(*TimelineEntry)(nil),               // 18: flowstate.v1.TimelineEntry
-	nil,                                 // 19: flowstate.v1.Scope.VarsEntry
-	nil,                                 // 20: flowstate.v1.Scope.AmbientVarsEntry
-	nil,                                 // 21: flowstate.v1.Scope.InputsEntry
-	nil,                                 // 22: flowstate.v1.EntityState.VarsEntry
-	nil,                                 // 23: flowstate.v1.EntityState.LoopStateEntry
-	nil,                                 // 24: flowstate.v1.Frame.CallVarsEntry
-	nil,                                 // 25: flowstate.v1.RunState.VarsEntry
-	nil,                                 // 26: flowstate.v1.RunState.InputsEntry
-	(*durationpb.Duration)(nil),         // 27: google.protobuf.Duration
-	(*Task)(nil),                        // 28: flowstate.v1.Task
-	(*Node_Outputs)(nil),                // 29: flowstate.v1.Node.Outputs
-	(*SignalSender)(nil),                // 30: flowstate.v1.SignalSender
-	(*Workflow_StepOutputs)(nil),        // 31: flowstate.v1.Workflow.StepOutputs
-	(*WorkloadIdentity)(nil),            // 32: flowstate.v1.WorkloadIdentity
-	(*TriggerContext)(nil),              // 33: flowstate.v1.TriggerContext
-	(*timestamppb.Timestamp)(nil),       // 34: google.protobuf.Timestamp
-	(*Value)(nil),                       // 35: flowstate.v1.Value
-	(*Workflow)(nil),                    // 36: flowstate.v1.Workflow
-	(*RunOutputs)(nil),                  // 37: flowstate.v1.RunOutputs
+	(*HeldFailure)(nil),                 // 17: flowstate.v1.HeldFailure
+	(*RunState)(nil),                    // 18: flowstate.v1.RunState
+	(*TimelineEntry)(nil),               // 19: flowstate.v1.TimelineEntry
+	nil,                                 // 20: flowstate.v1.Scope.VarsEntry
+	nil,                                 // 21: flowstate.v1.Scope.AmbientVarsEntry
+	nil,                                 // 22: flowstate.v1.Scope.InputsEntry
+	nil,                                 // 23: flowstate.v1.EntityState.VarsEntry
+	nil,                                 // 24: flowstate.v1.EntityState.LoopStateEntry
+	nil,                                 // 25: flowstate.v1.Frame.CallVarsEntry
+	nil,                                 // 26: flowstate.v1.RunState.VarsEntry
+	nil,                                 // 27: flowstate.v1.RunState.InputsEntry
+	(*durationpb.Duration)(nil),         // 28: google.protobuf.Duration
+	(*Task)(nil),                        // 29: flowstate.v1.Task
+	(*Node_Outputs)(nil),                // 30: flowstate.v1.Node.Outputs
+	(*SignalSender)(nil),                // 31: flowstate.v1.SignalSender
+	(*Workflow_StepOutputs)(nil),        // 32: flowstate.v1.Workflow.StepOutputs
+	(*WorkloadIdentity)(nil),            // 33: flowstate.v1.WorkloadIdentity
+	(*TriggerContext)(nil),              // 34: flowstate.v1.TriggerContext
+	(*timestamppb.Timestamp)(nil),       // 35: google.protobuf.Timestamp
+	(*Value)(nil),                       // 36: flowstate.v1.Value
+	(*Workflow)(nil),                    // 37: flowstate.v1.Workflow
+	(*RunOutputs)(nil),                  // 38: flowstate.v1.RunOutputs
 }
 var file_flowstate_v1_run_proto_depIdxs = []int32{
 	0,  // 0: flowstate.v1.AttemptOutcome.effect:type_name -> flowstate.v1.AttemptOutcome.Effect
@@ -2493,54 +2679,55 @@ var file_flowstate_v1_run_proto_depIdxs = []int32{
 	2,  // 2: flowstate.v1.AttemptOutcome.contract:type_name -> flowstate.v1.AttemptOutcome.Contract
 	3,  // 3: flowstate.v1.AttemptOutcome.repeat_safety:type_name -> flowstate.v1.AttemptOutcome.RepeatSafety
 	4,  // 4: flowstate.v1.AttemptOutcome.retry_permission:type_name -> flowstate.v1.AttemptOutcome.RetryPermission
-	27, // 5: flowstate.v1.AttemptOutcome.retry_after:type_name -> google.protobuf.Duration
-	28, // 6: flowstate.v1.PendingUndo.task:type_name -> flowstate.v1.Task
-	29, // 7: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
-	30, // 8: flowstate.v1.PendingSignal.sender:type_name -> flowstate.v1.SignalSender
-	29, // 9: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
-	30, // 10: flowstate.v1.SignalDelivery.sender:type_name -> flowstate.v1.SignalSender
-	31, // 11: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	19, // 12: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
-	20, // 13: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
-	21, // 14: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
-	32, // 15: flowstate.v1.Scope.identity:type_name -> flowstate.v1.WorkloadIdentity
+	28, // 5: flowstate.v1.AttemptOutcome.retry_after:type_name -> google.protobuf.Duration
+	29, // 6: flowstate.v1.PendingUndo.task:type_name -> flowstate.v1.Task
+	30, // 7: flowstate.v1.PendingSignal.payload:type_name -> flowstate.v1.Node.Outputs
+	31, // 8: flowstate.v1.PendingSignal.sender:type_name -> flowstate.v1.SignalSender
+	30, // 9: flowstate.v1.SignalDelivery.payload:type_name -> flowstate.v1.Node.Outputs
+	31, // 10: flowstate.v1.SignalDelivery.sender:type_name -> flowstate.v1.SignalSender
+	32, // 11: flowstate.v1.Scope.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	20, // 12: flowstate.v1.Scope.vars:type_name -> flowstate.v1.Scope.VarsEntry
+	21, // 13: flowstate.v1.Scope.ambient_vars:type_name -> flowstate.v1.Scope.AmbientVarsEntry
+	22, // 14: flowstate.v1.Scope.inputs:type_name -> flowstate.v1.Scope.InputsEntry
+	33, // 15: flowstate.v1.Scope.identity:type_name -> flowstate.v1.WorkloadIdentity
 	11, // 16: flowstate.v1.Scope.address:type_name -> flowstate.v1.RunAddress
-	33, // 17: flowstate.v1.Scope.trigger:type_name -> flowstate.v1.TriggerContext
-	22, // 18: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
-	23, // 19: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
-	34, // 20: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
+	34, // 17: flowstate.v1.Scope.trigger:type_name -> flowstate.v1.TriggerContext
+	23, // 18: flowstate.v1.EntityState.vars:type_name -> flowstate.v1.EntityState.VarsEntry
+	24, // 19: flowstate.v1.EntityState.loop_state:type_name -> flowstate.v1.EntityState.LoopStateEntry
+	35, // 20: flowstate.v1.PendingActivity.next_attempt_scheduled_time:type_name -> google.protobuf.Timestamp
 	15, // 21: flowstate.v1.RunProgress.pending_waits:type_name -> flowstate.v1.PendingWait
-	34, // 22: flowstate.v1.PendingWait.deadline:type_name -> google.protobuf.Timestamp
-	31, // 23: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
-	31, // 24: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	24, // 25: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
-	35, // 26: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
-	36, // 27: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
-	31, // 28: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	16, // 29: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
-	32, // 30: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
-	8,  // 31: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
-	25, // 32: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
-	26, // 33: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
-	37, // 34: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
-	7,  // 35: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
-	33, // 36: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
-	34, // 37: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
-	34, // 38: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
-	5,  // 39: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
-	35, // 40: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 41: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 42: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
-	35, // 43: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 44: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
-	35, // 45: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 46: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	35, // 47: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
-	48, // [48:48] is the sub-list for method output_type
-	48, // [48:48] is the sub-list for method input_type
-	48, // [48:48] is the sub-list for extension type_name
-	48, // [48:48] is the sub-list for extension extendee
-	0,  // [0:48] is the sub-list for field type_name
+	35, // 22: flowstate.v1.PendingWait.deadline:type_name -> google.protobuf.Timestamp
+	32, // 23: flowstate.v1.Frame.results:type_name -> flowstate.v1.Workflow.StepOutputs
+	32, // 24: flowstate.v1.Frame.call_outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	25, // 25: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
+	36, // 26: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
+	17, // 27: flowstate.v1.Frame.held_failures:type_name -> flowstate.v1.HeldFailure
+	37, // 28: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
+	32, // 29: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	16, // 30: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
+	33, // 31: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
+	8,  // 32: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
+	26, // 33: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
+	27, // 34: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
+	38, // 35: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
+	7,  // 36: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
+	34, // 37: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
+	35, // 38: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
+	35, // 39: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
+	5,  // 40: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
+	36, // 41: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 42: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 43: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
+	36, // 44: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 45: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
+	36, // 46: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 47: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	36, // 48: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
+	49, // [49:49] is the sub-list for method output_type
+	49, // [49:49] is the sub-list for method input_type
+	49, // [49:49] is the sub-list for extension type_name
+	49, // [49:49] is the sub-list for extension extendee
+	0,  // [0:49] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_run_proto_init() }
@@ -2561,7 +2748,7 @@ func file_flowstate_v1_run_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_run_proto_rawDesc), len(file_flowstate_v1_run_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   21,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
