@@ -601,3 +601,50 @@ func TestShadowed(t *testing.T) {
 	assert.Equal(t, []int{11}, pollLines(waits),
 		"the shadowing limitation changed; if it was fixed, delete this test and say so")
 }
+
+// TestAPollThroughATestifyObjectIsCounted is the regression for the hole an
+// automated reviewer found on #1989: testify's object API binds the assertions
+// to a value, so the receiver at the call is that value and not the package the
+// file imported. A poll written that way used to be invisible here, which is
+// the one defect a ratchet cannot survive — the count stays green while the
+// tree gets worse, so it reports "no polls were added" about a poll that was.
+//
+// No test in this repository uses the object API today. That is exactly why the
+// case is written down: the hole was not costing anything yet, and a ratchet is
+// for the change nobody has made yet.
+func TestAPollThroughATestifyObjectIsCounted(t *testing.T) {
+	t.Parallel()
+
+	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestBound(t *testing.T) {
+	r := require.New(t)
+	r.Eventually(nil, 0, 0)
+
+	var a = assert.New(t)
+	a.Never(nil, 0, 0)
+}
+
+func TestReassigned(t *testing.T) {
+	var r *require.Assertions
+	r = require.New(t)
+	r.EventuallyWithT(nil, 0, 0)
+}
+
+func TestNotTestify(t *testing.T) {
+	var other struct{ Eventually func() }
+	other.Eventually()
+}
+`})
+
+	assert.Equal(t, []int{12, 15, 21}, pollLines(waits),
+		"a poll reached through a testify assertion object was missed, or a value that is not "+
+			"one was mistaken for it")
+}
