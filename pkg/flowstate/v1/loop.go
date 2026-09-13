@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/google/cel-go/cel"
 )
@@ -200,9 +201,7 @@ func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value, toler
 			continue
 		}
 		named := make(map[string]*Value, len(outputs.GetNamedValues())+1)
-		for name, v := range outputs.GetNamedValues() {
-			named[name] = v
-		}
+		maps.Copy(named, outputs.GetNamedValues())
 		named[StepErrorItemOutput] = bound
 		decorated[id] = &Node_Outputs{NamedValues: named}
 	}
@@ -211,12 +210,8 @@ func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value, toler
 	}
 
 	out := &Workflow_StepOutputs{StepValues: make(map[string]*Node_Outputs, len(iteration.GetStepValues()))}
-	for id, outputs := range iteration.GetStepValues() {
-		out.StepValues[id] = outputs
-	}
-	for id, outputs := range decorated {
-		out.StepValues[id] = outputs
-	}
+	maps.Copy(out.StepValues, iteration.GetStepValues())
+	maps.Copy(out.StepValues, decorated)
 	return out
 }
 

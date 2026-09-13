@@ -34,13 +34,13 @@ func main() {
 	}
 	flag.Parse()
 
-	subject, body, err := message(*title, *bodyFile, os.Getenv("GITHUB_EVENT_PATH"), os.Stdin)
+	subject, body, where, err := message(*title, *bodyFile, os.Getenv("GITHUB_EVENT_PATH"), os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "commitcheck: %v\n", err)
 		os.Exit(2)
 	}
 
-	findings := commitcheck.Check(subject, body)
+	findings := commitcheck.Check(subject, body, where)
 	report(os.Stderr, findings, os.Getenv("GITHUB_ACTIONS") == "true")
 
 	if *strict && len(findings) > 0 {
@@ -51,22 +51,27 @@ func main() {
 // message picks the subject and body from wherever this invocation carries
 // them: the flags, the pull request in the event payload, or a whole message
 // on stdin with the subject as its first line.
-func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, err error) {
+//
+// Only the event payload is known to be a pull request body, which the forge
+// has already appended its own footer to. The flags and stdin carry whatever
+// the caller has in hand, so they are read as a commit message, which is the
+// stricter of the two.
+func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, where commitcheck.Surface, err error) {
 	switch {
 	case title != "":
 		if bodyFile != "" {
 			data, err := readFile(bodyFile, stdin)
 			if err != nil {
-				return "", "", err
+				return "", "", 0, err
 			}
 			body = string(data)
 		}
-		return title, body, nil
+		return title, body, commitcheck.SurfaceCommit, nil
 
 	case eventPath != "":
 		data, err := readBounded(eventPath, nil)
 		if err != nil {
-			return "", "", fmt.Errorf("reading the event payload: %w", err)
+			return "", "", 0, fmt.Errorf("reading the event payload: %w", err)
 		}
 		var event struct {
 			PullRequest *struct {
@@ -75,20 +80,20 @@ func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body 
 			} `json:"pull_request"`
 		}
 		if err := json.Unmarshal(data, &event); err != nil {
-			return "", "", fmt.Errorf("decoding the event payload: %w", err)
+			return "", "", 0, fmt.Errorf("decoding the event payload: %w", err)
 		}
 		if event.PullRequest == nil {
-			return "", "", fmt.Errorf("the event payload carries no pull request; this check reads pull_request events")
+			return "", "", 0, fmt.Errorf("the event payload carries no pull request; this check reads pull_request events")
 		}
-		return event.PullRequest.Title, event.PullRequest.Body, nil
+		return event.PullRequest.Title, event.PullRequest.Body, commitcheck.SurfacePullRequest, nil
 
 	default:
 		data, err := readBounded("-", stdin)
 		if err != nil {
-			return "", "", fmt.Errorf("reading the message from stdin: %w", err)
+			return "", "", 0, fmt.Errorf("reading the message from stdin: %w", err)
 		}
 		subject, body, _ = strings.Cut(strings.TrimSpace(string(data)), "\n")
-		return subject, body, nil
+		return subject, body, commitcheck.SurfaceCommit, nil
 	}
 }
 

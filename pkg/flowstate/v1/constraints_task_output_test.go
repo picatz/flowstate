@@ -24,7 +24,7 @@ func taskOutputManyItems(n int) []any {
 // same reason [taskOutputManyItems] does.
 func taskOutputNestedStruct(depth int, leaf any) any {
 	v := leaf
-	for i := 0; i < depth; i++ {
+	for range depth {
 		v = map[string]any{"child": v}
 	}
 	return v

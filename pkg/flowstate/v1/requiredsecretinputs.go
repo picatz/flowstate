@@ -50,10 +50,12 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // An input the workflow does not supply at all is not this check's business —
 // a required input left unset is a different mistake with its own diagnostic —
 // so only supplied inputs are examined, and only the ones the task named. The
-// walk is the one [RequiredTaskNames] performs, so a position that can reach a
-// task is a position this reaches: [WalkWorkflow] for nested control flow and
-// compensations, walkEmbeddedWorkflows for the bounded callee edge. It is bounded
-// the same way, and runs behind [CheckSpecSize] and [CheckStructureDepth].
+// walk is [specNodes], the one [RequiredTaskNames] performs, so a position that
+// can reach a task is a position this reaches: [WalkWorkflow] for nested control
+// flow and compensations, walkEmbeddedWorkflows for the bounded callee edge. It
+// is bounded the same way, and runs behind [CheckSpecSize] and
+// [CheckStructureDepth]. The first refusal ends the walk rather than being
+// latched while it runs on.
 //
 // The refusal names the step and the input and never the value: the value is
 // the credential this exists to keep out of durable state, and an error message
@@ -63,27 +65,16 @@ func CheckRequiredSecretInputs(wf *Workflow, registry *Registry) error {
 		return fmt.Errorf("no task registry: cannot decide which task inputs must be whole secret references")
 	}
 
-	var refusal error
-	walkErr := walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
-		WalkWorkflow(current, Walk{Node: func(node *Node) {
-			if refusal != nil {
-				return
-			}
-			if err := checkNodeRequiredSecretInputs(node.GetId(), "", node.GetTask(), registry); err != nil {
-				refusal = err
-				return
-			}
-			if err := checkNodeRequiredSecretInputs(node.GetId(), "undo", node.GetUndo().GetTask(), registry); err != nil {
-				refusal = err
-			}
-		}})
-		return nil
-	})
-	if refusal != nil {
-		return refusal
-	}
-	if walkErr != nil {
-		return fmt.Errorf("checking which task inputs must be whole secret references: %w", walkErr)
+	for node, err := range specNodes(wf) {
+		if err != nil {
+			return fmt.Errorf("checking which task inputs must be whole secret references: %w", err)
+		}
+		if err := checkNodeRequiredSecretInputs(node.GetId(), "", node.GetTask(), registry); err != nil {
+			return err
+		}
+		if err := checkNodeRequiredSecretInputs(node.GetId(), "undo", node.GetUndo().GetTask(), registry); err != nil {
+			return err
+		}
 	}
 
 	return nil

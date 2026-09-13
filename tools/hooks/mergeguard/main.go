@@ -172,7 +172,8 @@ func conventionNote(in *hook.Input, owner, repo string, number int) string {
 	if !ok {
 		return ""
 	}
-	findings := commitcheck.Check(title, stringOf(in.ToolInput["commit_message"]))
+	// A squash message is a commit message: nothing appends a footer to one.
+	findings := commitcheck.Check(title, stringOf(in.ToolInput["commit_message"]), commitcheck.SurfaceCommit)
 	if len(findings) == 0 {
 		return ""
 	}

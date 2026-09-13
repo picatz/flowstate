@@ -1,7 +1,6 @@
 package flowstatev1
 
 import (
-	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -304,28 +303,24 @@ func CheckDeclarationTypes(wf *Workflow) error {
 // a call declares a sensitive input or output. Whole-run display decisions must
 // include callees because their steps execute under the same run and debugger.
 func DeclaresSensitiveValues(wf *Workflow) (bool, error) {
-	err := walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+	for current, err := range specWorkflows(wf) {
+		if err != nil {
+			return false, err
+		}
 		for _, input := range current.GetDeclaredInputs() {
 			if input.GetSensitive() {
-				return errSensitiveDeclaration
+				return true, nil
 			}
 		}
 		for _, output := range current.GetDeclaredOutputs() {
 			if output.GetSensitive() {
-				return errSensitiveDeclaration
+				return true, nil
 			}
 		}
-
-		return nil
-	})
-	if errors.Is(err, errSensitiveDeclaration) {
-		return true, nil
 	}
 
-	return false, err
+	return false, nil
 }
-
-var errSensitiveDeclaration = errors.New("sensitive declaration found")
 
 // checkTypeDepth iteratively verifies that t does not nest deeper than
 // maxDepth levels through its list and map recursive arms, and that no
@@ -630,11 +625,9 @@ func DeclaredTypeNames() []string {
 
 // ParseDeclaredType reads a type as a Flowfile spells it.
 func ParseDeclaredType(name string) (InputDeclaration_Type, bool) {
-	for _, t := range DeclaredTypeNames() {
-		if t == name {
-			value, ok := InputDeclaration_Type_value["TYPE_"+strings.ToUpper(name)]
-			return InputDeclaration_Type(value), ok
-		}
+	if slices.Contains(DeclaredTypeNames(), name) {
+		value, ok := InputDeclaration_Type_value["TYPE_"+strings.ToUpper(name)]
+		return InputDeclaration_Type(value), ok
 	}
 
 	return InputDeclaration_TYPE_UNSPECIFIED, false

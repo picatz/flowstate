@@ -773,9 +773,13 @@ jobs:
       # one had — the weekly deep tier ran four of the ten targets this job ran,
       # because each of the four places holding the list was kept by hand. The
       # per-step boundary that is lost was there so a hanging target did not hide
-      # the others' output; the Makefile's loop prints `==> <target>` before each
-      # one and every target's output still streams into this step's log, so the
-      # hanging one is still the last one named.
+      # the others' output. The targets now run several at a time through
+      # tools/fuzzrun, so "the hanging one is the last one named" is no longer
+      # how to read this log: a target announces itself when it starts and its
+      # output is printed in one piece when it finishes, so a target that hung
+      # is one this step named as started and never reported — and later targets
+      # will have started, and finished, after it. Its output is bounded per
+      # target, and says so when it dropped anything.
       #
       # Which targets is the plan's answer, not the tier's (#1726). Thirteen
       # targets at 30s each plus a test-binary build per package was nine

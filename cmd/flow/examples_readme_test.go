@@ -1,12 +1,22 @@
 package main
 
 import (
+	"maps"
+	"net/url"
 	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // TestExamplesREADMEFirstRunCommands executes the short, offline path promised
@@ -56,5 +66,423 @@ func TestExamplesREADMEFirstRunCommands(t *testing.T) {
 	for _, args := range commands {
 		result := runFlow(t, args...)
 		require.NoError(t, result.Err, "documented `flow %s` failed:\n%s", strings.Join(args, " "), result.Stderr)
+	}
+}
+
+// liveExampleHosts are the hosts a Flowfile in the example corpus may name that
+// actually answer, each against the reason it is worth a real request.
+//
+// Everything else has to be reserved for documentation, which is the property
+// examples/README.md's closing section turns into advice: an example pointed at
+// a live host runs and shows you something, and one pointed at `example.com`
+// stops at name resolution and is read, validated and exercised with `flow test`
+// instead. A reader chooses between those two, so the difference has to be true.
+//
+// An addition here is a decision to make a real request from a file people are
+// invited to paste and run. `httpbin.org` earns it by being a request echo with
+// no state, no account, and no side effect worth causing; a marketing homepage
+// fetched to read one status code — which is what `simple-http-multi-step`
+// reached for until this test existed — does not.
+var liveExampleHosts = map[string]string{
+	"httpbin.org": "the request echo the runnable HTTP examples are written against",
+}
+
+// offlineExampleHosts are the loopback spellings an example may name: a request
+// to one of these leaves nothing, so an example naming one is still offline and
+// still honestly marked `no`. A definition rather than a permission, which is why
+// the entries no example happens to use today stay — and, like everything else
+// here, a list rather than a range, so `127.0.0.2` is refused as undecided.
+var offlineExampleHosts = map[string]string{
+	"localhost": "`conditional-and-retry` dials a closed port on it on purpose",
+	"127.0.0.1": "the same, written as an address",
+	"::1":       "the same, over IPv6",
+}
+
+// servedDocumentationHosts are the reserved names that answer anyway. IANA
+// delegates the three second-level domains RFC 2606 [§3] reserves and serves a
+// page at each apex and at each `www`, so a request to one of these six leaves
+// the machine like any other.
+//
+// Checked rather than assumed: `example.com`, `example.net`, `example.org` and
+// the `www.` of each resolve here, while `api.example.com`, `mail.example.com`,
+// `random-xyz.example.com`, `www.foo.example.com`, `foo.example` and
+// `nothing.invalid` do not.
+//
+// [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
+var servedDocumentationHosts = map[string]bool{
+	"example.com":     true,
+	"www.example.com": true,
+	"example.net":     true,
+	"www.example.net": true,
+	"example.org":     true,
+	"www.example.org": true,
+}
+
+// documentationOnlyHost reports whether a host is one this repository has
+// decided an example may name without anybody deciding it may make a real
+// request.
+//
+// It is a convention, not a fact about the DNS, and the difference is the whole
+// reason this is written as a predicate with a comment rather than as a suffix
+// match. Four review rounds on #1990 each found the same class of mistake in it,
+// because "reserved for documentation" and "cannot resolve" are different
+// properties and the first was standing in for the second:
+//
+//   - RFC 2606 [§3] reserves `example.com`, `example.net` and `example.org`
+//     *delegated*, so their apexes answer, and so does each `www` —
+//     [servedDocumentationHosts] is that subtraction.
+//   - A single-label host is relative. `https://example` is not the `.example`
+//     top-level domain [§2] reserves; it is a name with no dots, which a
+//     resolver tries against its search list first, so on a machine with
+//     `search corp.internal` it is a request to `example.corp.internal`. Only a
+//     name *beneath* `.example` is admitted (Codex, r3998521062).
+//   - Case is not part of a name and [url.URL.Hostname] does not fold it, so
+//     `WWW.example.com` missed the subtraction above and matched the suffix
+//     below. The fold in the body is that fix. A trailing dot is not part of a
+//     name either and is deliberately *not* normalized — see its row in
+//     [TestDocumentationOnlyHostAdmitsOnlyTheSpellingsThatDoNotResolve], and
+//     note that admitting the dotted family safely would mean stripping the dot
+//     before the map lookup, never loosening the suffixes alone.
+//
+// So what a caller gets is "the repository permits this spelling", and the
+// reason the permitted spellings are the ones that do not resolve is written
+// here rather than asserted by the code. A name outside them is not refused as
+// unresolvable — it is refused as undecided, and deciding it means a
+// [liveExampleHosts] entry saying why an example people paste and run may reach
+// it.
+//
+// [§2]: https://www.rfc-editor.org/rfc/rfc2606#section-2
+// [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
+func documentationOnlyHost(host string) bool {
+	// DNS is case-insensitive and [url.URL.Hostname] is not — `net/url` lowercases
+	// the scheme and leaves the host as typed — so `WWW.example.com` would miss
+	// the served map, match the `.example.com` suffix below, and be admitted as a
+	// name that in fact answers. That is the fourth member of the family above and
+	// the one that would have made this function's own case untrue as a statement
+	// about the predicate rather than about its rows. Folding first is what stops
+	// capitalization deciding the answer; a trailing dot still does, deliberately.
+	host = strings.ToLower(host)
+
+	if servedDocumentationHosts[host] {
+		return false
+	}
+	if strings.HasSuffix(host, ".example") {
+		return true
+	}
+	for _, reserved := range []string{"example.com", "example.net", "example.org"} {
+		if strings.HasSuffix(host, "."+reserved) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestDocumentationOnlyHostAdmitsOnlyTheSpellingsThatDoNotResolve pins every
+// boundary [documentationOnlyHost] turns on, because nothing in the corpus sits
+// on one and so nothing else would notice one moving. Each row below is a
+// mistake a previous version of that predicate made.
+func TestDocumentationOnlyHostAdmitsOnlyTheSpellingsThatDoNotResolve(t *testing.T) {
+	t.Parallel()
+
+	for host, admitted := range map[string]bool{
+		// Delegated and served, so a request to one leaves the machine.
+		"example.com":     false,
+		"www.example.com": false,
+		"example.net":     false,
+		"www.example.net": false,
+		"example.org":     false,
+		"www.example.org": false,
+
+		// Everything else under the same three. `www.foo.example.com` is the
+		// boundary a "starts with www" rule would get wrong.
+		"api.example.com":             true,
+		"mail.example.com":            true,
+		"ledger.internal.example.com": true,
+		"flowstate.peer.example.com":  true,
+		"www.foo.example.com":         true,
+
+		// The reserved top-level domain admits names beneath it and not its own
+		// bare label, which has no dots and so is a search-list query first.
+		"foo.example": true,
+		"example":     false,
+
+		// Case is not part of a name, so a served one stays refused however it is
+		// typed; the corpus's own spellings are unaffected either way.
+		"WWW.example.com": false,
+		"EXAMPLE.COM":     false,
+		"API.Example.Com": true,
+
+		// A trailing dot is the same name, and is refused rather than admitted:
+		// nothing in the corpus writes one, and refusing an unrecognized spelling
+		// asks for a decision where admitting it would quietly widen the rule.
+		"api.example.com.": false,
+
+		// Neither reserved nor ours to permit silently.
+		"httpbin.org":      false,
+		"microsoft.com":    false,
+		"notexample.com":   false,
+		"example.com.evil": false,
+	} {
+		assert.Equal(t, admitted, documentationOnlyHost(host), "documentationOnlyHost(%q)", host)
+	}
+}
+
+// exampleInventoryNetwork reads the Network column of examples/README.md's
+// complete inventory, keyed by the directory each row links.
+func exampleInventoryNetwork(t *testing.T, readme string) map[string]bool {
+	t.Helper()
+
+	_, inventory, ok := strings.Cut(readme, "## Complete inventory")
+	require.True(t, ok, "examples/README.md lost its complete inventory heading")
+
+	row := regexp.MustCompile(`(?m)^\|\s*\[[^\]]+\]\(([^)]+)\)\s*\|.*\|\s*(yes|no)\s*\|\s*$`)
+	network := map[string]bool{}
+	for _, match := range row.FindAllStringSubmatch(inventory, -1) {
+		dir := strings.TrimSuffix(strings.Split(match[1], "#")[0], "/")
+		if strings.HasSuffix(dir, ".md") {
+			dir = path.Dir(dir)
+		}
+		network[dir] = match[2] == "yes"
+	}
+	require.NotEmpty(t, network, "no inventory rows parsed; the row pattern is wrong")
+
+	return network
+}
+
+// exampleLiteralHosts returns every host named by a literal string anywhere in a
+// compiled workflow — a URL a task will fetch, but equally an issuer written into
+// a `signals:` subject, which names an authority and requests nothing.
+//
+// Over the message rather than over the shapes this package knows about, for the
+// reason the charter's own walk gives, and each of its three places is a real one
+// in this corpus: a literal task input (every `url:`), a `for_each`'s
+// list-of-maps `items:` (`ops-healthcheck`'s three services), and a CEL constant
+// (`approval-gate`'s `signals:` subject, `${"https://issuer.example.com#" + …}`).
+// A walk that named those three would be a fourth place to keep in step.
+//
+// What it recognises is a string that is entirely an `http(s)` URL, which is every
+// spelling the corpus uses. A host written with no scheme is invisible to it, so
+// this is a floor on where a live host can hide rather than a proof there is none.
+func exampleLiteralHosts(msg protoreflect.Message) []string {
+	var hosts []string
+
+	collect := func(value string) {
+		if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+			return
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Hostname() == "" {
+			// An expression that builds a URL from parts leaves a hostless
+			// prefix behind as a constant. There is no host to judge.
+			return
+		}
+		hosts = append(hosts, parsed.Hostname())
+	}
+
+	var walk func(protoreflect.Message)
+	walk = func(m protoreflect.Message) {
+		m.Range(func(field protoreflect.FieldDescriptor, val protoreflect.Value) bool {
+			switch {
+			case field.IsMap():
+				val.Map().Range(func(_ protoreflect.MapKey, entry protoreflect.Value) bool {
+					switch field.MapValue().Kind() {
+					case protoreflect.MessageKind:
+						walk(entry.Message())
+					case protoreflect.StringKind:
+						collect(entry.String())
+					}
+
+					return true
+				})
+			case field.IsList():
+				list := val.List()
+				for i := range list.Len() {
+					switch field.Kind() {
+					case protoreflect.MessageKind:
+						walk(list.Get(i).Message())
+					case protoreflect.StringKind:
+						collect(list.Get(i).String())
+					}
+				}
+			case field.Kind() == protoreflect.MessageKind:
+				walk(val.Message())
+			case field.Kind() == protoreflect.StringKind:
+				collect(val.String())
+			}
+
+			return true
+		})
+	}
+	walk(msg)
+
+	return hosts
+}
+
+// exampleRequestHosts returns what a run of a compiled workflow would actually
+// request: one entry per `http` step, the host of its `url:` where that is a
+// literal and [requestHostUnknown] where it is an expression.
+//
+// The unknown is deliberately not skipped. A `url:` computed at run time is a
+// host this test cannot see, and the claim it is checked against — that a row
+// marked `no` reaches nothing — is the one where being unable to see is the same
+// as not knowing, so it counts as a request and the row has to say `yes`.
+func exampleRequestHosts(msg protoreflect.Message) []string {
+	var hosts []string
+
+	var walk func(protoreflect.Message)
+	walk = func(m protoreflect.Message) {
+		if !strings.HasPrefix(string(m.Descriptor().FullName()), "flowstate.v1.") {
+			return
+		}
+		if task, ok := m.Interface().(*v1.Task); ok && task.GetName() == "http" {
+			literal := task.GetInputs()["url"].GetLiteral().GetStringValue()
+			if parsed, err := url.Parse(literal); err == nil && parsed.Hostname() != "" {
+				hosts = append(hosts, parsed.Hostname())
+			} else {
+				hosts = append(hosts, requestHostUnknown)
+			}
+		}
+		m.Range(func(field protoreflect.FieldDescriptor, val protoreflect.Value) bool {
+			switch {
+			case field.IsMap():
+				if field.MapValue().Kind() == protoreflect.MessageKind {
+					val.Map().Range(func(_ protoreflect.MapKey, entry protoreflect.Value) bool {
+						walk(entry.Message())
+
+						return true
+					})
+				}
+			case field.IsList():
+				if field.Kind() == protoreflect.MessageKind {
+					list := val.List()
+					for i := range list.Len() {
+						walk(list.Get(i).Message())
+					}
+				}
+			case field.Kind() == protoreflect.MessageKind:
+				walk(val.Message())
+			}
+
+			return true
+		})
+	}
+	walk(msg)
+
+	return hosts
+}
+
+// requestHostUnknown stands for the host of an `http` step whose `url:` is an
+// expression, and so is not decided until the step runs.
+const requestHostUnknown = "<computed>"
+
+// TestExamplesREADMENetworkClaims derives what examples/README.md says about the
+// network from the corpus it says it about.
+//
+// Two claims, and each one is advice a reader acts on rather than trivia. The
+// first is which hosts the corpus reaches: `httpbin.org` answers, so an example
+// pointed at it runs as written, and every other host is reserved for
+// documentation, so an example pointed at one stops at name resolution. The
+// second is the Network column, which is how a reader finds out which of those
+// they are about to run.
+//
+// Only the `no` direction of the column is derivable, and that is the direction
+// worth holding: a row promising a run touches nothing must be telling the
+// truth. The converse is not checkable here — a plugin task, a secret backend
+// and a `call:` into a plugin file all reach the network with no URL in any
+// Flowfile — so a row marked `yes` is a claim this test takes at its word.
+//
+// The corpus is the charter's, for the charter's reason: `examples/plugins/` and
+// `examples/embedding/` name tasks a stock `flow` cannot resolve, so their files
+// do not compile in this process at all.
+func TestExamplesREADMENetworkClaims(t *testing.T) {
+	t.Parallel()
+
+	// Resolved once, so the several reads below share one root rather than
+	// re-resolving `../..` against the process working directory at each use.
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(root, "examples", "README.md"))
+	require.NoError(t, err)
+	network := exampleInventoryNetwork(t, string(data))
+
+	// The same two globs the charter reads, spelled again because one package's
+	// `_test` identifiers are not visible from another. If the charter's globs
+	// move, this diverges silently.
+	var paths []string
+	for _, glob := range [][]string{
+		{"examples", "*", "workflow.yaml"},
+		{"examples", "*", "workflows", "*.yaml"},
+	} {
+		matched, globErr := filepath.Glob(filepath.Join(append([]string{root}, glob...)...))
+		require.NoError(t, globErr)
+		paths = append(paths, matched...)
+	}
+	require.NotEmpty(t, paths, "no examples found; the globs are wrong")
+
+	named := map[string][]string{}    // example directory -> every host it writes down
+	requests := map[string][]string{} // example directory -> the hosts a run of it would fetch
+	for _, workflow := range paths {
+		example := filepath.Base(filepath.Dir(workflow))
+		if example == "workflows" {
+			example = filepath.Base(filepath.Dir(filepath.Dir(workflow)))
+		}
+
+		wf, _, parseErr := flowfile.ParseFile(workflow)
+		require.NoError(t, parseErr, "%s does not compile", workflow)
+
+		for _, host := range exampleLiteralHosts(wf.ProtoReflect()) {
+			if !slices.Contains(named[example], host) {
+				named[example] = append(named[example], host)
+			}
+		}
+		for _, host := range exampleRequestHosts(wf.ProtoReflect()) {
+			if _, offline := offlineExampleHosts[host]; offline {
+				continue
+			}
+			if !slices.Contains(requests[example], host) {
+				requests[example] = append(requests[example], host)
+			}
+		}
+	}
+	require.NotEmpty(t, named, "no example names any host; the walk found nothing")
+	require.NotEmpty(t, requests, "no example requests anything; the walk found nothing")
+
+	for example, hosts := range named {
+		for _, host := range hosts {
+			if _, offline := offlineExampleHosts[host]; offline {
+				continue
+			}
+			if _, live := liveExampleHosts[host]; live || documentationOnlyHost(host) {
+				continue
+			}
+			t.Errorf("examples/%s names %s, which neither answers by agreement nor is reserved for "+
+				"documentation; point it at a host RFC 2606 reserves, or add it to liveExampleHosts "+
+				"with the reason a file people paste and run should make a real request to it",
+				example, host)
+		}
+	}
+
+	for example, hosts := range requests {
+		hosts = slices.Sorted(slices.Values(hosts))
+		marked, listed := network[example]
+		if !assert.True(t, listed, "examples/%s requests %v and has no row in the complete inventory", example, hosts) {
+			continue
+		}
+		assert.True(t, marked,
+			"examples/%s is marked Network `no`, but a run of it requests %v; either the column is "+
+				"wrong or the example stopped being offline", example, hosts)
+	}
+
+	// A live host nobody reaches any more is a standing permission for a real
+	// request that nothing asked for.
+	for host, reason := range liveExampleHosts {
+		assert.NotEmpty(t, reason, "%s is allowed with no reason; an entry is a decision, not an entry", host)
+
+		used := slices.ContainsFunc(slices.Collect(maps.Values(requests)), func(hosts []string) bool {
+			return slices.Contains(hosts, host)
+		})
+		assert.True(t, used, "%s is allowed as a live host no example requests; remove the entry", host)
 	}
 }

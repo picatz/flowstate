@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -14,33 +15,26 @@ const CurrentTaskCapabilitySchemaVersion uint32 = 1
 // RequiredTaskNames returns the sorted, unique task capabilities a workflow can
 // reach, including compensations, nested control flow, and inlined callees.
 //
-// [WalkWorkflow] is the one enumeration of a workflow's node positions and
-// walkEmbeddedWorkflows supplies its bounded callee edge. Keeping the two pieces
-// together here makes task availability one requirement walk rather than a list
-// maintained separately by the compiler, local evaluator, and durable engine.
+// [specNodes] is that walk: [WalkWorkflow]'s one enumeration of a workflow's
+// node positions over walkEmbeddedWorkflows' bounded callee edge. Reaching it
+// through the shared iterator makes task availability one requirement walk
+// rather than a list maintained separately by the compiler, local evaluator,
+// and durable engine.
 func RequiredTaskNames(wf *Workflow) ([]string, error) {
 	required := map[string]struct{}{}
-	err := walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
-		WalkWorkflow(current, Walk{Node: func(node *Node) {
-			if task := node.GetTask(); task != nil {
-				required[task.GetName()] = struct{}{}
-			}
-			if task := node.GetUndo().GetTask(); task != nil {
-				required[task.GetName()] = struct{}{}
-			}
-		}})
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("collecting task requirements: %w", err)
+	for node, err := range specNodes(wf) {
+		if err != nil {
+			return nil, fmt.Errorf("collecting task requirements: %w", err)
+		}
+		if task := node.GetTask(); task != nil {
+			required[task.GetName()] = struct{}{}
+		}
+		if task := node.GetUndo().GetTask(); task != nil {
+			required[task.GetName()] = struct{}{}
+		}
 	}
 
-	names := make([]string, 0, len(required))
-	for name := range required {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names, nil
+	return slices.Sorted(maps.Keys(required)), nil
 }
 
 // ResolveTaskCapabilities records the admitting registry's decision on wf.

@@ -107,14 +107,12 @@ func StepErrorText(err error) string {
 	// preserved beneath it. Rendering the nested TaskError directly would erase
 	// the configured bound that ended the step and make ordinary retry exhaustion
 	// and total_timeout: expiry read the same way.
-	var overall *scheduleToCloseTimeoutError
-	if errors.As(err, &overall) {
+	if overall, ok := errors.AsType[*scheduleToCloseTimeoutError](err); ok {
 		return overall.Error()
 	}
 
 	var cause string
-	var enriched *causeEnrichedError
-	if errors.As(err, &enriched) {
+	if enriched, ok := errors.AsType[*causeEnrichedError](err); ok {
 		cause = ": " + enriched.cause.Error()
 	}
 

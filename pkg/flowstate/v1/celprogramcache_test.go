@@ -252,9 +252,7 @@ func TestEvalParsedIsSafeForConcurrentUse(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for g := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 200 {
 				n := int64(g*1000 + i)
 				out, err := e.EvalParsed(ctx, env, parsed, map[string]any{
@@ -269,7 +267,7 @@ func TestEvalParsedIsSafeForConcurrentUse(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

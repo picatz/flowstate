@@ -1041,7 +1041,7 @@ func readCronField(field string, position cronField) (spans []cronSpan, modelled
 	}
 
 	modelled = true
-	for _, element := range strings.Split(field, ",") {
+	for element := range strings.SplitSeq(field, ",") {
 		value, stepText, hasStep := strings.Cut(element, "/")
 
 		// A step applies to whatever precedes it; the step size itself is a
@@ -1064,11 +1064,9 @@ func readCronField(field string, position cronField) (spans []cronSpan, modelled
 		case "*", "?":
 		default:
 			bounds := strings.Split(value, "-")
-			for _, bound := range bounds {
-				if bound == "" {
-					return nil, false, fmt.Errorf("has a %s range %q with a side missing; a range is written "+
-						"low-high, as in 1-5", position.name, value)
-				}
+			if slices.Contains(bounds, "") {
+				return nil, false, fmt.Errorf("has a %s range %q with a side missing; a range is written "+
+					"low-high, as in 1-5", position.name, value)
 			}
 
 			// Every bound in range before the shape is judged, so `1-5-99` is

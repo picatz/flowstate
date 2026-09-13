@@ -656,9 +656,17 @@ func (m *sensitiveSubstringMatcher) markMatches(redacted []bool, text string) bo
 	// bytes the longer secret added in front of it, printing `topsecret-` in the
 	// clear (#1119). Only a match that cannot touch the open span closes it.
 	//
-	// Still one pass over the text: the spans written are disjoint by
-	// construction, so the marking below costs the length of the union rather
-	// than the sum of every match's length.
+	// Still one pass over the *text*. The marking is close to the length of the
+	// union but not equal to it: the arm below that reaches further back moves
+	// `pendingStart` without re-examining what an earlier `mark()` already
+	// covered, so two written spans can overlap — matches at [0,10), [20,21)
+	// and [5,30) write [0,10) and then [5,30). A rewritten byte is bounded by
+	// how far back a single match can reach, which is the longest sensitive
+	// value. Who chooses that value, and therefore whether this cost is worth
+	// bounding rather than noting, is #2027. Correctness does not depend on it
+	// either way: marking
+	// is idempotent, every match is inside the pending span when it is taken,
+	// and the hull is only ever widened over spans the current match contains.
 	pendingStart, pendingEnd := 0, 0
 	mark := func() {
 		for j := pendingStart; j < pendingEnd; j++ {
