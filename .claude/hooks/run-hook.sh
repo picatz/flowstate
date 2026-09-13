@@ -62,50 +62,58 @@ warn() {
 # on a tree that does not compile exits 1, which Claude Code does not treat as
 # a block.
 #
-# This is a coarse over-approximation, not a second recognizer, and its
-# completeness is deliberately not claimed. tools/hooks/mergeguard/main.go
-# decides what a merge is by tokenizing the command the way a shell would; a
-# text test here cannot equal a tokenizer, so some spelling will always reach
-# further than this does. What it covers is every spelling a caller writes
-# without trying to evade it: the bare word, flags between `pr` and the
-# subcommand, an executable from a shell expansion, and a word broken up by
-# quoting, backslashes, or a line continuation. `./tools/hooks/mergeguard` is
-# not the word, which keeps the repair of this very guard runnable; `git merge`
-# is, and refusing it for the seconds this guard cannot be built costs a repair
-# nothing.
-#
-# The residual is bounded and known. This path exists only while mergeguard
-# cannot be compiled, it is strictly narrower than the previous behaviour --
-# `go run` on a tree that does not compile exits 1, so every spelling passed --
-# and the merge gates that decide whether a change may land are tools/shipcheck
-# and the exact-head review evidence, which this does not stand in for.
-# Widening it further is tracked in #1967 rather than pursued by matching one
-# more spelling at a time.
+# This is the backstop, not the recognizer: a coarse over-approximation whose
+# completeness is not claimed. The recognizer is the retained guard consulted
+# before it, and this runs only when there is none or it found nothing. A text
+# test cannot equal a tokenizer, so some spelling will always reach past this;
+# what it covers is every spelling a caller writes without trying to evade it,
+# and every spelling the retained guard is too old to know about.
+# `./tools/hooks/mergeguard` is not the word, which keeps the repair of this
+# very guard runnable; `git merge` is, and refusing it for the seconds this
+# guard cannot be built costs a repair nothing.
 #
 # Reading stdin is safe only because every path that consults this exits
 # without running the guard. On every other path the guard is still waiting for
 # this payload.
-payload_could_merge() {
-	# Bytes, not characters: the bound below is a byte count, and in a UTF-8
-	# locale ${#payload} would measure a truncated payload short and let it be
-	# decided on.
-	local LC_ALL=C payload stripped
+# The tool-call payload, read once. Two readers need it now -- the retained
+# guard and the text backstop -- and stdin can only be read once, so this holds
+# it. `payload_truncated` is kept separately because an empty payload and a
+# payload too large to judge are different facts that both fail closed.
+payload_text=""
+payload_truncated=""
+payload_read=""
+read_payload() {
+	if [[ -n "${payload_read}" ]]; then
+		return 0
+	fi
+	payload_read=1
 	# Bounded, as hook.Read bounds the same stdin, though tighter than its
-	# 16 MiB: no tool call this decides on is a megabyte. A payload at the bound was
-	# truncated, and a decision read off a truncated payload is not evidence.
-	# The trailing marker survives command substitution stripping newlines, so
-	# a payload ending in one still measures its true length.
-	payload="$(
+	# 16 MiB: no tool call this decides on is a megabyte. A payload at the bound
+	# was truncated, and a decision read off a truncated payload is not evidence.
+	# The trailing marker survives command substitution stripping newlines, so a
+	# payload ending in one still measures its true length.
+	payload_text="$(
 		head -c 1048576
 		printf x
 	)"
-	payload="${payload%x}"
-	if [[ "${#payload}" -ge 1048576 ]]; then
+	payload_text="${payload_text%x}"
+	# Bytes, not characters: the bound is a byte count, and in a UTF-8 locale
+	# ${#payload_text} would measure a truncated payload short.
+	local LC_ALL=C
+	if [[ "${#payload_text}" -ge 1048576 ]]; then
+		payload_truncated=1
+	fi
+}
+
+payload_could_merge() {
+	local LC_ALL=C stripped status
+	read_payload
+	if [[ -n "${payload_truncated}" ]]; then
 		return 0
 	fi
 	# Not provably an ordinary shell call — the merge tool's own entry, or a
 	# payload this could not read. Neither may fail open.
-	if ! printf '%s' "${payload}" | grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"Bash"'; then
+	if ! printf '%s' "${payload_text}" | grep -Eq '"tool_name"[[:space:]]*:[[:space:]]*"Bash"'; then
 		return 0
 	fi
 	# Also matched with the things the guard's tokenizer drops removed: the JSON
@@ -114,12 +122,55 @@ payload_could_merge() {
 	# join characters that were already adjacent, so it cannot manufacture the
 	# word across two JSON fields, and none of the commands a repair needs grows
 	# it -- both directions are pinned by the tables in the launcher's test.
-	stripped="$(printf '%s' "${payload}" | sed 's/\\\\[nrt]//g' | tr -d '\\"'"'")"
-	if printf '%s\n%s' "${payload}" "${stripped}" |
-		grep -Eqi '(^|[^[:alnum:]])merge([^[:alnum:]_]|$)|merge_pull_request'; then
+	stripped="$(printf '%s' "${payload_text}" | sed 's/\\\\[nrt]//g' | tr -d '\\"'"'")"
+	# grep's status is read rather than tested, because 0 and 1 are answers and
+	# anything above is a failure to answer. Treating an error as "no match"
+	# would make a broken grep quietly the same as a safe command.
+	status=0
+	printf '%s\n%s' "${payload_text}" "${stripped}" |
+		grep -Eqi '(^|[^[:alnum:]])merge([^[:alnum:]_]|$)|merge_pull_request' || status=$?
+	if [[ "${status}" -ne 1 ]]; then
 		return 0
 	fi
 	return 1
+}
+
+# Asks the last merge guard that compiled about this call, so the decision is
+# made by the recognizer rather than by a text test standing in for it. The
+# guard tokenizes a command the way a shell would; no pattern here can equal
+# that, which is why every round of review found one more spelling that reached
+# past the backstop below.
+#
+# What is retained is the binary from the previous successful build, so its
+# rules can be older than the sources being repaired. That is sound in the
+# direction that matters: a refusal it issues is a real recognition, and
+# anything it is too old to recognize still meets the backstop. It is consulted
+# only while the current sources will not compile.
+#
+# A decision is passed through exactly as the guard wrote it, so the operator
+# reads the guard's own reasons; the note saying it came from a retained binary
+# goes to stderr, which is shown alongside a refusal.
+retained_guard="${project_dir}/.claude/hooks/.lkg/${name}"
+retained_denies() {
+	local decision status=0
+	[[ "${name}" == "mergeguard" && -x "${retained_guard}" ]] || return 1
+	read_payload
+	if [[ -n "${payload_truncated}" ]]; then
+		return 1
+	fi
+	decision="$(printf '%s' "${payload_text}" | "${retained_guard}" 2>/dev/null)" || status=$?
+	# A retained binary that cannot run -- built for another platform, or
+	# truncated -- has not judged anything. The backstop still applies.
+	if [[ "${status}" -ne 0 ]]; then
+		return 1
+	fi
+	if [[ "${decision}" != *'"permissionDecision"'*'"deny"'* ]]; then
+		return 1
+	fi
+	printf 'Flowstate Claude hook %q refused this call. Its current sources do not compile, so the decision was made by the last build of it that did.\n' \
+		"${name}" >&2
+	printf '%s\n' "${decision}"
+	exit 0
 }
 
 # Decides the fail-open paths below. A guard that could not be built has not
@@ -130,7 +181,13 @@ may_fail_open() {
 	if [[ -n "${strict}" ]]; then
 		return 1
 	fi
-	if [[ "${name}" == "mergeguard" ]] && payload_could_merge; then
+	if [[ "${name}" != "mergeguard" ]]; then
+		return 0
+	fi
+	# The recognizer first: it exits when it refuses. Only what it did not
+	# refuse, or could not be asked about, reaches the text backstop.
+	retained_denies || true
+	if payload_could_merge; then
 		return 1
 	fi
 	return 0

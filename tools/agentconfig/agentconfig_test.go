@@ -1201,6 +1201,230 @@ func TestClaudeHookLauncherHandsTheGuardItsPayload(t *testing.T) {
 	}
 }
 
+// TestClaudeHookLauncherAsksTheRetainedMergeGuard pins the mechanism that
+// closes a class the launcher's text test cannot: mergeguard decides what a
+// merge is by tokenizing the command the way a shell would, so a subcommand
+// assembled by an expansion is a merge to it and is invisible to any pattern.
+// Successive review rounds each found one more such spelling, which is what a
+// stand-in for a tokenizer buys. The build now retains the last merge guard
+// that compiled, and the launcher asks it, so while the sources are mid-repair
+// the decision is still made by a recognizer.
+//
+// What is asserted is the whole shape, because each half is unsafe alone: the
+// retained guard refuses what only it can see, the text backstop still runs
+// when there is no retained guard or it found nothing, and neither refuses the
+// commands a repair needs.
+func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude hooks require Bash")
+	}
+	root := repoRoot(t)
+	project := t.TempDir()
+	writeHookFixture(t, root, project)
+	for _, script := range []string{"run-hook.sh"} {
+		data, err := os.ReadFile(filepath.Join(root, ".claude", "hooks", script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(project, ".claude", "hooks", script), data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	launcher := filepath.Join(project, ".claude", "hooks", "run-hook.sh")
+	retained := filepath.Join(project, ".claude", "hooks", ".lkg")
+
+	// A stand-in for the compiled guard: it refuses exactly the spelling the
+	// text backstop cannot reach, so a pass here can only come from the
+	// launcher having consulted it.
+	expansion := "gh pr m${EMPTY:-}erge 1942 -R picatz/flowstate"
+	if err := os.MkdirAll(retained, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recognizer := "#!/bin/sh\npayload=$(cat)\n" +
+		"case \"$payload\" in\n" +
+		"  *'m${EMPTY:-}erge'*) printf '%s\\n' '{\"decision\":\"block\",\"hookSpecificOutput\":{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"retained recognizer saw a merge\"}}' ;;\n" +
+		"esac\nexit 0\n"
+	writeRetained := func(t *testing.T, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(retained, "mergeguard"), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRetained(t, recognizer)
+
+	// The guard's own sources must not compile, because that is the only
+	// state in which the retained binary is consulted at all.
+	if err := os.WriteFile(filepath.Join(project, "tools", "hooks", "mergeguard", "main.go"),
+		[]byte("package main\n\nthis is not go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T, command string) (int, string, string) {
+		t.Helper()
+		cmd := exec.Command("bash", launcher, "mergeguard")
+		cmd.Env = append(os.Environ(), "CLAUDE_PROJECT_DIR="+project)
+		cmd.Stdin = strings.NewReader(
+			`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"` + command + `"}}`)
+		var stdout, stderr strings.Builder
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			return 0, stdout.String(), stderr.String()
+		case errors.As(err, &exit):
+			return exit.ExitCode(), stdout.String(), stderr.String()
+		default:
+			t.Fatalf("run the launcher: %v", err)
+			return 0, "", ""
+		}
+	}
+
+	t.Run("a spelling only the recognizer can see", func(t *testing.T) {
+		status, stdout, stderr := run(t, expansion)
+		if status != 0 {
+			t.Fatalf("passing the guard's own decision through = %d, want 0; stderr:\n%s", status, stderr)
+		}
+		if !strings.Contains(stdout, `"deny"`) {
+			t.Fatalf("the retained guard's refusal did not reach Claude Code:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, "retained recognizer saw a merge") {
+			t.Fatalf("the guard's own reason was not passed through:\n%s", stdout)
+		}
+		if !strings.Contains(stderr, "last build of it that did") {
+			t.Fatalf("the operator was not told the decision came from a retained binary:\n%s", stderr)
+		}
+	})
+
+	t.Run("the commands a repair needs still run", func(t *testing.T) {
+		for _, allowed := range []string{
+			"go build ./tools/hooks/mergeguard",
+			"git status --short",
+			"make fmt",
+		} {
+			status, stdout, stderr := run(t, allowed)
+			if status != 0 || strings.Contains(stdout, `"deny"`) {
+				t.Fatalf("a retained guard blocked %q (exit %d):\n%s\n%s", allowed, status, stdout, stderr)
+			}
+		}
+	})
+
+	t.Run("the backstop still refuses what the recognizer missed", func(t *testing.T) {
+		// This recognizer answers nothing, standing for one too old to know a
+		// spelling. The text test must still refuse the plain one.
+		writeRetained(t, "#!/bin/sh\ncat > /dev/null\nexit 0\n")
+		if status, _, _ := run(t, "gh pr merge 1942 -R picatz/flowstate"); status != 2 {
+			t.Fatalf("a silent recognizer let the plain spelling through with exit %d", status)
+		}
+	})
+
+	t.Run("a retained binary that cannot run does not decide", func(t *testing.T) {
+		// Not an executable at all, which is what a binary built for another
+		// platform looks like here. It must neither refuse nor be trusted.
+		writeRetained(t, "not a binary\n")
+		if status, _, _ := run(t, "gh pr merge 1942 -R picatz/flowstate"); status != 2 {
+			t.Fatalf("an unusable retained binary broke the backstop, exit %d", status)
+		}
+		if status, stdout, stderr := run(t, "go build ./tools/hooks/mergeguard"); status != 0 {
+			t.Fatalf("an unusable retained binary blocked a repair, exit %d:\n%s\n%s", status, stdout, stderr)
+		}
+	})
+
+	t.Run("a refusal from a guard that then failed is not a decision", func(t *testing.T) {
+		// The real guards always exit 0 and say what they decided in JSON, so
+		// a non-zero exit means the run came apart -- and output from a run
+		// that came apart is not a judgement, however much of it looks like
+		// one. Honouring it would let a crashing binary speak for the guard.
+		// The call is still refused here, by the backstop rather than by this
+		// output, which is what makes the two distinguishable: the operator is
+		// not told a recognizer decided when none did.
+		writeRetained(t, "#!/bin/sh\ncat > /dev/null\n"+
+			"printf '%s\\n' '{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"half-written\"}}'\n"+
+			"exit 3\n")
+		status, stdout, stderr := run(t, "gh pr merge 1942 -R picatz/flowstate")
+		if status != 2 {
+			t.Fatalf("a failed retained guard decided the call, exit %d:\n%s", status, stdout)
+		}
+		if strings.Contains(stdout, "half-written") {
+			t.Fatalf("output from a failed guard was passed off as its decision:\n%s", stdout)
+		}
+		if strings.Contains(stderr, "last build of it that did") {
+			t.Fatalf("the operator was told a recognizer decided when none did:\n%s", stderr)
+		}
+		// And it must not block a repair either.
+		if status, stdout, stderr := run(t, "go build ./tools/hooks/mergeguard"); status != 0 {
+			t.Fatalf("a failed retained guard blocked a repair, exit %d:\n%s\n%s", status, stdout, stderr)
+		}
+	})
+
+	t.Run("no retained binary leaves the previous behaviour", func(t *testing.T) {
+		if err := os.RemoveAll(retained); err != nil {
+			t.Fatal(err)
+		}
+		if status, _, _ := run(t, "gh pr merge 1942 -R picatz/flowstate"); status != 2 {
+			t.Fatalf("without a retained guard the plain spelling was allowed, exit %d", status)
+		}
+		if status, stdout, stderr := run(t, "git status --short"); status != 0 {
+			t.Fatalf("without a retained guard a repair was blocked, exit %d:\n%s\n%s", status, stdout, stderr)
+		}
+	})
+}
+
+// TestClaudeHookBuildRetainsTheMergeGuardItCompiled pins the other half: a
+// build that produces a merge guard keeps it, so the launcher above has one to
+// ask. Only that guard is retained, because it is the only one whose answer to
+// being unbuildable is a refusal rather than a warning -- a retained genguard
+// could refuse the very edit that repairs it.
+func TestClaudeHookBuildRetainsTheMergeGuardItCompiled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Claude hooks require Bash")
+	}
+	root := repoRoot(t)
+	project := t.TempDir()
+	writeHookFixture(t, root, project)
+	if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+		t.Fatalf("build: %v\n%s", err, output)
+	}
+	retained := filepath.Join(project, ".claude", "hooks", ".lkg")
+	info, err := os.Stat(filepath.Join(retained, "mergeguard"))
+	if err != nil {
+		t.Fatalf("a successful build retained no merge guard: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("the retained merge guard is not executable: %v", info.Mode())
+	}
+	if _, err := os.Stat(filepath.Join(retained, ".source-id")); err != nil {
+		t.Fatalf("the retained guard records no source identity: %v", err)
+	}
+	for _, other := range []string{"genguard", "gofmtcheck", "pidguard"} {
+		if _, err := os.Stat(filepath.Join(retained, other)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s was retained; only the merge guard may be, since a stale one of these could refuse a repair", other)
+		}
+	}
+
+	// A later build that cannot compile the guard must leave the retained one
+	// alone rather than clearing it -- that is the whole point of keeping it.
+	if err := os.WriteFile(filepath.Join(project, "tools", "hooks", "mergeguard", "main.go"),
+		[]byte("package main\n\nthis is not go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(retained, "mergeguard"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+		t.Logf("build with a broken guard failed as expected: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(retained, "mergeguard"))
+	if err != nil {
+		t.Fatalf("a build that could not compile the guard discarded the retained one: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("a build that could not compile the guard replaced the retained one")
+	}
+}
+
 // TestClaudeHookBuildRunsOnAnOrdinaryCheckout covers the two properties that
 // have nothing to do with a broken tree and everything to do with where the
 // checkout happens to sit. Both failed silently in exactly the direction that

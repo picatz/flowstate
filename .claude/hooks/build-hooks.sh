@@ -31,6 +31,9 @@ done
 
 hook_dir="${project_dir}/.claude/hooks/.bin"
 cache_dir="${project_dir}/.claude/hooks/.cache"
+# The last merge guard that compiled, kept across generations so a tree that
+# does not compile still has one to consult.
+retained_dir="${project_dir}/.claude/hooks/.lkg"
 install -d -m 0700 "${cache_dir}"
 
 # Exit 3 says the tree does not compile right now, which is an ordinary state
@@ -110,7 +113,7 @@ list_source_dirs() {
 					exit 2
 					;;
 			esac
-		done | sort -u
+		done | LC_ALL=C sort -u
 }
 
 # The walk in source-id.sh covers the source extensions a package directory
@@ -232,4 +235,24 @@ printf '%s\n' "${source_id}" > "${stage_dir}/.source-id"
 touch "${stage_dir}/.ready"
 rm -rf "${hook_dir}"
 mv "${stage_dir}" "${hook_dir}"
+
+# Retain the merge guard that just compiled, so the next build that cannot
+# compile one still has a real recognizer to consult. Only this guard: it is
+# the only one whose answer to being unbuildable is a refusal rather than a
+# warning, so it is the only one where deciding precisely beats failing open --
+# and a retained genguard could refuse the very edit that repairs it, which is
+# the lockout these hooks exist to avoid.
+#
+# Copied through a temporary name and renamed, so a reader never opens a
+# half-written binary, and written only when this build produced one.
+if [[ -x "${hook_dir}/mergeguard" ]]; then
+	install -d -m 0700 "${retained_dir}"
+	retained_tmp="$(mktemp "${retained_dir}/mergeguard.XXXXXX")"
+	if cp "${hook_dir}/mergeguard" "${retained_tmp}" && chmod 0700 "${retained_tmp}"; then
+		mv "${retained_tmp}" "${retained_dir}/mergeguard"
+		printf '%s\n' "${source_id}" > "${retained_dir}/.source-id"
+	else
+		rm -f "${retained_tmp}"
+	fi
+fi
 trap 'rm -f "${post_build_dirs}" "${post_build_extra}"; rm -rf "${lock_dir}"' EXIT
