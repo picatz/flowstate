@@ -376,6 +376,41 @@ func TestStoreIgnoresARangeEditWithNothingToSpliceInto(t *testing.T) {
 		[]lsp.TextDocumentContentChangeEvent{{Text: full}}, nil)
 	require.NotNil(t, replaced, "a full-text change with no base was ignored")
 	assert.Equal(t, full, replaced.text)
+
+	// The test is whether a full replacement arrives, not whether a range
+	// does. An empty change set carries no range and still establishes
+	// nothing: applying it would store an empty document at the edit's
+	// version, which outranks the didOpen still on its way and leaves the
+	// buffer empty for good — the same permanent failure as the ranged case,
+	// reached through a different door.
+	for _, empty := range [][]lsp.TextDocumentContentChangeEvent{{}, nil} {
+		var store documentStore
+		assert.Nil(t, store.change("file:///empty.yaml", 5, empty, nil),
+			"a change set establishing no text created a document")
+		if _, ok := store.get("file:///empty.yaml"); ok {
+			t.Fatal("a change set establishing no text created a document")
+		}
+		opened := store.open("file:///empty.yaml", 1, full, nil)
+		require.NotNil(t, opened)
+		assert.Equal(t, full, opened.text, "the open did not recover the document")
+	}
+
+	// And the converse: a set whose trailing entry replaces everything does
+	// establish the text, however it begins, because that replacement makes
+	// whatever preceded it irrelevant.
+	var mixed documentStore
+	both := mixed.change("file:///mixed.yaml", 3, []lsp.TextDocumentContentChangeEvent{
+		{
+			Range: &lsp.Range{
+				Start: lsp.Position{Line: 0, Character: 0},
+				End:   lsp.Position{Line: 0, Character: 3},
+			},
+			Text: "ignored",
+		},
+		{Text: full},
+	}, nil)
+	require.NotNil(t, both, "a change set ending in a full replacement was ignored")
+	assert.Equal(t, full, both.text)
 }
 
 // TestStoreRejectsAnOvertakenOpen covers the same ordering guard from the other

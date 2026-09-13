@@ -495,21 +495,32 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 		}
 		text = prev.text
 	} else {
-		// No document to splice into. A range is computed against text the
-		// client believes the server holds, so applying one to an empty string
-		// does not produce that text — it produces the replacement alone, at
-		// the edit's version, which then looks newer than the didOpen still on
-		// its way. Ignoring it leaves the open to land the real text, and the
-		// client's next edit applies to it; fabricating a document here would
-		// outrank the open and leave the buffer truncated for good.
+		// No document to splice into, so this change set is applied only if it
+		// establishes the whole text by itself: at least one entry carrying no
+		// range, which replaces everything and makes whatever preceded it
+		// irrelevant. That is the sync kind this server advertises.
 		//
-		// A change carrying no range replaces the whole document and needs no
-		// base, so it is still applied — that is the sync kind this server
-		// advertises.
+		// Anything else would fabricate a document out of nothing — a range
+		// spliced into an empty string leaves the replacement alone, and an
+		// empty change set leaves the empty string — stored at the edit's
+		// version, which then looks newer than the didOpen still on its way.
+		// The guard in open would keep it, and the buffer would stay wrong for
+		// good. Ignoring the change instead leaves the open to land the real
+		// text, and the client's next edit applies to that.
+		//
+		// The test is "does a full replacement arrive", not "does a range
+		// arrive": an empty set carries no range and still establishes
+		// nothing, and a set ending in a full replacement carries one and
+		// establishes everything.
+		establishesText := false
 		for _, c := range changes {
-			if c.Range != nil {
-				return nil
+			if c.Range == nil {
+				establishesText = true
+				break
 			}
+		}
+		if !establishesText {
+			return nil
 		}
 	}
 	for _, c := range changes {
