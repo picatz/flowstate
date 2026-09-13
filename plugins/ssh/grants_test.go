@@ -71,8 +71,14 @@ func TestNoGrantsFileMeansNoAuthority(t *testing.T) {
 	if err == nil {
 		t.Fatal("a plugin with no grants file claimed authority")
 	}
-	if !strings.Contains(err.Error(), "--plugin-env") {
-		t.Errorf("the refusal does not tell an operator how to grant anything: %v", err)
+	// This plugin's own pair - a host to reach and a command to run - named in
+	// the refusal beside the flag that grants them, because "not configured" is
+	// not an answer an operator can act on.
+	if !strings.Contains(err.Error(), "no hosts and no commands") {
+		t.Errorf("the refusal does not say what is missing in this plugin's terms: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--plugin-env ssh="+grantsEnv) {
+		t.Errorf("the refusal does not show the flag that grants them: %v", err)
 	}
 }
 

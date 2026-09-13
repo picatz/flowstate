@@ -39,6 +39,16 @@ func TestTheDeploymentDefaultIsAcceptedAsTheGrant(t *testing.T) {
 	if egressPolicy == nil {
 		t.Fatalf("the deployment default was refused, which denies every task on a worker with no --egress-policy: %v", egressRefusal)
 	}
+
+	// And the client a task builds under it is one that still refuses a
+	// cleartext directory: accepting the default is not accepting anything the
+	// default happens to permit.
+	if _, err := newClient("https://example.okta.com/scim/v2", "not-a-real-directory-token"); err != nil {
+		t.Errorf("a SCIM client cannot be built under the grant this plugin accepted: %v", err)
+	}
+	if _, err := newClient("http://example.okta.com/scim/v2", "not-a-real-directory-token"); err == nil {
+		t.Error("a cleartext directory was accepted under the deployment default")
+	}
 }
 
 // TestABaseUrlMustBeHttps is the refusal that keeps a directory credential off

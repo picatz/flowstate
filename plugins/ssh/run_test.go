@@ -208,7 +208,7 @@ func TestOutputOverTheGrantsLimitIsMarkedTruncated(t *testing.T) {
 // result is not a failure that can be retried.
 func TestACommandThatNeverFinishesIsAnUnknownOutcome(t *testing.T) {
 	host := newFakeHost(t)
-	host.hang = true
+	host.hang()
 	command := simpleCommand()
 	command.Timeout = Duration(250 * time.Millisecond)
 	authority := grantsFor(t, host, command)

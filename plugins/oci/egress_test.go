@@ -48,6 +48,13 @@ func TestTheDeploymentDefaultIsAcceptedAsTheGrant(t *testing.T) {
 	if egressPolicy == nil {
 		t.Fatalf("the deployment default was refused, which denies every task on a worker with no --egress-policy: %v", egressRefusal)
 	}
+
+	// Accepting it means the tasks can actually build their client under it,
+	// which is the thing the posture is about rather than the value of a
+	// package variable.
+	if _, err := newRegistryClient(credentials{}); err != nil {
+		t.Errorf("a registry client cannot be built under the grant this plugin accepted: %v", err)
+	}
 }
 
 // TestTheDeploymentDefaultDeniesALoopbackRegistry is the other half of that

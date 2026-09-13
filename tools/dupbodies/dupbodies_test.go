@@ -22,6 +22,13 @@ import (
 //   - plugins/git beside plugins/vcs — two plugin modules over the same
 //     go-git backend, one per task vocabulary, and a module cannot import
 //     the other's helpers; a fix lands in both until one retires.
+//   - plugins/sql beside plugins/ssh — installEgressPolicy, the refusal of the
+//     worker's built-in default policy. Two plugins take that posture for the
+//     same reason (a database connection and a remote command are both
+//     destinations a default decides nothing about) and, being separate
+//     modules, neither can import the other's copy. This is #1333's shared
+//     plugin substrate stated as a body: when a plugintoolkit exists, this
+//     entry is one of the things that retires with it.
 //   - plugins/*/readme_test.go — each plugin module's README example walker
 //     and repo-root finder, written per module for the same reason.
 //   - tokenFromValue, parseSince — the same across git, github and vcs,
@@ -46,6 +53,7 @@ import (
 //     in wait_local.go. Each is a helper waiting to be written; recorded so
 //     the next copied closure is seen the day it arrives.
 var duplicateBodies = map[string]bool{
+	"plugins/sql/egress.go:installEgressPolicy = plugins/ssh/egress.go:installEgressPolicy":                                                                                                                                                                                                                                          true,
 	"pkg/flowstate/v1/engine/authority_test.go:TestAuthorityDenial = pkg/flowstate/v1/eval_test.go:TestAuthorityDenial":                                                                                                                                                                                                              true,
 	"pkg/flowstate/v1/engine/authority_test.go:TestCleartextCredential = pkg/flowstate/v1/eval_test.go:TestCleartextCredential":                                                                                                                                                                                                      true,
 	"pkg/flowstate/v1/engine/walkers_guard_test.go:sameScopeContainers = pkg/flowstate/v1/flowfile/walkers_guard_test.go:sameScopeContainers":                                                                                                                                                                                        true,

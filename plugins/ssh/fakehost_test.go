@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -50,9 +49,29 @@ type fakeHost struct {
 	stderr   string
 	exitCode uint32
 
-	// hang makes the server accept the exec request and never answer, for the
-	// timeout case - where the command is running and the outcome is unknown.
-	hang bool
+	// hanging, when non-nil, makes the server accept the exec request and never
+	// answer, for the timeout case - where the command is running and the
+	// outcome is unknown. The channel is what the "command" is doing: it is
+	// never sent on, and the test closes it on cleanup, so the goroutine ends
+	// with the test rather than after a wall-clock sleep nobody waits for.
+	hanging chan struct{}
+}
+
+// hang makes the next exec request block until this fake is torn down, which is
+// what a command that is still running on the far side looks like from here.
+func (f *fakeHost) hang() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.hanging != nil {
+		return
+	}
+	f.hanging = make(chan struct{})
+	f.t.Cleanup(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		close(f.hanging)
+	})
 }
 
 // newFakeHost starts one.
@@ -183,15 +202,17 @@ func (f *fakeHost) handleSession(channel ssh.Channel, requests <-chan *ssh.Reque
 
 		f.mu.Lock()
 		f.commandLines = append(f.commandLines, payload.Command)
-		stdout, stderr, code, hang := f.stdout, f.stderr, f.exitCode, f.hang
+		stdout, stderr, code, hanging := f.stdout, f.stderr, f.exitCode, f.hanging
 		f.mu.Unlock()
 
 		_ = request.Reply(true, nil)
 
-		if hang {
-			// The command is "running": the client's timeout is what ends this,
-			// and the far side never reports a status.
-			time.Sleep(30 * time.Second)
+		if hanging != nil {
+			// The command is "running": the client's timeout is what ends the
+			// call, and the far side never reports a status. Waiting on a
+			// channel rather than sleeping means this goroutine costs the test
+			// nothing and ends when the test does.
+			<-hanging
 			return
 		}
 

@@ -81,8 +81,13 @@ func TestNoGrantsFileMeansNoAuthority(t *testing.T) {
 	if err == nil {
 		t.Fatal("a plugin with no grants file claimed authority")
 	}
-	if !strings.Contains(err.Error(), "--plugin-env") {
-		t.Errorf("the refusal does not tell an operator how to grant anything: %v", err)
+	// Both halves of what an operator needs: what is missing in this plugin's
+	// own terms - a daemon and a run, which is the pair that makes a container
+	// possible - and the flag that supplies it.
+	for _, want := range []string{"no daemon and no runs", "--plugin-env docker=" + grantsEnv} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q, so an operator is not told what is missing or how to fix it: %v", want, err)
+		}
 	}
 }
 

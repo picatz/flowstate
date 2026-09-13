@@ -57,6 +57,24 @@ go.work
 /plugins/*/flowstate-plugin-*
 /plugins/*/bin/
 
+# The same accident from the other direction: `go build ./...` run *inside* a
+# plugin module writes the binary beside its sources, named for the directory,
+# which the two patterns above do not match. /embedding above records the
+# 46 MB version of this mistake; this is the plugin-shaped one. A glob cannot
+# say "the file whose name is its directory's", so the modules are named.
+/plugins/codex/codex
+/plugins/docker/docker
+/plugins/git/git
+/plugins/github/github
+/plugins/jose/jose
+/plugins/oci/oci
+/plugins/oidc/oidc
+/plugins/scim/scim
+/plugins/slack/slack
+/plugins/sql/sql
+/plugins/ssh/ssh
+/plugins/vcs/vcs
+
 # Agent worktrees. Worktree isolation for subagents materializes under
 # .claude/worktrees/, which is scratch by definition: each is a copy of the
 # tree mid-edit, and committing one would commit a snapshot of unfinished
