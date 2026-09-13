@@ -30,27 +30,24 @@ inputs:
     must: size(this) > 0 && size(this) <= 65536
   expected_ref:
     type: string
-    required: false
     default: refs/heads/main
     description: the git ref this workflow is willing to act for
 steps:
   - id: identity
     jose.verify:
+      audience: flowstate
       token: ${inputs.callback_token}
       # Not just "some issuer we trust": this step requires the entry the
       # operator named `github-actions`.
       trust: github-actions
-      audience: flowstate
 
   # Authorization, over claims that are now facts rather than assertions.
   - id: authorized
     value: ${steps.identity.claims.ref == inputs.expected_ref}
-
   - id: proceed
     if: ${steps.authorized.value}
     log:
-      message: '${"acting for %s from %s".format([steps.identity.subject, steps.identity.claims.repository])}'
-
+      message: ${"acting for %s from %s".format([steps.identity.subject, steps.identity.claims.repository])}
   - id: refused
     if: ${!steps.authorized.value}
     log:

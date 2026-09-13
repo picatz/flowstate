@@ -25,18 +25,17 @@ inputs:
 steps:
   - id: invoice
     http:
-      method: GET
-      url: ${"https://billing.example.com/v1/invoices/" + inputs.invoice_id}
       # `bearer:` is the input built to take a reference whole: the worker
       # resolves it inside the activity and sends Authorization: Bearer <value>.
       # A reference cannot be concatenated with anything workflow-side, because
       # the value does not exist until the worker running this step asks for it.
       bearer: ${secret('oidc:billing-api')}
-      parse_json: true
+      method: GET
       outputs:
         status: ${response.json.status}
         total: ${response.json.total}
-
+      parse_json: true
+      url: ${"https://billing.example.com/v1/invoices/" + inputs.invoice_id}
   - id: settled
     value: ${steps.invoice.status == "paid"}
 outputs:

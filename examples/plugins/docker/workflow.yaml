@@ -34,16 +34,14 @@ signals:
 steps:
   - id: tests
     docker.run:
-      run: smoke-test
       parameters:
         suite: ${inputs.suite}
+      run: smoke-test
     # The grant counts exit 1 as success, because a failing test suite is a
     # result this workflow reads rather than an error. A container that could
     # not start at all still fails the step.
-
   - id: passed
     value: ${steps.tests.exit_code == 0}
-
   - id: approval
     wait_for_signal:
       name: release-approved

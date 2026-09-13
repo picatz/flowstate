@@ -41,7 +41,6 @@ inputs:
     must: this.startsWith("https://")
   scope_filter:
     type: string
-    required: false
     default: active eq true
     description: SCIM filter naming the accounts in scope for this review
   user_id:
@@ -65,35 +64,32 @@ steps:
   - id: in_scope
     scim.user_list:
       base_url: ${inputs.directory}
-      filter: ${inputs.scope_filter}
       count: 50
+      filter: ${inputs.scope_filter}
       token: ${secret('env:SCIM_TOKEN')}
-
   - id: under_review
     scim.user_get:
       base_url: ${inputs.directory}
       id: ${inputs.user_id}
       token: ${secret('env:SCIM_TOKEN')}
-
   - id: decision
     wait_for_signal:
       name: review-decided
-      prompt: '${"Keep access for %s (%s), in %d group(s)? %d account(s) in scope.".format([steps.under_review.display_name, steps.under_review.primary_email, size(steps.under_review.groups), steps.in_scope.total_results])}'
+      prompt: ${"Keep access for %s (%s), in %d group(s)? %d account(s) in scope.".format([steps.under_review.display_name, steps.under_review.primary_email, size(steps.under_review.groups), steps.in_scope.total_results])}
       timeout: 168h
       outputs:
         keep: ${payload.?keep.orValue(false)}
         timed_out: ${timed_out}
-
   - id: revoke
     # Only on an explicit refusal. A timeout changes nothing: an access review
     # nobody answered is an unanswered review, not a decision to revoke.
     if: ${!steps.decision.keep && !steps.decision.timed_out}
     scim.user_deactivate:
       base_url: ${inputs.directory}
-      id: ${steps.under_review.id}
       # The version the reviewer's evidence was read at. A user who changed
       # since then fails as a conflict rather than being overwritten.
       expected_version: ${steps.under_review.version}
+      id: ${steps.under_review.id}
       token: ${secret('env:SCIM_TOKEN')}
 outputs:
   accounts_in_scope:

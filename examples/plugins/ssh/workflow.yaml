@@ -44,23 +44,23 @@ steps:
   # is the same on the read and the write, and two copies of it are two things
   # to keep in step.
   - id: params
-    value: '${{"service": inputs.service}}'
+    value:
+      service: ${inputs.service}
 
   # Read first: the current status is the evidence the approver judges, and a
   # read-only command grant is one an operator can hand out freely.
   - id: before
     ssh.run:
-      host: ${inputs.host}
       command: service-status
+      host: ${inputs.host}
       parameters: ${steps.params.value}
       # A status command exits non-zero for an inactive unit, and the operator's
       # grant is what decides whether that counts as success here - see
       # success_exit_codes in grants.yaml.
-
   - id: approval
     wait_for_signal:
       name: restart-approved
-      prompt: '${"Restart %s on %s?\n\n%s".format([inputs.service, inputs.host, steps.before.stdout])}'
+      prompt: ${"Restart %s on %s?\n\n%s".format([inputs.service, inputs.host, steps.before.stdout])}
       timeout: 4h
       outputs:
         approved: ${payload.?approved.orValue(false)}
@@ -69,25 +69,23 @@ steps:
   # The decision, stated once and read back everywhere it is needed.
   - id: go_ahead
     value: ${steps.approval.approved && !steps.approval.timed_out}
-
   - id: restart
     if: ${steps.go_ahead.value}
-    ssh.run:
-      host: ${inputs.host}
-      command: restart-service
-      parameters: ${steps.params.value}
     # A restart is not safely repeatable on its own: if the connection drops
     # after the command is sent, ssh.run returns an unknown outcome and the
     # engine does not retry it. Saying so here rather than setting a retry
     # policy that would.
     retry:
       attempts: 1
-
+    ssh.run:
+      command: restart-service
+      host: ${inputs.host}
+      parameters: ${steps.params.value}
   - id: after
     if: ${steps.go_ahead.value}
     ssh.run:
-      host: ${inputs.host}
       command: service-status
+      host: ${inputs.host}
       parameters: ${steps.params.value}
 outputs:
   restarted:

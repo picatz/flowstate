@@ -36,13 +36,11 @@ inputs:
     must: size(this) > 0 && size(this) <= 1024
   platform:
     type: string
-    required: false
     default: ""
     description: optional os/arch to select out of a multi-platform index
     example: linux/amd64
   attestation_type:
     type: string
-    required: false
     default: application/vnd.in-toto+json
     description: the artifact type the deploy gate requires to be attached
   expected_approver:
@@ -60,31 +58,26 @@ signals:
 steps:
   - id: pin
     oci.resolve:
-      reference: ${inputs.image}
       platform: ${inputs.platform}
-
+      reference: ${inputs.image}
   - id: attached
     oci.referrers:
+      artifact_type: ${inputs.attestation_type}
+      limit: 20
       # The pinned reference, never the tag: a referrer set is a statement about
       # specific bytes, and oci.referrers refuses a tag for that reason.
       reference: ${steps.pin.reference}
-      artifact_type: ${inputs.attestation_type}
-      limit: 20
-
   - id: attestation_present
     value: ${steps.attached.count > 0}
-
   - id: attestation
     if: ${steps.attestation_present.value}
     oci.blob:
-      reference: ${steps.pin.registry + "/" + steps.pin.repository + "@" + steps.attached.referrers[0].digest}
-      parse_json: true
       max_bytes: 262144
-
+      parse_json: true
+      reference: ${steps.pin.registry + "/" + steps.pin.repository + "@" + steps.attached.referrers[0].digest}
   - id: predicate_type
     if: ${steps.attestation_present.value}
     value: ${steps.attestation.json.predicateType}
-
   - id: approval
     wait_for_signal:
       name: digest-approved
