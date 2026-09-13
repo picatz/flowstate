@@ -32,6 +32,17 @@ jobs:
           # already carries Apache-2.0 (Temporal), BSD (Go) and MPL-2.0
           # dependencies, so the list is what the tree has, not MIT alone.
           allow-licenses: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MPL-2.0, 0BSD, Unlicense, CC0-1.0
+          # This repository, reached through the `replace github.com/picatz/flowstate => ../..`
+          # every plugin module under plugins/ carries. The dependency graph
+          # resolves that replacement to the literal path and reports it with no
+          # license, because there is no package to look one up for — it is the
+          # tree this workflow is running in, whose MIT LICENSE is a file away.
+          # Only a pull request that *adds a plugin module* changes a manifest
+          # holding it, which is why the refusal first appeared long after the
+          # convention did (#95's ecosystem work). Named exactly rather than
+          # loosening allow-licenses, so a genuinely unlicensed dependency is
+          # still refused.
+          allow-dependencies-licenses: pkg:golang/..%2F.., pkg:golang/../..
           # No comment on the pull request: posting one needs a token that
           # can write pull requests, and the check's own log and the
           # step summary already say what was refused and why.
