@@ -1,0 +1,68 @@
+edition: v2026.3
+name: jose-verified-callback
+description: Turns a token a run received into claims it can act on - verifying it against the issuers an operator trusts, then deciding with CEL rather than with the token's own say-so.
+# The shape this task is for: a run holds a token somebody sent it - a callback
+# from a build system, a webhook body, a partner's request - and has to decide
+# whether to act on what it says.
+#
+# The decision splits in two, and keeping them apart is the point:
+#
+#   jose.verify  - is this token real, from an issuer this deployment trusts,
+#                  for this audience, unexpired? The trust roots are the
+#                  operator's file; the workflow cannot name an issuer, a key
+#                  set or an algorithm, because a workflow that could would be
+#                  choosing what counts as valid.
+#
+#   authorized   - given that it is real, may this subject do this? That is a
+#                  CEL decision over the verified claims, made here, where the
+#                  workflow's own policy lives.
+#
+# Verification is not authorization, and a task that conflated them would be
+# one that decided the second question by answering the first.
+plugins:
+  jose: v0.1.0
+inputs:
+  callback_token:
+    type: string
+    required: true
+    description: the token the callback carried, as received
+    example: eyJhbGciOiJFUzI1NiIsImtpZCI6ImV4YW1wbGUifQ.eyJpc3MiOiJodHRwczovL3Rva2VuLmFjdGlvbnMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIn0.signature
+    must: size(this) > 0 && size(this) <= 65536
+  expected_ref:
+    type: string
+    required: false
+    default: refs/heads/main
+    description: the git ref this workflow is willing to act for
+steps:
+  - id: identity
+    jose.verify:
+      token: ${inputs.callback_token}
+      # Not just "some issuer we trust": this step requires the entry the
+      # operator named `github-actions`.
+      trust: github-actions
+      audience: flowstate
+
+  # Authorization, over claims that are now facts rather than assertions.
+  - id: authorized
+    value: ${steps.identity.claims.ref == inputs.expected_ref}
+
+  - id: proceed
+    if: ${steps.authorized.value}
+    log:
+      message: '${"acting for %s from %s".format([steps.identity.subject, steps.identity.claims.repository])}'
+
+  - id: refused
+    if: ${!steps.authorized.value}
+    log:
+      level: warn
+      message: '${"refusing a verified token from %s: it is for %s, not %s".format([steps.identity.subject, steps.identity.claims.ref, inputs.expected_ref])}'
+outputs:
+  subject:
+    value: ${steps.identity.subject}
+    description: who the trusted issuer says this token is for
+  trusted_by:
+    value: ${steps.identity.trust_name}
+    description: which rule in the operator's policy admitted the token
+  authorized:
+    value: ${steps.authorized.value}
+    description: whether the verified subject is one this workflow will act for

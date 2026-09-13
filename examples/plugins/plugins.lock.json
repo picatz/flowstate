@@ -1414,6 +1414,109 @@
       "claimsDigest": "sha256:b85791e367c47b103ff192779ff3c606f47b1e310e5582bd6ebc6220352b0902"
     },
     {
+      "name": "jose",
+      "version": "0.1.0",
+      "description": "Verifies a JWT against the issuers an operator trusts, and returns the verified claims - trust roots are configuration, never workflow input.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "jose.verify",
+          "summary": "Verify one JWT against the operator's trust policy and return its verified subject, audience and claims.",
+          "inputs": [
+            {
+              "name": "token",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "may hold a secret reference"
+              ]
+            },
+            {
+              "name": "trust",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "audience",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "issuer",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "subject",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "trust_name",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "audience",
+              "type": "list[string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "expires_at",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "issued_at",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "claims",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "token"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChJqb3NlL3YxL2pvc2UucHJvdG8SB2pvc2UudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvImsKDFZlcmlmeUlucHV0cxIpCgV0b2tlbhgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SFAoFdHJ1c3QYAiABKAlSBXRydXN0EhoKCGF1ZGllbmNlGAMgASgJUghhdWRpZW5jZSLxAQoNVmVyaWZ5T3V0cHV0cxIWCgZpc3N1ZXIYASABKAlSBmlzc3VlchIYCgdzdWJqZWN0GAIgASgJUgdzdWJqZWN0Eh0KCnRydXN0X25hbWUYAyABKAlSCXRydXN0TmFtZRIaCghhdWRpZW5jZRgEIAMoCVIIYXVkaWVuY2USHQoKZXhwaXJlc19hdBgFIAEoCVIJZXhwaXJlc0F0EhsKCWlzc3VlZF9hdBgGIAEoCVIIaXNzdWVkQXQSNwoGY2xhaW1zGAcgASgLMh8uZ29vZ2xlLmFwaS5leHByLnYxYWxwaGExLlZhbHVlUgZjbGFpbXNCkgEKC2NvbS5qb3NlLnYxQglKb3NlUHJvdG9QAVo7Z2l0aHViLmNvbS9waWNhdHovZmxvd3N0YXRlL3BsdWdpbnMvam9zZS9nZW4vam9zZS92MTtqb3NldjGiAgNKWFiqAgdKb3NlLlYxygIHSm9zZVxWMeICE0pvc2VcVjFcR1BCTWV0YWRhdGHqAghKb3NlOjpWMWIGcHJvdG8z",
+          "inputMessage": "jose.v1.VerifyInputs",
+          "outputDescriptor": "ChJqb3NlL3YxL2pvc2UucHJvdG8SB2pvc2UudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvImsKDFZlcmlmeUlucHV0cxIpCgV0b2tlbhgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIFdG9rZW4SFAoFdHJ1c3QYAiABKAlSBXRydXN0EhoKCGF1ZGllbmNlGAMgASgJUghhdWRpZW5jZSLxAQoNVmVyaWZ5T3V0cHV0cxIWCgZpc3N1ZXIYASABKAlSBmlzc3VlchIYCgdzdWJqZWN0GAIgASgJUgdzdWJqZWN0Eh0KCnRydXN0X25hbWUYAyABKAlSCXRydXN0TmFtZRIaCghhdWRpZW5jZRgEIAMoCVIIYXVkaWVuY2USHQoKZXhwaXJlc19hdBgFIAEoCVIJZXhwaXJlc0F0EhsKCWlzc3VlZF9hdBgGIAEoCVIIaXNzdWVkQXQSNwoGY2xhaW1zGAcgASgLMh8uZ29vZ2xlLmFwaS5leHByLnYxYWxwaGExLlZhbHVlUgZjbGFpbXNCkgEKC2NvbS5qb3NlLnYxQglKb3NlUHJvdG9QAVo7Z2l0aHViLmNvbS9waWNhdHovZmxvd3N0YXRlL3BsdWdpbnMvam9zZS9nZW4vam9zZS92MTtqb3NldjGiAgNKWFiqAgdKb3NlLlYxygIHSm9zZVxWMeICE0pvc2VcVjFcR1BCTWV0YWRhdGHqAghKb3NlOjpWMWIGcHJvdG8z",
+          "outputMessage": "jose.v1.VerifyOutputs",
+          "requiredSecretInputs": []
+        }
+      ],
+      "protocolVersion": 7,
+      "taskSchemaDigest": "sha256:f83fad19bc2585828b8f34395fa68ac90144f571761b5910e74390ed3930164f",
+      "claimsDigest": "sha256:8e62e7398d511e8c50057ee311bc595f71588b7314e7cb8c51186d029aba10ca"
+    },
+    {
       "name": "oci",
       "version": "0.1.0",
       "description": "Reads an OCI registry: resolves a reference to its digest, lists what is attached to it, and fetches one verified blob.",

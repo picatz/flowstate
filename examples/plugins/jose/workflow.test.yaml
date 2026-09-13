@@ -1,0 +1,53 @@
+edition: v2026.3
+tests:
+  - name: a verified token for the expected ref is acted on
+    workflow: ./workflow.yaml
+    inputs:
+      callback_token: a.verified.token
+    stubs:
+      - step: identity
+        returns:
+          issuer: https://token.actions.githubusercontent.com
+          subject: repo:acme/api:ref:refs/heads/main
+          trust_name: github-actions
+          audience: [flowstate]
+          expires_at: "2026-09-13T04:00:00Z"
+          issued_at: "2026-09-13T03:00:00Z"
+          claims:
+            repository: acme/api
+            ref: refs/heads/main
+      - step: proceed
+        returns: {}
+    expect:
+      ran: [identity, authorized, proceed]
+      outputs:
+        subject: repo:acme/api:ref:refs/heads/main
+        trusted_by: github-actions
+        authorized: true
+
+  - name: a token that verifies but is for another ref is refused by the workflow
+    workflow: ./workflow.yaml
+    inputs:
+      callback_token: a.verified.token
+    stubs:
+      - step: identity
+        returns:
+          issuer: https://token.actions.githubusercontent.com
+          subject: repo:acme/api:ref:refs/heads/feature
+          trust_name: github-actions
+          audience: [flowstate]
+          expires_at: "2026-09-13T04:00:00Z"
+          issued_at: "2026-09-13T03:00:00Z"
+          claims:
+            repository: acme/api
+            ref: refs/heads/feature
+      - step: refused
+        returns: {}
+    expect:
+      # Verification succeeded and authorization did not, which is the split
+      # this example is about.
+      ran: [identity, authorized, refused]
+      outputs:
+        subject: repo:acme/api:ref:refs/heads/feature
+        trusted_by: github-actions
+        authorized: false

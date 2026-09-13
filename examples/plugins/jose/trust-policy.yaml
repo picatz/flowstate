@@ -1,0 +1,26 @@
+# The operator's half: which issuers this worker will believe.
+#
+# This is the same document shape `flow server --auth-policy` reads, and that is
+# deliberate - a deployment that already trusts an issuer for its own API can
+# point both at one file, and a reviewer learns one spelling rather than two.
+#
+#   flow worker --plugin-dir ./plugins \
+#     --plugin-env jose=FLOWSTATE_JOSE_TRUST=$PWD/examples/plugins/jose/trust-policy.yaml
+#
+# With no file, this plugin verifies nothing and says so: the only default
+# available would be "whatever the token says about itself", which is the
+# failure verification exists to prevent.
+issuers:
+  # A GitHub Actions workload identity token. `name` is what a workflow can
+  # require with the task's `trust:` input, and what a run's history records as
+  # the rule that admitted a token.
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    # The audience this deployment mints tokens for. A token for somebody else's
+    # audience is somebody else's token.
+    audiences: [flowstate]
+    # Claim requirements are the policy's, not the workflow's: a workflow that
+    # could choose them would be choosing what counts as valid.
+    require:
+      - claim: repository
+        any_of: [acme/api]
