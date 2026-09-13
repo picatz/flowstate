@@ -55,6 +55,7 @@ var forcingCases = []forcingCase{
 	{"a Makefile-only change", []string{"Makefile"}, nil, true},
 	{"a change to the gate itself", []string{"tools/gate/plan.go"}, []string{modulePath + "/tools/gate"}, true},
 	{"a change to the fuzz target list", []string{"tools/fuzztargets/targets.txt"}, nil, true},
+	{"a change to the fuzz tier's loop", []string{"tools/fuzzrun/main.go"}, []string{modulePath + "/tools/fuzzrun"}, true},
 }
 
 // TestTheVetLegFollowsCIsForcing is the vet half of #887, and the same

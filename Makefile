@@ -122,11 +122,36 @@ check:
 # is to find the input that explodes, and these bounds are what make it safe to
 # run on every push.
 #
-# The list is captured before the loop rather than piped into it: a pipeline's
-# status is the status of its right-hand side, so `list.sh | while read` would
+# The list is captured before the runner rather than piped into it: a pipeline's
+# status is the status of its right-hand side, so `list.sh | fuzzrun` would
 # report success on a run that fuzzed nothing at all if the list could not be
 # read — a check passing by not running, which is the failure this file
-# legislates against elsewhere. list.sh itself refuses to print an empty tier.
+# legislates against elsewhere. list.sh refuses to print an empty tier and
+# tools/fuzzrun refuses an empty standard input, so neither end can pass by
+# fuzzing nothing.
+#
+# The targets run several at a time (tools/fuzzrun), which is a bound this
+# target used to get wrong by conflating it with a different one. `-parallel 1`
+# gives each target one fuzzing worker and stays: it is what keeps a crash and
+# the memory behind it attributable to a single input. Running the targets
+# themselves one after another was never that bound — one worker is about one
+# core, so on a four-core runner three idled for every target's whole budget.
+#
+# Spending those cores on other targets is not free, because `-fuzztime` bounds
+# wall clock rather than executions: a target sharing the machine stops after
+# thirty seconds having done whatever a contended thirty seconds allowed. How
+# much that costs is measured in tools/fuzzrun, and it is why the default is
+# half the CPUs rather than all of them — a fuzzing target is a coordinator
+# process and a worker process, so one per CPU is twice as many processes as
+# cores and leaves each target about two thirds of the CPU it would have had
+# alone. Half the CPUs costs a median 8% and still nearly halves the wall clock.
+# The count is GOMAXPROCS rather than NumCPU: an affinity mask is not a quota,
+# so a lane given two cores on a large host must not dispatch by the host's.
+#
+# FUZZ_SMOKE_JOBS sets how many at once; unset, the runner uses one per two CPUs
+# and never more than there are targets. FUZZ_SMOKE_JOBS=1 is the serial loop
+# back, for a machine that wants its cores for something else, and a larger
+# value is available for a machine that is not a runner.
 #
 # FUZZ_SMOKE_TARGETS, when set, is a space-separated list of target names that
 # narrows the run to those (#1726):
@@ -140,12 +165,14 @@ check:
 # seven targets it can move rather than all thirteen. The narrowing is list.sh's
 # and not a second filter here: a name that is not in the smoke tier is a
 # refusal from the one reader, not a silently shorter run.
+# 0 is the runner's own default — one job per two CPUs — spelled here so that an
+# unset variable expands to something the flag can parse rather than to nothing.
+FUZZ_SMOKE_JOBS ?= 0
+
 fuzz-smoke:
 	@targets="$$(tools/fuzztargets/list.sh smoke $(FUZZ_SMOKE_TARGETS))" || exit 1; \
-	echo "$$targets" | while read -r target dir; do \
-		echo "==> $$target ($$dir)"; \
-		GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz "$$target" -fuzztime 30s "./$$dir/" || exit 1; \
-	done
+	printf '%s\n' "$$targets" | go run ./tools/fuzzrun \
+		-fuzztime 30s -timeout 120s -memlimit 512MiB -jobs $(or $(FUZZ_SMOKE_JOBS),0)
 
 # Bounded full test run (no -short). CI's `test` step runs this target rather
 # than its own copy of the command, so the bound cannot drift between the two —
