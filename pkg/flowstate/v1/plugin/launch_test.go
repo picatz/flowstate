@@ -916,3 +916,80 @@ func TestABuildableEgressGrantIsAccepted(t *testing.T) {
 		})
 	}
 }
+
+// TestAPerPluginProxyOverridesBothSpellings is the same rule for the
+// per-plugin environment, which is the more specific of the two blocks and so
+// has at least as much claim to settle the variable.
+//
+// Without it the plugin is launched holding both its operator's `http_proxy`
+// and the worker's ambient `HTTP_PROXY`, and net/http prefers the uppercase —
+// so the override is outvoted by exactly the value it was written to replace,
+// and the plugin's own credentials go to the worker's proxy.
+func TestAPerPluginProxyOverridesBothSpellings(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configured string
+		ambient    [2]string
+	}{
+		{
+			name:       "a lowercase per-plugin override suppresses the uppercase ambient value",
+			configured: "http_proxy=http://plugin-proxy.invalid:8080",
+			ambient:    [2]string{"HTTP_PROXY", "http_proxy"},
+		},
+		{
+			name:       "an uppercase per-plugin override suppresses the lowercase ambient value",
+			configured: "HTTPS_PROXY=http://plugin-proxy.invalid:8080",
+			ambient:    [2]string{"HTTPS_PROXY", "https_proxy"},
+		},
+		{
+			name:       "the same rule holds for NO_PROXY",
+			configured: "no_proxy=plugin.internal.invalid",
+			ambient:    [2]string{"NO_PROXY", "no_proxy"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, name := range test.ambient {
+				t.Setenv(name, "http://worker-proxy.invalid:3128")
+			}
+
+			cfg := testConfig(t, t.TempDir()).withDefaults()
+			cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n")
+			cfg.EnvByPlugin = map[string][]string{"example": {test.configured}}
+
+			env := pluginEnv(cfg, "example", "/tmp/s")
+
+			configuredName, configuredValue, _ := strings.Cut(test.configured, "=")
+			for _, name := range test.ambient {
+				value, found := envValue(env, name)
+				if name == configuredName {
+					if !found || value != configuredValue {
+						t.Errorf("%s = %q (found %v), want this plugin's own entry %q",
+							name, value, found, configuredValue)
+					}
+					continue
+				}
+				if found {
+					t.Errorf("%s = %q reached the plugin beside its own %s override; net/http would prefer whichever spelling is uppercase",
+						name, value, configuredName)
+				}
+			}
+		})
+	}
+
+	// The suppression is per plugin: another plugin, configured with nothing,
+	// still gets the worker's ambient values.
+	t.Run("another plugin is unaffected", func(t *testing.T) {
+		t.Setenv("HTTP_PROXY", "http://worker-proxy.invalid:3128")
+
+		cfg := testConfig(t, t.TempDir()).withDefaults()
+		cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n")
+		cfg.EnvByPlugin = map[string][]string{"example": {"http_proxy=http://plugin-proxy.invalid:8080"}}
+
+		env := pluginEnv(cfg, "other", "/tmp/s")
+
+		if value, found := envValue(env, "HTTP_PROXY"); !found || value != "http://worker-proxy.invalid:3128" {
+			t.Errorf("HTTP_PROXY = %q (found %v) for a plugin that configured nothing, want the worker's own value",
+				value, found)
+		}
+	})
+}

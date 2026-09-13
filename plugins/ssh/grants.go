@@ -254,6 +254,16 @@ func (c *commandGrant) check(name string) error {
 		return fmt.Errorf("command %q has max_output_bytes over this plugin's ceiling of %d", name, maxOutputByteLimit)
 	}
 
+	if len(c.Parameters) > maxParameters {
+		// A call may fill at most maxParameters placeholders, so a grant
+		// declaring more is one no call could ever satisfy: supplying them all
+		// is refused for the count, and supplying fewer is refused for the
+		// missing ones. An operator learns that here rather than from a
+		// workflow that cannot be made to work.
+		return fmt.Errorf("command %q declares %d parameters, over the %d one call may fill",
+			name, len(c.Parameters), maxParameters)
+	}
+
 	declared := make(map[string]bool, len(c.Parameters))
 	for parameter, grant := range c.Parameters {
 		if !parameterNamePattern.MatchString(parameter) {

@@ -139,13 +139,15 @@ func classifyVerification(err error) error {
 //
 // Sorted, so what reaches durable history does not depend on map iteration.
 //
-// The count is not bounded here, and deliberately: auth's own verifier refuses
-// a token whose claim set is larger than it accepts rather than returning a
-// partial one, so a Principal that reached this point already carries a whole
-// set. A second, larger ceiling here would be a second answer to the same
-// question - and the dangerous kind, because cutting a claim set silently is
-// how a workflow branches on the absence of a claim the token carried. Only
-// each key's own length is bounded, which changes no claim's presence.
+// Nothing is bounded here, and deliberately. auth's own verifier refuses a
+// token whose claim set is larger, or whose claims are bigger in total, than it
+// accepts - rather than returning part of one - so a Principal that reached
+// this point already carries a whole set of bounded size. A second ceiling here
+// would be a second answer to the same question, and the dangerous kind: a
+// claim set silently shortened is how a workflow branches on the absence of a
+// claim the token carried, and a claim *name* silently shortened is worse
+// still, because two names sharing a prefix collapse into one entry and the
+// value a step reads is not the one that was signed.
 func boundedClaims(claims map[string]any) *expr.Value {
 	if len(claims) == 0 {
 		return sdk.Literal(map[string]any{})
@@ -159,7 +161,7 @@ func boundedClaims(claims map[string]any) *expr.Value {
 
 	bounded := make(map[string]any, len(keys))
 	for _, key := range keys {
-		bounded[truncate(key, 128)] = claims[key]
+		bounded[key] = claims[key]
 	}
 	return sdk.Literal(bounded)
 }

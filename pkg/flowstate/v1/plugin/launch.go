@@ -659,7 +659,7 @@ func pluginEnv(cfg Config, name, socketPath string) []string {
 		env = append(env, protocol.EgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(cfg.EgressPolicy))
 	}
 
-	env = append(env, proxyGrant(cfg)...)
+	env = append(env, proxyGrant(cfg, name)...)
 
 	// Operator-supplied entries come last, but cannot override the protocol's
 	// own: a Config.Env that redefined the socket path or a token descriptor
@@ -724,7 +724,7 @@ func pluginEnv(cfg Config, name, socketPath string) []string {
 // policy on Config, which is the derived copy above by another name. Launches
 // are a handful at worker startup, and the bytes are bounded by
 // [MaxEgressPolicyBytes].
-func proxyGrant(cfg Config) []string {
+func proxyGrant(cfg Config, name string) []string {
 	if cfg.EgressPolicy == nil {
 		return nil
 	}
@@ -773,7 +773,14 @@ func proxyGrant(cfg Config) []string {
 		// value it was written to replace, with nothing anywhere to say so.
 		// Either spelling being configured settles the variable, and neither
 		// ambient spelling crosses.
-		if configuredInEnv(cfg.Env, variable.upper, variable.lower) {
+		// Both blocks, because [Config.EnvByPlugin] is as much an operator
+		// naming this variable as [Config.Env] is - and more specific, being
+		// written for this plugin alone. Checking only the deployment-wide one
+		// would leave a per-plugin `http_proxy` beside an ambient HTTP_PROXY,
+		// which is precisely the outvoting this skip exists to prevent, with
+		// the plugin's own credentials going to the worker's proxy instead.
+		if configuredInEnv(cfg.Env, variable.upper, variable.lower) ||
+			configuredInEnv(cfg.EnvByPlugin[name], variable.upper, variable.lower) {
 			continue
 		}
 

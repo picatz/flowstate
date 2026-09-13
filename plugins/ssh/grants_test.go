@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,5 +141,39 @@ func TestAPatternIsAnchored(t *testing.T) {
 	}
 	if pattern.MatchString("/etc/passwd nginx.service") {
 		t.Error("the pattern matched a value with something prepended, so it was not anchored")
+	}
+}
+
+// TestAGrantDeclaringMoreParametersThanACallMayFillIsRefused closes a grant
+// that validates and can never run.
+//
+// A call fills at most maxParameters placeholders. A grant declaring more is
+// refused at every call either for the count or for the placeholders it did not
+// fill, so an operator gets a plugin reporting healthy and a command nobody can
+// execute. The refusal belongs at startup, where the file is.
+func TestAGrantDeclaringMoreParametersThanACallMayFillIsRefused(t *testing.T) {
+	command := commandGrant{Argv: []string{"/bin/echo"}, Parameters: map[string]parameterGrant{}}
+	for i := range maxParameters + 1 {
+		name := fmt.Sprintf("p%02d", i)
+		command.Argv = append(command.Argv, "${"+name+"}")
+		command.Parameters[name] = parameterGrant{Pattern: `[a-z]{1,8}`}
+	}
+
+	if err := command.check("too-many"); err == nil {
+		t.Fatal("a grant no call could ever satisfy was accepted at startup")
+	} else if !strings.Contains(err.Error(), "parameters") {
+		t.Errorf("the refusal does not name the parameter count: %v", err)
+	}
+
+	// The limit itself still loads: the refusal is for more than a call may
+	// fill, not for reaching it.
+	atLimit := commandGrant{Argv: []string{"/bin/echo"}, Parameters: map[string]parameterGrant{}}
+	for i := range maxParameters {
+		name := fmt.Sprintf("p%02d", i)
+		atLimit.Argv = append(atLimit.Argv, "${"+name+"}")
+		atLimit.Parameters[name] = parameterGrant{Pattern: `[a-z]{1,8}`}
+	}
+	if err := atLimit.check("at-the-limit"); err != nil {
+		t.Fatalf("a grant a call could fill exactly was refused: %v", err)
 	}
 }

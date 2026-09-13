@@ -368,6 +368,13 @@ func (r *runGrant) check(name string, mounts map[string]mountGrant) error {
 			return fmt.Errorf("run %q names the mount %q, which is not granted anywhere in this file", name, truncate(mount, 64))
 		}
 	}
+	if len(r.Parameters) > maxParameters {
+		// As in plugins/ssh: a call may fill at most maxParameters, so a grant
+		// declaring more could never be executed - every call is refused either
+		// for the count or for the placeholders it did not fill.
+		return fmt.Errorf("run %q declares %d parameters, over the %d one call may fill",
+			name, len(r.Parameters), maxParameters)
+	}
 	if len(r.Env) > maxEnvironment {
 		return fmt.Errorf("run %q names %d environment variables, over this plugin's ceiling of %d", name, len(r.Env), maxEnvironment)
 	}
