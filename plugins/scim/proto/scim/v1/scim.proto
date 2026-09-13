@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package scim.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/scim/gen/scim/v1;scimv1";
+
+import "flowstate/v1/value.proto";
+import "google/api/expr/v1alpha1/value.proto";
+
+// SCIM 2.0 - System for Cross-domain Identity Management - is the standard an
+// identity provider serves its users and groups over: RFC 7643 defines the
+// resources, RFC 7644 the protocol. Okta, Entra ID, Keycloak, Google Workspace
+// and JumpCloud all speak it, which is why these tasks are named for the
+// standard rather than for any one of them.
+//
+// The tasks are the ones an access review needs: read who has an account, read
+// the set of them, and turn one off once a reviewer has attested.
+
+// UserGetInputs reads one user, by the identifier the provider assigned or by
+// the user name the rest of the organization knows them as.
+message UserGetInputs {
+  // BaseUrl is the provider's SCIM base, up to and including /v2 - for example
+  // https://example.okta.com/scim/v2. HTTPS is required.
+  string base_url = 1;
+
+  // Token is the bearer credential for the SCIM API. The task requires this
+  // entire input to be a secret reference, which the host resolves before
+  // execution, so it never enters durable history.
+  flowstate.v1.Value token = 2;
+
+  // Id is the provider's own identifier for the user. Exactly one of id and
+  // user_name is given: they are two ways to name one user, and accepting both
+  // would leave which one decided up to this plugin.
+  string id = 3;
+
+  // UserName is the user's userName attribute, matched exactly. The value is
+  // escaped into the filter rather than interpolated, so a name containing a
+  // quote cannot become filter syntax.
+  string user_name = 4;
+}
+
+// UserGetOutputs is the user, in the attributes an access review acts on, plus
+// the whole resource for anything else the workflow needs.
+message UserGetOutputs {
+  string id = 1;
+  string user_name = 2;
+  string display_name = 3;
+
+  // Active is what a deactivation changes and what a review reads: SCIM models
+  // "has an account" and "may use it" as one boolean.
+  bool active = 4;
+
+  // PrimaryEmail is the email marked primary, or the first one when none is.
+  string primary_email = 5;
+
+  // ExternalId is the identifier the organization's own system of record uses,
+  // which is how a review joins a SCIM user to an HR record.
+  string external_id = 6;
+
+  // Version is the provider's ETag for this resource when it sends one. Passing
+  // it back to scim.user_deactivate as expected_version makes the write a
+  // compare-and-swap: a user who changed since this read is a conflict rather
+  // than a silent overwrite.
+  string version = 7;
+
+  // Groups are the group display names the provider lists on the user, bounded.
+  repeated string groups = 8;
+
+  // Resource is the whole SCIM resource as the provider returned it, for the
+  // attributes these fields do not name - an enterprise extension, a manager, a
+  // custom attribute an organization added.
+  google.api.expr.v1alpha1.Value resource = 9;
+}
+
+// UserListInputs reads a bounded page of users.
+message UserListInputs {
+  string base_url = 1;
+  flowstate.v1.Value token = 2;
+
+  // Filter is a SCIM filter expression (RFC 7644 section 3.4.2.2), such as
+  // active eq false. It is bounded and checked for shape, and it is the
+  // provider that evaluates it: what a filter can reach is what the credential
+  // can reach, never more.
+  string filter = 3;
+
+  // Count is how many users to return, bounded by this task's own ceiling.
+  int32 count = 4;
+
+  // StartIndex is SCIM's one-based cursor. A page is resumed by passing the
+  // next_start_index the previous call returned.
+  int32 start_index = 5;
+}
+
+// UserListOutputs is one page.
+message UserListOutputs {
+  // Users are maps carrying the same attributes scim.user_get names.
+  repeated google.api.expr.v1alpha1.Value users = 1;
+
+  // TotalResults is what the provider says the whole result set holds, and
+  // NextStartIndex is the cursor for the next page, zero when this page is the
+  // last. A workflow that stops when next_start_index is zero has read
+  // everything the filter matched.
+  int64 total_results = 2;
+  int32 next_start_index = 3;
+}
+
+// UserDeactivateInputs turns one account off: the write half of an access
+// review, and the only write this plugin has.
+//
+// It is deliberately deactivation rather than deletion. SCIM providers treat
+// DELETE as irreversible and organizations treat a deactivated account as the
+// auditable record that access was removed on a date.
+message UserDeactivateInputs {
+  string base_url = 1;
+  flowstate.v1.Value token = 2;
+
+  // Id is the provider's identifier for the user, as returned by
+  // scim.user_get. A user name is not accepted here: a write names the resource
+  // the reviewer looked at, not a search that might resolve to another user.
+  string id = 3;
+
+  // ExpectedVersion is the ETag the reviewer's own read returned. Given, the
+  // write is conditional (If-Match): a user modified since that read fails as a
+  // conflict rather than overwriting whatever changed. Omitted, the write is
+  // unconditional, which is what a provider that sends no ETag leaves available.
+  string expected_version = 4;
+}
+
+// UserDeactivateOutputs reports what the provider says the user is now.
+message UserDeactivateOutputs {
+  string id = 1;
+  bool active = 2;
+
+  // AlreadyInactive distinguishes "this call turned the account off" from "it
+  // was already off", which an audit record should not have to infer.
+  bool already_inactive = 3;
+
+  // Version is the provider's ETag after the write, when it sends one.
+  string version = 4;
+}

@@ -76,5 +76,6 @@ FuzzVerifyRefusesAMutatedToken pkg/flowstate/v1/auth                     deep
 FuzzPluginHandshake          pkg/flowstate/v1/plugin/internal/protocol   deep
 FuzzParseConfig              pkg/flowstate/v1/netpolicy                  deep
 FuzzParsePinsConfig          pkg/flowstate/v1/plugin                     deep
+FuzzParseEnvConfig           pkg/flowstate/v1/plugin                     deep
 FuzzBindRunInputs            pkg/flowstate/v1                            deep
 FuzzRootParsers              pkg/flowstate/v1                            deep

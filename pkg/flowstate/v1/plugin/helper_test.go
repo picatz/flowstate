@@ -698,6 +698,16 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pl
 	case name == "empty":
 		return connect.NewResponse(&pluginv1.ResolveResponse{}), nil
 
+	case name == "from-environment":
+		// The probe for Config.EnvByPlugin: this fake answers out of its own
+		// process environment, which a plugin inherits nothing of and receives
+		// only what the deployment configured for it by name.
+		value, ok := os.LookupEnv(fakeConfigEnv)
+		if !ok {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("no "+fakeConfigEnv+" in this plugin's environment"))
+		}
+		return connect.NewResponse(&pluginv1.ResolveResponse{Value: []byte(value)}), nil
+
 	case name == "leased":
 		// A backend that issues short-lived credentials and says so, which is the
 		// only party that knows.
@@ -719,6 +729,12 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pl
 
 	return connect.NewResponse(&pluginv1.ResolveResponse{Value: []byte(value)}), nil
 }
+
+// fakeConfigEnv is the variable the fake plugin's "from-environment" secret
+// answers out of, standing in for the real ones a deployment configures a
+// plugin with — plugins/codex's base config path, plugins/git's own secret
+// variables.
+const fakeConfigEnv = "FLOWSTATE_TEST_PLUGIN_CONFIG"
 
 // sleepyTaskDuration is how long the "sleepy" fake below works before it
 // answers. It has to be comfortably longer than the CallTimeout its tests

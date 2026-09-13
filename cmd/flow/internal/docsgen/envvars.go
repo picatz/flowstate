@@ -238,6 +238,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
+			name:    "FLOWSTATE_PLUGIN_ENV",
+			value:   "unset",
+			purpose: "Default for `--plugin-env-file`: a YAML file mapping a plugin name to the variables that plugin's processes are launched with (`env: {name: {KEY: VALUE}}`), merged with any --plugin-env. A plugin inherits nothing of the worker's environment, so this and the flag are the only way a deployment configures one. What belongs in it is an endpoint or a path to a document, not a secret value: a process environment is readable to anything running as this user.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
 			name:    "FLOWSTATE_PLUGIN_MAX_CALL_TIMEOUT",
 			value:   "1h",
 			purpose: "Ceiling on the deadline a plugin call may inherit from its caller. `--plugin-call-timeout` is the default a call with no deadline of its own gets; this is the most any call may take, so a caller that arrives with a long deadline cannot hold a plugin worker past it. An unparseable or non-positive value is refused at startup.",

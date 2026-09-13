@@ -220,7 +220,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	cmd := exec.CommandContext(procCtx, execPath)
 	cmd.Args = []string{found.Path}
 	cmd.Dir = socketDir
-	cmd.Env = pluginEnv(cfg, socketPath)
+	cmd.Env = pluginEnv(cfg, found.Name, socketPath)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
@@ -640,7 +640,7 @@ func tokenPipe(token string) (*os.File, error) {
 //
 // The proxy variables travel for the same reason and under the same condition:
 // see [proxyGrant].
-func pluginEnv(cfg Config, socketPath string) []string {
+func pluginEnv(cfg Config, name, socketPath string) []string {
 	env := []string{
 		protocol.MagicCookieEnv + "=" + protocol.MagicCookieValue,
 		protocol.VersionsEnv + "=" + protocol.FormatVersions(cfg.protocolVersions()),
@@ -659,12 +659,25 @@ func pluginEnv(cfg Config, socketPath string) []string {
 		env = append(env, protocol.EgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(cfg.EgressPolicy))
 	}
 
-	env = append(env, proxyGrant(cfg)...)
+	env = append(env, proxyGrant(cfg, name)...)
 
 	// Operator-supplied entries come last, but cannot override the protocol's
 	// own: a Config.Env that redefined the socket path or a token descriptor
 	// would break the handshake in a way that looks like a plugin bug.
 	for _, entry := range cfg.Env {
+		if isProtocolEnv(entry) {
+			continue
+		}
+		env = append(env, entry)
+	}
+
+	// Then this plugin's own configuration, which is nothing for every other
+	// plugin this host launches. It comes after the deployment-wide entries so
+	// that a variable set in both takes the value written for this plugin —
+	// os/exec keeps the last of a repeated key — and it is filtered the same
+	// way, because the handshake is not configuration whichever surface an
+	// operator writes it on.
+	for _, entry := range cfg.EnvByPlugin[name] {
 		if isProtocolEnv(entry) {
 			continue
 		}
@@ -711,7 +724,7 @@ func pluginEnv(cfg Config, socketPath string) []string {
 // policy on Config, which is the derived copy above by another name. Launches
 // are a handful at worker startup, and the bytes are bounded by
 // [MaxEgressPolicyBytes].
-func proxyGrant(cfg Config) []string {
+func proxyGrant(cfg Config, name string) []string {
 	if cfg.EgressPolicy == nil {
 		return nil
 	}
@@ -760,7 +773,14 @@ func proxyGrant(cfg Config) []string {
 		// value it was written to replace, with nothing anywhere to say so.
 		// Either spelling being configured settles the variable, and neither
 		// ambient spelling crosses.
-		if configuredInEnv(cfg.Env, variable.upper, variable.lower) {
+		// Both blocks, because [Config.EnvByPlugin] is as much an operator
+		// naming this variable as [Config.Env] is - and more specific, being
+		// written for this plugin alone. Checking only the deployment-wide one
+		// would leave a per-plugin `http_proxy` beside an ambient HTTP_PROXY,
+		// which is precisely the outvoting this skip exists to prevent, with
+		// the plugin's own credentials going to the worker's proxy instead.
+		if configuredInEnv(cfg.Env, variable.upper, variable.lower) ||
+			configuredInEnv(cfg.EnvByPlugin[name], variable.upper, variable.lower) {
 			continue
 		}
 

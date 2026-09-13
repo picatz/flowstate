@@ -1,0 +1,59 @@
+# The operator's half, and the whole of this plugin's authority.
+#
+# Handed to the plugin by name, because a plugin inherits nothing of the
+# worker's environment:
+#
+#   flow worker --plugin-dir ./plugins \
+#     --plugin-env docker=FLOWSTATE_DOCKER_GRANTS=$PWD/examples/plugins/docker/grants.yaml
+#
+# Read the note in plugins/docker/doc.go before deciding to run this: a Docker
+# socket is ambient daemon authority, so a worker with this plugin installed is
+# a worker inside the trusted computing base. What this file bounds is what the
+# plugin will ask for, not what it could.
+daemon:
+  # The local daemon. A remote one is `address: dockerd.internal:2376` with
+  # tls_ca_file, tls_cert_file and tls_key_file - all three, because an
+  # unverified connection to a daemon is a connection to whoever answered.
+  socket: /var/run/docker.sock
+  api_version: v1.43
+
+mounts:
+  # Host paths, named. A run grant names these; a workflow never names a path.
+  # Read-only unless a grant says `writable: true` in as many words.
+  fixtures:
+    source: /srv/flowstate/fixtures
+    target: /fixtures
+
+runs:
+  smoke-test:
+    # Digest-pinned. A tag does not load: what an operator reviewed and what a
+    # node executes have to be the same bytes.
+    image: ghcr.io/acme/api-tests@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+    # Explicit argv, no shell. ${suite} is filled by the workflow and checked
+    # against the pattern below; it becomes exactly one element of argv.
+    argv: ["/usr/bin/pytest", "-q", "--suite", "${suite}"]
+    parameters:
+      suite:
+        pattern: '[a-z0-9-]{1,32}'
+        max_bytes: 32
+    # The container's whole environment, assembled from nothing. The worker's
+    # own environment never reaches a container.
+    env:
+      CI: "true"
+      PYTHONDONTWRITEBYTECODE: "1"
+    mounts: [fixtures]
+    # Required, and bounded by the plugin's own ceilings. "The operator forgot"
+    # is not a limit.
+    memory_bytes: 536870912   # 512 MiB
+    nano_cpus: 1000000000     # one core
+    pids_limit: 256
+    timeout: 5m
+    max_output_bytes: 262144
+    # pytest exits 1 when tests fail, and that is a result this workflow reads
+    # rather than a failure of the step. Whether a status is a failure is a fact
+    # about the command, which whoever granted it knows.
+    success_exit_codes: [0, 1]
+    # Optional: the tenants whose workflows may spend this grant.
+    # namespaces: [platform]
+
+  # Everything not named above is not runnable. There is no wildcard.

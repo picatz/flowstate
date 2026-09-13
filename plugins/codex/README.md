@@ -43,8 +43,20 @@ go build -o /path/to/plugins/flowstate-plugin-codex ./plugins/codex
 
 ## Configuration
 
-Four environment variables, all read by the worker process this plugin runs
-inside - never by a Flowfile, and none ever searched on `$PATH`:
+Four environment variables, read by this plugin's own process - never by a
+Flowfile, and none ever searched on `$PATH`.
+
+A plugin inherits nothing of the worker's environment, so each is named to the
+worker that launches this plugin, not exported into the shell that starts it:
+
+```console
+$ flow worker --plugin-dir /path/to/plugins \
+    --plugin-env codex=FLOWSTATE_CODEX_BIN=/usr/local/bin/codex
+```
+
+`--plugin-env-file` is the same configuration as a YAML document for a
+deployment that would otherwise repeat the flag; see
+[docs/PLUGINS.md](../../docs/PLUGINS.md#being-configured-by-an-operator).
 
 - `FLOWSTATE_CODEX_BIN` (**required**) - the absolute path to a real `codex`
   binary. `codex.exec` refuses every call, and this plugin's own health
