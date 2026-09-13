@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"maps"
 	"os"
 	"regexp"
@@ -163,9 +164,15 @@ func (p providers) check() error {
 
 // check validates one provider.
 func (p provider) check(name string) error {
-	if !strings.HasPrefix(p.TokenURL, "https://") {
+	// The shared rule, not a prefix test. `https://` alone, or a URL carrying
+	// userinfo, passes a prefix check and is then refused by
+	// auth.NewClientCredentialsExchanger at the first resolution - so the
+	// worker reports this plugin healthy and every call fails. Same validator,
+	// same answer, at the point an operator can still fix the file.
+	if _, err := auth.ValidateHTTPSURL(p.TokenURL, "token_url"); err != nil {
 		return fmt.Errorf(
-			"provider %q has a token_url that is not https; a client secret is not sent in cleartext", name)
+			"provider %q has an unusable token_url (%w); a client secret is not sent in cleartext, or anywhere a URL cannot name",
+			name, err)
 	}
 	if p.ClientID == "" {
 		return fmt.Errorf("provider %q names no client_id", name)

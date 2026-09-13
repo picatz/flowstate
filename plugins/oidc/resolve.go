@@ -36,18 +36,16 @@ func resolveSecret(ctx context.Context, req sdk.SecretRequest) (sdk.SecretRespon
 			"%q is not a provider name; a name is lower-case letters, digits and interior hyphens", truncate(name, 64))
 	}
 
-	configured, ok := operatorProviders.Providers[name]
-	if !ok {
-		return sdk.SecretResponse{}, sdk.NotFound(
-			"no provider named %q; this worker configures %s", truncate(name, 64), configuredNames(req.Namespace))
-	}
-
 	// The namespace the host established for the calling workload, never one
 	// the workload declared. A provider naming namespaces is one another
-	// tenant's workflows cannot mint from.
-	if !configured.reachableFrom(req.Namespace) {
-		return sdk.SecretResponse{}, sdk.PermissionDenied(
-			"the provider %q is not configured for this workload's namespace", truncate(name, 64))
+	// tenant's workflows cannot mint from - and, answered this way, one they
+	// cannot learn exists either: "denied" for a configured provider and "not
+	// found" for an unconfigured one is an oracle a tenant can walk.
+	configured, ok := operatorProviders.Providers[name]
+	if !ok || !configured.reachableFrom(req.Namespace) {
+		return sdk.SecretResponse{}, sdk.NotFound(
+			"no provider named %q is configured for this workload; this worker configures %s",
+			truncate(name, 64), configuredNames(req.Namespace))
 	}
 
 	secret, err := configured.secret(name)

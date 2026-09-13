@@ -327,11 +327,23 @@ func TestANamespacedRunIsReachableOnlyFromThatNamespace(t *testing.T) {
 	if _, err := selectRun("platform", "check"); err != nil {
 		t.Fatalf("the namespace the grant names could not spend it: %v", err)
 	}
-	if _, err := selectRun("other", "check"); !sdk.IsPermissionDenied(err) {
-		t.Errorf("error is %v, want permission denied", err)
+	// Not-found rather than denied, and the same not-found a missing name
+	// earns: telling the two apart is an oracle a tenant can walk to enumerate
+	// the operator's grants.
+	_, grantedElsewhere := selectRun("other", "check")
+	_, neverGranted := selectRun("other", "missing")
+	if !sdk.IsNotFound(grantedElsewhere) || !sdk.IsNotFound(neverGranted) {
+		t.Errorf("a grant another namespace holds answers %v and an unknown name answers %v; want not-found for both",
+			grantedElsewhere, neverGranted)
 	}
-	if _, err := selectRun("", "check"); !sdk.IsPermissionDenied(err) {
-		t.Errorf("error is %v, want permission denied for a caller with no namespace", err)
+	// The two refusals differ only where the caller's own name is echoed back,
+	// so nothing in either says whether the grant exists.
+	if strings.Replace(grantedElsewhere.Error(), `"check"`, "", 1) != strings.Replace(neverGranted.Error(), `"missing"`, "", 1) {
+		t.Errorf("the refusals differ beyond the name the caller supplied:\n  granted elsewhere: %v\n  never granted:     %v",
+			grantedElsewhere, neverGranted)
+	}
+	if _, err := selectRun("", "check"); !sdk.IsNotFound(err) {
+		t.Errorf("error is %v, want not-found for a caller with no namespace", err)
 	}
 	if _, err := selectRun("platform", "missing"); !sdk.IsNotFound(err) {
 		t.Errorf("error is %v, want not-found", err)
@@ -339,11 +351,7 @@ func TestANamespacedRunIsReachableOnlyFromThatNamespace(t *testing.T) {
 
 	// The refusal a mistyped name earns names what this namespace could have
 	// spent, never what another tenant was granted.
-	_, err := selectRun("other", "missing")
-	if !sdk.IsNotFound(err) {
-		t.Fatalf("error is %v, want not-found", err)
-	}
-	if strings.Contains(err.Error(), "check") {
+	if _, err := selectRun("other", "missing"); strings.Contains(err.Error(), "check") {
 		t.Errorf("the refusal names another namespace's run grant: %v", err)
 	}
 }

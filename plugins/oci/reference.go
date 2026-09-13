@@ -3,6 +3,7 @@ package main
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
@@ -197,5 +198,15 @@ func truncate(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit] + "…"
+	// Cut on a rune boundary, not a byte offset. Registry annotations are
+	// another party's text and they reach a protobuf string field through
+	// oci.referrers - and a multibyte value cut through the middle is invalid
+	// UTF-8, which that field refuses, failing the encoding of the whole result
+	// rather than arriving shortened. plugins/scim cuts the same way and for
+	// the same reason.
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut] + "…"
 }

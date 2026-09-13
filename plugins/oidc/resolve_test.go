@@ -218,24 +218,29 @@ func TestANamespacedProviderIsReachableOnlyFromThatNamespace(t *testing.T) {
 		t.Fatalf("the tenant the provider names could not resolve it: %v", err)
 	}
 
-	_, err := resolveSecret(t.Context(), sdk.SecretRequest{Scheme: secretScheme, Name: "billing-api", Namespace: "tenant-b"})
-	if !sdk.IsPermissionDenied(err) {
-		t.Errorf("error is %v, want permission denied: another tenant minted from a namespaced provider", err)
+	_, grantedElsewhere := resolveSecret(t.Context(), sdk.SecretRequest{Scheme: secretScheme, Name: "billing-api", Namespace: "tenant-b"})
+	if !sdk.IsNotFound(grantedElsewhere) {
+		t.Errorf("error is %v, want not-found: another tenant minted from a namespaced provider", grantedElsewhere)
 	}
 
-	_, err = resolveSecret(t.Context(), sdk.SecretRequest{Scheme: secretScheme, Name: "billing-api"})
-	if !sdk.IsPermissionDenied(err) {
-		t.Errorf("error is %v, want permission denied for a caller with no namespace", err)
+	_, noNamespace := resolveSecret(t.Context(), sdk.SecretRequest{Scheme: secretScheme, Name: "billing-api"})
+	if !sdk.IsNotFound(noNamespace) {
+		t.Errorf("error is %v, want not-found for a caller with no namespace", noNamespace)
 	}
 
-	// The other half of that boundary: a tenant who mistypes a reference must
-	// not be handed the name of a provider it was never configured for.
-	_, err = resolveSecret(t.Context(), sdk.SecretRequest{Scheme: secretScheme, Name: "typo", Namespace: "tenant-b"})
-	if !sdk.IsNotFound(err) {
-		t.Fatalf("error is %v, want not-found", err)
+	// A tenant that mistypes a reference must not be handed the name of a
+	// provider it was never configured for, and must not be able to tell a
+	// provider another tenant holds from one nobody does.
+	_, neverGranted := resolveSecret(t.Context(), sdk.SecretRequest{Scheme: secretScheme, Name: "typo", Namespace: "tenant-b"})
+	if !sdk.IsNotFound(neverGranted) {
+		t.Fatalf("error is %v, want not-found", neverGranted)
 	}
-	if strings.Contains(err.Error(), "billing-api") {
-		t.Errorf("the refusal names a provider another tenant's namespace owns: %v", err)
+	if strings.Contains(neverGranted.Error(), "billing-api") {
+		t.Errorf("the refusal names a provider another tenant's namespace owns: %v", neverGranted)
+	}
+	if strings.Replace(grantedElsewhere.Error(), `"billing-api"`, "", 1) != strings.Replace(neverGranted.Error(), `"typo"`, "", 1) {
+		t.Errorf("the refusals differ beyond the name the caller supplied:\n  configured elsewhere: %v\n  never configured:     %v",
+			grantedElsewhere, neverGranted)
 	}
 }
 

@@ -87,15 +87,27 @@ func TestANamespacedGrantIsReachableOnlyFromThatNamespace(t *testing.T) {
 		t.Fatalf("the tenant the grant names could not spend it: %v", err)
 	}
 
-	_, _, err := selectGrants("tenant-b", &sshv1.RunInputs{Host: "tenant-a-only", Command: "probe"})
-	if !sdk.IsPermissionDenied(err) {
-		t.Fatalf("error is %v, want permission denied: another tenant spent a namespaced grant", err)
+	_, _, grantedElsewhere := selectGrants("tenant-b", &sshv1.RunInputs{Host: "tenant-a-only", Command: "probe"})
+	if !sdk.IsNotFound(grantedElsewhere) {
+		t.Fatalf("error is %v, want not-found: another tenant spent a namespaced grant", grantedElsewhere)
+	}
+
+	// Not-found rather than denied, and indistinguishable from a host nobody
+	// holds: telling the two apart is an oracle a tenant can walk to enumerate
+	// the operator's infrastructure a guess at a time.
+	_, _, neverGranted := selectGrants("tenant-b", &sshv1.RunInputs{Host: "no-such-host", Command: "probe"})
+	if !sdk.IsNotFound(neverGranted) {
+		t.Fatalf("error is %v, want not-found", neverGranted)
+	}
+	if strings.Replace(grantedElsewhere.Error(), `"tenant-a-only"`, "", 1) != strings.Replace(neverGranted.Error(), `"no-such-host"`, "", 1) {
+		t.Errorf("the refusals differ beyond the name the caller supplied:\n  granted elsewhere: %v\n  never granted:     %v",
+			grantedElsewhere, neverGranted)
 	}
 
 	// A workload whose namespace the host did not establish is the empty
 	// namespace, which a grant naming namespaces does not match either.
-	if _, _, err := selectGrants("", &sshv1.RunInputs{Host: "tenant-a-only", Command: "probe"}); !sdk.IsPermissionDenied(err) {
-		t.Errorf("error is %v, want permission denied for a caller with no namespace", err)
+	if _, _, err := selectGrants("", &sshv1.RunInputs{Host: "tenant-a-only", Command: "probe"}); !sdk.IsNotFound(err) {
+		t.Errorf("error is %v, want not-found for a caller with no namespace", err)
 	}
 
 	// A grant naming no namespaces is every namespace, which is what a

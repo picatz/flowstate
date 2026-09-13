@@ -48,26 +48,33 @@ import (
 //   - walkers_guard_test.go sameScopeContainers — the guard each walker
 //     package keeps beside the walkers it guards.
 //   - constraints tests nestedStruct — one fixture, two test files.
+//   - oci/reference.go and scim/client.go truncate — the rune-safe cut for
+//     other-party text on its way into a protobuf string field. Two plugin
+//     modules, neither of which can import the other's copy, and the root
+//     module's internal/textbound is not something a plugin module reaches
+//     for today; the same #1333 shared substrate the installEgressPolicy
+//     entry names would retire both.
 //   - `.funcN` members — function literals: t.Run bodies and setup closures
 //     repeated across a test file's cases, and the two signal-wait goroutines
 //     in wait_local.go. Each is a helper waiting to be written; recorded so
 //     the next copied closure is seen the day it arrives.
 var duplicateBodies = map[string]bool{
-	"plugins/sql/egress.go:installEgressPolicy = plugins/ssh/egress.go:installEgressPolicy":                                                                                                                                                                                                            true,
-	"pkg/flowstate/v1/engine/authority_test.go:TestAuthorityDenial = pkg/flowstate/v1/eval_test.go:TestAuthorityDenial":                                                                                                                                                                                true,
-	"pkg/flowstate/v1/engine/authority_test.go:TestCleartextCredential = pkg/flowstate/v1/eval_test.go:TestCleartextCredential":                                                                                                                                                                        true,
-	"pkg/flowstate/v1/engine/walkers_guard_test.go:sameScopeContainers = pkg/flowstate/v1/flowfile/walkers_guard_test.go:sameScopeContainers":                                                                                                                                                          true,
-	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflow = pkg/flowstate/v1/eval_test.go:TestRunWorkflow":                                                                                                                                                                                         true,
-	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowAsync.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowSwitch.func1":                                                                                                                                                       true,
-	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowDebuggerNeutrality.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowInterpolation.func1":                                                                                                                                   true,
+	"plugins/oci/reference.go:truncate = plugins/scim/client.go:truncate":                                                                                            true,
+	"plugins/sql/egress.go:installEgressPolicy = plugins/ssh/egress.go:installEgressPolicy":                                                                          true,
+	"pkg/flowstate/v1/engine/authority_test.go:TestAuthorityDenial = pkg/flowstate/v1/eval_test.go:TestAuthorityDenial":                                              true,
+	"pkg/flowstate/v1/engine/authority_test.go:TestCleartextCredential = pkg/flowstate/v1/eval_test.go:TestCleartextCredential":                                      true,
+	"pkg/flowstate/v1/engine/walkers_guard_test.go:sameScopeContainers = pkg/flowstate/v1/flowfile/walkers_guard_test.go:sameScopeContainers":                        true,
+	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflow = pkg/flowstate/v1/eval_test.go:TestRunWorkflow":                                                       true,
+	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowAsync.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowSwitch.func1":                     true,
+	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowDebuggerNeutrality.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowInterpolation.func1": true,
 	"pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowErrorText.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowLog.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowNestedErrorText.func1 = pkg/flowstate/v1/engine/workflow_test.go:TestRunWorkflowVars.func1": true,
-	"pkg/flowstate/v1/eval_task_http_run.go:isLoopbackHost = pkg/flowstate/v1/secrets/vault/vault.go:isLoopback":                                                                                                                                                                                       true,
-	"pkg/flowstate/v1/eval_test.go:TestRunWorkflowAsync.func1 = pkg/flowstate/v1/eval_test.go:TestRunWorkflowSwitch.func1":                                                                                                                                                                             true,
-	"pkg/flowstate/v1/flowfile/call_test.go:TestCallArgumentTypeChecked.func1 = pkg/flowstate/v1/flowfile/call_test.go:TestCallEnumArgumentType.func1":                                                                                                                                                 true,
-	"pkg/flowstate/v1/flowfile/lsp/schema.go:fieldNames = pkg/flowstate/v1/flowfile/schema.go:fieldNames = pkg/flowstate/v1/plugin/catalogtask_test.go:fieldNamesOf":                                                                                                                                   true,
-	"pkg/flowstate/v1/netpolicy/credentials_test.go:Test_New_credentialsRules.func1 = pkg/flowstate/v1/netpolicy/identity_test.go:Test_New_identityRules.func1":                                                                                                                                        true,
-	"pkg/flowstate/v1/protodoc/presence_test.go:TestPluginProtocolProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestRunAndReportsProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestTaskProtocolProseIsPresent.func3":                                           true,
-	"pkg/flowstate/v1/secrets/secrets.go:validScheme = pkg/flowstate/v1/secrets/vault/vault.go:validScheme":                                                                                                                                                                                            true,
+	"pkg/flowstate/v1/eval_task_http_run.go:isLoopbackHost = pkg/flowstate/v1/secrets/vault/vault.go:isLoopback":                                                                                                                                             true,
+	"pkg/flowstate/v1/eval_test.go:TestRunWorkflowAsync.func1 = pkg/flowstate/v1/eval_test.go:TestRunWorkflowSwitch.func1":                                                                                                                                   true,
+	"pkg/flowstate/v1/flowfile/call_test.go:TestCallArgumentTypeChecked.func1 = pkg/flowstate/v1/flowfile/call_test.go:TestCallEnumArgumentType.func1":                                                                                                       true,
+	"pkg/flowstate/v1/flowfile/lsp/schema.go:fieldNames = pkg/flowstate/v1/flowfile/schema.go:fieldNames = pkg/flowstate/v1/plugin/catalogtask_test.go:fieldNamesOf":                                                                                         true,
+	"pkg/flowstate/v1/netpolicy/credentials_test.go:Test_New_credentialsRules.func1 = pkg/flowstate/v1/netpolicy/identity_test.go:Test_New_identityRules.func1":                                                                                              true,
+	"pkg/flowstate/v1/protodoc/presence_test.go:TestPluginProtocolProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestRunAndReportsProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestTaskProtocolProseIsPresent.func3": true,
+	"pkg/flowstate/v1/secrets/secrets.go:validScheme = pkg/flowstate/v1/secrets/vault/vault.go:validScheme":                                                                                                                                                  true,
 	"pkg/flowstate/v1/server/list_scan_test.go:TestAFilterOnNameCannotEscapeTenancy.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryMatchingRun.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRun.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRunAmongOtherTenants.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRunMatchingByName.func1 = pkg/flowstate/v1/server/list_selection_internal_test.go:pagingNamespace.func1": true,
 	"pkg/flowstate/v1/wait_local.go:waitForSignalLocally.func3 = pkg/flowstate/v1/wait_local.go:waitForSignalsLocally.func3":                                            true,
 	"plugins/codex/readme_test.go:extractExampleBlocks = plugins/github/readme_test.go:extractExampleBlocks = plugins/sql/readme_test.go:extractExampleBlocks":          true,

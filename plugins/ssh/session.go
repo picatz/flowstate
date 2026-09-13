@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -60,14 +62,19 @@ func run(ctx context.Context, host hostGrant, command commandGrant, commandLine 
 		return nil, err
 	}
 
-	address, err := authorizedAddress(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-
+	// One deadline for the whole of getting connected, taken before the name is
+	// resolved. Resolution, the dial and the handshake are three waits on a
+	// party this worker does not control, and giving each its own interval lets
+	// a slow resolver and a slow peer add up to several times the bound the
+	// operator wrote.
 	connectTimeout := host.ConnectTimeout.duration(defaultConnectTimeout)
 	dialCtx, cancelDial := context.WithTimeout(ctx, connectTimeout)
 	defer cancelDial()
+
+	address, err := authorizedAddress(dialCtx, host)
+	if err != nil {
+		return nil, err
+	}
 
 	dialer := net.Dialer{}
 	conn, err := dialer.DialContext(dialCtx, "tcp", address)
@@ -117,8 +124,8 @@ func exec(ctx context.Context, client *ssh.Client, command commandGrant, command
 	defer session.Close()
 
 	limit := command.outputLimit()
-	stdout := &boundedWriter{limit: limit}
-	stderr := &boundedWriter{limit: limit}
+	stdout := newBoundedWriter(limit)
+	stderr := newBoundedWriter(limit)
 	session.Stdout = stdout
 	session.Stderr = stderr
 
@@ -140,6 +147,10 @@ func exec(ctx context.Context, client *ssh.Client, command commandGrant, command
 	select {
 	case err := <-done:
 		return finish(command, stdout, stderr, err)
+	case <-stdout.exhausted:
+		return nil, endForOutput(session, "stdout")
+	case <-stderr.exhausted:
+		return nil, endForOutput(session, "stderr")
 	case <-runCtx.Done():
 		// Closing the session unblocks the goroutine above; the command itself
 		// keeps running on the far side, which is exactly why this is an
@@ -153,6 +164,24 @@ func exec(ctx context.Context, client *ssh.Client, command commandGrant, command
 		return nil, sdk.OutcomeUnknown(
 			"the call was cancelled after the command was started; it may still be running on the host, so it is not retried automatically")
 	}
+}
+
+// endForOutput closes a session whose command has written past what this call
+// will read, and says what happened.
+//
+// The streams are not reported: the command was still writing when this ended
+// it, so what was captured is a prefix of output that kept going, and the exit
+// status never arrived. That makes it an unknown outcome - the command ran, it
+// may still be running, and a retry would run it again - but a prompt one with
+// an accurate reason, rather than a timeout's worth of waiting and a message
+// about a command that had in fact already finished.
+func endForOutput(session *ssh.Session, stream string) error {
+	_ = session.Close()
+
+	return sdk.OutcomeUnknown(
+		"the command wrote more than %d bytes to %s after this grant's output limit was full, and the session was ended; "+
+			"it may still be running on the host, so it is not retried automatically",
+		int64(maxOutputReadBytes), stream)
 }
 
 // finish turns a completed session into a result or a classified failure.
@@ -269,20 +298,36 @@ func loadIdentity(host hostGrant) (ssh.Signer, error) {
 
 // readBoundedFile reads a file the operator's grant names.
 func readBoundedFile(path string, limit int64, field string) ([]byte, error) {
-	info, err := os.Stat(path)
+	// Opened once and checked through that descriptor, rather than stat-then-
+	// read: a path checked and reopened is a path that can be a different file
+	// the second time, and the size that was checked is not the size that gets
+	// read. A FIFO or a device also passes a size check and then blocks a task
+	// handler with nothing to stop it.
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, sdk.Failed("the host grant's %s (%q) cannot be read: %v", field, truncate(path, 256), err)
 	}
-	if info.IsDir() {
-		return nil, sdk.Failed("the host grant's %s (%q) is a directory", field, truncate(path, 256))
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, sdk.Failed("the host grant's %s (%q) cannot be read: %v", field, truncate(path, 256), err)
 	}
-	if info.Size() > limit {
-		return nil, sdk.Failed("the host grant's %s (%q) is %d bytes, over the %d-byte limit", field, truncate(path, 256), info.Size(), limit)
+	if !info.Mode().IsRegular() {
+		return nil, sdk.Failed(
+			"the host grant's %s (%q) is not a regular file; a key is a file this worker reads, not a stream something writes",
+			field, truncate(path, 256))
 	}
 
-	data, err := os.ReadFile(path)
+	// The limit is enforced on the read, not on the size reported before it,
+	// and one byte past it is what makes "over the limit" observable rather
+	// than "exactly the limit".
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, sdk.Failed("the host grant's %s (%q) cannot be read: %v", field, truncate(path, 256), err)
+	}
+	if int64(len(data)) > limit {
+		return nil, sdk.Failed("the host grant's %s (%q) is over the %d-byte limit", field, truncate(path, 256), limit)
 	}
 	return data, nil
 }
@@ -369,20 +414,17 @@ func subtleEqual(a, b []byte) bool {
 	return diff == 0
 }
 
-// errOutputExhausted ends a session whose command has written far enough past
-// the grant's limit that nothing further can be reported. It never reaches a
-// caller: run turns it into the truncated result the limit describes.
-var errOutputExhausted = errors.New("this command has written past the output this grant will read")
-
-// discardRatio is how far past its limit a stream may go before this writer
-// stops accepting it at all.
+// maxOutputReadBytes bounds what one stream will be read and thrown away after
+// its reporting limit is full.
 //
-// Some slack, because a command that ends just over the limit should produce a
-// truncated result rather than a refusal, and the far side writes in blocks it
-// chose. Past that the stream is no longer output being cut short, it is a
-// command deciding how long this call reads - which the grant's limit has to
-// bound as well as what it reports.
-const discardRatio = 4
+// Deliberately far above any grant's limit, and absolute rather than a multiple
+// of it. Reading past a full stream is ordinary - a noisy command produces a
+// truncated result, which is what max_output_bytes describes - so the ceiling
+// that ends a session has to sit where the stream has stopped being output
+// being cut short and become a command deciding how long this call reads. It is
+// the same shape, and the same size, as the container log ceiling in
+// plugins/docker.
+const maxOutputReadBytes = 64 << 20
 
 // boundedWriter collects a stream up to a limit and remembers that there was
 // more, so a truncated stream is never reported as a complete one.
@@ -392,12 +434,20 @@ type boundedWriter struct {
 	discarded  int64
 	buffer     strings.Builder
 	overflowed bool
+
+	// exhausted is closed once this stream has spent the reading this call will
+	// do on it. A signal rather than a write error: refusing a write leaves the
+	// far side blocked on a flow-control window nobody extends again, so the
+	// command never exits, the session's own wait never returns, and a command
+	// that in fact ran to completion is reported as an unknown outcome a whole
+	// timeout later. Closing the session is what ends it, and exec does that.
+	exhausted chan struct{}
+	once      sync.Once
 }
 
-// exhausted reports whether this stream has spent the reading this call will do
-// on it.
-func (w *boundedWriter) exhausted() bool {
-	return w.discarded >= w.limit*discardRatio
+// newBoundedWriter builds one for a stream bounded at limit.
+func newBoundedWriter(limit int64) *boundedWriter {
+	return &boundedWriter{limit: limit, exhausted: make(chan struct{})}
 }
 
 // Write implements io.Writer.
@@ -405,14 +455,10 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 	remaining := w.limit - w.written
 	if remaining <= 0 {
 		w.overflowed = true
-		if w.exhausted() {
-			// Refusing the write is what closes the channel: the session ends,
-			// and what is kept is reported as truncated rather than as whole.
-			return 0, errOutputExhausted
-		}
 		w.discarded += int64(len(p))
-		// Otherwise counted as written so the remote command is not blocked on
-		// a writer that refuses them; they are simply not kept.
+		w.signalIfExhausted()
+		// Counted as written so the remote command is not blocked on a writer
+		// that refuses them; they are simply not kept.
 		return len(p), nil
 	}
 	if int64(len(p)) > remaining {
@@ -420,6 +466,7 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 		w.written = w.limit
 		w.overflowed = true
 		w.discarded += int64(len(p)) - remaining
+		w.signalIfExhausted()
 		return len(p), nil
 	}
 
@@ -431,6 +478,14 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 // text is the stream as a string, empty when it is not valid UTF-8: a step
 // output is not where arbitrary binary belongs, and a cut at the byte limit can
 // leave half a rune behind.
+// signalIfExhausted closes [boundedWriter.exhausted] the first time this stream
+// passes the ceiling.
+func (w *boundedWriter) signalIfExhausted() {
+	if w.discarded > maxOutputReadBytes {
+		w.once.Do(func() { close(w.exhausted) })
+	}
+}
+
 func (w *boundedWriter) text() string {
 	value := w.buffer.String()
 	if !utf8.ValidString(value) {

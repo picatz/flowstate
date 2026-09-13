@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -117,14 +122,84 @@ func fetchBlob(ctx context.Context, client *registryClient, ref reference, limit
 	}
 
 	if parseJSON {
-		var document any
-		if err := json.Unmarshal(body, &document); err != nil {
+		document, err := decodeJSON(body)
+		if err != nil {
 			return nil, sdk.Failed(
-				"parse_json was set and the blob at %s is not valid JSON; it is returned as content or not at all",
-				truncate(ref.Digest, 96))
+				"parse_json was set and the blob at %s could not be decoded (%v); it is returned as content or not at all",
+				truncate(ref.Digest, 96), err)
 		}
 		out.Json = sdk.Literal(document)
 	}
 
 	return out, nil
+}
+
+// decodeJSON decodes a blob into the shapes a CEL value carries, without
+// rounding an integer on the way.
+//
+// encoding/json decodes every number into a float64 when the destination is
+// `any`, and a float64 holds integers exactly only up to 2^53. An attestation
+// or SBOM carrying a larger one - a build number, an epoch in nanoseconds, an
+// identifier - would reach a workflow as a different value from the one in the
+// bytes this task just verified against their digest, and a policy decision
+// made on it would be made on evidence the registry did not serve. Numbers are
+// decoded as text and converted, so an integer stays an integer and anything
+// that is not representable is refused rather than rounded.
+func decodeJSON(body []byte) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return nil, errors.New("the blob is not valid JSON")
+	}
+	if decoder.More() {
+		return nil, errors.New("the blob carries more than one JSON document")
+	}
+	return exactNumbers(document)
+}
+
+// exactNumbers replaces every json.Number with the Go value a CEL literal can
+// carry without loss.
+func exactNumbers(value any) (any, error) {
+	switch typed := value.(type) {
+	case json.Number:
+		if integer, err := typed.Int64(); err == nil {
+			return integer, nil
+		}
+		asFloat, err := typed.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("the blob carries the number %s, which is neither an integer nor a float this plugin can represent",
+				truncate(typed.String(), 64))
+		}
+		// A non-integer that survives the round trip is exact as a float; one
+		// that does not is a value this task would be changing.
+		if strconv.FormatFloat(asFloat, 'g', -1, 64) != typed.String() && big.NewFloat(asFloat).Text('g', -1) != typed.String() {
+			if _, ok := new(big.Float).SetString(typed.String()); ok {
+				return nil, fmt.Errorf("the blob carries the number %s, which cannot be represented exactly; a policy decision on a rounded value is a decision on evidence this registry did not serve",
+					truncate(typed.String(), 64))
+			}
+		}
+		return asFloat, nil
+	case map[string]any:
+		for key, entry := range typed {
+			converted, err := exactNumbers(entry)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = converted
+		}
+		return typed, nil
+	case []any:
+		for i, entry := range typed {
+			converted, err := exactNumbers(entry)
+			if err != nil {
+				return nil, err
+			}
+			typed[i] = converted
+		}
+		return typed, nil
+	default:
+		return value, nil
+	}
 }

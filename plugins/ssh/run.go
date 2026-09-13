@@ -77,22 +77,22 @@ func sshRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowst
 // selectGrants resolves the two names a call carries into the operator's own
 // grants, refusing anything the operator did not write.
 //
-// The order matters for what an author learns: an unknown host is named as
-// unknown, a known host that does not permit a command says so, and a namespace
-// that may not spend the grant is refused as a permission decision rather than
-// as a missing host - a tenant probing for which grants exist learns nothing
-// they could not already see in their own configuration.
+// What an author learns is bounded by what their own namespace holds. A host
+// this workload is not granted is not found, whether or not it exists
+// elsewhere in the file; a host it does hold that does not permit the command
+// says so, because both halves are then the author's own configuration to
+// read. So a tenant probing for grants learns nothing it could not already
+// see.
 func selectGrants(namespace string, in *sshv1.RunInputs) (hostGrant, commandGrant, error) {
 	host, ok := operatorGrants.Hosts[in.GetHost()]
-	if !ok {
+	if !ok || !host.reachableFrom(namespace) {
+		// One answer for both, deliberately: see selectRun in plugins/docker.
+		// A tenant that can tell "exists but denied" from "does not exist" can
+		// enumerate the operator's hosts a guess at a time, which is the
+		// disclosure the reachable-names list refuses to make in bulk.
 		return hostGrant{}, commandGrant{}, sdk.NotFound(
-			"no host grant named %q; this worker's grants file names %s",
+			"no host grant named %q is granted to this workload; this worker's grants file names %s",
 			truncate(in.GetHost(), 64), joinNames(reachableHostNames(namespace)))
-	}
-
-	if !host.reachableFrom(namespace) {
-		return hostGrant{}, commandGrant{}, sdk.PermissionDenied(
-			"the host grant %q is not granted to this workload's namespace", truncate(in.GetHost(), 64))
 	}
 
 	if !host.permits(in.GetCommand()) {

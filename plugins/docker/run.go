@@ -96,14 +96,15 @@ func dockerRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 // tenant's workflows do not learn it exists.
 func selectRun(namespace, name string) (runGrant, error) {
 	grant, ok := operatorGrants.Runs[name]
-	if !ok {
+	if !ok || !grant.reachableFrom(namespace) {
+		// One answer for both, deliberately. Answering "denied" for a grant
+		// that exists and "not found" for one that does not lets a tenant
+		// enumerate the operator's grant names one guess at a time, which is
+		// the disclosure the reachable-names list above already refuses to
+		// make in bulk.
 		return runGrant{}, sdk.NotFound(
-			"no run grant named %q; this worker's grants file names %s",
+			"no run grant named %q is granted to this workload; this worker's grants file names %s",
 			truncate(name, 64), joinNames(reachableRuns(namespace)))
-	}
-	if !grant.reachableFrom(namespace) {
-		return runGrant{}, sdk.PermissionDenied(
-			"the run grant %q is not granted to this workload's namespace", truncate(name, 64))
 	}
 	return grant, nil
 }

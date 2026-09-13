@@ -100,3 +100,46 @@ func TestBlobMaxBytesIsRefusedRatherThanLowered(t *testing.T) {
 		t.Errorf("boundedBlobBytes(0) = %d, %v", got, err)
 	}
 }
+
+// TestParsedJSONKeepsIntegersTheRegistryServed is why parse_json does not
+// decode into `any` directly.
+//
+// encoding/json turns every number into a float64 when the destination is
+// `any`, and a float64 holds integers exactly only to 2^53. A workflow
+// branching on a build number or a nanosecond epoch out of an attestation would
+// be branching on a value different from the bytes this task just verified
+// against their digest.
+func TestParsedJSONKeepsIntegersTheRegistryServed(t *testing.T) {
+	registry := newFakeRegistry(t)
+	// 2^53 + 1: the first integer a float64 cannot represent.
+	document := []byte(`{"buildNumber":9007199254740993,"small":42,"ratio":0.5}`)
+	digest := registry.addBlob("app", "application/vnd.in-toto+json", document)
+
+	out, err := fetchBlob(t.Context(), registry.client(t, credentials{}), mustParse(t, registry.pinned("app", digest)), defaultBlobBytes, true)
+	if err != nil {
+		t.Fatalf("fetchBlob: %v", err)
+	}
+
+	entries := out.GetJson().GetMapValue().GetEntries()
+	if len(entries) != 3 {
+		t.Fatalf("json decoded to %d entries, want 3", len(entries))
+	}
+
+	for _, entry := range entries {
+		switch entry.GetKey().GetStringValue() {
+		case "buildNumber":
+			if got := entry.GetValue().GetInt64Value(); got != 9007199254740993 {
+				t.Errorf("buildNumber = %d (double %v), want the integer the registry served",
+					got, entry.GetValue().GetDoubleValue())
+			}
+		case "small":
+			if got := entry.GetValue().GetInt64Value(); got != 42 {
+				t.Errorf("small = %d, want 42", got)
+			}
+		case "ratio":
+			if got := entry.GetValue().GetDoubleValue(); got != 0.5 {
+				t.Errorf("ratio = %v, want a float to stay a float", got)
+			}
+		}
+	}
+}
