@@ -1,0 +1,67 @@
+edition: v2026.3
+name: docker-smoke-test-gate
+description: Runs a digest-pinned test container, reports what it found, and gates a release on a human reading the result - spending an operator's run grant rather than naming an image.
+# What a workflow can say here, and what it cannot.
+#
+# The step below names a run grant and one parameter. It cannot name the image,
+# the mounts, the network, the user, the memory limit or the timeout, because
+# none of those are inputs to docker.run - they are in the operator's grants
+# file beside this workflow.
+#
+# That is the whole difference between this and a CI system's `image:` key: a
+# Flowfile selects within an operator's authority, and cannot compose it.
+plugins:
+  docker: v0.1.0
+inputs:
+  suite:
+    type: string
+    required: true
+    description: which suite the granted run should execute
+    example: smoke
+    must: this.matches(r'^[a-z0-9-]{1,32}$')
+  expected_approver:
+    type: string
+    required: true
+    description: attested subject allowed to approve the release
+    example: release-manager@example.com
+signals:
+  release-approved:
+    allow:
+      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
+        claims:
+          team: release-managers
+    distinct_from_starter: true
+steps:
+  - id: tests
+    docker.run:
+      run: smoke-test
+      parameters:
+        suite: ${inputs.suite}
+    # The grant counts exit 1 as success, because a failing test suite is a
+    # result this workflow reads rather than an error. A container that could
+    # not start at all still fails the step.
+
+  - id: passed
+    value: ${steps.tests.exit_code == 0}
+
+  - id: approval
+    wait_for_signal:
+      name: release-approved
+      prompt: '${"Tests %s on %s.\n\n%s\n\nRelease?".format([steps.passed.value ? "passed" : "FAILED", steps.tests.image, steps.tests.stdout])}'
+      timeout: 24h
+      outputs:
+        approved: ${payload.?approved.orValue(false)}
+        timed_out: ${timed_out}
+outputs:
+  passed:
+    value: ${steps.passed.value}
+    description: whether the granted container exited zero
+  image:
+    value: ${steps.tests.image}
+    description: the digest-pinned image that actually ran, for the release record
+  output:
+    value: ${steps.tests.stdout}
+    description: what the container reported, bounded by the grant
+  released:
+    value: ${steps.approval.approved && !steps.approval.timed_out}
+    description: true only when an attested approver said yes after reading the result

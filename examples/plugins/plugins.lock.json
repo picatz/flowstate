@@ -160,6 +160,91 @@
       "claimsDigest": "sha256:b5dd70042bdd23befca5989ea040080ef4a81fca6cf2d82e444220955ace33eb"
     },
     {
+      "name": "docker",
+      "version": "0.1.0",
+      "description": "Runs one operator-granted container to completion: digest-pinned image, explicit argv, no network, read-only root, bounded and removed.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "docker.run",
+          "summary": "Run one container grant to completion, filling the placeholders it declares, and return its bounded output.",
+          "inputs": [
+            {
+              "name": "run",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "parameters",
+              "type": "map[string, string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "exit_code",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "stdout",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "stderr",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "image",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "run",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChZkb2NrZXIvdjEvZG9ja2VyLnByb3RvEglkb2NrZXIudjEiogEKCVJ1bklucHV0cxIQCgNydW4YASABKAlSA3J1bhJECgpwYXJhbWV0ZXJzGAIgAygLMiQuZG9ja2VyLnYxLlJ1bklucHV0cy5QYXJhbWV0ZXJzRW50cnlSCnBhcmFtZXRlcnMaPQoPUGFyYW1ldGVyc0VudHJ5EhAKA2tleRgBIAEoCVIDa2V5EhQKBXZhbHVlGAIgASgJUgV2YWx1ZToCOAEinwEKClJ1bk91dHB1dHMSGwoJZXhpdF9jb2RlGAEgASgFUghleGl0Q29kZRIWCgZzdGRvdXQYAiABKAlSBnN0ZG91dBIWCgZzdGRlcnIYAyABKAlSBnN0ZGVychIcCgl0cnVuY2F0ZWQYBCABKAhSCXRydW5jYXRlZBIUCgVpbWFnZRgFIAEoCVIFaW1hZ2USEAoDcnVuGAYgASgJUgNydW5CpAEKDWNvbS5kb2NrZXIudjFCC0RvY2tlclByb3RvUAFaQWdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL2RvY2tlci9nZW4vZG9ja2VyL3YxO2RvY2tlcnYxogIDRFhYqgIJRG9ja2VyLlYxygIJRG9ja2VyXFYx4gIVRG9ja2VyXFYxXEdQQk1ldGFkYXRh6gIKRG9ja2VyOjpWMWIGcHJvdG8z",
+          "inputMessage": "docker.v1.RunInputs",
+          "outputDescriptor": "ChZkb2NrZXIvdjEvZG9ja2VyLnByb3RvEglkb2NrZXIudjEiogEKCVJ1bklucHV0cxIQCgNydW4YASABKAlSA3J1bhJECgpwYXJhbWV0ZXJzGAIgAygLMiQuZG9ja2VyLnYxLlJ1bklucHV0cy5QYXJhbWV0ZXJzRW50cnlSCnBhcmFtZXRlcnMaPQoPUGFyYW1ldGVyc0VudHJ5EhAKA2tleRgBIAEoCVIDa2V5EhQKBXZhbHVlGAIgASgJUgV2YWx1ZToCOAEinwEKClJ1bk91dHB1dHMSGwoJZXhpdF9jb2RlGAEgASgFUghleGl0Q29kZRIWCgZzdGRvdXQYAiABKAlSBnN0ZG91dBIWCgZzdGRlcnIYAyABKAlSBnN0ZGVychIcCgl0cnVuY2F0ZWQYBCABKAhSCXRydW5jYXRlZBIUCgVpbWFnZRgFIAEoCVIFaW1hZ2USEAoDcnVuGAYgASgJUgNydW5CpAEKDWNvbS5kb2NrZXIudjFCC0RvY2tlclByb3RvUAFaQWdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL2RvY2tlci9nZW4vZG9ja2VyL3YxO2RvY2tlcnYxogIDRFhYqgIJRG9ja2VyLlYxygIJRG9ja2VyXFYx4gIVRG9ja2VyXFYxXEdQQk1ldGFkYXRh6gIKRG9ja2VyOjpWMWIGcHJvdG8z",
+          "outputMessage": "docker.v1.RunOutputs",
+          "requiredSecretInputs": []
+        }
+      ],
+      "protocolVersion": 7,
+      "taskSchemaDigest": "sha256:0e2882a6352434e1f45d110be901dc4e717c04dcd1511a48257094dda96d8c45",
+      "claimsDigest": "sha256:40ef9c189ed75ea650bb2a3f0aec65c28bd96df24e54512107a753a0876d4157"
+    },
+    {
       "name": "example",
       "version": "0.1.0",
       "description": "Resolves example: secrets and greets people.",

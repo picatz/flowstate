@@ -30,8 +30,8 @@ operate.
 ## The plugin ecosystem
 
 The built-in registry stays small — the admission test in DSL.md holds — so the
-breadth lives in plugins, spelled `<plugin>.<task>:`. Nine ship in-tree and so are
-no longer listed here — `codex`, `git`, `github`, `oci`, `scim`, `slack`, `sql`, `ssh`, `vcs`; the
+breadth lives in plugins, spelled `<plugin>.<task>:`. Ten ship in-tree and so are
+no longer listed here — `codex`, `docker`, `git`, `github`, `oci`, `scim`, `slack`, `sql`, `ssh`, `vcs`; the
 README's *Extend* row and [PLUGINS.md](PLUGINS.md) are the record. Still wanted,
 each landing with a worked example verified in CI:
 
@@ -44,8 +44,12 @@ each landing with a worked example verified in CI:
   `secrets/vault` package is the in-process ancestor).
 - **1password** — exists in-tree as a provider; needs local verification against
   the real agent before it is claimed.
-- **docker, or a sandbox-provider plugin** (Modal or similar) — a place to run
-  untrusted work that is not the worker's own host; pairs with `exec:`'s policy.
+- **a sandbox-provider plugin** (Modal or similar) — a place to run untrusted
+  work that is not the worker's own host; pairs with `exec:`'s policy. The
+  `docker` half of this entry shipped and deliberately does not claim to be the
+  sandbox: it runs an operator-granted container and says plainly that a daemon
+  socket is ambient authority, so the confine column (#721) is still the
+  substrate's and still empty.
 - **github-actions** — bidirectional integration, deliberately weird: GHA as a
   trigger source and as a target, so each system can gate the other. The in-tree
   `github` plugin covers issues and pull requests; the Actions half is what remains.
