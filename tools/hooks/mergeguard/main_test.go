@@ -613,6 +613,217 @@ func TestMergeShellExpansionIsRejected(t *testing.T) {
 	}
 }
 
+// TestShellExpansionDenialSaysWhatToDo covers #1972's other half. The refusal is
+// intentional and unchanged — text cannot separate an obfuscated merge from prose
+// about merging once expansion is in play — but the message has to tell the
+// caller which of the two cases they are in, because the remedies are opposite.
+func TestShellExpansionDenialSaysWhatToDo(t *testing.T) {
+	t.Parallel()
+	sha := strings.Repeat("a", 40)
+
+	// A recognized merge keeps the advice that fits it: make the invocation
+	// explicit and pin the head.
+	for _, command := range []string{
+		"gh pr merge 498 -R picatz/flowstate --match-head-commit $HEAD",
+		`cmd=gh; "$cmd" pr merge 498 -R picatz/flowstate --auto`,
+	} {
+		reason := shellExpansionDenial(command)
+		if !strings.Contains(reason, "shell expansion in a merge invocation") {
+			t.Errorf("a recognized merge lost its own advice: %q -> %q", command, reason)
+		}
+		if strings.Contains(reason, "not a recognized merge invocation") {
+			t.Errorf("a recognized merge was described as not one: %q", command)
+		}
+		// Recognized is recognized by text, so this branch is also where prose
+		// quoting a merge invocation lands. It has to offer that caller a way out
+		// rather than only the advice for merging.
+		if !strings.Contains(reason, "only quotes or documents a merge invocation") ||
+			!strings.Contains(reason, "git commit -F FILE") {
+			t.Errorf("the recognized branch offers no remedy for prose: %q", reason)
+		}
+	}
+
+	// The #1972 reproduction: a status query. The message must not assert this is
+	// a merge invocation, must name what actually matched, and must give the
+	// remedy for a command that is not merging anything.
+	repro := `cd /home/user/flowstate && echo "=== PR 1960 state ===" && ` +
+		`gh api repos/picatz/flowstate/pulls/1960 --jq '"merged=\(.merged)"'; ` +
+		`echo "=== any comment/review after the merge? ==="; ` +
+		`gh api repos/picatz/flowstate/commits/$(git rev-parse origin/main)/check-runs --jq .total_count`
+	reason := shellExpansionDenial(repro)
+	// The ingredient clause is asserted whole, in order, and anchored to the text
+	// that follows it. Matching the ingredient names one at a time does not work:
+	// "the standalone word `merge`" also appears in the remedy sentence below, so
+	// a per-name check passes even when the ingredient list is empty.
+	const clause = "it carries a `gh` token, the standalone word `merge` and an expansion character (`$` or a backtick). This hook matches text"
+	if !strings.Contains(reason, clause) {
+		t.Errorf("denial for the status query does not name what matched:\n got %q\nwant substring %q", reason, clause)
+	}
+	for _, want := range []string{
+		"not a recognized merge invocation",
+		"quoting is not the remedy",
+		"no single remedy is promised here",
+		"#1972",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("denial for the status query does not mention %q: %q", want, reason)
+		}
+	}
+
+	// The names describe syntax the predicates matched, never a behavior they
+	// proved. A quoted jq selector is the case that makes the difference: its
+	// braces and `$` are literal to the shell, so a message calling them an
+	// expansion would be false and would imply quoting as a fix.
+	quoted := `gh api repos/o/r/pulls/1 --jq '{merge: .mergeable}' && echo $?`
+	if in := (&hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": quoted}}); !mergeUsesShellExpansion(in) {
+		t.Fatalf("test corpus drifted: %q is no longer denied", quoted)
+	}
+	quotedReason := shellExpansionDenial(quoted)
+	for _, want := range []string{
+		"brace characters (`{` with `}`)",
+		"an expansion character (`$` or a backtick)",
+		"a quoted occurrence counts the same as a live one",
+	} {
+		if !strings.Contains(quotedReason, want) {
+			t.Errorf("denial for a quoted selector does not mention %q: %q", want, quotedReason)
+		}
+	}
+	for _, unwanted := range []string{"a brace expansion", "a shell expansion", "process substitution syntax"} {
+		if strings.Contains(quotedReason, unwanted) {
+			t.Errorf("denial asserts %q for text the shell treats literally: %q", unwanted, quotedReason)
+		}
+	}
+
+	// A commit message discussing the tooling is the other shape that reaches
+	// here, and the file remedy is the one that works for it. The message has to
+	// carry the standalone word *after* a gh token to reach the heuristic at all:
+	// `\bgh\b.*\bmerge\b` is ordered, and `mergeguard` is not `\bmerge\b`, so a
+	// subject naming only this tool does not trigger it.
+	message := `git commit -m "a gh api read is not a merge, $reason"`
+	messageIn := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": message}}
+	if !mergeUsesShellExpansion(messageIn) {
+		t.Fatalf("the commit-message case is unreachable, so its assertion proves nothing: %q", message)
+	}
+	if reason := shellExpansionDenial(message); !strings.Contains(reason, "git commit -F FILE") {
+		t.Errorf("denial for a commit message does not name the file remedy: %q", reason)
+	}
+
+	// Process substitution is the one indicator with no other case behind it. It
+	// is reachable through an evaluator: the single-quoted body is one word to the
+	// tokenizer, so the command is not a recognized merge and the heuristic branch
+	// renders the list.
+	procSub := `eval 'gh pr merge 498 -R picatz/flowstate --auto > >(cat)'`
+	procSubIn := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": procSub}}
+	if !mergeUsesShellExpansion(procSubIn) {
+		t.Fatalf("test corpus drifted: %q is no longer denied", procSub)
+	}
+	procSubReason := shellExpansionDenial(procSub)
+	for _, want := range []string{
+		"process-substitution syntax (`>(` or `<(`)",
+		"an `eval` or shell `-c` spelling",
+	} {
+		if !strings.Contains(procSubReason, want) {
+			t.Errorf("denial does not name %q for %q: %q", want, procSub, procSubReason)
+		}
+	}
+
+	// The negative direction for every name, which is what the positive cases
+	// above cannot establish: a name must appear only when its own syntax is
+	// present. Without this, stubbing an indicator's condition to true survives
+	// the suite, because the anchored clause only pins the repro's three names.
+	for _, tc := range []struct {
+		name    string
+		command string
+		absent  []string
+	}{
+		{
+			// dynamicGHExecutable fires here while `\bgh\b` does not match the
+			// obfuscated executable, so the denial must not claim a `gh` token.
+			name:    "obfuscated executable carries no gh token",
+			command: `empty=; g${empty}h pr merge 498 -R picatz/flowstate --auto`,
+			absent:  []string{"a `gh` token"},
+		},
+		{
+			name:    "status query has no evaluator or process substitution",
+			command: repro,
+			absent: []string{
+				"an `eval` or shell `-c` spelling",
+				"process-substitution syntax (`>(` or `<(`)",
+				"brace characters (`{` with `}`)",
+			},
+		},
+		{
+			name:    "brace-only selector has no process substitution",
+			command: quoted,
+			absent:  []string{"process-substitution syntax (`>(` or `<(`)"},
+		},
+		{
+			// ghDynamicPRMergeText matches a `p…` `m…` adjacency and needs no
+			// standalone `merge`, so this reaches the heuristic branch without the
+			// word and the denial must not claim it.
+			name:    "p-m adjacency carries no standalone merge",
+			command: `gh api pulls m$X`,
+			absent:  []string{"the standalone word `merge`"},
+		},
+		{
+			// Braces are the trigger here, so the command reaches the heuristic
+			// branch with no `$` or backtick anywhere in it.
+			name:    "brace trigger carries no expansion character",
+			command: `gh api repos/o/r/pulls/1/merge --jq '{x: .y}'`,
+			absent:  []string{"an expansion character (`$` or a backtick)"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": tc.command}}
+			if !mergeUsesShellExpansion(in) {
+				t.Fatalf("test corpus drifted: %q is no longer denied", tc.command)
+			}
+			got := shellExpansionDenial(tc.command)
+			if strings.Contains(got, "not a recognized merge invocation") == isGHPRMergeInvocation(tc.command) {
+				t.Fatalf("branch and message disagree for %q: %q", tc.command, got)
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(got, absent) {
+					t.Errorf("denial names %q for a command that does not carry it: %q", absent, got)
+				}
+			}
+		})
+	}
+
+	// Every indicator the decision can fire on has a name in the message, so a
+	// denial never reports an empty or generic shape. The fallback exists for
+	// unreachable input and must not be what a real denial says.
+	for _, command := range []string{
+		repro,
+		"gh pr merge 498 -R picatz/flowstate --match-head-commit " + sha + " > >(cat) --auto",
+		`eval 'gh pr merge 498 -R picatz/flowstate --auto'`,
+		`gh pr merge 498 -R picatz/flowstate --disable-auto{,=false}`,
+		`empty=; g${empty}h pr merge 498 -R picatz/flowstate --auto`,
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if !mergeUsesShellExpansion(in) {
+			t.Fatalf("test corpus drifted: %q is no longer denied", command)
+		}
+		if reason := shellExpansionDenial(command); strings.Contains(reason, "a shape this hook refuses") {
+			t.Errorf("denial fell back to the generic shape for %q: %q", command, reason)
+		}
+	}
+
+	for _, tc := range []struct {
+		items []string
+		want  string
+	}{
+		{items: nil, want: "a shape this hook refuses"},
+		{items: []string{"one"}, want: "one"},
+		{items: []string{"one", "two"}, want: "one and two"},
+		{items: []string{"one", "two", "three"}, want: "one, two and three"},
+	} {
+		if got := joinAnd(tc.items); got != tc.want {
+			t.Errorf("joinAnd(%q) = %q, want %q", tc.items, got, tc.want)
+		}
+	}
+}
+
 func TestManualMergeRequiresOneExactHeadPrecondition(t *testing.T) {
 	t.Parallel()
 	sha := strings.Repeat("a", 40)
