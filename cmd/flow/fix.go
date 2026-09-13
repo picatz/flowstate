@@ -216,13 +216,13 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 	// `flow fix --stdout old.yaml > new.yaml` cannot produce a new.yaml whose first
 	// line is a diagnostic about old.yaml. A tool that writes its own complaints
 	// into its output is a tool that cannot be piped.
-	// Through the surface rather than the raw writers, and carrying the theme that
-	// belongs to whichever stream the reports land on — they go to stderr only when
-	// stdout is carrying a document, so the two cases have different palettes for
-	// the same reason `flow get x | jq` does.
+	// Reports go through the surface, carrying the theme that belongs to whichever
+	// stream they land on. The document itself stays on the raw writer: unlike UI
+	// text, its bytes must not be interpreted or rewritten by the colour-profile
+	// writer.
 	surface := newSurface(cmd)
 
-	out := surface.Out
+	out := cmd.OutOrStdout()
 	reports, reportTheme := surface.Err, surface.ErrTheme
 	if !opts.stdout {
 		reports, reportTheme = surface.Out, surface.Theme
