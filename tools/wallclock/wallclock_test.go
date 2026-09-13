@@ -699,3 +699,41 @@ func TestNotTestify(t *testing.T) {
 		"a poll reached through a testify assertion object was missed, or a value that is not "+
 			"one was mistaken for it")
 }
+
+// TestAShadowedDotImportedBubbleCallSuppressesNoBubble is the dot-import half
+// of [TestAShadowedSynctestNameSuppressesNoBubble], and a regression for a
+// mistake the first fix made.
+//
+// That fix exempted dot-imports from the shadow check, reasoning that a
+// dot-import has no name for a local to shadow. True of the import and beside
+// the point: what a local can displace is the name at the *call*, and for a
+// dot-import that is the bare `Test` or `Run`. A local of either name therefore
+// had its callback read as a bubble, which is the under-counting direction the
+// first fix existed to close.
+func TestAShadowedDotImportedBubbleCallSuppressesNoBubble(t *testing.T) {
+	t.Parallel()
+
+	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	. "testing/synctest"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestReal(t *testing.T) {
+	Test := func(_ *testing.T, f func(*testing.T)) { f(t) }
+	Test(t, func(t *testing.T) {
+		time.Sleep(time.Second)
+		require.Eventually(t, nil, 0, 0)
+	})
+}
+`})
+
+	assert.Equal(t, []int{14}, lines(OfKind(waits, KindSleep)),
+		"a sleep inside a shadowed dot-imported Test call was treated as bubbled")
+	assert.Equal(t, []int{15}, pollLines(waits),
+		"a poll inside a shadowed dot-imported Test call was treated as bubbled")
+}

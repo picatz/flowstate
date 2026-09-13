@@ -290,7 +290,7 @@ func isSelectorOnAny(expr ast.Expr, objects map[string]bool, names ...string) bo
 // wrong only in the safe direction.
 func bubblesIn(file *ast.File) [][2]token.Pos {
 	synctestName := localName(file, "testing/synctest")
-	if synctestName == "" || declaresName(file, synctestName) {
+	if synctestName == "" || shadowsABubbleCall(file, synctestName) {
 		return nil
 	}
 
@@ -311,20 +311,33 @@ func bubblesIn(file *ast.File) [][2]token.Pos {
 	return bubbles
 }
 
+// shadowsABubbleCall reports whether the file declares a name that could make a
+// call [bubblesIn] would read as a bubble mean something else.
+//
+// Which name that is depends on how synctest was imported, and getting it wrong
+// under-counts, so the two cases are separate. Under a named or aliased import
+// the call is `synctest.Test(…)`, so the name at risk is the import's own. Under
+// a dot-import there is no such name — the call is a bare `Test(…)` or `Run(…)`
+// — so those are the names a local can displace, and a file declaring either
+// gets no bubbles.
+//
+// The dot-import half was missed on the first pass at this and reported again
+// on #1989: the earlier code returned false for a dot-import on the reasoning
+// that "a dot-import has no name to shadow". True of the import, and beside the
+// point — what matters is the name at the *call*, and for a dot-import that is
+// the bare function.
+func shadowsABubbleCall(file *ast.File, synctestName string) bool {
+	if synctestName != "." {
+		return declaresName(file, synctestName)
+	}
+
+	return declaresName(file, "Test") || declaresName(file, "Run")
+}
+
 // declaresName reports whether the file declares name as anything other than an
 // import: a function, a parameter or result, a receiver, a type, or a variable
 // or constant, including one defined by `:=`.
-//
-// It answers "could this name mean something other than the package here",
-// which is all [bubblesIn] needs before it declines to trust the name at all.
 func declaresName(file *ast.File, name string) bool {
-	if name == "." {
-		// A dot-import has no name to shadow; a local declaration cannot
-		// displace it, only the call it makes ambiguous, which is the
-		// over-counting direction.
-		return false
-	}
-
 	declared := false
 	noteField := func(fields *ast.FieldList) {
 		if fields == nil {
