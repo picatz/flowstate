@@ -172,7 +172,12 @@ func CollectRefsFromExpr(e *expr.Expr, prev *Workflow_StepOutputs, refs map[stri
 		// after which the caller prunes every output and the activity is handed
 		// an empty map. No error anywhere, and the run only fails after a
 		// Continue-As-New.
-		if step, field, ok := RootedStepRef(kind.SelectExpr); ok {
+		// A stored expression compiled before the root existed may use `steps` as
+		// a real step ID. Match the evaluator's compatibility precedence: that
+		// step wins over the root, so its select must continue through the legacy
+		// bare-reference path below.
+		_, legacySteps := prev.GetStepValues()[StepsRoot]
+		if step, field, ok := RootedStepRef(kind.SelectExpr); ok && !legacySteps {
 			if prev != nil && prev.StepValues != nil {
 				if _, known := prev.StepValues[step]; known {
 					if field == "" {
