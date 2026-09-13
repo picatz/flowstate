@@ -126,6 +126,13 @@ func heldIDs(held []heldFailure) []string {
 // held failure of that shape therefore reports its own classification and loses
 // the inner attempt's — a narrowing, recorded here rather than discovered later.
 //
+// `ErrRunFailed.recordedOwn` is not carried either, and needs no narrowing note
+// of its own: an `async:` step must be a task ([v1.CheckAsyncPlacement]), and
+// that field is only ever set for a step with an account of its own — an
+// exhausted loop or a failed switch — so a held failure never has one. The
+// step's transcript entry is durable regardless, which is what `keepHeldOutputs`
+// keeps through the seam.
+//
 // A failure that is not an [ErrRunFailed] is carried by its text rather than
 // dropped: losing one is the defect this mechanism exists to prevent.
 func heldAcross(held []heldFailure) []*v1.HeldFailure {

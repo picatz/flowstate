@@ -19,9 +19,9 @@ import (
 
 // A failure a debug ask made a scope hear early is an obligation that outlives
 // the segment holding it, and [heldFailureCarryChange] is what lets the segment
-// end. These are the four mechanical claims that stand behind the end-to-end
-// round trips in debugasyncorder_test.go, each stated where a single wrong line
-// shows up as itself rather than as a run that finished differently:
+// end. These are the mechanical claims that stand behind the end-to-end round
+// trips in debugasyncorder_test.go, each stated where a single wrong line shows
+// up as itself rather than as a run that finished differently:
 //
 //   - what crosses is what comes back ([heldAcross], [heldFrom]),
 //   - a history recorded before the marker still refuses the seam, at every
@@ -260,7 +260,12 @@ func TestEveryContinuationExitAsksTheOneSuspensionPredicate(t *testing.T) {
 	sources, err := filepath.Glob("*.go")
 	require.NoError(t, err)
 
-	emitted := 0
+	// Counted two ways. `guarded` is an emission the walk could attribute to a
+	// boundary; `emitted` is every emission there is. They have to agree, or the
+	// walk is answering for a subset and saying nothing about the rest — an exit
+	// written as `if !e.shouldSuspend() { continue }` followed by a bare return
+	// is guarded correctly and would still be invisible to the first count.
+	guarded, emitted := 0, 0
 	for _, source := range sources {
 		if strings.HasSuffix(source, "_test.go") {
 			continue
@@ -270,11 +275,15 @@ func TestEveryContinuationExitAsksTheOneSuspensionPredicate(t *testing.T) {
 		require.NoError(t, err)
 
 		ast.Inspect(file, func(n ast.Node) bool {
+			if returnsContinueAsNew(n) {
+				emitted++
+			}
+
 			guard, ok := n.(*ast.IfStmt)
-			if !ok || !returnsContinueAsNew(guard.Body) {
+			if !ok || !blockReturnsContinueAsNew(guard.Body) {
 				return true
 			}
-			emitted++
+			guarded++
 			assert.Truef(t, callsShouldSuspend(guard.Cond),
 				"%s: a continuation is emitted from a boundary that does not ask [executor.shouldSuspend], so a history whose version refuses this boundary suspends at it anyway",
 				fset.Position(guard.Pos()))
@@ -283,22 +292,35 @@ func TestEveryContinuationExitAsksTheOneSuspensionPredicate(t *testing.T) {
 		})
 	}
 
+	assert.Equalf(t, emitted, guarded,
+		"%d continuations are emitted but only %d sit behind a boundary condition this walk can read, so the rest are unchecked",
+		emitted, guarded)
+
 	// Four today: two in runNodes, the `for_each` iteration boundary and the
 	// `loop:` one. A fifth is fine and is exactly what this is here for; zero
 	// means the walk stopped matching and proves nothing.
-	require.Equalf(t, 4, emitted,
-		"the engine emits %d gated continuations, not the 4 this test was written against — if a boundary was added or removed, update this count deliberately", emitted)
+	require.Equalf(t, 4, guarded,
+		"the engine emits %d gated continuations, not the 4 this test was written against — if a boundary was added or removed, update this count deliberately", guarded)
 }
 
-// returnsContinueAsNew reports whether a block's own statements return the
+// returnsContinueAsNew reports whether one statement returns the suspension
+// sentinel. A propagation (`return err` after an errors.Is check) is not one:
+// re-raising a continuation another boundary emitted issues no second command.
+func returnsContinueAsNew(n ast.Node) bool {
+	ret, ok := n.(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return false
+	}
+	ident, ok := ret.Results[0].(*ast.Ident)
+
+	return ok && ident.Name == "errContinueAsNew"
+}
+
+// blockReturnsContinueAsNew reports whether a block's own statements return the
 // suspension sentinel, without descending into a nested block.
-func returnsContinueAsNew(block *ast.BlockStmt) bool {
+func blockReturnsContinueAsNew(block *ast.BlockStmt) bool {
 	for _, stmt := range block.List {
-		ret, ok := stmt.(*ast.ReturnStmt)
-		if !ok || len(ret.Results) != 1 {
-			continue
-		}
-		if ident, ok := ret.Results[0].(*ast.Ident); ok && ident.Name == "errContinueAsNew" {
+		if returnsContinueAsNew(stmt) {
 			return true
 		}
 	}

@@ -640,6 +640,20 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// so it is no reason to refuse — except on a history recorded before
 		// [heldFailureCarryChange], which [executor.shouldSuspend] refuses for
 		// all four boundaries at once.
+		//
+		// The `len(started) == 0` here and at the skipped-step check above are
+		// the *only* places outstanding work refuses a seam, and that asymmetry
+		// with the held failure is deliberate rather than an oversight waiting to
+		// be tidied. [v1.MaxAtomicBlockActivities] exempts a sequential top-level
+		// `for_each` from its activity ceiling precisely because its iteration
+		// boundary is a seam, so refusing there for the whole life of one
+		// unjoined `async:` step would remove the pacing that exemption is
+		// written against and let a large loop run as one segment into Temporal's
+		// history cap. The consequence is a live residual: a `for_each`'s
+		// iteration boundary and a `loop:`'s can still continue as new while this
+		// scope has coroutines outstanding, stranding work that exists in neither
+		// segment. #1968 tracks it, and settling it rather than refusing it is
+		// what that issue's remaining half is for.
 		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 			// The frame first, because the stamp below writes onto the frame at
 			// this depth and [executor.setFrame] replaces it wholesale.
