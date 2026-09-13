@@ -1706,9 +1706,7 @@ type asyncHeld struct {
 // itself would read whatever had accumulated by the time the join called it.
 func cloneStepOutputs(outputs *Workflow_StepOutputs) *Workflow_StepOutputs {
 	clone := &Workflow_StepOutputs{StepValues: make(map[string]*Node_Outputs, len(outputs.GetStepValues()))}
-	for id, value := range outputs.GetStepValues() {
-		clone.StepValues[id] = value
-	}
+	maps.Copy(clone.StepValues, outputs.GetStepValues())
 
 	return clone
 }
@@ -2229,9 +2227,7 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// outputs, which keeps an iteration's behavior independent of how many
 		// ran before it.
 		iterationOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-		for k, v := range scope.GetOutputs().GetStepValues() {
-			iterationOutputs.StepValues[k] = v
-		}
+		maps.Copy(iterationOutputs.StepValues, scope.GetOutputs().GetStepValues())
 
 		// A local, not a var: the iterator is bound right where the body's
 		// expressions are written, so it stays bare.
@@ -2358,9 +2354,7 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// between iterations is the carried state, exactly as a `for_each`'s only
 		// thread is its item.
 		iterationOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-		for k, v := range scope.GetOutputs().GetStepValues() {
-			iterationOutputs.StepValues[k] = v
-		}
+		maps.Copy(iterationOutputs.StepValues, scope.GetOutputs().GetStepValues())
 
 		// The carried state is bound bare, the same standing as a loop iterator, so a
 		// body written for a loop that names one reads `${cursor}`. A loop that carries
@@ -2758,8 +2752,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 			// retry loop was doing when the budget ran out. Temporal preserves the
 			// same cause when its server expires this budget during backoff; dropping
 			// it here made the local rehearsal strictly less informative.
-			var overall *scheduleToCloseTimeoutCause
-			if errors.As(context.Cause(ctx), &overall) {
+			if _, ok := errors.AsType[*scheduleToCloseTimeoutCause](context.Cause(ctx)); ok {
 				return nil, &scheduleToCloseTimeoutError{timeout: timeouts.ScheduleToClose, err: err}
 			}
 			return nil, withCancellationCause(ctx, ctx.Err())
@@ -2860,8 +2853,7 @@ func WithCause(err error, cause error) error {
 		return err
 	}
 
-	var already *causeEnrichedError
-	if errors.As(err, &already) {
+	if _, ok := errors.AsType[*causeEnrichedError](err); ok {
 		return err
 	}
 

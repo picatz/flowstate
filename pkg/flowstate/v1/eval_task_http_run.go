@@ -107,18 +107,15 @@ func retriableTransportFailure(method string, err error) bool {
 //     sent and the peer answered, so it is not this, and the read path below
 //     keeps its own unknown-outcome reasoning.
 func requestNeverLeft(err error) bool {
-	var limited *netpolicy.RateLimitedError
-	if errors.As(err, &limited) {
+	if limited, ok := errors.AsType[*netpolicy.RateLimitedError](err); ok {
 		return !limited.AfterRedirect
 	}
 
-	var undecided *netpolicy.UndecidedError
-	if errors.As(err, &undecided) {
+	if undecided, ok := errors.AsType[*netpolicy.UndecidedError](err); ok {
 		return !undecided.AfterRedirect
 	}
 
-	var denied *netpolicy.DenyError
-	if errors.As(err, &denied) {
+	if denied, ok := errors.AsType[*netpolicy.DenyError](err); ok {
 		return !denied.AfterRedirect
 	}
 
@@ -266,8 +263,7 @@ func revealSecret(ctx context.Context, scrubber *secrets.Scrubber) revealFunc {
 // input, which made a policy decision look like a typo and — worse — made it
 // retryable in exactly the cases retrying cannot help.
 func httpInputError(err error) error {
-	var resolution *secretResolutionError
-	if errors.As(err, &resolution) {
+	if _, ok := errors.AsType[*secretResolutionError](err); ok {
 		kind := ErrorKindPolicyDenied
 		if secrets.Retryable(err) || AuditRecorderUnavailable(err) {
 			kind = ErrorKindUpstream
@@ -1015,8 +1011,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		respBody, err := policy.ReadResponseBody(httpResp)
 		if err != nil {
 			err = scrubber.ScrubError(err)
-			var tooLarge *netpolicy.BodyTooLargeError
-			if errors.As(err, &tooLarge) {
+			if _, ok := errors.AsType[*netpolicy.BodyTooLargeError](err); ok {
 				return nil, NewTaskError("http", ErrorKindLimitExceeded, fmt.Errorf(
 					"response body from %s is too large: %w; use the outputs input to select only the fields this step needs",
 					taskInputs.GetUrl(), err))

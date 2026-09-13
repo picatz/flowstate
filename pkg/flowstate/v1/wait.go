@@ -384,9 +384,7 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bo
 		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
 	case *Value_Expr:
 		extra := make(map[string]ref.Val, len(bound)+1)
-		for name, value := range bound {
-			extra[name] = value
-		}
+		maps.Copy(extra, bound)
 		extra[NowIdentifier] = types.DefaultTypeAdapter.NativeToValue(now)
 
 		activation := scope.ActivationWith(ctx, extra)

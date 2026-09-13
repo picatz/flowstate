@@ -27,7 +27,7 @@ func taskGuarded(id string) *Node {
 
 func tasks(n int) []*Node {
 	out := make([]*Node, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out = append(out, task("t-"+strconv.Itoa(i)))
 	}
 	return out
@@ -172,7 +172,7 @@ func TestWorstCaseBodyActivities(t *testing.T) {
 func TestWorstCaseBodyActivitiesSaturates(t *testing.T) {
 	inner := tasks(1)
 	body := inner
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		body = []*Node{{
 			Id: "level-" + strconv.Itoa(i),
 			Kind: &Node_Loop{Loop: &Loop{

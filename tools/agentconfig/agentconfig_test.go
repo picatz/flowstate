@@ -1827,7 +1827,7 @@ func writeHookFixture(t *testing.T, root, project string) {
 // resolves the same toolchain the hooks are built with.
 func goDirective(t *testing.T, root string) string {
 	t.Helper()
-	for _, line := range strings.Split(string(read(t, filepath.Join(root, "go.mod"))), "\n") {
+	for line := range strings.SplitSeq(string(read(t, filepath.Join(root, "go.mod"))), "\n") {
 		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "go" {
 			return fields[1]
 		}
