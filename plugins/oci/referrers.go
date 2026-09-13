@@ -24,8 +24,15 @@ const (
 	maxReferrerLimit = 200
 
 	// maxReferrersBytes bounds the index a registry answers with, which holds
-	// one descriptor per attachment.
-	maxReferrersBytes = 4 << 20
+	// one descriptor per attachment. Derived from the host's own output ceiling
+	// rather than chosen: every descriptor this reads can become a map in the
+	// step's result, so an index this plugin accepts and cannot report is a
+	// registry read that spends the bytes and returns nothing.
+	maxReferrersBytes = flowstatev1.MaxTaskOutputBytes - referrersEnvelopeReserve
+
+	// referrersEnvelopeReserve is what the result costs beside the descriptors:
+	// the subject digest, the truncated flag, the count, and the framing.
+	referrersEnvelopeReserve = 128 << 10
 
 	// maxAnnotations bounds the annotations carried out of one descriptor.
 	// Annotations are arbitrary key-value pairs chosen by whoever pushed the

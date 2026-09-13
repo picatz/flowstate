@@ -271,7 +271,19 @@ func execute(ctx context.Context, runtime *daemon, grant runGrant, name string, 
 				"the container did not finish within this grant's timeout of %s and was removed; what it had already done is not known, so it is not retried automatically",
 				timeout)
 		}
-		return nil, err
+		if ctx.Err() != nil {
+			// The caller cancelled. Nothing about this call decided anything,
+			// and the deferred removal still runs.
+			return nil, err
+		}
+		// The start succeeded, so the container ran. Whatever the daemon said
+		// about waiting for it, a retry would run it a second time - and a
+		// grant with a writable mount or a granted network is one whose second
+		// run is not free. The classification the transport or the status
+		// suggested does not survive that.
+		return nil, sdk.OutcomeUnknown(
+			"the container was started and waiting for it failed (%s); what it did is not known, and it is not retried automatically because retrying would run it again",
+			truncate(err.Error(), maxErrorBytes))
 	}
 
 	// The output is read after the wait and before the removal: the daemon

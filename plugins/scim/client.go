@@ -28,13 +28,23 @@ const (
 	// never required.
 	scimContentType = "application/scim+json"
 
-	// maxResourceBytes bounds one user resource. A SCIM user with enterprise
-	// extensions is a few kilobytes; this leaves room for an organization's own
-	// custom attributes and still bounds what another party returns.
-	maxResourceBytes = 1 << 20
+	// resourceEnvelopeReserve is what a user result costs beside the resource
+	// map itself. It is generous because the summarized fields - display_name,
+	// user_name, the group names - repeat values the map already holds, so one
+	// resource can appear in a result close to twice.
+	resourceEnvelopeReserve = 256 << 10
 
-	// maxListBytes bounds a page of them.
-	maxListBytes = 4 << 20
+	// maxResourceBytes bounds one user resource, derived from the host's own
+	// output ceiling rather than chosen. A SCIM user with enterprise extensions
+	// is a few kilobytes, so this is generous for the shape; what it prevents
+	// is a provider returning one this plugin reads in full and the engine then
+	// refuses, which spends the read and returns nothing.
+	maxResourceBytes = (flowstatev1.MaxTaskOutputBytes - resourceEnvelopeReserve) / 2
+
+	// maxListBytes bounds a page of them. A page becomes a list of summaries
+	// rather than whole resources, so it is the host ceiling less the envelope
+	// rather than half of it.
+	maxListBytes = flowstatev1.MaxTaskOutputBytes - resourceEnvelopeReserve
 
 	// maxErrorBytes bounds what a provider's own error text may contribute to a
 	// failure this plugin reports.

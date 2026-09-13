@@ -52,9 +52,12 @@ type fakeDaemon struct {
 	// identifier that named it never arrived.
 	createHangsUp bool
 
-	// createStatus and startStatus override the successful answers.
+	// createStatus, startStatus, waitStatus and logsStatus override the
+	// successful answers, so a test can put a refusal at each step of the call.
 	createStatus int
 	startStatus  int
+	waitStatus   int
+	logsStatus   int
 
 	// errorBody is the daemon's own error message for an overridden status.
 	errorBody string
@@ -75,6 +78,8 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 		stdout:       "ok\n",
 		createStatus: http.StatusCreated,
 		startStatus:  http.StatusNoContent,
+		waitStatus:   http.StatusOK,
+		logsStatus:   http.StatusOK,
 	}
 
 	listener, err := net.Listen("unix", socket)
@@ -210,8 +215,14 @@ func (f *fakeDaemon) serveStart(w http.ResponseWriter, path string) {
 
 func (f *fakeDaemon) serveWait(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	blocks, code := f.waitBlocks, f.exitCode
+	blocks, code, status, message := f.waitBlocks, f.exitCode, f.waitStatus, f.errorBody
 	f.mu.Unlock()
+
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"message":"` + message + `"}`))
+		return
+	}
 
 	if blocks != nil {
 		select {
@@ -229,8 +240,14 @@ func (f *fakeDaemon) serveWait(w http.ResponseWriter, r *http.Request) {
 // this plugin has to demultiplex.
 func (f *fakeDaemon) serveLogs(w http.ResponseWriter) {
 	f.mu.Lock()
-	stdout, stderr := f.stdout, f.stderr
+	stdout, stderr, status, message := f.stdout, f.stderr, f.logsStatus, f.errorBody
 	f.mu.Unlock()
+
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"message":"` + message + `"}`))
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
 	writeFrame(w, streamStdout, stdout)

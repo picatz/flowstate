@@ -395,3 +395,48 @@ func TestTwoRunsDoNotShareAContainerName(t *testing.T) {
 		t.Fatalf("two calls chose the same container name (%q)", first)
 	}
 }
+
+// TestAFailureAfterTheStartIsNeverRetryable is the difference between a step
+// that can be tried again and one that already happened.
+//
+// Once the container is started it has run: it may have written through a
+// writable mount or reached a granted network. Whatever the daemon says next —
+// a refusal on the wait, a connection lost while reading logs — retrying
+// `docker.run` would run it a second time, so the classification the transport
+// or the HTTP status suggests does not survive the start.
+func TestAFailureAfterTheStartIsNeverRetryable(t *testing.T) {
+	for name, arrange := range map[string]func(*fakeDaemon){
+		"the wait is refused": func(f *fakeDaemon) { f.waitStatus = 500; f.errorBody = "daemon is shutting down" },
+		"the logs are refused": func(f *fakeDaemon) {
+			f.logsStatus = 503
+			f.errorBody = "daemon is shutting down"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeDaemon(t)
+			arrange(fake)
+
+			authority := &grants{Daemon: fake.grant(), Runs: map[string]runGrant{"check": testRun()}}
+			withGrants(t, authority)
+
+			runtime, err := newDaemon(authority.Daemon)
+			if err != nil {
+				t.Fatalf("newDaemon: %v", err)
+			}
+
+			_, runErr := execute(t.Context(), runtime, authority.Runs["check"], "check", []string{"/usr/bin/check"})
+			if runErr == nil {
+				t.Fatal("a container that ran was reported as success")
+			}
+			if sdk.IsUnavailable(runErr) {
+				t.Errorf("error is %v, which a retry would act on by running the container again", runErr)
+			}
+			if !sdk.IsOutcomeUnknown(runErr) {
+				t.Errorf("error is %v, want the unknown-outcome classification", runErr)
+			}
+			if fake.starts() != 1 {
+				t.Errorf("the container was started %d times, want exactly one", fake.starts())
+			}
+		})
+	}
+}

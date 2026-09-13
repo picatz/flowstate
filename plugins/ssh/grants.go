@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/internal/strictyaml"
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
@@ -34,9 +35,20 @@ const maxGrantsBytes = 1 << 20
 // is authority an operator delegates; these are what this plugin is willing to
 // spend on one call regardless of what the file says.
 const (
-	maxCommandTimeout  = 10 * time.Minute
-	maxConnectTimeout  = 2 * time.Minute
-	maxOutputByteLimit = 1 << 20
+	maxCommandTimeout = 10 * time.Minute
+	maxConnectTimeout = 2 * time.Minute
+
+	// outputEnvelopeReserve is what a result costs beside its two streams: the
+	// exit code, the host and command names, the truncated flag, and the
+	// framing around them.
+	outputEnvelopeReserve = 64 << 10
+
+	// maxOutputByteLimit bounds each stream a grant may ask for, derived from
+	// the host's own ceiling rather than chosen. stdout and stderr travel in
+	// one task result, and a result over flowstatev1.MaxTaskOutputBytes is
+	// refused by the engine - so a higher grant would let the command run to
+	// completion only for its answer to be thrown away.
+	maxOutputByteLimit = (flowstatev1.MaxTaskOutputBytes - outputEnvelopeReserve) / 2
 
 	defaultCommandTimeout = 60 * time.Second
 	defaultConnectTimeout = 15 * time.Second
