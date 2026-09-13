@@ -266,10 +266,11 @@ on.
 The examples marked as needing network are two kinds, and which kind decides whether running
 one shows you anything.
 
-- Pointed at `httpbin.org`, the only live service any Flowfile's `url:` names. These run as
-  written, and need internet access. A `vault:` or `op:` reference reaches its own backend
-  and no `url:` shows it, so that is outside this split — those examples' READMEs say what
-  they contact.
+- Pointed at `httpbin.org`, the only live service a `url:` names anywhere in this split.
+  These run as written, and need internet access. A `vault:`, `op:` or `command:` reference
+  reaches its own backend and no `url:` shows it, so that sits outside the split too —
+  `vault-secret`'s README names the address it contacts, and the others name the tool that
+  holds the credential.
 - Pointed at a name beneath one RFC 2606 reserves for documentation: under `example.com`,
   `example.net` or `example.org` ([§3](https://www.rfc-editor.org/rfc/rfc2606#section-3)),
   or under the `.example` top-level domain

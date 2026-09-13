@@ -124,8 +124,8 @@ var servedDocumentationHosts = map[string]bool{
 //
 // It is a convention, not a fact about the DNS, and the difference is the whole
 // reason this is written as a predicate with a comment rather than as a suffix
-// match. Three review rounds on #1990 each found the same class of mistake in
-// it, because "reserved for documentation" and "cannot resolve" are different
+// match. Four review rounds on #1990 each found the same class of mistake in it,
+// because "reserved for documentation" and "cannot resolve" are different
 // properties and the first was standing in for the second:
 //
 //   - RFC 2606 [§3] reserves `example.com`, `example.net` and `example.org`
@@ -136,6 +136,13 @@ var servedDocumentationHosts = map[string]bool{
 //     resolver tries against its search list first, so on a machine with
 //     `search corp.internal` it is a request to `example.corp.internal`. Only a
 //     name *beneath* `.example` is admitted (Codex, r3998521062).
+//   - Case is not part of a name and [url.URL.Hostname] does not fold it, so
+//     `WWW.example.com` missed the subtraction above and matched the suffix
+//     below. The fold in the body is that fix. A trailing dot is not part of a
+//     name either and is deliberately *not* normalized — see its row in
+//     [TestDocumentationOnlyHostAdmitsOnlyTheSpellingsThatDoNotResolve], and
+//     note that admitting the dotted family safely would mean stripping the dot
+//     before the map lookup, never loosening the suffixes alone.
 //
 // So what a caller gets is "the repository permits this spelling", and the
 // reason the permitted spellings are the ones that do not resolve is written
@@ -152,8 +159,8 @@ func documentationOnlyHost(host string) bool {
 	// the served map, match the `.example.com` suffix below, and be admitted as a
 	// name that in fact answers. That is the fourth member of the family above and
 	// the one that would have made this function's own case untrue as a statement
-	// about the predicate rather than about its rows. Folding first is what makes
-	// everything after it a claim about the name instead of about its spelling.
+	// about the predicate rather than about its rows. Folding first is what stops
+	// capitalization deciding the answer; a trailing dot still does, deliberately.
 	host = strings.ToLower(host)
 
 	if servedDocumentationHosts[host] {
