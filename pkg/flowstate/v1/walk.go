@@ -557,10 +557,10 @@ type nodeWalkFrame struct {
 // [CheckStructureDepth] holds one: how deeply a document nests steps is chosen
 // by whoever built the specification, the compiler's own nesting bound says
 // nothing about a message submitted over the RPC path, and this traversal runs
-// during admission — [RequiredTaskNames]'s callee walk hands every workflow it
-// visits to [WalkWorkflow] *before* that walk's depth guard has seen the
-// workflow's own steps. Recursing here turned wire-chosen control-flow depth
-// into Go recursion depth: measured at 32 MiB of goroutine stack for a
+// during admission — [specNodes]'s callee walk hands every workflow it visits
+// to [WalkWorkflow] *before* that walk's depth guard has seen the workflow's
+// own steps. Recursing here turned wire-chosen control-flow depth into Go
+// recursion depth: measured at 32 MiB of goroutine stack for a
 // 99,000-level `for_each` chain that fits under [MaxSpecBytes] (#1284), spent
 // per in-flight admission and only then refused by the guard. The work stack
 // puts that cost on the heap, where it is bounded by the size of the

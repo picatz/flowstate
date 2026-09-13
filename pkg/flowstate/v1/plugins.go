@@ -68,13 +68,18 @@ const maxWorkflowScanDepth = maxVarScanDepth
 // so every whole-specification check must include it. A walk that stopped at the
 // call would validate only the half of a specification spelled at the top.
 //
+// A caller that refuses in place calls this directly, so the callee edge below
+// wraps its error with the `call:` that reached the workflow. One that asks a
+// question and stops when it has the answer ranges over [specWorkflows]
+// instead; specwalk.go's doc has the split and why it is not a migration.
+//
 // visit runs on each workflow *before* the depth guard below has descended into
 // that workflow's own steps, so the guard bounds where this walk goes next and
 // says nothing about what visit spends. A visit that traverses the workflow it
 // is handed must not turn wire-chosen nesting into Go recursion depth of its
-// own: [RequiredTaskNames]'s visit runs [WalkWorkflow], whose work stack exists
-// for exactly this reason (#1284); the other visitors read only bounded fields
-// on the workflow they are handed.
+// own: [specNodes]'s visit runs [WalkWorkflow], whose work stack exists for
+// exactly this reason (#1284); the other visitors read only bounded fields on
+// the workflow they are handed.
 func walkEmbeddedWorkflows(wf *Workflow, depth int, visit func(wf *Workflow) error) error {
 	if wf == nil {
 		return nil
