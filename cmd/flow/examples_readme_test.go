@@ -227,9 +227,11 @@ func exampleInventoryNetwork(t *testing.T, readme string) map[string]bool {
 // a `signals:` subject, which names an authority and requests nothing.
 //
 // Over the message rather than over the shapes this package knows about, for the
-// reason the charter's own walk gives: a URL sits in a task input here, inside a
-// list-of-maps `vars:` entry there, and inside a CEL constant in a third place. A
-// walk that named those three would be a fourth place to keep in step.
+// reason the charter's own walk gives, and each of its three places is a real one
+// in this corpus: a literal task input (every `url:`), a `for_each`'s
+// list-of-maps `items:` (`ops-healthcheck`'s three services), and a CEL constant
+// (`approval-gate`'s `signals:` subject, `${"https://issuer.example.com#" + …}`).
+// A walk that named those three would be a fourth place to keep in step.
 //
 // What it recognises is a string that is entirely an `http(s)` URL, which is every
 // spelling the corpus uses. A host written with no scheme is invisible to it, so
