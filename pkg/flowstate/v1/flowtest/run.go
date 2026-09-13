@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -649,8 +650,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// needed here too, because a *literal* var named from `secrets:` is
 	// deliberately not in [withheldVars] (see [withheldMaterial]) and would
 	// otherwise reach a setup failure through the value it was substituted into.
-	posture := sensitiveInputs{}.WithValues(
-		append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...)...)
+	posture := casePosture(test, vars)
 
 	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
 	// surface in vars.go's containment table, and the one its own row predicted
@@ -1799,12 +1799,92 @@ func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
 	return nil
 }
 
-// CheckSignalNames validates that every scripted signal in signals names a gate
-// the compiled workflow declares. It is the exported face of [checkSignalNames],
-// for callers that compile the workflow themselves — `flow validate` and the LSP
-// — rather than through [RunFile].
-func CheckSignalNames(signals []SignalScript, spec *v1.Workflow) error {
-	return checkSignalNames(signals, spec)
+// casePosture is what one case's rendered text may not carry, as much of it as
+// is knowable before the case runs: the material a `vars:` entry withholds, and
+// the case's own `secrets:` plaintext.
+//
+// One function because it has two callers that must not drift. [runCase]
+// establishes it before anything can fail; [File.CheckSignalNames] renders
+// through it for a caller that reaches the same check with no run at all. A
+// second construction of "what this case withholds" is how one of them comes to
+// withhold less than the other.
+func casePosture(test *Test, vars fileVars) sensitiveInputs {
+	return sensitiveInputs{}.WithValues(
+		bothSpellings(append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...))...)
+}
+
+// bothSpellings is each value as written and, where they differ, as a `%q`
+// rendering escapes it.
+//
+// The value set matches by content, and %q *transforms* content: a value
+// holding a newline, a tab, a quote or a backslash is rewritten before the
+// redaction ever reads the sentence, so a search for the plaintext finds
+// nothing and the escaped spelling prints (Codex). An escaped secret is a
+// secret — `sk\tlive` is one keystroke from `sk<tab>live`.
+//
+// Both spellings rather than un-escaping the rendered line, because the line
+// is prose with a quoted fragment inside it and there is no un-escaping that
+// without knowing which part was quoted. Adding the second spelling needs to
+// know nothing about the sentence.
+func bothSpellings(values []string) []string {
+	out := make([]string, 0, len(values)*2)
+	for _, value := range values {
+		out = append(out, value)
+
+		// Trimmed of the quotes strconv adds: what appears in the rendered
+		// line is the escaped body, inside quotes the sentence supplied.
+		if quoted := strconv.Quote(value); quoted != `"`+value+`"` {
+			out = append(out, quoted[1:len(quoted)-1])
+		}
+	}
+
+	return out
+}
+
+// CheckSignalNames reports a scripted signal in test that names no gate the
+// compiled workflow waits on. It is the exported face of [checkSignalNames],
+// for a caller that compiles the workflow itself — `flow validate` — rather
+// than reaching the check through [RunFile].
+//
+// A method on the [File], and not a function over the signals alone, because
+// what it returns is rendered text and the file is what decides which text may
+// be rendered. A signal's name is a fixture position: `name: ${vars.token}` is
+// substituted at load exactly as a `secrets:` value is, so one string can be a
+// case's secret *and* the name this refusal quotes with %q. The run-time caller
+// has always cleared that through [runCase]'s caseError; this renders through
+// the same pair, so `flow validate` is not the seventh surface vars.go's
+// containment table predicted would be a leak until it met the row (Codex).
+//
+// The chain stops here, as it does at every other rendering in this package:
+// what a caller is owed is the sentence, and returning the redacted text
+// wrapped around the original would hand the unredacted one back to anything
+// that unwraps.
+func (f *File) CheckSignalNames(test *Test, spec *v1.Workflow) error {
+	err := checkSignalNames(test.Signals, spec)
+	if err == nil {
+		return nil
+	}
+
+	posture := casePosture(test, fileVars{values: f.Vars, withheld: f.varsWithheld})
+
+	// And the run's own sensitive values, which [runCase] adds to its posture
+	// once the inputs are bound. Nothing is bound here — there is no run — but
+	// this caller compiled the workflow in order to check the names against
+	// it, so it holds both the declaration and the case's `inputs:`, which is
+	// what that set is built from. Without this a case that binds a
+	// `sensitive:` input and scripts the same literal as a signal name is
+	// covered at run time and not at validate time (Copilot).
+	if names := v1.SensitiveInputNames(spec); len(names) > 0 {
+		var material []string
+		for name, value := range test.Inputs {
+			if names[name] {
+				collectVarStrings(value, 0, &material)
+			}
+		}
+		posture = posture.WithValues(bothSpellings(material)...)
+	}
+
+	return errors.New(redactedErrorText(err.Error(), posture))
 }
 
 // assertExpectation compares a run's outcome against what the case declared,
