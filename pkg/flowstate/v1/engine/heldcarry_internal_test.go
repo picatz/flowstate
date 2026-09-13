@@ -261,10 +261,20 @@ func TestEveryContinuationExitAsksTheOneSuspensionPredicate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Counted two ways. `guarded` is an emission the walk could attribute to a
-	// boundary; `emitted` is every emission there is. They have to agree, or the
-	// walk is answering for a subset and saying nothing about the rest — an exit
-	// written as `if !e.shouldSuspend() { continue }` followed by a bare return
-	// is guarded correctly and would still be invisible to the first count.
+	// boundary; `emitted` is every `return` statement naming the sentinel,
+	// wherever it is written. They have to agree, or the walk is answering for a
+	// subset and saying nothing about the rest — an exit written as
+	// `if !e.shouldSuspend() { continue }` followed by a bare return is guarded
+	// correctly and would still be invisible to the first count.
+	//
+	// What this does not see, stated so the next reader does not over-trust it:
+	// a sentinel reached other than by naming it in a `return` — assigned to the
+	// named `err` result and returned bare, set in a `defer`, passed through a
+	// variable, wrapped by `%w`, or built directly with
+	// `workflow.NewContinueAsNewErrorWithOptions`. None of those shapes exists
+	// here (the one direct construction, in runWorkflow, is reached only through
+	// the sentinel), and each would need its own detection. A boundary written
+	// that way is a silent bypass this check would not catch.
 	guarded, emitted := 0, 0
 	for _, source := range sources {
 		if strings.HasSuffix(source, "_test.go") {
@@ -304,16 +314,27 @@ func TestEveryContinuationExitAsksTheOneSuspensionPredicate(t *testing.T) {
 }
 
 // returnsContinueAsNew reports whether one statement returns the suspension
-// sentinel. A propagation (`return err` after an errors.Is check) is not one:
+// sentinel, in any result position.
+//
+// Any position rather than a single-value return, because the two functions a
+// fifth boundary would most plausibly be added to — runIteration and
+// runLoopIteration — both return several values, so `return nil, errContinueAsNew`
+// is the shape it would take there.
+//
+// A propagation (`return err` after an errors.Is check) is not an emission:
 // re-raising a continuation another boundary emitted issues no second command.
 func returnsContinueAsNew(n ast.Node) bool {
 	ret, ok := n.(*ast.ReturnStmt)
-	if !ok || len(ret.Results) != 1 {
+	if !ok {
 		return false
 	}
-	ident, ok := ret.Results[0].(*ast.Ident)
+	for _, result := range ret.Results {
+		if ident, ok := result.(*ast.Ident); ok && ident.Name == "errContinueAsNew" {
+			return true
+		}
+	}
 
-	return ok && ident.Name == "errContinueAsNew"
+	return false
 }
 
 // blockReturnsContinueAsNew reports whether a block's own statements return the

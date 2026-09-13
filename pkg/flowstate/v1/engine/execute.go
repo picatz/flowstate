@@ -649,11 +649,15 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// boundary is a seam, so refusing there for the whole life of one
 		// unjoined `async:` step would remove the pacing that exemption is
 		// written against and let a large loop run as one segment into Temporal's
-		// history cap. The consequence is a live residual: a `for_each`'s
-		// iteration boundary and a `loop:`'s can still continue as new while this
-		// scope has coroutines outstanding, stranding work that exists in neither
-		// segment. #1968 tracks it, and settling it rather than refusing it is
-		// what that issue's remaining half is for.
+		// history cap. The consequence is a live residual, and it is the same
+		// three boundaries a held failure has to reach: a `for_each`'s iteration
+		// boundary, a `loop:`'s, and a called workflow's own next-step boundary
+		// — a call leaves the suspend depth unchanged, so the callee reaches this
+		// very check at `susp == 0` with its own empty `started` while this
+		// scope's coroutines are still running. Each can continue as new and
+		// strand work that then exists in neither segment. #1968 tracks it, and
+		// settling it rather than refusing it is what that issue's remaining half
+		// is for.
 		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 			// The frame first, because the stamp below writes onto the frame at
 			// this depth and [executor.setFrame] replaces it wholesale.
