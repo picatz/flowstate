@@ -88,22 +88,22 @@ func TestSpecWorkflowsYieldsTheRootAndEveryCallee(t *testing.T) {
 func TestSpecNodesYieldsEveryStepExactlyOnce(t *testing.T) {
 	t.Parallel()
 
-	seen := map[string]int{}
 	var order []string
 	for node, err := range specNodes(specWalkTree()) {
 		require.NoError(t, err)
-		seen[node.GetId()]++
 		order = append(order, node.GetId())
 	}
 
+	// The ids below are distinct, so this one equality carries both halves of
+	// the claim: every step of the fixture appears, and none appears twice. A
+	// separate tally over a map built from this same loop would restate what
+	// the sequence already fixes and could not fail — the shape
+	// TestStoppingASpecWalkIsNeverReportedAsAFailure declines to write.
 	require.Equal(t,
 		[]string{"a", "to-first", "b", "fan", "to-second", "first-a", "second-a", "to-third", "third-a"},
 		order,
-		"each workflow's own steps are delivered by WalkWorkflow before the next callee is entered")
-	for id, count := range seen {
-		require.Equal(t, 1, count, "step %q was yielded %d times; a `call:` step's body is "+
-			"descended for its callee edge, never for its steps", id, count)
-	}
+		"each workflow's own steps are delivered by WalkWorkflow before the next callee is entered, "+
+			"and a `call:` step's body is descended for its callee edge rather than for its steps")
 }
 
 // TestSpecWorkflowsStopsWhereTheConsumerStops is the behavior a callback could
@@ -189,6 +189,7 @@ func TestSpecWalkReportsADepthRefusalAsItsLastPair(t *testing.T) {
 		for node, err := range specNodes(deep) {
 			if err != nil {
 				require.Nil(t, node, "a terminal error pair carries no step")
+				require.Nil(t, refusal, "the error pair must be the last one yielded")
 				refusal = err
 				continue
 			}
