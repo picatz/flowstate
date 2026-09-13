@@ -108,8 +108,7 @@ func (e *renderedDiagnosticsError) Unwrap() error { return e.diagnostics }
 // a third command cannot widen an error its own way and spell the fallback
 // differently.
 func errDiagnosticsOf(err error) flowfile.Diagnostics {
-	var diagnostics flowfile.Diagnostics
-	if errors.As(err, &diagnostics) {
+	if diagnostics, ok := errors.AsType[flowfile.Diagnostics](err); ok {
 		return diagnostics
 	}
 	return flowfile.Diagnostics{{Message: err.Error()}}

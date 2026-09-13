@@ -305,7 +305,7 @@ func TestOutputHeldForARunningTestIsBounded(t *testing.T) {
 	const pkg = "example.com/fixture/loud"
 	fmt.Fprintf(&stream, `{"Action":"start","Package":%q}`+"\n", pkg)
 	fmt.Fprintf(&stream, `{"Action":"run","Package":%q,"Test":"TestLoud"}`+"\n", pkg)
-	for i := 0; i < 5000; i++ {
+	for i := range 5000 {
 		fmt.Fprintf(&stream, `{"Action":"output","Package":%q,"Test":"TestLoud","Output":"    loud_test.go:7: line %d\n"}`+"\n", pkg, i)
 	}
 	fmt.Fprintf(&stream, `{"Action":"output","Package":%q,"Test":"TestLoud","Output":"    loud_test.go:9: the assertion\n","OutputType":"error"}`+"\n", pkg)
@@ -341,7 +341,7 @@ func TestAFailuresLinesAreBounded(t *testing.T) {
 	fmt.Fprintf(&stream, `{"Action":"run","Package":%q,"Test":"TestWide"}`+"\n", pkg)
 	fmt.Fprintf(&stream, `{"Action":"output","Package":%q,"Test":"TestWide","Output":"    wide_test.go:9: not equal\n","OutputType":"error"}`+"\n", pkg)
 	fmt.Fprintf(&stream, `{"Action":"output","Package":%q,"Test":"TestWide","Output":"        expected: %s\n","OutputType":"error-continue"}`+"\n", pkg, long)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		fmt.Fprintf(&stream, `{"Action":"output","Package":%q,"Test":"TestWide","Output":"        -line %d\n","OutputType":"error-continue"}`+"\n", pkg, i)
 	}
 	fmt.Fprintf(&stream, `{"Action":"fail","Package":%q,"Test":"TestWide","Elapsed":0.1}`+"\n", pkg)
@@ -359,7 +359,7 @@ func TestAFailuresLinesAreBounded(t *testing.T) {
 	if lines := strings.Count(out.String(), "\n"); lines > maxFailureLines+6 {
 		t.Errorf("one failure printed %d lines", lines)
 	}
-	for _, l := range strings.Split(out.String(), "\n") {
+	for l := range strings.SplitSeq(out.String(), "\n") {
 		if len(l) > maxLineLen+40 {
 			t.Errorf("a printed line is %d bytes long", len(l))
 		}

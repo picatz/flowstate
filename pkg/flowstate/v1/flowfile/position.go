@@ -525,11 +525,11 @@ func spanWithin(n ast.Node, inner string) Span {
 		return outer
 	}
 	text := tokenText(n.GetToken())
-	i := strings.Index(text, inner)
-	if i < 0 {
+	before, _, ok := strings.Cut(text, inner)
+	if !ok {
 		return outer
 	}
-	start := advance(outer.Start, text[:i])
+	start := advance(outer.Start, before)
 	return Span{Start: start, End: advance(start, inner)}
 }
 

@@ -2622,10 +2622,8 @@ func declaredAnywhere(id string, wf *v1.Workflow) bool {
 					}
 				}
 			case *v1.Node_Switch:
-				for _, body := range v1.SwitchBodies(kind.Switch) {
-					if walk(body) {
-						return true
-					}
+				if slices.ContainsFunc(v1.SwitchBodies(kind.Switch), walk) {
+					return true
 				}
 			}
 		}

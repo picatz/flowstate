@@ -40,7 +40,7 @@ func TestSetLoopStateRefusesPastTheEntryBound(t *testing.T) {
 
 	// Fill exactly to the bound. Every one of these is a new key under the
 	// limit, so every one is accepted and nothing is marked truncated.
-	for i := 0; i < entityStateMaxLoopEntries; i++ {
+	for i := range entityStateMaxLoopEntries {
 		p.setLoopState(fmt.Sprintf("loop-%d", i), v1.NewLiteral(i))
 	}
 
@@ -79,7 +79,7 @@ func TestStateSnapshotByteBoundWinsOverCountBound(t *testing.T) {
 	// serialized EntityState well over the 256 KiB byte bound while the entry
 	// count (4) stays far below entityStateMaxLoopEntries (64).
 	const big = 96 * 1024
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		p.setLoopState(fmt.Sprintf("loop-%d", i), v1.NewLiteral(strings.Repeat("x", big)))
 	}
 
@@ -108,7 +108,7 @@ func TestLoopStateTruncatedIsStickyAcrossClear(t *testing.T) {
 	p := &progress{}
 
 	// Fill to the bound, then overflow it to set loopStateTruncated.
-	for i := 0; i < entityStateMaxLoopEntries; i++ {
+	for i := range entityStateMaxLoopEntries {
 		p.setLoopState(fmt.Sprintf("loop-%d", i), v1.NewLiteral(i))
 	}
 	p.setLoopState("loop-overflow", v1.NewLiteral("dropped"))

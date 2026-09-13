@@ -321,8 +321,7 @@ func isQuietError(err error) bool {
 // they fall through to the wording match below — see [usageError]'s doc for why
 // that split is exact rather than incidental.
 func isUsageError(err error) bool {
-	var marked *usageError
-	if errors.As(err, &marked) {
+	if _, ok := errors.AsType[*usageError](err); ok {
 		return true
 	}
 

@@ -109,8 +109,7 @@ func runGoFix(patterns []string) (string, error) {
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	out, err := cmd.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "", incompleteAnalysisError(exit.ExitCode(), stderr.String(), len(out))
 		}
 		return "", fmt.Errorf("running `go %s`: %w", strings.Join(args, " "), err)

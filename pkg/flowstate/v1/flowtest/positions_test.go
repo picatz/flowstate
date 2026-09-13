@@ -53,8 +53,8 @@ func spot(t *testing.T, source, needle string) (line, column int) {
 	t.Helper()
 
 	for i, text := range strings.Split(source, "\n") {
-		if at := strings.Index(text, needle); at >= 0 {
-			return i + 1, len([]rune(text[:at])) + 1
+		if before, _, ok := strings.Cut(text, needle); ok {
+			return i + 1, len([]rune(before)) + 1
 		}
 	}
 	t.Fatalf("the fixture does not contain %q, so this test is asserting about nothing", needle)

@@ -137,7 +137,7 @@ func TestEveryInstrumentCreatedInTheRepositoryIsDeclared(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, line := range strings.Split(string(contents), "\n") {
+		for line := range strings.SplitSeq(string(contents), "\n") {
 			if literal.MatchString(line) {
 				rel, _ := filepath.Rel(testkit.RepoRoot(t), path)
 				offenders = append(offenders, rel+": "+strings.TrimSpace(line))

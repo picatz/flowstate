@@ -557,8 +557,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			r.log.WarnContext(req.Context(), "refused a delivery: body past the bound",
 				"path", req.URL.Path, "limit", v1.MaxWebhookPayloadBytes)
 			// Recorded against the route the path names when it names one,
@@ -897,8 +896,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 			route.trigger.GetName(), identity.GetSubject(), deliveryID),
 	})
 	if err != nil {
-		var already *serviceerror.WorkflowExecutionAlreadyStarted
-		if errors.As(err, &already) {
+		if already, ok := errors.AsType[*serviceerror.WorkflowExecutionAlreadyStarted](err); ok {
 			// A redelivery: the second record beside the admission above,
 			// naming the run it was answered with. See [WebhookReceiver.admitted]
 			// for why this one is written after the attempt.

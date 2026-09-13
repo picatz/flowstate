@@ -60,7 +60,7 @@ descend from are in Part I.
 | A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
 
 The last row is the one place where the canonical spelling is not yet the only legal
-one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:151`) documents the
+one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:152`) documents the
 fence as optional for expression-typed fields, and it is: a step written
 `if: inputs.amount > 1`, with no fence anywhere, validates. Every `if:` in
 `examples/` that holds an expression writes the fence anyway, which is the corpus
@@ -166,7 +166,7 @@ inputs.amount.must: cannot be an expression; it is read when the workflow is
 compiled, so write the value out
 ```
 
-while `if:` accepts the fenced and the bare form alike (`pkg/flowstate/v1/flowfile/value.go:151`). Whatever
+while `if:` accepts the fenced and the bare form alike (`pkg/flowstate/v1/flowfile/value.go:152`). Whatever
 #545 decides, this rule constrains the resolution:
 
 - It applies to **every** expression-typed field, at **one** edition boundary, with a

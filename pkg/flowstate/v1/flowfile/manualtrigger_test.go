@@ -597,7 +597,7 @@ func parseCompilerRefusal(t *testing.T, err error) flowfile.Diagnostics {
 	t.Helper()
 
 	var ds flowfile.Diagnostics
-	for _, line := range strings.Split(err.Error(), "\n") {
+	for line := range strings.SplitSeq(err.Error(), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

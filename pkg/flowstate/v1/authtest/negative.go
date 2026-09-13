@@ -10,6 +10,8 @@ package authtest
 // because a negative test fed a token with two defects cannot tell which one
 // it caught. See this file's tests for the proof of that, one per helper.
 
+import "maps"
+
 // Claim names an [Issuer] does not fill in itself, minted only through
 // [WithDelegation] and [WithMayAct].
 //
@@ -166,9 +168,7 @@ func WrongIssuerToken(claims map[string]any, tokenOptions []TokenOption, issuerO
 	// this helper pass on the wrong defect.
 	if _, has := claims[claimIssuer]; has {
 		forced := make(map[string]any, len(claims))
-		for k, v := range claims {
-			forced[k] = v
-		}
+		maps.Copy(forced, claims)
 		forced[claimIssuer] = foreign.URL()
 		claims = forced
 	}

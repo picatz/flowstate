@@ -101,14 +101,12 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 	}
 	principal, err := verifier.Verify(cmd.Context(), rawToken)
 	if err != nil {
-		var ambiguous *auth.AmbiguousIssuerError
-		if errors.As(err, &ambiguous) {
+		if ambiguous, ok := errors.AsType[*auth.AmbiguousIssuerError](err); ok {
 			// This error is intentionally credential-free and names the exact
 			// policy rows the operator has to make disjoint.
 			return ambiguous
 		}
-		var blocked *auth.IssuerBlockedError
-		if errors.As(err, &blocked) {
+		if blocked, ok := errors.AsType[*auth.IssuerBlockedError](err); ok {
 			// A policy denial is deterministic: the operator needs the URL and
 			// rule, not the redacted "temporarily unavailable" that hid it.
 			return blocked

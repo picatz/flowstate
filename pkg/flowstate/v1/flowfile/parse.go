@@ -594,8 +594,7 @@ var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
 func YAMLSyntaxDiagnostics(data []byte, err error) Diagnostics {
 	d := Diagnostic{Message: err.Error()}
 
-	var yamlErr yaml.Error
-	if errors.As(err, &yamlErr) {
+	if yamlErr, ok := errors.AsType[yaml.Error](err); ok {
 		if msg := yamlErr.GetMessage(); msg != "" {
 			d.Message = msg
 		}
@@ -1433,10 +1432,8 @@ func (c *compiler) checkAnchorCycles() bool {
 			return false
 		}
 		state[name] = 1
-		for _, next := range edges[name] {
-			if cyclic(next) {
-				return true
-			}
+		if slices.ContainsFunc(edges[name], cyclic) {
+			return true
 		}
 		state[name] = 2
 		return false

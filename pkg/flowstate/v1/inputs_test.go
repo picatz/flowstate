@@ -157,7 +157,7 @@ func TestBindRunInputsRefusesAWorkflowWithAMalformedOutputMust(t *testing.T) {
 			Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}},
 		}},
 		DeclaredOutputs: []*v1.OutputDeclaration{
-			{Name: "answer", Value: v1.NewLiteral("ok"), Must: strPtr(`this.matches(`)},
+			{Name: "answer", Value: v1.NewLiteral("ok"), Must: new(`this.matches(`)},
 		},
 	}
 
@@ -198,7 +198,7 @@ func TestASideEffectDoesNotOccurWhenOutputMustCannotCompile(t *testing.T) {
 			// Malformed the same way the shape-check test above is: a `must:`
 			// that does not compile. Before the fix, this was only discovered
 			// in EvalRunOutputs, after the "charge" step above had already run.
-			{Name: "answer", Value: v1.NewLiteral("ok"), Must: strPtr(`this.matches(`)},
+			{Name: "answer", Value: v1.NewLiteral("ok"), Must: new(`this.matches(`)},
 		},
 	}
 

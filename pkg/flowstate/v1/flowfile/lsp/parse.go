@@ -1042,9 +1042,9 @@ func containsFrame(scope []scopeFrame, want scopeFrame) bool {
 // it is a name that resolves and belongs in completion — but only in the body.
 func (s *parsedStep) iteratorsInScope() []*parsedStep {
 	var loops []*parsedStep
-	for i := len(s.scope) - 1; i >= 0; i-- {
-		if s.scope[i].loopBody() {
-			loops = append(loops, s.scope[i].block)
+	for _, v := range slices.Backward(s.scope) {
+		if v.loopBody() {
+			loops = append(loops, v.block)
 		}
 	}
 	return loops

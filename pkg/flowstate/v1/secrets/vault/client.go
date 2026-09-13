@@ -143,13 +143,11 @@ func decodeJSON(body []byte, into any) error {
 		return fmt.Errorf("an empty body")
 	}
 
-	var syntaxErr *json.SyntaxError
-	if errors.As(err, &syntaxErr) {
+	if syntaxErr, ok := errors.AsType[*json.SyntaxError](err); ok {
 		return fmt.Errorf("a body that is not JSON, at byte %d of %d", syntaxErr.Offset, len(body))
 	}
 
-	var typeErr *json.UnmarshalTypeError
-	if errors.As(err, &typeErr) {
+	if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
 		return fmt.Errorf(
 			"a body whose %q field is a JSON %s, at byte %d",
 			typeErr.Field, typeErr.Value, typeErr.Offset,

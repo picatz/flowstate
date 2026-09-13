@@ -147,8 +147,7 @@ func validateInputConstraintShape(profile string, declaration *v1.InputDeclarati
 	// one at fault — which [enumValues] recorded a position for while parsing
 	// the list, so this points there directly rather than falling back to
 	// [inputConstraintShapeField]'s coarser guess.
-	var shapeErr *v1.EnumValuesShapeError
-	if errors.As(err, &shapeErr) {
+	if shapeErr, ok := errors.AsType[*v1.EnumValuesShapeError](err); ok {
 		return Diagnostics{{Field: field + "." + shapeErr.Field, Message: err.Error()}}
 	}
 
@@ -355,8 +354,7 @@ func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, in
 // will not compile is reported against the declaration for the reason the
 // input side reports it there.
 func outputConstraintShapeField(declaration *v1.OutputDeclaration, field string, err error) string {
-	var shapeErr *v1.EnumValuesShapeError
-	if errors.As(err, &shapeErr) {
+	if shapeErr, ok := errors.AsType[*v1.EnumValuesShapeError](err); ok {
 		return field + "." + shapeErr.Field
 	}
 	if len(declaration.GetValues()) > 0 && declaration.GetType() != v1.InputDeclaration_TYPE_ENUM {

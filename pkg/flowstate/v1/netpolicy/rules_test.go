@@ -306,7 +306,7 @@ func Test_Policy_rules_contextErrorIsNotADenial(t *testing.T) {
 	// Running out of time is not a policy decision, so it must not be reported as
 	// one: a caller distinguishing the two would otherwise blame the operator's
 	// rules for a cancelled request.
-	err = ruleSet{Set: celrule.Set{Deny: []celrule.Rule{r}}}.evaluate(ctx, "https://example.com/", map[string]any{
+	err = ruleSet{Deny: []celrule.Rule{r}}.evaluate(ctx, "https://example.com/", map[string]any{
 		"url": "https://example.com/", "scheme": "https", "host": "example.com",
 		"port": int64(443), "method": "GET", "path": "/",
 	})
@@ -655,10 +655,9 @@ func Test_ruleSet_evaluate(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			rs := ruleSet{Set: celrule.Set{
+			rs := ruleSet{
 				Allow: compile(t, "allow", test.allow...),
-				Deny:  compile(t, "deny", test.deny...),
-			}}
+				Deny:  compile(t, "deny", test.deny...)}
 
 			test.check(t, rs.evaluate(t.Context(), "https://api.example.com/v1/things", vars))
 		})

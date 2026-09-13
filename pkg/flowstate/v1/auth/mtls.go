@@ -328,10 +328,8 @@ func (t TrustedIssuer) admitsPeer(claims map[string]any) error {
 func chainMatchesCA(chains [][]*x509.Certificate, caCerts []*x509.Certificate) bool {
 	for _, chain := range chains {
 		for _, cert := range chain {
-			for _, ca := range caCerts {
-				if cert.Equal(ca) {
-					return true
-				}
+			if slices.ContainsFunc(caCerts, cert.Equal) {
+				return true
 			}
 		}
 	}

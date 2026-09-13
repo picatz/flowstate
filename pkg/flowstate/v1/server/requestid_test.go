@@ -299,7 +299,7 @@ func TestRequestIDComposesWithAnEntityKey(t *testing.T) {
 	first, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow:  entityWorkflow(nil),
 		EntityKey: &key,
-		RequestId: stringPtr("create-77"),
+		RequestId: new("create-77"),
 	}))
 	require.NoError(t, err)
 	require.Equal(t, "flowstate-entity-team-a_order-77", first.Msg.GetWorkflowId(),
@@ -308,7 +308,7 @@ func TestRequestIDComposesWithAnEntityKey(t *testing.T) {
 	retry, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow:  entityWorkflow(nil),
 		EntityKey: &key,
-		RequestId: stringPtr("create-77"),
+		RequestId: new("create-77"),
 	}))
 	require.NoError(t, err)
 	require.True(t, retry.Msg.GetReused())
@@ -317,11 +317,9 @@ func TestRequestIDComposesWithAnEntityKey(t *testing.T) {
 	_, err = fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow:  entityWorkflow(nil),
 		EntityKey: &key,
-		RequestId: stringPtr("create-77-again"),
+		RequestId: new("create-77-again"),
 	}))
 	require.Error(t, err, "a second submission against a live entity is not the one that started it")
 	require.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 	require.ErrorContains(t, err, first.Msg.GetRunId())
 }
-
-func stringPtr(s string) *string { return &s }

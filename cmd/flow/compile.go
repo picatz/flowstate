@@ -126,8 +126,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
 	surface := newSurface(cmd)
 	if err != nil {
-		var pathErr *os.PathError
-		if errors.As(err, &pathErr) {
+		if _, ok := errors.AsType[*os.PathError](err); ok {
 			// Not a diagnostic: the path itself cannot be read, which is a fact
 			// about the invocation rather than about a workflow, and listing it
 			// beside "this step references a step that does not exist" would put

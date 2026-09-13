@@ -220,27 +220,25 @@ func PluginTaskInputStep(workflowName, stepID string) *v1.Workflow {
 func PluginTaskInputCases() []AuthorityCase {
 	return []AuthorityCase{
 		{
-			Case: Case{
-				Name:     "a plugin task is handed evaluated, deferred and referenced inputs",
-				Workflow: PluginTaskInputStep("plugin-task-inputs", "call"),
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"call": {NamedValues: map[string]*v1.Value{
-						// The engine evaluated it, so the task got a value.
-						"resolved_kind": v1.NewLiteral("literal"),
-						"resolved_text": v1.NewLiteral("hello world"),
+			Name:     "a plugin task is handed evaluated, deferred and referenced inputs",
+			Workflow: PluginTaskInputStep("plugin-task-inputs", "call"),
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": {NamedValues: map[string]*v1.Value{
+					// The engine evaluated it, so the task got a value.
+					"resolved_kind": v1.NewLiteral("literal"),
+					"resolved_text": v1.NewLiteral("hello world"),
 
-						// The engine left it alone, so the task can evaluate it
-						// in a scope the workflow does not have.
-						"deferred_kind": v1.NewLiteral("expression"),
+					// The engine left it alone, so the task can evaluate it
+					// in a scope the workflow does not have.
+					"deferred_kind": v1.NewLiteral("expression"),
 
-						// The reference travelled as a reference, and was
-						// resolved inside the task.
-						"token_kind":   v1.NewLiteral("secret_ref"),
-						"token_ref":    v1.NewLiteral(PluginTaskInputsScheme + ":" + PluginTaskInputsSecretName),
-						"token_length": v1.NewLiteral(int64(len(PluginTaskInputsMaterial))),
-					}},
+					// The reference travelled as a reference, and was
+					// resolved inside the task.
+					"token_kind":   v1.NewLiteral("secret_ref"),
+					"token_ref":    v1.NewLiteral(PluginTaskInputsScheme + ":" + PluginTaskInputsSecretName),
+					"token_length": v1.NewLiteral(int64(len(PluginTaskInputsMaterial))),
 				}},
-			},
+			}},
 			Authority: Authority{
 				Scheme:       PluginTaskInputsScheme,
 				FixtureValue: PluginTaskInputsMaterial,

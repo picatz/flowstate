@@ -201,8 +201,7 @@ func runTaskProbe(ctx workflow.Context, node *v1.Node) (string, error) {
 		return "", nil
 	}
 
-	var runFailed *ErrRunFailed
-	if errors.As(err, &runFailed) {
+	if runFailed, ok := errors.AsType[*ErrRunFailed](err); ok {
 		return runFailed.Message, nil
 	}
 

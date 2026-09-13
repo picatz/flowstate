@@ -67,9 +67,9 @@ func TestAStatedFieldBeatsAnInheritedOne(t *testing.T) {
 	row := Expectation{
 		Outputs:        map[string]any{"row": true},
 		Inputs:         map[string]any{"row": true},
-		Refused:        ptr(false),
+		Refused:        new(false),
 		IdempotencyKey: "row",
-		Failed:         ptr(false),
+		Failed:         new(false),
 		ErrorContains:  "row",
 		Compensated:    []string{"row"},
 		Ran:            []string{"row"},
@@ -131,9 +131,9 @@ func nonZeroExpectation() Expectation {
 	return Expectation{
 		Outputs:        map[string]any{"entry": true},
 		Inputs:         map[string]any{"entry": true},
-		Refused:        ptr(true),
+		Refused:        new(true),
 		IdempotencyKey: "entry",
-		Failed:         ptr(true),
+		Failed:         new(true),
 		ErrorContains:  "entry",
 		Compensated:    []string{"entry"},
 		Ran:            []string{"entry"},
@@ -142,5 +142,3 @@ func nonZeroExpectation() Expectation {
 		Check:          []CheckClaim{{That: "true"}},
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

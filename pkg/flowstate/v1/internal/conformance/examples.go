@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -898,9 +900,9 @@ func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []strin
 // the same name for this to choose between — but bindings is assembled inner
 // scope last, so taking the last match is the correct read of it regardless.
 func lookupBinding(bindings []binding, name string) (binding, bool) {
-	for i := len(bindings) - 1; i >= 0; i-- {
-		if bindings[i].name == name {
-			return bindings[i], true
+	for _, binding := range slices.Backward(bindings) {
+		if binding.name == name {
+			return binding, true
 		}
 	}
 	return binding{}, false
@@ -1186,12 +1188,8 @@ type ExampleVariant struct {
 // a caller does not have to know an example's other declarations to run one.
 func (v ExampleVariant) WithOverrides(bound map[string]*v1.Value) map[string]*v1.Value {
 	merged := make(map[string]*v1.Value, len(bound)+len(v.Overrides))
-	for name, value := range bound {
-		merged[name] = value
-	}
-	for name, value := range v.Overrides {
-		merged[name] = value
-	}
+	maps.Copy(merged, bound)
+	maps.Copy(merged, v.Overrides)
 
 	return merged
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -585,10 +586,8 @@ func (c *compiler) containsExpr(n ast.Node) bool {
 	case *ast.LiteralNode:
 		return scalarHoldsFence(blockText(node))
 	case *ast.SequenceNode:
-		for _, v := range node.Values {
-			if c.containsExpr(v) {
-				return true
-			}
+		if slices.ContainsFunc(node.Values, c.containsExpr) {
+			return true
 		}
 	case *ast.MappingNode:
 		for _, v := range node.Values {

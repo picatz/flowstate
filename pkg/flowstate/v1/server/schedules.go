@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -263,20 +264,12 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// creates a schedule is the starter of every run it fires, frozen once
 	// here because there is no caller left at 03:00 to derive one from.
 	scheduleMemo := map[string]any{namespaceMemoKey: namespace}
-	for k, v := range starterMemoEntry(identity) {
-		scheduleMemo[k] = v
-	}
-	for k, v := range signalEntry {
-		scheduleMemo[k] = v
-	}
+	maps.Copy(scheduleMemo, starterMemoEntry(identity))
+	maps.Copy(scheduleMemo, signalEntry)
 
 	actionMemo := map[string]any{namespaceMemoKey: namespace, triggerMemoKey: v1.TriggerKindSchedule + ":" + name}
-	for k, v := range starterMemoEntry(identity) {
-		actionMemo[k] = v
-	}
-	for k, v := range signalEntry {
-		actionMemo[k] = v
-	}
+	maps.Copy(actionMemo, starterMemoEntry(identity))
+	maps.Copy(actionMemo, signalEntry)
 
 	// Unconditional, through the exact function [FlowstateServer.Run] uses —
 	// see [workflowNameMemoEntry]. Written to both memos for the reason the
@@ -879,8 +872,7 @@ func noSuchSchedule(name string) *connect.Error {
 // schedule gets, so a caller sees one answer for one situation rather than a 500
 // for the half of it that happened to lose a race.
 func actOnScheduleError(verb, name string, err error) error {
-	var notFound *serviceerror.NotFound
-	if errors.As(err, &notFound) {
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return noSuchSchedule(name)
 	}
 

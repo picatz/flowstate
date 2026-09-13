@@ -125,16 +125,14 @@ func CleartextCredentialCases(tlsServerURL string) []AuthorityCase {
 			// the network — refused before the request is dialed, same as
 			// [AuthorityDenialCases]' unreachable URLs — so the URL named is
 			// deliberately unresolvable.
-			Case: Case{
-				Name: "a bearer secret to a cleartext, non-loopback destination is refused before it is resolved",
-				Workflow: &v1.Workflow{
-					Name:  "cleartext-credential-bearer",
-					Steps: []*v1.Node{bearerSecretStep("call", cleartextCredentialTarget, "fixture-secret", "API_TOKEN")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"call": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText),
-				}},
+			Name: "a bearer secret to a cleartext, non-loopback destination is refused before it is resolved",
+			Workflow: &v1.Workflow{
+				Name:  "cleartext-credential-bearer",
+				Steps: []*v1.Node{bearerSecretStep("call", cleartextCredentialTarget, "fixture-secret", "API_TOKEN")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText),
+			}},
 			Authority: Authority{
 				// An authority that would succeed if ever consulted — see the
 				// package doc above for why that is the point.
@@ -148,16 +146,14 @@ func CleartextCredentialCases(tlsServerURL string) []AuthorityCase {
 			// reaches [v1.AuthorizeCredential] rather than [v1.ResolveSecret],
 			// and so needs its own ordering proof
 			// ([Federation.ExchangeCalls]) rather than reusing ProviderCalls.
-			Case: Case{
-				Name: "a JIT federation credential to a cleartext, non-loopback destination is refused before authorization",
-				Workflow: &v1.Workflow{
-					Name:  "cleartext-credential-jit",
-					Steps: []*v1.Node{credentialStep("call", cleartextCredentialTarget, "partner-api")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"call": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText),
-				}},
+			Name: "a JIT federation credential to a cleartext, non-loopback destination is refused before authorization",
+			Workflow: &v1.Workflow{
+				Name:  "cleartext-credential-jit",
+				Steps: []*v1.Node{credentialStep("call", cleartextCredentialTarget, "partner-api")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` + cleartextCredentialErrorText),
+			}},
 			Authority: Authority{
 				Identity: identity,
 				Federation: &Federation{
@@ -172,26 +168,24 @@ func CleartextCredentialCases(tlsServerURL string) []AuthorityCase {
 			// refuses cleartext specifically: the identical bearer secret,
 			// the identical fixture authority, over https instead — and it
 			// must reach the peer and come back.
-			Case: Case{
-				Name: "the same bearer secret succeeds over https",
-				Workflow: &v1.Workflow{
-					Name: "cleartext-credential-bearer-https",
-					Steps: []*v1.Node{{
-						Id: "call",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "http",
-							Inputs: map[string]*v1.Value{
-								"url":     v1.NewLiteral(tlsServerURL),
-								"bearer":  {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "fixture-secret", Name: "API_TOKEN"}}},
-								"outputs": v1.NewExpr(`{"said": response.body}`),
-							},
-						}},
+			Name: "the same bearer secret succeeds over https",
+			Workflow: &v1.Workflow{
+				Name: "cleartext-credential-bearer-https",
+				Steps: []*v1.Node{{
+					Id: "call",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url":     v1.NewLiteral(tlsServerURL),
+							"bearer":  {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "fixture-secret", Name: "API_TOKEN"}}},
+							"outputs": v1.NewExpr(`{"said": response.body}`),
+						},
 					}},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"call": said("reached"),
 				}},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": said("reached"),
+			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "https-secret-value",
 				Allow: []string{"true"}, Identity: identity,

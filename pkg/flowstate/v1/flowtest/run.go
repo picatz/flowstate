@@ -1676,10 +1676,8 @@ func containsCallStep(nodes []*v1.Node) bool {
 				}
 			}
 		case *v1.Node_Switch:
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				if containsCallStep(body) {
-					return true
-				}
+			if slices.ContainsFunc(v1.SwitchBodies(kind.Switch), containsCallStep) {
+				return true
 			}
 		case *v1.Node_ForEach:
 			if containsCallStep(kind.ForEach.GetBody()) {

@@ -130,8 +130,7 @@ func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err
 		// or client TLS triple. Those already name their own repair, and
 		// "fix --address, start the server" would point away from it; the
 		// [clientSideError] mark is how the transport says which half failed.
-		var local *clientSideError
-		if errors.As(err, &local) {
+		if _, ok := errors.AsType[*clientSideError](err); ok {
 			return err
 		}
 
@@ -234,10 +233,9 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		Redact: func(response *v1.GetResponse) *v1.GetResponse {
 			return redactGetResponse(response, nil, revealSensitiveRequested(cmd))
 		},
-	}
 
-	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
-	deps.DecorateRPCError = mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd))
+		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
+		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd))}
 
 	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
 		stdioExtraTools(cmd, providers)...)
@@ -888,7 +886,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 
 			var encoded []byte
 
-			for pass := 0; pass < maxTestFloorPasses; pass++ {
+			for range maxTestFloorPasses {
 				summary := &v1.TestReport{
 					File:    capText(report.GetFile(), share),
 					Refused: capText(trimmed.GetRefused(), share),

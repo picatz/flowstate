@@ -264,8 +264,7 @@ func (ds *Diagnostics) inFile(path string) *Diagnostics {
 func yamlProblem(err error) *Diagnostics {
 	d := Diagnostic{Message: err.Error()}
 
-	var yamlErr yaml.Error
-	if errors.As(err, &yamlErr) {
+	if yamlErr, ok := errors.AsType[yaml.Error](err); ok {
 		if message := yamlErr.GetMessage(); message != "" {
 			d.Message = message
 		}

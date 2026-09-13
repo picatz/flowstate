@@ -1108,8 +1108,7 @@ func (s *FlowstateServer) Terminate(ctx context.Context, req *connect.Request[v1
 // repo's to depend on, and a string match would fail open the day it changes,
 // which is the direction that turns a clear diagnostic back into a 500.
 func actOnRunError(verb, workflowID, runID string, err error) error {
-	var notFound *serviceerror.NotFound
-	if !errors.As(err, &notFound) {
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); !ok {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("%s run %q: %w", verb, workflowID, err))
 	}
 

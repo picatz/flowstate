@@ -888,7 +888,7 @@ func TestEachScopeLineNamesItsOwnNamespace(t *testing.T) {
 	session.Autopsy(t.Context(), scope, nil, []string{"a failure"})
 
 	lines := map[string]string{}
-	for _, line := range strings.Split(out.String(), "\n") {
+	for line := range strings.SplitSeq(out.String(), "\n") {
 		label, rest, ok := strings.Cut(line, ": ")
 		if ok {
 			lines[label] = rest

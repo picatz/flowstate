@@ -553,8 +553,7 @@ func publicReason(err error) string {
 	case errors.Is(err, ErrClaimMismatch):
 		return "token is not accepted by the trust policy"
 	case errors.Is(err, ErrIssuerUnavailable):
-		var blocked *IssuerBlockedError
-		if errors.As(err, &blocked) {
+		if _, ok := errors.AsType[*IssuerBlockedError](err); ok {
 			return "issuer keys are blocked by the identity egress policy"
 		}
 		return "issuer keys are temporarily unavailable"

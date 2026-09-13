@@ -402,28 +402,26 @@ func capabilities() serverCapabilities {
 			// editor can bind to a command or to save.
 			CodeActionKinds: []lsp.CodeActionKind{lsp.CAKQuickFix, codeActionKindSourceFixAll},
 		},
-		ServerCapabilities: lsp.ServerCapabilities{
-			TextDocumentSync: &lsp.TextDocumentSyncOptionsOrKind{
-				// Only Options is set: the marshaler prefers Kind when both are
-				// present, and the kind form cannot express that the server wants
-				// save notifications.
-				Options: &lsp.TextDocumentSyncOptions{
-					OpenClose: true,
-					Change:    lsp.TDSKFull,
-					Save:      &lsp.SaveOptions{IncludeText: true},
-				},
+		TextDocumentSync: &lsp.TextDocumentSyncOptionsOrKind{
+			// Only Options is set: the marshaler prefers Kind when both are
+			// present, and the kind form cannot express that the server wants
+			// save notifications.
+			Options: &lsp.TextDocumentSyncOptions{
+				OpenClose: true,
+				Change:    lsp.TDSKFull,
+				Save:      &lsp.SaveOptions{IncludeText: true},
 			},
-			HoverProvider: true,
-			CompletionProvider: &lsp.CompletionOptions{
-				// Enough to open completion at each place a Flowfile has something
-				// to offer: after a key's colon, inside ${...}, after a step id's
-				// dot, and within a libs list.
-				TriggerCharacters: []string{":", " ", ".", "{", "[", ",", "-"},
-			},
-			DefinitionProvider:         true,
-			DocumentSymbolProvider:     true,
-			DocumentFormattingProvider: true,
 		},
+		HoverProvider: true,
+		CompletionProvider: &lsp.CompletionOptions{
+			// Enough to open completion at each place a Flowfile has something
+			// to offer: after a key's colon, inside ${...}, after a step id's
+			// dot, and within a libs list.
+			TriggerCharacters: []string{":", " ", ".", "{", "[", ",", "-"},
+		},
+		DefinitionProvider:         true,
+		DocumentSymbolProvider:     true,
+		DocumentFormattingProvider: true,
 	}
 }
 
@@ -835,8 +833,7 @@ func decode(req *jsonrpc2.Request, into any) error {
 // asRPCError converts an error into the JSON-RPC form, preserving a code that was
 // chosen deliberately.
 func asRPCError(err error) *jsonrpc2.Error {
-	var rpcErr *jsonrpc2.Error
-	if errors.As(err, &rpcErr) {
+	if rpcErr, ok := errors.AsType[*jsonrpc2.Error](err); ok {
 		return rpcErr
 	}
 	return &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: err.Error()}

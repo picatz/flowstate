@@ -247,7 +247,7 @@ func TestDefaultsStubBound(t *testing.T) {
 	writeDefaultsWorkflow(t, dir)
 	var b strings.Builder
 	b.WriteString("defaults:\n  stubs:\n")
-	for i := 0; i < flowtest.MaxDefaultStubs+1; i++ {
+	for range flowtest.MaxDefaultStubs + 1 {
 		b.WriteString("    - task: log\n      returns: {}\n")
 	}
 	b.WriteString("tests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {failed: false}\n")

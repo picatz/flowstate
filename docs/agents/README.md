@@ -266,17 +266,23 @@ and whether a deterministic mechanism can prevent it more reliably.
   gone denies, because that is a control removed rather than unfinished. The
   merge guard is the one exception to failing open, and only for the calls it
   would have judged: the merge tool's entry passes `strict`, and on the shell
-  the launcher refuses a payload that could be a merge while letting every
-  other command through, since it is wired on all of Bash but ignores
-  everything that is not a merge, and denying `go build` to guard a `go build`
-  would take away the repair itself. That test is a coarse over-approximation,
-  not a second recognizer, and it does not claim to be complete: the guard
-  decides what a merge is by tokenizing the command, and a text test cannot
-  equal a tokenizer. It covers the spellings a caller writes without trying to
-  evade it, it is strictly narrower than the behaviour it replaced, and the
-  gates that decide whether a change may land are `tools/shipcheck` and the
-  exact-head review evidence, not this. Every other failure denies. Other hosts
-  do not run these Claude-native tool events.
+  the launcher refuses a merge while letting every other command through, since
+  it is wired on all of Bash but ignores everything that is not a merge, and
+  denying `go build` to guard a `go build` would take away the repair itself.
+  Which calls those are is decided by the last merge guard that compiled, kept
+  by the build under `.claude/hooks/.lkg/` and asked while the current sources
+  will not: the guard recognizes a merge by tokenizing the command, so a
+  subcommand assembled by a shell expansion is one to it and is invisible to
+  any pattern. Its refusal is passed through as it wrote it, with a note on
+  stderr saying it came from a retained binary; output from a run that exited
+  non-zero is not treated as a decision. Only the merge guard is retained,
+  because it is the only one whose answer to being unbuildable is a refusal —
+  a retained `genguard` could refuse the very edit that repairs it. Behind that
+  sits a coarse text test, for when no retained guard exists or it is too old
+  to know a spelling; it does not claim completeness, and the gates that decide
+  whether a change may land remain `tools/shipcheck` and the exact-head review
+  evidence. Every other failure denies. Other hosts do not run these
+  Claude-native tool events.
 - Legacy `.claude/commands/ci-check.md` and `test-fast.md` remain only as short
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
   in skills. A command never shares a skill's name: `both-drivers.md` was

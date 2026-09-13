@@ -374,13 +374,11 @@ func (p *Policy) checkDeniedNetworks(addr netip.AddrPort) error {
 	}
 
 	for _, denied := range p.cfg.denyNetworks {
-		for _, candidate := range candidates {
-			if denied.Contains(candidate) {
-				return &DenyError{
-					Reason: ReasonAddress,
-					Target: ip.String(),
-					Detail: "within denied network " + denied.String(),
-				}
+		if slices.ContainsFunc(candidates, denied.Contains) {
+			return &DenyError{
+				Reason: ReasonAddress,
+				Target: ip.String(),
+				Detail: "within denied network " + denied.String(),
 			}
 		}
 	}

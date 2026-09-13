@@ -60,7 +60,7 @@ func TestEvalRunOutputsWithholdsASensitiveValueFromItsOwnRefusal(t *testing.T) {
 				Name:      "token",
 				Value:     v1.NewExpr(`"` + secretAnswer + `"`),
 				Sensitive: true,
-				Must:      strPtr(`this == "expected"`),
+				Must:      new(`this == "expected"`),
 			},
 			contains: "output \"token\" must satisfy `this == \"expected\"`; got " + v1.SensitiveMarker,
 		},
@@ -117,7 +117,7 @@ func TestEvalRunOutputsNamesAnUnredactedValueInItsRefusal(t *testing.T) {
 			declaration: &v1.OutputDeclaration{
 				Name:  "channel",
 				Value: v1.NewExpr(`"canary"`),
-				Must:  strPtr(`this == "stable"`),
+				Must:  new(`this == "stable"`),
 			},
 			contains: "output \"channel\" must satisfy `this == \"stable\"`; got canary",
 		},

@@ -212,7 +212,7 @@ func assumeRuleFailure(ctx context.Context, target, subject string, err error) e
 func newAssumeEnv() (*cel.Env, error) {
 	return cel.NewEnv(
 		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeOf(workload{}), reflect.TypeOf(callerIdentity{})),
+			reflect.TypeFor[workload](), reflect.TypeFor[callerIdentity]()),
 		cel.Variable(attrTarget, cel.StringType),
 		cel.Variable(attrAudience, cel.StringType),
 		cel.Variable(attrIdentity, cel.ObjectType(callerTypeName)),
@@ -248,7 +248,7 @@ func compileAssumeRules(allow, deny []string, costLimit uint64) (assumeRules, er
 		return assumeRules{}, err
 	}
 
-	return assumeRules{Set: celrule.Set{Allow: allowRules, Deny: denyRules}}, nil
+	return assumeRules{Allow: allowRules, Deny: denyRules}, nil
 }
 
 // assumeVars builds the attributes a rule is evaluated against.

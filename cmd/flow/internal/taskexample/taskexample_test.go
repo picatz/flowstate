@@ -36,7 +36,7 @@ func TestBuildValidates(t *testing.T) {
 			// document. What a reader copies is the block; what compiles is the
 			// block with that indent removed.
 			var source strings.Builder
-			for _, line := range strings.Split(example, "\n") {
+			for line := range strings.SplitSeq(example, "\n") {
 				source.WriteString(strings.TrimPrefix(line, "  ") + "\n")
 			}
 
@@ -64,7 +64,7 @@ func TestAPluginsTaskIsPinned(t *testing.T) {
 
 	// The pinned file compiles: the block is one the grammar reads.
 	var source strings.Builder
-	for _, line := range strings.Split(pinned, "\n") {
+	for line := range strings.SplitSeq(pinned, "\n") {
 		source.WriteString(strings.TrimPrefix(line, "  ") + "\n")
 	}
 	diagnostics, err := flowfile.ValidateSource([]byte(source.String()))

@@ -283,8 +283,7 @@ func yamlDiagnostic(doc *document, err error, code string) (lsp.Diagnostic, flow
 // refusing an expression that the CEL check above has already flagged precisely —
 // and a second copy at line 1 with no range is pure noise.
 func addCompileFailure(doc *document, set *diagnosticSet, err error) {
-	var yamlErr yaml.Error
-	if errors.As(err, &yamlErr) {
+	if _, ok := errors.AsType[yaml.Error](err); ok {
 		set.addFrom(yamlDiagnostic(doc, err, codeYAMLSyntax))
 		return
 	}

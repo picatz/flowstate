@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -210,13 +211,7 @@ func readFileBounded(p string) (data []byte, truncated bool, err error) {
 // a message that says what the shape means instead of leaving a caller to
 // find out from whichever half happened to fail first.
 func checkStdinArg(paths []string) error {
-	hasStdin := false
-	for _, p := range paths {
-		if p == stdinArg {
-			hasStdin = true
-			break
-		}
-	}
+	hasStdin := slices.Contains(paths, stdinArg)
 	if !hasStdin || len(paths) == 1 {
 		return nil
 	}

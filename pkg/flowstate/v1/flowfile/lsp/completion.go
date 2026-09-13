@@ -770,8 +770,8 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	// than offered: a menu with the same id twice cannot say which is which, and
 	// the second entry's outputs are a step this expression cannot reach.
 	seen := map[string]bool{}
-	for i := len(doc.parsed.steps) - 1; i >= 0; i-- {
-		s := doc.parsed.steps[i]
+	for _, s := range slices.Backward(doc.parsed.steps) {
+
 		if s.id == "" || seen[s.id] || !visibleFromEntry(s, from, ls) {
 			continue
 		}
@@ -851,16 +851,16 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 	// indentation.
 	ancestors := map[*outlineStep]bool{}
 	depth := currentIndent
-	for i := len(earlier) - 1; i >= 0; i-- {
-		if earlier[i].indent < depth {
-			ancestors[earlier[i]] = true
-			depth = earlier[i].indent
+	for _, e := range slices.Backward(earlier) {
+		if e.indent < depth {
+			ancestors[e] = true
+			depth = e.indent
 		}
 	}
 
 	scope := refScope{steps: make([]celcomplete.Candidate, 0, len(earlier))}
-	for i := len(earlier) - 1; i >= 0; i-- {
-		s := earlier[i]
+	for _, s := range slices.Backward(earlier) {
+
 		if s.id == "" || s.indent > currentIndent || ancestors[s] {
 			continue
 		}
@@ -1336,7 +1336,7 @@ func rangeBack(pos lsp.Position, word string) lsp.Range {
 // to the reader as literal characters.
 func plainText(md string) string {
 	var kept []string
-	for _, line := range strings.Split(md, "\n") {
+	for line := range strings.SplitSeq(md, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "```") {
 			continue
 		}

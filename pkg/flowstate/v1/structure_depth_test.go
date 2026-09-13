@@ -526,7 +526,7 @@ func TestCheckStructureDepthCallGraphTerminates(t *testing.T) {
 		const levels = 4
 
 		wf := leaf
-		for level := 0; level < levels; level++ {
+		for level := range levels {
 			branches := make([]*v1.Node, 0, fanOut)
 			for i := range fanOut {
 				branches = append(branches, &v1.Node{

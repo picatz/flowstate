@@ -52,8 +52,7 @@ func yamlKeys(t reflect.Type) []string {
 		return nil
 	}
 	keys := make([]string, 0, t.NumField())
-	for i := range t.NumField() {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		if f.PkgPath != "" {
 			// Unexported: goccy cannot set it and does not offer it as a key.
 			// [flowtest.Stub.fromDefaults] and [flowtest.CheckClaim.fromDefaults]

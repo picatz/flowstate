@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,7 +229,7 @@ func documentedLocalToolNames() []string {
 // the method it claims to serve.
 func rpcNameOfTool(tool string) string {
 	var b strings.Builder
-	for _, word := range strings.Split(strings.TrimPrefix(tool, flowmcp.ToolPrefix), "_") {
+	for word := range strings.SplitSeq(strings.TrimPrefix(tool, flowmcp.ToolPrefix), "_") {
 		if word == "" {
 			continue
 		}
@@ -298,9 +299,7 @@ func TestRPCToolsAdvertiseTheirResponseSchemas(t *testing.T) {
 	assert.ElementsMatch(t, []any{"object", "null"}, compileWorkflow["type"],
 		"Compile must represent its documented diagnostic-only response without a workflow")
 	successfulCompileWorkflow := make(map[string]any, len(compileWorkflow))
-	for key, value := range compileWorkflow {
-		successfulCompileWorkflow[key] = value
-	}
+	maps.Copy(successfulCompileWorkflow, compileWorkflow)
 	successfulCompileWorkflow["type"] = "object"
 	assert.Equal(t, successfulCompileWorkflow, runProperties["workflow"],
 		"a successful Compile workflow result is not structurally accepted by Run")

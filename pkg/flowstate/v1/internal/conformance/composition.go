@@ -17,7 +17,6 @@ func CompositionPrototype(record func(string)) (*v1.Workflow, []v1.TaskDef, *v1.
 	defs := make([]v1.TaskDef, 0, len(providers)*2)
 	plugins := make([]*v1.PluginDescription, 0, len(providers))
 	for _, provider := range providers {
-		provider := provider
 		provision := v1.TaskDef{
 			Name: provider + ".provision",
 			Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {

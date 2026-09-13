@@ -115,7 +115,7 @@ func parallelWithTasks(name string, count int, firstRuns bool) *v1.Workflow {
 	for branchIndex := 0; remaining > 0; branchIndex++ {
 		branchSize := min(remaining, tasksPerBranch)
 		steps := make([]*v1.Node, 0, branchSize)
-		for taskIndex := 0; taskIndex < branchSize; taskIndex++ {
+		for taskIndex := range branchSize {
 			guarded := !firstRuns || branchIndex != 0 || taskIndex != 0
 			steps = append(steps, atomicTask(
 				"branch-"+strconv.Itoa(branchIndex)+"-task-"+strconv.Itoa(taskIndex),
@@ -147,7 +147,7 @@ func parallelWithTasks(name string, count int, firstRuns bool) *v1.Workflow {
 func siblingParallelForEachBlocks() *v1.Workflow {
 	parallel := func(id string) *v1.Node {
 		body := make([]*v1.Node, 0, 3)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			body = append(body, atomicTask(id+"-body-"+strconv.Itoa(i), true))
 		}
 		return &v1.Node{
@@ -218,7 +218,7 @@ func AtomicBlockRefusalSubstrings() []string {
 // rather than in how they produce items.
 func fansOutAtomically(name string, n int) *v1.Workflow {
 	body := make([]*v1.Node, 0, atomicBodySteps)
-	for i := 0; i < atomicBodySteps; i++ {
+	for i := range atomicBodySteps {
 		body = append(body, &v1.Node{
 			Id:        "body-" + strconv.Itoa(i),
 			Condition: v1.NewExpr("false"),

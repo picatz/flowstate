@@ -68,6 +68,7 @@ go.work
 # per-tool hook events execute these checkout-local binaries directly.
 .claude/hooks/.bin/
 .claude/hooks/.cache/
+.claude/hooks/.lkg/
 
 .worktrees/
 

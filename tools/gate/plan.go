@@ -621,12 +621,9 @@ func repoDataDepPackages(testSrc map[string][]byte, roots []string) []string {
 
 	seen := map[string]bool{}
 	var out []string
-	for _, root := range roots {
-		if root == agentConfigDataRoot {
-			seen[agentConfigPkg] = true
-			out = append(out, agentConfigPkg)
-			break
-		}
+	if slices.Contains(roots, agentConfigDataRoot) {
+		seen[agentConfigPkg] = true
+		out = append(out, agentConfigPkg)
 	}
 	if pattern := repoDataDepPattern(roots); pattern != nil {
 		for _, pkg := range dataDepPackages(testSrc, pattern) {

@@ -416,8 +416,7 @@ func (p *Policy) dialWithVerdict(dial func(context.Context, string, string) (net
 		}
 
 		if denied := answered.denied.Load(); denied != nil {
-			var reported *DenyError
-			if errors.As(err, &reported) {
+			if _, ok := errors.AsType[*DenyError](err); ok {
 				// The dialer reported the denial itself, wrapped in its own
 				// error; that is the shape every caller has always seen.
 				return nil, err
@@ -444,8 +443,7 @@ func (p *Policy) dialWithVerdict(dial func(context.Context, string, string) (net
 // which is what [net.Dialer] reports for an address family the host lacks.
 // Anything else is left unclassified rather than guessed at.
 func undecidedCause(err error) UndecidedCause {
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return UndecidedByResolver
 	}
 
@@ -915,8 +913,7 @@ func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
 
 	hop, afterRedirect := req.URL.Redacted(), req.Response != nil
 
-	var denied *DenyError
-	if errors.As(err, &denied) {
+	if denied, ok := errors.AsType[*DenyError](err); ok {
 		denied.Hop, denied.AfterRedirect = hop, afterRedirect
 	}
 
@@ -924,8 +921,7 @@ func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
 	// answers an interrupted rule evaluation with an [*UndecidedError], and a
 	// caller that reads only the denial would take that one for a request that
 	// never left. [Policy.checkRequestHop] marks both for the same reason.
-	var undecided *UndecidedError
-	if errors.As(err, &undecided) {
+	if undecided, ok := errors.AsType[*UndecidedError](err); ok {
 		undecided.AfterRedirect = afterRedirect
 	}
 

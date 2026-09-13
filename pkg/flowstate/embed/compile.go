@@ -66,8 +66,7 @@ type Diagnostics = flowfile.Diagnostics
 func Compile(data []byte) (workflow *Workflow, diagnostics Diagnostics, err error) {
 	workflow, _, err = flowfile.Parse(data)
 	if err != nil {
-		var diags flowfile.Diagnostics
-		if errors.As(err, &diags) {
+		if diags, ok := errors.AsType[flowfile.Diagnostics](err); ok {
 			return nil, diags, err
 		}
 		return nil, nil, err

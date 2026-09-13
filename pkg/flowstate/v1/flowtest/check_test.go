@@ -454,7 +454,7 @@ func TestManyWitnessesAreBounded(t *testing.T) {
 	writeCheckWorkflow(t, dir)
 
 	terms := make([]string, 0, flowtest.MaxCheckWitnesses+3)
-	for i := 0; i < flowtest.MaxCheckWitnesses+3; i++ {
+	for i := range flowtest.MaxCheckWitnesses + 3 {
 		terms = append(terms, "steps.plan.value.regions["+strings.Repeat("0+", i)+"0] == 'nope'")
 	}
 	path := filepath.Join(dir, "workflow.test.yaml")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -157,9 +158,7 @@ outputs: {}
 			conn.await("response", "initialize")
 			conn.await("event", "initialized")
 			launch := map[string]any{"program": workflow}
-			for name, value := range test.launchArg {
-				launch[name] = value
-			}
+			maps.Copy(launch, test.launchArg)
 			conn.send("launch", launch)
 			conn.await("response", "launch")
 			conn.send("configurationDone", nil)
