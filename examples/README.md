@@ -266,11 +266,14 @@ on.
 The examples marked as needing network are two kinds, and which kind decides whether running
 one shows you anything.
 
-- Pointed at `httpbin.org`, the only live service the Flowfile corpus reaches. These run as
-  written, and need internet access.
-- Pointed at a name beneath one reserved for documentation by
-  [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3): under `example.com`,
-  `example.net` or `example.org`, or under the `.example` top-level domain. *Beneath* is
+- Pointed at `httpbin.org`, the only live service any Flowfile's `url:` names. These run as
+  written, and need internet access. A `vault:` or `op:` reference reaches its own backend
+  and no `url:` shows it, so that is outside this split — those examples' READMEs say what
+  they contact.
+- Pointed at a name beneath one RFC 2606 reserves for documentation: under `example.com`,
+  `example.net` or `example.org` ([§3](https://www.rfc-editor.org/rfc/rfc2606#section-3)),
+  or under the `.example` top-level domain
+  ([§2](https://www.rfc-editor.org/rfc/rfc2606#section-2)). *Beneath* is
   load-bearing — those three domains and their `www` are reserved and also served, and a
   bare `example` is a single label a resolver expands against its search list — so what is
   left is the set of spellings nobody publishes a record for. These files are written to be

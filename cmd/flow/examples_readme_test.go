@@ -87,10 +87,11 @@ var liveExampleHosts = map[string]string{
 	"httpbin.org": "the request echo the runnable HTTP examples are written against",
 }
 
-// offlineExampleHosts spells the loopback interface: a request to one of these
-// leaves nothing, so an example naming one is still offline and still honestly
-// marked `no`. A definition rather than a permission, which is why the entries
-// no example happens to use today stay.
+// offlineExampleHosts are the loopback spellings an example may name: a request
+// to one of these leaves nothing, so an example naming one is still offline and
+// still honestly marked `no`. A definition rather than a permission, which is why
+// the entries no example happens to use today stay — and, like everything else
+// here, a list rather than a range, so `127.0.0.2` is refused as undecided.
 var offlineExampleHosts = map[string]string{
 	"localhost": "`conditional-and-retry` dials a closed port on it on purpose",
 	"127.0.0.1": "the same, written as an address",
@@ -146,6 +147,15 @@ var servedDocumentationHosts = map[string]bool{
 // [§2]: https://www.rfc-editor.org/rfc/rfc2606#section-2
 // [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
 func documentationOnlyHost(host string) bool {
+	// DNS is case-insensitive and [url.URL.Hostname] is not — `net/url` lowercases
+	// the scheme and leaves the host as typed — so `WWW.example.com` would miss
+	// the served map, match the `.example.com` suffix below, and be admitted as a
+	// name that in fact answers. That is the fourth member of the family above and
+	// the one that would have made this function's own case untrue as a statement
+	// about the predicate rather than about its rows. Folding first is what makes
+	// everything after it a claim about the name instead of about its spelling.
+	host = strings.ToLower(host)
+
 	if servedDocumentationHosts[host] {
 		return false
 	}
@@ -189,6 +199,17 @@ func TestDocumentationOnlyHostAdmitsOnlyTheSpellingsThatDoNotResolve(t *testing.
 		// bare label, which has no dots and so is a search-list query first.
 		"foo.example": true,
 		"example":     false,
+
+		// Case is not part of a name, so a served one stays refused however it is
+		// typed; the corpus's own spellings are unaffected either way.
+		"WWW.example.com": false,
+		"EXAMPLE.COM":     false,
+		"API.Example.Com": true,
+
+		// A trailing dot is the same name, and is refused rather than admitted:
+		// nothing in the corpus writes one, and refusing an unrecognized spelling
+		// asks for a decision where admitting it would quietly widen the rule.
+		"api.example.com.": false,
 
 		// Neither reserved nor ours to permit silently.
 		"httpbin.org":      false,
