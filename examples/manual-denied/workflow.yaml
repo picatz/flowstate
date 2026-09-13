@@ -51,7 +51,9 @@ triggers:
     # assumed — see `examples/webhook-trigger` for the named-scheme case.
     verify:
       hmac_sha256: ${secret('env:CHARGEBACK_PROVIDER_SECRET')}
-    idempotency_key: ${event.headers["x-delivery-id"]}
+    # Keep deduplication inside the signed payload: generic HMAC verification
+    # authenticates the raw body, but not independently mutable headers.
+    idempotency_key: ${event.body.delivery_id}
     with:
       dispute_id: ${event.body.dispute_id}
       outcome: ${event.body.outcome}
