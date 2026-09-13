@@ -411,8 +411,10 @@ func watchRun(
 	// Both flags decide before the terminal does. A document was asked for
 	// explicitly and a terminal was not, so drawing a view over somebody's requested
 	// JSON would be this command guessing against a flag — which is the mistake
-	// --output exists to prevent, and --plain is the same rule said out loud.
-	if plain || rendering.WantsDocument() || !surface.ErrCaps.TTY {
+	// --output exists to prevent, and --plain is the same rule said out loud. Both
+	// terminal directions are required: terminal stderr with redirected stdin must
+	// not turn bytes from a pipe into commands for the live view.
+	if plain || rendering.WantsDocument() || !surface.ErrCaps.TTY || !surface.InputTTY {
 		return followPlainly(ctx, surface, rendering, poller, interval, workflowID, known, options...)
 	}
 

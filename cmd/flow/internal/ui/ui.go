@@ -347,6 +347,11 @@ type UI struct {
 	Caps    Capabilities
 	ErrCaps Capabilities
 
+	// InputTTY reports whether stdin can carry an interactive conversation. A
+	// terminal output does not imply terminal input: stderr can remain attached
+	// while stdin is redirected from a pipe.
+	InputTTY bool
+
 	// Theme styles what goes to Out, and ErrTheme what goes to Err.
 	//
 	// Two themes rather than one for the same reason there are two Capabilities:
@@ -365,12 +370,17 @@ type UI struct {
 
 // New builds the rendering surface for a pair of streams.
 func New(in, out, errOut *os.File, environ []string) *UI {
-	return ForCapabilities(
+	surface := ForCapabilities(
 		colorprofile.NewWriter(out, environ),
 		colorprofile.NewWriter(errOut, environ),
 		Detect(in, out, environ),
 		Detect(in, errOut, environ),
 	)
+	if in != nil {
+		surface.InputTTY = term.IsTerminal(in.Fd())
+	}
+
+	return surface
 }
 
 // ForCapabilities builds a surface for streams whose capabilities are already
