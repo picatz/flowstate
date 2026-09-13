@@ -595,12 +595,22 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// cancellation and is not tolerated — see
 						// [executor.recordOutcome] — so the divergence stops at
 						// the first one that does. What can differ is the steps
-						// before it: a `value:`, a pure `switch:`, or a step
-						// whose `if:` is false evaluates inline and does not
-						// fail under a cancelled context, so those would have
-						// run had the failure been held. The run ends CANCELED
-						// with its cancellation compensations either way; what
-						// differs is transcript entries of a cancelled run.
+						// before it: a `value:`, a step whose `if:` is false, or
+						// a `switch:` whose taken body schedules nothing all
+						// evaluate inline and do not fail under a cancelled
+						// context, so those would have run had the failure been
+						// held. The list is not exhaustive — a `call:` or a
+						// block made only of such steps behaves the same way —
+						// which understates the divergence rather than
+						// overstating it.
+						//
+						// What does not differ is where the run ends up, and
+						// [drainRaises] is why: holding nothing, both shapes
+						// end CANCELED with cancellation compensations; holding
+						// a failure heard earlier, both end FAILED with failure
+						// ones, because that failure outranks the cancellation
+						// on either path. So the divergence is confined to
+						// transcript entries.
 						if temporal.IsCanceledError(err) {
 							return drainRaises(held, err)
 						}

@@ -977,14 +977,15 @@ Honest notes on where the design strains, so future work does not rediscover the
   inputs *are* evaluated in workflow code today, and the exposure is held down by pinning
   rather than by moving the evaluation. Moving it would be a round trip per condition.
 
-  What pinning covers is *vocabulary*, and that is the whole of it: `CurrentProfile` and
-  `OriginalProfile` freeze library membership per recorded spec, and the extension
-  versions are pinned at build. It does not cover *price*. The cost estimator is a
-  package-level singleton installed unconditionally for every program, with no profile or
-  version input, so re-pricing an expression reaches a replaying history exactly as it
-  reaches a fresh one — a run can cross its slice budget at a different node than its
-  history recorded, or be refused at the cost limit for an expression that history
-  admitted. `engine.workflowSliceCostChange`'s doc comment states that exposure as a
+  What pinning covers is *vocabulary*: `CurrentProfile` and `OriginalProfile` freeze
+  library membership per recorded spec, and the extension versions are pinned at build,
+  which also closes the door on a version-gated behaviour changing underneath a recorded
+  spec. What it does not cover is *price*. The cost estimator is a package-level
+  singleton, built once and installed for every program with a cost budget, with no
+  profile or version input — so re-pricing an expression reaches a replaying history
+  exactly as it reaches a fresh one, and a run can cross its slice budget at a different
+  node than its history recorded, or be refused at the cost limit for an expression that
+  history admitted. `engine.workflowSliceCostChange`'s doc comment states that exposure as a
   deploy-window risk, because a `workflow.GetVersion` marker cannot gate it: the
   estimator is read by every version alike. So an estimator change is sized against that,
   not against whether it touches a Continue-As-New seam.
