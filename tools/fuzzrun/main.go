@@ -191,8 +191,9 @@ func runWith(args []string, stdin io.Reader, stdout io.Writer, fuzz func(context
 // given two cores' worth of CPU time on a sixty-four-core host reads NumCPU as
 // sixty-four. Go's default GOMAXPROCS reads the cgroup limit, and a fleet lane
 // exports an explicit GOMAXPROCS besides, so this one call honours both. Under
-// NumCPU a two-core lane on a large host would have dispatched sixteen targets
-// — thirty-two processes — and every one of them would still have "completed"
+// NumCPU that lane would have taken half the *host's* count, capped only by how
+// many targets there are — every one of the smoke tier's thirteen, so twenty-six
+// processes on two cores' worth of CPU — and each would still have "completed"
 // its thirty seconds having fuzzed almost nothing, which is the failure this
 // whole function exists to prevent. On a GitHub runner the two agree at 4.
 //
@@ -292,10 +293,11 @@ func fuzzCommand(ctx context.Context, t target, opts options) *exec.Cmd {
 // target prints the one it found. Reading all of it into this process would put
 // an unbounded buffer *outside* the GOMEMLIMIT that bounds each child — the one
 // memory bound this design claims — so the capture is bounded here and the
-// ceiling is stated: at most headBytes+tailBytes of content per target in
-// flight, and headBytes+2*tailBytes of memory, because the append that
-// overshoots leaves the tail's capacity at twice tailBytes after the trim
-// shrinks its length.
+// ceiling is stated: at most headBytes+tailBytes of content retained per target
+// in flight. The memory behind it is that plus whatever slack Go's slice growth
+// leaves, which is why [boundedOutput.Write] makes room before it appends —
+// a length that transiently passes the bound would leave a capacity that keeps
+// it.
 //
 // Head and tail rather than either alone, because a fuzz run's two useful ends
 // are both ends: the head names the seed corpus and the worker count, and the
@@ -333,11 +335,17 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	if len(p) > tailBytes {
 		p = p[len(p)-tailBytes:]
 	}
-	b.tail = append(b.tail, p...)
-	if extra := len(b.tail) - tailBytes; extra > 0 {
+	// Make room *before* appending rather than trimming after. Appending first
+	// and shrinking back lets the length pass tailBytes for the duration of the
+	// append, and a slice's capacity keeps what its length once reached: a full
+	// tail plus a nearly-full write grew the capacity to 2.57 times tailBytes
+	// that way, above the ceiling this type states. Shifting first means the
+	// length never exceeds tailBytes, so the capacity has no reason to.
+	if overflow := len(b.tail) + len(p) - tailBytes; overflow > 0 {
 		// copy rather than append: source and destination overlap.
-		b.tail = b.tail[:copy(b.tail, b.tail[extra:])]
+		b.tail = b.tail[:copy(b.tail, b.tail[overflow:])]
 	}
+	b.tail = append(b.tail, p...)
 	return written, nil
 }
 

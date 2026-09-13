@@ -241,6 +241,35 @@ func TestBoundedOutputBoundsASingleEnormousWrite(t *testing.T) {
 	}
 }
 
+// The case the ceiling is actually easy to breach in, and which the enormous
+// single write above does not reach: a full tail plus a nearly-full write.
+// Appending before trimming let the length pass tailBytes for the duration of
+// the append, and the capacity kept what the length reached — 2.57x tailBytes,
+// above the ceiling the type states.
+func TestBoundedOutputBoundsAFullTailPlusALargeWrite(t *testing.T) {
+	var b boundedOutput
+	for written := 0; written < headBytes+tailBytes+8192; written += 4096 {
+		if _, err := b.Write(bytes.Repeat([]byte("x"), 4096)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if _, err := b.Write(bytes.Repeat([]byte("y"), tailBytes-1)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if len(b.tail) != tailBytes {
+		t.Errorf("tail holds %d byte(s), want exactly %d", len(b.tail), tailBytes)
+	}
+	if cap(b.tail) > 2*tailBytes {
+		t.Errorf("the tail's capacity reached %d, want at most %d — the length passed the bound", cap(b.tail), 2*tailBytes)
+	}
+	// The newest bytes are the ones kept: a tail that dropped the wrong end
+	// would lose the failure a fuzz run ends with.
+	if got := b.tail[len(b.tail)-1]; got != 'y' {
+		t.Errorf("the tail ends with %q, want the most recent byte %q", got, byte('y'))
+	}
+}
+
 // Short output is passed through whole and unannotated: the bound must not
 // cost the ordinary case its exact log.
 func TestBoundedOutputPassesShortOutputThroughUnchanged(t *testing.T) {
@@ -321,8 +350,10 @@ func TestDefaultWorkersIsHalfTheCPUsThisProcessMaySpend(t *testing.T) {
 
 	// The bound follows GOMAXPROCS and not NumCPU, because an affinity mask is
 	// not a quota: a lane told it may use two cores of a sixty-four-core host
-	// reads NumCPU as sixty-four and would dispatch sixteen targets. Driving
-	// GOMAXPROCS is what distinguishes the two on any machine.
+	// reads NumCPU as sixty-four and would dispatch half of that, capped only
+	// by the target count. Driving GOMAXPROCS across several values is what
+	// distinguishes the two on any machine, since procs/2 varies where
+	// NumCPU/2 is constant.
 	restore := runtime.GOMAXPROCS(0)
 	t.Cleanup(func() { runtime.GOMAXPROCS(restore) })
 	for _, procs := range []int{1, 2, 4, 8} {

@@ -360,8 +360,8 @@ inferred rather than measured. Compiling the binaries once before the fuzzing
 starts should recover most of it and has not been measured either.
 
 At the shipped default the step took 6m15s on run `34762432757`, between the
-5m48s and the 9m13s this section brackets, with about 3m45s of margin against
-the job's `timeout-minutes: 10`.
+5m48s and the 9m13s this section brackets, whose job ran 6m35s, about 3m25s inside
+the `timeout-minutes: 10` that bounds it.
 
 ### A failing test is an annotation, not a line in a log
 

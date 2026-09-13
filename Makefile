@@ -172,7 +172,7 @@ FUZZ_SMOKE_JOBS ?= 0
 fuzz-smoke:
 	@targets="$$(tools/fuzztargets/list.sh smoke $(FUZZ_SMOKE_TARGETS))" || exit 1; \
 	printf '%s\n' "$$targets" | go run ./tools/fuzzrun \
-		-fuzztime 30s -timeout 120s -memlimit 512MiB -jobs $(FUZZ_SMOKE_JOBS)
+		-fuzztime 30s -timeout 120s -memlimit 512MiB -jobs $(or $(FUZZ_SMOKE_JOBS),0)
 
 # Bounded full test run (no -short). CI's `test` step runs this target rather
 # than its own copy of the command, so the bound cannot drift between the two —
