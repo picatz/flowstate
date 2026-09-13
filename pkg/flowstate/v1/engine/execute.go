@@ -383,8 +383,10 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 	// refused every boundary while any scope on the stack held a failure. Four
 	// boundaries can emit a continuation and only two of them are written in this
 	// function, so a predicate the scope publishes is how the other two reach the
-	// same answer — the callee's own next-step boundary, a `for_each`'s iteration
-	// boundary and a `loop:`'s cannot see this frame's locals.
+	// same answer. Three cannot see this frame's locals: those two — a
+	// `for_each`'s iteration boundary and a `loop:`'s — plus a callee's own
+	// next-step boundary, which is this very check reached from a different
+	// executor, since a call leaves the suspend depth unchanged.
 	if susp == 0 {
 		outer := e.holdingFailure
 		e.holdingFailure = holdingWith(outer, &held)
@@ -578,6 +580,17 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// would make a cancelled run resume, report FAILED,
 						// and take its failure compensations instead of its
 						// cancellation ones.
+						//
+						// It costs a sliver of the neutrality a debugger owes
+						// the run, and the size of that sliver is why the trade
+						// is worth taking: returning here ends the walk where
+						// holding would have carried the failure to the join
+						// that owed it, so a step written between the two could
+						// run without an ask and not with one. Under a cancelled
+						// context every such step fails immediately with the
+						// same cancellation and is not tolerated — see
+						// [executor.recordOutcome] — so what differs is at most
+						// one attempt that was going to fail either way.
 						if temporal.IsCanceledError(err) {
 							return err
 						}
