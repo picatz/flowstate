@@ -1343,6 +1343,28 @@ func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("an allow from the retained guard is not honoured", func(t *testing.T) {
+		// The one property that makes consulting a possibly-old binary safe at
+		// all: only its refusal short-circuits. Its rules can be behind the
+		// sources being repaired, so a decision to permit is exactly the one it
+		// may no longer be entitled to make, and the backstop must still see
+		// the call. Without this, a retained guard that answers "allow" would
+		// be strictly worse than having none.
+		writeRetained(t, "#!/bin/sh\ncat > /dev/null\n"+
+			"printf '%s\\n' '{\"hookSpecificOutput\":{\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"stale rules said fine\"}}'\n"+
+			"exit 0\n")
+		status, stdout, stderr := run(t, "gh pr merge 1942 -R picatz/flowstate")
+		if status != 2 {
+			t.Fatalf("an allow from the retained guard was honoured, exit %d:\n%s", status, stdout)
+		}
+		if strings.Contains(stdout, "stale rules said fine") {
+			t.Fatalf("the retained guard's allow was passed through to Claude Code:\n%s", stdout)
+		}
+		if strings.Contains(stderr, "the last build of it that did") {
+			t.Fatalf("an allow was reported as a decision by the retained guard:\n%s", stderr)
+		}
+	})
+
 	t.Run("a refusal from a guard that then failed is not a decision", func(t *testing.T) {
 		// The real guards always exit 0 and say what they decided in JSON, so
 		// a non-zero exit means the run came apart -- and output from a run
@@ -1487,8 +1509,13 @@ func TestClaudeHookBuildRetainsTheMergeGuardItCompiled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the second build left no retained guard: %v", err)
 	}
+	// Replacement, not merely presence: the absence check above is satisfied by
+	// a build that never updates the guard at all, which would leave an
+	// indefinitely stale recognizer under a green test. The fixture's second
+	// build edits a package in the closure, and Go derives a build ID from
+	// input content, so the binaries must differ.
 	if bytes.Equal(first, second) {
-		t.Log("the two builds produced identical binaries; the replacement is still asserted by the absence check above")
+		t.Fatal("the second build did not replace the retained guard")
 	}
 
 	// Retention runs after the generation is published, so a failure in it
