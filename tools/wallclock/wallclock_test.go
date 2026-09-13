@@ -505,7 +505,13 @@ func TestTheWholeEventuallyFamilyCounts(t *testing.T) {
 
 	// Never is the expensive one — it spends its whole timeout every run rather
 	// than returning on the first true tick — so leaving it out would let the
-	// count fall while the wall clock did not.
+	// count fall while the wall clock did not. The formatted spellings are the
+	// same calls with a message, and were the hole #1989's reviewer found.
+	//
+	// These six are the whole family in the pinned testify. There is no
+	// NeverWithT, so the last two lines below are both "an ordinary assertion is
+	// not counted" and "a plausible-sounding name that does not exist is not
+	// quietly matched".
 	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
 
 import (
@@ -517,16 +523,61 @@ import (
 
 func TestReal(t *testing.T) {
 	require.Eventually(t, nil, 0, 0)
+	require.Eventuallyf(t, nil, 0, 0, "")
 	require.EventuallyWithT(t, nil, 0, 0)
+	require.EventuallyWithTf(t, nil, 0, 0, "")
 	require.Never(t, nil, 0, 0)
-	require.NeverWithT(t, nil, 0, 0)
+	require.Neverf(t, nil, 0, 0, "")
 	assert.Eventually(t, nil, 0, 0)
+	require.NeverWithT(t, nil, 0, 0)
 	require.True(t, true)
 }
 `})
 
-	assert.Equal(t, []int{11, 12, 13, 14, 15}, pollLines(waits),
+	assert.Equal(t, []int{11, 12, 13, 14, 15, 16, 17}, pollLines(waits),
 		"a member of the Eventually family was missed, or an ordinary assertion was counted")
+}
+
+// TestAShadowedSynctestNameSuppressesNoBubble is the negative direction of the
+// shadowing tradeoff, and the reason it is handled rather than merely recorded.
+//
+// A local that shadows `require` makes this analysis count a call that is not a
+// poll — over-counting, which never hides a wait. A local that shadows
+// `synctest` would do the opposite: its `Test` call would be read as a bubble
+// and the real waits inside it would stop being counted, so the ratchet would
+// go green because a test got worse. #1989's reviewer found that asymmetry, and
+// the file-scoped answer is that a file declaring the import's own name gets no
+// bubbles at all.
+func TestAShadowedSynctestNameSuppressesNoBubble(t *testing.T) {
+	t.Parallel()
+
+	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+type fake struct{}
+
+func (fake) Test(f func(*testing.T)) {}
+
+func TestReal(t *testing.T) {
+	synctest := fake{}
+	synctest.Test(func(t *testing.T) {
+		time.Sleep(time.Second)
+		require.Eventually(t, nil, 0, 0)
+	})
+}
+`})
+
+	assert.Equal(t, []int{18}, lines(OfKind(waits, KindSleep)),
+		"a sleep inside a shadowed Test call was treated as bubbled")
+	assert.Equal(t, []int{19}, pollLines(waits),
+		"a poll inside a shadowed Test call was treated as bubbled")
 }
 
 func TestAnAliasedAndADotImportedTestifyAreFollowed(t *testing.T) {

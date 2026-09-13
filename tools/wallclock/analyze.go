@@ -54,10 +54,24 @@ type Wait struct {
 	Kind Kind
 }
 
-// pollNames are the testify assertions that wait by asking repeatedly. Never
-// belongs with Eventually: it spends its whole timeout every time, which makes
-// it the most expensive wait in the list and the one a bubble helps most.
-var pollNames = []string{"Eventually", "EventuallyWithT", "Never", "NeverWithT"}
+// pollNames are the testify assertions that wait by asking repeatedly.
+//
+// Never belongs with Eventually: it spends its whole timeout every time, which
+// makes it the most expensive wait in the list and the one a bubble helps most.
+// The formatted `…f` spellings belong because they are the same call with a
+// message — omitting them left a supported API the ratchet could not see, which
+// is the one defect a ratchet cannot survive (#1989).
+//
+// This is the whole family as of the pinned testify, read off
+// assert/*.go and require/*.go rather than recalled: there is no NeverWithT,
+// despite the symmetry with EventuallyWithT suggesting one. A testify bump is
+// the moment to re-read it, since a name added there is a hole here on the day
+// it lands.
+var pollNames = []string{
+	"Eventually", "Eventuallyf",
+	"EventuallyWithT", "EventuallyWithTf",
+	"Never", "Neverf",
+}
 
 // Analyze walks every `_test.go` file under root and returns the waits that are
 // not inside a synctest bubble, sorted by position, with the number of test
@@ -264,9 +278,19 @@ func isSelectorOnAny(expr ast.Expr, objects map[string]bool, names ...string) bo
 
 // bubblesIn returns the span of every function literal handed to synctest, so a
 // wait inside one is recognised by position rather than by walking with a stack.
+//
+// Shadowing cuts the other way here than it does for a wait, which is why this
+// checks for it and the wait matching does not. A local named `require` makes
+// this analysis count a call that is not a poll: over-counting, harmless. A
+// local named `synctest` with a `Test` method taking a function literal would
+// make it treat that literal as a bubble and *stop* counting the real waits
+// inside it — under-counting, which is the direction a ratchet cannot afford
+// (#1989). So if the file declares the import's own name anywhere, no call in
+// it is taken for a bubble and every wait is counted. Blunt, file-scoped, and
+// wrong only in the safe direction.
 func bubblesIn(file *ast.File) [][2]token.Pos {
 	synctestName := localName(file, "testing/synctest")
-	if synctestName == "" {
+	if synctestName == "" || declaresName(file, synctestName) {
 		return nil
 	}
 
@@ -285,6 +309,63 @@ func bubblesIn(file *ast.File) [][2]token.Pos {
 	})
 
 	return bubbles
+}
+
+// declaresName reports whether the file declares name as anything other than an
+// import: a function, a parameter or result, a receiver, a type, or a variable
+// or constant, including one defined by `:=`.
+//
+// It answers "could this name mean something other than the package here",
+// which is all [bubblesIn] needs before it declines to trust the name at all.
+func declaresName(file *ast.File, name string) bool {
+	if name == "." {
+		// A dot-import has no name to shadow; a local declaration cannot
+		// displace it, only the call it makes ambiguous, which is the
+		// over-counting direction.
+		return false
+	}
+
+	declared := false
+	noteField := func(fields *ast.FieldList) {
+		if fields == nil {
+			return
+		}
+		for _, field := range fields.List {
+			for _, ident := range field.Names {
+				declared = declared || ident.Name == name
+			}
+		}
+	}
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch decl := n.(type) {
+		case *ast.FuncDecl:
+			declared = declared || decl.Name.Name == name
+			noteField(decl.Recv)
+		case *ast.FuncType:
+			noteField(decl.Params)
+			noteField(decl.Results)
+		case *ast.ValueSpec:
+			for _, ident := range decl.Names {
+				declared = declared || ident.Name == name
+			}
+		case *ast.TypeSpec:
+			declared = declared || decl.Name.Name == name
+		case *ast.AssignStmt:
+			if decl.Tok != token.DEFINE {
+				return true
+			}
+			for _, lhs := range decl.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok {
+					declared = declared || ident.Name == name
+				}
+			}
+		}
+
+		return true
+	})
+
+	return declared
 }
 
 // localName returns the name a file refers to an import by: the package's own
