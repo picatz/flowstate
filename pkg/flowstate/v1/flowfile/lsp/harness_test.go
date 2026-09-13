@@ -336,6 +336,91 @@ func (c *client) publishCount() int {
 	return len(c.published)
 }
 
+// lastPublishedFor returns the most recent publishDiagnostics notification for
+// uri, and whether one arrived at all.
+//
+// The server republishes a URI as its analysis changes, so a test asking what
+// the editor would be showing wants the last notification for that URI rather
+// than the first or the newest overall. Inside a [synctest.Test] bubble, call
+// it after [synctest.Wait]: the wait is what makes "the most recent" mean
+// "final" rather than "most recent so far".
+func (c *client) lastPublishedFor(uri lsp.DocumentURI) (lsp.PublishDiagnosticsParams, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := len(c.published) - 1; i >= 0; i-- {
+		if c.published[i].URI == uri {
+			return c.published[i], true
+		}
+	}
+
+	return lsp.PublishDiagnosticsParams{}, false
+}
+
+// defaultsFor returns the defaults file the server currently has suite depending
+// on, or the empty URI when it has none. Read it after [synctest.Wait]: the
+// bookkeeping is updated on a handler goroutine, so before the bubble is idle
+// the answer is a moment in the middle of one.
+func (c *client) defaultsFor(suite lsp.DocumentURI) lsp.DocumentURI {
+	c.server.testDiagnosticsMu.Lock()
+	defer c.server.testDiagnosticsMu.Unlock()
+
+	return c.server.testDefaultsBySuite[suite]
+}
+
+// overflowFor is [client.defaultsFor] for the bounded waiting list a suite lands
+// on when the defaults file already has its full complement of dependents.
+func (c *client) overflowFor(suite lsp.DocumentURI) lsp.DocumentURI {
+	c.server.testDiagnosticsMu.Lock()
+	defer c.server.testDiagnosticsMu.Unlock()
+
+	return c.server.testOverflowBySuite[suite]
+}
+
+// sourcedDiagnostics returns the diagnostics source contributed to target: the
+// server keeps them indexed by contributor so a file's squiggles can be
+// retracted by whoever put them there. Read it after [synctest.Wait].
+func (c *client) sourcedDiagnostics(source, target lsp.DocumentURI) []lsp.Diagnostic {
+	c.server.testDiagnosticsMu.Lock()
+	defer c.server.testDiagnosticsMu.Unlock()
+
+	return c.server.testDiagnosticsBySource[source][target]
+}
+
+// sourceCountFor returns how many documents currently contribute diagnostics to
+// target, which is the number the dependency bound holds down.
+func (c *client) sourceCountFor(target lsp.DocumentURI) int {
+	c.server.testDiagnosticsMu.Lock()
+	defer c.server.testDiagnosticsMu.Unlock()
+
+	return len(c.server.testSourcesByTarget[target])
+}
+
+// hasSource reports whether source is one of target's current contributors.
+func (c *client) hasSource(target, source lsp.DocumentURI) bool {
+	c.server.testDiagnosticsMu.Lock()
+	defer c.server.testDiagnosticsMu.Unlock()
+
+	_, ok := c.server.testSourcesByTarget[target][source]
+
+	return ok
+}
+
+// lastPublishedSuffix is [client.lastPublishedFor] for a test that knows how a
+// URI ends but not the temporary directory it begins with.
+func (c *client) lastPublishedSuffix(suffix string) (lsp.PublishDiagnosticsParams, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := len(c.published) - 1; i >= 0; i-- {
+		if strings.HasSuffix(string(c.published[i].URI), suffix) {
+			return c.published[i], true
+		}
+	}
+
+	return lsp.PublishDiagnosticsParams{}, false
+}
+
 // labels returns a completion list's labels, for readable assertions.
 func labels(items []lsp.CompletionItem) []string {
 	out := make([]string, 0, len(items))
