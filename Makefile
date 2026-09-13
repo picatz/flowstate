@@ -404,15 +404,18 @@ modernize:
 vacuity:
 	go run ./tools/vacuity $(if $(SITES),-sites,)
 
-# Report the sleeps in tests that spend real time.
+# Report the waits in tests that spend real time: `time.Sleep`, and testify's
+# Eventually family.
 #
-#     make wallclock          # a count per file
+#     make wallclock          # a count per file, per kind
 #     make wallclock SITES=1  # every site
 #
-# A `time.Sleep` inside `synctest.Test` is not counted: it returns the instant
-# the bubble is idle. The count is held by `tools/wallclock`'s own
-# TestTheRepositoryWallClockSleepsOnlyGoDown under `go test ./...`, a ratchet
-# in both directions, so this target is for reading the report (#1706).
+# Neither is counted inside `synctest.Test`: a sleep there returns the instant
+# the bubble is idle, and a condition is waited for with `synctest.Wait` rather
+# than asked about repeatedly. Both counts are held by `tools/wallclock`'s own
+# TestTheRepositoryWallClockSleepsOnlyGoDown and TestTheRepositoryPollsOnlyGoDown
+# under `go test ./...`, ratchets in both directions, so this target is for
+# reading the report (#1706).
 wallclock:
 	go run ./tools/wallclock $(if $(SITES),-sites,)
 

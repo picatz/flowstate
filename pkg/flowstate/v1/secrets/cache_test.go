@@ -83,40 +83,15 @@ func (p *countingProvider) arm() (release func()) {
 	return sync.OnceFunc(func() { close(gate) })
 }
 
-// clock is a manual clock, so expiry is exercised without waiting for it.
-type clock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newClock() *clock {
-	return &clock{now: time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)}
-}
-
-func (c *clock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.now
-}
-
-func (c *clock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = c.now.Add(d)
-}
-
-// newTestCache wraps provider in a cache driven by a manual clock.
-func newTestCache(t *testing.T, provider Provider, opts ...CacheOption) (*Cache, *clock) {
-	t.Helper()
-
-	cache := NewCache(provider, opts...)
-	clk := newClock()
-	cache.now = clk.Now
-
-	return cache, clk
-}
+// Every subtest whose claim is about time passing runs inside [synctest.Test],
+// where time.Now is the bubble's own clock and a time.Sleep past a TTL returns
+// the instant every goroutine is blocked.
+//
+// #1971 bubbled the two subtests whose claim is about goroutines and left the
+// clock injected for the rest, deliberately changing no non-test file. This
+// finishes that: the bubble's clock is the same fake the injected one was, so
+// [Cache] reads time.Now directly and the seam is gone from the type. A sleep
+// here costs no wall time — see tools/wallclock, which counts the ones that do.
 
 func Test_Cache_Resolve(t *testing.T) {
 	ref := NewRef("test", "key")
@@ -125,7 +100,7 @@ func Test_Cache_Resolve(t *testing.T) {
 		// Caching a miss would keep a secret invisible for the whole TTL after
 		// someone creates it, leaving a worker broken after the problem is fixed.
 		provider := &countingProvider{err: &ResolveError{Ref: ref, Err: ErrNotFound}}
-		cache, _ := newTestCache(t, provider)
+		cache := NewCache(provider)
 
 		for range 3 {
 			_, err := cache.Resolve(t.Context(), Request{Ref: ref})
@@ -145,7 +120,7 @@ func Test_Cache_Resolve(t *testing.T) {
 
 	t.Run("a hit does not reach the provider", func(t *testing.T) {
 		provider := &countingProvider{value: "cached"}
-		cache, _ := newTestCache(t, provider)
+		cache := NewCache(provider)
 
 		for range 5 {
 			secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
@@ -158,50 +133,54 @@ func Test_Cache_Resolve(t *testing.T) {
 	})
 
 	t.Run("an entry expires after the TTL", func(t *testing.T) {
-		provider := &countingProvider{value: "first"}
-		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			provider := &countingProvider{value: "first"}
+			cache := NewCache(provider, WithCacheTTL(time.Minute))
 
-		secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "first", secret.Reveal())
+			secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "first", secret.Reveal())
 
-		// Still inside the TTL: the rotated value is not seen yet.
-		provider.set("second", nil)
-		clk.advance(59 * time.Second)
+			// Still inside the TTL: the rotated value is not seen yet.
+			provider.set("second", nil)
+			time.Sleep(59 * time.Second)
 
-		secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "first", secret.Reveal())
-		require.Equal(t, 1, provider.count())
+			secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "first", secret.Reveal())
+			require.Equal(t, 1, provider.count())
 
-		// Past the TTL: the secret is re-read, which is how rotation takes effect
-		// without restarting the worker.
-		clk.advance(2 * time.Second)
+			// Past the TTL: the secret is re-read, which is how rotation takes effect
+			// without restarting the worker.
+			time.Sleep(2 * time.Second)
 
-		secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "second", secret.Reveal())
-		require.Equal(t, 2, provider.count())
+			secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "second", secret.Reveal())
+			require.Equal(t, 2, provider.count())
+		})
 	})
 
 	t.Run("an entry exactly at its expiry is treated as expired", func(t *testing.T) {
-		provider := &countingProvider{value: "first"}
-		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			provider := &countingProvider{value: "first"}
+			cache := NewCache(provider, WithCacheTTL(time.Minute))
 
-		_, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
+			_, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
 
-		provider.set("second", nil)
-		clk.advance(time.Minute)
+			provider.set("second", nil)
+			time.Sleep(time.Minute)
 
-		secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "second", secret.Reveal())
+			secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "second", secret.Reveal())
+		})
 	})
 
 	t.Run("a non-positive TTL disables caching", func(t *testing.T) {
 		provider := &countingProvider{value: "uncached"}
-		cache, _ := newTestCache(t, provider, WithCacheTTL(0))
+		cache := NewCache(provider, WithCacheTTL(0))
 
 		for range 3 {
 			secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
@@ -215,7 +194,7 @@ func Test_Cache_Resolve(t *testing.T) {
 
 	t.Run("distinct references are cached separately", func(t *testing.T) {
 		provider := &countingProvider{value: "v"}
-		cache, _ := newTestCache(t, provider)
+		cache := NewCache(provider)
 
 		for i := range 3 {
 			_, err := cache.Resolve(t.Context(), Request{Ref: NewRef("test", fmt.Sprint(i))})
@@ -279,19 +258,20 @@ func Test_Cache_collapsesConcurrentResolutions(t *testing.T) {
 	t.Run("expiry does not stampede either", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			provider := &countingProvider{value: "first"}
-			cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+			cache := NewCache(provider, WithCacheTTL(time.Minute))
 
 			_, err := cache.Resolve(t.Context(), Request{Ref: ref})
 			require.NoError(t, err)
 			require.Equal(t, 1, provider.count())
 
 			// Every entry created together expires together, so the TTL boundary is a
-			// second stampede if it is not collapsed. Expiry is driven by the cache's
-			// own manual clock rather than the bubble's, since what has to elapse is
-			// the TTL; the gate parks the callers exactly as above.
+			// second stampede if it is not collapsed. Expiry is driven by the
+			// bubble's clock — the sleep below crosses the TTL and costs nothing,
+			// because the cache reads time.Now and time.Now here is the bubble's.
+			// The gate parks the callers exactly as above.
 			release := provider.arm()
 			t.Cleanup(release) // as above: a failure must not deadlock the bubble
-			clk.advance(2 * time.Minute)
+			time.Sleep(2 * time.Minute)
 
 			var wg sync.WaitGroup
 			for range 50 {
@@ -343,63 +323,69 @@ func Test_Cache_providerSuppliedTTL(t *testing.T) {
 	ref := NewRef("test", "key")
 
 	t.Run("a shorter provider TTL shortens the entry", func(t *testing.T) {
-		// A backend knows when its own credential stops working, so a shorter answer
-		// is always taken: holding one past its lifetime hands out something the
-		// backend has already stopped honoring.
-		provider := &ttlProvider{value: "first", ttl: 10 * time.Second}
-		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			// A backend knows when its own credential stops working, so a shorter answer
+			// is always taken: holding one past its lifetime hands out something the
+			// backend has already stopped honoring.
+			provider := &ttlProvider{value: "first", ttl: 10 * time.Second}
+			cache := NewCache(provider, WithCacheTTL(time.Minute))
 
-		secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "first", secret.Reveal())
-		require.Equal(t, 10*time.Second, secret.TTL())
+			secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "first", secret.Reveal())
+			require.Equal(t, 10*time.Second, secret.TTL())
 
-		provider.value = "second"
+			provider.value = "second"
 
-		// Inside the provider's window, still cached.
-		clk.advance(9 * time.Second)
+			// Inside the provider's window, still cached.
+			time.Sleep(9 * time.Second)
 
-		secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "first", secret.Reveal())
+			secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "first", secret.Reveal())
 
-		// Past it, re-read — even though the cache's own minute has not elapsed.
-		clk.advance(2 * time.Second)
+			// Past it, re-read — even though the cache's own minute has not elapsed.
+			time.Sleep(2 * time.Second)
 
-		secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "second", secret.Reveal())
+			secret, err = cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "second", secret.Reveal())
+		})
 	})
 
 	t.Run("a longer provider TTL is capped by the cache", func(t *testing.T) {
-		// The other direction is the operator's call: a provider claiming a day must
-		// not override a policy that says a minute.
-		provider := &ttlProvider{value: "first", ttl: 24 * time.Hour}
-		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			// The other direction is the operator's call: a provider claiming a day must
+			// not override a policy that says a minute.
+			provider := &ttlProvider{value: "first", ttl: 24 * time.Hour}
+			cache := NewCache(provider, WithCacheTTL(time.Minute))
 
-		_, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
+			_, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
 
-		provider.value = "second"
-		clk.advance(2 * time.Minute)
+			provider.value = "second"
+			time.Sleep(2 * time.Minute)
 
-		secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, "second", secret.Reveal(), "the cache's own limit still applies")
+			secret, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, "second", secret.Reveal(), "the cache's own limit still applies")
+		})
 	})
 
 	t.Run("a provider that does not say gets the cache default", func(t *testing.T) {
-		provider := &countingProvider{value: "v"}
-		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			provider := &countingProvider{value: "v"}
+			cache := NewCache(provider, WithCacheTTL(time.Minute))
 
-		_, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
+			_, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
 
-		clk.advance(30 * time.Second)
+			time.Sleep(30 * time.Second)
 
-		_, err = cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, 1, provider.count(), "still inside the cache's own TTL")
+			_, err = cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, 1, provider.count(), "still inside the cache's own TTL")
+		})
 	})
 
 	t.Run("an empty value carries no TTL", func(t *testing.T) {
@@ -414,7 +400,7 @@ func Test_Cache_providerSuppliedTTL(t *testing.T) {
 			secret := NewSecretWithTTL(NewRef("env", "X"), "v", ttl)
 			require.Equal(t, ttl, secret.TTL())
 
-			cache, _ := newTestCache(t, &ttlProvider{value: "v", ttl: ttl}, WithCacheTTL(time.Minute))
+			cache := NewCache(&ttlProvider{value: "v", ttl: ttl}, WithCacheTTL(time.Minute))
 			require.Equal(t, time.Minute, cache.lifetime(secret))
 		}
 	})
@@ -437,7 +423,7 @@ func Test_Cache_bounds(t *testing.T) {
 		// A workflow naming an unbounded set of references must not be able to grow
 		// the cache without limit.
 		provider := &countingProvider{value: "v"}
-		cache, _ := newTestCache(t, provider, WithCacheMaxEntries(8))
+		cache := NewCache(provider, WithCacheMaxEntries(8))
 
 		for i := range 100 {
 			_, err := cache.Resolve(t.Context(), Request{Ref: NewRef("test", fmt.Sprint(i))})
@@ -449,22 +435,24 @@ func Test_Cache_bounds(t *testing.T) {
 	})
 
 	t.Run("expired entries are reclaimed before anything live is evicted", func(t *testing.T) {
-		provider := &countingProvider{value: "v"}
-		cache, clk := newTestCache(t, provider, WithCacheMaxEntries(4), WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			provider := &countingProvider{value: "v"}
+			cache := NewCache(provider, WithCacheMaxEntries(4), WithCacheTTL(time.Minute))
 
-		for i := range 4 {
-			_, err := cache.Resolve(t.Context(), Request{Ref: NewRef("test", fmt.Sprint(i))})
+			for i := range 4 {
+				_, err := cache.Resolve(t.Context(), Request{Ref: NewRef("test", fmt.Sprint(i))})
+				require.NoError(t, err)
+			}
+			require.Equal(t, 4, cache.Len())
+
+			// Everything expires, so inserting one more clears the lot rather than
+			// evicting a live entry.
+			time.Sleep(2 * time.Minute)
+
+			_, err := cache.Resolve(t.Context(), Request{Ref: NewRef("test", "fresh")})
 			require.NoError(t, err)
-		}
-		require.Equal(t, 4, cache.Len())
-
-		// Everything expires, so inserting one more clears the lot rather than
-		// evicting a live entry.
-		clk.advance(2 * time.Minute)
-
-		_, err := cache.Resolve(t.Context(), Request{Ref: NewRef("test", "fresh")})
-		require.NoError(t, err)
-		require.Equal(t, 1, cache.Len())
+			require.Equal(t, 1, cache.Len())
+		})
 	})
 
 	t.Run("a non-positive limit restores the default", func(t *testing.T) {
@@ -478,7 +466,7 @@ func Test_Cache_Forget(t *testing.T) {
 
 	t.Run("Forget drops one entry", func(t *testing.T) {
 		provider := &countingProvider{value: "first"}
-		cache, _ := newTestCache(t, provider)
+		cache := NewCache(provider)
 
 		_, err := cache.Resolve(t.Context(), Request{Ref: ref})
 		require.NoError(t, err)
@@ -492,14 +480,14 @@ func Test_Cache_Forget(t *testing.T) {
 	})
 
 	t.Run("Forget on an absent reference is harmless", func(t *testing.T) {
-		cache, _ := newTestCache(t, &countingProvider{value: "v"})
+		cache := NewCache(&countingProvider{value: "v"})
 		cache.Forget(Request{Ref: ref})
 		require.Zero(t, cache.Len())
 	})
 
 	t.Run("Clear drops everything", func(t *testing.T) {
 		provider := &countingProvider{value: "v"}
-		cache, _ := newTestCache(t, provider)
+		cache := NewCache(provider)
 
 		for i := range 3 {
 			_, err := cache.Resolve(t.Context(), Request{Ref: NewRef("test", fmt.Sprint(i))})
