@@ -750,3 +750,43 @@ func TestReal(t *testing.T) {
 	assert.Equal(t, []int{15}, pollLines(waits),
 		"a poll inside a shadowed dot-imported Test call was treated as bubbled")
 }
+
+// TestARangeDeclaredSynctestShadowSuppressesNoBubble is the range-clause half of
+// the shadow check, reported on #1989 after the first two halves were closed.
+//
+// A range clause is its own node rather than an assignment inside one, so the
+// declaration scan walked straight past `for synctest := range …` and the loop
+// body's `synctest.Test(…)` was read as a bubble. Every wait inside then stopped
+// being counted, which is the direction this check exists to prevent.
+func TestARangeDeclaredSynctestShadowSuppressesNoBubble(t *testing.T) {
+	t.Parallel()
+
+	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+type fake struct{}
+
+func (fake) Test(f func(*testing.T)) {}
+
+func TestReal(t *testing.T) {
+	for synctest := range map[fake]struct{}{{}: {}} {
+		synctest.Test(func(t *testing.T) {
+			time.Sleep(time.Second)
+			require.Eventually(t, nil, 0, 0)
+		})
+	}
+}
+`})
+
+	assert.Equal(t, []int{18}, lines(OfKind(waits, KindSleep)),
+		"a sleep inside a range-declared shadow was treated as bubbled")
+	assert.Equal(t, []int{19}, pollLines(waits),
+		"a poll inside a range-declared shadow was treated as bubbled")
+}

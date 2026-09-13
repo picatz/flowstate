@@ -289,10 +289,37 @@ func shadowsABubbleCall(file *ast.File, synctestName string) bool {
 }
 
 // declaresName reports whether the file declares name as anything other than an
-// import: a function, a parameter or result, a receiver, a type, or a variable
-// or constant, including one defined by `:=`.
+// import.
+//
+// The enumeration below has to be complete, and that is the opposite of how the
+// poll matcher handles the same problem. There, missing a shape over-counts, so
+// the matcher takes the widest reading and no case can hurt. Here a missed shape
+// means the shadow goes unnoticed, the call is read as a bubble, and the waits
+// inside it stop being counted — the direction a ratchet cannot afford. So this
+// names every form in Go that binds a value to an identifier:
+//
+//   - [ast.FuncDecl] — a function's own name, and its receiver.
+//   - [ast.FuncType] — parameters and results, closures included.
+//   - [ast.ValueSpec] — `var` and `const`, at any scope.
+//   - [ast.TypeSpec] — a type name.
+//   - [ast.AssignStmt] with `:=`, which is also how the tree spells a type
+//     switch guard (`x := y.(type)`) and a `select` receive clause.
+//   - [ast.RangeStmt] with `:=` — its key and value. Missed on the first pass
+//     at this and reported again on #1989, because a range clause is its own
+//     node rather than an assignment inside one.
+//
+// A label is deliberately absent: [ast.LabeledStmt] binds a name that cannot be
+// called or selected from, so it can never produce the `synctest.Test(…)` this
+// exists to distrust.
 func declaresName(file *ast.File, name string) bool {
 	declared := false
+	noteIdents := func(exprs ...ast.Expr) {
+		for _, expr := range exprs {
+			if ident, ok := expr.(*ast.Ident); ok {
+				declared = declared || ident.Name == name
+			}
+		}
+	}
 	noteField := func(fields *ast.FieldList) {
 		if fields == nil {
 			return
@@ -322,11 +349,12 @@ func declaresName(file *ast.File, name string) bool {
 			if decl.Tok != token.DEFINE {
 				return true
 			}
-			for _, lhs := range decl.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					declared = declared || ident.Name == name
-				}
+			noteIdents(decl.Lhs...)
+		case *ast.RangeStmt:
+			if decl.Tok != token.DEFINE {
+				return true
 			}
+			noteIdents(decl.Key, decl.Value)
 		}
 
 		return true
