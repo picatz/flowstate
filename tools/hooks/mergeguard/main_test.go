@@ -613,6 +613,96 @@ func TestMergeShellExpansionIsRejected(t *testing.T) {
 	}
 }
 
+// TestReadOnlyGHAPIIsNotAMerge covers #1972: a command whose only GitHub calls
+// are `gh api` GETs cannot merge, so the whole-command `gh ... merge` heuristic
+// must not deny it for mentioning the word in prose. The denied half is the
+// point of the test — the exemption is about capability, so anything that can
+// change the method, supply a body, or hide either one still denies.
+func TestReadOnlyGHAPIIsNotAMerge(t *testing.T) {
+	t.Parallel()
+
+	// The reproduction from #1972: a post-merge status query. `gh api` reads, the
+	// only standalone `merge` is an echoed heading in another simple command, and
+	// the expansion is a revision interpolated into a URL.
+	repro := `cd /home/user/flowstate && echo "=== PR 1960 state ===" && ` +
+		`gh api repos/picatz/flowstate/pulls/1960 --jq '"merged=\(.merged)"'; ` +
+		`echo "=== any comment/review after the merge? ==="; ` +
+		`gh api repos/picatz/flowstate/commits/$(git rev-parse origin/main)/check-runs --jq .total_count`
+
+	for _, command := range []string{
+		repro,
+		`gh api repos/o/r/pulls/1 --jq '{state: .mergeable}'`,
+		`echo merge; gh api repos/o/r/pulls/$N --paginate`,
+		`gh api repos/o/r/pulls/1 -H "Accept: $ACCEPT" --jq .merged; echo "the merge is done"`,
+		`gh api repos/o/r/commits/$SHA/check-runs --jq .x && gh api repos/o/r/pulls/1 --jq .y # merge`,
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if mergeUsesShellExpansion(in) {
+			t.Errorf("read-only gh api command was treated as a merge: %q", command)
+		}
+	}
+
+	// Every one of these can merge, or can hide a merge, and each is denied both
+	// before and after the exemption exists. `gh api "$FLAG" <url>` is the reason
+	// a bare-expansion argument is refused: it word-splits into `-X PUT` at run
+	// time. The `--jq '{...}'` pair covers the brace path, which reaches the same
+	// heuristic by a different route.
+	for _, command := range []string{
+		`gh api -X PUT repos/o/r/pulls/1/merge --jq .$field`,
+		`gh api --method $M repos/o/r/pulls/1/merge`,
+		`gh api --method=PUT repos/o/r/pulls/1/merge --jq .$f`,
+		`gh api -XPUT repos/o/r/pulls/1/merge --jq .$f`,
+		`gh api -f merge_method=squash repos/o/r/pulls/1/merge --jq .$f`,
+		`gh api -F sha=$SHA repos/o/r/pulls/1/merge`,
+		`gh api --input $BODY repos/o/r/pulls/1/merge`,
+		`gh api "$FLAG" repos/o/r/pulls/1/merge`,
+		`gh api repos/o/r/pulls/1/merge --jq '{x: .$y}'`,
+		`gh api repos/o/r/pulls/1 --jq .$x; gh pr merge 1 -R o/r --auto`,
+		`gh api repos/o/r/pulls/1 > >(cat) --jq .$x; gh pr merge 1 -R o/r`,
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if !mergeUsesShellExpansion(in) {
+			t.Errorf("a command that can merge was exempted as a read: %q", command)
+		}
+	}
+
+	// A command with no gh call at all is not what this exemption is about; the
+	// other predicates decide it, and the exemption must not claim it.
+	if everyGHCallIsAProvableRead(`echo "merge $x"`) {
+		t.Error("a command with no gh invocation was reported as a provable gh read")
+	}
+
+	// The residual narrow false positive, pinned so it is a decision rather than
+	// a surprise: a read whose own words carry the standalone token, such as a jq
+	// selector spelled `{merge: ...}`, keeps the conservative denial. Naming the
+	// field `.mergeable` reads the same data without the token, so the cost is a
+	// spelling rather than a capability, and chasing every jq form would trade
+	// that for a rule nobody can audit by reading it.
+	residual := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{
+		"command": `gh api repos/o/r/pulls/1 --jq '{merge: .mergeable}' && echo $?`,
+	}}
+	if !mergeUsesShellExpansion(residual) {
+		t.Error("the residual case is now allowed; if that is intended, update this test and the exemption's doc comment together")
+	}
+
+	// Pre-existing gaps, pinned here so they are visible rather than implied, and
+	// so a later fix has a place to flip the expectation. Neither is caused or
+	// widened by the exemption above: this hook already allows both on the commit
+	// this test was written against, because ghExpansionMergeText requires `gh`
+	// to precede `merge` and ghMergeText requires the word `pr`, which `gh api`
+	// never carries. Tracked in #1973.
+	for _, command := range []string{
+		`X=merge; gh api -X PUT repos/o/r/pulls/1/$X`,
+		`eval 'gh api -X PUT repos/o/r/pulls/1/merge'`,
+		`bash -c 'gh api -X PUT repos/o/r/pulls/1/merge'`,
+	} {
+		in := &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": command}}
+		if mergeUsesShellExpansion(in) {
+			t.Errorf("%q is now caught; #1973 is fixed, so move this case up into the denied set", command)
+		}
+	}
+}
+
 func TestManualMergeRequiresOneExactHeadPrecondition(t *testing.T) {
 	t.Parallel()
 	sha := strings.Repeat("a", 40)

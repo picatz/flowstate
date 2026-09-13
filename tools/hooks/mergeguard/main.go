@@ -465,6 +465,22 @@ func mergeUsesShellExpansion(in *hook.Input) bool {
 	mergeExpansion := !recognized && (ghExpansionMergeText.MatchString(cmd) || ghDynamicPRMergeText.MatchString(cmd) || dynamicGHExecutable.MatchString(cmd)) && (strings.ContainsAny(cmd, "$`") ||
 		strings.Contains(cmd, "{") && strings.Contains(cmd, "}"))
 	nestedEvaluation := ghMergeText.MatchString(cmd) && (strings.Contains(cmd, "eval ") || bashCommandEvaluation.MatchString(cmd))
+
+	// ghExpansionMergeText spans the whole command on purpose, so that
+	// `X=merge; gh api -X PUT repos/o/r/pulls/1/$X` cannot split itself past the
+	// heuristic. The cost was that any command mixing a gh call, a standalone
+	// `merge` anywhere in it, and any expansion anywhere was denied — including a
+	// post-merge status query whose only `merge` was in an echoed heading (#1972).
+	// A command whose every gh call is a provable read cannot merge, so it is
+	// exempt from those text heuristics, but only when no other indicator fires:
+	// a recognized merge, an expanded executable, process substitution, nested
+	// evaluation, or either segment-scoped dynamic pattern all still deny.
+	if !recognized && !expandedMergeExecutable.MatchString(cmd) && !processSubstitution &&
+		!nestedEvaluation && !dynamicGHExecutable.MatchString(cmd) &&
+		!ghDynamicPRMergeText.MatchString(cmd) && everyGHCallIsAProvableRead(cmd) {
+		return false
+	}
+
 	if !recognized && !expandedMergeExecutable.MatchString(cmd) && !processSubstitution && !braceExpansion && !mergeExpansion && !nestedEvaluation {
 		return false
 	}
@@ -658,7 +674,14 @@ func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
 // redirect the guard to a different pull request. Control operators bound
 // each simple command; this intentionally remains a small recognizer, not a
 // shell evaluator.
-func ghPRMergeInvocations(s string) [][]string {
+// simpleCommands splits a Bash command line into the simple commands it would
+// run, each as its words. It is deliberately small: it tracks quoting, escapes,
+// comments and redirections well enough to tell one command's words from the
+// next's, and treats `$(`, backticks and braces as separators rather than
+// nesting them, so a word carrying an expansion is split at the expansion. Both
+// the merge recognizer and the read-only recognizer below read it, so there is
+// one tokenizer rather than two that can disagree about where a command ends.
+func simpleCommands(s string) [][]string {
 	// Normalize Bash's combined output-redirection spellings before tokenizing.
 	// Their leading ampersand is not a command separator, and >| is one
 	// redirection operator rather than a redirect followed by a pipeline.
@@ -760,9 +783,12 @@ func ghPRMergeInvocations(s string) [][]string {
 		}
 	}
 	flushCommand()
+	return commands
+}
 
+func ghPRMergeInvocations(s string) [][]string {
 	var invocations [][]string
-	for _, command := range commands {
+	for _, command := range simpleCommands(s) {
 		for i := 0; i < len(command); i++ {
 			if command[i] != "gh" && !strings.HasSuffix(command[i], "/gh") {
 				continue
@@ -814,6 +840,95 @@ func ghPRMergeInvocations(s string) [][]string {
 		}
 	}
 	return invocations
+}
+
+// ghAPIWritesFlag reports whether one `gh api` argument changes the request
+// method or supplies a body, either of which can turn a read into a merge. The
+// spellings are prefix-matched so `--method=PUT`, `-XPUT` and `-fkey=value` are
+// caught alongside their separated forms, and a single-dash group containing
+// X, f or F is refused without enumerating gh's read-only short options.
+func ghAPIWritesFlag(arg string) bool {
+	for _, flag := range []string{"-X", "--method", "-f", "--raw-field", "-F", "--field", "--input"} {
+		if strings.HasPrefix(arg, flag) {
+			return true
+		}
+	}
+	return strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") &&
+		strings.ContainsAny(arg, "XfF")
+}
+
+// standaloneMerge matches the word `merge` as its own token, the same spelling
+// the text heuristics use. `merged`, `merge_commit` and `mergeable` are not it,
+// which is why a status query reading those fields is not mentioning merging.
+var standaloneMerge = regexp.MustCompile(`\bmerge\b`)
+
+// provableGHAPIRead reports whether one gh invocation's arguments are a GET
+// through `gh api`. A GET cannot merge whatever its URL expands to, so this is a
+// statement about what the call is capable of rather than a relaxation of the
+// merge heuristics.
+//
+// Four conditions, each covering a way a read could turn out to write:
+//
+//   - The subcommand is the literal first argument `api`. A spelling like
+//     `gh --hostname h api` does not qualify and keeps today's denial, which
+//     costs nothing and keeps the rule auditable by reading it.
+//   - No argument changes the method or supplies a body.
+//   - No argument is a bare expansion. `gh api "$FLAG" <url>` can word-split
+//     into `-X PUT` at run time, so a token that is nothing but an expansion is
+//     refused; a token with literal text of its own, like a URL interpolating a
+//     revision, is the shape a status query actually needs.
+//   - No flag-shaped argument carries an expansion, for the same reason.
+func provableGHAPIRead(args []string) bool {
+	if len(args) == 0 || args[0] != "api" {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "$") || strings.HasPrefix(arg, "`") {
+			return false
+		}
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if ghAPIWritesFlag(arg) || strings.ContainsAny(arg, "$`") {
+			return false
+		}
+	}
+	return true
+}
+
+// everyGHCallIsAProvableRead reports whether s carries at least one gh
+// invocation, every one of them is a provable read, and no command that runs one
+// so much as names merging. One writing call among many readers disqualifies the
+// whole command, so the answer is about the command rather than about its most
+// innocent part.
+//
+// The second condition is what keeps this narrow. The exemption is meant only
+// for a command whose GitHub calls are about something else and that happens to
+// carry the word in prose; a call whose own words say `merge` keeps the
+// conservative denial even when its flags look like a read.
+func everyGHCallIsAProvableRead(s string) bool {
+	var sawGH bool
+	for _, command := range simpleCommands(s) {
+		var carriesGH bool
+		for i, word := range command {
+			if word != "gh" && !strings.HasSuffix(word, "/gh") {
+				continue
+			}
+			carriesGH, sawGH = true, true
+			if !provableGHAPIRead(command[i+1:]) {
+				return false
+			}
+		}
+		if !carriesGH {
+			continue
+		}
+		for _, word := range command {
+			if standaloneMerge.MatchString(word) {
+				return false
+			}
+		}
+	}
+	return sawGH
 }
 
 func ghPRMergeArgs(s string) ([]string, bool) {
