@@ -846,3 +846,40 @@ func TestReal(t *testing.T) {}
 	assert.Equal(t, []int{13}, lines(OfKind(waits, KindSleep)),
 		"a sleep under a type parameter shadowing the import was treated as bubbled")
 }
+
+// TestAReceiverTypeParameterShadowSuppressesNoBubble is the last binding form
+// the exhaustiveness claim was missing, found by an independent review of
+// #1989 after the function-type-parameter case was closed.
+//
+// A method on a generic type rebinds its type parameters in the *receiver's
+// type* rather than in a name list, and may rename them while doing it: the
+// type below writes `Box[T bubbler]` and the method writes `Box[synctest]`.
+// Noting the receiver's field names reaches `b`, not `synctest`, so the binder
+// lives in an IndexExpr that nothing was looking inside.
+func TestAReceiverTypeParameterShadowSuppressesNoBubble(t *testing.T) {
+	t.Parallel()
+
+	waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	"testing/synctest"
+	"time"
+)
+
+type bubbler interface{ Test(func(*testing.T)) }
+
+type Box[T bubbler] struct{ v T }
+
+func (b Box[synctest]) run(t *testing.T) {
+	synctest.Test(b.v, func(t *testing.T) {
+		time.Sleep(time.Second)
+	})
+}
+
+func TestReal(t *testing.T) {}
+`})
+
+	assert.Equal(t, []int{15}, lines(OfKind(waits, KindSleep)),
+		"a sleep under a receiver type parameter shadowing the import was treated as bubbled")
+}

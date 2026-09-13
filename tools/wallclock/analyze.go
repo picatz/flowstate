@@ -308,6 +308,11 @@ func shadowsABubbleCall(file *ast.File, synctestName string) bool {
 //   - [ast.TypeSpec] — a type name, and a generic type's own type parameters.
 //   - [ast.FuncType].TypeParams — a generic function's type parameters, which
 //     are binders like any other and were missed until #1989 asked.
+//   - [ast.FuncDecl].Recv's *type* — a method on a generic type rebinds its
+//     type parameters there rather than in a name list, so
+//     `func (b Box[synctest]) …` declares the name even where the type wrote
+//     `Box[T any]`. The binder is inside an IndexExpr, which is why noting the
+//     receiver's field names alone does not reach it.
 //   - [ast.AssignStmt] with `:=`, which is also how the tree spells a type
 //     switch guard (`x := y.(type)`) and a `select` receive clause.
 //   - [ast.RangeStmt] with `:=` — its key and value. Missed on the first pass
@@ -336,12 +341,37 @@ func declaresName(file *ast.File, name string) bool {
 			}
 		}
 	}
+	// A method on a generic type rebinds its type parameters in the receiver's
+	// *type*, not in a name list: `func (b Box[synctest]) …` declares synctest
+	// even though the type wrote `Box[T ...]`. The binders sit inside an
+	// IndexExpr (one) or IndexListExpr (several).
+	noteReceiverTypeParams := func(recv *ast.FieldList) {
+		if recv == nil {
+			return
+		}
+		for _, field := range recv.List {
+			switch typ := field.Type.(type) {
+			case *ast.IndexExpr:
+				noteIdents(typ.Index)
+			case *ast.IndexListExpr:
+				noteIdents(typ.Indices...)
+			case *ast.StarExpr:
+				switch inner := typ.X.(type) {
+				case *ast.IndexExpr:
+					noteIdents(inner.Index)
+				case *ast.IndexListExpr:
+					noteIdents(inner.Indices...)
+				}
+			}
+		}
+	}
 
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch decl := n.(type) {
 		case *ast.FuncDecl:
 			declared = declared || decl.Name.Name == name
 			noteField(decl.Recv)
+			noteReceiverTypeParams(decl.Recv)
 		case *ast.FuncType:
 			noteField(decl.TypeParams)
 			noteField(decl.Params)
