@@ -153,6 +153,12 @@ func bareKeyContinue(b byte) bool {
 // its own contents, and that is the answer the parser would return after
 // building a document, a body node and a token stream to reach it.
 //
+// The equivalence holds *given a properly closed scalar*, which is what the
+// scanners feeding this deliver: they take the span between a quote and its
+// match. Handed something else the fast path is more permissive than the
+// parser — `"a"b"` is returned as `a"b, true` where the parser refuses — so a
+// second caller has to supply that guarantee or call the decoder directly.
+//
 // The fast path is here rather than in the caller because the equivalence is a
 // fact about YAML's quoting rather than about outlines, and because the cost is
 // paid per *key*: the whole-document scans this feeds call it once per line, so

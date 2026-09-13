@@ -590,11 +590,27 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// is worth taking: returning here ends the walk where
 						// holding would have carried the failure to the join
 						// that owed it, so a step written between the two could
-						// run without an ask and not with one. Under a cancelled
-						// context every such step fails immediately with the
-						// same cancellation and is not tolerated — see
-						// [executor.recordOutcome] — so what differs is at most
-						// one attempt that was going to fail either way.
+						// run without an ask and not with one. A step that
+						// touches the context fails immediately with the same
+						// cancellation and is not tolerated — see
+						// [executor.recordOutcome] — so the divergence stops at
+						// the first one that does. What can differ is the steps
+						// before it: a `value:`, a step whose `if:` is false, or
+						// a `switch:` whose taken body schedules nothing all
+						// evaluate inline and do not fail under a cancelled
+						// context, so those would have run had the failure been
+						// held. The list is not exhaustive — a `call:` or a
+						// block made only of such steps behaves the same way —
+						// which understates the divergence rather than
+						// overstating it.
+						//
+						// What the two shapes then report is not stated here,
+						// because it is not one sentence: [drainRaises] decides
+						// between the cancellation and a failure held earlier,
+						// and an intervening inline step can fail on its own
+						// merits and be reported instead. #2027 works out the
+						// cases; what is certain, and all this guard needs, is
+						// that a held cancellation must never cross the seam.
 						if temporal.IsCanceledError(err) {
 							return drainRaises(held, err)
 						}

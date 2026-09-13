@@ -1088,8 +1088,9 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 //
 // Only the run's own frame, because only its step ids name entries in these
 // outputs. A failure can be held at any depth whose scope is a representable
-// level, which is the top level and a callee's — a `for_each` body or a
-// `parallel` branch runs a suspend level deeper — and a callee records under
+// level, which is the top level and a callee's — a `for_each` body, a `loop:`
+// body, a `parallel` branch and a `switch:` body each run a suspend level
+// deeper, which is the property this rests on — and a callee records under
 // its own scope, carried wholesale in [v1.Frame.CallOutputs] and never
 // compacted, so its held step's entry needs no rescuing here. Step ids are
 // unique within a workflow and not across them, so walking every frame against
