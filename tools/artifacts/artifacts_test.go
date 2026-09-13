@@ -30,7 +30,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -180,13 +179,92 @@ func TestNoCompiledExecutableIsTracked(t *testing.T) {
 // flag; and quoted, so one containing a space survives a copy and paste. Both
 // are properties of a *message*, which is the whole product of a failing check:
 // a command that looks right and does something else is worse than no command.
+//
+// Quoted for the *shell*, which is the part this got wrong. It quoted with
+// strconv.Quote, which writes a Go string literal: the double quotes it puts
+// around a path leave `$`, a backtick and `$(...)` live, so a tracked file
+// named `$(touch PWNED)` — a name git allows, and a name whoever proposed the
+// revision chose — was reported as
+//
+//	git rm --cached -- "$(touch PWNED)"
+//
+// which runs the substitution before git is handed an argument. The paths here
+// come from `git ls-files` on whatever revision is checked out, so they are
+// somebody else's text, and the whole product of this check is a command a
+// maintainer pastes into a shell (Codex).
 func removals(paths []string) string {
 	lines := make([]string, 0, len(paths))
 	for _, path := range paths {
-		lines = append(lines, "    git rm --cached -- "+strconv.Quote(path))
+		lines = append(lines, "    git rm --cached -- "+shellWord(path))
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// shellWord renders one path as a single word no shell expands.
+//
+// Single quotes disable every expansion there is, and the one character they
+// cannot appear inside — a single quote — closes the word, is written on its
+// own in double quotes, and the word reopens: the standard '"'"' splice, which
+// is the spelling `cmd/flow`'s own shellArg uses for the same job.
+//
+// Every path, including the ordinary ones. The alternative is to leave a path
+// bare when it holds no metacharacter, which reads better and needs a list of
+// which characters those are — and a list missing a character is exactly the
+// bug above, written a second time and harder to see.
+func shellWord(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", `'"'"'`) + "'"
+}
+
+// TestTheRemovalAdviceCannotRunWhatItNames is the property the message has to
+// hold whatever a path is called.
+//
+// A tracked filename is not this repository's text. `git ls-files` reports
+// whatever the checked-out revision holds, so a proposed revision can name a
+// file `$(touch PWNED)` and, with four bytes of executable magic in it, have
+// that name printed back inside a command whose entire purpose is to be
+// pasted into a shell. Both halves are asserted: the exact rendering, so a
+// future quoting change is read rather than guessed at, and then the rendered
+// line actually run, because the rendering is only right if a shell agrees.
+func TestTheRemovalAdviceCannotRunWhatItNames(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t,
+		"    git rm --cached -- 'vacuity'\n"+
+			"    git rm --cached -- 'a path with spaces'\n"+
+			"    git rm --cached -- '$(touch PWNED)'\n"+
+			`    git rm --cached -- 'it'"'"'s'`,
+		removals([]string{"vacuity", "a path with spaces", "$(touch PWNED)", "it's"}))
+
+	// And what a shell makes of it. The canary is named with an absolute path
+	// so that the substitution, if the quoting ever stops holding, writes
+	// somewhere this test can see rather than into whatever directory the
+	// suite happens to run in.
+	dir := t.TempDir()
+	canary := filepath.Join(dir, "PWNED")
+
+	line := strings.TrimSpace(removals([]string{"$(touch " + canary + ")"}))
+
+	// git refuses: there is no repository here, and no such path if there
+	// were. That is the point — the command must reach git as one argument
+	// and do nothing else on the way.
+	run := exec.Command("/bin/sh", "-c", line)
+	run.Dir = dir
+	output, err := run.CombinedOutput()
+
+	// An *exec.ExitError and not merely an error, because the way this can
+	// fail without proving anything arrives as a plain one: a machine with no
+	// /bin/sh fails to *start* the process, and a bare `require.Error` accepts
+	// that and reports success having expanded nothing — a claim of coverage
+	// over a mechanism the test never reached (flowstate-reviewer). An exit
+	// status says a shell ran on this line, which is what makes the canary
+	// below evidence rather than a tautology; even the 127 a machine without
+	// git exits with says that much.
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit, "the shell never ran, so nothing was proved:\n%s", output)
+
+	require.NoFileExists(t, canary,
+		"the advice ran the filename it was printing:\n%s", line)
 }
 
 // TestEveryGoTargetsExecutableIsRecognised keeps the list from being the three
