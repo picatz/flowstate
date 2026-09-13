@@ -139,8 +139,12 @@ for after a model upgrade was this one.
   collapsed to the one statement in `AGENTS.md`.
 - **Single instructions.** Verification, shipping, and attribution each have
   one home: the `flowstate-verify` and `flowstate-ship` skills, `.agents/ship.md`,
-  and one line of `AGENTS.md`. The always-loaded contract points at them and
-  keeps the commands an agent needs in nearly every task.
+  and one line of `AGENTS.md` whose per-surface detail is in `comms-pr` and
+  `comms-commit`. The always-loaded contract points at them and keeps the
+  commands an agent needs in nearly every task. Attribution is the one of the
+  three that also has a mechanism, because guidance alone did not hold it:
+  `internal/commitcheck` reports a hand-written footer or a session link on a
+  pull request and on the squash message a merge would write.
 - **Progressive disclosure.** Procedures are skills whose descriptions say when
   they apply; `.claude/rules/agent-config.md` loads the maintenance procedure
   only while agent-configuration files are open; the legacy manual is indexed,
