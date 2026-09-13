@@ -1305,11 +1305,12 @@ hostname or PID, both of which can be shared or reused, and it is a version 4
 UUID — 122 bits of randomness and nothing else, rather than a version 7 whose
 leading bits would carry the process start time.
 
-The attribute is always set. Flowstate reads randomness through
-`crypto/rand`, which is documented never to return an error and to crash the
-program irrecoverably if its source fails, so a host that cannot supply
-randomness never reaches a Flowstate code path at all; there is no
-degraded mode in which the attribute is omitted and a warning is logged.
+The attribute is always set. Flowstate reads randomness through `crypto/rand`,
+which is documented never to return an error: if its source fails it crashes the
+program irrecoverably, and on Linux a source not yet seeded at early boot blocks
+in `getrandom(2)` instead. Either way Flowstate is never handed a failure it
+could degrade on, so there is no mode in which the attribute is omitted and a
+warning is logged.
 
 Flowstate also uses the OTel SDK's built-in detectors for `host.name`,
 `container.id` (when the platform exposes a supported cgroup container ID),

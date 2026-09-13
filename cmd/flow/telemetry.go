@@ -262,12 +262,14 @@ func telemetryConfigFromEnv() (telemetryConfig, error) {
 // error, so this was a [sync.OnceValues] and [telemetryResourceWith] dropped the
 // attribute and warned when it came back set. The error could not occur.
 // [uuid.NewV4] draws from [crypto/rand.Read], which is documented never to
-// return an error and to crash the program irrecoverably if its source fails
-// (go.dev/issue/66821) — a container with no usable entropy dies in the runtime
-// without reaching this code, under either package. So the branch was a claim
-// about resilience that nothing could exercise, and the test for it exercised
-// only its own stub; both are gone. Restoring either needs a failure mode that
-// reaches Go first.
+// return an error: it crashes the program irrecoverably if its source fails
+// (go.dev/issue/66821), and on Linux a source not yet seeded at early boot
+// blocks in getrandom(2) rather than failing. Neither is something this function
+// is handed and could degrade on — the crash happens inside a call this line
+// made, with this file still on the stack — and google/uuid read through the
+// same source, so the branch was a claim about resilience that nothing could
+// exercise, and the test for it exercised only its own stub. Both are gone.
+// Restoring either needs a failure mode that reaches Go first.
 var instanceID = sync.OnceValue(uuid.NewV4)
 
 // telemetryResource describes what is emitting, so a collector can group by it.
