@@ -590,11 +590,17 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// is worth taking: returning here ends the walk where
 						// holding would have carried the failure to the join
 						// that owed it, so a step written between the two could
-						// run without an ask and not with one. Under a cancelled
-						// context every such step fails immediately with the
-						// same cancellation and is not tolerated — see
-						// [executor.recordOutcome] — so what differs is at most
-						// one attempt that was going to fail either way.
+						// run without an ask and not with one. A step that
+						// touches the context fails immediately with the same
+						// cancellation and is not tolerated — see
+						// [executor.recordOutcome] — so the divergence stops at
+						// the first one that does. What can differ is the steps
+						// before it: a `value:`, a pure `switch:`, or a step
+						// whose `if:` is false evaluates inline and does not
+						// fail under a cancelled context, so those would have
+						// run had the failure been held. The run ends CANCELED
+						// with its cancellation compensations either way; what
+						// differs is transcript entries of a cancelled run.
 						if temporal.IsCanceledError(err) {
 							return drainRaises(held, err)
 						}
