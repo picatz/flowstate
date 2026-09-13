@@ -180,9 +180,16 @@ func buildPlan(changed []string) plan {
 		// buf, govulncheck and staticcheck the proto, vulncheck and
 		// staticcheck jobs run, so a bump there changes what every one of
 		// them would say about an unchanged tree.
+		//
+		// tools/fuzzrun joins them because it is the fuzz tier's loop: it
+		// decides how many targets a tier fuzzes at once and how a failing
+		// one is reported, so a change there changes what the fuzz job does
+		// to an unchanged tree exactly as a targets.txt edit does. Its own
+		// package tests would otherwise be the only thing a diff to it ran,
+		// and they cannot tell whether the tier still fuzzes.
 		if strings.HasPrefix(f, ".github/workflows/") || f == "Makefile" ||
 			strings.HasPrefix(f, "tools/gate/") || strings.HasPrefix(f, "tools/fuzztargets/") ||
-			strings.HasPrefix(f, "tools/external/") {
+			strings.HasPrefix(f, "tools/fuzzrun/") || strings.HasPrefix(f, "tools/external/") {
 			p.ciWide = true
 			reason("ci", f)
 		}
