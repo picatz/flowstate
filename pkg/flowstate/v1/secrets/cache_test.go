@@ -31,11 +31,9 @@ type countingProvider struct {
 	// pile-up the assertion is about has already happened when the provider is
 	// released, rather than being hoped for. Left nil, a provider never blocks.
 	//
-	// Arm it before any caller is in flight, as both tests below do: the field
-	// is read under p.mu but written without it, and what makes that safe is
-	// the ordering — the write happens-before the goroutines that read it are
-	// started. A test that armed the gate while callers were already running
-	// would be a data race, which -race would catch.
+	// Written through arm, not directly, so that a test which arms the gate
+	// while a resolution is already in flight is ordered rather than racing
+	// against Resolve's read of it.
 	gate chan struct{}
 }
 
@@ -70,6 +68,19 @@ func (p *countingProvider) set(value string, err error) {
 	defer p.mu.Unlock()
 
 	p.value, p.err = value, err
+}
+
+// arm makes the next resolution block until the returned release is called,
+// and makes releasing it idempotent so that a cleanup and an explicit call can
+// both run.
+func (p *countingProvider) arm() (release func()) {
+	gate := make(chan struct{})
+
+	p.mu.Lock()
+	p.gate = gate
+	p.mu.Unlock()
+
+	return sync.OnceFunc(func() { close(gate) })
 }
 
 // clock is a manual clock, so expiry is exercised without waiting for it.
@@ -229,8 +240,7 @@ func Test_Cache_collapsesConcurrentResolutions(t *testing.T) {
 
 			// The cold-start stampede a worker sees at startup: every caller
 			// arrives while the first resolution is still open.
-			provider.gate = make(chan struct{})
-			release := sync.OnceFunc(func() { close(provider.gate) })
+			release := provider.arm()
 
 			// A failed assertion below exits this goroutine, and a bubble
 			// whose root exited with goroutines still parked is a deadlock
@@ -279,8 +289,7 @@ func Test_Cache_collapsesConcurrentResolutions(t *testing.T) {
 			// second stampede if it is not collapsed. Expiry is driven by the cache's
 			// own manual clock rather than the bubble's, since what has to elapse is
 			// the TTL; the gate parks the callers exactly as above.
-			provider.gate = make(chan struct{})
-			release := sync.OnceFunc(func() { close(provider.gate) })
+			release := provider.arm()
 			t.Cleanup(release) // as above: a failure must not deadlock the bubble
 			clk.advance(2 * time.Minute)
 

@@ -23,9 +23,10 @@ import (
 //   - cmd/flow — a worker or server subprocess, and a browser the test
 //     never opens.
 //   - internal/temporaltest — the supervised dev server process.
-//   - engine/deadlock_budget_test.go — a workflow task deliberately running
-//     past the deadlock budget on a real Temporal worker; workflow_slice_test.go
-//     is the child process that deliberately outlives its replay deadline.
+//   - engine/deadlock_budget_test.go — a sleep inside a workflow goroutine
+//     that must *not* yield, since failing to yield is the thing the SDK's
+//     deadlock detector is watching for; workflow_slice_test.go is the child
+//     process that deliberately outlives its replay deadline.
 //   - netpolicy — a hold in the *test body*, not in the handler, which parks on
 //     a channel instead: it keeps the response body back so that the exported
 //     span is measurably longer than the moment its headers arrived, which is
@@ -41,21 +42,30 @@ import (
 //     request, in that process rather than this one.
 //   - server — the run's completion on a real dev server.
 //
-// Every remaining entry waits on something no bubble can advance past: a
-// process, or a socket. Three that did not — a cache TTL, a wait's deadline
-// and a parked reader — became bubbles instead, because each turned out to be
-// making a *weaker* claim in exchange for the real time it spent: a stampede
-// hoped for rather than guaranteed, a gate assumed reached after 100ms, a
-// goroutine census carrying slack. Each is now an assertion the bubble makes
-// exactly.
+// What keeps these out of a bubble is not one rule but three, and telling them
+// apart is the work when the ratchet fires on something new:
 //
-// Netpolicy is the one that measures a wall-clock bound and still belongs
-// here, so "the test is timing something" is not by itself the reason to stay
-// out of a bubble — what keeps a test out is a real process or socket inside
-// the thing it times. A new entry is more likely a test that wants
-// [synctest.Test] than one that needs an exemption; reach for the exemption
-// only when something outside the bubble is genuinely on the other side of
-// the wait.
+//  1. Something outside the bubble has to make progress first — a subprocess,
+//     a dev server, a socket, an unlinked file. A goroutine waiting on one of
+//     those is never durably blocked, so the bubble's clock would never
+//     advance and the wait would hang rather than return early.
+//  2. The assertion measures a real-clock interval across such a boundary.
+//     Netpolicy is the one: what the hold buys is a span, timed across a
+//     loopback socket, that is measurably longer than the moment its headers
+//     arrived.
+//  3. The elapsed real time *is* the mechanism, and a bubble would defeat it.
+//     deadlock_budget_test.go sleeps inside a workflow goroutine precisely so
+//     that it does not yield; in a bubble that sleep becomes a yield, the
+//     detector never fires, and the test passes while proving nothing.
+//
+// So neither "the test is timing something" nor "there is a process somewhere
+// nearby" settles it. The question to ask of a new entry is what the bubble
+// would break. Three that answered "nothing" — a cache TTL, a wait's deadline
+// and a parked reader — became bubbles, because each was paying real time for
+// a *weaker* claim than a bubble makes: a stampede hoped for rather than
+// guaranteed, a gate assumed reached after 100ms, a goroutine census carrying
+// slack. Each is now an assertion the bubble makes exactly, and a new entry
+// here is more likely to be a fourth of those than a fourth reason.
 var wallClockSleeps = map[string]int{
 	"cmd/flow/browser_test.go":                        1,
 	"cmd/flow/serverdev_test.go":                      1,
