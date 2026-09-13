@@ -1,5 +1,9 @@
 // Command fuzzrun fuzzes a list of targets, several at a time.
 //
+// It is the smoke tier's loop. deep.yml still runs its own, deliberately: ten
+// minutes a target is a different budget with different crasher handling, and
+// nobody waits on it.
+//
 // It reads `<target> <package directory>` lines on standard input — the shape
 // tools/fuzztargets/list.sh prints — and runs one `go test -fuzz` per line.
 // Selection stays list.sh's job: this command never reads targets.txt and never
@@ -21,17 +25,19 @@
 // less. `-fuzztime` bounds wall clock rather than executions, so the question
 // this design turns on is whether a target sharing the machine still gets
 // through as many inputs. Measured against this tree on four cores, with the
-// fuzz corpus cache cleared before each run so corpus growth could not explain
-// the difference: the smoke tier took 448s serially and 139s four-at-a-time,
-// and total executions were 456,000 and 467,519 — the same fuzzing in a third
-// of the wall clock.
+// fuzz corpus cache cleared before each run: the smoke tier took 448s serially
+// and 139s four-at-a-time. The wall clock is the settled part.
 //
-// Per-target execution counts are not the metric and should not be read as one.
-// They swing by orders of magnitude between two identical runs, in both
-// directions, because what a fuzzer reaches depends on what its corpus happened
-// to grow: one target here went from 18 executions to 107,201 between the two
-// runs above. Only the total is stable enough to compare, which is why the
-// claim this command makes is about the total.
+// Whether the targets fuzzed as hard is not settled, and the first version of
+// this comment said it was. Total executions went 456,000 to 467,519, which
+// reads as flat until the per-target numbers are opened: one target supplied
+// +107,183 of that, leaving the other twelve at −95,664, or −21%. One sample
+// per arm cannot separate "same fuzzing" from "one outlier hiding a broad
+// loss", and execution counts cannot settle it at any sample size — they
+// depend on the corpus a run happened to grow, so they move by large factors
+// between runs of one configuration, and a sum inherits whichever target swung
+// hardest. What concurrency owes a target is its share of the machine; CPU
+// seconds per target is what measures that, and it is the open item.
 //
 // # Output
 //
@@ -86,6 +92,13 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout io.Writer) error {
+	return runWith(args, stdin, stdout, nil)
+}
+
+// runWith is run with the per-target runner named, so a test can drive a mix
+// of passing and failing targets without spending a fuzz budget on either.
+// fuzz is nil everywhere but tests, and nil means [fuzzOne].
+func runWith(args []string, stdin io.Reader, stdout io.Writer, fuzz func(context.Context, target, options) ([]byte, error)) error {
 	flags := flag.NewFlagSet("fuzzrun", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	var (
@@ -131,6 +144,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		fuzztime: *fuzztime,
 		timeout:  *timeout,
 		memlimit: *memlimit,
+		run:      fuzz,
 	}) {
 		if r.err != nil {
 			failed = append(failed, r.target.name)
@@ -148,16 +162,34 @@ type options struct {
 	fuzztime time.Duration
 	timeout  time.Duration
 	memlimit string
+
+	// run fuzzes one target. Always nil outside tests, where [fuzzOne] is
+	// what runs. It exists because every case that reaches a real `go test`
+	// has to name a package, and a package that exists would spend a fuzz
+	// budget while one that does not fails identically for every target —
+	// so without a seam here, "a target that passed did not clear an
+	// earlier one's failure" is a claim no test in this package can make.
+	run func(context.Context, target, options) ([]byte, error)
+}
+
+// fuzz runs one target through whatever this options value says runs targets.
+func (o options) fuzz(ctx context.Context, t target) ([]byte, error) {
+	if o.run != nil {
+		return o.run(ctx, t, o)
+	}
+	return fuzzOne(ctx, t, o)
 }
 
 // fuzzAll fuzzes every target, at most workers at a time, and returns the
 // results in the order the targets were read. Writes to out are serialized so
 // one target's buffered output never lands inside another's.
 func fuzzAll(ctx context.Context, out io.Writer, targets []target, workers int, opts options) []result {
+	// max rather than trusting the caller: run guards this, but a helper that
+	// deadlocks on a zero-capacity channel is a bad thing to leave lying about.
 	var (
 		mu      sync.Mutex
 		results = make([]result, len(targets))
-		sem     = make(chan struct{}, workers)
+		sem     = make(chan struct{}, max(workers, 1))
 		wg      sync.WaitGroup
 	)
 	for i, t := range targets {
@@ -171,7 +203,7 @@ func fuzzAll(ctx context.Context, out io.Writer, targets []target, workers int, 
 			fmt.Fprintf(out, "==> %s (%s) started\n", t.name, t.dir)
 			mu.Unlock()
 
-			output, err := fuzzOne(ctx, t, opts)
+			output, err := opts.fuzz(ctx, t)
 			results[i] = result{target: t, err: err}
 
 			verdict := "ok"

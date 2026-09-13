@@ -137,12 +137,12 @@ check:
 # themselves one after another was never that bound — one worker is about one
 # core, so on a four-core runner three idled for every target's whole budget.
 #
-# Spending those cores on other targets is not the same as giving a target
-# less, and the measurement is in tools/fuzzrun because `-fuzztime` bounds wall
-# clock rather than executions and the question deserved an answer: with the
-# fuzz corpus cache cleared before each run, this tier took 448s serially and
-# 139s four-at-a-time, for 456,000 and 467,519 total executions. Same fuzzing,
-# a third of the wall clock.
+# Spending those cores on other targets is not obviously free, because
+# `-fuzztime` bounds wall clock rather than executions. With the fuzz corpus
+# cache cleared before each run this tier took 448s serially and 139s
+# four-at-a-time; the wall clock is settled, and whether the targets fuzzed as
+# hard is not. tools/fuzzrun carries the numbers and says why the execution
+# counts that look like an answer are not one.
 #
 # FUZZ_SMOKE_JOBS sets how many at once; unset, the runner uses one per CPU and
 # never more than there are targets. FUZZ_SMOKE_JOBS=1 is the serial loop back,

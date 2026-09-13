@@ -298,21 +298,31 @@ it is not obviously free: `-fuzztime` bounds wall clock rather than executions,
 so a target sharing a machine could simply explore less in its thirty seconds
 and the tier would get weaker while looking faster.
 
-Measured rather than assumed, with the fuzz corpus cache cleared before each
-run so corpus growth could not explain the difference: the tier took 448s
-serially and 139s four-at-a-time, for 456,000 and 467,519 total executions.
-The same fuzzing in a third of the wall clock. `tools/fuzzrun` is the loop now
-— it reads `list.sh`'s output, so selection is still the one reader's job, and
-runs one job per CPU by default, capped at the number of targets so the memory
-ceiling stays in proportion to the machine.
+The wall clock is settled: with the fuzz corpus cache cleared before each run,
+the tier took 448s serially and 139s four-at-a-time. `tools/fuzzrun` is the
+loop now — it reads `list.sh`'s output, so selection is still the one reader's
+job, and runs one job per CPU by default, capped at the number of targets so
+the memory ceiling stays in proportion to the machine.
 
-Per-target execution counts are not the metric and reading them as one is a
-trap this measurement fell into once already. They swing by orders of magnitude
-between two *identical* runs, in both directions, because what a fuzzer reaches
-depends on the corpus it happened to grow: one target went from 18 executions
-to 107,201 between the two runs above. An early A/B that compared per-target
-counts across runs with a warm corpus appeared to show a 57% coverage loss that
-was not there. Only the total is stable enough to compare.
+Whether the same fuzzing happened in that third of the wall clock is **not**
+settled by that run, and the first version of this section claimed it was.
+Totals went 456,000 to 467,519, which reads as flat until the per-target
+numbers are opened: one target contributed +107,183 of it, so the other twelve
+netted −95,664, or −21%. A single outlier was hiding exactly the decline this
+design has to rule out, and a paired run with one sample per arm cannot tell
+"same fuzzing" from "one target masking a broad loss".
+
+Execution counts are a poor instrument here and this measurement has now been
+misled by them twice. They depend on the corpus a run happened to grow, so they
+move by large factors between runs of the same configuration — and summing them
+does not fix it, because the sum inherits whichever target swung hardest. An
+early A/B compared per-target counts across runs with a warm corpus and appeared
+to show a 57% coverage loss that was not there; the replacement summed them and
+appeared to show no loss at all, which the paragraph above takes apart.
+
+What a target *is* owed under concurrency is its share of the machine, and CPU
+seconds per target measures that without asking what its corpus found. That is
+the measurement this claim should rest on, and it is the open item here.
 
 On the runner the same thirteen targets went from 9m13s to 5m48s (`main` run
 `34726074939` against pull request run `34735407267`, both forced-wide, both

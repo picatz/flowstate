@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -249,5 +250,57 @@ func TestBoundedOutputPassesShortOutputThroughUnchanged(t *testing.T) {
 	}
 	if got := string(b.Bytes()); got != want {
 		t.Errorf("short output rendered as %q, want %q", got, want)
+	}
+}
+
+// A target that passes must not clear an earlier target's failure. Every other
+// case here fails every target, so this is the half of the failure contract
+// that nothing could observe before the runner became injectable: a mutation
+// that reset the failure list whenever a later target passed would survive.
+func TestAPassingTargetDoesNotClearAnEarlierFailure(t *testing.T) {
+	var out bytes.Buffer
+	results := fuzzAll(context.Background(), &out,
+		[]target{{name: "FuzzBroken", dir: "pkg/one"}, {name: "FuzzFine", dir: "pkg/two"}}, 1,
+		options{
+			fuzztime: time.Millisecond, timeout: time.Minute, memlimit: "512MiB",
+			run: func(_ context.Context, tg target, _ options) ([]byte, error) {
+				if tg.name == "FuzzBroken" {
+					return []byte("boom\n"), errors.New("exit status 1")
+				}
+				return []byte("ok\n"), nil
+			},
+		})
+
+	if results[0].err == nil {
+		t.Error("the failing target reported no error")
+	}
+	if results[1].err != nil {
+		t.Errorf("the passing target reported %v", results[1].err)
+	}
+}
+
+// The same, end to end through run, so the exit status and the summary are
+// what a red job would actually show.
+func TestRunFailsWhenOnlyOneOfSeveralTargetsFails(t *testing.T) {
+	var out bytes.Buffer
+	err := runWith([]string{"-fuzztime", "1ms"},
+		strings.NewReader("FuzzFine pkg/one\nFuzzBroken pkg/two\nFuzzAlsoFine pkg/three\n"), &out,
+		func(_ context.Context, tg target, _ options) ([]byte, error) {
+			if tg.name == "FuzzBroken" {
+				return nil, errors.New("exit status 1")
+			}
+			return nil, nil
+		})
+	if err == nil {
+		t.Fatal("a run with one failing target succeeded")
+	}
+	if !strings.Contains(err.Error(), "FuzzBroken") {
+		t.Errorf("error %q does not name the failing target", err)
+	}
+	if strings.Contains(err.Error(), "FuzzFine") || strings.Contains(err.Error(), "FuzzAlsoFine") {
+		t.Errorf("error %q names a target that passed", err)
+	}
+	if strings.Contains(out.String(), "target(s) passed") {
+		t.Errorf("a run with a failing target still reported a pass:\n%s", out.String())
 	}
 }
