@@ -45,6 +45,12 @@ const (
 	// cannot be reported as conforming, so a body past the bound is a
 	// finding of its own rather than a silent pass.
 	RuleBounded Rule = "bounded"
+
+	// RuleAttribution is provenance a message states for itself rather than
+	// carries: a hand-written "Generated with Claude Code" footer, which the
+	// host or the forge already appends, or a session-specific console link,
+	// which resolves for its author and nobody else.
+	RuleAttribution Rule = "attribution"
 )
 
 // Finding is one convention a message does not follow.
@@ -86,6 +92,17 @@ var (
 	// evidence is what a line offering an absolute has to carry beside it: a
 	// code span, an issue, a parenthetical, or a clause that says why.
 	evidence = regexp.MustCompile("`|#[0-9]+|\\(|\\b(because|since|so that|which|as)\\b")
+
+	// attributionFooter is a footer standing on its own line, which is the
+	// one place the marker is a claim the message makes rather than a phrase
+	// it mentions. A sentence about the footer carries other words and is
+	// left alone, so a message may say what it is not allowed to append.
+	attributionFooter = regexp.MustCompile(`(?im)^[\s>]*(?:[-*_]{3,}[\s>]*)?(?:\x{1F916}\s*)?[_*]{0,2}generated (?:with|by) \[?claude(?: code)?\]?(?:\([^)]*\))?[_*.\s]*$`)
+
+	// sessionLink is a console URL naming one agent session. Unlike the
+	// footer it is reported wherever it appears: it is unreachable for every
+	// reader but its author, so there is no sentence that wants one.
+	sessionLink = regexp.MustCompile(`https://claude\.ai/code/session_\w+`)
 )
 
 // Check holds subject and body to the conventions and returns every finding.
@@ -123,6 +140,10 @@ func Check(subject, body string) []Finding {
 	// body that runs past the bound is a finding, since what was not read
 	// cannot be called conforming (Codex, #1848).
 	omitted := 0
+	// Each kind of attribution is reported once. Every occurrence of one has
+	// the same repair — delete it — so a body that stacks three footers
+	// needs three deletions and one sentence saying so.
+	var sawFooter, sawSessionLink bool
 	rest := body
 	for n := 0; rest != ""; n++ {
 		if n == maxLines {
@@ -135,6 +156,24 @@ func Check(subject, body string) []Finding {
 		}
 		var line string
 		line, rest, _ = strings.Cut(rest, "\n")
+
+		if !sawFooter && attributionFooter.MatchString(line) {
+			sawFooter = true
+			out = append(out, Finding{
+				Rule:    RuleAttribution,
+				Message: "the body writes its own attribution footer, which the host or the forge appends already, so the post carries it twice: " + excerpt(strings.TrimSpace(line)),
+				Skill:   prSkill,
+			})
+		}
+		if !sawSessionLink && sessionLink.MatchString(line) {
+			sawSessionLink = true
+			out = append(out, Finding{
+				Rule:    RuleAttribution,
+				Message: "the body carries a session link, which resolves for its author and for no other reader of this history; delete it",
+				Skill:   commitSkill,
+			})
+		}
+
 		loc := absolutes.FindStringIndex(line)
 		if loc == nil {
 			continue

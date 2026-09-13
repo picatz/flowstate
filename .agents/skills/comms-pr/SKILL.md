@@ -38,6 +38,7 @@ then strict) and on the squash message at merge time:
   `Unverified: <reason>` trailer.
 - "fully tested", "safe", "backward-compatible", and "no impact" must sit on a
   line that also carries their evidence.
+- No hand-written attribution footer and no `claude.ai/code/session_…` link.
 
 ## Repository specifics
 
@@ -45,6 +46,22 @@ then strict) and on the squash message at merge time:
   line and let the browser wrap it.
 - Distinguish a local pass from CI, and a targeted check from the full gate. A
   skipped or unavailable check is named as such, not omitted.
+
+## Attribution
+
+The host and the forge append their own attribution to a body they post. One
+written by hand lands above theirs rather than instead of it, and two whose
+wordings differ do not collapse into one: #1976 said it three times. Write none.
+The post's author is the claim, and the way to keep attribution quiet is to post
+less often, not to shrink the marker.
+
+A session link belongs to no surface at all. It resolves for the agent that
+produced it and for no other reader, so in a pull request body it is a dead
+reference, and a body pasted into a squash message carries it into `git log` for
+good — twenty-two commits here already carry one.
+
+Review comments and replies are the exception, and the only one: nothing appends
+a footer there, so those carry it explicitly.
 
 ## History
 
