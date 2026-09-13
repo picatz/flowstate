@@ -439,9 +439,15 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 		s.localByPath = make(map[string]lsp.DocumentURI)
 	}
 	if prev, ok := s.docs[uri]; ok {
-		// A version of zero means the client does not track them, in which case
-		// there is nothing to compare and last-write-wins is all that is on offer.
-		if version > 0 && prev.version > 0 && version <= prev.version {
+		// Ordered against what the store holds, not against this open's own
+		// version. Zero is a legal document version, not a sentinel: a client
+		// that opens at zero and immediately edits to one is compliant, and
+		// comparing only opens above zero would let that open revert the edit —
+		// the very reversion this guard exists to stop. What zero means is that
+		// the *stored* document cannot be ordered against, which is the client
+		// that does not track versions at all; there last-write-wins is all
+		// that is on offer, so the open applies.
+		if prev.version > 0 && version <= prev.version {
 			doc = prev
 		}
 	}

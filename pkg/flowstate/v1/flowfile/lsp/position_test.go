@@ -368,8 +368,18 @@ func TestStoreRejectsAnOvertakenOpen(t *testing.T) {
 	require.NotNil(t, fresh)
 	assert.Equal(t, "name: fresh\n", fresh.text)
 
+	// Zero is a legal document version, not a sentinel. A compliant client may
+	// open at zero and edit to one, and that open must not revert the edit
+	// either — what cannot be ordered against is a *stored* version of zero.
+	var zeroOpen documentStore
+	zeroOpen.change("file:///zero.yaml", 1, []lsp.TextDocumentContentChangeEvent{{Text: "name: edited\n"}}, nil)
+	late := zeroOpen.open("file:///zero.yaml", 0, "name: opened\n", nil)
+	require.NotNil(t, late)
+	assert.Equal(t, "name: edited\n", late.text, "an open at version zero reverted a later edit")
+
 	// A client that does not track versions keeps last-write-wins, the same
-	// tolerance change has, because there is nothing to order by.
+	// tolerance change has, because the stored document carries nothing to
+	// order by.
 	var untracked documentStore
 	untracked.change("file:///untracked.yaml", 0, []lsp.TextDocumentContentChangeEvent{{Text: "name: one\n"}}, nil)
 	reopened := untracked.open("file:///untracked.yaml", 0, "name: two\n", nil)
