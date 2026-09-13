@@ -58,8 +58,7 @@ func retryBackoffTimeoutProbe(ctx workflow.Context, input retryBackoffProbeInput
 	err := workflow.ExecuteActivity(ctx, retryBackoffDependencyFailure, input.NonRetryable, input.AttemptTimeout).Get(ctx, nil)
 	shape := retryBackoffTimeoutShape{}
 
-	var activityErr *temporal.ActivityError
-	if errors.As(err, &activityErr) {
+	if activityErr, ok := errors.AsType[*temporal.ActivityError](err); ok {
 		shape.RetryState = activityErr.RetryState()
 	}
 
@@ -69,8 +68,7 @@ func retryBackoffTimeoutProbe(ctx workflow.Context, input retryBackoffProbeInput
 		shape.TimeoutType = timeoutErr.TimeoutType()
 	}
 
-	var applicationErr *temporal.ApplicationError
-	if errors.As(err, &applicationErr) {
+	if applicationErr, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 		shape.HasApplicationErr = true
 		shape.ApplicationType = applicationErr.Type()
 		shape.ApplicationText = applicationErr.Message()

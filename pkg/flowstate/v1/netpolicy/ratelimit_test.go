@@ -166,9 +166,7 @@ func TestHostRateLimitBucketUnderConcurrencyGrantsExactlyBurstTokens(t *testing.
 
 	var done sync.WaitGroup
 	for range burst + 1 {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			start.Wait()
 
 			// Counted rather than asserted: require's failures call
@@ -182,7 +180,7 @@ func TestHostRateLimitBucketUnderConcurrencyGrantsExactlyBurstTokens(t *testing.
 			default:
 				refused.Add(1)
 			}
-		}()
+		})
 	}
 
 	start.Done()
@@ -229,9 +227,7 @@ func TestHostRateLimitConcurrentRequestsSeeExactlyOneRefusal(t *testing.T) {
 
 	var done sync.WaitGroup
 	for range rate + 1 {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			start.Wait()
 
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
@@ -243,14 +239,13 @@ func TestHostRateLimitConcurrentRequestsSeeExactlyOneRefusal(t *testing.T) {
 			if err != nil {
 				// errors.As rather than require, which must not be called
 				// off the test's own goroutine.
-				var limited *RateLimitedError
-				if errors.As(err, &limited) {
+				if _, ok := errors.AsType[*RateLimitedError](err); ok {
 					refusals.Add(1)
 				}
 				return
 			}
 			resp.Body.Close()
-		}()
+		})
 	}
 
 	start.Done()

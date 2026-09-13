@@ -3,6 +3,7 @@ package auth_test
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -317,9 +318,7 @@ func TestTokenExchangeStrictProfileVectors(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			response := make(map[string]any, len(base))
-			for key, value := range base {
-				response[key] = value
-			}
+			maps.Copy(response, base)
 			test.mutate(response)
 			party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
 				writeJSON(t, w, http.StatusOK, response)

@@ -691,8 +691,7 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 		// this package's: an operator's policy may cap bodies lower, and a
 		// refusal quoting the wrong number sends them looking for a setting
 		// they did not write.
-		var tooLarge *netpolicy.BodyTooLargeError
-		if errors.As(err, &tooLarge) {
+		if tooLarge, ok := errors.AsType[*netpolicy.BodyTooLargeError](err); ok {
 			return nil, fmt.Errorf("%w: %s returned more than %d bytes", ErrExchangeFailed, provider, tooLarge.Limit)
 		}
 		return nil, fmt.Errorf("%w: %w: reading %s response: %v", ErrExchangeFailed, ErrExchangeUnavailable, provider, err)

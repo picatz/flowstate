@@ -544,8 +544,8 @@ func keyPath(ix *lineIndex, line0 int) []string {
 		}
 	}
 	path := make([]string, 0, len(reversed))
-	for i := len(reversed) - 1; i >= 0; i-- {
-		path = append(path, reversed[i])
+	for _, r := range slices.Backward(reversed) {
+		path = append(path, r)
 	}
 	return path
 }

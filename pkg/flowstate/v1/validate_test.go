@@ -349,16 +349,14 @@ func TestValidateErrorMessage(t *testing.T) {
 func TestValidateConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			require.NoError(t, v1.Validate(&v1.RunRequest{Workflow: validWorkflow()}))
 
 			err := v1.Validate(&v1.Task_HTTP_Inputs{Url: fmt.Sprintf("bad url %d", i)})
 			var invalid *v1.ValidationError
 			require.ErrorAs(t, err, &invalid)
-		}()
+		})
 	}
 	wg.Wait()
 }

@@ -248,7 +248,7 @@ func (rs secretRules) evaluate(
 func newSecretEnv() (*cel.Env, error) {
 	return cel.NewEnv(
 		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeOf(workload{}), reflect.TypeOf(callerIdentity{}), reflect.TypeOf(secret{})),
+			reflect.TypeFor[workload](), reflect.TypeFor[callerIdentity](), reflect.TypeFor[secret]()),
 		cel.Variable(attrIdentity, cel.ObjectType(callerTypeName)),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrSecret, cel.ObjectType(secretTypeName)),
@@ -281,5 +281,5 @@ func compileSecretRules(allow, deny []string, costLimit uint64) (secretRules, er
 		return secretRules{}, err
 	}
 
-	return secretRules{Set: celrule.Set{Allow: allowRules, Deny: denyRules, WithoutAllow: celrule.NoAllowRules}}, nil
+	return secretRules{Allow: allowRules, Deny: denyRules, WithoutAllow: celrule.NoAllowRules}, nil
 }

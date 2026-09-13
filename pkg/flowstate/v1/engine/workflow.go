@@ -304,8 +304,7 @@ func recordedStepError(err error) (string, bool) {
 	// Every application error reaching a step's tolerance came from
 	// activityError, which builds it from a classified task failure and puts the
 	// canonical text in the message.
-	var app *temporal.ApplicationError
-	if errors.As(err, &app) {
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 		return app.Message(), true
 	}
 
@@ -361,8 +360,7 @@ func recordedStepKind(err error) v1.ErrorKind {
 		return v1.ErrorKindTimeout
 	}
 
-	var app *temporal.ApplicationError
-	if errors.As(err, &app) {
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
 			return kind
 		}
@@ -961,8 +959,7 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 	// and nothing else, which is the string the local driver appends to its own
 	// failure — the one value that has to be identical for a local run to rehearse
 	// what a compensated production run will say.
-	var inner *ErrRunFailed
-	if errors.As(err, &inner) {
+	if inner, ok := errors.AsType[*ErrRunFailed](err); ok {
 		return &ErrRunFailed{
 			Message:          inner.Message + v1.UndoSummary(results),
 			Recorded:         inner.Recorded,

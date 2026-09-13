@@ -96,7 +96,7 @@ func main() {
 		return
 	}
 	if mergeUsesShellExpansion(in) {
-		hook.Deny("mergeguard: shell expansion in a `gh pr merge` invocation can hide auto-merge or change its target and head. Use one fully explicit invocation after shipcheck passes.")
+		hook.Deny(shellExpansionDenial(in.Command()))
 		return
 	}
 	if mergeHelpOnly(in) {
@@ -521,6 +521,107 @@ var bashCommandEvaluation = regexp.MustCompile(`\b(?:ba|da)?sh(?:\s+(?:--[A-Za-z
 
 var fullCommitOID = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
+// ghToken and standaloneMergeWord are the two ingredients the loose heuristics
+// above look for, named separately so a denial can report which of them it saw.
+// `merged`, `mergeable` and `merge_commit` are not standaloneMergeWord: `_`, `d`
+// and `a` are word characters, so a status query reading those fields does not
+// carry the word in the sense that matters here.
+var (
+	ghToken             = regexp.MustCompile(`\bgh\b`)
+	standaloneMergeWord = regexp.MustCompile(`\bmerge\b`)
+)
+
+// shellExpansionDenial explains one mergeUsesShellExpansion denial. That
+// function owns the decision and is not consulted here for anything but the
+// reason; this only chooses the wording, because a PreToolUse hook may write one
+// document and the reason is the whole of what a caller can act on.
+//
+// The distinction worth drawing is whether the command was recognized as a merge
+// at all. When it was, the original advice is the right advice: make the
+// invocation explicit and pin it. When it was not, a loose text heuristic
+// matched — a gh token, a standalone `merge`, and an expansion, in any three
+// places in the command — and the caller may well have written a status query, or
+// a commit message that discusses merging, with no merge anywhere in it (#1972).
+// Telling that caller to use one fully explicit merge invocation after shipcheck
+// passes is advice for a task they are not doing, and the only thing it teaches
+// is to stop running the command rather than to separate it.
+//
+// The refusal itself is deliberate and unchanged. Text cannot tell an obfuscated
+// merge from prose about merging once expansion is in play, so this hook fails
+// closed and says so, rather than guessing from what the words look like.
+func shellExpansionDenial(cmd string) string {
+	const explicit = "If it is a merge, use one fully explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes."
+
+	// Recognized means recognized by text, not proven to be a merge: the words are
+	// matched wherever they appear, a quoted heredoc body included, so prose that
+	// merely documents a merge invocation lands here too and needs a remedy of its
+	// own rather than only the advice for merging.
+	if isGHPRMergeInvocation(cmd) || expandedMergeExecutable.MatchString(cmd) {
+		return "mergeguard: shell expansion in a merge invocation can hide auto-merge or change its target and head. " + explicit +
+			" If this command only quotes or documents a merge invocation, the words were still matched: pass that text through a file, the way `git commit -F FILE` does, rather than through the command line."
+	}
+
+	// Each name describes the syntax the heuristic matched, not a behavior it
+	// proved. The predicates run over raw text, so a `$` inside single quotes and
+	// a `{` in a jq selector count exactly as much as a live expansion does;
+	// calling those "a shell expansion" would send the caller looking for an
+	// expansion that is not there, and, worse, would suggest quoting as the
+	// remedy when quoting changes nothing here.
+	//
+	// The list reports what the command carries, not why it was refused, and is
+	// deliberately not claimed to be either exhaustive or sufficient. Two earlier
+	// drafts of this message asserted remedies and both were falsified by
+	// measurement: `dynamicGHExecutable` can fire on an obfuscated executable that
+	// `\bgh\b` does not match, so a named ingredient is not always the one that
+	// matched; and `gh api "repos/o/r/pulls/$PR/merge"`, GitHub's own endpoint for
+	// checking whether a pull request is merged, is refused with no remedy
+	// available short of inlining the value. Stating what matched is checkable.
+	// Stating what clears it is a claim about a five-way disjunction, which this
+	// text is the wrong place to make; #1972 carries it instead.
+	var saw []string
+	if ghToken.MatchString(cmd) {
+		saw = append(saw, "a `gh` token")
+	}
+	if standaloneMergeWord.MatchString(cmd) {
+		saw = append(saw, "the standalone word `merge`")
+	}
+	if strings.Contains(cmd, ">(") || strings.Contains(cmd, "<(") {
+		saw = append(saw, "process-substitution syntax (`>(` or `<(`)")
+	}
+	if strings.Contains(cmd, "eval ") || bashCommandEvaluation.MatchString(cmd) {
+		saw = append(saw, "an `eval` or shell `-c` spelling")
+	}
+	if strings.Contains(cmd, "{") && strings.Contains(cmd, "}") {
+		saw = append(saw, "brace characters (`{` with `}`)")
+	}
+	if strings.ContainsAny(cmd, "$`") {
+		saw = append(saw, "an expansion character (`$` or a backtick)")
+	}
+
+	return "mergeguard: this is not a recognized merge invocation, but it carries " + joinAnd(saw) +
+		". This hook matches text rather than parsed shell, so a quoted occurrence counts the same as a live one and quoting is not the remedy; " +
+		"together they are how an obfuscated merge looks to it, so the command is refused rather than guessed at. " +
+		"Which change clears it depends on which pattern matched, so no single remedy is promised here: #1972 records what has " +
+		"worked, and the reads these patterns cannot tell from a merge. If the command only discusses merging, a commit message " +
+		"say, passing that text through a file the way `git commit -F FILE` does keeps it off the command line. " + explicit
+}
+
+// joinAnd renders a short list as prose. The lists here are the handful of
+// indicator names above, so the simple form is enough and an empty list cannot
+// arise: mergeUsesShellExpansion denies only when at least one of them is set.
+func joinAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return "a shape this hook refuses"
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+	}
+}
+
 func isMergeInvocation(in *hook.Input) bool {
 	if in == nil {
 		return false
@@ -557,8 +658,8 @@ func mergeHeadPinned(in *hook.Input) bool {
 			i++
 			continue
 		}
-		if strings.HasPrefix(arg, "--match-head-commit=") {
-			heads = append(heads, strings.TrimPrefix(arg, "--match-head-commit="))
+		if after, ok0 := strings.CutPrefix(arg, "--match-head-commit="); ok0 {
+			heads = append(heads, after)
 			continue
 		}
 		if ghMergeValueFlags[arg] || arg == "-R" || arg == "--repo" {
@@ -764,7 +865,7 @@ func ghPRMergeInvocations(s string) [][]string {
 
 	var invocations [][]string
 	for _, command := range commands {
-		for i := 0; i < len(command); i++ {
+		for i := range command {
 			if command[i] != "gh" && !strings.HasSuffix(command[i], "/gh") {
 				continue
 			}

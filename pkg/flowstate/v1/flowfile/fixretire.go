@@ -3,6 +3,7 @@ package flowfile
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -138,8 +139,7 @@ func rewriteExpressions(line string, rewrite func(string) (string, bool)) (strin
 	spans := expressionSpans(line)
 
 	out, changed := line, false
-	for i := len(spans) - 1; i >= 0; i-- {
-		span := spans[i]
+	for _, span := range slices.Backward(spans) {
 
 		replaced, did := rewrite(out[span[0]:span[1]])
 		if !did {

@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -66,13 +67,7 @@ func TestTheTimelineAccountsForARunThatActuallyRan(t *testing.T) {
 		}
 		finished = resp.Msg
 
-		for _, kind := range timelineKinds(finished) {
-			if kind == v1.TimelineEntry_KIND_RUN_ENDED {
-				return true
-			}
-		}
-
-		return false
+		return slices.Contains(timelineKinds(finished), v1.TimelineEntry_KIND_RUN_ENDED)
 	}, 60*time.Second, 200*time.Millisecond, "the run never reached an ending in its own account")
 
 	assert.False(t, finished.GetTruncated(),

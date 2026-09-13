@@ -9,7 +9,7 @@ import (
 
 // stringSliceType is the type every list inside a [ClaimRule] has, and what the
 // walks below select fields by.
-var stringSliceType = reflect.TypeOf([]string(nil))
+var stringSliceType = reflect.TypeFor[[]string]()
 
 // TestCloneSharesNoClaimRuleSliceWithItsSource is the guard for the defect that
 // arrived with [ClaimRule.NoneOf]: [TrustedIssuer.clone] deep-copied AnyOf and
@@ -31,11 +31,11 @@ func TestCloneSharesNoClaimRuleSliceWithItsSource(t *testing.T) {
 
 	populated := 0
 	fields := reflect.ValueOf(&rule).Elem()
-	for i := range fields.NumField() {
-		if fields.Field(i).Type() != stringSliceType {
+	for _, field := range fields.Fields() {
+		if field.Type() != stringSliceType {
 			continue
 		}
-		fields.Field(i).Set(reflect.ValueOf([]string{"original"}))
+		field.Set(reflect.ValueOf([]string{"original"}))
 		populated++
 	}
 	require.Positive(t, populated,
@@ -54,8 +54,7 @@ func TestCloneSharesNoClaimRuleSliceWithItsSource(t *testing.T) {
 	// policy after building a verifier could.
 	mutated := 0
 	sourceRule := reflect.ValueOf(&source.Require[0]).Elem()
-	for i := range sourceRule.NumField() {
-		field := sourceRule.Field(i)
+	for _, field := range sourceRule.Fields() {
 		if field.Type() != stringSliceType || field.Len() == 0 {
 			continue
 		}

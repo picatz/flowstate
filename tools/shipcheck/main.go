@@ -283,7 +283,7 @@ func loadCommentsGraphQL(repo string, number int) ([]comment, error) {
 	parts := strings.Split(repo, "/")
 	var comments []comment
 	var cursor string
-	for page := 0; page < maxThreadPages; page++ {
+	for range maxThreadPages {
 		args := []string{"api", "graphql", "-f", "query=" + commentsQuery, "-F", "owner=" + parts[0], "-F", "repo=" + parts[1], "-F", "number=" + strconv.Itoa(number)}
 		if cursor != "" {
 			args = append(args, "-f", "cursor="+cursor)
@@ -329,7 +329,7 @@ func loadReviewsGraphQL(repo string, number int) ([]review, error) {
 	parts := strings.Split(repo, "/")
 	var reviews []review
 	var cursor string
-	for page := 0; page < maxThreadPages; page++ {
+	for range maxThreadPages {
 		args := []string{"api", "graphql", "-f", "query=" + reviewsQuery, "-F", "owner=" + parts[0], "-F", "repo=" + parts[1], "-F", "number=" + strconv.Itoa(number)}
 		if cursor != "" {
 			args = append(args, "-f", "cursor="+cursor)
@@ -535,7 +535,7 @@ func ownerCodexRequests(pr pullRequest) int {
 				continue
 			}
 		}
-		for _, line := range strings.Split(strings.ToLower(comment.Body), "\n") {
+		for line := range strings.SplitSeq(strings.ToLower(comment.Body), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "@codex review") || strings.HasPrefix(line, "@codex security review") {
 				requests++
@@ -686,7 +686,7 @@ func hasIndependentReview(pr pullRequest) bool {
 		if comment.AuthorAssociation != "OWNER" {
 			continue
 		}
-		for _, line := range strings.Split(comment.Body, "\n") {
+		for line := range strings.SplitSeq(comment.Body, "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, independentReviewMarker) || !strings.HasSuffix(line, " -->") {
 				continue
@@ -754,7 +754,7 @@ func unresolvedReviewThreadsGraphQL(repo string, number int) (int, error) {
 	const query = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}`
 	cursor := ""
 	unresolved := 0
-	for page := 0; page < maxThreadPages; page++ {
+	for range maxThreadPages {
 		args := []string{"api", "graphql", "-f", "query=" + query, "-F", "owner=" + owner, "-F", "repo=" + name, "-F", "number=" + strconv.Itoa(number)}
 		if cursor != "" {
 			args = append(args, "-F", "cursor="+cursor)

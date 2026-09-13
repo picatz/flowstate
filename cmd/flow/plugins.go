@@ -301,9 +301,7 @@ func pluginPinsOf(pinsFile string, pinFlags []string) (map[string]string, error)
 	}
 
 	out := make(map[string]string, len(base)+len(pinFlags))
-	for name, digest := range base {
-		out[name] = digest
-	}
+	maps.Copy(out, base)
 
 	for _, entry := range pinFlags {
 		name, digest, found := strings.Cut(entry, "=")
@@ -350,7 +348,7 @@ func ambientPluginSearchPath() string { return os.Getenv(pluginSearchPathEnv) }
 // the directory it was launched from.
 func splitSearchPath(value string) []string {
 	var out []string
-	for _, part := range strings.Split(value, string(os.PathListSeparator)) {
+	for part := range strings.SplitSeq(value, string(os.PathListSeparator)) {
 		if part != "" {
 			out = append(out, part)
 		}

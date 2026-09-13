@@ -718,7 +718,7 @@ func TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound(t *testing.T
 	// none of them consumed, by the time Continue-As-New's own drain runs.
 	first := atABound(newWaitEnv(t))
 	first.RegisterDelayedCallback(func() {
-		for i := 0; i < total; i++ {
+		for i := range total {
 			first.SignalWorkflow(signalName, testSignalDelivery(
 				fmt.Sprintf("approver-%d@example.com", i),
 				map[string]*v1.Value{"approved": v1.NewLiteral(true), "seq": v1.NewLiteral(int64(i))}))

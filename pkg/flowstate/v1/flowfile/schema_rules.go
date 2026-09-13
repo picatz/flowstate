@@ -169,7 +169,7 @@ func walkFieldPath(msg protoreflect.Message, path string) fieldWalk {
 		walk.candidates = append([]string{walk.authored}, walk.candidates...)
 	}
 
-	for _, component := range strings.Split(path, ".") {
+	for component := range strings.SplitSeq(path, ".") {
 		name, index, key := splitPathComponent(component)
 		if msg == nil {
 			return walk

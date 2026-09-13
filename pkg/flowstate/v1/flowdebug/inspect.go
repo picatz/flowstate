@@ -777,12 +777,11 @@ func (s *Session) stepWindow(offset, limit int) (StepList, int) {
 	list := StepList{
 		Total:     len(order),
 		Truncated: s.seenShort,
-	}
 
-	// Counted in [New] rather than here: it is a property of an inventory that
-	// does not change, and recomputing it per call would put the O(N) pass
-	// back that the window exists to remove.
-	list.Unattributed = s.sharedCount
+		// Counted in [New] rather than here: it is a property of an inventory that
+		// does not change, and recomputing it per call would put the O(N) pass
+		// back that the window exists to remove.
+		Unattributed: s.sharedCount}
 
 	// Where the run is, resolved once and by index. The earlier draft compared
 	// the position's workflow name against each row's, which marks *both* rows
