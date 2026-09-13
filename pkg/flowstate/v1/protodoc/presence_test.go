@@ -472,8 +472,13 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		}
 	}
 
-	if checked != 189 {
-		t.Errorf("run/report walk checked %d declarations; want 189", checked)
+	// 196 since [v1.HeldFailure] and [v1.Frame.held_failures] joined the run
+	// model: a message, its five fields, and the field that holds them. The
+	// count is pinned so that adding a declaration is a deliberate act with its
+	// prose written at the same moment, rather than something the walk silently
+	// absorbs.
+	if checked != 196 {
+		t.Errorf("run/report walk checked %d declarations; want 196", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
