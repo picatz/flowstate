@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package ssh.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/ssh/gen/ssh/v1;sshv1";
+
+// One task, ssh.run, and its whole surface is a pair of names and some
+// parameters.
+//
+// A Flowfile cannot name a host, a command, a user, a key or a port here. Those
+// are the operator's, written in a grants file the worker hands this plugin;
+// what a workflow chooses is which of the operator's grants to spend and what
+// to fill that grant's own placeholders with. The authority is the operator's
+// to grant and the workflow's to select within - never to compose.
+message RunInputs {
+  // Host is the name of a host grant in the operator's grants file. Not an
+  // address: an address in a Flowfile is a Flowfile choosing which machine to
+  // execute on.
+  string host = 1;
+
+  // Command is the name of a command grant the host grant permits. Not a
+  // command line: the operator wrote the argv, and this names which of them to
+  // run.
+  string command = 2;
+
+  // Parameters fill the placeholders the command grant declares. Each value is
+  // checked against that parameter's own pattern before it is used, and is
+  // quoted as a single argument when the command line is built - so a value can
+  // never become a second command, a flag, or a redirection.
+  map<string, string> parameters = 3;
+}
+
+// RunOutputs is what the remote command did.
+message RunOutputs {
+  // ExitCode is the command's exit status. A status the grant does not list as
+  // successful fails the step, so this is the record of what happened rather
+  // than a value a workflow has to remember to check.
+  int32 exit_code = 1;
+
+  // Stdout and Stderr are the streams, each bounded by the grant and each valid
+  // UTF-8 or empty.
+  string stdout = 2;
+  string stderr = 3;
+
+  // Truncated reports that the command wrote more than the grant's limit. The
+  // output above is what fit; this says there was more, so a workflow never
+  // reads a cut-off stream as a complete one.
+  bool truncated = 4;
+
+  // Host and Command echo the grants that were spent, so a run's history
+  // records which authority was used without a reader joining it to a
+  // configuration file.
+  string host = 5;
+  string command = 6;
+}

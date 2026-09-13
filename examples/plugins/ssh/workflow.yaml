@@ -1,0 +1,101 @@
+edition: v2026.3
+name: ssh-service-restart
+description: Restarts one service on one host after an authorized human approves, then reads the unit's status back - spending an operator's grants rather than composing a command line.
+# What a workflow can say here, and what it cannot.
+#
+# Every step below names two things: a host grant and a command grant. It
+# cannot name an address, a user, a port, a key, or a program, because none of
+# those are inputs to ssh.run. They live in the operator's grants file, which
+# the worker hands the plugin (see grants.yaml beside this file). A Flowfile
+# selects within that authority; it never composes it.
+#
+# The `service` parameter is checked against the pattern the operator's command
+# grant declares before it is used, and quoted as a single argument when the
+# command line is built. A value like `nginx.service; rm -rf /` fails the
+# pattern, and would still be one argument if it did not.
+plugins:
+  ssh: v0.1.0
+inputs:
+  host:
+    type: string
+    required: true
+    description: the name of a host grant in the worker's grants file - not an address
+    example: web-prod
+  service:
+    type: string
+    required: true
+    description: the systemd unit to restart, as the command grant's pattern allows
+    example: nginx.service
+    must: this.matches(r'^[a-z0-9-]{1,64}\.service$')
+  expected_approver:
+    type: string
+    required: true
+    description: attested subject allowed to approve the restart
+    example: sre-oncall@example.com
+signals:
+  restart-approved:
+    allow:
+      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
+        claims:
+          team: sre
+    distinct_from_starter: true
+steps:
+  # The parameters every step here fills, stated once: a grant's placeholder set
+  # is the same on the read and the write, and two copies of it are two things
+  # to keep in step.
+  - id: params
+    value: '${{"service": inputs.service}}'
+
+  # Read first: the current status is the evidence the approver judges, and a
+  # read-only command grant is one an operator can hand out freely.
+  - id: before
+    ssh.run:
+      host: ${inputs.host}
+      command: service-status
+      parameters: ${steps.params.value}
+      # A status command exits non-zero for an inactive unit, and the operator's
+      # grant is what decides whether that counts as success here - see
+      # success_exit_codes in grants.yaml.
+
+  - id: approval
+    wait_for_signal:
+      name: restart-approved
+      prompt: '${"Restart %s on %s?\n\n%s".format([inputs.service, inputs.host, steps.before.stdout])}'
+      timeout: 4h
+      outputs:
+        approved: ${payload.?approved.orValue(false)}
+        timed_out: ${timed_out}
+
+  # The decision, stated once and read back everywhere it is needed.
+  - id: go_ahead
+    value: ${steps.approval.approved && !steps.approval.timed_out}
+
+  - id: restart
+    if: ${steps.go_ahead.value}
+    ssh.run:
+      host: ${inputs.host}
+      command: restart-service
+      parameters: ${steps.params.value}
+    # A restart is not safely repeatable on its own: if the connection drops
+    # after the command is sent, ssh.run returns an unknown outcome and the
+    # engine does not retry it. Saying so here rather than setting a retry
+    # policy that would.
+    retry:
+      attempts: 1
+
+  - id: after
+    if: ${steps.go_ahead.value}
+    ssh.run:
+      host: ${inputs.host}
+      command: service-status
+      parameters: ${steps.params.value}
+outputs:
+  restarted:
+    value: ${steps.go_ahead.value}
+    description: true only when an attested approver said yes and the restart step ran
+  status_before:
+    value: ${steps.before.stdout}
+    description: what the unit looked like when the approver was asked
+  status_after:
+    value: '${steps.go_ahead.value ? steps.after.stdout : ""}'
+    description: what the unit looks like now, empty when nothing was restarted

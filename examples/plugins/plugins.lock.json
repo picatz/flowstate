@@ -2149,6 +2149,98 @@
       "claimsDigest": "sha256:9fe13b9671d955e53dda98a95e044d119782cf15ba341a936fbf971814e67a7b"
     },
     {
+      "name": "ssh",
+      "version": "0.1.0",
+      "description": "Runs operator-granted commands on operator-granted hosts over SSH: pinned host keys, no shell, no arbitrary command line.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "ssh.run",
+          "summary": "Run one command grant on one host grant, filling the placeholders the grant declares.",
+          "inputs": [
+            {
+              "name": "host",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "command",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "parameters",
+              "type": "map[string, string]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "exit_code",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "stdout",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "stderr",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "host",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "command",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBzc2gvdjEvc3NoLnByb3RvEgZzc2gudjEiuwEKCVJ1bklucHV0cxISCgRob3N0GAEgASgJUgRob3N0EhgKB2NvbW1hbmQYAiABKAlSB2NvbW1hbmQSQQoKcGFyYW1ldGVycxgDIAMoCzIhLnNzaC52MS5SdW5JbnB1dHMuUGFyYW1ldGVyc0VudHJ5UgpwYXJhbWV0ZXJzGj0KD1BhcmFtZXRlcnNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIqUBCgpSdW5PdXRwdXRzEhsKCWV4aXRfY29kZRgBIAEoBVIIZXhpdENvZGUSFgoGc3Rkb3V0GAIgASgJUgZzdGRvdXQSFgoGc3RkZXJyGAMgASgJUgZzdGRlcnISHAoJdHJ1bmNhdGVkGAQgASgIUgl0cnVuY2F0ZWQSEgoEaG9zdBgFIAEoCVIEaG9zdBIYCgdjb21tYW5kGAYgASgJUgdjb21tYW5kQokBCgpjb20uc3NoLnYxQghTc2hQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zc2gvZ2VuL3NzaC92MTtzc2h2MaICA1NYWKoCBlNzaC5WMcoCBlNzaFxWMeICElNzaFxWMVxHUEJNZXRhZGF0YeoCB1NzaDo6VjFiBnByb3RvMw==",
+          "inputMessage": "ssh.v1.RunInputs",
+          "outputDescriptor": "ChBzc2gvdjEvc3NoLnByb3RvEgZzc2gudjEiuwEKCVJ1bklucHV0cxISCgRob3N0GAEgASgJUgRob3N0EhgKB2NvbW1hbmQYAiABKAlSB2NvbW1hbmQSQQoKcGFyYW1ldGVycxgDIAMoCzIhLnNzaC52MS5SdW5JbnB1dHMuUGFyYW1ldGVyc0VudHJ5UgpwYXJhbWV0ZXJzGj0KD1BhcmFtZXRlcnNFbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEoCVIFdmFsdWU6AjgBIqUBCgpSdW5PdXRwdXRzEhsKCWV4aXRfY29kZRgBIAEoBVIIZXhpdENvZGUSFgoGc3Rkb3V0GAIgASgJUgZzdGRvdXQSFgoGc3RkZXJyGAMgASgJUgZzdGRlcnISHAoJdHJ1bmNhdGVkGAQgASgIUgl0cnVuY2F0ZWQSEgoEaG9zdBgFIAEoCVIEaG9zdBIYCgdjb21tYW5kGAYgASgJUgdjb21tYW5kQokBCgpjb20uc3NoLnYxQghTc2hQcm90b1ABWjhnaXRodWIuY29tL3BpY2F0ei9mbG93c3RhdGUvcGx1Z2lucy9zc2gvZ2VuL3NzaC92MTtzc2h2MaICA1NYWKoCBlNzaC5WMcoCBlNzaFxWMeICElNzaFxWMVxHUEJNZXRhZGF0YeoCB1NzaDo6VjFiBnByb3RvMw==",
+          "outputMessage": "ssh.v1.RunOutputs",
+          "requiredSecretInputs": []
+        }
+      ],
+      "protocolVersion": 7,
+      "taskSchemaDigest": "sha256:10cc0b3ca499e38d9dbb97cd9159b3033a1fa1614ee1c39596aa5ddf70fcdc6d",
+      "claimsDigest": "sha256:685ca5aae686c533ce51291c529f168f9c81e09fb917b4d1ade3df143def8077"
+    },
+    {
       "name": "vcs",
       "version": "0.1.0",
       "description": "Reads a repository's commit history and diffs two revisions of it, over git (go-git). No shared workspace, no subprocesses.",

@@ -141,9 +141,15 @@ type Option func(*config) error
 
 // WithSchemes replaces the scheme allowlist. Schemes are compared
 // case-insensitively. The default allowlist is http and https, which rejects
-// file, gopher, ftp, postgres, and every other scheme a URL might name.
-// Postgres is supported only when explicitly listed, for protocol-native tasks
-// that apply this same policy to their actual database dial path.
+// file, gopher, ftp, postgres, ssh, and every other scheme a URL might name.
+//
+// Postgres and ssh are supported only when explicitly listed, for
+// protocol-native tasks that apply this same policy to a dial path that is not
+// HTTP at all - plugins/sql's database connection and plugins/ssh's session.
+// Those tasks call [Policy.CheckConnection] with the scheme and the resolved
+// address before they dial, so a deployment governs "which databases" and
+// "which machines may be executed on" in the same document, and with the same
+// vocabulary, as "which URLs".
 func WithSchemes(schemes ...string) Option {
 	return func(c *config) error {
 		if len(schemes) == 0 {
@@ -153,14 +159,14 @@ func WithSchemes(schemes ...string) Option {
 		for _, s := range schemes {
 			s = strings.ToLower(strings.TrimSpace(s))
 			switch s {
-			case "http", "https", "postgres":
+			case "http", "https", "postgres", "ssh":
 				set[s] = struct{}{}
 			case "":
 				return fmt.Errorf("scheme must not be empty")
 			default:
 				// Allowing a scheme the transport cannot speak would produce a
 				// confusing failure later instead of a clear one now.
-				return fmt.Errorf("scheme %q is not supported, only http, https, and postgres can be requested", s)
+				return fmt.Errorf("scheme %q is not supported, only http, https, postgres, and ssh can be requested", s)
 			}
 		}
 		c.schemes = set
