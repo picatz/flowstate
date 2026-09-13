@@ -1,31 +1,36 @@
-# Two independent claims, both about a value arriving intact:
+# Two claims, one per direction of the round trip:
 #
-#   * `headers:` is a map handed to the task, so both entries reach it under the
-#     names written — asserted in the stub's `where:`, which is the only place a
-#     header this workflow sends is observable without a network;
-#   * a var holding a nested map is indexable twice — `${vars.nested['outer']['inner']}`
-#     must be `value`, not the map, and not the fenced expression's own text.
-#     That is the whole of what the `nested` var is in the file for.
+#   * `headers:` reaches the task as a map, both entries under the names written —
+#     asserted in the stub's `where:`, which is where a header this workflow sends
+#     is observable without a network;
+#   * the parsed response is indexable twice — `steps.web.json.headers['X-From']`
+#     must be the string inside the nested map, not the map, and not a missing-key
+#     error.
 #
-# The status echo is pinned to 204 rather than 200 so the message is one the
-# default could not have produced by accident.
+# What a stub cannot assert is the round trip itself: that the header this file
+# sent is the one the far side echoed. Here the stub supplies both sides, so the
+# case proves the selection and the send, and the service proves the echo. The
+# echoed values are deliberately not the sent ones for that reason — a selection
+# that quietly read the request back would produce `Flowstate`, and fail here.
 edition: v2026.3
 tests:
-  - name: both headers reach the task, and a nested var indexes twice
+  - name: both headers reach the task, and the parsed response indexes twice
     workflow: ./workflow.yaml
     stubs:
       - task: http
         where: >-
           inputs.url == 'https://httpbin.org/anything' &&
+          inputs.parse_json &&
           inputs.headers['X-From'] == 'Flowstate' &&
           inputs.headers['X-Env'] == 'dev'
         returns:
-          status_code: 204
+          status_code: 200
+          json:
+            headers:
+              X-From: echoed-from
+              X-Env: echoed-env
       - task: log
-        where: inputs.message == '204'
-        returns: {}
-      - task: log
-        where: inputs.message == 'value'
+        where: inputs.message == 'the server saw X-From=echoed-from and X-Env=echoed-env'
         returns: {}
     expect:
-      ran: [web, report_status, pick]
+      ran: [web, echoed]

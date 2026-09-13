@@ -1,7 +1,10 @@
 # A callee, meant to be called - but also runnable on its own:
 #   flow run local examples/enterprise-customer-onboarding/workflows/provision-database.yaml --input tenant=acme
 # resolves its own `inputs:`/`outputs:` exactly as a call from the parent
-# does, the same property call-a-workflow's own callee demonstrates.
+# does, the same property call-a-workflow's own callee demonstrates. What it
+# cannot do on its own is finish: `provisioning.internal.example.com` resolves
+# nowhere, so the run reaches `provision_database` and stops there. The
+# directory's `.test.yaml` is where the whole composition is exercised.
 edition: v2026.3
 name: provision-database
 inputs:
