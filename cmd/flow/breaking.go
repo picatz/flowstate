@@ -739,7 +739,7 @@ func gitListYAML(root, ref string, paths []string) []string {
 		return nil
 	}
 	var rels []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

@@ -172,7 +172,7 @@ func TestNoRunnerHoldsItsOwnCopyOfTheList(t *testing.T) {
 			// A prose mention in a comment is fine and often the
 			// point (ci.yml explains why particular targets
 			// exist); a `-fuzz <name>` invocation is the copy.
-			for _, line := range strings.Split(string(data), "\n") {
+			for line := range strings.SplitSeq(string(data), "\n") {
 				if strings.Contains(line, "-fuzz ") && strings.Contains(line, target.Name) {
 					t.Errorf("%s runs %s by name: %q — read it from tools/fuzztargets/targets.txt instead", path, target.Name, strings.TrimSpace(line))
 				}

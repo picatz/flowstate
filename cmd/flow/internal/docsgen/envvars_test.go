@@ -293,7 +293,7 @@ func TestEveryDocumentedReadLocationIsWhereItIsRead(t *testing.T) {
 // documentedReadLocations splits a `read:` column into the paths it names.
 func documentedReadLocations(column string) []string {
 	var locations []string
-	for _, part := range strings.Split(column, ",") {
+	for part := range strings.SplitSeq(column, ",") {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {
 			locations = append(locations, trimmed)
 		}

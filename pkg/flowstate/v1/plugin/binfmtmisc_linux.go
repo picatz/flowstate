@@ -168,7 +168,7 @@ type binfmtMiscEntry struct {
 func parseBinfmtMiscEntry(text string) (binfmtMiscEntry, error) {
 	var entry binfmtMiscEntry
 
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 
 		field, value, _ := strings.Cut(line, " ")

@@ -363,8 +363,7 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 // can distinguish "the egress policy refused this" from "the issuer did not
 // answer".
 func issuerUnavailable(issuer string, err error) error {
-	var denied *netpolicy.DenyError
-	if errors.As(err, &denied) {
+	if denied, ok := errors.AsType[*netpolicy.DenyError](err); ok {
 		return &IssuerBlockedError{Issuer: issuer, Deny: denied}
 	}
 	return fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, issuer, err)

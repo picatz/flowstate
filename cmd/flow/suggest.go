@@ -278,11 +278,11 @@ func parseUnknownCommandError(text string) (typed, cmdPath string, ok bool) {
 	rest := text[len(prefix):]
 
 	const sep = " for "
-	i := strings.Index(rest, sep)
-	if i < 0 {
+	before, after, ok := strings.Cut(rest, sep)
+	if !ok {
 		return "", "", false
 	}
-	typedQuoted, cmdPathQuoted := rest[:i], rest[i+len(sep):]
+	typedQuoted, cmdPathQuoted := before, after
 
 	typed, err := strconv.Unquote(typedQuoted)
 	if err != nil {

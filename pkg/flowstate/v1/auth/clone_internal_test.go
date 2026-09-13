@@ -9,7 +9,7 @@ import (
 
 // stringSliceType is the type every list inside a [ClaimRule] has, and what the
 // walks below select fields by.
-var stringSliceType = reflect.TypeOf([]string(nil))
+var stringSliceType = reflect.TypeFor[[]string]()
 
 // TestCloneSharesNoClaimRuleSliceWithItsSource is the guard for the defect that
 // arrived with [ClaimRule.NoneOf]: [TrustedIssuer.clone] deep-copied AnyOf and

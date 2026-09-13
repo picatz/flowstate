@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"slices"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -96,8 +97,8 @@ type deferredCleanup struct {
 func (d *deferredCleanup) Cleanup(fn func()) { d.cleanups = append(d.cleanups, fn) }
 
 func (d *deferredCleanup) runCleanups() {
-	for i := len(d.cleanups) - 1; i >= 0; i-- {
-		d.cleanups[i]()
+	for _, v := range slices.Backward(d.cleanups) {
+		v()
 	}
 	d.cleanups = nil
 }

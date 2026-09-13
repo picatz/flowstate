@@ -58,7 +58,7 @@ func unknownKeyRemedy(err error, parsed *ast.File) string {
 		return ""
 	}
 
-	legal := legalKeysAt(reflect.TypeOf(File{}), parentSegments(path))
+	legal := legalKeysAt(reflect.TypeFor[File](), parentSegments(path))
 	if len(legal) == 0 {
 		return ""
 	}

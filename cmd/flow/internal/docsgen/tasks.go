@@ -113,7 +113,7 @@ func writeTaskExample(b *strings.Builder, task *v1.TaskDescription) {
 	}
 
 	b.WriteString("**A step that uses it:**\n\n```yaml\n")
-	for _, line := range strings.Split(example, "\n") {
+	for line := range strings.SplitSeq(example, "\n") {
 		// Two spaces of indent for the terminal `flow tasks <name>` prints this
 		// beside, which is not what a fenced code block wants: what a reader
 		// copies out of a document is the block itself, and it should compile

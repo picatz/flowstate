@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,8 +225,8 @@ func TestAnOpenDefaultsSyntaxDiagnosticWinsOverAnIncludingSuiteDuplicate(t *test
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			p := c.published[i]
+		for _, p := range slices.Backward(c.published) {
+
 			if p.URI != defaultsURI || len(p.Diagnostics) == 0 {
 				continue
 			}
@@ -250,8 +251,8 @@ func TestAnUnsavedDefaultsBufferOwnsItsSemanticDiagnosticAndClearsIt(t *testing.
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			p := c.published[i]
+		for _, p := range slices.Backward(c.published) {
+
 			if p.URI == lsp.DocumentURI(defaultsURI) && len(p.Diagnostics) > 0 {
 				return p.Diagnostics[0].Range.Start.Line == 2 &&
 					strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
@@ -265,8 +266,8 @@ func TestAnUnsavedDefaultsBufferOwnsItsSemanticDiagnosticAndClearsIt(t *testing.
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			p := c.published[i]
+		for _, p := range slices.Backward(c.published) {
+
 			if p.URI == lsp.DocumentURI(defaultsURI) {
 				return len(p.Diagnostics) == 0
 			}
@@ -287,8 +288,8 @@ func TestIncludedDefaultsRetainTheEditorsLocalhostURI(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			p := c.published[i]
+		for _, p := range slices.Backward(c.published) {
+
 			if p.URI == defaultsURI && len(p.Diagnostics) > 0 {
 				return strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
 			}
@@ -310,8 +311,8 @@ func TestIncludedDefaultsMatchMixedLocalURIForms(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			p := c.published[i]
+		for _, p := range slices.Backward(c.published) {
+
 			if p.URI == defaultsURI && len(p.Diagnostics) > 0 {
 				return strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
 			}
@@ -334,9 +335,9 @@ func TestSavedDefaultsRetainTheSuitesLocalhostURI(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == defaultsURI {
-				return len(c.published[i].Diagnostics) > 0
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == defaultsURI {
+				return len(v.Diagnostics) > 0
 			}
 		}
 		return false
@@ -373,9 +374,9 @@ func TestClosingDefaultsReturnsDependentSuitesToTheSavedFile(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == defaultsURI {
-				return len(c.published[i].Diagnostics) > 0
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == defaultsURI {
+				return len(v.Diagnostics) > 0
 			}
 		}
 		return false
@@ -389,9 +390,9 @@ func TestClosingDefaultsReturnsDependentSuitesToTheSavedFile(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == defaultsURI {
-				return len(c.published[i].Diagnostics) == 0
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == defaultsURI {
+				return len(v.Diagnostics) == 0
 			}
 		}
 		return false
@@ -424,9 +425,9 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == lsp.DocumentURI(overflow) {
-				return diagnosticsHaveCode(c.published[i].Diagnostics, codeTestDefaultsDependents)
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == lsp.DocumentURI(overflow) {
+				return diagnosticsHaveCode(v.Diagnostics, codeTestDefaultsDependents)
 			}
 		}
 		return false
@@ -459,9 +460,9 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == lsp.DocumentURI(overflow2) {
-				return len(c.published[i].Diagnostics) == 0
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == lsp.DocumentURI(overflow2) {
+				return len(v.Diagnostics) == 0
 			}
 		}
 		return false
@@ -492,13 +493,13 @@ func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T)
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == lsp.DocumentURI(overflow) {
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == lsp.DocumentURI(overflow) {
 				hasFallback := false
-				for _, diagnostic := range c.published[i].Diagnostics {
+				for _, diagnostic := range v.Diagnostics {
 					hasFallback = hasFallback || strings.HasPrefix(diagnostic.Message, "saved testdefaults.yaml fallback:")
 				}
-				return hasFallback && diagnosticsHaveCode(c.published[i].Diagnostics, codeTestDefaultsDependents)
+				return hasFallback && diagnosticsHaveCode(v.Diagnostics, codeTestDefaultsDependents)
 			}
 		}
 		return false
@@ -506,9 +507,9 @@ func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for i := len(c.published) - 1; i >= 0; i-- {
-		if c.published[i].URI == defaultsURI {
-			assert.Empty(t, c.published[i].Diagnostics,
+	for _, v := range slices.Backward(c.published) {
+		if v.URI == defaultsURI {
+			assert.Empty(t, v.Diagnostics,
 				"the overflow suite mapped a saved-file error onto the newer open buffer")
 			return
 		}
@@ -539,9 +540,9 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == lsp.DocumentURI(overflow) {
-				return diagnosticsHaveCode(c.published[i].Diagnostics, codeTestDefaultsDependents)
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == lsp.DocumentURI(overflow) {
+				return diagnosticsHaveCode(v.Diagnostics, codeTestDefaultsDependents)
 			}
 		}
 		return false
@@ -562,9 +563,9 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == defaultsURI {
-				return len(c.published[i].Diagnostics) == 0
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == defaultsURI {
+				return len(v.Diagnostics) == 0
 			}
 		}
 		return false
@@ -582,9 +583,9 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 	require.Eventually(t, func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		for i := len(c.published) - 1; i >= 0; i-- {
-			if c.published[i].URI == defaultsURI {
-				return len(c.published[i].Diagnostics) > 0
+		for _, v := range slices.Backward(c.published) {
+			if v.URI == defaultsURI {
+				return len(v.Diagnostics) > 0
 			}
 		}
 		return false

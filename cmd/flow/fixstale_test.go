@@ -245,7 +245,7 @@ func TestFixWithStdoutAcceptsTheSameFileNamedTwice(t *testing.T) {
 // Reflective because that is the property: not "these particular fields", but
 // that nothing retained per file grows with the size of the file.
 func TestFixOutcomeHoldsNoDocumentBodies(t *testing.T) {
-	outcome := reflect.TypeOf(fixOutcome{})
+	outcome := reflect.TypeFor[fixOutcome]()
 	for field := range outcome.Fields() {
 		if field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.Uint8 {
 			t.Errorf("fixOutcome.%s holds a document body; one of these is kept per file for the "+

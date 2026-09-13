@@ -39,7 +39,7 @@ func TestMarkdownSectionNormalizesCheckoutLineEndings(t *testing.T) {
 
 func styleRuleHeadings(source string) []string {
 	var headings []string
-	for _, line := range strings.Split(source, "\n") {
+	for line := range strings.SplitSeq(source, "\n") {
 		match := styleRuleHeading.FindStringSubmatch(strings.TrimSpace(line))
 		if match != nil {
 			headings = append(headings, match[1])
@@ -56,7 +56,7 @@ func styleSkillRules(t *testing.T, source string) []string {
 	}
 
 	var rules []string
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		cells := strings.Split(line, "|")
 		if len(cells) != 4 {
 			continue

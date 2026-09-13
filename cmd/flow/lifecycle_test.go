@@ -212,7 +212,7 @@ func TestListRefusalsExplainThemselves(t *testing.T) {
 func tableRow(t *testing.T, rendered, first string) []string {
 	t.Helper()
 
-	for _, line := range strings.Split(rendered, "\n") {
+	for line := range strings.SplitSeq(rendered, "\n") {
 		line = strings.TrimRight(line, " ")
 		if line == "" {
 			continue

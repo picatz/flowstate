@@ -195,7 +195,7 @@ func parseTargets(value string) ([]target, error) {
 	}
 	seen := map[target]bool{}
 	var targets []target
-	for _, item := range strings.Split(value, ",") {
+	for item := range strings.SplitSeq(value, ",") {
 		parts := strings.Split(strings.TrimSpace(item), "/")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return nil, fmt.Errorf("target %q must be GOOS/GOARCH", item)
@@ -221,7 +221,7 @@ func validReleaseVersion(version string) bool {
 	if !found {
 		return true
 	}
-	for _, identifier := range strings.Split(prerelease, ".") {
+	for identifier := range strings.SplitSeq(prerelease, ".") {
 		if len(identifier) > 1 && identifier[0] == '0' {
 			numeric := true
 			for _, character := range identifier {

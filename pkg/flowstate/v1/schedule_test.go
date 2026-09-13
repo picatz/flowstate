@@ -826,7 +826,7 @@ func TestWallClockCadencePeriodsAreNeverReturnedBare(t *testing.T) {
 
 	sawReturn := false
 	sawGuardedCall := false
-	for _, line := range strings.Split(string(source), "\n") {
+	for line := range strings.SplitSeq(string(source), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "return ") {
 			continue

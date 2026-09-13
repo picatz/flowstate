@@ -430,7 +430,7 @@ func TestWatchViewFitsTheTerminal(t *testing.T) {
 		watch.StateMsg{Response: failedResponse(v1.RunResponse_STATUS_FAILED, strings.Repeat("cause ", 40))},
 	)
 
-	for _, line := range strings.Split(viewOf(folded), "\n") {
+	for line := range strings.SplitSeq(viewOf(folded), "\n") {
 		require.LessOrEqual(t, len([]rune(line)), width, "a line ran past the terminal: %q", line)
 	}
 }
@@ -452,7 +452,7 @@ func TestWatchViewFollowsTheTerminalItIsToldAbout(t *testing.T) {
 		watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING, "checkout")})
 
 	require.Equal(t, 30, narrowed.ViewWidth(), "a resize narrower than the surface was ignored")
-	for _, line := range strings.Split(viewOf(narrowed), "\n") {
+	for line := range strings.SplitSeq(viewOf(narrowed), "\n") {
 		require.LessOrEqual(t, len([]rune(line)), 30, "a line ran past the resized terminal: %q", line)
 	}
 
@@ -506,7 +506,7 @@ func TestWatchViewTrimsIdentifiersAndWrapsProse(t *testing.T) {
 	require.Contains(t, drawn, "long-workflow-id-long", "the id was dropped rather than trimmed")
 
 	// The message is whole, because it is the reason somebody is looking.
-	for _, word := range strings.Fields("the registry refused the push because the tag already exists") {
+	for word := range strings.FieldsSeq("the registry refused the push because the tag already exists") {
 		require.Contains(t, drawn, word, "the failure message lost %q to the right margin", word)
 	}
 }
@@ -535,7 +535,7 @@ func TestWatchViewSurvivesItsOwnStyling(t *testing.T) {
 
 	// Every word the unstyled screen says, the styled screen says too. Styling wraps
 	// text; it never replaces it.
-	for _, word := range strings.Fields(plainDrawn) {
+	for word := range strings.FieldsSeq(plainDrawn) {
 		require.Contains(t, styledDrawn, word, "styling dropped %q", word)
 	}
 }

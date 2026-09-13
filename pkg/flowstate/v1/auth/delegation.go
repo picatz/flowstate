@@ -107,8 +107,7 @@ func refuseDelegationClaims(claims map[string]any) error {
 // delegationClaimOf reports the claim key a delegation refusal named, for
 // [publicReason]. It reports "" for any other error.
 func delegationClaimOf(err error) string {
-	var delegation *DelegationClaimError
-	if errors.As(err, &delegation) {
+	if delegation, ok := errors.AsType[*DelegationClaimError](err); ok {
 		return delegation.Claim
 	}
 

@@ -25,7 +25,7 @@ func TestTranscriptBoundsRetainedOutputBytes(t *testing.T) {
 	big := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
 		"blob": v1.NewLiteral(strings.Repeat("x", 1<<20)),
 	}}
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		r.StepFinished("bulky", big, nil, false)
 	}
 
@@ -109,7 +109,7 @@ func TestFailureTextCountsAgainstTheByteBudget(t *testing.T) {
 
 	r := newRunRecorder(v1.NewVirtualClock(epoch))
 	huge := errors.New(strings.Repeat("e", 1<<20))
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		r.StepFinished("shrugged", nil, huge, true)
 	}
 

@@ -531,7 +531,7 @@ func renderDebugResult(report *v1.TestReport, transcript *debugTranscript, scrip
 
 			var encoded []byte
 
-			for pass := 0; pass < maxDebugFloorPasses; pass++ {
+			for range maxDebugFloorPasses {
 				reduced, err := renderTestResultWithin(report, budget)
 				if err != nil {
 					return nil, err

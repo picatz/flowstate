@@ -266,7 +266,7 @@ func TestTasksColumnsAlignOnATerminal(t *testing.T) {
 	// point of a column. Measured on the rendered text with the styling stripped,
 	// since that is what a reader sees laid out.
 	var starts []int
-	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(out.String(), "\n"), "\n") {
 		plain := stripANSI(line)
 		for _, kind := range []string{"string", "bool", "int"} {
 			if i := strings.LastIndex(plain, kind); i > 0 {
@@ -382,7 +382,7 @@ func renderTasksAt(t *testing.T, width int, draw func(*ui.UI) error) string {
 // widestLine is the display width of the longest line in a rendered surface.
 func widestLine(rendered string) (int, string) {
 	widest, worst := 0, ""
-	for _, line := range strings.Split(rendered, "\n") {
+	for line := range strings.SplitSeq(rendered, "\n") {
 		if w := lipgloss.Width(stripANSI(line)); w > widest {
 			widest, worst = w, line
 		}
@@ -536,7 +536,7 @@ func TestTasksIndexIsOneLinePerTask(t *testing.T) {
 
 	for _, def := range v1.DefaultRegistry().All() {
 		var found int
-		for _, line := range strings.Split(rendered, "\n") {
+		for line := range strings.SplitSeq(rendered, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(line), def.Name+" ") {
 				found++
 			}

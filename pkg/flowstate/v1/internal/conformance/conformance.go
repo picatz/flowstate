@@ -164,7 +164,7 @@ func NewHTTPServer(tb testing.TB) string {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "[")
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if i > 0 {
 				_, _ = io.WriteString(w, ",")
 			}

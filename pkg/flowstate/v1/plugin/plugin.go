@@ -1061,8 +1061,7 @@ func taskNames(tasks []*pluginv1.TaskManifest) []string {
 // connectError reports whether err came back from a plugin as a Connect error,
 // and with which code.
 func connectError(err error) (connect.Code, bool) {
-	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
+	if connectErr, ok := errors.AsType[*connect.Error](err); ok {
 		return connectErr.Code(), true
 	}
 	return 0, false

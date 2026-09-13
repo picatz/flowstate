@@ -254,7 +254,7 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 	// at more than one level (`steps`, `name`, `description`, `timeout` all do), and
 	// it is the vocabulary that is being compared rather than any one occurrence.
 	emitted := map[string]bool{}
-	for _, line := range strings.Split(source, "\n") {
+	for line := range strings.SplitSeq(source, "\n") {
 		if m, ok := scanKeyLine(line); ok {
 			emitted[m.key] = true
 		}

@@ -2343,8 +2343,7 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 		// a line of its own and left every position after the first unattributed
 		// (#384). A failure that is not diagnostics is about the invocation rather
 		// than the file, and keeps its own wrapping.
-		var parsed flowfile.Diagnostics
-		if errors.As(err, &parsed) {
+		if parsed, ok := errors.AsType[flowfile.Diagnostics](err); ok {
 			return nil, diagnosticsError(path, parsed)
 		}
 		return nil, fmt.Errorf("%s: %w", path, err)
