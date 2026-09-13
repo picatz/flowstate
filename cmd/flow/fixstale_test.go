@@ -246,8 +246,7 @@ func TestFixWithStdoutAcceptsTheSameFileNamedTwice(t *testing.T) {
 // that nothing retained per file grows with the size of the file.
 func TestFixOutcomeHoldsNoDocumentBodies(t *testing.T) {
 	outcome := reflect.TypeOf(fixOutcome{})
-	for i := range outcome.NumField() {
-		field := outcome.Field(i)
+	for field := range outcome.Fields() {
 		if field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.Uint8 {
 			t.Errorf("fixOutcome.%s holds a document body; one of these is kept per file for the "+
 				"whole run, so it must hold only what does not grow with a file's size", field.Name)

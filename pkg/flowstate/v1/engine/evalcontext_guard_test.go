@@ -193,6 +193,7 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 	}
 	// Methods are not in the package scope; find them through their receiver
 	// type's method set.
+	methods := map[string]bool{}
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -201,9 +202,24 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 			}
 			for _, obj := range methodObjects(pkg, fn) {
 				decls[obj] = fn
+				methods[fn.Name.Name] = true
 			}
 		}
 	}
+
+	// Asserted rather than assumed, because nothing below fails when decls
+	// holds no method: the walk simply stops descending into one. A resolution
+	// that came back empty would narrow this guard to v1's plain functions and
+	// still pass green, which is the fail-open direction for a guard whose
+	// whole subject is what a call chain reaches. `(*Evaluator).Eval` is named
+	// for the same reason EvalLoopUntilWithCost is named above — a count alone
+	// is satisfied by resolving the wrong things, and it is the value/pointer
+	// receiver pair above that makes that one resolve at all.
+	require.NotEmpty(t, methods, "no method of v1 resolved through its receiver's method set, so the walk "+
+		"below would skip every method rather than refuse a context read inside one")
+	require.Contains(t, methods, "Eval", "the method-set resolution missed (*Evaluator).Eval, "+
+		"which is the method this walk most needs to follow")
+
 	for _, name := range entryPoints {
 		require.Containsf(t, byName, name, "entry point %s is not a function of v1", name)
 	}
@@ -317,9 +333,8 @@ func methodObjects(pkg *types.Package, fn *ast.FuncDecl) []types.Object {
 	}
 	var objs []types.Object
 	for _, typ := range []types.Type{named.Type(), types.NewPointer(named.Type())} {
-		set := types.NewMethodSet(typ)
-		for i := 0; i < set.Len(); i++ {
-			if m := set.At(i).Obj(); m.Name() == fn.Name.Name && m.Pos() == fn.Name.Pos() {
+		for selection := range types.NewMethodSet(typ).Methods() {
+			if m := selection.Obj(); m.Name() == fn.Name.Name && m.Pos() == fn.Name.Pos() {
 				objs = append(objs, m)
 			}
 		}

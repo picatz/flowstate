@@ -183,8 +183,8 @@ func legalKeysAt(root reflect.Type, segments []string) []string {
 		return nil
 	}
 	var keys []string
-	for i := range t.NumField() {
-		if key, ok := yamlKey(t.Field(i)); ok {
+	for field := range t.Fields() {
+		if key, ok := yamlKey(field); ok {
 			keys = append(keys, key)
 		}
 	}
@@ -199,8 +199,7 @@ func deref(t reflect.Type) reflect.Type {
 }
 
 func fieldByYAMLKey(t reflect.Type, key string) (reflect.StructField, bool) {
-	for i := range t.NumField() {
-		field := t.Field(i)
+	for field := range t.Fields() {
 		if name, ok := yamlKey(field); ok && name == key {
 			return field, true
 		}
