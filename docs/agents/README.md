@@ -251,7 +251,32 @@ and whether a deterministic mechanism can prevent it more reliably.
 - Verify the loaded memory files and skills with `/context`.
 - Use `/doctor` when always-loaded guidance grows or becomes inconsistent.
 - The repository's `.claude/settings.json` hooks guard generated files, process
-  cleanup, merge review state, and formatting. Other hosts do not run them.
+  cleanup, merge review state, and formatting. SessionStart builds those four
+  existing commands once in the checkout-local ignored `.claude/hooks/.bin`
+  directory; per-tool hooks use a launcher to execute the ready binaries
+  instead of recompiling through `go run`. The identity that decides whether a
+  binary is current walks each package directory the compiler reaches, so a
+  source Git ignores counts and a test file does not, and the build re-asks the
+  compiler afterwards so an import added mid-build cannot be missed. A stale
+  generation is rebuilt on the spot rather than deferred to a restart. A
+  guard whose own package does not compile warns and lets the call through,
+  since the guards match the very tools needed to repair it and a guard that
+  could not be built has refused nothing. Each guard is compiled separately, so
+  one mid-edit does not decide for the others, and a guard whose package is
+  gone denies, because that is a control removed rather than unfinished. The
+  merge guard is the one exception to failing open, and only for the calls it
+  would have judged: the merge tool's entry passes `strict`, and on the shell
+  the launcher refuses a payload that could be a merge while letting every
+  other command through, since it is wired on all of Bash but ignores
+  everything that is not a merge, and denying `go build` to guard a `go build`
+  would take away the repair itself. That test is a coarse over-approximation,
+  not a second recognizer, and it does not claim to be complete: the guard
+  decides what a merge is by tokenizing the command, and a text test cannot
+  equal a tokenizer. It covers the spellings a caller writes without trying to
+  evade it, it is strictly narrower than the behaviour it replaced, and the
+  gates that decide whether a change may land are `tools/shipcheck` and the
+  exact-head review evidence, not this. Every other failure denies. Other hosts
+  do not run these Claude-native tool events.
 - Legacy `.claude/commands/ci-check.md` and `test-fast.md` remain only as short
   compatibility aliases for the `flowstate-verify` skill. New procedures belong
   in skills. A command never shares a skill's name: `both-drivers.md` was

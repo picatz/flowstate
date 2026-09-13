@@ -5,7 +5,7 @@
 //
 // Wired in .claude/settings.json as:
 //
-//	go -C "${CLAUDE_PROJECT_DIR}" run ./tools/hooks/gofmtcheck
+//	bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh" gofmtcheck
 //
 // It checks with go/format, the library face of gofmt: the same printer the
 // gofmt binary uses, from the same toolchain that runs this hook, with no

@@ -7,7 +7,7 @@
 //
 // Wired in .claude/settings.json as:
 //
-//	go -C "${CLAUDE_PROJECT_DIR}" run ./tools/hooks/genguard
+//	bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh" genguard
 //
 // The generated surfaces, each with its source and regenerate command:
 //

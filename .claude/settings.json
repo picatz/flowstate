@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-env.sh\""
+            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/session-env.sh\"; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
           }
         ]
       }
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/genguard"
+            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh\" genguard; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
           }
         ]
       },
@@ -68,11 +68,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/pidguard"
+            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh\" pidguard; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
           },
           {
             "type": "command",
-            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/mergeguard"
+            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh\" mergeguard; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
           }
         ]
       },
@@ -81,7 +81,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/mergeguard"
+            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh\" mergeguard strict; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
           }
         ]
       }
@@ -92,7 +92,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/gofmtcheck"
+            "command": "bash -c 'if [[ -z \"${CLAUDE_PROJECT_DIR:-}\" || ! -d \"${CLAUDE_PROJECT_DIR}\" ]]; then printf \"CLAUDE_PROJECT_DIR does not name a checkout directory.\\n\" >&2; exit 2; fi; if ! bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh\" gofmtcheck; then printf \"Flowstate Claude hook entrypoint could not run.\\n\" >&2; exit 2; fi'"
           }
         ]
       }

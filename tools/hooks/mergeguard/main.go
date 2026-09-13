@@ -9,7 +9,7 @@
 //
 // Wired in .claude/settings.json as:
 //
-//	go -C "${CLAUDE_PROJECT_DIR}" run ./tools/hooks/mergeguard
+//	bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh" mergeguard
 //
 // # Identifying the PR
 //
