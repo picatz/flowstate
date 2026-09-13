@@ -1295,7 +1295,7 @@ func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
 		if !strings.Contains(stdout, "retained recognizer saw a merge") {
 			t.Fatalf("the guard's own reason was not passed through:\n%s", stdout)
 		}
-		if !strings.Contains(stderr, "the last one that did") {
+		if !strings.Contains(stderr, "the last build of it that did") {
 			t.Fatalf("the operator was not told the decision came from a retained binary:\n%s", stderr)
 		}
 		// The identity recorded beside the binary is named, so an operator can
@@ -1361,7 +1361,7 @@ func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
 		if strings.Contains(stdout, "half-written") {
 			t.Fatalf("output from a failed guard was passed off as its decision:\n%s", stdout)
 		}
-		if strings.Contains(stderr, "the last one that did") {
+		if strings.Contains(stderr, "the last build of it that did") {
 			t.Fatalf("the operator was told a recognizer decided when none did:\n%s", stderr)
 		}
 		// And it must not block a repair either.
@@ -1430,6 +1430,56 @@ func TestClaudeHookBuildRetainsTheMergeGuardItCompiled(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(retained, other)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s was retained; only the merge guard may be, since a stale one of these could refuse a repair", other)
 		}
+	}
+
+	// The guard is replaced, never removed and re-created. Publishing the
+	// directory wholesale would mean deleting the recognizer before its
+	// replacement was in place, and a build killed in that window would leave
+	// the next session with none -- falling back to a text test whose
+	// incompleteness is exactly what retaining a binary is for. Asserted by
+	// watching what the directory holds across a second successful build.
+	guard := filepath.Join(retained, "mergeguard")
+	first, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "internal", "commitcheck", "check.go"),
+		[]byte("package commitcheck\n\nconst Name = \"commitcheck2\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	watched := make(chan bool, 1)
+	stop := make(chan struct{})
+	go func() {
+		// Any moment at which the guard is absent is the window this asserts
+		// against; a rename leaves no such moment.
+		missing := false
+		for {
+			select {
+			case <-stop:
+				watched <- missing
+				return
+			default:
+			}
+			if _, err := os.Lstat(guard); errors.Is(err, os.ErrNotExist) {
+				missing = true
+			}
+		}
+	}()
+	if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+		close(stop)
+		<-watched
+		t.Fatalf("second build: %v\n%s", err, output)
+	}
+	close(stop)
+	if <-watched {
+		t.Fatal("the retained guard was absent while its replacement was being published")
+	}
+	second, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("the second build left no retained guard: %v", err)
+	}
+	if bytes.Equal(first, second) {
+		t.Log("the two builds produced identical binaries; the replacement is still asserted by the absence check above")
 	}
 
 	// A later build that cannot compile the guard must leave the retained one

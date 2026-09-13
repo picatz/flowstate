@@ -251,19 +251,27 @@ if [[ -x "${hook_dir}/mergeguard" ]]; then
 	# not report failure because it could not also retain a copy -- the launcher
 	# reads any status but 0 and 3 as an incoherent build and denies the call.
 	#
-	# Staged under the cache directory the stale-build sweep already prunes,
-	# then published by renaming the directory, so the binary and the identity
-	# it was built from arrive together and a kill leaves no half-written guard
-	# behind. Losing the directory is the safe direction: with no retained guard
-	# the launcher falls back to the text backstop.
+	# Staged under the cache directory the stale-build sweep already prunes, so
+	# a kill leaves no half-written guard behind, then moved in by renaming each
+	# file over its predecessor. The directory itself is durable and is never
+	# removed: replacing it wholesale would mean deleting the guard before its
+	# replacement was in place, and a kill in that window would leave the next
+	# session with no recognizer at all -- which is the control this retention
+	# exists to keep. Renaming a file replaces it atomically, so the guard is
+	# only ever the previous one or the new one.
+	#
+	# The binary moves first. The two renames cannot be made one, so the
+	# recorded identity can briefly describe the previous build; the note that
+	# reads it says what is recorded rather than asserting the binary's
+	# provenance, which stays true either way.
 	retained_stage="$(mktemp -d "${cache_dir}/build.lkg.XXXXXX")"
-	if cp "${hook_dir}/mergeguard" "${retained_stage}/mergeguard" &&
+	if install -d -m 0700 "${retained_dir}" &&
+		cp "${hook_dir}/mergeguard" "${retained_stage}/mergeguard" &&
 		chmod 0700 "${retained_stage}/mergeguard" &&
-		printf '%s\n' "${source_id}" > "${retained_stage}/.source-id"; then
-		rm -rf "${retained_dir}"
-		mv "${retained_stage}" "${retained_dir}"
-	else
-		rm -rf "${retained_stage}"
+		printf '%s\n' "${source_id}" > "${retained_stage}/.source-id" &&
+		mv "${retained_stage}/mergeguard" "${retained_dir}/mergeguard"; then
+		mv "${retained_stage}/.source-id" "${retained_dir}/.source-id" || true
 	fi
+	rm -rf "${retained_stage}"
 fi
 trap 'rm -f "${post_build_dirs}" "${post_build_extra}"; rm -rf "${lock_dir}"' EXIT

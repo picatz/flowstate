@@ -173,15 +173,16 @@ retained_denies() {
 	if [[ "${decision}" != *'"permissionDecision"'*'"deny"'* ]]; then
 		return 1
 	fi
-	# Names the sources that build came from, so the operator can see which one
-	# decided rather than being told only that some earlier one did. Recorded
-	# beside the binary in the same rename, and absent only if the directory
-	# predates that.
-	local built_from="an earlier build"
+	# Names the identity recorded beside the binary, so the operator can see
+	# which build decided rather than being told only that an earlier one did.
+	# Reported as what is recorded, not asserted as the binary's provenance: the
+	# build writes the two with separate renames, so between them the record can
+	# still describe the previous one.
+	local built_from=""
 	if [[ -r "${retained_guard%/*}/.source-id" ]]; then
-		built_from="the build of $(<"${retained_guard%/*}/.source-id")"
+		built_from=" (recorded as built from $(<"${retained_guard%/*}/.source-id"))"
 	fi
-	printf 'Flowstate Claude hook %q refused this call. Its current sources do not compile, so the decision was made by %s, the last one that did.\n' \
+	printf 'Flowstate Claude hook %q refused this call. Its current sources do not compile, so the decision was made by the last build of it that did%s.\n' \
 		"${name}" "${built_from}" >&2
 	printf '%s\n' "${decision}"
 	exit 0
