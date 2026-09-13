@@ -53,17 +53,21 @@ inventory below remains the source of truth for every directory.
 | --- | --- | --- |
 | Hello and the authoring loop | [hello-world](hello-world), then [hello-world-multi-step](hello-world-multi-step) | first-run tutorial |
 | Typed inputs, outputs, and CEL | [parameterized-deploy](parameterized-deploy), [computed-outputs](computed-outputs), [expressions](expressions) | focused feature demonstration |
+| Refusing a value rather than carrying it | [enum-input](enum-input), [alert-title-bound](alert-title-bound), [utilization-guard](utilization-guard) | focused feature demonstration |
 | Branching and optional values | [webhook-routing](webhook-routing), [optional-dispatch](optional-dispatch) | focused feature demonstration |
 | Loops and bounded fan-out | [loop-accumulate](loop-accumulate), [fan-out-and-parallel](fan-out-and-parallel), [matrix-fan-out](matrix-fan-out) | focused feature demonstration |
 | Reusable workflow composition | [call-a-workflow](call-a-workflow), then [enterprise-customer-onboarding](enterprise-customer-onboarding) | production-shaped composition |
 | Retries, timeouts, cancellation, and undo | [conditional-and-retry](conditional-and-retry), [wait-timeout](wait-timeout), [order-fulfillment](order-fulfillment) | focused feature demonstration → production-shaped composition |
 | Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation) | policy/governance → production-shaped composition |
+| Long-lived entities many callers address | [entity-order](entity-order), [renewal-reminder](renewal-reminder), [signal-batch-drain](signal-batch-drain) | focused feature demonstration |
 | Schedules and trigger context | [scheduled-report](scheduled-report), [schedule-overlap-policies](schedule-overlap-policies), [webhook-trigger](webhook-trigger), [webhook-approval-bridge](webhook-approval-bridge), [trigger-context](trigger-context) | focused feature demonstration |
 | Local rehearsal and durable execution | [deployment-reconciler](deployment-reconciler), [approval-gate](approval-gate) | local-vs-Temporal parity |
 | `flow test`, directory fixtures, and `testdefaults.yaml` | [testing-defaults](testing-defaults), then any sibling `workflow.test.yaml` | testing/debugging/editor/agent journey; regression fixture |
 | CLI, MCP, and DAP debugging | [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
 | LSP and editor setup | [editor setup](../docs/EDITORS.md), [VS Code client](../editors/vscode/README.md) | testing/debugging/editor/agent journey |
 | Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [http-secret](http-secret) | policy/governance |
+| Holding a credential a step needs | [http-secret](http-secret), then [vault-secret](vault-secret), [http-federated](http-federated) | policy/governance |
+| One run at a time, and one tenant's fleet | [exclusive-cluster-drain](exclusive-cluster-drain), [operations/tenant-routing](operations/tenant-routing/) | policy/governance |
 | Observability and audit | [observability](observability), [enterprise-access-review](enterprise-access-review) | production-shaped composition |
 | Plugin discovery and one safe invocation | [plugins/greet](plugins/greet), then the read-only [Git](plugins/git) or [VCS](plugins/vcs) journey | plugin integration |
 | Agent and MCP authoring | [agentic-loop](agentic-loop); [agentic-fix](plugins/agentic-fix) only after its plugin prerequisites | testing/debugging/editor/agent journey → plugin integration |
@@ -105,7 +109,7 @@ says otherwise.
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
-| [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | no |
+| [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | yes |
 | [loop-accumulate](loop-accumulate) | `loop:` carrying state between iterations until a condition holds, bounded by `max_iterations:`, reporting `results` and `state` | no |
 | [loop-poll-until](loop-poll-until) | `loop:` in its stateless mode — a bounded poll that repeats a check until the body reports ready, or gives up at `max_iterations:` | yes |
 | [paged-fan-out](paged-fan-out) | The batch shape — a `loop:` walking a cursor API to exhaustion with a `for_each` inside it fanning out over each page under `max_parallel:`, and the file honest about the window draining at every page boundary | yes |
@@ -259,7 +263,37 @@ working out why the loop's last term never lands in its sum. `cmd/flow`'s own te
 it, which is what keeps it from rotting into a file describing a workflow that has moved
 on.
 
-The examples marked as needing network reach `httpbin.org`. They will fail without internet
-access, and the `http` task's egress policy denies internal addresses by default — see
+The examples marked as needing network are two kinds, and which kind decides whether running
+one shows you anything.
+
+- Pointed at `httpbin.org`, the only live service a `url:` names anywhere in this split.
+  These run as written, and need internet access. A `vault:`, `op:` or `command:` reference
+  reaches its own backend and no `url:` shows it, so that sits outside the split too —
+  `vault-secret`'s README names the address it contacts, and the others name the tool that
+  holds the credential.
+- Pointed at a name beneath one RFC 2606 reserves for documentation: under `example.com`,
+  `example.net` or `example.org` ([§3](https://www.rfc-editor.org/rfc/rfc2606#section-3)),
+  or under the `.example` top-level domain
+  ([§2](https://www.rfc-editor.org/rfc/rfc2606#section-2)). *Beneath* is
+  load-bearing — those three domains and their `www` are reserved and also served, and a
+  bare `example` is a single label a resolver expands against its search list — so what is
+  left is the set of spellings nobody publishes a record for. These files are written to be
+  read, validated, and exercised with `flow test`: a local run reaches the step pointed
+  there and stops with a name-resolution error rather than showing you that request. A
+  secret backend does resolve its reference before the step it feeds fails, and says so.
+
+That second kind is a convention this repository keeps, not a property of your resolver.
+Nothing here looks a name up, and a split-horizon resolver that answers for
+`api.example.com` would make a local run reach it — so `cmd/flow`'s
+`TestExamplesREADMENetworkClaims` enforces which spellings an example may name, and holds
+the Network column's `no` to the same tree. An example pointed somewhere new fails there
+rather than going stale here, and the reason each permitted spelling is permitted is written
+beside it in `documentationOnlyHost`.
+
+`plugins/` sits outside the split, because a plugin's own task decides where it goes: the Git
+and VCS examples read a public repository on `github.com`, and the rest reach whichever
+service the credential you supply belongs to. Those directories' READMEs say which.
+
+The `http` task's egress policy denies internal addresses by default — see
 [Flowstate's governance capabilities](../README.md#what-you-can-build-today) before
 pointing one at a service on `localhost`.

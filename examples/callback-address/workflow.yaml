@@ -16,24 +16,23 @@ description: Hands an external reviewer the address of this very run, then waits
 # server authenticated, under the run's own tenancy — so a leaked address is a
 # leaked *name*, not a leaked permission.
 #
-# Run it locally with:
+# `reviews.example.com` resolves nowhere, so a local run stops at `register`
+# before reaching the wait it exists to set up. The reviewer is stood in for
+# instead:
 #
-#   flow run local examples/callback-address/workflow.yaml --input-file examples/callback-address/inputs.json
+#   flow test examples/callback-address/
 #
-# Nobody answers, so the wait lapses and the review is abandoned — the
-# fail-closed default. To see the answered path:
+# whose four cases are the answered path, the rejection, nobody answering, and a
+# document name refused before the first step. Its `where:` on the registration
+# asserts the exact bytes the reviewer would have received, which is the thing
+# worth watching in this file.
 #
-#   flow run local examples/callback-address/workflow.yaml \
-#     --input-file examples/callback-address/inputs.json \
-#     --signal review-decided='{"accepted": true}'
-#
-# Watch what the `register` step below sends when you do. A local run reports
-# `local` for both halves of its address, and that is deliberate rather than a
-# placeholder nobody filled in: a local run has no server in front of it and no
-# Temporal behind it, so *nothing* can reach it by any name. A sentinel says
-# that outright; an empty string would read as a field that failed to populate
-# and send you looking for a bug in this file. Against a real deployment the
-# same expressions produce the id `flow signal` takes:
+# Either way the address reads `local` for both halves, and that is deliberate
+# rather than a placeholder nobody filled in: a run outside a server has no
+# server in front of it and no Temporal behind it, so *nothing* can reach it by
+# any name. A sentinel says that outright; an empty string would read as a field
+# that failed to populate and send you looking for a bug in this file. Against a
+# real deployment the same expressions produce the id `flow signal` takes:
 #
 #   flow signal <workflow-id> review-decided --data '{"accepted": true}'
 inputs:
