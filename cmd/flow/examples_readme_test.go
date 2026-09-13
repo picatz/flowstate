@@ -143,6 +143,10 @@ func exampleInventoryNetwork(t *testing.T, readme string) map[string]bool {
 // reason the charter's own walk gives: a URL sits in a task input here, inside a
 // list-of-maps `vars:` entry there, and inside a CEL constant in a third place. A
 // walk that named those three would be a fourth place to keep in step.
+//
+// What it recognises is a string that is entirely an `http(s)` URL, which is every
+// spelling the corpus uses. A host written with no scheme is invisible to it, so
+// this is a floor on where a live host can hide rather than a proof there is none.
 func exampleLiteralHosts(msg protoreflect.Message) []string {
 	var hosts []string
 
@@ -277,12 +281,20 @@ const requestHostUnknown = "<computed>"
 func TestExamplesREADMENetworkClaims(t *testing.T) {
 	t.Parallel()
 
-	const root = "../.."
+	// Absolute, because five tests in this package call [testing.T.Chdir] and
+	// this one runs in parallel with none of them only by the scheduling rule
+	// that parallel tests resume after the serial phase. Resolving once removes
+	// the dependency rather than relying on it.
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(root, "examples", "README.md"))
 	require.NoError(t, err)
 	network := exampleInventoryNetwork(t, string(data))
 
+	// The same two globs the charter reads, spelled again because one package's
+	// `_test` identifiers are not visible from another. If the charter's globs
+	// move, this diverges silently.
 	var paths []string
 	for _, glob := range [][]string{
 		{"examples", "*", "workflow.yaml"},
@@ -338,11 +350,11 @@ func TestExamplesREADMENetworkClaims(t *testing.T) {
 	}
 
 	for example, hosts := range requests {
+		hosts = slices.Sorted(slices.Values(hosts))
 		marked, listed := network[example]
 		if !assert.True(t, listed, "examples/%s requests %v and has no row in the complete inventory", example, hosts) {
 			continue
 		}
-		slices.Sort(hosts)
 		assert.True(t, marked,
 			"examples/%s is marked Network `no`, but a run of it requests %v; either the column is "+
 				"wrong or the example stopped being offline", example, hosts)

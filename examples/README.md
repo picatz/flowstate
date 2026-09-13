@@ -268,11 +268,12 @@ one shows you anything.
 
 - Pointed at `httpbin.org`, the only live service the Flowfile corpus reaches. These run as
   written, and need internet access.
-- Pointed at a host under `example.com`, which
-  [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3) reserves for documentation and
-  nothing resolves. These are written to be read, validated, and exercised with `flow test`;
-  a local run of one stops at its first request with a name-resolution error rather than
-  demonstrating anything, and each says so where it says how to run it.
+- Pointed at a name [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3) reserves —
+  `example.com`, its `.net` and `.org` siblings, or the `.example` top-level domain — which
+  nothing resolves. These are written to be read, validated, and exercised with `flow test`:
+  a local run reaches the step pointed there and stops on a name-resolution error, so that
+  request is never the half of the file running it shows you, whatever the run does first.
+  A secret backend does resolve its reference before the step it feeds fails, and says so.
 
 `cmd/flow`'s `TestExamplesREADMENetworkClaims` derives that split from the corpus, and holds
 the Network column's `no` to the same tree, so an example pointed somewhere new fails there

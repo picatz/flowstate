@@ -768,11 +768,10 @@ Over the shipped corpus, per run:
 | workflow | evaluations | of which workflow `vars:` |
 |---|---|---|
 | `hello-world` | 0 | 0 |
-| `http-form`, `simple-http-multi-step` | 1 | 0 |
+| `headers-and-nested`, `http-form`, `simple-http-multi-step` | 1 | 0 |
 | `hello-world-multi-step`, `http-output-shaping` | 2 | 0 |
 | `string-formatting` | 2 | 1 |
 | `conditional-and-retry`, `http-json` | 3 | 0 |
-| `headers-and-nested` | 3 | 1 |
 | `expressions`, `http-expect` | 4 | 0 |
 | `approval-gate` | 5 | 0 |
 | `wait-until-a-moment` | 5 | 1 |
