@@ -53,6 +53,22 @@ const (
 	RuleAttribution Rule = "attribution"
 )
 
+// Surface is where a message is headed, which decides whether an attribution
+// footer at its end was written by its author or appended for them.
+type Surface int
+
+const (
+	// SurfaceCommit is a commit or squash message. Nothing appends to one,
+	// so every footer it carries was written by whoever wrote the message.
+	SurfaceCommit Surface = iota
+
+	// SurfacePullRequest is a pull request title and body. The forge appends
+	// one attribution footer after the author's last line and the body is
+	// read back with it already there, so that one is not the author's to
+	// answer for. A second is.
+	SurfacePullRequest
+)
+
 // Finding is one convention a message does not follow.
 type Finding struct {
 	Rule Rule
@@ -99,6 +115,9 @@ var (
 	// left alone, so a message may say what it is not allowed to append.
 	attributionFooter = regexp.MustCompile(`(?im)^[\s>]*(?:[-*_]{3,}[\s>]*)?(?:\x{1F916}\s*)?[_*]{0,2}generated (?:with|by) \[?claude(?: code)?\]?(?:\([^)]*\))?[_*.\s]*$`)
 
+	// horizontalRule is the rule a forge sets above the footer it appends.
+	horizontalRule = regexp.MustCompile(`^[\s>]*[-*_]{3,}\s*$`)
+
 	// sessionLink is a console URL naming one agent session. Unlike the
 	// footer it is reported wherever it appears: it is unreachable for every
 	// reader but its author, so there is no sentence that wants one.
@@ -106,9 +125,15 @@ var (
 )
 
 // Check holds subject and body to the conventions and returns every finding.
-// A message that follows them all returns none.
-func Check(subject, body string) []Finding {
+// A message that follows them all returns none. where says which surface the
+// message is headed for, since a pull request body is read back carrying one
+// footer its author did not write.
+func Check(subject, body string, where Surface) []Finding {
 	var out []Finding
+
+	if where == SurfacePullRequest {
+		body = withoutAppendedFooter(body)
+	}
 
 	if !subjectShape.MatchString(strings.TrimSpace(subject)) {
 		out = append(out, Finding{
@@ -200,6 +225,33 @@ func Check(subject, body string) []Finding {
 	}
 
 	return out
+}
+
+// withoutAppendedFooter is body without the one attribution footer a forge
+// adds after an author's last line: the footer, a horizontal rule set above
+// it, and the blank lines around them.
+//
+// Only that last one is removed. A footer the author wrote as well sits above
+// it and is still reported, which is the shape that made this rule necessary:
+// a hand-written footer and a session link stacked over the forge's own.
+func withoutAppendedFooter(body string) string {
+	head, last := cutLastLine(strings.TrimRight(body, " \t\r\n"))
+	if !attributionFooter.MatchString(last) {
+		return body
+	}
+	if before, above := cutLastLine(strings.TrimRight(head, " \t\r\n")); horizontalRule.MatchString(above) {
+		return before
+	}
+	return head
+}
+
+// cutLastLine is s without its final line, and that line. A string of one
+// line is all last and no head.
+func cutLastLine(s string) (head, last string) {
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+		return s[:i], s[i+1:]
+	}
+	return "", s
 }
 
 // Bounds on what one message can make this report: findings are one per

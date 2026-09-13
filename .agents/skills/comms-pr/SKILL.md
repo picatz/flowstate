@@ -60,6 +60,11 @@ produced it and for no other reader, so in a pull request body it is a dead
 reference, and a body pasted into a squash message carries it into `git log` for
 good — twenty-two commits here already carry one.
 
+The check knows whose is whose: it reads a pull request body back as the forge
+stores it, discounts the one footer appended after your last line, and reports
+whatever is left. So the forge's own marker is never a finding and a second one
+always is.
+
 Review comments and replies are the exception, and the only one: nothing appends
 a footer there, so those carry it explicitly.
 

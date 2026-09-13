@@ -43,11 +43,12 @@ func TestOutsideActionsAFindingIsAPlainLine(t *testing.T) {
 func TestAnOversizedInputIsRefusedRatherThanRead(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := message("", "", "", strings.NewReader(strings.Repeat("x", maxInput+1)))
+	_, _, _, err := message("", "", "", strings.NewReader(strings.Repeat("x", maxInput+1)))
 	assert.ErrorContains(t, err, "over", "a message past the bound was read whole")
 
-	subject, body, err := message("", "", "", strings.NewReader("a: b\n\nbody\n"))
+	subject, body, where, err := message("", "", "", strings.NewReader("a: b\n\nbody\n"))
 	assert.NoError(t, err)
 	assert.Equal(t, "a: b", subject)
 	assert.Equal(t, "\nbody", body)
+	assert.Equal(t, commitcheck.SurfaceCommit, where, "stdin carries whatever the caller has; the stricter surface applies")
 }
