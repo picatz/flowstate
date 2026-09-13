@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"uuid"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -104,7 +104,7 @@ func (i *recoverInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 			return next(ctx, req)
 		}
 
-		id := uuid.NewString()
+		id := uuid.New().String()
 		ctx = audit.ContextWithCorrelationID(ctx, id)
 
 		defer func() {
@@ -127,7 +127,7 @@ func (i *recoverInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 // WrapStreamingHandler implements [connect.Interceptor].
 func (i *recoverInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) (retErr error) {
-		id := uuid.NewString()
+		id := uuid.New().String()
 		ctx = audit.ContextWithCorrelationID(ctx, id)
 
 		defer func() {

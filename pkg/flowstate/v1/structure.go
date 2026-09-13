@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 	"strings"
@@ -288,12 +289,10 @@ func callChainText(chain []string) string {
 // input and output refusals, flow test's resolver gate) fails closed rather
 // than open at depth.
 func ValueHoldsSecretRef(v *Value) bool {
-	found := false
-	walkSecretRefs(v, 0, func(*SecretRef) bool {
-		found = true
-		return false
-	})
-	return found
+	for range secretRefs(v) {
+		return true
+	}
+	return false
 }
 
 // SecretRefsIn returns every reference a task's inputs name, rendered as
@@ -312,45 +311,74 @@ func ValueHoldsSecretRef(v *Value) bool {
 func SecretRefsIn(task *Task) []string {
 	var refs []string
 	for _, value := range task.GetInputs() {
-		walkSecretRefs(value, 0, func(ref *SecretRef) bool {
+		for ref := range secretRefs(value) {
 			if ref == nil {
 				// The walk hit its depth bound: something below may be a
 				// reference it cannot name. Naming surfaces stay exact and
 				// skip it; the authority question is ValueHoldsSecretRef's,
 				// which answers conservatively.
-				return true
+				continue
 			}
 			refs = append(refs, secretRefText(ref))
-			return true
-		})
+		}
 	}
 
 	slices.Sort(refs)
 	return slices.Compact(refs)
 }
 
-// walkSecretRefs visits every reference in v, stopping early when visit says so.
+// secretRefs is every reference v holds, at any depth, in the fixed order
+// [StructureValues] reads a structure's contents in.
 //
-// Past MaxStructureDepth the walk cannot see what is below, and it visits nil to
-// say so rather than walking on or staying silent: a visitor deciding an
+// Past MaxStructureDepth the walk cannot see what is below, and it yields nil to
+// say so rather than walking on or staying silent: a consumer deciding an
 // authority or refusal question must treat "too deep to scan" as "may hold one",
-// because the compiler admits deeper nesting than this walk inspects and a
-// silent cutoff turned every consumer into a fail-open gate at depth 33
-// (#329 review). A visitor that only names references skips the nil.
-func walkSecretRefs(v *Value, depth int, visit func(*SecretRef) bool) bool {
+// because a silent cutoff turned every consumer into a fail-open gate at depth
+// 33 (#329 review). A consumer that only names references skips the nil.
+//
+// What can be that deep decides whether the nil is pedantry, and the answer is
+// the one [CollectValueRefs] already states for its own bound: no Flowfile can
+// express it. The compiler refuses a structure nested past [MaxStructureDepth],
+// and [CheckStructureDepth] refuses the same on every submit path, which
+// `pkg/flowstate/embed` and both drivers reach through [BindRunInputs].
+//
+// A plugin's outputs are the shape that does arrive without passing either.
+// `plugin`'s scrubPluginOutputs asks [ValueHoldsSecretRef] of every value an
+// out-of-process task returned, before it can become a step output in workflow
+// history, and nothing bounds how deeply that party nested what it sent. So the
+// depth here is a number the peer chooses, not one an author could write, and
+// the conservative answer is what keeps that refusal from failing open — which
+// is the same reasoning as the walk's own bound rather than a second one.
+//
+// A sequence rather than the `visit func(*SecretRef) bool` this was, for the
+// reason the fail-open history above makes sharp: both consumers below decide a
+// security question from this walk, and in the callback spelling each one wrote
+// `return true` to mean continue and `return false` to mean stop, inside a
+// function whose own answer is a bool with the opposite polarity. `continue` and
+// `break` cannot be misread that way, and the caller that wants the first hit
+// ranges and returns rather than setting a captured flag.
+func secretRefs(v *Value) iter.Seq[*SecretRef] {
+	return func(yield func(*SecretRef) bool) { yieldSecretRefs(v, 0, yield) }
+}
+
+// yieldSecretRefs is [secretRefs]'s recursion. It reports whether the walk may
+// continue, so that a consumer's `break` unwinds every frame rather than only the
+// structure that happened to hold the reference it stopped on — yielding after
+// yield has returned false is a panic, not a missed value.
+func yieldSecretRefs(v *Value, depth int, yield func(*SecretRef) bool) bool {
 	if v == nil {
 		return true
 	}
 	if depth > MaxStructureDepth {
-		return visit(nil)
+		return yield(nil)
 	}
 
 	switch kind := v.GetKind().(type) {
 	case *Value_SecretRef:
-		return visit(kind.SecretRef)
+		return yield(kind.SecretRef)
 	case *Value_Structure_:
 		for _, entry := range StructureValues(kind.Structure) {
-			if !walkSecretRefs(entry, depth+1, visit) {
+			if !yieldSecretRefs(entry, depth+1, yield) {
 				return false
 			}
 		}

@@ -14,9 +14,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"uuid"
 
 	"github.com/go-logr/logr"
-	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
@@ -240,7 +240,7 @@ func telemetryConfigFromEnv() (telemetryConfig, error) {
 // for as long as the process lives and distinct from every other copy.
 //
 // Stability within the process is the whole requirement, and it is why this is
-// a [sync.OnceValues] rather than a call per resource. A process builds more than
+// a [sync.OnceValue] rather than a call per resource. A process builds more than
 // one provider — traces, metrics and logs each take a resource — and an id that
 // differed between them would split one process into three services in the
 // backend, which is worse than having no instance id at all.
@@ -250,15 +250,27 @@ func telemetryConfigFromEnv() (telemetryConfig, error) {
 // Deployment two pods restarting can present the same name; a restarted process
 // is a new instance and should say so.
 //
-// Randomness can fail, and this returns the error rather than panicking on it.
-// [uuid.NewString] is `Must(NewRandom())`, so a container whose entropy source
-// is unavailable would take down the command from inside a resource builder —
-// past [telemetryResource]'s error return, past the client path that warns and
-// continues without telemetry. Telemetry describes the work; it must never be
-// the reason the work does not happen. [telemetryResource] therefore drops the
-// attribute and warns, which is the same thing it already does for a detector
-// that comes back partial.
-var instanceID = sync.OnceValues(uuid.NewRandom)
+// [uuid.NewV4] rather than [uuid.New], which is the same algorithm today but
+// documented not to promise it: version 4 is 122 bits of randomness and nothing
+// else, while version 7 would carry this process's start time in its leading
+// bits. An instance id is attached to every span, metric and log the process
+// emits, so what it says about the process is worth naming deliberately rather
+// than inheriting from whichever version the convenience spelling means next.
+//
+// There is nothing here to degrade on, which is the one thing that changed when
+// this moved off `github.com/google/uuid`: that package's NewRandom returned an
+// error, so this was a [sync.OnceValues] and [telemetryResourceWith] dropped the
+// attribute and warned when it came back set. The error could not occur.
+// [uuid.NewV4] draws from [crypto/rand.Read], which is documented never to
+// return an error: it crashes the program irrecoverably if its source fails
+// (go.dev/issue/66821), and on Linux a source not yet seeded at early boot
+// blocks in getrandom(2) rather than failing. Neither is something this function
+// is handed and could degrade on — the crash happens inside a call this line
+// made, with this file still on the stack — and google/uuid read through the
+// same source, so the branch was a claim about resilience that nothing could
+// exercise, and the test for it exercised only its own stub. Both are gone.
+// Restoring either needs a failure mode that reaches Go first.
+var instanceID = sync.OnceValue(uuid.NewV4)
 
 // telemetryResource describes what is emitting, so a collector can group by it.
 //
@@ -324,15 +336,7 @@ func telemetryResourceWith(ctx context.Context, detected ...resource.Option) (*r
 	attrs := []attribute.KeyValue{
 		semconv.ServiceName("flowstate"),
 		semconv.ServiceVersion(version),
-	}
-
-	// An instance id this process could not generate is one attribute fewer, not
-	// a command that fails to run. See [instanceID] for why it can fail at all.
-	if id, err := instanceID(); err != nil {
-		telemetryLogger.Warn("telemetry cannot identify this instance, so its signals will not be distinguishable from another copy's",
-			"attribute", string(semconv.ServiceInstanceIDKey), "err", err)
-	} else {
-		attrs = append(attrs, semconv.ServiceInstanceID(id.String()))
+		semconv.ServiceInstanceID(instanceID().String()),
 	}
 
 	options := []resource.Option{resource.WithTelemetrySDK()}

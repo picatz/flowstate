@@ -6,8 +6,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"uuid"
 
-	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -601,6 +601,6 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	return v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store: store, Policy: secretAccess, Broker: broker,
 		Identity: identity,
-		Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.NewString()},
+		Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.New().String()},
 	}), nil
 }
