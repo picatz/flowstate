@@ -270,8 +270,8 @@ one shows you anything.
   written, and need internet access.
 - Pointed at a name the DNS does not answer for: a subdomain of `example.com`, `example.net`
   or `example.org`, or a name in the `.example` top-level domain, all reserved for
-  documentation by [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3). (The three
-  domains' own apexes are reserved *and* served, so they are not in this kind.) These are
+  documentation by [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3). (Those three
+  domains and their `www` are reserved *and* served, so they are not in this kind.) These are
   written to be read, validated, and exercised with `flow test`: a local run reaches the step
   pointed there and stops on a name-resolution error, so that request is never the half of
   the file running it shows you, whatever the run does first. A secret backend does resolve

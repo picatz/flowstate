@@ -97,22 +97,49 @@ var offlineExampleHosts = map[string]string{
 	"::1":       "the same, over IPv6",
 }
 
-// reservedForDocumentation reports whether a host is one the DNS does not answer
-// for: a name *under* one of the three second-level domains RFC 2606 [§3]
-// reserves, or a name in the `.example` top-level domain [§2] reserves.
+// servedDocumentationHosts are the reserved names that answer anyway. IANA
+// delegates the three second-level domains RFC 2606 [§3] reserves and serves a
+// page at each apex and at each `www`, so a request to one of these six leaves
+// the machine like any other.
 //
-// The three second-level names themselves are deliberately not in it, which is
-// the whole subtlety. They are reserved *and* delegated: IANA publishes address
-// records for `example.com`, `example.net` and `example.org` and serves a page
-// at each, so an example pointed at one of those apexes makes a real request,
-// while every subdomain of them is NXDOMAIN. Checked rather than assumed —
-// `example.com` resolves here and `api.example.com` does not — and pinned by
-// [TestReservedForDocumentationExcludesTheServedApexes], because the difference
-// is invisible in the name and is exactly what this predicate exists to decide.
+// Checked rather than assumed, and exhaustively rather than at the apex alone:
+// `example.com`, `example.net`, `example.org` and the `www.` of each resolve
+// here, while `api.example.com`, `mail.example.com`, `random-xyz.example.com`,
+// `www.foo.example.com`, `foo.example` and `nothing.invalid` do not.
+//
+// [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
+var servedDocumentationHosts = map[string]bool{
+	"example.com":     true,
+	"www.example.com": true,
+	"example.net":     true,
+	"www.example.net": true,
+	"example.org":     true,
+	"www.example.org": true,
+}
+
+// reservedForDocumentation reports whether a host is one an example may name
+// without anybody deciding it may make a real request: a name under one of the
+// three second-level domains RFC 2606 [§3] reserves, or a name in the `.example`
+// top-level domain [§2] reserves, minus the six in [servedDocumentationHosts].
+//
+// The subtraction is the whole subtlety, and it is why this is a predicate
+// rather than a suffix match. "Reserved" and "does not resolve" are different
+// properties: RFC 2606 reserves those three names *delegated*, so the apexes and
+// their `www` answer while everything else under them is NXDOMAIN. A suffix
+// match would call `https://example.com` offline and let a real outbound request
+// through the check that exists to catch one.
+//
+// What it cannot do is track the DNS. If IANA starts serving a seventh name the
+// corpus happens to use, this says offline where the tree says otherwise —
+// which is the residual risk of deriving "will not resolve" from a list, and
+// the reason the six are enumerated with the observation that put them there.
 //
 // [§2]: https://www.rfc-editor.org/rfc/rfc2606#section-2
 // [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
 func reservedForDocumentation(host string) bool {
+	if servedDocumentationHosts[host] {
+		return false
+	}
 	if host == "example" || strings.HasSuffix(host, ".example") {
 		return true
 	}
@@ -125,24 +152,29 @@ func reservedForDocumentation(host string) bool {
 	return false
 }
 
-// TestReservedForDocumentationExcludesTheServedApexes pins the boundary
-// [reservedForDocumentation] turns on, since nothing in the corpus reaches an
-// apex today and so nothing else would notice it moving.
-func TestReservedForDocumentationExcludesTheServedApexes(t *testing.T) {
+// TestReservedForDocumentationExcludesTheNamesThatAnswer pins the boundary
+// [reservedForDocumentation] turns on, since nothing in the corpus reaches one of
+// the six served names today and so nothing else would notice it moving.
+func TestReservedForDocumentationExcludesTheNamesThatAnswer(t *testing.T) {
 	t.Parallel()
 
 	for host, reserved := range map[string]bool{
 		// Delegated and served, so a request to one leaves the machine.
 		"example.com":     false,
+		"www.example.com": false,
 		"example.net":     false,
+		"www.example.net": false,
 		"example.org":     false,
-		"www.example.com": true,
+		"www.example.org": false,
 
-		// Subdomains of the same three: NXDOMAIN, which is the property the
-		// corpus relies on.
+		// Everything else under the same three: NXDOMAIN, which is the property
+		// the corpus relies on. `www.foo.example.com` is the boundary a naive
+		// "starts with www" rule would get wrong.
 		"api.example.com":             true,
+		"mail.example.com":            true,
 		"ledger.internal.example.com": true,
 		"flowstate.peer.example.com":  true,
+		"www.foo.example.com":         true,
 
 		// The reserved top-level domain, which is not delegated at all.
 		"example":     true,
