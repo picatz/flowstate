@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
-	"strconv"
 	"strings"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -164,21 +162,26 @@ func decodeJSON(body []byte) (any, error) {
 func exactNumbers(value any) (any, error) {
 	switch typed := value.(type) {
 	case json.Number:
+		text := typed.String()
 		if integer, err := typed.Int64(); err == nil {
 			return integer, nil
 		}
+		// Int64 failed. If the number is written as an integer, it is one this
+		// plugin cannot carry - a build number or an identifier past int64 -
+		// and returning it as a float would hand a workflow a different value
+		// from the bytes just verified against their digest.
+		if !strings.ContainsAny(text, ".eE") {
+			return nil, fmt.Errorf("the blob carries the integer %s, which is outside the range this plugin can represent exactly",
+				truncate(text, 64))
+		}
+		// Otherwise it is a fractional or exponential number, and a float64 is
+		// what JSON means by one. No exactness check: 0.1 is not exactly
+		// representable in binary and is entirely ordinary, so demanding
+		// exactness here would refuse most real documents.
 		asFloat, err := typed.Float64()
 		if err != nil {
-			return nil, fmt.Errorf("the blob carries the number %s, which is neither an integer nor a float this plugin can represent",
-				truncate(typed.String(), 64))
-		}
-		// A non-integer that survives the round trip is exact as a float; one
-		// that does not is a value this task would be changing.
-		if strconv.FormatFloat(asFloat, 'g', -1, 64) != typed.String() && big.NewFloat(asFloat).Text('g', -1) != typed.String() {
-			if _, ok := new(big.Float).SetString(typed.String()); ok {
-				return nil, fmt.Errorf("the blob carries the number %s, which cannot be represented exactly; a policy decision on a rounded value is a decision on evidence this registry did not serve",
-					truncate(typed.String(), 64))
-			}
+			return nil, fmt.Errorf("the blob carries the number %s, which is not a number this plugin can represent",
+				truncate(text, 64))
 		}
 		return asFloat, nil
 	case map[string]any:

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
@@ -149,6 +150,19 @@ func getByUserName(ctx context.Context, client *client, rawUserName string) (*sc
 	if err := json.Unmarshal(page.Resources[0], &user); err != nil {
 		return nil, sdk.Failed("%s returned a user resource this plugin cannot read", client.base.Host)
 	}
+
+	// The filter was this plugin's, and so is the check that it was honoured. A
+	// provider that ignores or mis-evaluates `userName eq` and answers with one
+	// unrelated resource would otherwise have that account's identifier
+	// returned as an exact-name lookup - and an access review's next step
+	// deactivates by identifier. RFC 7643 makes userName case-insensitive
+	// (caseExact false), so the comparison is too.
+	if !strings.EqualFold(user.UserName, userName) {
+		return nil, sdk.Failed(
+			"%s answered a lookup for one user name with a different one; this plugin will not return an account it did not ask for",
+			client.base.Host)
+	}
+
 	return outputsFor(user, page.Resources[0], "")
 }
 

@@ -143,3 +143,59 @@ func TestParsedJSONKeepsIntegersTheRegistryServed(t *testing.T) {
 		}
 	}
 }
+
+// TestParsedJSONAcceptsOrdinaryNumberSpellings is the other half of keeping
+// integers exact: only integers are held to it.
+//
+// `1.0` and `1e3` are exact values written non-canonically, and `0.1` is not
+// exactly representable in binary at all — it is also in most real documents.
+// A representability check applied to floats would refuse all three, which is
+// how a correctness fix becomes an availability defect.
+func TestParsedJSONAcceptsOrdinaryNumberSpellings(t *testing.T) {
+	registry := newFakeRegistry(t)
+	document := []byte(`{"one":1.0,"thousand":1e3,"tenth":0.1,"negative":-17}`)
+	digest := registry.addBlob("app", "application/json", document)
+
+	out, err := fetchBlob(t.Context(), registry.client(t, credentials{}), mustParse(t, registry.pinned("app", digest)), defaultBlobBytes, true)
+	if err != nil {
+		t.Fatalf("an ordinary JSON document was refused: %v", err)
+	}
+
+	for _, entry := range out.GetJson().GetMapValue().GetEntries() {
+		switch entry.GetKey().GetStringValue() {
+		case "one":
+			if got := entry.GetValue().GetDoubleValue(); got != 1 {
+				t.Errorf("one = %v, want 1", got)
+			}
+		case "thousand":
+			if got := entry.GetValue().GetDoubleValue(); got != 1000 {
+				t.Errorf("thousand = %v, want 1000", got)
+			}
+		case "tenth":
+			if got := entry.GetValue().GetDoubleValue(); got != 0.1 {
+				t.Errorf("tenth = %v, want 0.1", got)
+			}
+		case "negative":
+			if got := entry.GetValue().GetInt64Value(); got != -17 {
+				t.Errorf("negative = %d, want -17", got)
+			}
+		}
+	}
+}
+
+// TestParsedJSONRefusesAnIntegerItCannotCarry is the direction that must stay
+// a refusal: an integer past int64 returned as a float would be a different
+// value from the bytes verified against their digest.
+func TestParsedJSONRefusesAnIntegerItCannotCarry(t *testing.T) {
+	registry := newFakeRegistry(t)
+	document := []byte(`{"huge":123456789012345678901234567890}`)
+	digest := registry.addBlob("app", "application/json", document)
+
+	_, err := fetchBlob(t.Context(), registry.client(t, credentials{}), mustParse(t, registry.pinned("app", digest)), defaultBlobBytes, true)
+	if err == nil {
+		t.Fatal("an integer this plugin cannot represent was returned rather than refused")
+	}
+	if !sdk.IsFailed(err) {
+		t.Errorf("error is %v, want the permanent failure classification", err)
+	}
+}

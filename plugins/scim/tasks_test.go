@@ -319,3 +319,26 @@ func TestAnAlreadyInactiveAccountStillHonorsTheExpectedVersion(t *testing.T) {
 		t.Errorf("%d writes happened on an account that was already inactive", provider.patches)
 	}
 }
+
+// TestAProviderCannotAnswerWithADifferentUser is the check that makes an
+// exact-name lookup exact.
+//
+// The filter is this plugin's, and so is verifying it was honoured. A provider
+// that ignores or mis-evaluates `userName eq` and returns one unrelated
+// resource would otherwise have that account's identifier come back as a
+// successful lookup — and the next step of an access review deactivates by
+// identifier.
+func TestAProviderCannotAnswerWithADifferentUser(t *testing.T) {
+	provider := newFakeProvider(t)
+	provider.addUser("2819c224", "someone-else@example.com", true)
+	// Whatever is asked for, this provider answers with the one user above.
+	provider.filterMatches = []string{"2819c224"}
+
+	_, err := getByUserName(t.Context(), provider.client(t), "alice@example.com")
+	if err == nil {
+		t.Fatal("a provider answered a lookup with an unrelated account and the identifier came back as a match")
+	}
+	if !sdk.IsFailed(err) {
+		t.Errorf("error is %v, want the permanent failure classification", err)
+	}
+}

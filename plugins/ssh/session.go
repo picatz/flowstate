@@ -85,16 +85,22 @@ func run(ctx context.Context, host hostGrant, command commandGrant, commandLine 
 	}
 	defer conn.Close()
 
-	// The deadline covers the handshake as well as the dial; without it a host
-	// that accepts a connection and never speaks holds this call open.
-	_ = conn.SetDeadline(time.Now().Add(connectTimeout))
+	// The deadline dialCtx already carries, not a fresh interval: resolving the
+	// name and dialing have already spent part of connect_timeout, and giving
+	// the handshake a full one again lets the connection phase run to nearly
+	// twice the bound the operator wrote. A host that accepts a connection and
+	// never speaks is held to what is left.
+	if deadline, ok := dialCtx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
 
 	config := &ssh.ClientConfig{
 		User:              host.User,
 		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback:   pinnedHostKeys(hostKeys),
 		HostKeyAlgorithms: hostKeyAlgorithms(hostKeys),
-		Timeout:           connectTimeout,
+		// The socket deadline above is what bounds this; ssh.ClientConfig's own
+		// Timeout applies to a dial it performs itself, which is not this path.
 	}
 
 	clientConn, channels, requests, err := ssh.NewClientConn(conn, address, config)
