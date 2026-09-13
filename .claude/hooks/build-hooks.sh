@@ -245,33 +245,45 @@ mv "${stage_dir}" "${hook_dir}"
 #
 # Copied through a temporary name and renamed, so a reader never opens a
 # half-written binary, and written only when this build produced one.
-if [[ -x "${hook_dir}/mergeguard" ]]; then
-	# Every step is inside the condition, so none of them can end this script:
-	# the generation above is already published, and a build that succeeded must
-	# not report failure because it could not also retain a copy -- the launcher
-	# reads any status but 0 and 3 as an incoherent build and denies the call.
-	#
-	# Staged under the cache directory the stale-build sweep already prunes, so
-	# a kill leaves no half-written guard behind, then moved in by renaming each
-	# file over its predecessor. The directory itself is durable and is never
-	# removed: replacing it wholesale would mean deleting the guard before its
-	# replacement was in place, and a kill in that window would leave the next
-	# session with no recognizer at all -- which is the control this retention
-	# exists to keep. Renaming a file replaces it atomically, so the guard is
-	# only ever the previous one or the new one.
-	#
-	# The binary moves first. The two renames cannot be made one, so the
-	# recorded identity can briefly describe the previous build; the note that
-	# reads it says what is recorded rather than asserting the binary's
-	# provenance, which stays true either way.
-	retained_stage="$(mktemp -d "${cache_dir}/build.lkg.XXXXXX")"
+# Retains the merge guard that just compiled, so a later build that cannot
+# compile one still has a real recognizer for the launcher to consult. Only
+# this guard: it is the only one whose answer to being unbuildable is a refusal
+# rather than a warning, so it is the only one where deciding precisely beats
+# failing open -- and a retained genguard could refuse the very edit that
+# repairs it, which is the lockout these hooks exist to avoid.
+#
+# A function, called with `|| true`, because that is what actually contains a
+# failure: `set -e` is suppressed for the command in an `if` condition but not
+# for the commands in its body, and it is suppressed through a whole function
+# body invoked this way. The generation above is already published, so a build
+# that succeeded must not report failure because it could not also keep a copy
+# -- the launcher reads any status but 0 and 3 as an incoherent build and
+# denies the call.
+#
+# Staged under the cache directory the stale-build sweep already prunes, then
+# moved in by renaming each file over its predecessor. The directory itself is
+# durable and is never removed: replacing it wholesale would mean deleting the
+# guard before its replacement was in place, and a kill in that window would
+# leave the next session with no recognizer at all. Renaming a file replaces it
+# atomically, so the guard is only ever the previous one or the new one.
+#
+# The binary moves first. The two renames cannot be made one, so the recorded
+# identity can briefly describe the previous build; the note that reads it says
+# what is recorded rather than asserting the binary's provenance, which stays
+# true either way.
+retain_merge_guard() {
+	local stage
+	[[ -x "${hook_dir}/mergeguard" ]] || return 0
+	stage="$(mktemp -d "${cache_dir}/build.lkg.XXXXXX")" || return 0
 	if install -d -m 0700 "${retained_dir}" &&
-		cp "${hook_dir}/mergeguard" "${retained_stage}/mergeguard" &&
-		chmod 0700 "${retained_stage}/mergeguard" &&
-		printf '%s\n' "${source_id}" > "${retained_stage}/.source-id" &&
-		mv "${retained_stage}/mergeguard" "${retained_dir}/mergeguard"; then
-		mv "${retained_stage}/.source-id" "${retained_dir}/.source-id" || true
+		cp "${hook_dir}/mergeguard" "${stage}/mergeguard" &&
+		chmod 0700 "${stage}/mergeguard" &&
+		printf '%s\n' "${source_id}" > "${stage}/.source-id" &&
+		mv "${stage}/mergeguard" "${retained_dir}/mergeguard"; then
+		mv "${stage}/.source-id" "${retained_dir}/.source-id" || true
 	fi
-	rm -rf "${retained_stage}"
-fi
+	rm -rf "${stage}" || true
+	return 0
+}
+retain_merge_guard || true
 trap 'rm -f "${post_build_dirs}" "${post_build_extra}"; rm -rf "${lock_dir}"' EXIT

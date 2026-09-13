@@ -1394,6 +1394,15 @@ func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
 		if status, _, _ := run(t, "gh pr merge 1942 -R picatz/flowstate"); status != 2 {
 			t.Fatalf("without a retained guard the plain spelling was allowed, exit %d", status)
 		}
+		// A payload large enough that the backstop's own grep finishes before
+		// the writer does. `grep -q` exits on its first match and the writer
+		// dies of SIGPIPE, so under `pipefail` the pipeline reports 141 --
+		// which a test of grep's status, rather than a read of it, took for
+		// "no match" and allowed. A long heredoc reaches this.
+		big := strings.Repeat("x", 700000)
+		if status, _, stderr := run(t, "gh pr merge 1942 -R picatz/flowstate # "+big); status != 2 {
+			t.Fatalf("a large payload let the plain spelling through, exit %d:\n%s", status, stderr)
+		}
 		if status, stdout, stderr := run(t, "git status --short"); status != 0 {
 			t.Fatalf("without a retained guard a repair was blocked, exit %d:\n%s\n%s", status, stdout, stderr)
 		}
@@ -1481,6 +1490,45 @@ func TestClaudeHookBuildRetainsTheMergeGuardItCompiled(t *testing.T) {
 	if bytes.Equal(first, second) {
 		t.Log("the two builds produced identical binaries; the replacement is still asserted by the absence check above")
 	}
+
+	// Retention runs after the generation is published, so a failure in it
+	// must not turn a build that succeeded into one the launcher reads as
+	// incoherent -- that denies an unrelated tool call, with a diagnostic
+	// naming a cause that has nothing to do with the guards. `set -e` is
+	// suppressed for the command in an `if` condition but not for the commands
+	// in its body, which is why the whole of retention is a function invoked
+	// with `|| true` rather than a bare block.
+	t.Run("a build whose retention fails still succeeds", func(t *testing.T) {
+		project := t.TempDir()
+		writeHookFixture(t, root, project)
+		bin := filepath.Join(project, "double")
+		if err := os.Mkdir(bin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		realMktemp, err := exec.LookPath("mktemp")
+		if err != nil {
+			t.Skip("mktemp is not available")
+		}
+		// Fails only for retention's own staging template, so every other use
+		// of mktemp in the build still works and this isolates the one step.
+		double := "#!/bin/sh\nfor arg do\n  case \"$arg\" in *build.lkg.*)" +
+			" printf 'mktemp: simulated failure\\n' >&2; exit 1 ;; esac\ndone\nexec " +
+			strconv.Quote(realMktemp) + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(bin, "mktemp"), []byte(double), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runBuild(t, project, bin+":"+os.Getenv("PATH"))
+		if err != nil {
+			t.Fatalf("a build whose retention failed reported failure: %v\n%s", err, output)
+		}
+		// The generation it published must still be complete and current, so
+		// the launcher has no reason to deny anything.
+		for _, name := range []string{"genguard", "gofmtcheck", "pidguard", "mergeguard", ".ready", ".source-id"} {
+			if _, err := os.Stat(filepath.Join(project, ".claude", "hooks", ".bin", name)); err != nil {
+				t.Fatalf("the published generation is missing %s: %v", name, err)
+			}
+		}
+	})
 
 	// A later build that cannot compile the guard must leave the retained one
 	// alone rather than clearing it -- that is the whole point of keeping it.
