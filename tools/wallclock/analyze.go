@@ -150,6 +150,24 @@ type found struct {
 // waitsIn returns every `time.Sleep` and every testify poll in the file that is
 // not lexically inside a function literal passed to synctest.Test or
 // synctest.Run.
+//
+// A poll is matched by the method name alone, in any file that imports testify,
+// and deliberately not by what it is called on. Three rounds of review on #1989
+// found three receiver shapes an identifier-based matcher missed — the object
+// API bound to a local (`r := require.New(t); r.Eventually(…)`), the same call
+// chained (`require.New(t).Eventually(…)`), and the package's own name once a
+// local shadowed it — and each fix invited the next: a struct field holding an
+// object, a map entry, a method value, a helper's return used directly.
+//
+// The shapes are not the problem; enumerating them is. A missed poll is the one
+// defect a ratchet cannot survive, because the count stays green while the tree
+// gets worse, so the matcher takes the side that cannot miss: anything named
+// Eventually, Never or one of their variants, called in a file that imports
+// testify, is a poll. That over-counts a same-named method on some other type,
+// which is the direction every other approximation here already errs in and
+// which the table records like any other entry. It needs no type information,
+// so the plugin modules' tests stay in scope, and no receiver case is left to
+// forget.
 func waitsIn(file *ast.File) []found {
 	timeName := localName(file, "time")
 	requireName := localName(file, "github.com/stretchr/testify/require")
@@ -158,7 +176,8 @@ func waitsIn(file *ast.File) []found {
 		return nil
 	}
 
-	objects := testifyObjectsIn(file, requireName, assertName)
+	testifyImported := requireName != "" || assertName != ""
+	dotImported := requireName == "." || assertName == "."
 
 	bubbles := bubblesIn(file)
 	inBubble := func(pos token.Pos) bool {
@@ -181,9 +200,7 @@ func waitsIn(file *ast.File) []found {
 		kind := KindSleep
 		switch {
 		case timeName != "" && isSelector(call.Fun, timeName, "Sleep"):
-		case requireName != "" && isSelector(call.Fun, requireName, pollNames...),
-			assertName != "" && isSelector(call.Fun, assertName, pollNames...),
-			isSelectorOnAny(call.Fun, objects, pollNames...):
+		case testifyImported && isPollCall(call.Fun, dotImported):
 			kind = KindPoll
 		default:
 			return true
@@ -199,81 +216,18 @@ func waitsIn(file *ast.File) []found {
 	return out
 }
 
-// testifyObjectsIn returns the names bound to a testify assertion object by
-// `require.New(t)` or `assert.New(t)` anywhere in the file.
-//
-// The object API is the other supported way to spell an assertion, and it moves
-// the poll off the package identifier: `r := require.New(t)` makes the call
-// `r.Eventually(...)`, which no amount of looking at import names will find. A
-// ratchet that misses it stays green while a poll is added, which is worse than
-// no ratchet, so the bindings are collected first and the receivers checked
-// against them (#1989).
-//
-// File-scoped and name-based, like the rest of this analysis: a binding in one
-// function makes that name a testify object for the whole file. That
-// over-counts a same-named value elsewhere, which is the direction that never
-// misses a wait. What it does not reach is an object held somewhere other than
-// a plain name — a struct field, a map entry, a function's return value used
-// directly. Those need types, and types need a build; see [Analyze].
-func testifyObjectsIn(file *ast.File, requireName, assertName string) map[string]bool {
-	if requireName == "" && assertName == "" {
-		return nil
-	}
-
-	objects := map[string]bool{}
-	note := func(lhs []ast.Expr, rhs []ast.Expr) {
-		if len(lhs) != 1 || len(rhs) != 1 {
-			return
-		}
-		call, ok := rhs[0].(*ast.CallExpr)
-		if !ok {
-			return
-		}
-		if !isSelector(call.Fun, requireName, "New") && !isSelector(call.Fun, assertName, "New") {
-			return
-		}
-		if name, ok := lhs[0].(*ast.Ident); ok && name.Name != "_" {
-			objects[name.Name] = true
-		}
-	}
-
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch decl := n.(type) {
-		case *ast.AssignStmt:
-			// Both `r := require.New(t)` and a later `r = require.New(t)`.
-			note(decl.Lhs, decl.Rhs)
-		case *ast.ValueSpec:
-			// `var r = require.New(t)`.
-			names := make([]ast.Expr, 0, len(decl.Names))
-			for _, name := range decl.Names {
-				names = append(names, name)
-			}
-			note(names, decl.Values)
-		}
-
-		return true
-	})
-
-	return objects
-}
-
-// isSelectorOnAny reports whether expr calls one of the names on a receiver
-// that is one of the recognised assertion objects.
-func isSelectorOnAny(expr ast.Expr, objects map[string]bool, names ...string) bool {
-	if len(objects) == 0 {
+// isPollCall reports whether expr calls one of [pollNames] on any receiver at
+// all — `require.Eventually`, `r.Eventually`, `require.New(t).Eventually`, or a
+// bare `Eventually` where testify is dot-imported.
+func isPollCall(expr ast.Expr, dotImported bool) bool {
+	switch fun := expr.(type) {
+	case *ast.SelectorExpr:
+		return slices.Contains(pollNames, fun.Sel.Name)
+	case *ast.Ident:
+		return dotImported && slices.Contains(pollNames, fun.Name)
+	default:
 		return false
 	}
-
-	sel, ok := expr.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || !objects[ident.Name] {
-		return false
-	}
-
-	return slices.Contains(names, sel.Sel.Name)
 }
 
 // bubblesIn returns the span of every function literal handed to synctest, so a

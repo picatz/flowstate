@@ -580,6 +580,15 @@ func TestReal(t *testing.T) {
 		"a poll inside a shadowed Test call was treated as bubbled")
 }
 
+// TestAnAliasedAndADotImportedTestifyAreFollowed also pins the over-count the
+// name-based matcher accepts: in a file that imports testify, a call named
+// Eventually on something that is not a testify object is counted anyway.
+//
+// That is the deliberate side of the trade. Recognising the receiver instead
+// took three rounds of review on #1989 and was still missing shapes — a chained
+// New, a field, a map entry — and every miss is a poll the ratchet lets through.
+// Counting one extra call costs a table entry with a note; missing one costs the
+// mechanism.
 func TestAnAliasedAndADotImportedTestifyAreFollowed(t *testing.T) {
 	t.Parallel()
 
@@ -615,9 +624,9 @@ func TestDotted(t *testing.T) {
 `,
 	})
 
-	assert.Equal(t, []int{10, 10}, pollLines(waits),
-		"an aliased or dot-imported testify poll was missed, or a value named after the "+
-			"package the file did not import under that name was mistaken for one")
+	assert.Equal(t, []int{10, 15, 10}, pollLines(waits),
+		"an aliased or dot-imported testify poll was missed, or the deliberate over-count "+
+			"on a non-testify Eventually in a testify-importing file has changed")
 }
 
 // TestALocalShadowingTheImportedNameIsCounted records the limitation the
@@ -689,15 +698,19 @@ func TestReassigned(t *testing.T) {
 	r.EventuallyWithT(nil, 0, 0)
 }
 
-func TestNotTestify(t *testing.T) {
-	var other struct{ Eventually func() }
-	other.Eventually()
+func TestChained(t *testing.T) {
+	require.New(t).Eventually(nil, 0, 0)
+}
+
+func TestHeldInAField(t *testing.T) {
+	h := struct{ r *require.Assertions }{r: require.New(t)}
+	h.r.Neverf(nil, 0, 0, "")
 }
 `})
 
-	assert.Equal(t, []int{12, 15, 21}, pollLines(waits),
-		"a poll reached through a testify assertion object was missed, or a value that is not "+
-			"one was mistaken for it")
+	assert.Equal(t, []int{12, 15, 21, 25, 30}, pollLines(waits),
+		"a poll reached through a testify assertion object was missed: bound to a local, "+
+			"reassigned, chained onto New, or held in a field")
 }
 
 // TestAShadowedDotImportedBubbleCallSuppressesNoBubble is the dot-import half
