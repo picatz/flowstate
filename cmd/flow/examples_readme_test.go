@@ -102,10 +102,10 @@ var offlineExampleHosts = map[string]string{
 // page at each apex and at each `www`, so a request to one of these six leaves
 // the machine like any other.
 //
-// Checked rather than assumed, and exhaustively rather than at the apex alone:
-// `example.com`, `example.net`, `example.org` and the `www.` of each resolve
-// here, while `api.example.com`, `mail.example.com`, `random-xyz.example.com`,
-// `www.foo.example.com`, `foo.example` and `nothing.invalid` do not.
+// Checked rather than assumed: `example.com`, `example.net`, `example.org` and
+// the `www.` of each resolve here, while `api.example.com`, `mail.example.com`,
+// `random-xyz.example.com`, `www.foo.example.com`, `foo.example` and
+// `nothing.invalid` do not.
 //
 // [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
 var servedDocumentationHosts = map[string]bool{
@@ -117,30 +117,39 @@ var servedDocumentationHosts = map[string]bool{
 	"www.example.org": true,
 }
 
-// reservedForDocumentation reports whether a host is one an example may name
-// without anybody deciding it may make a real request: a name under one of the
-// three second-level domains RFC 2606 [§3] reserves, or a name in the `.example`
-// top-level domain [§2] reserves, minus the six in [servedDocumentationHosts].
+// documentationOnlyHost reports whether a host is one this repository has
+// decided an example may name without anybody deciding it may make a real
+// request.
 //
-// The subtraction is the whole subtlety, and it is why this is a predicate
-// rather than a suffix match. "Reserved" and "does not resolve" are different
-// properties: RFC 2606 reserves those three names *delegated*, so the apexes and
-// their `www` answer while everything else under them is NXDOMAIN. A suffix
-// match would call `https://example.com` offline and let a real outbound request
-// through the check that exists to catch one.
+// It is a convention, not a fact about the DNS, and the difference is the whole
+// reason this is written as a predicate with a comment rather than as a suffix
+// match. Three review rounds on #1990 each found the same class of mistake in
+// it, because "reserved for documentation" and "cannot resolve" are different
+// properties and the first was standing in for the second:
 //
-// What it cannot do is track the DNS. If IANA starts serving a seventh name the
-// corpus happens to use, this says offline where the tree says otherwise —
-// which is the residual risk of deriving "will not resolve" from a list, and
-// the reason the six are enumerated with the observation that put them there.
+//   - RFC 2606 [§3] reserves `example.com`, `example.net` and `example.org`
+//     *delegated*, so their apexes answer, and so does each `www` —
+//     [servedDocumentationHosts] is that subtraction.
+//   - A single-label host is relative. `https://example` is not the `.example`
+//     top-level domain [§2] reserves; it is a name with no dots, which a
+//     resolver tries against its search list first, so on a machine with
+//     `search corp.internal` it is a request to `example.corp.internal`. Only a
+//     name *beneath* `.example` is admitted (Codex, r3998521062).
+//
+// So what a caller gets is "the repository permits this spelling", and the
+// reason the permitted spellings are the ones that do not resolve is written
+// here rather than asserted by the code. A name outside them is not refused as
+// unresolvable — it is refused as undecided, and deciding it means a
+// [liveExampleHosts] entry saying why an example people paste and run may reach
+// it.
 //
 // [§2]: https://www.rfc-editor.org/rfc/rfc2606#section-2
 // [§3]: https://www.rfc-editor.org/rfc/rfc2606#section-3
-func reservedForDocumentation(host string) bool {
+func documentationOnlyHost(host string) bool {
 	if servedDocumentationHosts[host] {
 		return false
 	}
-	if host == "example" || strings.HasSuffix(host, ".example") {
+	if strings.HasSuffix(host, ".example") {
 		return true
 	}
 	for _, reserved := range []string{"example.com", "example.net", "example.org"} {
@@ -152,13 +161,14 @@ func reservedForDocumentation(host string) bool {
 	return false
 }
 
-// TestReservedForDocumentationExcludesTheNamesThatAnswer pins the boundary
-// [reservedForDocumentation] turns on, since nothing in the corpus reaches one of
-// the six served names today and so nothing else would notice it moving.
-func TestReservedForDocumentationExcludesTheNamesThatAnswer(t *testing.T) {
+// TestDocumentationOnlyHostAdmitsOnlyTheSpellingsThatDoNotResolve pins every
+// boundary [documentationOnlyHost] turns on, because nothing in the corpus sits
+// on one and so nothing else would notice one moving. Each row below is a
+// mistake a previous version of that predicate made.
+func TestDocumentationOnlyHostAdmitsOnlyTheSpellingsThatDoNotResolve(t *testing.T) {
 	t.Parallel()
 
-	for host, reserved := range map[string]bool{
+	for host, admitted := range map[string]bool{
 		// Delegated and served, so a request to one leaves the machine.
 		"example.com":     false,
 		"www.example.com": false,
@@ -167,18 +177,18 @@ func TestReservedForDocumentationExcludesTheNamesThatAnswer(t *testing.T) {
 		"example.org":     false,
 		"www.example.org": false,
 
-		// Everything else under the same three: NXDOMAIN, which is the property
-		// the corpus relies on. `www.foo.example.com` is the boundary a naive
-		// "starts with www" rule would get wrong.
+		// Everything else under the same three. `www.foo.example.com` is the
+		// boundary a "starts with www" rule would get wrong.
 		"api.example.com":             true,
 		"mail.example.com":            true,
 		"ledger.internal.example.com": true,
 		"flowstate.peer.example.com":  true,
 		"www.foo.example.com":         true,
 
-		// The reserved top-level domain, which is not delegated at all.
-		"example":     true,
+		// The reserved top-level domain admits names beneath it and not its own
+		// bare label, which has no dots and so is a search-list query first.
 		"foo.example": true,
+		"example":     false,
 
 		// Neither reserved nor ours to permit silently.
 		"httpbin.org":      false,
@@ -186,7 +196,7 @@ func TestReservedForDocumentationExcludesTheNamesThatAnswer(t *testing.T) {
 		"notexample.com":   false,
 		"example.com.evil": false,
 	} {
-		assert.Equal(t, reserved, reservedForDocumentation(host), "reservedForDocumentation(%q)", host)
+		assert.Equal(t, admitted, documentationOnlyHost(host), "documentationOnlyHost(%q)", host)
 	}
 }
 
@@ -414,7 +424,7 @@ func TestExamplesREADMENetworkClaims(t *testing.T) {
 			if _, offline := offlineExampleHosts[host]; offline {
 				continue
 			}
-			if _, live := liveExampleHosts[host]; live || reservedForDocumentation(host) {
+			if _, live := liveExampleHosts[host]; live || documentationOnlyHost(host) {
 				continue
 			}
 			t.Errorf("examples/%s names %s, which neither answers by agreement nor is reserved for "+

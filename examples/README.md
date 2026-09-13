@@ -268,14 +268,16 @@ one shows you anything.
 
 - Pointed at `httpbin.org`, the only live service the Flowfile corpus reaches. These run as
   written, and need internet access.
-- Pointed at a name the DNS does not answer for: a subdomain of `example.com`, `example.net`
-  or `example.org`, or a name in the `.example` top-level domain, all reserved for
-  documentation by [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3). (Those three
-  domains and their `www` are reserved *and* served, so they are not in this kind.) These are
-  written to be read, validated, and exercised with `flow test`: a local run reaches the step
-  pointed there and stops on a name-resolution error, so that request is never the half of
-  the file running it shows you, whatever the run does first. A secret backend does resolve
-  its reference before the step it feeds fails, and says so.
+- Pointed at a name beneath one reserved for documentation by
+  [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3): under `example.com`,
+  `example.net` or `example.org`, or under the `.example` top-level domain. *Beneath* is
+  load-bearing — those three domains and their `www` are reserved and also served, and a
+  bare `example` is a single label a resolver expands against its search list — so the
+  spellings an example may use are the ones left over, which do not resolve. These files
+  are written to be read, validated, and exercised with `flow test`: a local run reaches
+  the step pointed there and stops on a name-resolution error, so that request is never the
+  half of the file running it shows you, whatever the run does first. A secret backend does
+  resolve its reference before the step it feeds fails, and says so.
 
 `cmd/flow`'s `TestExamplesREADMENetworkClaims` derives that split from the corpus, and holds
 the Network column's `no` to the same tree, so an example pointed somewhere new fails there
