@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -1374,7 +1374,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// live*, and the request id then decides only whether a submission colliding
 	// with it is a retry — see [RunRequest.request_id]'s composition rule and the
 	// already-started arm below.
-	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
+	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.New().String())
 	if submission != nil {
 		workflowID = submission.workflowID
 	}

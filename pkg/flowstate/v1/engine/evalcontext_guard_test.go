@@ -193,6 +193,7 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 	}
 	// Methods are not in the package scope; find them through their receiver
 	// type's method set.
+	methods := map[string]bool{}
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -201,9 +202,28 @@ func TestEvaluatorsReadNothingFromTheirContext(t *testing.T) {
 			}
 			for _, obj := range methodObjects(pkg, fn) {
 				decls[obj] = fn
+				methods[methodKey(pkg, obj)] = true
 			}
 		}
 	}
+
+	// Asserted rather than assumed, because nothing below fails when decls holds
+	// no method: the walk simply stops descending into one. A resolution that
+	// came back empty would narrow this guard to v1's plain functions and still
+	// pass green, which is the fail-open direction for a guard whose whole
+	// subject is what a call chain reaches.
+	//
+	// Named by receiver, not by method name, for the reason [methodKey] exists:
+	// v1 declares three methods called `Eval`, so a bare "Eval" would be
+	// satisfied by any of them and would not say that the one this walk most
+	// needs to follow resolved. It is also the assertion that holds the
+	// value/pointer receiver pair in [methodObjects] in place, since a pointer
+	// receiver resolves only through the second of the two.
+	require.NotEmpty(t, methods, "no method of v1 resolved through its receiver's method set, so the walk "+
+		"below would skip every method rather than refuse a context read inside one")
+	require.Contains(t, methods, "(*Evaluator).Eval", "the method-set resolution missed "+
+		"(*Evaluator).Eval, which is the method this walk most needs to follow")
+
 	for _, name := range entryPoints {
 		require.Containsf(t, byName, name, "entry point %s is not a function of v1", name)
 	}
@@ -324,6 +344,26 @@ func methodObjects(pkg *types.Package, fn *ast.FuncDecl) []types.Object {
 		}
 	}
 	return objs
+}
+
+// methodKey names a resolved method as `(receiver).Name`, with the receiver
+// spelled as v1 declares it.
+//
+// It exists because a method name alone does not identify a method: v1 has three
+// `Eval` — `(*Evaluator).Eval`, `(*boundedListCall).Eval` and `(*Task).Eval` —
+// so an assertion keyed on the bare name is satisfied by whichever of them
+// happened to resolve, which is not the claim the caller is making.
+func methodKey(pkg *types.Package, obj types.Object) string {
+	fn, ok := obj.(*types.Func)
+	if !ok {
+		return obj.Name()
+	}
+	recv := fn.Signature().Recv()
+	if recv == nil {
+		return obj.Name()
+	}
+
+	return "(" + types.TypeString(recv.Type(), types.RelativeTo(pkg)) + ")." + obj.Name()
 }
 
 // isContext reports whether a type is context.Context.

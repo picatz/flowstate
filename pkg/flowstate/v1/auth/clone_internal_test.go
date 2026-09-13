@@ -67,13 +67,12 @@ func TestCloneSharesNoClaimRuleSliceWithItsSource(t *testing.T) {
 		"TrustedIssuer.clone left the action grant aliased to the caller's slice")
 
 	clonedRule := reflect.ValueOf(&clone.Require[0]).Elem()
-	for i := range clonedRule.NumField() {
-		field := clonedRule.Field(i)
+	for spec, field := range clonedRule.Fields() {
 		if field.Type() != stringSliceType || field.Len() == 0 {
 			continue
 		}
 		require.Equalf(t, "original", field.Index(0).String(),
 			"TrustedIssuer.clone left ClaimRule.%s aliased to the caller's slice: a verifier built from this "+
-				"policy reads whatever the caller writes next", clonedRule.Type().Field(i).Name)
+				"policy reads whatever the caller writes next", spec.Name)
 	}
 }
