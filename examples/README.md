@@ -272,16 +272,19 @@ one shows you anything.
   [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606#section-3): under `example.com`,
   `example.net` or `example.org`, or under the `.example` top-level domain. *Beneath* is
   load-bearing — those three domains and their `www` are reserved and also served, and a
-  bare `example` is a single label a resolver expands against its search list — so the
-  spellings an example may use are the ones left over, which do not resolve. These files
-  are written to be read, validated, and exercised with `flow test`: a local run reaches
-  the step pointed there and stops on a name-resolution error, so that request is never the
-  half of the file running it shows you, whatever the run does first. A secret backend does
-  resolve its reference before the step it feeds fails, and says so.
+  bare `example` is a single label a resolver expands against its search list — so what is
+  left is the set of spellings nobody publishes a record for. These files are written to be
+  read, validated, and exercised with `flow test`: a local run reaches the step pointed
+  there and stops with a name-resolution error rather than showing you that request. A
+  secret backend does resolve its reference before the step it feeds fails, and says so.
 
-`cmd/flow`'s `TestExamplesREADMENetworkClaims` derives that split from the corpus, and holds
-the Network column's `no` to the same tree, so an example pointed somewhere new fails there
-rather than going stale here.
+That second kind is a convention this repository keeps, not a property of your resolver.
+Nothing here looks a name up, and a split-horizon resolver that answers for
+`api.example.com` would make a local run reach it — so `cmd/flow`'s
+`TestExamplesREADMENetworkClaims` enforces which spellings an example may name, and holds
+the Network column's `no` to the same tree. An example pointed somewhere new fails there
+rather than going stale here, and the reason each permitted spelling is permitted is written
+beside it in `documentationOnlyHost`.
 
 `plugins/` sits outside the split, because a plugin's own task decides where it goes: the Git
 and VCS examples read a public repository on `github.com`, and the rest reach whichever
