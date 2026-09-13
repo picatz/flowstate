@@ -246,13 +246,24 @@ mv "${stage_dir}" "${hook_dir}"
 # Copied through a temporary name and renamed, so a reader never opens a
 # half-written binary, and written only when this build produced one.
 if [[ -x "${hook_dir}/mergeguard" ]]; then
-	install -d -m 0700 "${retained_dir}"
-	retained_tmp="$(mktemp "${retained_dir}/mergeguard.XXXXXX")"
-	if cp "${hook_dir}/mergeguard" "${retained_tmp}" && chmod 0700 "${retained_tmp}"; then
-		mv "${retained_tmp}" "${retained_dir}/mergeguard"
-		printf '%s\n' "${source_id}" > "${retained_dir}/.source-id"
+	# Every step is inside the condition, so none of them can end this script:
+	# the generation above is already published, and a build that succeeded must
+	# not report failure because it could not also retain a copy -- the launcher
+	# reads any status but 0 and 3 as an incoherent build and denies the call.
+	#
+	# Staged under the cache directory the stale-build sweep already prunes,
+	# then published by renaming the directory, so the binary and the identity
+	# it was built from arrive together and a kill leaves no half-written guard
+	# behind. Losing the directory is the safe direction: with no retained guard
+	# the launcher falls back to the text backstop.
+	retained_stage="$(mktemp -d "${cache_dir}/build.lkg.XXXXXX")"
+	if cp "${hook_dir}/mergeguard" "${retained_stage}/mergeguard" &&
+		chmod 0700 "${retained_stage}/mergeguard" &&
+		printf '%s\n' "${source_id}" > "${retained_stage}/.source-id"; then
+		rm -rf "${retained_dir}"
+		mv "${retained_stage}" "${retained_dir}"
 	else
-		rm -f "${retained_tmp}"
+		rm -rf "${retained_stage}"
 	fi
 fi
 trap 'rm -f "${post_build_dirs}" "${post_build_extra}"; rm -rf "${lock_dir}"' EXIT

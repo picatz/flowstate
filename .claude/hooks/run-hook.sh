@@ -158,7 +158,13 @@ retained_denies() {
 	if [[ -n "${payload_truncated}" ]]; then
 		return 1
 	fi
-	decision="$(printf '%s' "${payload_text}" | "${retained_guard}" 2>/dev/null)" || status=$?
+	# Fed from a here-string rather than a pipe, so `status` is the guard's own
+	# exit code. Under `pipefail` a pipeline reports the writer's death too, and
+	# a retained guard that exits without draining a large payload would kill the
+	# writer with SIGPIPE -- discarding a refusal it had already made. Today's
+	# guard always drains, but a retained binary is by design one the launcher
+	# cannot inspect.
+	decision="$("${retained_guard}" <<< "${payload_text}" 2>/dev/null)" || status=$?
 	# A retained binary that cannot run -- built for another platform, or
 	# truncated -- has not judged anything. The backstop still applies.
 	if [[ "${status}" -ne 0 ]]; then
@@ -167,8 +173,16 @@ retained_denies() {
 	if [[ "${decision}" != *'"permissionDecision"'*'"deny"'* ]]; then
 		return 1
 	fi
-	printf 'Flowstate Claude hook %q refused this call. Its current sources do not compile, so the decision was made by the last build of it that did.\n' \
-		"${name}" >&2
+	# Names the sources that build came from, so the operator can see which one
+	# decided rather than being told only that some earlier one did. Recorded
+	# beside the binary in the same rename, and absent only if the directory
+	# predates that.
+	local built_from="an earlier build"
+	if [[ -r "${retained_guard%/*}/.source-id" ]]; then
+		built_from="the build of $(<"${retained_guard%/*}/.source-id")"
+	fi
+	printf 'Flowstate Claude hook %q refused this call. Its current sources do not compile, so the decision was made by %s, the last one that did.\n' \
+		"${name}" "${built_from}" >&2
 	printf '%s\n' "${decision}"
 	exit 0
 }

@@ -1249,6 +1249,9 @@ func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(retained, "mergeguard"), []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(retained, ".source-id"), []byte("retainedsourceid\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	writeRetained(t, recognizer)
 
@@ -1292,8 +1295,17 @@ func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
 		if !strings.Contains(stdout, "retained recognizer saw a merge") {
 			t.Fatalf("the guard's own reason was not passed through:\n%s", stdout)
 		}
-		if !strings.Contains(stderr, "last build of it that did") {
+		if !strings.Contains(stderr, "the last one that did") {
 			t.Fatalf("the operator was not told the decision came from a retained binary:\n%s", stderr)
+		}
+		// The identity recorded beside the binary is named, so an operator can
+		// see which build decided rather than only that an earlier one did.
+		recorded, err := os.ReadFile(filepath.Join(retained, ".source-id"))
+		if err != nil {
+			t.Fatalf("no identity was recorded beside the retained guard: %v", err)
+		}
+		if !strings.Contains(stderr, strings.TrimSpace(string(recorded))) {
+			t.Fatalf("the note did not name the build that decided (%q):\n%s", recorded, stderr)
 		}
 	})
 
@@ -1349,12 +1361,29 @@ func TestClaudeHookLauncherAsksTheRetainedMergeGuard(t *testing.T) {
 		if strings.Contains(stdout, "half-written") {
 			t.Fatalf("output from a failed guard was passed off as its decision:\n%s", stdout)
 		}
-		if strings.Contains(stderr, "last build of it that did") {
+		if strings.Contains(stderr, "the last one that did") {
 			t.Fatalf("the operator was told a recognizer decided when none did:\n%s", stderr)
 		}
 		// And it must not block a repair either.
 		if status, stdout, stderr := run(t, "go build ./tools/hooks/mergeguard"); status != 0 {
 			t.Fatalf("a failed retained guard blocked a repair, exit %d:\n%s\n%s", status, stdout, stderr)
+		}
+	})
+
+	t.Run("a refusal survives a guard that does not drain the payload", func(t *testing.T) {
+		// The guard is fed from a here-string rather than a pipe, so its own
+		// exit code is what is read. Through a pipe, a guard that decides
+		// without draining a large payload kills the writer with SIGPIPE, and
+		// `pipefail` would report that as the guard's failure -- throwing away
+		// a refusal it had already made. Today's guard drains, but a retained
+		// binary is by design one the launcher cannot inspect.
+		writeRetained(t, "#!/bin/sh\nhead -c 200 > /dev/null\n"+
+			"printf '%s\\n' '{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"decided early\"}}'\n"+
+			"exit 0\n")
+		big := strings.Repeat("x", 200000)
+		status, stdout, stderr := run(t, "gh pr "+"mer"+"ge 1942 # "+big)
+		if status != 0 || !strings.Contains(stdout, "decided early") {
+			t.Fatalf("a refusal was discarded because the guard did not drain the payload (exit %d):\n%s\n%s", status, stdout, stderr)
 		}
 	})
 
