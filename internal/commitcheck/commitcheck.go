@@ -119,7 +119,14 @@ var (
 	// their own. Naming them keeps the rule provider-neutral, which is what
 	// AGENTS.md asks for, without claiming every such line is attribution
 	// (Codex, #1985).
-	attributionFooter = regexp.MustCompile(`(?im)^[\s>]*(?:[-*_]{3,}[\s>]*)?(?:\x{1F916}\s*)?[_*]{0,2}generated (?:with|by) \[?(?:claude(?: code)?|codex|amp|copilot|cursor|gemini(?: cli)?)\]?(?:\([^)]*\))?[_*.\s]*$`)
+	//
+	// A run of HTML tags may wrap the marker on either side, because the
+	// archived house style for a surface this repository controls is the
+	// compact `<sup><sub>…</sub></sup>` form, and a footer does not stop
+	// being one for being written small (Codex, #1985). The comment syntax
+	// `<!--` is not a tag, so this repository's generated banners still do
+	// not match.
+	attributionFooter = regexp.MustCompile(`(?im)^[\s>]*(?:[-*_]{3,}[\s>]*)?(?:<[a-z][a-z0-9]{0,9}>\s*){0,4}(?:\x{1F916}\s*)?[_*]{0,2}generated (?:with|by) \[?(?:claude(?: code)?|codex|amp|copilot|cursor|gemini(?: cli)?)\]?(?:\([^)]*\))?[_*.]{0,2}\s*(?:</[a-z][a-z0-9]{0,9}>\s*){0,4}[_*.\s]*$`)
 
 	// horizontalRule is the rule a forge sets above the footer it appends.
 	horizontalRule = regexp.MustCompile(`^[\s>]*[-*_]{3,}\s*$`)
@@ -249,11 +256,19 @@ func Check(subject, body string, where Surface) []Finding {
 // it, and the blank lines around them.
 //
 // The rule is what identifies the footer as the forge's rather than the
-// author's, and it is required: over the sixty most recently updated pull
-// requests in this repository, every one of the eighteen trailing footers was
-// preceded by a rule and none stood without one. Without that test a footer an
-// author typed as their last line would be exempt, which is the slop this
-// reports rather than an appendage they cannot remove.
+// author's, and it is required. Measured over the sixty most recently updated
+// pull requests in this repository: every trailing footer was preceded by a
+// rule and none stood without one, while the hand-written marker sits above a
+// bare session link and never under a rule. The count is deliberately not
+// written down, because the window moves; the shape is what holds. Without the
+// test a footer an author typed as their last line would be exempt, which is
+// the slop this reports rather than an appendage they cannot remove.
+//
+// Syntax is all this has. An author who reproduces the forge's exact tail is
+// indistinguishable from the forge here, and no provenance reaches this seam
+// to settle it (Codex, #1985). The trade is deliberate: the other direction
+// reported a footer every author was powerless to remove, on a check that is
+// required to merge.
 //
 // Only the one is removed. A footer the author wrote as well sits above it and
 // is still reported, which is the shape that made this necessary: a
