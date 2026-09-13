@@ -1,0 +1,23 @@
+# The operator's half of this example: which registries a worker may read.
+#
+# The oci plugin has no allowlist of its own. It takes the deployment's grant
+# and applies it on its real dial path, so this file is the whole of the
+# answer - for the plugin, and for the worker's own built-in http task.
+#
+#   flow worker --plugin-dir ./plugins --egress-policy examples/plugins/oci/egress-policy.yaml
+#
+# Written as an allow list, so a registry that is not named here is denied
+# rather than reachable by omission.
+egress:
+  allow:
+    # The registry this example reads from.
+    - host == "ghcr.io"
+    # Docker Hub, when an image is written docker.io/…: the API is served from
+    # registry-1.docker.io, and the token endpoint it names in its challenge is
+    # auth.docker.io. A policy that permits only the first of those permits a
+    # read that cannot authenticate.
+    - host == "registry-1.docker.io"
+    - host == "auth.docker.io"
+  # Responses are read under a ceiling as well as from permitted hosts; the
+  # plugin's own bounds are tighter, and the lower of the two wins.
+  max_response_bytes: 8388608

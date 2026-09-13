@@ -1329,6 +1329,299 @@
       "claimsDigest": "sha256:b85791e367c47b103ff192779ff3c606f47b1e310e5582bd6ebc6220352b0902"
     },
     {
+      "name": "oci",
+      "version": "0.1.0",
+      "description": "Reads an OCI registry: resolves a reference to its digest, lists what is attached to it, and fetches one verified blob.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "oci.blob",
+          "summary": "Fetch one content-addressed blob, bounded, and refuse it unless the bytes hash to the digest that was asked for.",
+          "inputs": [
+            {
+              "name": "reference",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_bytes",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "parse_json",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "password",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "name": "digest",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "size",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "content",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "json",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "media_type",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "password"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBvY2kvdjEvb2NpLnByb3RvEgZvY2kudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIpYBCg1SZXNvbHZlSW5wdXRzEhwKCXJlZmVyZW5jZRgBIAEoCVIJcmVmZXJlbmNlEhoKCHBsYXRmb3JtGAIgASgJUghwbGF0Zm9ybRIaCgh1c2VybmFtZRgDIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIvwBCg5SZXNvbHZlT3V0cHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIWCgZkaWdlc3QYAiABKAlSBmRpZ2VzdBIdCgptZWRpYV90eXBlGAMgASgJUgltZWRpYVR5cGUSEgoEc2l6ZRgEIAEoA1IEc2l6ZRIaCghyZWdpc3RyeRgFIAEoCVIIcmVnaXN0cnkSHgoKcmVwb3NpdG9yeRgGIAEoCVIKcmVwb3NpdG9yeRIaCghwbGF0Zm9ybRgHIAEoCVIIcGxhdGZvcm0SKQoQcGxhdGZvcm1fbWF0Y2hlZBgIIAEoCFIPcGxhdGZvcm1NYXRjaGVkIrcBCg9SZWZlcnJlcnNJbnB1dHMSHAoJcmVmZXJlbmNlGAEgASgJUglyZWZlcmVuY2USIwoNYXJ0aWZhY3RfdHlwZRgCIAEoCVIMYXJ0aWZhY3RUeXBlEhQKBWxpbWl0GAMgASgFUgVsaW1pdBIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIoUBChBSZWZlcnJlcnNPdXRwdXRzEj0KCXJlZmVycmVycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIJcmVmZXJyZXJzEhQKBWNvdW50GAIgASgDUgVjb3VudBIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKzAQoKQmxvYklucHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIbCgltYXhfYnl0ZXMYAiABKANSCG1heEJ5dGVzEh0KCnBhcnNlX2pzb24YAyABKAhSCXBhcnNlSnNvbhIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIqcBCgtCbG9iT3V0cHV0cxIWCgZkaWdlc3QYASABKAlSBmRpZ2VzdBISCgRzaXplGAIgASgDUgRzaXplEhgKB2NvbnRlbnQYAyABKAlSB2NvbnRlbnQSMwoEanNvbhgEIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIEanNvbhIdCgptZWRpYV90eXBlGAUgASgJUgltZWRpYVR5cGVCiQEKCmNvbS5vY2kudjFCCE9jaVByb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL29jaS9nZW4vb2NpL3YxO29jaXYxogIDT1hYqgIGT2NpLlYxygIGT2NpXFYx4gIST2NpXFYxXEdQQk1ldGFkYXRh6gIHT2NpOjpWMWIGcHJvdG8z",
+          "inputMessage": "oci.v1.BlobInputs",
+          "outputDescriptor": "ChBvY2kvdjEvb2NpLnByb3RvEgZvY2kudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIpYBCg1SZXNvbHZlSW5wdXRzEhwKCXJlZmVyZW5jZRgBIAEoCVIJcmVmZXJlbmNlEhoKCHBsYXRmb3JtGAIgASgJUghwbGF0Zm9ybRIaCgh1c2VybmFtZRgDIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIvwBCg5SZXNvbHZlT3V0cHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIWCgZkaWdlc3QYAiABKAlSBmRpZ2VzdBIdCgptZWRpYV90eXBlGAMgASgJUgltZWRpYVR5cGUSEgoEc2l6ZRgEIAEoA1IEc2l6ZRIaCghyZWdpc3RyeRgFIAEoCVIIcmVnaXN0cnkSHgoKcmVwb3NpdG9yeRgGIAEoCVIKcmVwb3NpdG9yeRIaCghwbGF0Zm9ybRgHIAEoCVIIcGxhdGZvcm0SKQoQcGxhdGZvcm1fbWF0Y2hlZBgIIAEoCFIPcGxhdGZvcm1NYXRjaGVkIrcBCg9SZWZlcnJlcnNJbnB1dHMSHAoJcmVmZXJlbmNlGAEgASgJUglyZWZlcmVuY2USIwoNYXJ0aWZhY3RfdHlwZRgCIAEoCVIMYXJ0aWZhY3RUeXBlEhQKBWxpbWl0GAMgASgFUgVsaW1pdBIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIoUBChBSZWZlcnJlcnNPdXRwdXRzEj0KCXJlZmVycmVycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIJcmVmZXJyZXJzEhQKBWNvdW50GAIgASgDUgVjb3VudBIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKzAQoKQmxvYklucHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIbCgltYXhfYnl0ZXMYAiABKANSCG1heEJ5dGVzEh0KCnBhcnNlX2pzb24YAyABKAhSCXBhcnNlSnNvbhIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIqcBCgtCbG9iT3V0cHV0cxIWCgZkaWdlc3QYASABKAlSBmRpZ2VzdBISCgRzaXplGAIgASgDUgRzaXplEhgKB2NvbnRlbnQYAyABKAlSB2NvbnRlbnQSMwoEanNvbhgEIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIEanNvbhIdCgptZWRpYV90eXBlGAUgASgJUgltZWRpYVR5cGVCiQEKCmNvbS5vY2kudjFCCE9jaVByb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL29jaS9nZW4vb2NpL3YxO29jaXYxogIDT1hYqgIGT2NpLlYxygIGT2NpXFYx4gIST2NpXFYxXEdQQk1ldGFkYXRh6gIHT2NpOjpWMWIGcHJvdG8z",
+          "outputMessage": "oci.v1.BlobOutputs",
+          "requiredSecretInputs": [
+            "password"
+          ]
+        },
+        {
+          "name": "oci.referrers",
+          "summary": "List the artifacts attached to a digest - signatures, SBOMs, in-toto attestations - bounded and filterable by artifact type.",
+          "inputs": [
+            {
+              "name": "reference",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "artifact_type",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "limit",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "password",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "name": "referrers",
+              "type": "list[any]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "count",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "truncated",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "password"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBvY2kvdjEvb2NpLnByb3RvEgZvY2kudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIpYBCg1SZXNvbHZlSW5wdXRzEhwKCXJlZmVyZW5jZRgBIAEoCVIJcmVmZXJlbmNlEhoKCHBsYXRmb3JtGAIgASgJUghwbGF0Zm9ybRIaCgh1c2VybmFtZRgDIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIvwBCg5SZXNvbHZlT3V0cHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIWCgZkaWdlc3QYAiABKAlSBmRpZ2VzdBIdCgptZWRpYV90eXBlGAMgASgJUgltZWRpYVR5cGUSEgoEc2l6ZRgEIAEoA1IEc2l6ZRIaCghyZWdpc3RyeRgFIAEoCVIIcmVnaXN0cnkSHgoKcmVwb3NpdG9yeRgGIAEoCVIKcmVwb3NpdG9yeRIaCghwbGF0Zm9ybRgHIAEoCVIIcGxhdGZvcm0SKQoQcGxhdGZvcm1fbWF0Y2hlZBgIIAEoCFIPcGxhdGZvcm1NYXRjaGVkIrcBCg9SZWZlcnJlcnNJbnB1dHMSHAoJcmVmZXJlbmNlGAEgASgJUglyZWZlcmVuY2USIwoNYXJ0aWZhY3RfdHlwZRgCIAEoCVIMYXJ0aWZhY3RUeXBlEhQKBWxpbWl0GAMgASgFUgVsaW1pdBIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIoUBChBSZWZlcnJlcnNPdXRwdXRzEj0KCXJlZmVycmVycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIJcmVmZXJyZXJzEhQKBWNvdW50GAIgASgDUgVjb3VudBIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKzAQoKQmxvYklucHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIbCgltYXhfYnl0ZXMYAiABKANSCG1heEJ5dGVzEh0KCnBhcnNlX2pzb24YAyABKAhSCXBhcnNlSnNvbhIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIqcBCgtCbG9iT3V0cHV0cxIWCgZkaWdlc3QYASABKAlSBmRpZ2VzdBISCgRzaXplGAIgASgDUgRzaXplEhgKB2NvbnRlbnQYAyABKAlSB2NvbnRlbnQSMwoEanNvbhgEIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIEanNvbhIdCgptZWRpYV90eXBlGAUgASgJUgltZWRpYVR5cGVCiQEKCmNvbS5vY2kudjFCCE9jaVByb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL29jaS9nZW4vb2NpL3YxO29jaXYxogIDT1hYqgIGT2NpLlYxygIGT2NpXFYx4gIST2NpXFYxXEdQQk1ldGFkYXRh6gIHT2NpOjpWMWIGcHJvdG8z",
+          "inputMessage": "oci.v1.ReferrersInputs",
+          "outputDescriptor": "ChBvY2kvdjEvb2NpLnByb3RvEgZvY2kudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIpYBCg1SZXNvbHZlSW5wdXRzEhwKCXJlZmVyZW5jZRgBIAEoCVIJcmVmZXJlbmNlEhoKCHBsYXRmb3JtGAIgASgJUghwbGF0Zm9ybRIaCgh1c2VybmFtZRgDIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIvwBCg5SZXNvbHZlT3V0cHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIWCgZkaWdlc3QYAiABKAlSBmRpZ2VzdBIdCgptZWRpYV90eXBlGAMgASgJUgltZWRpYVR5cGUSEgoEc2l6ZRgEIAEoA1IEc2l6ZRIaCghyZWdpc3RyeRgFIAEoCVIIcmVnaXN0cnkSHgoKcmVwb3NpdG9yeRgGIAEoCVIKcmVwb3NpdG9yeRIaCghwbGF0Zm9ybRgHIAEoCVIIcGxhdGZvcm0SKQoQcGxhdGZvcm1fbWF0Y2hlZBgIIAEoCFIPcGxhdGZvcm1NYXRjaGVkIrcBCg9SZWZlcnJlcnNJbnB1dHMSHAoJcmVmZXJlbmNlGAEgASgJUglyZWZlcmVuY2USIwoNYXJ0aWZhY3RfdHlwZRgCIAEoCVIMYXJ0aWZhY3RUeXBlEhQKBWxpbWl0GAMgASgFUgVsaW1pdBIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIoUBChBSZWZlcnJlcnNPdXRwdXRzEj0KCXJlZmVycmVycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIJcmVmZXJyZXJzEhQKBWNvdW50GAIgASgDUgVjb3VudBIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKzAQoKQmxvYklucHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIbCgltYXhfYnl0ZXMYAiABKANSCG1heEJ5dGVzEh0KCnBhcnNlX2pzb24YAyABKAhSCXBhcnNlSnNvbhIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIqcBCgtCbG9iT3V0cHV0cxIWCgZkaWdlc3QYASABKAlSBmRpZ2VzdBISCgRzaXplGAIgASgDUgRzaXplEhgKB2NvbnRlbnQYAyABKAlSB2NvbnRlbnQSMwoEanNvbhgEIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIEanNvbhIdCgptZWRpYV90eXBlGAUgASgJUgltZWRpYVR5cGVCiQEKCmNvbS5vY2kudjFCCE9jaVByb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL29jaS9nZW4vb2NpL3YxO29jaXYxogIDT1hYqgIGT2NpLlYxygIGT2NpXFYx4gIST2NpXFYxXEdQQk1ldGFkYXRh6gIHT2NpOjpWMWIGcHJvdG8z",
+          "outputMessage": "oci.v1.ReferrersOutputs",
+          "requiredSecretInputs": [
+            "password"
+          ]
+        },
+        {
+          "name": "oci.resolve",
+          "summary": "Resolve a registry reference to the digest it names, optionally selecting one platform out of an index.",
+          "inputs": [
+            {
+              "name": "reference",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "platform",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "username",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "password",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            }
+          ],
+          "outputs": [
+            {
+              "name": "reference",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "digest",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "media_type",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "size",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "registry",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "repository",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "platform",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "platform_matched",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "password"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChBvY2kvdjEvb2NpLnByb3RvEgZvY2kudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIpYBCg1SZXNvbHZlSW5wdXRzEhwKCXJlZmVyZW5jZRgBIAEoCVIJcmVmZXJlbmNlEhoKCHBsYXRmb3JtGAIgASgJUghwbGF0Zm9ybRIaCgh1c2VybmFtZRgDIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIvwBCg5SZXNvbHZlT3V0cHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIWCgZkaWdlc3QYAiABKAlSBmRpZ2VzdBIdCgptZWRpYV90eXBlGAMgASgJUgltZWRpYVR5cGUSEgoEc2l6ZRgEIAEoA1IEc2l6ZRIaCghyZWdpc3RyeRgFIAEoCVIIcmVnaXN0cnkSHgoKcmVwb3NpdG9yeRgGIAEoCVIKcmVwb3NpdG9yeRIaCghwbGF0Zm9ybRgHIAEoCVIIcGxhdGZvcm0SKQoQcGxhdGZvcm1fbWF0Y2hlZBgIIAEoCFIPcGxhdGZvcm1NYXRjaGVkIrcBCg9SZWZlcnJlcnNJbnB1dHMSHAoJcmVmZXJlbmNlGAEgASgJUglyZWZlcmVuY2USIwoNYXJ0aWZhY3RfdHlwZRgCIAEoCVIMYXJ0aWZhY3RUeXBlEhQKBWxpbWl0GAMgASgFUgVsaW1pdBIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIoUBChBSZWZlcnJlcnNPdXRwdXRzEj0KCXJlZmVycmVycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIJcmVmZXJyZXJzEhQKBWNvdW50GAIgASgDUgVjb3VudBIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKzAQoKQmxvYklucHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIbCgltYXhfYnl0ZXMYAiABKANSCG1heEJ5dGVzEh0KCnBhcnNlX2pzb24YAyABKAhSCXBhcnNlSnNvbhIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIqcBCgtCbG9iT3V0cHV0cxIWCgZkaWdlc3QYASABKAlSBmRpZ2VzdBISCgRzaXplGAIgASgDUgRzaXplEhgKB2NvbnRlbnQYAyABKAlSB2NvbnRlbnQSMwoEanNvbhgEIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIEanNvbhIdCgptZWRpYV90eXBlGAUgASgJUgltZWRpYVR5cGVCiQEKCmNvbS5vY2kudjFCCE9jaVByb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL29jaS9nZW4vb2NpL3YxO29jaXYxogIDT1hYqgIGT2NpLlYxygIGT2NpXFYx4gIST2NpXFYxXEdQQk1ldGFkYXRh6gIHT2NpOjpWMWIGcHJvdG8z",
+          "inputMessage": "oci.v1.ResolveInputs",
+          "outputDescriptor": "ChBvY2kvdjEvb2NpLnByb3RvEgZvY2kudjEaGGZsb3dzdGF0ZS92MS92YWx1ZS5wcm90bxokZ29vZ2xlL2FwaS9leHByL3YxYWxwaGExL3ZhbHVlLnByb3RvIpYBCg1SZXNvbHZlSW5wdXRzEhwKCXJlZmVyZW5jZRgBIAEoCVIJcmVmZXJlbmNlEhoKCHBsYXRmb3JtGAIgASgJUghwbGF0Zm9ybRIaCgh1c2VybmFtZRgDIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBCABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIvwBCg5SZXNvbHZlT3V0cHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIWCgZkaWdlc3QYAiABKAlSBmRpZ2VzdBIdCgptZWRpYV90eXBlGAMgASgJUgltZWRpYVR5cGUSEgoEc2l6ZRgEIAEoA1IEc2l6ZRIaCghyZWdpc3RyeRgFIAEoCVIIcmVnaXN0cnkSHgoKcmVwb3NpdG9yeRgGIAEoCVIKcmVwb3NpdG9yeRIaCghwbGF0Zm9ybRgHIAEoCVIIcGxhdGZvcm0SKQoQcGxhdGZvcm1fbWF0Y2hlZBgIIAEoCFIPcGxhdGZvcm1NYXRjaGVkIrcBCg9SZWZlcnJlcnNJbnB1dHMSHAoJcmVmZXJlbmNlGAEgASgJUglyZWZlcmVuY2USIwoNYXJ0aWZhY3RfdHlwZRgCIAEoCVIMYXJ0aWZhY3RUeXBlEhQKBWxpbWl0GAMgASgFUgVsaW1pdBIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIoUBChBSZWZlcnJlcnNPdXRwdXRzEj0KCXJlZmVycmVycxgBIAMoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIJcmVmZXJyZXJzEhQKBWNvdW50GAIgASgDUgVjb3VudBIcCgl0cnVuY2F0ZWQYAyABKAhSCXRydW5jYXRlZCKzAQoKQmxvYklucHV0cxIcCglyZWZlcmVuY2UYASABKAlSCXJlZmVyZW5jZRIbCgltYXhfYnl0ZXMYAiABKANSCG1heEJ5dGVzEh0KCnBhcnNlX2pzb24YAyABKAhSCXBhcnNlSnNvbhIaCgh1c2VybmFtZRgEIAEoCVIIdXNlcm5hbWUSLwoIcGFzc3dvcmQYBSABKAsyEy5mbG93c3RhdGUudjEuVmFsdWVSCHBhc3N3b3JkIqcBCgtCbG9iT3V0cHV0cxIWCgZkaWdlc3QYASABKAlSBmRpZ2VzdBISCgRzaXplGAIgASgDUgRzaXplEhgKB2NvbnRlbnQYAyABKAlSB2NvbnRlbnQSMwoEanNvbhgEIAEoCzIfLmdvb2dsZS5hcGkuZXhwci52MWFscGhhMS5WYWx1ZVIEanNvbhIdCgptZWRpYV90eXBlGAUgASgJUgltZWRpYVR5cGVCiQEKCmNvbS5vY2kudjFCCE9jaVByb3RvUAFaOGdpdGh1Yi5jb20vcGljYXR6L2Zsb3dzdGF0ZS9wbHVnaW5zL29jaS9nZW4vb2NpL3YxO29jaXYxogIDT1hYqgIGT2NpLlYxygIGT2NpXFYx4gIST2NpXFYxXEdQQk1ldGFkYXRh6gIHT2NpOjpWMWIGcHJvdG8z",
+          "outputMessage": "oci.v1.ResolveOutputs",
+          "requiredSecretInputs": [
+            "password"
+          ]
+        }
+      ],
+      "protocolVersion": 7,
+      "taskSchemaDigest": "sha256:fd6cfdc41328cb17c01106b8d4ccb4c3a4fede6f389d899633bfa522493b7837",
+      "claimsDigest": "sha256:2a2abcbe1cd1956825b51cf9b6b949669a208437d68de744513b34c9701945e2"
+    },
+    {
       "name": "slack",
       "version": "0.1.0",
       "description": "Posts bounded accessible text to Slack for approval and human-in-the-loop notifications; outbound only.",

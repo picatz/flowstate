@@ -1,0 +1,108 @@
+edition: v2026.3
+name: oci-verify-before-deploy
+description: Pins a tag to the digest a registry serves today, asks what is attached to those exact bytes, reads the in-toto attestation, and gates the deploy on a human approving the digest rather than the tag.
+# The supply-chain shape this plugin exists for, and the reason each step is a
+# separate one: everything after `pin` is about the same bytes.
+#
+#   oci.resolve    - a tag is a name somebody can move, including between the
+#                    moment a human approves and the moment a node pulls. This
+#                    step turns the name into the bytes, once, and every step
+#                    below carries `steps.pin.reference` rather than the tag.
+#
+#   oci.referrers  - what is attached to those bytes. A 404 here is reported
+#                    rather than read as "nothing is attached": a registry that
+#                    does not implement the referrers API cannot tell this
+#                    workflow that an image is unattested, and a gate that read
+#                    it that way would fail open.
+#
+#   oci.blob       - the attestation itself, fetched by its own digest and
+#                    refused unless the bytes hash to it. This is the step an
+#                    `http:` call cannot stand in for.
+#
+#   wait_for_signal - a person approves the digest. The prompt names it, so what
+#                    was approved and what is deployed are the same string.
+#
+# Everything here is a read. Nothing in this file deploys anything - the last
+# step is the decision, and what consumes it is a deployment workflow this one
+# hands a pinned reference to.
+plugins:
+  oci: v0.1.0
+inputs:
+  image:
+    type: string
+    required: true
+    description: the image to promote, as registry/repository:tag - this plugin never infers a registry
+    example: ghcr.io/acme/api:1.4.2
+    must: size(this) > 0 && size(this) <= 1024
+  platform:
+    type: string
+    required: false
+    default: ""
+    description: optional os/arch to select out of a multi-platform index
+    example: linux/amd64
+  attestation_type:
+    type: string
+    required: false
+    default: application/vnd.in-toto+json
+    description: the artifact type the deploy gate requires to be attached
+  expected_approver:
+    type: string
+    required: true
+    description: attested subject allowed to answer the Flowstate signal
+    example: release-manager@example.com
+signals:
+  digest-approved:
+    allow:
+      - subject: ${"https://issuer.example.com#" + inputs.expected_approver}
+        claims:
+          team: release-managers
+    distinct_from_starter: true
+steps:
+  - id: pin
+    oci.resolve:
+      reference: ${inputs.image}
+      platform: ${inputs.platform}
+
+  - id: attached
+    oci.referrers:
+      # The pinned reference, never the tag: a referrer set is a statement about
+      # specific bytes, and oci.referrers refuses a tag for that reason.
+      reference: ${steps.pin.reference}
+      artifact_type: ${inputs.attestation_type}
+      limit: 20
+
+  - id: attestation_present
+    value: ${steps.attached.count > 0}
+
+  - id: attestation
+    if: ${steps.attestation_present.value}
+    oci.blob:
+      reference: ${steps.pin.registry + "/" + steps.pin.repository + "@" + steps.attached.referrers[0].digest}
+      parse_json: true
+      max_bytes: 262144
+
+  - id: predicate_type
+    if: ${steps.attestation_present.value}
+    value: ${steps.attestation.json.predicateType}
+
+  - id: approval
+    wait_for_signal:
+      name: digest-approved
+      prompt: '${"Approve deploying %s? %s attestation attached.".format([steps.pin.reference, steps.attestation_present.value ? "An" : "No"])}'
+      timeout: 24h
+      outputs:
+        approved: ${payload.?approved.orValue(false)}
+        timed_out: ${timed_out}
+outputs:
+  reference:
+    value: ${steps.pin.reference}
+    description: the digest-pinned reference that was approved, to be deployed verbatim
+  digest:
+    value: ${steps.pin.digest}
+    description: the digest the registry served for this tag at pin time
+  attested:
+    value: ${steps.attestation_present.value}
+    description: whether an artifact of the required type is attached to those exact bytes
+  approved:
+    value: ${steps.approval.approved && !steps.approval.timed_out}
+    description: true only after an attested, authorized human approved the digest

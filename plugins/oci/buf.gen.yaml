@@ -1,0 +1,32 @@
+version: v1
+# managed mode's only job here is telling buf what flowstate/v1/value.proto's
+# go_package is, so it can resolve the import oci.proto makes - this plugin
+# never generates code for that file.
+managed:
+  enabled: true
+  override:
+    GO_PACKAGE:
+      flowstate/v1/value.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+# Generated with the locally installed protoc-gen-go rather than a remote
+# plugin, so regenerating needs no network - the same choice every other plugin
+# in this tree makes.
+#
+# # Regenerating
+#
+# buf refuses a workspace directory that reaches outside the directory it was
+# invoked against, and this plugin's schema needs the repository root's
+# proto/flowstate/v1/value.proto beside its own, so the root's workspace is
+# borrowed for the duration of one command (the recipe plugins/vcs records):
+#
+#   GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
+#
+#   # from the repository root, with protoc-gen-go on $PATH:
+#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/oci/proto\n' > buf.work.yaml
+#   go tool -modfile=tools/external/go.mod buf generate \
+#     --template plugins/oci/buf.gen.yaml --path plugins/oci/proto/oci -o plugins/oci
+#   git checkout -- buf.work.yaml
+plugins:
+  - plugin: go
+    out: gen
+    opt:
+      - paths=source_relative
