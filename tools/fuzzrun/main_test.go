@@ -244,8 +244,9 @@ func TestBoundedOutputBoundsASingleEnormousWrite(t *testing.T) {
 // The case the ceiling is actually easy to breach in, and which the enormous
 // single write above does not reach: a full tail plus a nearly-full write.
 // Appending before trimming let the length pass tailBytes for the duration of
-// the append, and the capacity kept what the length reached — 2.57x tailBytes,
-// above the ceiling the type states.
+// the append, and the capacity kept what the length reached — past the
+// 2*tailBytes this asserts, which is the threshold rather than a figure,
+// because how far past depends on the capacity the tail had grown to first.
 func TestBoundedOutputBoundsAFullTailPlusALargeWrite(t *testing.T) {
 	var b boundedOutput
 	for written := 0; written < headBytes+tailBytes+8192; written += 4096 {

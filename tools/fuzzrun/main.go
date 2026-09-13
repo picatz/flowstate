@@ -337,10 +337,11 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	}
 	// Make room *before* appending rather than trimming after. Appending first
 	// and shrinking back lets the length pass tailBytes for the duration of the
-	// append, and a slice's capacity keeps what its length once reached: a full
-	// tail plus a nearly-full write grew the capacity to 2.57 times tailBytes
-	// that way, above the ceiling this type states. Shifting first means the
-	// length never exceeds tailBytes, so the capacity has no reason to.
+	// append, and a slice's capacity keeps what its length once reached, so a
+	// full tail plus a nearly-full write left the capacity well above the
+	// ceiling this type states — how far above depending on what the tail had
+	// already grown to. Shifting first means the length never exceeds
+	// tailBytes, so the capacity has no reason to.
 	if overflow := len(b.tail) + len(p) - tailBytes; overflow > 0 {
 		// copy rather than append: source and destination overlap.
 		b.tail = b.tail[:copy(b.tail, b.tail[overflow:])]
