@@ -576,8 +576,10 @@ func (s *State) Failure() string { return s.failure }
 func (s *State) OutageSince() time.Time { return s.outageSince }
 
 // pendingActivityKeys reduces the retries to what a reader would call news:
-// the attempt count and the last failure, and nothing else — the countdown
-// is left out and kept only in the rendered line.
+// the attempt count, the last failure, and whether it is waiting for its next
+// attempt. The countdown's exact value is left out and kept only in the
+// rendered line, but its presence is news: that is what distinguishes a
+// retry waiting out its backoff from an attempt that is running.
 //
 // The truncation flag is news too, and that is the part this had wrong. When
 // more steps start retrying than the server projects, the reported prefix can
@@ -600,7 +602,8 @@ func pendingActivityKeys(response *v1.GetResponse) []string {
 
 	keys := make([]string, 0, len(pending)+1)
 	for _, activity := range pending {
-		keys = append(keys, fmt.Sprintf("%d\x00%s", activity.GetAttempt(), activity.GetLastFailure()))
+		keys = append(keys, fmt.Sprintf("%d\x00%s\x00%t", activity.GetAttempt(), activity.GetLastFailure(),
+			activity.GetNextAttemptScheduledTime() != nil))
 	}
 
 	// Last, and shaped so it cannot collide with an activity's key: this is a
