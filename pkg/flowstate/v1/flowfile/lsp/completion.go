@@ -907,7 +907,8 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
 		c.Docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
 
 	case s.loopEntry != nil, s.waitUntilEntry != nil, s.sleepEntry != nil,
-		s.waitForSignalEntry != nil, s.hasKey(waitUntilKey), s.hasKey(sleepKey), s.hasKey("wait_for_signal"):
+		s.waitForSignalEntry != nil, s.waitForSignalsEntry != nil,
+		s.hasKey(waitUntilKey), s.hasKey(sleepKey), s.hasKey("wait_for_signal"), s.hasKey("wait_for_signals"):
 		// A `loop:` or a wait runs no task either, and stepCandidate had no
 		// branch for either — so completion fell into the default arm below,
 		// looked up an empty task name, and offered nothing after
