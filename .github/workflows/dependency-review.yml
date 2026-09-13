@@ -42,7 +42,27 @@ jobs:
           # convention did (#95's ecosystem work). Named exactly rather than
           # loosening allow-licenses, so a genuinely unlicensed dependency is
           # still refused.
-          allow-dependencies-licenses: pkg:golang/..%2F.., pkg:golang/../..
+          #
+          # The five below are dependencies this tree already carries in the
+          # root module's own graph. They are refused here only because their
+          # SPDX expression is *compound*, and allow-licenses matches a whole
+          # expression rather than each term: `BSD-3-Clause AND
+          # LicenseRef-scancode-google-patent-license-golang` is what a scanner
+          # makes of the Go project's PATENTS file beside its BSD licence, and
+          # `Apache-2.0 AND CC-BY-4.0 AND MIT` is the MCP SDK carrying its
+          # specification's documentation licence beside its code's. Neither is
+          # a licence this tree cannot carry; both are unexpressible in a list
+          # of single identifiers. They appear now because a pull request that
+          # adds a plugin module changes a manifest that requires them, and the
+          # root manifest they already sit in is not part of that diff.
+          allow-dependencies-licenses: >-
+            pkg:golang/..%2F..,
+            pkg:golang/../..,
+            pkg:golang/github.com/modelcontextprotocol/go-sdk,
+            pkg:golang/golang.org/x/exp,
+            pkg:golang/golang.org/x/net,
+            pkg:golang/golang.org/x/sync,
+            pkg:golang/golang.org/x/sys
           # No comment on the pull request: posting one needs a token that
           # can write pull requests, and the check's own log and the
           # step summary already say what was refused and why.
