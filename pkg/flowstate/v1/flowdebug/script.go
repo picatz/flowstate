@@ -239,6 +239,11 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 	for _, id := range steps {
 		known[id] = struct{}{}
 	}
+	names := make([]string, 0, len(known))
+	for name := range known {
+		names = append(names, name)
+	}
+	slices.Sort(names)
 
 	report := func(line, column int, format string, args ...any) {
 		total++
@@ -299,7 +304,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, target, known)
+			checkStepArgument(report, number, line, target, known, names, len(problems) < MaxScriptProblems)
 
 		case "break":
 			id, condition, conditional, err := splitCondition(rest)
@@ -326,7 +331,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known)
+			checkStepArgument(report, number, line, id, known, names, len(problems) < MaxScriptProblems)
 
 		case "inspect":
 			if strings.TrimSpace(rest) == "" {
@@ -352,6 +357,8 @@ func checkStepArgument(
 	line string,
 	id string,
 	known map[string]struct{},
+	names []string,
+	detail bool,
 ) {
 	if len(known) == 0 {
 		return
@@ -361,9 +368,13 @@ func checkStepArgument(
 	}
 
 	column := columnOf(line, argumentOffset(line))
-	names := make([]string, 0, len(known))
-	for name := range known {
-		names = append(names, name)
+	if !detail {
+		// Keep counting every problem so a bounded report never looks like a
+		// short one, but do not spend workflow-inventory-sized work preparing a
+		// diagnostic the report cannot retain.
+		report(number, column, "no step named %q", id)
+
+		return
 	}
 
 	if suggestion, found := nearest.Name(id, names); found {
@@ -442,18 +453,14 @@ func verbList() string {
 // [MaxScopeNames] is the bound rather than a number of this function's own,
 // because it is the same question that constant already answers — how many
 // names one line may list before it stops being scannable — asked about a
-// different list. Sorted, since a map's order would make one refusal read
-// differently on every run.
+// different list. The caller supplies the normalized, sorted inventory so it
+// is paid for once per script rather than once per invalid command.
 func stepList(names []string) string {
-	sorted := make([]string, len(names))
-	copy(sorted, names)
-	slices.Sort(sorted)
-
-	if len(sorted) > MaxScopeNames {
-		return quote(sorted[:MaxScopeNames]) + fmt.Sprintf(" and %d more", len(sorted)-MaxScopeNames)
+	if len(names) > MaxScopeNames {
+		return quote(names[:MaxScopeNames]) + fmt.Sprintf(" and %d more", len(names)-MaxScopeNames)
 	}
 
-	return quote(sorted)
+	return quote(names)
 }
 
 // quote renders names as a comma-separated list of quoted words.
