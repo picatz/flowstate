@@ -85,8 +85,8 @@ The complete rationale lives in
   the user asks to land a change, merge it once the shipping gates below are
   satisfied without asking again. Ask only when an action is materially
   destructive, irreversible, externally consequential, or out of scope.
-- Preserve accurate provenance without inventing it: do not hard-code a model
-  name or duplicate attribution the active host adds automatically.
+- Preserve provenance without inventing it: no hard-coded model name, and no
+  hand-written attribution footer or session link in a body or commit message.
 
 ## Communication
 
