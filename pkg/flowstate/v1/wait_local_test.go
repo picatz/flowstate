@@ -202,10 +202,10 @@ func TestLocalSignalCancellationIsNotATimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
 
-		// Belt and braces for the safety-net branch below, which exits this
-		// goroutine with the run still parked. Idempotent after the explicit
-		// cancel, and it fires too late to spare a run that ignored that one,
-		// so it does not blunt what the test is asking.
+		// Ordinary WithCancel hygiene, and nothing more: every path that
+		// reaches the select below has already called cancel explicitly, so
+		// this is a no-op on all of them. It is here so that a future edit
+		// returning early still releases the context.
 		defer cancel()
 
 		done := make(chan error, 1)
@@ -228,11 +228,17 @@ func TestLocalSignalCancellationIsNotATimeout(t *testing.T) {
 			require.True(t, errors.Is(err, context.Canceled),
 				"a cancelled run was not reported as cancelled: %v", err)
 		case <-time.After(15 * time.Second):
-			// Bubble time, so this costs nothing and still reports a run
-			// that ignored the cancellation as a failure rather than as a
-			// deadlocked bubble. It is reached only if the run stays blocked,
-			// since the clock advances just when nothing else can run — and
-			// it is sooner than the hour the gate itself would wait.
+			// Bubble time, so the wait itself costs nothing, and it is reached
+			// well before the hour the gate would otherwise sit for.
+			//
+			// It does not rescue the bubble, and it would be wrong to say so:
+			// getting here means the run ignored the cancel above and is still
+			// parked, and a bubble's clock stops once its root goroutine exits,
+			// so the runtime reports a deadlock on the way out regardless.
+			// Breaking the ctx.Done arm of waitForSignalLocally produces both,
+			// in this order. What this branch buys is that the *diagnosis* is
+			// printed first: "blocked goroutines remain" says some goroutine is
+			// stuck, where this says which claim of the test went unmet.
 			t.Fatal("a cancelled run did not stop")
 		}
 	})

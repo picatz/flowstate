@@ -20,8 +20,12 @@ import (
 // the entry shrinks, so the table cannot keep an entry the tree no longer
 // has. What each of the current entries waits for:
 //
-//   - cmd/flow — a worker or server subprocess, and a browser the test
-//     never opens.
+//   - cmd/flow — serverdev and workerinternallistener wait on a server or
+//     worker subprocess. The other two spend real time without waiting on
+//     anything: browser_test.go retries removing a profile directory while the
+//     zygote, renderers and crash handler it did not launch directly finish
+//     writing into it, and workershutdown_test.go holds a window open in which
+//     the worker must still be alive.
 //   - internal/temporaltest — the supervised dev server process.
 //   - engine/deadlock_budget_test.go — a sleep inside a workflow goroutine
 //     that must *not* yield, since failing to yield is the thing the SDK's
@@ -46,17 +50,21 @@ import (
 // apart is the work when the ratchet fires on something new:
 //
 //  1. Something outside the bubble has to make progress first — a subprocess,
-//     a dev server, a socket, an unlinked file. A goroutine waiting on one of
-//     those is never durably blocked, so the bubble's clock would never
-//     advance and the wait would hang rather than return early.
+//     a dev server, a socket. A goroutine waiting on one of those is never
+//     durably blocked, so the bubble's clock would never advance and the wait
+//     would hang rather than return early.
 //  2. The assertion measures a real-clock interval across such a boundary.
 //     Netpolicy is the one: what the hold buys is a span, timed across a
 //     loopback socket, that is measurably longer than the moment its headers
 //     arrived.
-//  3. The elapsed real time *is* the mechanism, and a bubble would defeat it.
-//     deadlock_budget_test.go sleeps inside a workflow goroutine precisely so
-//     that it does not yield; in a bubble that sleep becomes a yield, the
-//     detector never fires, and the test passes while proving nothing.
+//  3. The elapsed real time *is* the mechanism, and a bubble would defeat it
+//     by spending it for free. deadlock_budget_test.go is the sharp case: it
+//     sleeps inside a workflow goroutine precisely so that it does *not* yield,
+//     and in a bubble that sleep becomes a yield, the SDK's detector never
+//     fires, and the test passes having proved nothing. The retry backoffs and
+//     observation windows in cmd/flow are the quiet case — a bubble would burn
+//     all forty of browser_test.go's attempts, and workershutdown_test.go's
+//     whole window, against a world that had not moved.
 //
 // So neither "the test is timing something" nor "there is a process somewhere
 // nearby" settles it. The question to ask of a new entry is what the bubble
