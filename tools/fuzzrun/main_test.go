@@ -170,3 +170,84 @@ func TestFuzzAllHonoursTheWorkerBound(t *testing.T) {
 		t.Errorf("%s started and never reported:\n%s", inFlight, out.String())
 	}
 }
+
+// The tier's safety bounds are arguments, so nothing but an assertion on the
+// arguments can keep them. Every test above runs `go test` against a package
+// that does not exist, which fails before any of these matter — so without
+// this, dropping `-parallel 1` or `-run=XXX` would leave the package green.
+func TestFuzzCommandCarriesTheTiersBounds(t *testing.T) {
+	cmd := fuzzCommand(context.Background(),
+		target{name: "FuzzThing", dir: "pkg/some/where"},
+		options{fuzztime: 30 * time.Second, timeout: 2 * time.Minute, memlimit: "512MiB"})
+
+	args := strings.Join(cmd.Args, " ")
+	for _, want := range []string{
+		"-parallel 1",       // one fuzzing worker: a crash stays attributable
+		"-run=XXX",          // the package's ordinary tests are not the budget
+		"-fuzz FuzzThing",   // this target and no other
+		"-fuzztime 30s",     // the time bound
+		"-timeout 2m0s",     // the deadline that outlives it
+		"./pkg/some/where/", // the package the target lives in
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("command is %q, which is missing %q", args, want)
+		}
+	}
+	if !slices.Contains(cmd.Env, "GOMEMLIMIT=512MiB") {
+		t.Errorf("GOMEMLIMIT=512MiB is not in the child's environment; -fuzztime bounds time and this is what bounds memory")
+	}
+}
+
+// A target's output is decided by inputs the fuzzer manufactured, so the
+// capture of it must be bounded — and it must say when it dropped something
+// rather than present a truncated log as a whole one.
+func TestBoundedOutputKeepsBothEndsAndSaysWhatItDropped(t *testing.T) {
+	var b boundedOutput
+	// Written in many small pieces, the way a child's pipe actually arrives.
+	const total = headBytes + tailBytes + 100_000
+	for written := 0; written < total; {
+		chunk := min(4096, total-written)
+		if _, err := b.Write(bytes.Repeat([]byte("x"), chunk)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		written += chunk
+	}
+
+	if len(b.head) != headBytes || len(b.tail) != tailBytes {
+		t.Fatalf("kept %d head and %d tail bytes, want %d and %d", len(b.head), len(b.tail), headBytes, tailBytes)
+	}
+	got := b.Bytes()
+	if len(got) > headBytes+tailBytes+512 {
+		t.Errorf("rendered %d bytes for a %d-byte stream, which is not a bound", len(got), total)
+	}
+	if !strings.Contains(string(got), "elided") {
+		t.Errorf("output dropped %d bytes without saying so", total-headBytes-tailBytes)
+	}
+}
+
+// One write larger than the whole ceiling must not first be buffered whole.
+func TestBoundedOutputBoundsASingleEnormousWrite(t *testing.T) {
+	var b boundedOutput
+	if _, err := b.Write(bytes.Repeat([]byte("y"), 4<<20)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if len(b.tail) > tailBytes {
+		t.Errorf("one write left %d tail bytes, want at most %d", len(b.tail), tailBytes)
+	}
+	if cap(b.tail) > 2*tailBytes {
+		t.Errorf("one write grew the tail's capacity to %d, want at most %d", cap(b.tail), 2*tailBytes)
+	}
+}
+
+// Short output is passed through whole and unannotated: the bound must not
+// cost the ordinary case its exact log.
+func TestBoundedOutputPassesShortOutputThroughUnchanged(t *testing.T) {
+	var b boundedOutput
+	const want = "fuzz: elapsed: 30s, execs: 76108\nPASS\nok\n"
+	if _, err := b.Write([]byte(want)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := string(b.Bytes()); got != want {
+		t.Errorf("short output rendered as %q, want %q", got, want)
+	}
+}

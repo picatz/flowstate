@@ -36,13 +36,17 @@
 // # Output
 //
 // Concurrency costs the serial loop's one readable property — that the target
-// named last is the target that hung — so this command keeps that property
-// rather than the interleaved stream that would replace it. A target announces
-// itself when it starts, its output is buffered and printed in one piece when
-// it finishes, and the summary lists failures in input order. A run killed by
-// an outer timeout therefore ends with the targets that started and never
-// reported still named on standard output, which is the question an operator
-// reading a cancelled job has.
+// named last is the target that hung. With targets in flight together that is
+// simply false: a later one can start and finish while an earlier one is still
+// blocked. So this command answers the same question a different way rather
+// than leaving the old reading in place to mislead. A target announces itself
+// when it starts, its output is printed in one piece when it finishes, and the
+// summary lists failures in input order — so a hung target is one named as
+// started that never reported, which a run killed by an outer timeout still
+// shows. .github/workflows/ci.yml says the same thing where it tells an
+// operator how to read the job's log.
+//
+// The capture is bounded: see [boundedOutput].
 package main
 
 import (
@@ -56,6 +60,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -186,11 +191,14 @@ func fuzzAll(ctx context.Context, out io.Writer, targets []target, workers int, 
 	return results
 }
 
-// fuzzOne runs a single target and returns its combined output. The bounds are
-// the tier's: one fuzzing worker, a time budget, and a memory limit, because
-// -fuzztime bounds time and GOMEMLIMIT is what bounds memory. -run=XXX keeps
-// the package's ordinary tests out of the budget by matching none of them.
-func fuzzOne(ctx context.Context, t target, opts options) ([]byte, error) {
+// fuzzCommand builds the command for one target. It is a function of its own,
+// rather than three lines inside [fuzzOne], because these arguments are the
+// tier's safety bounds and a test has to be able to assert them: one fuzzing
+// worker, a time budget, and a memory limit, because -fuzztime bounds time and
+// GOMEMLIMIT is what bounds memory. -run=XXX keeps the package's ordinary tests
+// out of the budget by matching none of them. Dropping any of them would
+// otherwise leave every test in this package green.
+func fuzzCommand(ctx context.Context, t target, opts options) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "go", "test",
 		"-timeout", opts.timeout.String(),
 		"-parallel", "1",
@@ -200,7 +208,83 @@ func fuzzOne(ctx context.Context, t target, opts options) ([]byte, error) {
 		"./"+t.dir+"/",
 	)
 	cmd.Env = append(os.Environ(), "GOMEMLIMIT="+opts.memlimit)
-	return cmd.CombinedOutput()
+	return cmd
+}
+
+// The per-target output ceiling. What a target prints is not this command's to
+// trust: it is decided by the inputs the fuzzer manufactured, and a failing
+// target prints the one it found. Reading all of it into this process would put
+// an unbounded buffer *outside* the GOMEMLIMIT that bounds each child — the one
+// memory bound this design claims — so the capture is bounded here and the
+// ceiling is stated: at most headBytes+tailBytes retained per target in flight.
+//
+// Head and tail rather than either alone, because a fuzz run's two useful ends
+// are both ends: the head names the seed corpus and the worker count, and the
+// tail carries the failure and the input that caused it.
+const (
+	headBytes = 8 << 10
+	tailBytes = 56 << 10
+)
+
+// boundedOutput captures a child's output with an explicit ceiling, keeping the
+// first headBytes and the last tailBytes and counting what it dropped between
+// them. One goroutine — the one running that target — writes to it, and it is
+// read after that target's process has exited.
+type boundedOutput struct {
+	head  []byte
+	tail  []byte
+	total int
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	written := len(p)
+	b.total += written
+
+	if room := headBytes - len(b.head); room > 0 {
+		take := min(room, len(p))
+		b.head = append(b.head, p[:take]...)
+		p = p[take:]
+	}
+	if len(p) == 0 {
+		return written, nil
+	}
+
+	// Trim the incoming write before appending it, so that one enormous write
+	// cannot make this buffer enormous on its way to being trimmed.
+	if len(p) > tailBytes {
+		p = p[len(p)-tailBytes:]
+	}
+	b.tail = append(b.tail, p...)
+	if extra := len(b.tail) - tailBytes; extra > 0 {
+		// copy rather than append: source and destination overlap.
+		b.tail = b.tail[:copy(b.tail, b.tail[extra:])]
+	}
+	return written, nil
+}
+
+// Bytes renders what was kept, saying so when anything was dropped rather than
+// presenting a truncated log as if it were a whole one.
+func (b *boundedOutput) Bytes() []byte {
+	elided := b.total - len(b.head) - len(b.tail)
+	if elided <= 0 {
+		return slices.Concat(b.head, b.tail)
+	}
+	marker := fmt.Sprintf("\n... %d byte(s) elided: this target printed %d, and fuzzrun keeps the first %d and the last %d ...\n",
+		elided, b.total, len(b.head), len(b.tail))
+	return slices.Concat(b.head, []byte(marker), b.tail)
+}
+
+// fuzzOne runs a single target and returns the bounded capture of its output.
+func fuzzOne(ctx context.Context, t target, opts options) ([]byte, error) {
+	cmd := fuzzCommand(ctx, t, opts)
+	// One writer for both streams: os/exec gives the child a single pipe when
+	// Stdout and Stderr are the same value, which is what CombinedOutput does
+	// and is why the two cannot interleave a partial line here.
+	out := &boundedOutput{}
+	cmd.Stdout = out
+	cmd.Stderr = out
+	err := cmd.Run()
+	return out.Bytes(), err
 }
 
 // parse reads `<target> <dir>` lines, which is what list.sh prints. Anything

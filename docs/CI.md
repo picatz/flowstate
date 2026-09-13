@@ -314,6 +314,16 @@ to 107,201 between the two runs above. An early A/B that compared per-target
 counts across runs with a warm corpus appeared to show a 57% coverage loss that
 was not there. Only the total is stable enough to compare.
 
+On the runner the same thirteen targets went from 9m13s to 5m48s (`main` run
+`34726074939` against pull request run `34735407267`, both forced-wide, both
+reporting every target passed). That is 37%, against 69% locally, and the
+difference is not the fuzzing: thirteen targets at 30s across four workers is a
+two-minute floor, so about 228s of that step is building test binaries — more
+than the ~163s the serial job spent building, because four concurrent `go test`
+invocations each drive their own build over overlapping dependency graphs and
+contend on one build cache. Compiling the binaries once before the fuzzing
+starts should recover most of it and has not been measured yet.
+
 ### A failing test is an annotation, not a line in a log
 
 Until #1727, `ci.yml` emitted `::error` annotations for gofmt drift, generated
