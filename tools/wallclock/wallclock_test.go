@@ -942,4 +942,71 @@ func TestReal(t *testing.T) {}
 		assert.Equal(t, []int{15}, lines(OfKind(waits, KindSleep)),
 			"a sleep under a parenthesized receiver's type-parameter shadow was treated as bubbled")
 	})
+
+	// The three below are the same wrapper reaching isSelector, which matched
+	// the punctuation it had been shown rather than the shape underneath. A
+	// parenthesized sleep was the costly one — a real wait that no table
+	// counted — and the bubble is its mirror: unrecognised, so the analysis
+	// over-counted a wait that virtual time already made free.
+
+	t.Run("a parenthesized sleep callee", func(t *testing.T) {
+		t.Parallel()
+
+		waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	"time"
+)
+
+func TestReal(t *testing.T) {
+	(time.Sleep)(time.Second)
+	((time.Sleep))(time.Second)
+}
+`})
+
+		assert.Equal(t, []int{9, 10}, lines(OfKind(waits, KindSleep)),
+			"a sleep in parentheses was missed")
+	})
+
+	t.Run("a parenthesized dot-imported sleep callee", func(t *testing.T) {
+		t.Parallel()
+
+		waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	. "time"
+)
+
+func TestReal(t *testing.T) {
+	(Sleep)(Second)
+}
+`})
+
+		assert.Equal(t, []int{9}, lines(OfKind(waits, KindSleep)),
+			"a dot-imported sleep in parentheses was missed")
+	})
+
+	t.Run("a parenthesized bubble callee", func(t *testing.T) {
+		t.Parallel()
+
+		waits := analyzeSource(t, map[string]string{"a_test.go": `package a
+
+import (
+	"testing"
+	"testing/synctest"
+	"time"
+)
+
+func TestReal(t *testing.T) {
+	(synctest.Test)(t, func(t *testing.T) {
+		time.Sleep(time.Second)
+	})
+}
+`})
+
+		assert.Empty(t, lines(OfKind(waits, KindSleep)),
+			"a sleep inside a parenthesized synctest.Test was counted as real time")
+	})
 }

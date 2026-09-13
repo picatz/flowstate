@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-// Kind is which of the two ways a test spends real time waiting.
+// Kind is which of the two ways a test spends real time waiting that this
+// tool tracks. They are not the only ones — a `select` on [time.After] is a
+// third, and the lsp harness's own client.await uses it — but they are the two
+// #1706 is about and the two a ratchet can hold without a build.
 type Kind int
 
 const (
@@ -455,8 +458,11 @@ func localName(file *ast.File, path string) string {
 }
 
 // isSelector reports whether expr names one of the names in the package: as
-// `pkg.name`, or as the bare `name` when the package is dot-imported.
+// `pkg.name`, or as the bare `name` when the package is dot-imported. Either
+// spelling may be parenthesized, so expr is peeled before it is matched.
 func isSelector(expr ast.Expr, pkg string, names ...string) bool {
+	expr = unparen(expr)
+
 	if pkg == "." {
 		ident, ok := expr.(*ast.Ident)
 		return ok && slices.Contains(names, ident.Name)
