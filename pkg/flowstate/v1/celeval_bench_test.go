@@ -16,11 +16,12 @@ import (
 // making the number move rather than making the system faster, and a
 // benchmark's honest job is to make a suspicion checkable.
 //
-// So the set is deliberately five, on the paths where a regression would reach
+// So the set is deliberately six, on the paths where a regression would reach
 // a user, rather than a sweep. This file holds the CEL one; stepcost_test.go
-// holds the local driver's per-step cost on a straight chain; the other three
-// are in flowfile (parse-and-validate, and marshal) and in cmd/flow/internal/mcp
-// (the descriptor to JSON-Schema projection).
+// holds the local driver's per-step cost on a straight chain; specwire_bench_test.go
+// holds the compiled specification on the wire, which is the admission path; the
+// other three are in flowfile (parse-and-validate, and marshal) and in
+// cmd/flow/internal/mcp (the descriptor to JSON-Schema projection).
 
 // BenchmarkEval measures one compiled expression evaluated against an
 // activation, which is the operation a workflow performs most: every `if:`,
