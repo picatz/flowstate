@@ -594,6 +594,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		sliceCost              *uint64
 		everyExpressionCharged bool
 	)
+	carriesHeld := workflow.GetVersion(ctx, heldFailureCarryChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
 	switch workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 2) {
 	case workflow.DefaultVersion:
 	case 1:
@@ -621,6 +622,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		resume:                 resumeFrames(st),
 		sliceCost:              sliceCost,
 		everyExpressionCharged: everyExpressionCharged,
+		carriesHeld:            carriesHeld,
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
@@ -1059,7 +1061,61 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 	if len(frames) > 1 && from > 0 {
 		from--
 	}
-	return compactOutputsForRemainingSteps(spec.GetSteps(), from, outputs, spec.GetDeclaredOutputs())
+	return keepHeldOutputs(frames, outputs,
+		compactOutputsForRemainingSteps(spec.GetSteps(), from, outputs, spec.GetDeclaredOutputs()))
+}
+
+// keepHeldOutputs restores the transcript entries of the steps whose failures
+// cross the seam held.
+//
+// A held failure is a step that already ran, already failed, and whose failure
+// [executor.recordOutcome] already filed under its own id — the entry a
+// [v1.PartialTranscript] shows a person when the run stops there. Nothing
+// *remaining* mentions that step, which is the whole reason its failure is held
+// rather than raised, so the reference walk above prunes it: right for an output
+// no expression can still read, wrong for the record of the failure the resumed
+// segment is about to raise.
+//
+// Without this a run that suspended between the hold and the raise reports that
+// failure with the failing step missing from its transcript, while a run that
+// did not suspend reports it with the step present — the seam changing what the
+// run reports, which is the one thing #1968 exists to stop.
+//
+// The entry is restored whole rather than narrowed. A held step's entry is a
+// failure record ([v1.StepFailureRecord]), which is bounded by what
+// [failedStepOutputs] writes and is the thing being read; a reference walk's
+// field subset is the wrong shape for a reader that is not an expression.
+//
+// Only the run's own frame, because only its step ids name entries in these
+// outputs. A failure can be held at any depth whose scope is a representable
+// level, which is the top level and a callee's — a `for_each` body or a
+// `parallel` branch runs a suspend level deeper — and a callee records under
+// its own scope, carried wholesale in [v1.Frame.CallOutputs] and never
+// compacted, so its held step's entry needs no rescuing here. Step ids are
+// unique within a workflow and not across them, so walking every frame against
+// this one map would restore an unrelated top-level step that happened to share
+// a callee's id: an entry compaction correctly pruned, charged against
+// [v1.CheckRunStateSize], which refuses the continuation rather than truncating.
+func keepHeldOutputs(frames []*v1.Frame, full, trimmed *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
+	if len(frames) == 0 {
+		return trimmed
+	}
+
+	for _, failure := range frames[0].GetHeldFailures() {
+		entry, ok := full.GetStepValues()[failure.GetStepId()]
+		if !ok {
+			continue
+		}
+		if trimmed == nil {
+			trimmed = &v1.Workflow_StepOutputs{}
+		}
+		if trimmed.StepValues == nil {
+			trimmed.StepValues = map[string]*v1.Node_Outputs{}
+		}
+		trimmed.StepValues[failure.GetStepId()] = entry
+	}
+
+	return trimmed
 }
 
 // failedStepOutputs records a failure as a step's outputs.

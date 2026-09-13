@@ -761,6 +761,115 @@ message Frame {
   // across at most the loop's bounded iteration count. The unbounded entity loop
   // that would need a byte bound of its own is deferred; see [Loop].
   Value loop_state = 6;
+
+  // HeldFailures are the failures this scope heard early on a debugger's behalf
+  // and has not yet propagated, for a frame standing at the run's own
+  // representable level.
+  //
+  // A debug ask joins a scope's outstanding `async:` steps before publishing the
+  // run as held, so that a parent reported as held is not one whose child is
+  // still making progress. Joining is right; raising what the join hears is not,
+  // because an `async:` step nothing after it reads is heard at the scope-end
+  // join, and the steps written between its failure and that join still run.
+  // Propagating early skips exactly those, so whether a side-effecting step ran
+  // would depend on whether somebody was debugging (#1119). The failure is
+  // therefore carried to the join that owed it — and this is what carries it
+  // across a Continue-As-New, so that the obligation outlives the segment that
+  // heard it rather than being refused a seam until the scope ends (#1968).
+  //
+  // Present only on a frame at the depth of a scope that was holding one, which
+  // is a run's own top level or a callee's, never a `for_each` body or a
+  // `parallel` branch: those run at a suspend depth where no seam exists, so
+  // nothing there can be held across one.
+  //
+  // Absent for every frame that predates this field, which reads as "nothing
+  // held" — correct, because before it a scope holding a failure refused to
+  // suspend at all, so no recorded history can have suspended while holding one.
+  //
+  // Weighed by `CheckRunStateSize` with the rest of [RunState], which is the
+  // bound that actually holds. The count is one per `async:` step this scope
+  // started and a debug drain joined, so it is bounded by how many `async:`
+  // steps the scope contains rather than by `MaxAsyncInFlight` — that caps how
+  // many may be outstanding at once, and a drain empties the outstanding set so
+  // the scope may fill it again. Each entry carries one step id and two failure
+  // sentences, which have no byte bound of their own — `CheckRunStateSize` is
+  // the bound, and it refuses the continuation rather than truncating.
+  //
+  // # Rolling back a worker fleet across this field
+  //
+  // A worker that does not know this field is not protected by
+  // `workflow.GetVersion`, and this is the one direction that matters. A
+  // continuation starts a *fresh execution with empty history*, so the marker
+  // that gates the behaviour is decided anew by whichever worker picks the
+  // segment up — an older one never learns the changeID existed, reads no held
+  // failures because it has no field to read, walks past, and the run
+  // *completes* where it had to fail. Nothing on the new worker's side can
+  // prevent that: an unknown field is skipped silently, and nothing validates
+  // [RunState] on resume.
+  //
+  // So a fleet must not be downgraded across this field while runs are in
+  // flight. Upgrading is safe in both the senses that matter — an older frame
+  // carries no held failures, which reads as "nothing held" and is correct,
+  // since before this field a scope holding one refused to suspend at all.
+  repeated HeldFailure held_failures = 7;
+}
+
+// HeldFailure is one async step's failure, heard before the join that owed it
+// and waiting to be raised there.
+//
+// It carries what a resumed segment needs to raise the failure exactly as the
+// segment that heard it would have, and nothing that segment already wrote
+// down. The step's recorded `error` output is deliberately absent: it is
+// already in [RunState.outputs] under the step's own id, put there by the same
+// record that produced this, and a second copy is a second thing to disagree.
+message HeldFailure {
+  // StepID is the `async:` step whose failure this is, and is what makes the
+  // failure addressable: a later node mentioning that step joins it, so a
+  // reference finds the held failure exactly where the join it replaced would
+  // have raised it.
+  string step_id = 1 [(buf.validate.field).required = true];
+
+  // Message is the whole cause as a person reads it at the run's own failure,
+  // Temporal's envelope included — `ErrRunFailed.Message`, not the step's
+  // recorded sentence. It travels because it exists nowhere else: what is
+  // written into the step's outputs is the driver-independent text an author's
+  // expression compares, which is deliberately not this.
+  string message = 2 [(buf.validate.field).required = true];
+
+  // Kind classifies the failure the way `v1.ErrorKind` does, so a run that
+  // suspended while holding this failure reports the same classification as one
+  // that raised it without suspending.
+  //
+  // A plain string rather than an enum, for the reason `RunResponse.Error.kind`
+  // gives at length: that set already lives as a Go type in the
+  // execution-independent layer because it drives retry semantics on both
+  // drivers, and restating it as a proto-owned enum would be two closed sets
+  // that could disagree.
+  string kind = 3;
+
+  // Recorded is the driver-independent sentence an author's expression compares
+  // — what an enclosing level writes as its own `error` output when it tolerates
+  // this failure, and what `${steps.<id>.error}` reads.
+  //
+  // It is here despite the step's own recorded output already being in
+  // [RunState.outputs], because those two are not the same string and deriving
+  // one from the other is what makes them disagree: the step's output is written
+  // by `failedStepOutputs` without a position, while this is written by
+  // `failedAt`, which prepends `step "x": ` unless the sentence came from a
+  // classified task failure. Reading the output back and calling it this one
+  // produced `workflow "c": task …` where a run that did not suspend produced
+  // `task …`, so whether a segment boundary happened to fall there decided what
+  // an author's expression saw.
+  string recorded = 4;
+
+  // RecordedFromTask reports whether Recorded came from a classified task
+  // failure, which is what decides whether an enclosing level prepends its own
+  // position to it or lets the canonical task sentence stand.
+  //
+  // Carried rather than re-derived for the same reason Recorded is: the chain it
+  // would be re-derived from has been flattened by then, which is exactly what
+  // `ErrRunFailed` exists to do.
+  bool recorded_from_task = 5;
 }
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
