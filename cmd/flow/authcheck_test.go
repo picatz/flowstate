@@ -255,6 +255,126 @@ func TestAuthCheckNeverEchoesATokenReadAsPolicy(t *testing.T) {
 	assert.NotContains(t, res.Output(), token)
 }
 
+// TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL is the other half
+// of what #1693's syntax-versus-validation split assumed.
+//
+// It reports the loader's own sentence for a policy that decodes, on the
+// reasoning that a validation failure "quotes at most a value the policy
+// declared". One validation failure quotes a value the policy declared that is
+// itself a credential: an issuer written `https://user:password@host` is
+// refused for carrying credentials, and the refusal used to quote the URL to
+// say so. The operator holds the file either way; whoever reads the CI or
+// support transcript this command's stderr lands in does not (Codex).
+//
+// Asserted through the command rather than against [auth.ValidateHTTPSURL],
+// which has its own case, because the disclosure is the whole rendered
+// sentence reaching a stream — and this command is the one that renders it.
+func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
+	t.Parallel()
+
+	const password = "hunter2-not-a-real-password"
+
+	for name, tt := range map[string]struct {
+		issuer  string
+		wantErr string
+		absent  []string
+	}{
+		"userinfo url.Parse reads as userinfo": {
+			issuer:  "https://acct9:" + password + "@issuer.example.com",
+			wantErr: "must not include credentials",
+			absent:  []string{password, "acct9"},
+		},
+		// A password whose leading run is all digits parses as a *port*, so
+		// the URL is well formed, carries no userinfo by url.Parse's reading,
+		// and passes every check in ValidateHTTPSURL — the refusal an operator
+		// sees is validateIssuerURL's, about the query the rest of the
+		// credential became, and it used to carry the whole thing
+		// (flowstate-reviewer).
+		"a credential url.Parse reads as a port": {
+			issuer:  "https://acct9:2024?" + password + "@issuer.example.com",
+			wantErr: "must not include a query string or fragment",
+			absent:  []string{password, "acct9"},
+		},
+		// Both misreads at once: digit-leading password (so url.Parse calls it
+		// a port and the URL is well formed) and a percent-encoded delimiter.
+		"a port misread whose delimiter is percent-encoded": {
+			issuer:  "https://acct9:2024?" + password + "%40issuer.example.com",
+			wantErr: "must not include a query string or fragment",
+			absent:  []string{password, "acct9"},
+		},
+		// The delimiters mixed: the slash keeps the URL parseable, so nothing
+		// upstream calls it malformed, and it puts the rest of the credential
+		// past where a before-first-slash read stops. An issuer carrying a
+		// query is not a usable issuer, so this refusal reads it greedily.
+		"a port misread whose credential spans a slash and a query": {
+			issuer:  "https://acct9:2024/s3c?" + password + "@issuer.example.com",
+			wantErr: "must not include a query string or fragment",
+			absent:  []string{password, "acct9"},
+		},
+		"the same misread with a fragment": {
+			issuer:  "https://acct9:007#" + password + "@issuer.example.com",
+			wantErr: "must not include a query string or fragment",
+			absent:  []string{password, "acct9"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			policy := "issuers:\n  - name: vendor\n    issuer: " + tt.issuer +
+				"\n    audiences: [flowstate]\n"
+			path := filepath.Join(t.TempDir(), "trust.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(policy), 0o600))
+
+			res := runFlowStdin(t, "not-reached", "auth", "check", "--auth-policy", path, "--token-file", "-")
+			assert.Equal(t, exitCodeFailure, res.ExitCode)
+
+			// The refusal still arrives, and still says what is wrong: this is
+			// a redaction, not a withholding, for the reason every other one
+			// in this repository gives — the sentence is the only thing that
+			// says why.
+			unwrapped := strings.Join(strings.Fields(res.Stderr), " ")
+			assert.Contains(t, unwrapped, tt.wantErr)
+			assert.Contains(t, unwrapped, "issuer.example.com",
+				"the operator cannot find the entry this is about")
+
+			for _, secret := range tt.absent {
+				assert.NotContains(t, res.Output(), secret,
+					"credential material reached the command's output")
+			}
+		})
+	}
+}
+
+// TestAuthCheckRedactsAQueryBearingIssuerEvenWithoutACredential records the
+// cost of reading a query- or fragment-bearing issuer greedily, so that the
+// choice is a decision rather than something a later reader discovers.
+//
+// An issuer carrying a query is not a usable issuer whatever else is right
+// about it, so validateIssuerURL has no well-formed reading to protect and
+// takes the wider one. The price is this: a path `@` in such an issuer takes
+// the host with it, and the operator reads `[redacted]@handler` where no
+// credential was. That is the same trade the redaction makes everywhere it
+// cannot tell which `@` a person meant, and the entry is still addressed by
+// the `issuers[0]:` frame the loader wraps around it.
+func TestAuthCheckRedactsAQueryBearingIssuerEvenWithoutACredential(t *testing.T) {
+	t.Parallel()
+
+	policy := "issuers:\n  - name: vendor\n    issuer: https://issuer.example.com/callback@handler?tenant=a" +
+		"\n    audiences: [flowstate]\n"
+	path := filepath.Join(t.TempDir(), "trust.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(policy), 0o600))
+
+	res := runFlowStdin(t, "not-reached", "auth", "check", "--auth-policy", path, "--token-file", "-")
+	assert.Equal(t, exitCodeFailure, res.ExitCode)
+
+	unwrapped := strings.Join(strings.Fields(res.Stderr), " ")
+	assert.Contains(t, unwrapped, "must not include a query string or fragment")
+	assert.Contains(t, unwrapped, "[redacted]@handler",
+		"the greedy read stopped somewhere else")
+	assert.Contains(t, unwrapped, "issuers[0]",
+		"the loader's frame is what still addresses the entry")
+}
+
 // TestAuthCheckReportsTheLoadersOwnRefusal is #1693: a policy that decodes and
 // fails validation is refused with the loader's own sentence — the field and
 // the rule `flow server` would print for the same bytes — rather than the fixed

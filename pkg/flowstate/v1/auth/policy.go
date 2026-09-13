@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
@@ -1353,7 +1354,23 @@ func validateIssuerURL(issuer string) error {
 	}
 
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("issuer %q must not include a query string or fragment", issuer)
+		// Redacted like every refusal in [ValidateHTTPSURL], and for a sharper
+		// reason: this is the refusal a credential misread as `host:port`
+		// actually reaches. `https://acct9:2024?s3cr3t@host` passes every
+		// check above — url.Parse calls 2024 a port and finds no userinfo —
+		// and is refused here, for the query the rest of the credential
+		// became.
+		//
+		// Read as malformed, which is the one place that is true of a URL
+		// url.Parse accepted. An issuer *is* its identifier: one carrying a
+		// query or a fragment is not a usable issuer whatever else is right
+		// about it, so there is no well-formed reading of this string left to
+		// protect, and the wider search costs nothing here. It buys the shape
+		// that mixes the delimiters — `https://acct9:2024/s3c?r3t@host`, where
+		// the slash keeps the URL parseable and puts the rest of the
+		// credential past where a before-first-slash read stops (Codex).
+		return fmt.Errorf("issuer %q must not include a query string or fragment",
+			urlWithoutCredentials(issuer, true))
 	}
 
 	return nil
@@ -1371,21 +1388,58 @@ func validateIssuerURL(issuer string) error {
 func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, rawURL, err)
+		// What every refusal here quotes, rather than rawURL itself. One of
+		// them exists because a URL can carry a credential, and it quoted the
+		// URL — so `flow auth check`, whose whole job is to read a policy back
+		// to the operator before the server refuses it, printed
+		// `issuer "https://user:password@example.com" must not include
+		// credentials` to a stderr that CI and support transcripts keep
+		// (Codex). An ordinary URL is quoted exactly as before.
+		//
+		// Read as malformed, because url.Parse just said so: the redaction
+		// cannot trust a delimiter in a string whose structure was rejected.
+		// See urlWithoutCredentials.
+		shown := urlWithoutCredentials(rawURL, true)
+
+		// Not the [url.Error] around the reason: that error renders as
+		// `parse "https://user:password@host": ...`, a second copy of the
+		// text the line above just cleaned. Unwrapping is safe because
+		// nothing matches on this chain — the reason is prose either way —
+		// and a malformed URL is a shape credentials reach: `invalid
+		// userinfo` is itself one of the ways url.Parse refuses.
+		//
+		// And not the reason either, once something was redacted. url.Parse's
+		// reasons can quote a piece of what they refused: a password holding
+		// a bad percent escape makes a [url.EscapeError], which renders as
+		// `invalid URL escape "%zz"` — three characters of that password,
+		// after the URL around them was cleaned (Codex, Copilot). There is no
+		// enumeration of the reasons net/url may return now or add later, so
+		// the fail-closed answer is to keep the reason exactly when there was
+		// no credential for it to be a fragment of.
+		if shown != rawURL {
+			return nil, fmt.Errorf("%s %q is not a valid URL", field, shown)
+		}
+
+		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, shown, urlParseReason(err))
 	}
+
+	// A URL that parsed but names no host is malformed too, in the one way
+	// that matters here: there is no authority for a narrower reading to
+	// delimit, so the greedy one applies to it as well.
+	shown := urlWithoutCredentials(rawURL, parsed.Hostname() == "")
 
 	// Hostname, not Host: Host keeps a bare port (url.Parse("https://:443/x")
 	// yields Host == ":443", Hostname() == ""), so testing Host here would
 	// accept a URL that names no host and disagree with the isLoopbackHost
 	// check below, which already uses Hostname().
 	if parsed.Hostname() == "" {
-		return nil, fmt.Errorf("%s %q must name a host, such as %q", field, rawURL, "https://example.com")
+		return nil, fmt.Errorf("%s %q must name a host, such as %q", field, shown, "https://example.com")
 	}
 
 	// Credentials in an issuer or key set URL would be sent on every fetch and
 	// have to be compared as part of the issuer claim.
 	if parsed.User != nil {
-		return nil, fmt.Errorf("%s %q must not include credentials", field, rawURL)
+		return nil, fmt.Errorf("%s %q must not include credentials", field, shown)
 	}
 
 	switch parsed.Scheme {
@@ -1395,10 +1449,225 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 		if isLoopbackHost(parsed.Hostname()) {
 			return parsed, nil
 		}
-		return nil, fmt.Errorf("%s %q must use https: plain http is only allowed for loopback addresses", field, rawURL)
+		return nil, fmt.Errorf("%s %q must use https: plain http is only allowed for loopback addresses", field, shown)
 	default:
-		return nil, fmt.Errorf("%s %q must use https", field, rawURL)
+		return nil, fmt.Errorf("%s %q must use https", field, shown)
 	}
+}
+
+// urlCredentialsMarker stands in a diagnostic for the userinfo a configured
+// URL carried. It says the same thing pkg/flowstate/v1's SensitiveMarker says,
+// spelled here rather than taken from there because that package imports this
+// one.
+const urlCredentialsMarker = "[redacted]"
+
+// urlWithoutCredentials is rawURL with any userinfo replaced by
+// [urlCredentialsMarker], and rawURL unchanged when there is none.
+//
+// malformed says the caller has decided there is no well-formed reading of
+// this string left to protect — url.Parse refused it, or it names no host, or
+// the caller is refusing it for something that makes it unusable whatever else
+// is right about it — and it widens the search from the region before the
+// first slash to the whole remainder. It has to. A password holding an
+// unescaped `/`, `?` or `#` puts a delimiter where an authority-shaped read
+// stops,
+// so `https://acct9:s3c/r3t@host` has an "authority" of `acct9:s3c`, no `@` in
+// it, and the credential survives into the refusal (Codex). Nothing legitimate
+// is lost by the wider search there, because it runs only on strings that are
+// being rejected anyway: what it can cost is a host, on a malformed URL whose
+// *path* holds an `@`, which is a worse diagnostic and not a disclosure.
+//
+// A well-formed URL keeps the before-first-slash reading, so `https://host/a@b`
+// — where the `@` is in the path and the host is the thing an operator needs
+// to read — is quoted whole. Unless its caller passed malformed anyway: see
+// [validateIssuerURL], which does for an issuer carrying a query or a
+// fragment.
+//
+// "Any userinfo" is found textually: past the scheme, past the slashes that
+// open a hierarchical URL, up to the first `/`, cut at the last `@`.
+//
+// Up to the first `/`, and not the first of `/`, `?` or `#` where url.Parse
+// ends the authority — so this region is deliberately the wider of the two,
+// and on some well-formed URLs it cuts somewhere url.Parse would not. The body
+// says why: url.Parse's reading of where the userinfo ends can be wrong in the
+// author's terms, and a search shaped like the authority inherits the
+// mistake.
+//
+// Past *the slashes*, however many there are, rather than past a literal `//`.
+// An operator who mistypes the delimiter writes `https:/acct9:s3cr3t@host` or
+// `https:///acct9:s3cr3t@host`, and url.Parse reads both as a URL with no host
+// at all — so they are refused by the branch above the credentials check, and
+// a search for `//` finds no authority in the first and an empty one in the
+// second, leaving the credential in the sentence (Codex, Copilot).
+//
+// An *opaque* URL — a scheme with no slash after it, `mailto:a@b` — is left
+// alone, because there its `@` belongs to the path and url.Parse agrees there
+// is no userinfo.
+//
+// That exemption is a class rather than a single shape: anything with no slash
+// after the scheme is returned whole, so a leading space, a backslash
+// delimiter, a percent-encoded one (`https:%2f%2f…`) and a scheme-less
+// `acct9:s3cr3t@host` all keep whatever they hold. Not "anything url.Parse
+// reads as having no authority", which is a wider set and would contradict the
+// paragraph above: `https:/…` and `https:///…` have no authority by that test
+// either, and they are redacted. None of them breaks the rule
+// above — url.Parse finds no userinfo in any of them either, so this and it
+// still agree — but a person reading a refusal about one does see the text they
+// typed. Widening the rule to cover them means guessing which `@` is a
+// credential and which is a mail address, which is the judgement
+// picatz/flowstate#2028 holds rather than one to make here
+// (flowstate-reviewer).
+//
+// Textual, and not [url.URL.Redacted], for two reasons. Redacted hides the
+// password and keeps the username, which is the right trade where the repo
+// already uses it — netpolicy and the http task log the URL a request was
+// actually sent to, and an operator reading that log needs to recognise it —
+// and the wrong one here, where the refusal is "this must not include
+// credentials" and the username is the other half of the credential. And it
+// needs a [url.URL], which the branch above it does not have: url.Parse
+// refuses `https://user:pa ss@host` outright, so the shape most likely to
+// hold a mistyped password is exactly the one with nothing to call Redacted
+// on.
+//
+// The host, port and path survive wherever no delimiter precedes them in that
+// region, because those are what tell an operator which entry of their policy
+// the refusal is about.
+//
+// They do not survive an `@` written later in the same region, and that is the
+// accepted cost of reading past the authority. A URL with no path slash whose
+// query or fragment holds one — `http://issuer.example.com?tenant=a@b`, or the
+// same with `%40`, or `https://acct9:s3cr3t@host?cb=a@b`, which has a real
+// credential *and* a later `@` — is redacted from the start of the region to
+// that last one, so a host can be lost where no credential was.
+//
+// Nothing distinguishes those from the misreads above
+// without deciding which `@` a person meant, so this errs to the side that
+// cannot disclose, and the refusal is still addressed by the `issuers[N]:`
+// frame the loader wraps it in.
+//
+// The same trade is made the other way once a slash is involved, and that one
+// does leave a credential in the sentence.
+// `http://acct9:2024/s3cr3t@host` is the port misread with the rest of the
+// credential in what url.Parse calls the path, and it is textually identical
+// to `http://host:8443/path@thing`, which is an ordinary URL whose host a
+// refusal must keep. Redacting after a slash would erase the host from every
+// one of those, so this stops at the first slash and the credential survives
+// into the scheme refusal that URL earns from [ValidateHTTPSURL]. The same
+// shape reaching [validateIssuerURL] instead — with a query or a fragment on
+// it — is redacted, because that caller passes malformed. It is the
+// disclosure half of
+// picatz/flowstate#2038, whose repair is not to redact harder here but to
+// stop reading a credential as `host:port` and a path in the first place.
+func urlWithoutCredentials(rawURL string, malformed bool) string {
+	rest := rawURL
+	prefix := ""
+	if colon := strings.Index(rest, ":"); colon >= 0 && isURLScheme(rest[:colon]) {
+		prefix, rest = rest[:colon+1], rest[colon+1:]
+	} else if strings.HasPrefix(rest, ":") {
+		// `://acct9:s3cr3t@host`, which is what an unexpanded `${SCHEME}` or a
+		// deleted scheme leaves behind. There is no scheme for the branch
+		// above to take, and the colon would otherwise stop the slash count
+		// before it began. Unlike `mailto:`, this shape
+		// has no meaning to preserve.
+		prefix, rest = ":", rest[1:]
+	}
+
+	// The slashes that make this hierarchical. None of them means an opaque
+	// URL, which has no authority to hold userinfo.
+	slashes := 0
+	for slashes < len(rest) && rest[slashes] == '/' {
+		slashes++
+	}
+	if slashes == 0 {
+		return rawURL
+	}
+	prefix, rest = prefix+rest[:slashes], rest[slashes:]
+
+	// Where a delimiter may appear: everything before the first `/`, or the
+	// whole remainder when the string is malformed and there is no structure
+	// left to trust.
+	//
+	// Not url.Parse's authority, which stops at the first `/`, `?` *or* `#`.
+	// url.Parse's reading of where the userinfo ends can be wrong in the
+	// author's terms, and in two ways that compound. A password whose leading
+	// run is all digits parses as a *port*, so `https://acct9:2024?s3cr3t@host`
+	// is host `acct9`, port 2024 and a query, with no userinfo at all — the
+	// credential sits past the `?` where an authority-shaped search stops. And
+	// a username carrying an unescaped `@` moves the split: `https://ac@t9:2024?s3cr3t@host`
+	// parses as userinfo `ac`, host `t9`, so a search that stopped at the
+	// authority found *a* delimiter, was satisfied, and left the rest of the
+	// credential in the sentence (flowstate-reviewer, twice).
+	//
+	// One region and one search closes both, because this region is always a
+	// superset of the authority: whatever url.Parse concluded, an `@` before
+	// the first slash is in the position userinfo is written in.
+	//
+	// The first slash is where it stops, and that is what keeps a path out of
+	// it: `http://host/a@b` must keep its host. See the residuals below for
+	// what that concedes.
+	region := rest
+	if !malformed {
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			region = rest[:slash]
+		}
+	}
+
+	// The *last* delimiter, which is where url.Parse splits too: a region
+	// holding more than one is host after the last and userinfo before it, so
+	// cutting at the first would leave half the credential in place.
+	at := lastUserinfoDelimiter(region)
+	if at < 0 {
+		return rawURL
+	}
+
+	return prefix + urlCredentialsMarker + rest[at:]
+}
+
+// isURLScheme reports whether s is shaped like a URL scheme, so that the colon
+// after it is the scheme's rather than a port's or a password's. RFC 3986: a
+// letter, then letters, digits, `+`, `-` and `.`.
+func isURLScheme(s string) bool {
+	if s == "" || !isASCIILetter(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if isASCIILetter(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.' {
+			continue
+		}
+
+		return false
+	}
+
+	return true
+}
+
+func isASCIILetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+// lastUserinfoDelimiter is the last `@` in s, in either spelling it arrives
+// in: written, or percent-encoded as `%40` by templating that escaped it.
+//
+// Both spellings in one function, and every search for the delimiter goes
+// through it, because the two were once looked for in different places — the
+// encoded one only where url.Parse had already refused the string — and the
+// shape that is *both* at once slipped between them: `%40` in a password whose
+// leading run is digits is a URL url.Parse reads as host, port and query, so
+// it is well formed, and neither search was looking (flowstate-reviewer).
+//
+// Compared exactly. A percent escape's hex digits may be written in either
+// case, but `40` has no letter in it, so there is one spelling to look for.
+func lastUserinfoDelimiter(s string) int {
+	return max(strings.LastIndex(s, "@"), strings.LastIndex(s, "%40"))
+}
+
+// urlParseReason is why [url.Parse] refused, without the copy of the URL that
+// [url.Error] renders in front of it.
+func urlParseReason(err error) error {
+	if parseErr, ok := errors.AsType[*url.Error](err); ok {
+		return parseErr.Err
+	}
+
+	return err
 }
 
 // isLoopbackHost reports whether a URL host names the local machine.
