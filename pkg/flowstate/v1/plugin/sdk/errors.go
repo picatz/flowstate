@@ -111,12 +111,49 @@ func Unavailable(format string, args ...any) error {
 	return &classified{code: connect.CodeUnavailable, retryable: true, err: fmt.Errorf(format, args...)}
 }
 
-// IsConflict reports whether err is (or wraps) a [Conflict] classification -
-// the predicate a plugin's own tests, or a caller deciding how to log a
+// The predicates below report which classification an error carries. They are
+// what a plugin's own tests, and a caller deciding how to log or dispatch on a
 // failure, use instead of matching on message text, which is free to change.
-func IsConflict(err error) bool {
+//
+// Each reads through wrapping, so an error given context with fmt.Errorf still
+// answers for what it is. An unclassified error - a bare error, or one from
+// outside this SDK - answers false to all of them, which is the same thing the
+// engine concludes: a failure that named no classification is permanent and
+// unexplained.
+
+// IsNotFound reports whether err is (or wraps) a [NotFound] classification.
+func IsNotFound(err error) bool { return hasCode(err, connect.CodeNotFound, false) }
+
+// IsPermissionDenied reports whether err is (or wraps) a [PermissionDenied]
+// classification.
+func IsPermissionDenied(err error) bool { return hasCode(err, connect.CodePermissionDenied, false) }
+
+// IsInvalidInput reports whether err is (or wraps) an [InvalidInput]
+// classification.
+func IsInvalidInput(err error) bool { return hasCode(err, connect.CodeInvalidArgument, false) }
+
+// IsConflict reports whether err is (or wraps) a [Conflict] classification.
+func IsConflict(err error) bool { return hasCode(err, connect.CodeAborted, false) }
+
+// IsUnavailable reports whether err is (or wraps) an [Unavailable] or
+// [UnavailableAfter] classification - the one retryable answer, and so the one
+// worth testing for separately from the rest.
+func IsUnavailable(err error) bool { return hasCode(err, connect.CodeUnavailable, false) }
+
+// IsOutcomeUnknown reports whether err is (or wraps) an [OutcomeUnknown]
+// classification: a call that may already have taken effect.
+//
+// Distinct from [Failed], which shares its code: the difference between the two
+// is not the code but the verdict on retrying, so this asks about the verdict.
+func IsOutcomeUnknown(err error) bool { return hasCode(err, connect.CodeUnknown, true) }
+
+// hasCode is the one place the classification is read out of an error.
+func hasCode(err error, code connect.Code, unknownOutcome bool) bool {
 	var c *classified
-	return errors.As(err, &c) && c.code == connect.CodeAborted
+	if !errors.As(err, &c) || c.code != code {
+		return false
+	}
+	return c.unknownOutcome == unknownOutcome
 }
 
 // UnavailableAfter is [Unavailable] with a preferred delay before the next
