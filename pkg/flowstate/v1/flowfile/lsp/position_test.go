@@ -318,9 +318,159 @@ func TestStoreRejectsStaleEdits(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "name: two\n", got.text)
 
-	// Reopening resets the version, since an editor may close and reopen a file.
+	// Reopening resets the version, since an editor may close and reopen a file
+	// — and closing is what makes it a reopen. The protocol requires didClose
+	// before a document is opened again, and close removes it from the store, so
+	// this open has no incumbent to be ordered against.
+	store.close("file:///stale.yaml")
 	reopened := store.open("file:///stale.yaml", 1, "name: reopened\n", nil)
 	assert.Equal(t, "name: reopened\n", reopened.text)
+}
+
+// TestStoreIgnoresARangeEditWithNothingToSpliceInto covers the case that makes
+// ordering an open against the stored version safe for an incremental client.
+//
+// A range is computed against text the client believes the server holds.
+// Applying one to an empty string does not reproduce that text — the clamps
+// leave the replacement alone — and storing that at the edit's version would
+// outrank the didOpen still on its way, so the guard in open would then keep a
+// truncated buffer for good rather than letting the open repair it. Ignoring
+// the edit leaves the open to land the real text.
+func TestStoreIgnoresARangeEditWithNothingToSpliceInto(t *testing.T) {
+	t.Parallel()
+
+	full := "steps:\n  - id: one\n"
+	var store documentStore
+	ignored := store.change("file:///splice.yaml", 2, []lsp.TextDocumentContentChangeEvent{{
+		Range: &lsp.Range{
+			Start: lsp.Position{Line: 1, Character: 8},
+			End:   lsp.Position{Line: 1, Character: 11},
+		},
+		Text: "two",
+	}}, nil)
+	assert.Nil(t, ignored, "a range edit was spliced into a document the store does not have")
+	if _, ok := store.get("file:///splice.yaml"); ok {
+		t.Fatal("a range edit with no base created a document")
+	}
+
+	// The open that carries the real text still lands it.
+	opened := store.open("file:///splice.yaml", 1, full, nil)
+	require.NotNil(t, opened)
+	assert.Equal(t, full, opened.text, "the open did not recover the document")
+
+	// And an edit after it applies to that text rather than to nothing.
+	edited := store.change("file:///splice.yaml", 2, []lsp.TextDocumentContentChangeEvent{{
+		Range: &lsp.Range{
+			Start: lsp.Position{Line: 1, Character: 8},
+			End:   lsp.Position{Line: 1, Character: 11},
+		},
+		Text: "two",
+	}}, nil)
+	require.NotNil(t, edited)
+	assert.Equal(t, "steps:\n  - id: two\n", edited.text)
+
+	// A change with no range needs no base, and is the sync kind this server
+	// advertises, so it still applies.
+	var whole documentStore
+	replaced := whole.change("file:///whole.yaml", 1,
+		[]lsp.TextDocumentContentChangeEvent{{Text: full}}, nil)
+	require.NotNil(t, replaced, "a full-text change with no base was ignored")
+	assert.Equal(t, full, replaced.text)
+
+	// The test is whether a full replacement arrives, not whether a range
+	// does. An empty change set carries no range and still establishes
+	// nothing: applying it would store an empty document at the edit's
+	// version, which outranks the didOpen still on its way and leaves the
+	// buffer empty for good — the same permanent failure as the ranged case,
+	// reached through a different door.
+	for _, empty := range [][]lsp.TextDocumentContentChangeEvent{{}, nil} {
+		var store documentStore
+		assert.Nil(t, store.change("file:///empty.yaml", 5, empty, nil),
+			"a change set establishing no text created a document")
+		if _, ok := store.get("file:///empty.yaml"); ok {
+			t.Fatal("a change set establishing no text created a document")
+		}
+		opened := store.open("file:///empty.yaml", 1, full, nil)
+		require.NotNil(t, opened)
+		assert.Equal(t, full, opened.text, "the open did not recover the document")
+	}
+
+	// And the converse: a set whose trailing entry replaces everything does
+	// establish the text, however it begins, because that replacement makes
+	// whatever preceded it irrelevant.
+	var mixed documentStore
+	both := mixed.change("file:///mixed.yaml", 3, []lsp.TextDocumentContentChangeEvent{
+		{
+			Range: &lsp.Range{
+				Start: lsp.Position{Line: 0, Character: 0},
+				End:   lsp.Position{Line: 0, Character: 3},
+			},
+			Text: "ignored",
+		},
+		{Text: full},
+	}, nil)
+	require.NotNil(t, both, "a change set ending in a full replacement was ignored")
+	assert.Equal(t, full, both.text)
+}
+
+// TestStoreRejectsAnOvertakenOpen covers the same ordering guard from the other
+// side. AsyncHandler starts a goroutine per message, so a didOpen can be
+// scheduled behind a didChange for the same document; the open must not revert
+// the edit. Before the guard, this left an editor that opened a file, took the
+// first keystrokes, and then silently answered every read from the pre-edit
+// text until the next keystroke landed.
+func TestStoreRejectsAnOvertakenOpen(t *testing.T) {
+	t.Parallel()
+
+	// The change arriving first is the ordering under test: change tolerates it,
+	// starting from empty text and taking the full-text replacement, so the edit
+	// is applied and would then be discarded by the open.
+	var store documentStore
+	edited := store.change("file:///overtaken.yaml", 4, []lsp.TextDocumentContentChangeEvent{{Text: "name: edited\n"}}, nil)
+	require.NotNil(t, edited)
+
+	overtaken := store.open("file:///overtaken.yaml", 1, "name: opened\n", nil)
+	require.NotNil(t, overtaken)
+	assert.Equal(t, "name: edited\n", overtaken.text, "an open behind a change reverted the document")
+	assert.Equal(t, 4, overtaken.version, "an open behind a change reverted the version")
+
+	// The store agrees with what the open returned, so a caller publishing
+	// diagnostics from the return value and a later request reading the store
+	// cannot disagree about the text.
+	current, ok := store.get("file:///overtaken.yaml")
+	require.True(t, ok)
+	assert.Same(t, overtaken, current)
+
+	// The path index is registered on this path too: a request blocked on the
+	// build gate is waiting for this call, and an overtaken open still releases
+	// it rather than leaving it waiting.
+	indexed, ok := store.getByFilesystemPath("/overtaken.yaml")
+	require.True(t, ok)
+	assert.Same(t, current, indexed)
+
+	// An open that is not overtaken still opens, so the guard does not strand a
+	// client on text the store happens to hold.
+	fresh := store.open("file:///fresh.yaml", 1, "name: fresh\n", nil)
+	require.NotNil(t, fresh)
+	assert.Equal(t, "name: fresh\n", fresh.text)
+
+	// Zero is a legal document version, not a sentinel. A compliant client may
+	// open at zero and edit to one, and that open must not revert the edit
+	// either — what cannot be ordered against is a *stored* version of zero.
+	var zeroOpen documentStore
+	zeroOpen.change("file:///zero.yaml", 1, []lsp.TextDocumentContentChangeEvent{{Text: "name: edited\n"}}, nil)
+	late := zeroOpen.open("file:///zero.yaml", 0, "name: opened\n", nil)
+	require.NotNil(t, late)
+	assert.Equal(t, "name: edited\n", late.text, "an open at version zero reverted a later edit")
+
+	// A client that does not track versions keeps last-write-wins, the same
+	// tolerance change has, because the stored document carries nothing to
+	// order by.
+	var untracked documentStore
+	untracked.change("file:///untracked.yaml", 0, []lsp.TextDocumentContentChangeEvent{{Text: "name: one\n"}}, nil)
+	reopened := untracked.open("file:///untracked.yaml", 0, "name: two\n", nil)
+	require.NotNil(t, reopened)
+	assert.Equal(t, "name: two\n", reopened.text)
 }
 
 func TestNewLineIndexHandlesNoTrailingNewline(t *testing.T) {
