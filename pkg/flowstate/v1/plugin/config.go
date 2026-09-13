@@ -218,6 +218,23 @@ const (
 // bounds live.
 const MaxEgressPolicyBytes = protocol.MaxEgressPolicyBytes
 
+// MaxPluginEnvBytes bounds what one plugin's [Config.EnvByPlugin] entry may
+// carry into that plugin's launch environment, counted the way the kernel
+// counts it: every entry's bytes plus the NUL that terminates each one.
+//
+// 64 KiB is generous for what belongs in a plugin's environment — an endpoint,
+// a region, a path to a file the operator wrote — and deliberately too small
+// for what does not. Configuration that outgrows it is a document, and a
+// document belongs in a file whose *path* is the variable; that indirection is
+// also what keeps the value out of /proc/<pid>/environ, where anything running
+// as this user can read it.
+//
+// Refused at host construction rather than discovered at exec(2), for the
+// reason [MaxEgressPolicyBytes] is: past the operating system's own limit the
+// launch fails with an errno that names neither the variable nor the operator
+// who set it.
+const MaxPluginEnvBytes = 64 << 10
+
 // Config describes which plugins a deployment will run and how far it will let
 // them go.
 //
@@ -316,6 +333,33 @@ type Config struct {
 	// with. Anything a plugin needs — a vault address, a region, a path to a
 	// credential file — belongs here, named by the operator.
 	Env []string
+
+	// EnvByPlugin is extra environment for the processes of one named plugin,
+	// as "KEY=VALUE" entries keyed by the name discovery gives that plugin.
+	//
+	// [Env] reaches every plugin this host launches, which is the right shape
+	// for a fact about the deployment and the wrong one for a plugin's own
+	// configuration: a registry credential path meant for `oci`, a base config
+	// meant for `codex`, a host-grant file meant for `ssh`. A process's
+	// environment is readable to anything running as the same user — the reason
+	// the handshake token travels on a descriptor instead, documented where it
+	// is minted — so an operator configuring one plugin should not thereby
+	// configure the others, nor hand them what they were configured with.
+	// Entries here reach the named plugin alone.
+	//
+	// Keys are plugin names spelled the way [Discover] spells them. A key no
+	// plugin could ever answer to is configuration that silently reaches
+	// nothing, which leaves the plugin its operator meant to configure running
+	// without it — the same fail-open typo [Config.PinnedDigests] refuses — so
+	// [NewHost] refuses it at startup instead.
+	//
+	// Applied after [Env], so a variable named in both takes the per-plugin
+	// value for that plugin: the narrower statement is the more deliberate one.
+	// Neither may redefine a protocol variable; the handshake is not
+	// configuration.
+	//
+	// At most [MaxPluginEnvBytes] per plugin.
+	EnvByPlugin map[string][]string
 
 	// EgressPolicy is the deployment's egress policy, as the operator wrote it
 	// and the worker already parsed it for the built-in http task — or, when the
@@ -535,6 +579,7 @@ func (c Config) withDefaults() Config {
 	c.PinnedDigests = maps.Clone(c.PinnedDigests)
 	c.PermittedSchemes = slices.Clone(c.PermittedSchemes)
 	c.Env = slices.Clone(c.Env)
+	c.EnvByPlugin = cloneEnvByPlugin(c.EnvByPlugin)
 	c.EgressPolicy = slices.Clone(c.EgressPolicy)
 
 	return c
@@ -603,6 +648,40 @@ func (c Config) validate() error {
 	for _, entry := range c.Env {
 		if !isEnvEntry(entry) {
 			return fmt.Errorf("plugin: Env entry %q is not of the form KEY=VALUE", textbound.Truncate(entry, 64))
+		}
+	}
+
+	// Sorted for the reason the pins loop above is sorted: an operator whose
+	// file has two bad entries should be told about the same one on every run.
+	for _, name := range slices.Sorted(maps.Keys(c.EnvByPlugin)) {
+		if !validPluginName(name) {
+			return fmt.Errorf(
+				"%w: EnvByPlugin has an entry under %q, which is not a valid plugin name; "+
+					"a plugin name is lower-case letters, digits and interior hyphens, at most %d characters, "+
+					"so no discovered plugin could ever be launched with it",
+				ErrPluginEnv, textbound.Truncate(name, MaxNameLen+16), MaxNameLen,
+			)
+		}
+
+		// The kernel's accounting, not the slice's: each entry's bytes plus the
+		// NUL terminating it.
+		total := 0
+		for _, entry := range c.EnvByPlugin[name] {
+			if !isEnvEntry(entry) {
+				return fmt.Errorf(
+					"%w: EnvByPlugin[%q] entry %q is not of the form KEY=VALUE",
+					ErrPluginEnv, name, textbound.Truncate(entry, 64),
+				)
+			}
+			total += len(entry) + 1
+		}
+		if total > MaxPluginEnvBytes {
+			return fmt.Errorf(
+				"%w: EnvByPlugin[%q] is %d bytes, over the %d-byte limit; it becomes that plugin's "+
+					"launch environment, and a longer one fails exec with an error naming nothing. "+
+					"Configuration this large belongs in a file whose path is the variable",
+				ErrPluginEnv, name, total, MaxPluginEnvBytes,
+			)
 		}
 	}
 
@@ -684,6 +763,21 @@ func (c Config) wanted(name string) bool {
 // protocolVersions returns the protocol versions this host offers a plugin.
 func (c Config) protocolVersions() []int {
 	return protocol.HostVersions()
+}
+
+// cloneEnvByPlugin deep-copies [Config.EnvByPlugin], so that a caller who keeps
+// and mutates the map or one of its slices after handing it over cannot change
+// what a plugin is launched with after this Config was validated.
+func cloneEnvByPlugin(byPlugin map[string][]string) map[string][]string {
+	if byPlugin == nil {
+		return nil
+	}
+
+	cloned := make(map[string][]string, len(byPlugin))
+	for name, entries := range byPlugin {
+		cloned[name] = slices.Clone(entries)
+	}
+	return cloned
 }
 
 // isEnvEntry reports whether s is a KEY=VALUE entry with a non-empty key.

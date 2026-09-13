@@ -220,7 +220,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	cmd := exec.CommandContext(procCtx, execPath)
 	cmd.Args = []string{found.Path}
 	cmd.Dir = socketDir
-	cmd.Env = pluginEnv(cfg, socketPath)
+	cmd.Env = pluginEnv(cfg, found.Name, socketPath)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
@@ -645,7 +645,7 @@ func tokenPipe(token string) (*os.File, error) {
 //
 // The proxy variables travel for the same reason and under the same condition:
 // see [proxyGrant].
-func pluginEnv(cfg Config, socketPath string) []string {
+func pluginEnv(cfg Config, name, socketPath string) []string {
 	env := []string{
 		protocol.MagicCookieEnv + "=" + protocol.MagicCookieValue,
 		protocol.VersionsEnv + "=" + protocol.FormatVersions(cfg.protocolVersions()),
@@ -670,6 +670,19 @@ func pluginEnv(cfg Config, socketPath string) []string {
 	// own: a Config.Env that redefined the socket path or a token descriptor
 	// would break the handshake in a way that looks like a plugin bug.
 	for _, entry := range cfg.Env {
+		if isProtocolEnv(entry) {
+			continue
+		}
+		env = append(env, entry)
+	}
+
+	// Then this plugin's own configuration, which is nothing for every other
+	// plugin this host launches. It comes after the deployment-wide entries so
+	// that a variable set in both takes the value written for this plugin —
+	// os/exec keeps the last of a repeated key — and it is filtered the same
+	// way, because the handshake is not configuration whichever surface an
+	// operator writes it on.
+	for _, entry := range cfg.EnvByPlugin[name] {
 		if isProtocolEnv(entry) {
 			continue
 		}

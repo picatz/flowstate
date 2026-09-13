@@ -120,9 +120,12 @@ workflow itself cannot do:
   the operator's `FLOWSTATE_CODEX_WORKDIR_ROOT`, since that is where the agent
   edits and from which its `patch` is diffed.
 
-Two of the worker's environment variables are not optional here, and leaving
-either unset makes the turn fail rather than degrade — both are operator
-decisions the workflow cannot make for itself:
+Two of the codex plugin's environment variables are not optional here, and
+leaving either unset makes the turn fail rather than degrade — both are operator
+decisions the workflow cannot make for itself. A plugin inherits nothing of the
+worker's environment, so each is named to the worker with `--plugin-env
+codex=KEY=VALUE` (or the `--plugin-env-file` form), never exported into the
+shell that starts it:
 
 - **`FLOWSTATE_CODEX_BASE_CONFIG`** must name a codex config that permits
   workspace writes. The plugin's ceiling is fail-closed: with this unset the
@@ -145,13 +148,13 @@ decisions the workflow cannot make for itself:
 $ mkdir -p ./plugins
 $ go -C plugins/codex build -o ../../plugins/flowstate-plugin-codex .
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
-$ export FLOWSTATE_CODEX_BIN=/path/to/codex
-$ export FLOWSTATE_CODEX_GIT_BIN=/usr/bin/git          # no $PATH fallback; without it, no patch
-$ export FLOWSTATE_CODEX_BASE_CONFIG=/path/to/codex-base.toml  # else the ceiling stays read-only
-$ export FLOWSTATE_CODEX_WORKDIR_ROOT=/path/to/checkouts
-$ export FLOWSTATE_SECRET_OPENAI_API_KEY=sk-...
-$ export GIT_SECRET_0__TOKEN=...
-$ flow worker --plugin-dir ./plugins
+$ export FLOWSTATE_SECRET_OPENAI_API_KEY=sk-...        # the worker's own env: provider
+$ flow worker --plugin-dir ./plugins \
+    --plugin-env codex=FLOWSTATE_CODEX_BIN=/path/to/codex \
+    --plugin-env codex=FLOWSTATE_CODEX_GIT_BIN=/usr/bin/git \
+    --plugin-env codex=FLOWSTATE_CODEX_BASE_CONFIG=/path/to/codex-base.toml \
+    --plugin-env codex=FLOWSTATE_CODEX_WORKDIR_ROOT=/path/to/checkouts \
+    --plugin-env git=GIT_SECRET_0__TOKEN=...
 $ flow run examples/plugins/agentic-fix/workflow.yaml \
     --input repo=https://github.com/your-org/your-repo.git \
     --input branch=agent/fix \

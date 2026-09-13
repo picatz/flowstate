@@ -413,7 +413,7 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 		"FLOWSTATE_PLUGIN_TOKEN_FD=9",
 	}
 
-	env := pluginEnv(cfg, "/tmp/s")
+	env := pluginEnv(cfg, "example", "/tmp/s")
 
 	joined := strings.Join(env, "\n")
 
@@ -439,7 +439,7 @@ func TestPluginEnvironmentIsMinimal(t *testing.T) {
 
 	// Nothing from this process leaked in.
 	t.Setenv("A_WORKER_SECRET", "should-not-travel")
-	for _, entry := range pluginEnv(cfg, "/tmp/s") {
+	for _, entry := range pluginEnv(cfg, "example", "/tmp/s") {
 		if strings.HasPrefix(entry, "A_WORKER_SECRET") {
 			t.Errorf("the worker's own environment reached the plugin: %q", entry)
 		}
@@ -464,7 +464,7 @@ func TestTheEgressGrantReachesEveryPluginAndCannotBeOverriddenByEnv(t *testing.T
 	cfg.EgressPolicy = policy
 	cfg.Env = []string{protocol.EgressPolicyEnv + "=" + base64.StdEncoding.EncodeToString([]byte("egress: {}"))}
 
-	granted := grantsIn(t, pluginEnv(cfg, "/tmp/s"))
+	granted := grantsIn(t, pluginEnv(cfg, "example", "/tmp/s"))
 	if len(granted) != 1 {
 		t.Fatalf("%s appears %d times in the launch environment, want exactly one: %v",
 			protocol.EgressPolicyEnv, len(granted), granted)
@@ -483,7 +483,7 @@ func TestTheEgressGrantReachesEveryPluginAndCannotBeOverriddenByEnv(t *testing.T
 	// to prevent, and it must not be manufactured here.
 	cfg.EgressPolicy = nil
 	cfg.Env = nil
-	if granted := grantsIn(t, pluginEnv(cfg, "/tmp/s")); len(granted) != 0 {
+	if granted := grantsIn(t, pluginEnv(cfg, "example", "/tmp/s")); len(granted) != 0 {
 		t.Errorf("a host with no egress policy granted one anyway: %q", granted)
 	}
 }
@@ -519,7 +519,7 @@ func TestAnExplicitlyEmptyEgressPolicyIsStillGranted(t *testing.T) {
 	cfg := testConfig(t, t.TempDir()).withDefaults()
 	cfg.EgressPolicy = []byte{}
 
-	granted := grantsIn(t, pluginEnv(cfg, "/tmp/s"))
+	granted := grantsIn(t, pluginEnv(cfg, "example", "/tmp/s"))
 	if len(granted) != 1 {
 		t.Fatalf("an explicitly configured empty policy produced %d grants, want exactly one: %q",
 			len(granted), granted)
@@ -659,7 +659,7 @@ func TestTheProxyGrantTravelsOnlyWithAProxyPolicy(t *testing.T) {
 			cfg := testConfig(t, t.TempDir()).withDefaults()
 			cfg.EgressPolicy = test.grant
 
-			env := pluginEnv(cfg, "/tmp/s")
+			env := pluginEnv(cfg, "example", "/tmp/s")
 
 			for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} {
 				value, found := envValue(env, name)
@@ -701,7 +701,7 @@ func TestAnOperatorNamedProxyWinsOverTheWorkers(t *testing.T) {
 	cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n")
 	cfg.Env = []string{"HTTP_PROXY=http://plugin-proxy.invalid:8080"}
 
-	env := pluginEnv(cfg, "/tmp/s")
+	env := pluginEnv(cfg, "example", "/tmp/s")
 
 	var httpProxies []string
 	for _, entry := range env {
@@ -784,7 +784,7 @@ func TestAnOperatorNamedProxyOverridesBothSpellings(t *testing.T) {
 			cfg.EgressPolicy = []byte("egress:\n  schemes: [https]\n  proxy_from_environment: true\n")
 			cfg.Env = []string{test.configured}
 
-			env := pluginEnv(cfg, "/tmp/s")
+			env := pluginEnv(cfg, "example", "/tmp/s")
 
 			configuredName, configuredValue, _ := strings.Cut(test.configured, "=")
 			for _, name := range test.ambient {
@@ -807,7 +807,7 @@ func TestAnOperatorNamedProxyOverridesBothSpellings(t *testing.T) {
 			// A variable the operator said nothing about is unaffected, or the
 			// rule above would read as "naming any proxy turns the grant off".
 			t.Setenv("HTTPS_PROXY", "http://worker-proxy.invalid:3129")
-			if value, found := envValue(pluginEnv(cfg, "/tmp/s"), "HTTPS_PROXY"); !found ||
+			if value, found := envValue(pluginEnv(cfg, "example", "/tmp/s"), "HTTPS_PROXY"); !found ||
 				value != "http://worker-proxy.invalid:3129" {
 				t.Errorf("HTTPS_PROXY = %q (found %v), want the worker's own value", value, found)
 			}
@@ -854,7 +854,7 @@ func TestAnUnbuildableEgressGrantIsRefusedBeforeAnythingLaunches(t *testing.T) {
 
 	// And the credential never reaches a launch environment, which is the half
 	// that would still have been wrong had the refusal come later.
-	if value, found := envValue(pluginEnv(cfg.withDefaults(), "/tmp/s"), "HTTP_PROXY"); found {
+	if value, found := envValue(pluginEnv(cfg.withDefaults(), "example", "/tmp/s"), "HTTP_PROXY"); found {
 		t.Errorf("HTTP_PROXY = %q was granted under a policy that cannot build; "+
 			"a grant that governs nothing must not hand the operator's proxy credential over", value)
 	}
@@ -906,7 +906,7 @@ func TestABuildableEgressGrantIsAccepted(t *testing.T) {
 			// Accepting nil must not have made it a grant: the launch
 			// environment still carries none, which is the distinction
 			// presence-not-length rests on.
-			granted := grantsIn(t, pluginEnv(cfg.withDefaults(), "/tmp/s"))
+			granted := grantsIn(t, pluginEnv(cfg.withDefaults(), "example", "/tmp/s"))
 			if test.grant == nil && len(granted) != 0 {
 				t.Errorf("no configured policy produced a grant anyway: %q", granted)
 			}

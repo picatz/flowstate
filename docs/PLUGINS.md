@@ -25,6 +25,7 @@ sentence names, so a reference here is one the tree still agrees with.
 - [Chapter two: the schema is the contract](#chapter-two-the-schema-is-the-contract)
 - [Five places the contract is implicit](#five-places-the-contract-is-implicit)
 - [The rest of the manifest](#the-rest-of-the-manifest)
+- [Being configured by an operator](#being-configured-by-an-operator)
 - [Reaching the network](#reaching-the-network)
 - [Classifying failures](#classifying-failures)
 - [Writing one in another language](#writing-one-in-another-language)
@@ -666,6 +667,65 @@ rehearsal marker or from the durable driver itself, never from claims or task
 input. A future remote-plugin transport must authenticate the host and preserve
 that property; otherwise it must deliver `UNSPECIFIED`, not forward a mode
 supplied by a workflow or remote caller.
+
+## Being configured by an operator
+
+Your plugin starts with an environment built from nothing. That is deliberate —
+the worker's environment is where the worker's own credentials live — and it
+means the ordinary way a program is configured is not available to you by
+default: a variable exported in the shell that ran `flow worker` does not reach
+your process.
+
+What reaches it is what the deployment named for you:
+
+```console
+$ flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+    --plugin-env oci=FLOWSTATE_OCI_REGISTRIES=/etc/flowstate/oci.yaml
+```
+
+or, for a deployment configuring more than a plugin or two, the file form —
+`--plugin-env-file /etc/flowstate/plugin-env.yaml`, or `$FLOWSTATE_PLUGIN_ENV`
+for a container image that bakes it in:
+
+```yaml
+env:
+  oci:
+    FLOWSTATE_OCI_REGISTRIES: /etc/flowstate/oci.yaml
+  ssh:
+    FLOWSTATE_SSH_GRANTS: /etc/flowstate/ssh-grants.yaml
+```
+
+Three things about it are worth knowing before you design your own
+configuration around it.
+
+**It is scoped to you.** The entries written for `oci` reach `oci` and nothing
+else the worker launches. That is the point rather than a convenience: a
+process's environment is copied into `/proc/<pid>/environ` at `execve(2)`, where
+anything running as the same user can read it — which is why the handshake token
+travels on a descriptor instead — so one plugin's configuration is not another
+plugin's to see.
+
+**It is not a place for secret values.** Name a *path* and read the file
+yourself, the way `codex` takes `FLOWSTATE_CODEX_BASE_CONFIG`, or take the value
+as a task input the host resolves from the deployment's secret providers, the
+way `slack.post` takes `token`. A resolved secret input never enters durable
+history and never sits in an environment block for the life of your process; a
+variable does both.
+
+**It cannot redefine the protocol's own variables.** Entries naming the socket,
+the descriptors or the magic cookie are dropped rather than honored, in either
+surface. The handshake is not configuration.
+
+Read it with `os.Getenv` like any other program, and decide what an unset
+variable means — for anything governing what your plugin is allowed to do, that
+answer is the fail-closed one:
+
+```go
+// The operator's grants, or none: a plugin with no configured grants runs the
+// tasks that need none and refuses the ones that do, rather than inventing a
+// default authority nobody wrote down.
+path := os.Getenv("FLOWSTATE_OCI_REGISTRIES")
+```
 
 ## Reaching the network
 

@@ -49,6 +49,12 @@ const pluginSearchPathEnv = "FLOWSTATE_PLUGIN_DIR"
 // environment rather than into every command line.
 const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 
+// pluginEnvFileEnv names a per-plugin environment file the same way
+// --plugin-env-file does, mirroring [pluginPinsEnv] for a container image that
+// bakes its configuration into the environment rather than into every command
+// line.
+const pluginEnvFileEnv = "FLOWSTATE_PLUGIN_ENV"
+
 // pluginMaxCallTimeoutEnv raises the host's ceiling on one plugin call, in the
 // same env-var shape the two above take, for the same reason: a container image
 // bakes it in rather than repeating it on every command line.
@@ -83,6 +89,11 @@ type pluginFlags struct {
 	// only user is root — and no other one.
 	allowInsecureDirs bool
 
+	// env feeds [plugin.Config.EnvByPlugin] directly: for the names it holds,
+	// the variables that plugin's processes are launched with. Built by
+	// [pluginFlagsOf] from --plugin-env-file and --plugin-env together.
+	env map[string][]string
+
 	// pinnedDigests feeds [plugin.Config.PinnedDigests] directly: for the names
 	// it holds, the digest the binary answering to that name must have. Built
 	// by [pluginFlagsOf] from --plugin-pins and --plugin-pin together; see
@@ -110,6 +121,8 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
 	pinFlags, _ := cmd.Flags().GetStringArray("plugin-pin")
 	pinsFile, _ := cmd.Flags().GetString("plugin-pins")
+	envFlags, _ := cmd.Flags().GetStringArray("plugin-env")
+	envFile, _ := cmd.Flags().GetString("plugin-env-file")
 	egressPolicy := egressPolicySnapshot(cmd)
 
 	// The $FLOWSTATE_PLUGIN_DIR fallback is bound at registration time, in
@@ -128,7 +141,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	// --plugin-catalog rather than refusing the run.
 	if pluginCatalogPath(cmd) != "" {
 		var named []string
-		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins"} {
+		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins", "plugin-env", "plugin-env-file"} {
 			if cmd.Flags().Changed(name) {
 				named = append(named, "--"+name)
 			}
@@ -260,14 +273,97 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 		}
 	}
 
+	env, err := pluginEnvOf(envFile, envFlags)
+	if err != nil {
+		return pluginFlags{}, err
+	}
+
 	return pluginFlags{
 		dirs:              absolute,
 		only:              only,
 		schemes:           schemes,
 		allowInsecureDirs: allowInsecure,
 		pinnedDigests:     pins,
+		env:               env,
 		egressPolicy:      egressPolicy,
 	}, nil
+}
+
+// pluginEnvOf builds [plugin.Config.EnvByPlugin] from an environment file and
+// repeatable --plugin-env entries together.
+//
+// The same merge [pluginPinsOf] performs, for the same reasons: the file is the
+// base, the flag extends it for configuring one plugin without maintaining a
+// file, and one variable set for one plugin by both sources is refused rather
+// than resolved by which source ran last. The effective value would otherwise
+// depend on an order nothing about the command line states.
+//
+// Whether a key names a plugin that could exist, and whether the grant fits a
+// launch environment, is [plugin.Config]'s to answer — one check for every
+// source, reached through [plugin.NewHost].
+func pluginEnvOf(envFile string, envFlags []string) (map[string][]string, error) {
+	base := map[string]map[string]string{}
+	if envFile != "" {
+		data, err := readBoundedFile(envFile, "a plugin environment file", maxPluginEnvFileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("reading plugin environment %s: %w", envFile, err)
+		}
+
+		cfg, err := plugin.ParseEnvConfig(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing plugin environment %s: %w", envFile, err)
+		}
+
+		for name, vars := range cfg.Env {
+			base[name] = maps.Clone(vars)
+		}
+	}
+
+	fromFile := make(map[string]map[string]bool, len(base))
+	for name, vars := range base {
+		fromFile[name] = make(map[string]bool, len(vars))
+		for key := range vars {
+			fromFile[name][key] = true
+		}
+	}
+
+	for _, entry := range envFlags {
+		name, assignment, found := strings.Cut(entry, "=")
+		if !found {
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-env %q is not of the form plugin=KEY=VALUE", entry))
+		}
+
+		key, value, found := strings.Cut(assignment, "=")
+		if !found || key == "" {
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-env %q is not of the form plugin=KEY=VALUE: %q is not a KEY=VALUE assignment",
+				entry, assignment))
+		}
+
+		if _, ok := base[name][key]; ok {
+			if fromFile[name][key] {
+				return nil, newUsageError(fmt.Errorf(
+					"--plugin-env-file and --plugin-env both set %s for %q. A variable set twice is "+
+						"ambiguous even when the two values agree — remove one", key, name))
+			}
+
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-env sets %s for %q more than once. A variable set twice is ambiguous "+
+					"even when the two values agree — remove one", key, name))
+		}
+
+		if base[name] == nil {
+			base[name] = map[string]string{}
+		}
+		base[name][key] = value
+	}
+
+	if len(base) == 0 {
+		return nil, nil
+	}
+
+	return plugin.EnvConfig{Env: base}.ByPlugin(), nil
 }
 
 // pluginPinsOf builds [Config.PinnedDigests] from a pins file and repeatable
@@ -394,9 +490,13 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		AllowInsecureSearchPath: f.allowInsecureDirs,
 		Only:                    f.only,
 		PinnedDigests:           f.pinnedDigests,
-		PermittedSchemes:        f.schemes,
-		HostVersion:             version,
-		Logger:                  logger,
+		// What this deployment configured each plugin with, reaching that
+		// plugin alone. Unlike Env below it is operator-written, so it is
+		// forwarded on every run rather than only under coverage.
+		EnvByPlugin:      f.env,
+		PermittedSchemes: f.schemes,
+		HostVersion:      version,
+		Logger:           logger,
 
 		// Zero keeps plugin.DefaultMaxCallTimeout; see the constant above for
 		// why this is reachable from a shipped binary at all.
@@ -440,6 +540,16 @@ func addPluginFlags(cmd *cobra.Command) {
 		"path to a YAML pins file (default $"+pluginPinsEnv+"), the file form of --plugin-pin "+
 			"for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; "+
 			"merged with any --plugin-pin, and a name given by both is refused")
+	cmd.Flags().StringArray("plugin-env", nil,
+		"configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches "+
+			"that plugin alone and nothing else this worker launches. A plugin environment is "+
+			"readable to anything running as this user, so name a path to a file rather than a "+
+			"secret value")
+	cmd.Flags().String("plugin-env-file", os.Getenv(pluginEnvFileEnv),
+		"path to a YAML environment file (default $"+pluginEnvFileEnv+"), the file form of "+
+			"--plugin-env for a deployment configuring more than a couple of plugins: "+
+			"`env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by "+
+			"both is refused")
 }
 
 // pluginTrustAnnotation marks a command that does not trust its surroundings to

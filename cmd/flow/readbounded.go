@@ -41,6 +41,12 @@ const (
 	// maxPluginPinsBytes bounds a plugin pins file: one line per plugin.
 	maxPluginPinsBytes = 1 << 20
 
+	// maxPluginEnvFileBytes bounds a plugin environment file: a handful of
+	// variables per plugin, each an endpoint or a path to a document rather
+	// than the document itself. The per-plugin grant is bounded again, in the
+	// units a launch is refused in, by plugin.MaxPluginEnvBytes.
+	maxPluginEnvFileBytes = 1 << 20
+
 	// maxRepositoryDocBytes bounds a documentation source `flow docs` reads
 	// from a repository checkout; the largest in this tree is under a
 	// megabyte.

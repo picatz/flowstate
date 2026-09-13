@@ -63,6 +63,16 @@ var (
 	// exists.
 	ErrDigestPin = errors.New("plugin: digest not admitted")
 
+	// ErrPluginEnv reports that a deployment's per-plugin environment cannot be
+	// used as written: a file that is not the shape [EnvConfig] describes, a key
+	// that names no plugin a discovery could find, an entry that is not
+	// KEY=VALUE, or a grant past [MaxPluginEnvBytes].
+	//
+	// Separate from [ErrLaunch] because it is found at startup, before any
+	// process exists: configuration that could never reach a plugin is a
+	// misconfiguration to fix, not a launch that failed.
+	ErrPluginEnv = errors.New("plugin: environment not accepted")
+
 	// ErrDuplicateScheme reports that two plugins claim one secret scheme. Two
 	// answers for one scheme is a configuration error, not something to resolve
 	// by which plugin happened to load first.
