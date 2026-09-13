@@ -662,8 +662,9 @@ func (m *sensitiveSubstringMatcher) markMatches(redacted []bool, text string) bo
 	// covered, so two written spans can overlap — matches at [0,10), [20,21)
 	// and [5,30) write [0,10) and then [5,30). A rewritten byte is bounded by
 	// how far back a single match can reach, which is the longest sensitive
-	// value, and sensitive values are operator-supplied rather than
-	// attacker-chosen. Correctness does not depend on this either way: marking
+	// value. Who chooses that value, and therefore whether this cost is worth
+	// bounding rather than noting, is #2027. Correctness does not depend on it
+	// either way: marking
 	// is idempotent, every match is inside the pending span when it is taken,
 	// and the hull is only ever widened over spans the current match contains.
 	pendingStart, pendingEnd := 0, 0

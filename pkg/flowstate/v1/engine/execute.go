@@ -604,13 +604,13 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 						// which understates the divergence rather than
 						// overstating it.
 						//
-						// What does not differ is where the run ends up, and
-						// [drainRaises] is why: holding nothing, both shapes
-						// end CANCELED with cancellation compensations; holding
-						// a failure heard earlier, both end FAILED with failure
-						// ones, because that failure outranks the cancellation
-						// on either path. So the divergence is confined to
-						// transcript entries.
+						// What the two shapes then report is not stated here,
+						// because it is not one sentence: [drainRaises] decides
+						// between the cancellation and a failure held earlier,
+						// and an intervening inline step can fail on its own
+						// merits and be reported instead. #2027 works out the
+						// cases; what is certain, and all this guard needs, is
+						// that a held cancellation must never cross the seam.
 						if temporal.IsCanceledError(err) {
 							return drainRaises(held, err)
 						}
