@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goccy/go-yaml"
 )
@@ -1525,6 +1526,58 @@ func TestClaudeHookBuildRetainsTheMergeGuardItCompiled(t *testing.T) {
 	// suppressed for the command in an `if` condition but not for the commands
 	// in its body, which is why the whole of retention is a function invoked
 	// with `|| true` rather than a bare block.
+	t.Run("a generation that is already current still retains", func(t *testing.T) {
+		// The path every existing checkout takes when it picks this up: the
+		// sources have not changed, so the build finds the generation complete
+		// and exits before compiling anything. Retaining only after a compile
+		// would mean those checkouts never retain at all, and the launcher
+		// would still be on the text backstop the first time the merge guard
+		// is edited into a state that will not compile -- which is exactly the
+		// moment this exists for.
+		project := t.TempDir()
+		writeHookFixture(t, root, project)
+		if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+			t.Fatalf("seed build: %v\n%s", err, output)
+		}
+		retained := filepath.Join(project, ".claude", "hooks", ".lkg")
+		if err := os.RemoveAll(retained); err != nil {
+			t.Fatal(err)
+		}
+		// Nothing about the sources changed, so this build takes the fast path.
+		if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+			t.Fatalf("build over a current generation: %v\n%s", err, output)
+		}
+		if _, err := os.Stat(filepath.Join(retained, "mergeguard")); err != nil {
+			t.Fatalf("a current generation retained no merge guard: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(retained, ".source-id")); err != nil {
+			t.Fatalf("the backfilled guard records no identity: %v", err)
+		}
+
+		// And the repeat costs nothing: the guard is several megabytes and this
+		// path runs on every invocation, so it must not copy when the retained
+		// one already came from these sources.
+		before, err := os.Stat(filepath.Join(retained, "mergeguard"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(filepath.Join(retained, "mergeguard"),
+			time.Unix(1, 0), time.Unix(1, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := runBuild(t, project, os.Getenv("PATH")); err != nil {
+			t.Fatalf("repeat build: %v\n%s", err, output)
+		}
+		after, err := os.Stat(filepath.Join(retained, "mergeguard"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !after.ModTime().Equal(time.Unix(1, 0)) {
+			t.Fatalf("the retained guard was copied again on a repeat build (%v -> %v)",
+				before.ModTime(), after.ModTime())
+		}
+	})
+
 	t.Run("a build whose retention fails still succeeds", func(t *testing.T) {
 		project := t.TempDir()
 		writeHookFixture(t, root, project)

@@ -67,6 +67,53 @@ if [[ -z "${lock_held}" ]]; then
 fi
 trap 'rm -rf "${lock_dir}"' EXIT
 
+# Retains the merge guard that compiled, so a later build that cannot
+# compile one still has a real recognizer for the launcher to consult. Only
+# this guard: it is the only one whose answer to being unbuildable is a refusal
+# rather than a warning, so it is the only one where deciding precisely beats
+# failing open -- and a retained genguard could refuse the very edit that
+# repairs it, which is the lockout these hooks exist to avoid.
+#
+# A function, called with `|| true`, because that is what actually contains a
+# failure: `set -e` is suppressed for the command in an `if` condition but not
+# for the commands in its body, and it is suppressed through a whole function
+# body invoked this way. The generation above is already published, so a build
+# that succeeded must not report failure because it could not also keep a copy
+# -- the launcher reads any status but 0 and 3 as an incoherent build and
+# denies the call.
+#
+# Staged under the cache directory the stale-build sweep already prunes, then
+# moved in by renaming each file over its predecessor. The directory itself is
+# durable and is never removed: replacing it wholesale would mean deleting the
+# guard before its replacement was in place, and a kill in that window would
+# leave the next session with no recognizer at all. Renaming a file replaces it
+# atomically, so the guard is only ever the previous one or the new one.
+#
+# The binary moves first. The two renames cannot be made one, so the recorded
+# identity can briefly describe the previous build; the note that reads it says
+# what is recorded rather than asserting the binary's provenance, which stays
+# true either way.
+retain_merge_guard() {
+	local stage
+	[[ -x "${hook_dir}/mergeguard" ]] || return 0
+	# Already retained from these sources: nothing to do, and the fast path
+	# below runs on every invocation, so this must not copy each time.
+	if [[ -x "${retained_dir}/mergeguard" && -r "${retained_dir}/.source-id" ]] &&
+		[[ "$(<"${retained_dir}/.source-id")" == "${source_id}" ]]; then
+		return 0
+	fi
+	stage="$(mktemp -d "${cache_dir}/build.lkg.XXXXXX")" || return 0
+	if install -d -m 0700 "${retained_dir}" &&
+		cp "${hook_dir}/mergeguard" "${stage}/mergeguard" &&
+		chmod 0700 "${stage}/mergeguard" &&
+		printf '%s\n' "${source_id}" > "${stage}/.source-id" &&
+		mv "${stage}/mergeguard" "${retained_dir}/mergeguard"; then
+		mv "${stage}/.source-id" "${retained_dir}/.source-id" || true
+	fi
+	rm -rf "${stage}" || true
+	return 0
+}
+
 # The waiter that just took the lock may be looking at the generation the
 # previous holder published, in which case there is nothing left to build.
 generation_complete=1
@@ -80,6 +127,12 @@ if [[ -n "${generation_complete}" ]] &&
 	[[ -f "${hook_dir}/.ready" && -s "${hook_dir}/.source-dirs" && -f "${hook_dir}/.source-id" ]] &&
 	current_id="$(CLAUDE_PROJECT_DIR="${project_dir}" bash "${project_dir}/.claude/hooks/source-id.sh" "${hook_dir}/.source-dirs" 2>/dev/null)" &&
 	[[ "$(<"${hook_dir}/.source-id")" == "${current_id}" ]]; then
+	# Backfilled here, not only after a compile. A checkout upgrading to this
+	# commit already has a current generation, so every build takes this exit and
+	# would never retain anything -- leaving the launcher on the text backstop
+	# exactly when the guard is first edited into a state that will not compile.
+	source_id="${current_id}"
+	retain_merge_guard || true
 	exit 0
 fi
 
@@ -245,45 +298,5 @@ mv "${stage_dir}" "${hook_dir}"
 #
 # Copied through a temporary name and renamed, so a reader never opens a
 # half-written binary, and written only when this build produced one.
-# Retains the merge guard that just compiled, so a later build that cannot
-# compile one still has a real recognizer for the launcher to consult. Only
-# this guard: it is the only one whose answer to being unbuildable is a refusal
-# rather than a warning, so it is the only one where deciding precisely beats
-# failing open -- and a retained genguard could refuse the very edit that
-# repairs it, which is the lockout these hooks exist to avoid.
-#
-# A function, called with `|| true`, because that is what actually contains a
-# failure: `set -e` is suppressed for the command in an `if` condition but not
-# for the commands in its body, and it is suppressed through a whole function
-# body invoked this way. The generation above is already published, so a build
-# that succeeded must not report failure because it could not also keep a copy
-# -- the launcher reads any status but 0 and 3 as an incoherent build and
-# denies the call.
-#
-# Staged under the cache directory the stale-build sweep already prunes, then
-# moved in by renaming each file over its predecessor. The directory itself is
-# durable and is never removed: replacing it wholesale would mean deleting the
-# guard before its replacement was in place, and a kill in that window would
-# leave the next session with no recognizer at all. Renaming a file replaces it
-# atomically, so the guard is only ever the previous one or the new one.
-#
-# The binary moves first. The two renames cannot be made one, so the recorded
-# identity can briefly describe the previous build; the note that reads it says
-# what is recorded rather than asserting the binary's provenance, which stays
-# true either way.
-retain_merge_guard() {
-	local stage
-	[[ -x "${hook_dir}/mergeguard" ]] || return 0
-	stage="$(mktemp -d "${cache_dir}/build.lkg.XXXXXX")" || return 0
-	if install -d -m 0700 "${retained_dir}" &&
-		cp "${hook_dir}/mergeguard" "${stage}/mergeguard" &&
-		chmod 0700 "${stage}/mergeguard" &&
-		printf '%s\n' "${source_id}" > "${stage}/.source-id" &&
-		mv "${stage}/mergeguard" "${retained_dir}/mergeguard"; then
-		mv "${stage}/.source-id" "${retained_dir}/.source-id" || true
-	fi
-	rm -rf "${stage}" || true
-	return 0
-}
 retain_merge_guard || true
 trap 'rm -f "${post_build_dirs}" "${post_build_extra}"; rm -rf "${lock_dir}"' EXIT
