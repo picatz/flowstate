@@ -265,9 +265,10 @@ func Test_Cache_collapsesConcurrentResolutions(t *testing.T) {
 			require.Equal(t, 1, provider.count())
 
 			// Every entry created together expires together, so the TTL boundary is a
-			// second stampede if it is not collapsed. Expiry is driven by the cache's
-			// own manual clock rather than the bubble's, since what has to elapse is
-			// the TTL; the gate parks the callers exactly as above.
+			// second stampede if it is not collapsed. Expiry is driven by the
+			// bubble's clock — the sleep below crosses the TTL and costs nothing,
+			// because the cache reads time.Now and time.Now here is the bubble's.
+			// The gate parks the callers exactly as above.
 			release := provider.arm()
 			t.Cleanup(release) // as above: a failure must not deadlock the bubble
 			time.Sleep(2 * time.Minute)

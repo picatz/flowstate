@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -378,11 +379,17 @@ func (c *client) overflowFor(suite lsp.DocumentURI) lsp.DocumentURI {
 // sourcedDiagnostics returns the diagnostics source contributed to target: the
 // server keeps them indexed by contributor so a file's squiggles can be
 // retracted by whoever put them there. Read it after [synctest.Wait].
+//
+// Cloned rather than handed out, because the slice is the running server's and
+// nothing but call-site discipline would keep a test from reading it while a
+// handler appends. That discipline holds today — every caller reads after the
+// bubble is idle — which is exactly the kind of thing that stops being true
+// quietly.
 func (c *client) sourcedDiagnostics(source, target lsp.DocumentURI) []lsp.Diagnostic {
 	c.server.testDiagnosticsMu.Lock()
 	defer c.server.testDiagnosticsMu.Unlock()
 
-	return c.server.testDiagnosticsBySource[source][target]
+	return slices.Clone(c.server.testDiagnosticsBySource[source][target])
 }
 
 // sourceCountFor returns how many documents currently contribute diagnostics to
