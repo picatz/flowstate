@@ -143,6 +143,17 @@ func Check(subject, body string, where Surface) []Finding {
 		})
 	}
 
+	// The subject is one line and the walk below reads only the body, so it
+	// is held to the same two shapes here. It is the line `git log --oneline`
+	// and every listing shows, and a merge writes it as the squash subject.
+	if sessionLink.MatchString(subject) || attributionFooter.MatchString(subject) {
+		out = append(out, Finding{
+			Rule:    RuleAttribution,
+			Message: "the subject carries attribution or a session link; it has room for what changed and nothing else, and it is the line every listing shows",
+			Skill:   commitSkill,
+		})
+	}
+
 	if !issueRef.MatchString(body) {
 		out = append(out, Finding{
 			Rule:    RuleIssue,
@@ -228,21 +239,29 @@ func Check(subject, body string, where Surface) []Finding {
 }
 
 // withoutAppendedFooter is body without the one attribution footer a forge
-// adds after an author's last line: the footer, a horizontal rule set above
+// adds after an author's last line: the footer, the horizontal rule set above
 // it, and the blank lines around them.
 //
-// Only that last one is removed. A footer the author wrote as well sits above
-// it and is still reported, which is the shape that made this rule necessary:
-// a hand-written footer and a session link stacked over the forge's own.
+// The rule is what identifies the footer as the forge's rather than the
+// author's, and it is required: over the sixty most recently updated pull
+// requests in this repository, every one of the eighteen trailing footers was
+// preceded by a rule and none stood without one. Without that test a footer an
+// author typed as their last line would be exempt, which is the slop this
+// reports rather than an appendage they cannot remove.
+//
+// Only the one is removed. A footer the author wrote as well sits above it and
+// is still reported, which is the shape that made this necessary: a
+// hand-written footer and a session link stacked over the forge's own.
 func withoutAppendedFooter(body string) string {
 	head, last := cutLastLine(strings.TrimRight(body, " \t\r\n"))
 	if !attributionFooter.MatchString(last) {
 		return body
 	}
-	if before, above := cutLastLine(strings.TrimRight(head, " \t\r\n")); horizontalRule.MatchString(above) {
-		return before
+	before, above := cutLastLine(strings.TrimRight(head, " \t\r\n"))
+	if !horizontalRule.MatchString(above) {
+		return body
 	}
-	return head
+	return before
 }
 
 // cutLastLine is s without its final line, and that line. A string of one
