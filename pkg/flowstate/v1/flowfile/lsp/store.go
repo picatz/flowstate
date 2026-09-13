@@ -406,7 +406,22 @@ func (s *documentStore) await(ctx context.Context, disconnected <-chan struct{},
 	}
 }
 
-// open records a newly opened document and returns it.
+// open records a newly opened document and returns it, or the document already
+// stored when this open has been overtaken.
+//
+// The version guard is [documentStore.change]'s, for the same reason: the
+// connection wraps the handler in jsonrpc2.AsyncHandler, which starts a
+// goroutine per message and gives up the arrival ordering the protocol
+// guarantees. An open whose goroutine is scheduled behind a change would
+// otherwise replace the edited document with the opened text at version 1 --
+// an editor that takes the first keystrokes and then silently reverts them,
+// answering hover and diagnostics from pre-edit text until the next one lands.
+//
+// A document still in the store means this open was overtaken, because the
+// protocol requires didClose before a document is opened again and
+// [documentStore.close] removes it. So a close-then-open always applies, and an
+// open that finds an incumbent is either reordered or a client re-opening
+// without closing; neither is a reason to move the document backwards.
 func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, tasks *v1.Registry) *document {
 	// Announced before the parse and retired after the result is stored, so a
 	// request that arrives in between waits for this rather than reading past it.
@@ -423,10 +438,19 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 	if s.localByPath == nil {
 		s.localByPath = make(map[string]lsp.DocumentURI)
 	}
+	if prev, ok := s.docs[uri]; ok {
+		// A version of zero means the client does not track them, in which case
+		// there is nothing to compare and last-write-wins is all that is on offer.
+		if version > 0 && prev.version > 0 && version <= prev.version {
+			doc = prev
+		}
+	}
 	s.docs[uri] = doc
 	if path, ok := doc.filesystemPath(); ok {
 		s.localByPath[filepath.Clean(path)] = uri
 	}
+	// Registered and woken on both paths: a request blocked on the build gate is
+	// waiting for this call, and an overtaken open still has to release it.
 	s.wakeLocked()
 	return doc
 }

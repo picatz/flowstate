@@ -318,9 +318,63 @@ func TestStoreRejectsStaleEdits(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "name: two\n", got.text)
 
-	// Reopening resets the version, since an editor may close and reopen a file.
+	// Reopening resets the version, since an editor may close and reopen a file
+	// — and closing is what makes it a reopen. The protocol requires didClose
+	// before a document is opened again, and close removes it from the store, so
+	// this open has no incumbent to be ordered against.
+	store.close("file:///stale.yaml")
 	reopened := store.open("file:///stale.yaml", 1, "name: reopened\n", nil)
 	assert.Equal(t, "name: reopened\n", reopened.text)
+}
+
+// TestStoreRejectsAnOvertakenOpen covers the same ordering guard from the other
+// side. AsyncHandler starts a goroutine per message, so a didOpen can be
+// scheduled behind a didChange for the same document; the open must not revert
+// the edit. Before the guard, this left an editor that opened a file, took the
+// first keystrokes, and then silently answered every read from the pre-edit
+// text until the next keystroke landed.
+func TestStoreRejectsAnOvertakenOpen(t *testing.T) {
+	t.Parallel()
+
+	// The change arriving first is the ordering under test: change tolerates it,
+	// starting from empty text and taking the full-text replacement, so the edit
+	// is applied and would then be discarded by the open.
+	var store documentStore
+	edited := store.change("file:///overtaken.yaml", 4, []lsp.TextDocumentContentChangeEvent{{Text: "name: edited\n"}}, nil)
+	require.NotNil(t, edited)
+
+	overtaken := store.open("file:///overtaken.yaml", 1, "name: opened\n", nil)
+	require.NotNil(t, overtaken)
+	assert.Equal(t, "name: edited\n", overtaken.text, "an open behind a change reverted the document")
+	assert.Equal(t, 4, overtaken.version, "an open behind a change reverted the version")
+
+	// The store agrees with what the open returned, so a caller publishing
+	// diagnostics from the return value and a later request reading the store
+	// cannot disagree about the text.
+	current, ok := store.get("file:///overtaken.yaml")
+	require.True(t, ok)
+	assert.Same(t, overtaken, current)
+
+	// The path index is registered on this path too: a request blocked on the
+	// build gate is waiting for this call, and an overtaken open still releases
+	// it rather than leaving it waiting.
+	indexed, ok := store.getByFilesystemPath("/overtaken.yaml")
+	require.True(t, ok)
+	assert.Same(t, current, indexed)
+
+	// An open that is not overtaken still opens, so the guard does not strand a
+	// client on text the store happens to hold.
+	fresh := store.open("file:///fresh.yaml", 1, "name: fresh\n", nil)
+	require.NotNil(t, fresh)
+	assert.Equal(t, "name: fresh\n", fresh.text)
+
+	// A client that does not track versions keeps last-write-wins, the same
+	// tolerance change has, because there is nothing to order by.
+	var untracked documentStore
+	untracked.change("file:///untracked.yaml", 0, []lsp.TextDocumentContentChangeEvent{{Text: "name: one\n"}}, nil)
+	reopened := untracked.open("file:///untracked.yaml", 0, "name: two\n", nil)
+	require.NotNil(t, reopened)
+	assert.Equal(t, "name: two\n", reopened.text)
 }
 
 func TestNewLineIndexHandlesNoTrailingNewline(t *testing.T) {
