@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"google.golang.org/protobuf/proto"
 
@@ -259,6 +261,7 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	if len(subject.extra) > 0 {
 		activation = subject.scope.ActivationWith(ctx, subject.extra)
 	}
+	activation = redactedActivation(activation, subject.redactText, subject.redactValue)
 
 	out, err := v1.DefaultEvaluator().EvalString(ctx, expression, libs, activation)
 	if err != nil {
@@ -306,6 +309,83 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	// Both seams, then, exactly as [Session.SetValueRedactor] says there are
 	// two questions: is this the value, and does this text contain it.
 	return text, v1.TypeAdapter.NativeToValue(withheldLeaves(subject.redactText, native)), nil
+}
+
+// redactedActivation withholds values before an inspection expression can
+// observe them. Redacting only the expression's result turns equality, size,
+// prefix and slice expressions into an oracle for the value being withheld.
+func redactedActivation(activation cel.Activation, redactText func(string) string, redactValue func(any) any) cel.Activation {
+	if redactText == nil && redactValue == nil {
+		return activation
+	}
+
+	return withholdingActivation{Activation: activation, redactText: redactText, redactValue: redactValue}
+}
+
+type withholdingActivation struct {
+	cel.Activation
+	redactText  func(string) string
+	redactValue func(any) any
+}
+
+func (a withholdingActivation) ResolveName(name string) (any, bool) {
+	value, found := a.Activation.ResolveName(name)
+	if !found {
+		return nil, false
+	}
+
+	if value, ok := value.(ref.Val); ok {
+		redact := a.redactValue
+		if redact == nil {
+			redact = func(value any) any { return textRedactedTree(value, a.redactText) }
+		}
+		native, converted := redactedNative(value, redact)
+		if !converted {
+			return types.String("[redacted]"), true
+		}
+
+		return types.DefaultTypeAdapter.NativeToValue(native), true
+	}
+
+	if a.redactValue == nil {
+		return types.DefaultTypeAdapter.NativeToValue(textRedactedTree(value, a.redactText)), true
+	}
+
+	return types.DefaultTypeAdapter.NativeToValue(a.redactValue(value)), true
+}
+
+func (a withholdingActivation) Parent() cel.Activation {
+	parent := a.Activation.Parent()
+	if parent == nil {
+		return nil
+	}
+
+	return withholdingActivation{Activation: parent, redactText: a.redactText, redactValue: a.redactValue}
+}
+
+func textRedactedTree(value any, redact func(string) string) any {
+	switch value := value.(type) {
+	case map[string]any:
+		redacted := make(map[string]any, len(value))
+		for name, element := range value {
+			redacted[name] = textRedactedTree(element, redact)
+		}
+
+		return redacted
+	case []any:
+		redacted := make([]any, len(value))
+		for i, element := range value {
+			redacted[i] = textRedactedTree(element, redact)
+		}
+
+		return redacted
+	default:
+		if rendered := nativeText(value); redact(rendered) != rendered {
+			return "[redacted]"
+		}
+
+		return value
+	}
 }
 
 // withheldLeaves is native with the text redactor applied to every string in

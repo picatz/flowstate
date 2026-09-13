@@ -250,9 +250,9 @@ applies here rather than a second, weaker one.
   posture applies to **everything the session prints** — each step's account as
   it arrives, every `inspect` answer, and the autopsy's failures — so a
   declared-`sensitive:` input or a case secret renders `[redacted]` there
-  exactly as it does in the transcript beside it. Evaluation still sees the
-  real value, and a claim comparing against one still holds; only the printing
-  withholds.
+  exactly as it does in the transcript beside it. The case's claims still see
+  real values, but debugger inspections evaluate against redacted bindings so
+  predicates cannot reveal a withheld value indirectly.
 
 ## Reading a durable run
 
