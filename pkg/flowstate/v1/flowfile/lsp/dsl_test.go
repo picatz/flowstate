@@ -48,7 +48,7 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 	// A workflow exercising every field and every step kind the DSL can express.
 	workflow := &v1.Workflow{
 		Name:        "every-field",
-		Description: ptr("described"),
+		Description: new("described"),
 		// Both positions of `vars:`, because they are separate keys in separate
 		// tables and the table for one landed without the other. A fixture missing
 		// a key is how this test stayed green through the drift it exists to catch.
@@ -89,7 +89,7 @@ func TestNestedDSLKeysMatchMarshaledShapes(t *testing.T) {
 				// description is a property of a *step*: writing it here is what
 				// makes the fixture reach the key at a step that runs no task at
 				// all, which is the reading the table documents.
-				Description: ptr("Do the thing once per item."),
+				Description: new("Do the thing once per item."),
 				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 					Items:       v1.NewLiteralList("a", "b"),
 					Iterator:    "each",
@@ -1559,6 +1559,3 @@ func positionOfKey(t *testing.T, src, key string, minIndent int, after string) l
 	t.Fatalf("test source declares no key %q", key)
 	return lsp.Position{}
 }
-
-// ptr returns a pointer to a string, for the schema's optional fields.
-func ptr(s string) *string { return &s }

@@ -44,7 +44,7 @@ func TestBindRunInputsEnforcesStandardRules(t *testing.T) {
 			// used to — see TestMustMatchesIsPatternsEquivalent for the head-to-head
 			// comparison against a real example's regex.
 			name:  "must: this.matches (pattern's replacement)",
-			decl:  &v1.InputDeclaration{Name: "email", Type: v1.InputDeclaration_TYPE_STRING, Must: strPtr(`this.matches('^[^@]+@[^@]+$')`)},
+			decl:  &v1.InputDeclaration{Name: "email", Type: v1.InputDeclaration_TYPE_STRING, Must: new(`this.matches('^[^@]+@[^@]+$')`)},
 			value: v1.NewLiteral("not-an-email"),
 			says:  "must satisfy",
 		},
@@ -67,14 +67,14 @@ func TestBindRunInputsEnforcesStandardRules(t *testing.T) {
 			// precision past 2^53 — see the schema's own doc on the reserved
 			// fields, and docs/DSL.md, for the probe).
 			name:  "must: this >= N (min's replacement)",
-			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Must: strPtr("this >= 1")},
+			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Must: new("this >= 1")},
 			value: v1.NewLiteral(int64(0)),
 			says:  "must satisfy",
 		},
 		{
 			// max: is retired; must: this <= N is its replacement.
 			name:  "must: this <= N (max's replacement)",
-			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Must: strPtr("this <= 50")},
+			decl:  &v1.InputDeclaration{Name: "replicas", Type: v1.InputDeclaration_TYPE_INT, Must: new("this <= 50")},
 			value: v1.NewLiteral(int64(51)),
 			says:  "must satisfy",
 		},
@@ -95,13 +95,13 @@ func TestBindRunInputsEnforcesStandardRules(t *testing.T) {
 			// replacement — see TestUniqueDistinctIsUniquesEquivalent below for
 			// the head-to-head comparison.
 			name:  "must: this == this.distinct() (unique's replacement)",
-			decl:  &v1.InputDeclaration{Name: "regions", Type: v1.InputDeclaration_TYPE_LIST, Must: strPtr("this == this.distinct()")},
+			decl:  &v1.InputDeclaration{Name: "regions", Type: v1.InputDeclaration_TYPE_LIST, Must: new("this == this.distinct()")},
 			value: v1.NewLiteralList("a", "b", "a"),
 			says:  "must satisfy",
 		},
 		{
 			name:  "must",
-			decl:  &v1.InputDeclaration{Name: "budget", Type: v1.InputDeclaration_TYPE_STRING, Must: strPtr(`this == "unlimited" || this.matches("^[0-9]+$")`)},
+			decl:  &v1.InputDeclaration{Name: "budget", Type: v1.InputDeclaration_TYPE_STRING, Must: new(`this == "unlimited" || this.matches("^[0-9]+$")`)},
 			value: v1.NewLiteral("lots"),
 			says:  "must satisfy",
 		},
@@ -128,7 +128,7 @@ func TestUniqueDistinctIsUniquesEquivalent(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "regions", Type: v1.InputDeclaration_TYPE_LIST,
-		Must: strPtr("this == this.distinct()"),
+		Must: new("this == this.distinct()"),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -167,7 +167,7 @@ func TestBindRunInputsAcceptsAConformingValue(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "email", Type: v1.InputDeclaration_TYPE_STRING,
-		Must: strPtr(`this.matches('^[^@]+@[^@]+$')`), MinLen: u64Ptr(3), MaxLen: u64Ptr(64),
+		Must: new(`this.matches('^[^@]+@[^@]+$')`), MinLen: u64Ptr(3), MaxLen: u64Ptr(64),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -186,7 +186,7 @@ func TestCheckInputExampleCatchesAConstraintViolation(t *testing.T) {
 	decl := &v1.InputDeclaration{
 		Name:    "region",
 		Type:    v1.InputDeclaration_TYPE_STRING,
-		Must:    strPtr(`this.matches('^(us|eu)-')`),
+		Must:    new(`this.matches('^(us|eu)-')`),
 		Example: v1.NewLiteral("mars-east-1"),
 	}
 
@@ -204,7 +204,7 @@ func TestCheckInputExampleAcceptsAConformingExample(t *testing.T) {
 	decl := &v1.InputDeclaration{
 		Name:    "region",
 		Type:    v1.InputDeclaration_TYPE_STRING,
-		Must:    strPtr(`this.matches('^(us|eu)-')`),
+		Must:    new(`this.matches('^(us|eu)-')`),
 		Example: v1.NewLiteral("us-east-1"),
 	}
 
@@ -395,7 +395,7 @@ func TestMustHasTheProfileLibrariesEndToEnd(t *testing.T) {
 
 	t.Run("strings: trim", func(t *testing.T) {
 		t.Parallel()
-		decl := &v1.InputDeclaration{Name: "s", Type: v1.InputDeclaration_TYPE_STRING, Must: strPtr(`this.trim() != ''`)}
+		decl := &v1.InputDeclaration{Name: "s", Type: v1.InputDeclaration_TYPE_STRING, Must: new(`this.trim() != ''`)}
 		wf := constrainedWorkflow(decl)
 		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"s": v1.NewLiteral("hello")})
 		assert.NoError(t, err)
@@ -406,7 +406,7 @@ func TestMustHasTheProfileLibrariesEndToEnd(t *testing.T) {
 
 	t.Run("strings: lowerAscii", func(t *testing.T) {
 		t.Parallel()
-		decl := &v1.InputDeclaration{Name: "s", Type: v1.InputDeclaration_TYPE_STRING, Must: strPtr(`this.lowerAscii() == this`)}
+		decl := &v1.InputDeclaration{Name: "s", Type: v1.InputDeclaration_TYPE_STRING, Must: new(`this.lowerAscii() == this`)}
 		wf := constrainedWorkflow(decl)
 		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"s": v1.NewLiteral("already-lower")})
 		assert.NoError(t, err)
@@ -416,7 +416,7 @@ func TestMustHasTheProfileLibrariesEndToEnd(t *testing.T) {
 
 	t.Run("lists: distinct", func(t *testing.T) {
 		t.Parallel()
-		decl := &v1.InputDeclaration{Name: "l", Type: v1.InputDeclaration_TYPE_LIST, Must: strPtr(`this == this.distinct()`)}
+		decl := &v1.InputDeclaration{Name: "l", Type: v1.InputDeclaration_TYPE_LIST, Must: new(`this == this.distinct()`)}
 		wf := constrainedWorkflow(decl)
 		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"l": v1.NewLiteralList(1, 2, 3)})
 		assert.NoError(t, err)
@@ -426,7 +426,7 @@ func TestMustHasTheProfileLibrariesEndToEnd(t *testing.T) {
 
 	t.Run("sets: contains", func(t *testing.T) {
 		t.Parallel()
-		decl := &v1.InputDeclaration{Name: "l", Type: v1.InputDeclaration_TYPE_LIST, Must: strPtr(`sets.contains(this, this)`)}
+		decl := &v1.InputDeclaration{Name: "l", Type: v1.InputDeclaration_TYPE_LIST, Must: new(`sets.contains(this, this)`)}
 		wf := constrainedWorkflow(decl)
 		_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"l": v1.NewLiteralList(1, 2, 3)})
 		assert.NoError(t, err)
@@ -479,7 +479,7 @@ func TestMustIsCostBounded(t *testing.T) {
 	decl := &v1.InputDeclaration{
 		Name: "items",
 		Type: v1.InputDeclaration_TYPE_LIST,
-		Must: strPtr(`this.all(a, this.all(b, this.all(c, this.all(d, this.all(e, ` +
+		Must: new(`this.all(a, this.all(b, this.all(c, this.all(d, this.all(e, ` +
 			`this.all(f, a + b + c + d + e + f >= 0))))))`),
 	}
 	wf := constrainedWorkflow(decl)
@@ -518,7 +518,7 @@ func TestOutputMustCatchesAViolatingAnswer(t *testing.T) {
 	t.Parallel()
 
 	err := v1.CheckOutputConstraint(v1.CurrentProfile,
-		&v1.OutputDeclaration{Name: "tracking", Must: strPtr(`this.matches("^TRK-")`)},
+		&v1.OutputDeclaration{Name: "tracking", Must: new(`this.matches("^TRK-")`)},
 		v1.NewLiteral("not-a-tracking-id"),
 	)
 	require.Error(t, err)
@@ -531,7 +531,7 @@ func TestOutputMustAcceptsAConformingAnswer(t *testing.T) {
 	t.Parallel()
 
 	err := v1.CheckOutputConstraint(v1.CurrentProfile,
-		&v1.OutputDeclaration{Name: "tracking", Must: strPtr(`this.matches("^TRK-")`)},
+		&v1.OutputDeclaration{Name: "tracking", Must: new(`this.matches("^TRK-")`)},
 		v1.NewLiteral("TRK-12345"),
 	)
 	assert.NoError(t, err)
@@ -662,7 +662,7 @@ func TestMustRefusesAnOversizedList(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "items", Type: v1.InputDeclaration_TYPE_LIST,
-		Must: strPtr(`size(this) >= 0`),
+		Must: new(`size(this) >= 0`),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -712,7 +712,7 @@ func TestBindRunInputsRefusesAStructWithAnOversizedNestedList(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
-		Must: strPtr(`this.items.all(x, x >= 0)`),
+		Must: new(`this.items.all(x, x >= 0)`),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -742,7 +742,7 @@ func TestBindRunInputsRefusesManySmallListsSummingOverTheBound(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
-		Must: strPtr(`true`),
+		Must: new(`true`),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -768,7 +768,7 @@ func TestBindRunInputsRefusesADeeplyNestedStruct(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
-		Must: strPtr(`true`),
+		Must: new(`true`),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -793,7 +793,7 @@ func TestBindRunInputsAcceptsAStructJustUnderBothBounds(t *testing.T) {
 
 	decl := &v1.InputDeclaration{
 		Name: "payload", Type: v1.InputDeclaration_TYPE_STRUCT,
-		Must: strPtr(`true`),
+		Must: new(`true`),
 	}
 	wf := constrainedWorkflow(decl)
 
@@ -815,7 +815,7 @@ func TestBindRunInputsAcceptsAStructJustUnderBothBounds(t *testing.T) {
 func TestCheckOutputConstraintRefusesAnOversizedNestedList(t *testing.T) {
 	t.Parallel()
 
-	decl := &v1.OutputDeclaration{Name: "result", Must: strPtr(`this.items.all(x, x >= 0)`)}
+	decl := &v1.OutputDeclaration{Name: "result", Must: new(`this.items.all(x, x >= 0)`)}
 	value := v1.NewLiteralMap(map[string]any{"items": manyItems(10_001)})
 
 	err := v1.CheckOutputConstraint(v1.CurrentProfile, decl, value)
@@ -829,7 +829,7 @@ func TestCheckOutputConstraintRefusesAnOversizedNestedList(t *testing.T) {
 func TestCheckOutputConstraintAcceptsAConformingNestedStruct(t *testing.T) {
 	t.Parallel()
 
-	decl := &v1.OutputDeclaration{Name: "result", Must: strPtr(`true`)}
+	decl := &v1.OutputDeclaration{Name: "result", Must: new(`true`)}
 	value := v1.NewLiteralMap(map[string]any{"child": nestedStruct(10, manyItems(9_000))})
 
 	assert.NoError(t, v1.CheckOutputConstraint(v1.CurrentProfile, decl, value))
@@ -968,5 +968,4 @@ func TestBindRunInputsAcceptsAnOrdinaryUnconstrainedList(t *testing.T) {
 	assert.Len(t, results, len(regions), "the loop did not run once per region")
 }
 
-func strPtr(s string) *string { return &s }
 func u64Ptr(u uint64) *uint64 { return &u }
