@@ -159,6 +159,37 @@ func TestOutputNamesForAShapedSignalWaitReplacesTheDefaultNames(t *testing.T) {
 	}
 }
 
+func TestOutputNamesForAnUnshapedSignalBatchWaitIsThreeNames(t *testing.T) {
+	t.Parallel()
+
+	node := &Node{Kind: &Node_Wait{Wait: &Wait{Kind: &Wait_SignalBatch{SignalBatch: &SignalBatch{Name: "orders"}}}}}
+	names, ok := OutputNames(node, nil)
+	require.True(t, ok)
+
+	var got []string
+	for _, n := range names {
+		got = append(got, n.Name)
+		assert.Nil(t, n.Source)
+	}
+	assert.ElementsMatch(t, []string{TimedOutOutput, DeliveriesOutput, CountOutput}, got)
+}
+
+func TestOutputNamesForAShapedSignalBatchWaitReplacesTheDefaultNames(t *testing.T) {
+	t.Parallel()
+
+	idsExpr := NewExpr("deliveries.map(d, d.payload.id)")
+	node := &Node{Kind: &Node_Wait{Wait: &Wait{Kind: &Wait_SignalBatch{SignalBatch: &SignalBatch{
+		Name:    "orders",
+		Outputs: map[string]*Value{"ids": idsExpr},
+	}}}}}
+
+	names, ok := OutputNames(node, nil)
+	require.True(t, ok)
+	require.Len(t, names, 1)
+	assert.Equal(t, "ids", names[0].Name)
+	assert.Same(t, idsExpr, names[0].Source)
+}
+
 func TestOutputNamesForAValueStepCarriesItsExpressionAsSource(t *testing.T) {
 	t.Parallel()
 
