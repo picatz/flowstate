@@ -288,8 +288,7 @@ func RetryPermitted(err error) bool {
 // fmt.Errorf("plugin %q: %w", ...) — and an assertion would silently find nothing
 // for every one of those.
 func RetryAfter(err error) time.Duration {
-	var taskErr *TaskError
-	if errors.As(err, &taskErr) {
+	if taskErr, ok := errors.AsType[*TaskError](err); ok {
 		if taskErr.Outcome != nil && taskErr.Outcome.GetRetryAfter() != nil {
 			if delay := taskErr.Outcome.GetRetryAfter().AsDuration(); delay > 0 {
 				return delay

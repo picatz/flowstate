@@ -630,11 +630,9 @@ func DeclaredTypeNames() []string {
 
 // ParseDeclaredType reads a type as a Flowfile spells it.
 func ParseDeclaredType(name string) (InputDeclaration_Type, bool) {
-	for _, t := range DeclaredTypeNames() {
-		if t == name {
-			value, ok := InputDeclaration_Type_value["TYPE_"+strings.ToUpper(name)]
-			return InputDeclaration_Type(value), ok
-		}
+	if slices.Contains(DeclaredTypeNames(), name) {
+		value, ok := InputDeclaration_Type_value["TYPE_"+strings.ToUpper(name)]
+		return InputDeclaration_Type(value), ok
 	}
 
 	return InputDeclaration_TYPE_UNSPECIFIED, false
