@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
@@ -183,165 +183,133 @@ defaults:
 // publishDiagnostics notification rather than mapping it onto the suite.
 func TestABrokenDefaultsFileIsPublishedOnItsOwnURI(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
 
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "testdefaults.yaml"),
-		[]byte("defaults:\n  stubs: [\n"), 0o600))
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "testdefaults.yaml"),
+			[]byte("defaults:\n  stubs: [\n"), 0o600))
 
-	suiteURI := "file://" + dir + "/suite.test.yaml"
-	c.open(suiteURI, validSuite)
-	var defaults lsp.PublishDiagnosticsParams
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, published := range c.published {
-			if strings.HasSuffix(string(published.URI), "/testdefaults.yaml") && len(published.Diagnostics) > 0 {
-				defaults = published
-				return true
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
-	require.Len(t, defaults.Diagnostics, 1)
-	d := defaults.Diagnostics[0]
-	assert.Equal(t, codeTestFile, d.Code)
-	assert.Contains(t, string(defaults.URI), "testdefaults.yaml")
-	assert.Equal(t, 1, d.Range.Start.Line)
-	assert.NotEqual(t, documentStart, d.Range)
+		suiteURI := "file://" + dir + "/suite.test.yaml"
+		c.open(suiteURI, validSuite)
+		synctest.Wait()
+
+		defaults, ok := c.lastPublishedSuffix("/testdefaults.yaml")
+		require.True(t, ok, "the defaults file drew no diagnostics under its own URI")
+		require.Len(t, defaults.Diagnostics, 1)
+		d := defaults.Diagnostics[0]
+		assert.Equal(t, codeTestFile, d.Code)
+		assert.Contains(t, string(defaults.URI), "testdefaults.yaml")
+		assert.Equal(t, 1, d.Range.Start.Line)
+		assert.NotEqual(t, documentStart, d.Range)
+	})
 }
 
 func TestAnOpenDefaultsSyntaxDiagnosticWinsOverAnIncludingSuiteDuplicate(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
-	suiteURI := "file://" + filepath.Join(dir, "suite.test.yaml")
-	c.open(string(defaultsURI), "defaults:\n  stubs: [\n")
-	c.open(suiteURI, validSuite)
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
+		suiteURI := "file://" + filepath.Join(dir, "suite.test.yaml")
+		c.open(string(defaultsURI), "defaults:\n  stubs: [\n")
+		c.open(suiteURI, validSuite)
+		synctest.Wait()
 
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, p := range slices.Backward(c.published) {
-
-			if p.URI != defaultsURI || len(p.Diagnostics) == 0 {
-				continue
-			}
-			return p.Diagnostics[0].Code == codeYAMLSyntax
-		}
-		return false
-	}, time.Second, time.Millisecond,
-		"the directly open document must deterministically own the duplicate diagnostic code")
+		published, ok := c.lastPublishedFor(defaultsURI)
+		require.True(t, ok, "the open defaults document drew no diagnostics")
+		require.NotEmpty(t, published.Diagnostics)
+		assert.Equal(t, codeYAMLSyntax, published.Diagnostics[0].Code,
+			"the directly open document must deterministically own the duplicate diagnostic code")
+	})
 }
 
 func TestAnUnsavedDefaultsBufferOwnsItsSemanticDiagnosticAndClearsIt(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsURI := "file://" + dir + "/testdefaults.yaml"
-	suiteURI := "file://" + dir + "/suite.test.yaml"
-	bad := "defaults:\n  stubs:\n    - returns: {}\n"
-	c.open(defaultsURI, bad)
-	c.open(suiteURI, validSuite)
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsURI := lsp.DocumentURI("file://" + dir + "/testdefaults.yaml")
+		suiteURI := "file://" + dir + "/suite.test.yaml"
+		bad := "defaults:\n  stubs:\n    - returns: {}\n"
+		c.open(string(defaultsURI), bad)
+		c.open(suiteURI, validSuite)
+		synctest.Wait()
 
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, p := range slices.Backward(c.published) {
+		published, ok := c.lastPublishedFor(defaultsURI)
+		require.True(t, ok, "the unsaved defaults buffer drew no diagnostics of its own")
+		require.NotEmpty(t, published.Diagnostics)
+		assert.Equal(t, 2, published.Diagnostics[0].Range.Start.Line)
+		assert.Contains(t, published.Diagnostics[0].Message, "names neither a task nor a step")
 
-			if p.URI == lsp.DocumentURI(defaultsURI) && len(p.Diagnostics) > 0 {
-				return p.Diagnostics[0].Range.Start.Line == 2 &&
-					strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		good := "defaults:\n  stubs:\n    - task: log\n      returns: {}\n"
+		c.change(string(defaultsURI), good, 2)
+		synctest.Wait()
 
-	good := "defaults:\n  stubs:\n    - task: log\n      returns: {}\n"
-	c.change(defaultsURI, good, 2)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, p := range slices.Backward(c.published) {
-
-			if p.URI == lsp.DocumentURI(defaultsURI) {
-				return len(p.Diagnostics) == 0
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		published, ok = c.lastPublishedFor(defaultsURI)
+		require.True(t, ok)
+		assert.Empty(t, published.Diagnostics, "the corrected buffer must retract its own diagnostic")
+	})
 }
 
 func TestIncludedDefaultsRetainTheEditorsLocalhostURI(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsURI := lsp.DocumentURI("file://localhost" + filepath.Join(dir, "testdefaults.yaml"))
-	suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
-	c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
-	c.open(suiteURI, validSuite)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, p := range slices.Backward(c.published) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsURI := lsp.DocumentURI("file://localhost" + filepath.Join(dir, "testdefaults.yaml"))
+		suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
+		c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
+		c.open(suiteURI, validSuite)
+		synctest.Wait()
 
-			if p.URI == defaultsURI && len(p.Diagnostics) > 0 {
-				return strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		published, ok := c.lastPublishedFor(defaultsURI)
+		require.True(t, ok, "the localhost-spelled defaults URI drew no diagnostics")
+		require.NotEmpty(t, published.Diagnostics)
+		assert.Contains(t, published.Diagnostics[0].Message, "names neither a task nor a step")
+	})
 }
 
 func TestIncludedDefaultsMatchMixedLocalURIForms(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
-	suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
-	c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
-	c.open(suiteURI, validSuite)
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
+		suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
+		c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
+		c.open(suiteURI, validSuite)
+		synctest.Wait()
 
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, p := range slices.Backward(c.published) {
-
-			if p.URI == defaultsURI && len(p.Diagnostics) > 0 {
-				return strings.Contains(p.Diagnostics[0].Message, "names neither a task nor a step")
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		published, ok := c.lastPublishedFor(defaultsURI)
+		require.True(t, ok, "a suite and its defaults spelled with different local forms did not match")
+		require.NotEmpty(t, published.Diagnostics)
+		assert.Contains(t, published.Diagnostics[0].Message, "names neither a task nor a step")
+	})
 }
 
 func TestSavedDefaultsRetainTheSuitesLocalhostURI(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
-	defaultsURI := lsp.DocumentURI("file://localhost" + defaultsPath)
-	suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
-	require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
-	c.open(suiteURI, validSuite)
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+		defaultsURI := lsp.DocumentURI("file://localhost" + defaultsPath)
+		suiteURI := "file://localhost" + filepath.Join(dir, "suite.test.yaml")
+		require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
+		c.open(suiteURI, validSuite)
+		synctest.Wait()
 
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == defaultsURI {
-				return len(v.Diagnostics) > 0
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		published, ok := c.lastPublishedFor(defaultsURI)
+		require.True(t, ok, "the saved defaults file was not published under the suite's own URI spelling")
+		assert.NotEmpty(t, published.Diagnostics)
+	})
 }
 
 func TestSiblingDocumentURIRetainsFileSpelling(t *testing.T) {
@@ -360,236 +328,190 @@ func TestSiblingDocumentURIRetainsFileSpelling(t *testing.T) {
 
 func TestClosingDefaultsReturnsDependentSuitesToTheSavedFile(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
-	defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
-	suiteURI := "file://" + filepath.Join(dir, "suite.test.yaml")
-	require.NoError(t, os.WriteFile(defaultsPath,
-		[]byte("defaults:\n  stubs:\n    - task: log\n      returns: {}\n"), 0o600))
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+		defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
+		suiteURI := "file://" + filepath.Join(dir, "suite.test.yaml")
+		require.NoError(t, os.WriteFile(defaultsPath,
+			[]byte("defaults:\n  stubs:\n    - task: log\n      returns: {}\n"), 0o600))
 
-	c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
-	c.open(suiteURI, validSuite)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == defaultsURI {
-				return len(v.Diagnostics) > 0
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		c.open(string(defaultsURI), "defaults:\n  stubs:\n    - returns: {}\n")
+		c.open(suiteURI, validSuite)
+		synctest.Wait()
 
-	wait := c.expectPublish()
-	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
-		TextDocument: lsp.TextDocumentIdentifier{URI: defaultsURI},
-	}))
-	c.await(wait)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == defaultsURI {
-				return len(v.Diagnostics) == 0
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		published, ok := c.lastPublishedFor(defaultsURI)
+		require.True(t, ok, "the open defaults buffer drew no diagnostics to be returned from")
+		require.NotEmpty(t, published.Diagnostics)
+
+		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+			TextDocument: lsp.TextDocumentIdentifier{URI: defaultsURI},
+		}))
+		synctest.Wait()
+
+		published, ok = c.lastPublishedFor(defaultsURI)
+		require.True(t, ok)
+		assert.Empty(t, published.Diagnostics,
+			"closing the buffer must return its dependents to the saved file, which is correct")
+	})
 }
 
 func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
-	c.open(string(defaultsURI), "defaults: {}\n")
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsURI := lsp.DocumentURI("file://" + filepath.Join(dir, "testdefaults.yaml"))
+		c.open(string(defaultsURI), "defaults: {}\n")
 
-	var firstSuite lsp.DocumentURI
-	for i := range maxTestDefaultsDependents {
-		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
-		if i == 0 {
-			firstSuite = lsp.DocumentURI(uri)
-		}
-		c.open(uri, validSuite)
-		require.Eventually(t, func() bool {
-			c.server.testDiagnosticsMu.Lock()
-			defer c.server.testDiagnosticsMu.Unlock()
-			return c.server.testDefaultsBySuite[lsp.DocumentURI(uri)] == defaultsURI
-		}, time.Second, time.Millisecond)
-	}
-	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
-	c.open(overflow, validSuite)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == lsp.DocumentURI(overflow) {
-				return diagnosticsHaveCode(v.Diagnostics, codeTestDefaultsDependents)
+		var firstSuite lsp.DocumentURI
+		for i := range maxTestDefaultsDependents {
+			uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
+			if i == 0 {
+				firstSuite = lsp.DocumentURI(uri)
 			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
-	overflow2 := "file://" + filepath.Join(dir, "overflow-2.test.yaml")
-	c.open(overflow2, validSuite)
-	require.Eventually(t, func() bool {
-		c.server.testDiagnosticsMu.Lock()
-		defer c.server.testDiagnosticsMu.Unlock()
-		return c.server.testOverflowBySuite[lsp.DocumentURI(overflow2)] == defaultsURI
-	}, time.Second, time.Millisecond)
-	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
-		TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(overflow)},
-	}))
-	require.Eventually(t, func() bool {
-		c.server.testDiagnosticsMu.Lock()
-		defer c.server.testDiagnosticsMu.Unlock()
-		_, open := c.server.testOverflowBySuite[lsp.DocumentURI(overflow)]
-		return !open
-	}, time.Second, time.Millisecond)
+			c.open(uri, validSuite)
+			synctest.Wait()
 
-	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
-		TextDocument: lsp.TextDocumentIdentifier{URI: firstSuite},
-	}))
-	require.Eventually(t, func() bool {
-		c.server.testDiagnosticsMu.Lock()
-		defer c.server.testDiagnosticsMu.Unlock()
-		return c.server.testDefaultsBySuite[lsp.DocumentURI(overflow2)] == defaultsURI
-	}, time.Second, time.Millisecond, "the bounded overflow candidate was not promoted")
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == lsp.DocumentURI(overflow2) {
-				return len(v.Diagnostics) == 0
-			}
+			require.Equal(t, defaultsURI, c.defaultsFor(lsp.DocumentURI(uri)),
+				"suite %d of the bound did not take a dependency slot", i)
 		}
-		return false
-	}, time.Second, time.Millisecond, "the promoted suite retained its limit warning")
+		overflow := lsp.DocumentURI("file://" + filepath.Join(dir, "overflow.test.yaml"))
+		c.open(string(overflow), validSuite)
+		synctest.Wait()
+
+		published, ok := c.lastPublishedFor(overflow)
+		require.True(t, ok, "the suite past the bound was never published")
+		assert.True(t, diagnosticsHaveCode(published.Diagnostics, codeTestDefaultsDependents),
+			"a suite past the dependency bound must be told so rather than silently unwatched")
+
+		overflow2 := lsp.DocumentURI("file://" + filepath.Join(dir, "overflow-2.test.yaml"))
+		c.open(string(overflow2), validSuite)
+		synctest.Wait()
+
+		candidate, onList := c.overflowFor(overflow2)
+		require.True(t, onList, "the second suite past the bound was not remembered at all")
+		require.Equal(t, defaultsURI, candidate,
+			"the second suite past the bound must be remembered as a candidate")
+
+		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+			TextDocument: lsp.TextDocumentIdentifier{URI: overflow},
+		}))
+		synctest.Wait()
+
+		_, onList = c.overflowFor(overflow)
+		require.False(t, onList, "a closed suite must not stay on the overflow list")
+
+		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+			TextDocument: lsp.TextDocumentIdentifier{URI: firstSuite},
+		}))
+		synctest.Wait()
+
+		require.Equal(t, defaultsURI, c.defaultsFor(overflow2),
+			"the bounded overflow candidate was not promoted")
+
+		published, ok = c.lastPublishedFor(overflow2)
+		require.True(t, ok)
+		assert.Empty(t, published.Diagnostics, "the promoted suite retained its limit warning")
+	})
 }
 
 func TestOverflowSuiteDoesNotPublishSavedErrorsOnAnOpenDefaultsURI(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
-	defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
-	require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
-	assert.Empty(t, c.open(string(defaultsURI), "defaults: {}\n").Diagnostics)
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+		defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
+		require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
+		assert.Empty(t, c.open(string(defaultsURI), "defaults: {}\n").Diagnostics)
 
-	for i := range maxTestDefaultsDependents {
-		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
-		c.open(uri, validSuite)
-		require.Eventually(t, func() bool {
-			c.server.testDiagnosticsMu.Lock()
-			defer c.server.testDiagnosticsMu.Unlock()
-			return c.server.testDefaultsBySuite[lsp.DocumentURI(uri)] == defaultsURI
-		}, time.Second, time.Millisecond)
-	}
-	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
-	c.open(overflow, validSuite)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == lsp.DocumentURI(overflow) {
-				hasFallback := false
-				for _, diagnostic := range v.Diagnostics {
-					hasFallback = hasFallback || strings.HasPrefix(diagnostic.Message, "saved testdefaults.yaml fallback:")
-				}
-				return hasFallback && diagnosticsHaveCode(v.Diagnostics, codeTestDefaultsDependents)
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
+		for i := range maxTestDefaultsDependents {
+			uri := lsp.DocumentURI("file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i)))
+			c.open(string(uri), validSuite)
+			synctest.Wait()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, v := range slices.Backward(c.published) {
-		if v.URI == defaultsURI {
-			assert.Empty(t, v.Diagnostics,
-				"the overflow suite mapped a saved-file error onto the newer open buffer")
-			return
+			require.Equal(t, defaultsURI, c.defaultsFor(uri),
+				"suite %d of the bound did not take a dependency slot", i)
 		}
-	}
-	t.Fatal("the open defaults document never published diagnostics")
+		overflow := lsp.DocumentURI("file://" + filepath.Join(dir, "overflow.test.yaml"))
+		c.open(string(overflow), validSuite)
+		synctest.Wait()
+
+		published, ok := c.lastPublishedFor(overflow)
+		require.True(t, ok, "the suite past the bound was never published")
+		assert.True(t, diagnosticsHaveCode(published.Diagnostics, codeTestDefaultsDependents),
+			"a suite past the dependency bound must be told so")
+		assert.True(t, slices.ContainsFunc(published.Diagnostics, func(d lsp.Diagnostic) bool {
+			return strings.HasPrefix(d.Message, "saved testdefaults.yaml fallback:")
+		}), "the overflow suite must be told its defaults came from the saved file")
+
+		published, ok = c.lastPublishedFor(defaultsURI)
+		require.True(t, ok, "the open defaults document never published diagnostics")
+		assert.Empty(t, published.Diagnostics,
+			"the overflow suite mapped a saved-file error onto the newer open buffer")
+	})
 }
 
 func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 	t.Parallel()
-	c := newClient(t)
-	c.initialize()
-	dir := t.TempDir()
-	defaultsPath := filepath.Join(dir, "testdefaults.yaml")
-	defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
-	require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+		defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
+		require.NoError(t, os.WriteFile(defaultsPath, []byte("tests: []\n"), 0o600))
 
-	for i := range maxTestDefaultsDependents {
-		uri := "file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i))
-		c.open(uri, validSuite)
-		require.Eventually(t, func() bool {
-			c.server.testDiagnosticsMu.Lock()
-			defer c.server.testDiagnosticsMu.Unlock()
-			return c.server.testDefaultsBySuite[lsp.DocumentURI(uri)] == defaultsURI
-		}, time.Second, time.Millisecond)
-	}
-	overflow := "file://" + filepath.Join(dir, "overflow.test.yaml")
-	c.open(overflow, validSuite)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == lsp.DocumentURI(overflow) {
-				return diagnosticsHaveCode(v.Diagnostics, codeTestDefaultsDependents)
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond)
-	overflow2 := "file://" + filepath.Join(dir, "overflow-2.test.yaml")
-	c.open(overflow2, validSuite)
-	require.Eventually(t, func() bool {
-		c.server.testDiagnosticsMu.Lock()
-		defer c.server.testDiagnosticsMu.Unlock()
-		return diagnosticsHaveCode(c.server.testDiagnosticsBySource[lsp.DocumentURI(overflow2)][lsp.DocumentURI(overflow2)], codeTestDefaultsDependents)
-	}, time.Second, time.Millisecond)
-	c.server.testDiagnosticsMu.Lock()
-	assert.LessOrEqual(t, len(c.server.testSourcesByTarget[defaultsURI]), maxTestDefaultsDependents,
-		"overflow contributors grew target aggregation beyond the tracked set")
-	c.server.testDiagnosticsMu.Unlock()
+		for i := range maxTestDefaultsDependents {
+			uri := lsp.DocumentURI("file://" + filepath.Join(dir, fmt.Sprintf("suite-%d.test.yaml", i)))
+			c.open(string(uri), validSuite)
+			synctest.Wait()
 
-	c.open(string(defaultsURI), "defaults: {}\n")
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == defaultsURI {
-				return len(v.Diagnostics) == 0
-			}
+			require.Equal(t, defaultsURI, c.defaultsFor(uri),
+				"suite %d of the bound did not take a dependency slot", i)
 		}
-		return false
-	}, time.Second, time.Millisecond, "opening defaults retained an overflow suite's saved-file error")
-	c.server.testDiagnosticsMu.Lock()
-	assert.NotContains(t, c.server.testSourcesByTarget[defaultsURI], lsp.DocumentURI(overflow),
-		"the target index retained an overflow saved-file contribution")
-	c.server.testDiagnosticsMu.Unlock()
+		overflow := lsp.DocumentURI("file://" + filepath.Join(dir, "overflow.test.yaml"))
+		c.open(string(overflow), validSuite)
+		synctest.Wait()
 
-	wait := c.expectPublish()
-	require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
-		TextDocument: lsp.TextDocumentIdentifier{URI: defaultsURI},
-	}))
-	c.await(wait)
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, v := range slices.Backward(c.published) {
-			if v.URI == defaultsURI {
-				return len(v.Diagnostics) > 0
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond, "closing defaults did not restore the overflow suite's saved-file error")
+		published, ok := c.lastPublishedFor(overflow)
+		require.True(t, ok, "the suite past the bound was never published")
+		require.True(t, diagnosticsHaveCode(published.Diagnostics, codeTestDefaultsDependents))
+
+		overflow2 := lsp.DocumentURI("file://" + filepath.Join(dir, "overflow-2.test.yaml"))
+		c.open(string(overflow2), validSuite)
+		synctest.Wait()
+
+		require.True(t, diagnosticsHaveCode(c.sourcedDiagnostics(overflow2, overflow2), codeTestDefaultsDependents),
+			"the second suite past the bound did not record its own limit diagnostic")
+		assert.LessOrEqual(t, c.sourceCountFor(defaultsURI), maxTestDefaultsDependents,
+			"overflow contributors grew target aggregation beyond the tracked set")
+
+		c.open(string(defaultsURI), "defaults: {}\n")
+		synctest.Wait()
+
+		published, ok = c.lastPublishedFor(defaultsURI)
+		require.True(t, ok)
+		require.Empty(t, published.Diagnostics,
+			"opening defaults retained an overflow suite's saved-file error")
+		assert.False(t, c.hasSource(defaultsURI, overflow),
+			"the target index retained an overflow saved-file contribution")
+
+		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+			TextDocument: lsp.TextDocumentIdentifier{URI: defaultsURI},
+		}))
+		synctest.Wait()
+
+		published, ok = c.lastPublishedFor(defaultsURI)
+		require.True(t, ok)
+		assert.NotEmpty(t, published.Diagnostics,
+			"closing defaults did not restore the overflow suite's saved-file error")
+	})
 }
 
 func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
