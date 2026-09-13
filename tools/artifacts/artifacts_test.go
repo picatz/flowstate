@@ -30,7 +30,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -177,16 +176,30 @@ func TestNoCompiledExecutableIsTracked(t *testing.T) {
 // removals is the command to run, one line per path.
 //
 // `--` before the paths, so one beginning with a dash is a path rather than a
-// flag; and quoted, so one containing a space survives a copy and paste. Both
-// are properties of a *message*, which is the whole product of a failing check:
-// a command that looks right and does something else is worse than no command.
+// flag; and POSIX-shell quoted, so spaces and shell expansions survive a copy
+// and paste as literal path characters. Both are properties of a *message*,
+// which is the whole product of a failing check: a command that looks right and
+// does something else is worse than no command.
 func removals(paths []string) string {
 	lines := make([]string, 0, len(paths))
 	for _, path := range paths {
-		lines = append(lines, "    git rm --cached -- "+strconv.Quote(path))
+		// A single quote cannot occur inside a single-quoted shell word. End
+		// the word, emit that character inside double quotes, and resume it.
+		quoted := "'" + strings.ReplaceAll(path, "'", `'"'"'`) + "'"
+		lines = append(lines, "    git rm --cached -- "+quoted)
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func TestRemovalsQuotesPathsForTheShell(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t,
+		"    git rm --cached -- 'a path'\n"+
+			"    git rm --cached -- '$(touch PWNED)'\n"+
+			"    git rm --cached -- 'a'\"'\"'b'",
+		removals([]string{"a path", "$(touch PWNED)", "a'b"}))
 }
 
 // TestEveryGoTargetsExecutableIsRecognised keeps the list from being the three
