@@ -153,8 +153,9 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 	},
 
 	// enterprise-fund-transfer's `approval` gate is reached only above
-	// `approval_threshold_cents`, and this example's own `inputs.json` names an
-	// `amount_cents` below it — so this payload, like approval-gate's own, is
+	// the workflow-owned `approval_threshold_cents`, and this example's own
+	// `inputs.json` names an `amount_cents` below it — so this payload, like
+	// approval-gate's own, is
 	// never actually consumed by the comparison run below; it exists because the
 	// gate is structural (`WaitsForASignal` sees the node regardless of `if:`)
 	// and every waiting example must answer in one of these two tables.

@@ -15,9 +15,9 @@
 # that.
 edition: v2026.3
 
-# Stated once for every case (issue #416). Both accounts and the threshold are
-# the same transfer throughout; only the amount and the idempotency key change,
-# so each case sets just those two. The treasury-approver `sender:` is the
+# Stated once for every case (issue #416). Both accounts are the same transfer
+# throughout; only the amount and the idempotency key change, so each case sets
+# just those two. The treasury-approver `sender:` is the
 # desk that approves above the threshold, inherited by every signal that does
 # not name its own (the wrong-claim case below names its own and keeps it). The
 # `log` stub answers `request`'s log line, which carries no assertion.
@@ -25,7 +25,6 @@ defaults:
   inputs:
     from_account_id: acct-treasury-001
     to_account_id: acct-supplier-042
-    approval_threshold_cents: 1000000
   sender:
     subject: treasury-lead@example.com
     issuer: https://issuer.example.com
