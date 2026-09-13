@@ -368,12 +368,20 @@ func (c *client) defaultsFor(suite lsp.DocumentURI) lsp.DocumentURI {
 }
 
 // overflowFor is [client.defaultsFor] for the bounded waiting list a suite lands
-// on when the defaults file already has its full complement of dependents.
-func (c *client) overflowFor(suite lsp.DocumentURI) lsp.DocumentURI {
+// on when the defaults file already has its full complement of dependents, and
+// reports whether the suite is on that list at all.
+//
+// Presence is returned separately because it is a different claim from the URI:
+// a suite that was removed and one recorded against the empty URI are the same
+// zero value and not the same state, and "was it taken off the list" is exactly
+// what a close is asserted to have done.
+func (c *client) overflowFor(suite lsp.DocumentURI) (lsp.DocumentURI, bool) {
 	c.server.testDiagnosticsMu.Lock()
 	defer c.server.testDiagnosticsMu.Unlock()
 
-	return c.server.testOverflowBySuite[suite]
+	on, ok := c.server.testOverflowBySuite[suite]
+
+	return on, ok
 }
 
 // sourcedDiagnostics returns the diagnostics source contributed to target: the

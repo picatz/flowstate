@@ -392,7 +392,9 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 		c.open(string(overflow2), validSuite)
 		synctest.Wait()
 
-		require.Equal(t, defaultsURI, c.overflowFor(overflow2),
+		candidate, onList := c.overflowFor(overflow2)
+		require.True(t, onList, "the second suite past the bound was not remembered at all")
+		require.Equal(t, defaultsURI, candidate,
 			"the second suite past the bound must be remembered as a candidate")
 
 		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
@@ -400,8 +402,8 @@ func TestLiveDefaultsRevalidationHasAnExplicitDependentBound(t *testing.T) {
 		}))
 		synctest.Wait()
 
-		require.Empty(t, c.overflowFor(overflow),
-			"a closed suite must not stay on the overflow list")
+		_, onList = c.overflowFor(overflow)
+		require.False(t, onList, "a closed suite must not stay on the overflow list")
 
 		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
 			TextDocument: lsp.TextDocumentIdentifier{URI: firstSuite},

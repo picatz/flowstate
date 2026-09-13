@@ -82,6 +82,13 @@ var pollNames = []string{
 // needs no build. The cost is that only a wait *lexically* inside the function
 // literal handed to [synctest.Test] is known to be bubbled; one in a helper the
 // bubble calls is counted, and belongs in the table with that said beside it.
+//
+// The other cost is that a wait reached through a value rather than named at
+// the call escapes both counts: `sleep := time.Sleep; sleep(d)`, and the same
+// for a poll. Recorded here rather than left to be met in a green ratchet.
+// Nothing in the tree does it and it is hard to do by accident, but it is the
+// one shape the widened poll match above still cannot see, since there is no
+// name at the call site to match.
 func Analyze(root string) ([]Wait, int, error) {
 	fset := token.NewFileSet()
 
