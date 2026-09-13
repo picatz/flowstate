@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"maps"
 	"slices"
 	"strings"
@@ -58,6 +60,7 @@ func dockerRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	if err != nil {
 		return nil, err
 	}
+	defer runtime.close()
 
 	out, runErr := execute(ctx, runtime, grant, in.GetRun(), argv)
 	if out == nil {
@@ -82,18 +85,34 @@ func dockerRun(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 }
 
 // selectRun resolves the grant name a call carries.
+//
+// A refusal names the grants this namespace could have spent, never the ones it
+// could not: the whole point of a grant naming namespaces is that another
+// tenant's workflows do not learn it exists.
 func selectRun(namespace, name string) (runGrant, error) {
 	grant, ok := operatorGrants.Runs[name]
 	if !ok {
 		return runGrant{}, sdk.NotFound(
 			"no run grant named %q; this worker's grants file names %s",
-			truncate(name, 64), joinNames(slices.Sorted(maps.Keys(operatorGrants.Runs))))
+			truncate(name, 64), joinNames(reachableRuns(namespace)))
 	}
 	if !grant.reachableFrom(namespace) {
 		return runGrant{}, sdk.PermissionDenied(
 			"the run grant %q is not granted to this workload's namespace", truncate(name, 64))
 	}
 	return grant, nil
+}
+
+// reachableRuns is the sorted grant names this namespace may spend.
+func reachableRuns(namespace string) []string {
+	names := make([]string, 0, len(operatorGrants.Runs))
+	for name, grant := range operatorGrants.Runs {
+		if grant.reachableFrom(namespace) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // buildArgv fills the grant's argv with a call's parameters.
@@ -204,14 +223,32 @@ func execute(ctx context.Context, runtime *daemon, grant runGrant, name string, 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	id, err := runtime.create(runCtx, config)
+	container := containerName()
+
+	id, err := runtime.create(runCtx, container, config)
 	if err != nil {
+		// The create may have happened even though its answer did not arrive,
+		// and the identifier only ever existed in that answer. The name did
+		// not - it was chosen here - so it still names whatever the daemon
+		// made, and removing by it is what keeps a lost response from leaving
+		// a container behind.
+		if removeErr := runtime.remove(container, defaultCleanup); removeErr != nil {
+			sdk.Logger(ctx).Warn("a container that may have been created could not be removed",
+				"container", container, "error", removeErr)
+		}
 		return nil, err
 	}
 	// From here on there is a container, and it is this call's to clean up
 	// however this call ends. The removal takes its own deadline because the
-	// context that got here may already be cancelled.
-	defer func() { _ = runtime.remove(id, defaultCleanup) }()
+	// context that got here may already be cancelled, and a removal that fails
+	// is reported rather than dropped: a container this plugin could not remove
+	// is one still holding whatever the grant gave it.
+	defer func() {
+		if removeErr := runtime.remove(id, defaultCleanup); removeErr != nil {
+			sdk.Logger(ctx).Error("a container could not be removed and may still be running",
+				"container", container, "error", removeErr)
+		}
+	}()
 
 	if err := runtime.start(runCtx, id); err != nil {
 		return nil, err
@@ -221,8 +258,15 @@ func execute(ctx context.Context, runtime *daemon, grant runGrant, name string, 
 	if err != nil {
 		if runCtx.Err() != nil && ctx.Err() == nil {
 			// This call's own timeout, not the caller's cancellation. The
-			// container is stopped and removed by the deferred cleanup, and
-			// what it had already done before that is not knowable from here.
+			// removal happens here rather than in the deferred cleanup, because
+			// whether it worked is the difference between a container that is
+			// gone and one that is still running - and this is the message that
+			// says which. What it had already done is not knowable either way.
+			if removeErr := runtime.remove(id, defaultCleanup); removeErr != nil {
+				return nil, sdk.OutcomeUnknown(
+					"the container did not finish within this grant's timeout of %s and could not be removed (%s); it may still be running, and what it had already done is not known",
+					timeout, truncate(removeErr.Error(), maxErrorBytes))
+			}
 			return nil, sdk.OutcomeUnknown(
 				"the container did not finish within this grant's timeout of %s and was removed; what it had already done is not known, so it is not retried automatically",
 				timeout)
@@ -233,7 +277,16 @@ func execute(ctx context.Context, runtime *daemon, grant runGrant, name string, 
 	// The output is read after the wait and before the removal: the daemon
 	// keeps a stopped container's logs until it is deleted, and reading them
 	// while it runs would race the exit status this result is about.
-	stdout, stderr, truncated, err := runtime.logs(context.WithoutCancel(ctx), id, grant.outputLimit())
+	//
+	// It outlives the caller's cancellation - the container has already exited,
+	// and its output is what this call is for - but not indefinitely: stripping
+	// cancellation strips the deadline with it, and a daemon that accepts this
+	// request and then stalls mid-stream would otherwise hold the call, and the
+	// removal behind it, with nothing left to stop either.
+	logCtx, cancelLogs := context.WithTimeout(context.WithoutCancel(ctx), defaultLogRead)
+	defer cancelLogs()
+
+	stdout, stderr, truncated, err := runtime.logs(logCtx, id, grant.outputLimit())
 	if err != nil {
 		return nil, err
 	}
@@ -244,6 +297,19 @@ func execute(ctx context.Context, runtime *daemon, grant runGrant, name string, 
 			exitCode, truncate(firstNonEmpty(stderr, stdout), 512))
 	}
 	return out, nil
+}
+
+// containerName is the name one call creates its container under.
+//
+// Unique per call and chosen before the request, which is what makes a create
+// whose answer was lost reconcilable: the name is still here when the
+// identifier never arrived. The prefix is what an operator looking at a host
+// sees; the labels say which run grant it came from.
+func containerName() string {
+	var random [8]byte
+	// crypto/rand.Read fills the slice or panics; it does not return an error.
+	_, _ = rand.Read(random[:])
+	return "flowstate-" + hex.EncodeToString(random[:])
 }
 
 // environment renders the grant's environment, sorted so two runs of one grant

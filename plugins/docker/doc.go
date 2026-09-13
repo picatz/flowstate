@@ -46,6 +46,17 @@
 //     bounded cleanup window, and reports an outcome that distinguishes "did not
 //     start" from "ran" from "unknown".
 //
+// # The daemon, and who decides which one
+//
+// A local socket is a file the operator named, and needs nothing else. A
+// remote daemon named by address is a destination, and takes a second,
+// independent operator statement: the deployment's egress policy must permit
+// it, checked at the dial against the addresses the name actually answers with.
+// Whoever answers on that address decides what runs there, so a grants file
+// alone is not enough to reach one - the worker's built-in default policy is
+// what a deployment runs under when nobody has decided anything about
+// destinations, and this plugin does not read that as a decision.
+//
 // # Why there is no docker.pull, docker.exec or docker.build
 //
 // Each is a different authority with a different contract. Pulling is the

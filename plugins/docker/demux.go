@@ -35,24 +35,47 @@ const (
 	// header comes from the daemon, and a length nobody checked is an
 	// allocation another party chose.
 	maxFrameBytes = 16 << 20
+
+	// maxLogReadBytes bounds the whole stream this call will read, headers and
+	// skipped frames included.
+	//
+	// The grant's own limit bounds what each stream reports. It cannot bound
+	// the reading, because reaching a stream still under its limit means
+	// reading past one that is not - so without a second ceiling a container
+	// writing only to its full stream decides how long this call reads, which
+	// is a reporting limit standing in for a work limit.
+	maxLogReadBytes = 64 << 20
 )
 
 // demultiplex splits a log stream into its two streams, each bounded.
 //
-// Reading stops at the first frame that would take either stream past the
-// limit, and truncated says so: a workflow reading a cut-off stream as a
-// complete one is how a check passes on output nobody received.
+// A frame that would take a stream past the limit is kept up to it and the rest
+// skipped, and truncated says so: a workflow reading a cut-off stream as a
+// complete one is how a check passes on output nobody received. Reading stops
+// outright once both streams are full or [maxLogReadBytes] is spent, because
+// closing the body is what stops the daemon sending.
 func demultiplex(body io.Reader, limit int64) (stdout, stderr string, truncated bool, err error) {
 	var out, errOut strings.Builder
 	var outBytes, errBytes int64
 
 	header := make([]byte, frameHeaderBytes)
+	var read int64
 	for {
 		if _, readErr := io.ReadFull(body, header); readErr != nil {
 			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
 				break
 			}
 			return "", "", false, sdk.Unavailable("reading the container's output: %v", readErr)
+		}
+		read += frameHeaderBytes
+
+		// There is another frame, and one of these says it will not be read:
+		// both streams already hold everything they may report, or this call
+		// has spent what it will spend reading past them. Either way the rest
+		// of the container's output is content this result does not carry.
+		if (outBytes >= limit && errBytes >= limit) || read >= maxLogReadBytes {
+			truncated = true
+			break
 		}
 
 		length := int64(binary.BigEndian.Uint32(header[4:8]))
@@ -67,33 +90,34 @@ func demultiplex(body io.Reader, limit int64) (stdout, stderr string, truncated 
 			target, written = &out, &outBytes
 		case streamStderr:
 			target, written = &errOut, &errBytes
-		default:
-			// A stream this plugin does not know - stdin echoed back, or a
-			// future one. Skipped rather than guessed at, and its bytes are not
-			// mixed into either stream.
-			if _, copyErr := io.CopyN(io.Discard, body, length); copyErr != nil {
-				break
-			}
-			continue
 		}
 
-		remaining := limit - *written
-		if remaining <= 0 {
-			truncated = true
-			if _, copyErr := io.CopyN(io.Discard, body, length); copyErr != nil {
-				break
-			}
-			continue
+		// A stream this plugin does not know - stdin echoed back, or a future
+		// one - keeps nothing, so written is nil and the whole frame is
+		// skipped below rather than guessed at or mixed into either stream.
+		var toKeep int64
+		if written != nil {
+			toKeep = min(length, limit-*written)
 		}
 
-		toKeep := min(length, remaining)
-		if _, copyErr := io.CopyN(target, body, toKeep); copyErr != nil {
-			break
+		if toKeep > 0 {
+			kept, copyErr := io.CopyN(target, body, toKeep)
+			read += kept
+			*written += kept
+			if copyErr != nil {
+				break
+			}
 		}
-		*written += toKeep
 		if toKeep < length {
-			truncated = true
-			if _, copyErr := io.CopyN(io.Discard, body, length-toKeep); copyErr != nil {
+			if written != nil {
+				// A stream this result reports lost content, which is what
+				// truncated is for. A skipped unknown stream is not that: no
+				// stream reported here is missing anything because of it.
+				truncated = true
+			}
+			skipped, copyErr := io.CopyN(io.Discard, body, length-toKeep)
+			read += skipped
+			if copyErr != nil {
 				break
 			}
 		}

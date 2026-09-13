@@ -55,6 +55,10 @@ func TestTheCreateRequestIsTheContract(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 
+	if fake.starts() != 1 {
+		t.Errorf("the container was started %d times, want exactly one", fake.starts())
+	}
+
 	created := fake.createRequest()
 	if created.Image != testImage {
 		t.Errorf("Image = %q, want the digest-pinned reference", created.Image)
@@ -331,5 +335,63 @@ func TestANamespacedRunIsReachableOnlyFromThatNamespace(t *testing.T) {
 	}
 	if _, err := selectRun("platform", "missing"); !sdk.IsNotFound(err) {
 		t.Errorf("error is %v, want not-found", err)
+	}
+
+	// The refusal a mistyped name earns names what this namespace could have
+	// spent, never what another tenant was granted.
+	_, err := selectRun("other", "missing")
+	if !sdk.IsNotFound(err) {
+		t.Fatalf("error is %v, want not-found", err)
+	}
+	if strings.Contains(err.Error(), "check") {
+		t.Errorf("the refusal names another namespace's run grant: %v", err)
+	}
+}
+
+// TestALostCreateResponseIsReconciledByName is what the container name is for.
+//
+// An Engine API create answers with the identifier and nothing else knows it,
+// so a response that never arrives leaves a container nobody can name. The name
+// is chosen here before the request, which makes the removal possible at all.
+func TestALostCreateResponseIsReconciledByName(t *testing.T) {
+	fake := newFakeDaemon(t)
+	fake.createHangsUp = true
+
+	authority := &grants{Daemon: fake.grant(), Runs: map[string]runGrant{"check": testRun()}}
+	withGrants(t, authority)
+
+	runtime, err := newDaemon(authority.Daemon)
+	if err != nil {
+		t.Fatalf("newDaemon: %v", err)
+	}
+
+	_, runErr := execute(t.Context(), runtime, authority.Runs["check"], "check", []string{"/usr/bin/check"})
+	if runErr == nil {
+		t.Fatal("a create whose answer never arrived was reported as success")
+	}
+	if !sdk.IsOutcomeUnknown(runErr) {
+		t.Errorf("error is %v, want the unknown-outcome classification", runErr)
+	}
+
+	name := fake.createdName()
+	if name == "" {
+		t.Fatal("the create carried no name, so nothing could have been reconciled")
+	}
+	if !strings.HasPrefix(name, "flowstate-") {
+		t.Errorf("container name is %q, want this plugin's own prefix", name)
+	}
+
+	removed := fake.removedPaths()
+	if !slices.ContainsFunc(removed, func(path string) bool { return strings.HasSuffix(path, "/"+name) }) {
+		t.Errorf("removals are %v, want one naming the container this call may have created (%q)", removed, name)
+	}
+}
+
+// TestTwoRunsDoNotShareAContainerName proves the reconciliation above cannot
+// remove another call's container.
+func TestTwoRunsDoNotShareAContainerName(t *testing.T) {
+	first, second := containerName(), containerName()
+	if first == second {
+		t.Fatalf("two calls chose the same container name (%q)", first)
 	}
 }

@@ -85,7 +85,7 @@ func selectGrants(namespace string, in *sshv1.RunInputs) (hostGrant, commandGran
 	if !ok {
 		return hostGrant{}, commandGrant{}, sdk.NotFound(
 			"no host grant named %q; this worker's grants file names %s",
-			truncate(in.GetHost(), 64), grantNames(operatorGrants.Hosts))
+			truncate(in.GetHost(), 64), joinNames(reachableHostNames(namespace)))
 	}
 
 	if !host.reachableFrom(namespace) {

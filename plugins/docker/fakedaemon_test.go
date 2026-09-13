@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +42,15 @@ type fakeDaemon struct {
 
 	// waitBlocks makes wait hang, for the timeout case.
 	waitBlocks chan struct{}
+
+	// createNames are the names the plugin asked the daemon to create under,
+	// which is what a lost response leaves a caller holding.
+	createNames []string
+
+	// createHangsUp closes the connection after the create request has been
+	// read and recorded, without answering it: the container was made, and the
+	// identifier that named it never arrived.
+	createHangsUp bool
 
 	// createStatus and startStatus override the successful answers.
 	createStatus int
@@ -108,6 +118,24 @@ func (f *fakeDaemon) starts() int {
 	return len(f.started)
 }
 
+// createdName is the name the plugin asked to create under.
+func (f *fakeDaemon) createdName() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.createNames) == 0 {
+		return ""
+	}
+	return f.createNames[len(f.createNames)-1]
+}
+
+// removedPaths are the objects the plugin asked to delete, by the request path
+// it used - which says whether it removed by identifier or by name.
+func (f *fakeDaemon) removedPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.removed)
+}
+
 func (f *fakeDaemon) serve(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	switch {
@@ -136,8 +164,24 @@ func (f *fakeDaemon) serveCreate(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.created = config
 	f.created_ids = append(f.created_ids, "container-1")
-	status, message := f.createStatus, f.errorBody
+	f.createNames = append(f.createNames, r.URL.Query().Get("name"))
+	status, message, hangsUp := f.createStatus, f.errorBody, f.createHangsUp
 	f.mu.Unlock()
+
+	if hangsUp {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			f.t.Errorf("this server cannot hang up, so the lost-response case cannot be arranged")
+			return
+		}
+		connection, _, err := hijacker.Hijack()
+		if err != nil {
+			f.t.Errorf("hijacking the connection: %v", err)
+			return
+		}
+		_ = connection.Close()
+		return
+	}
 
 	if status != http.StatusCreated {
 		w.WriteHeader(status)

@@ -227,6 +227,16 @@ func TestANamespacedProviderIsReachableOnlyFromThatNamespace(t *testing.T) {
 	if !sdk.IsPermissionDenied(err) {
 		t.Errorf("error is %v, want permission denied for a caller with no namespace", err)
 	}
+
+	// The other half of that boundary: a tenant who mistypes a reference must
+	// not be handed the name of a provider it was never configured for.
+	_, err = resolveSecret(t.Context(), sdk.SecretRequest{Scheme: secretScheme, Name: "typo", Namespace: "tenant-b"})
+	if !sdk.IsNotFound(err) {
+		t.Fatalf("error is %v, want not-found", err)
+	}
+	if strings.Contains(err.Error(), "billing-api") {
+		t.Errorf("the refusal names a provider another tenant's namespace owns: %v", err)
+	}
 }
 
 // TestWithoutProvidersNothingIsMinted is the fail-closed direction.

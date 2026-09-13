@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -40,7 +39,7 @@ func resolveSecret(ctx context.Context, req sdk.SecretRequest) (sdk.SecretRespon
 	configured, ok := operatorProviders.Providers[name]
 	if !ok {
 		return sdk.SecretResponse{}, sdk.NotFound(
-			"no provider named %q; this worker configures %s", truncate(name, 64), configuredNames())
+			"no provider named %q; this worker configures %s", truncate(name, 64), configuredNames(req.Namespace))
 	}
 
 	// The namespace the host established for the calling workload, never one
@@ -135,11 +134,21 @@ func classifyExchange(name string, err error) error {
 	return sdk.Unavailable("minting a token for %q failed: %v", truncate(name, 64), err)
 }
 
-// configuredNames renders what this worker does configure, so an author who
-// mistyped a reference learns the names rather than searching a file they may
-// not be able to read.
-func configuredNames() string {
-	names := slices.Sorted(maps.Keys(operatorProviders.Providers))
+// configuredNames renders what this worker configures for one namespace, so an
+// author who mistyped a reference learns the names rather than searching a file
+// they may not be able to read.
+//
+// Only the providers that namespace could have minted from: a provider naming
+// namespaces is one another tenant is not meant to know exists, and a refusal
+// listing it says so as plainly as a token would.
+func configuredNames(namespace string) string {
+	names := make([]string, 0, len(operatorProviders.Providers))
+	for name, configured := range operatorProviders.Providers {
+		if configured.reachableFrom(namespace) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
 	if len(names) == 0 {
 		return "none"
 	}

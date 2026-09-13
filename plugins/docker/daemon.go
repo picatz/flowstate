@@ -61,6 +61,14 @@ func newDaemon(grant daemonGrant) (*daemon, error) {
 		}, nil
 	}
 
+	// A remote daemon is the one destination this plugin reaches over a
+	// network, so the deployment's egress policy decides about it - before the
+	// grants file's mTLS material gets a say, and at the dial rather than once
+	// at startup.
+	if err := requireOperatorEgress(); err != nil {
+		return nil, err
+	}
+
 	tlsConfig, err := daemonTLS(grant)
 	if err != nil {
 		return nil, err
@@ -68,6 +76,7 @@ func newDaemon(grant daemonGrant) (*daemon, error) {
 	transport := &http.Transport{
 		TLSClientConfig:    tlsConfig,
 		DisableCompression: true,
+		DialContext:        authorizedDial,
 	}
 	return &daemon{
 		http:    &http.Client{Transport: transport},
@@ -162,14 +171,22 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
-// create asks the daemon for a container and returns its identifier.
-func (d *daemon) create(ctx context.Context, config containerConfig) (string, error) {
+// create asks the daemon for a container under the name the caller chose and
+// returns its identifier.
+//
+// The name is the caller's rather than the daemon's so that a create whose
+// answer never arrives still names the container it may have made: the
+// identifier only exists in the response, and a response nobody received is a
+// container nobody can remove.
+func (d *daemon) create(ctx context.Context, name string, config containerConfig) (string, error) {
 	body, err := json.Marshal(config)
 	if err != nil {
 		return "", sdk.Failed("encoding the create request: %v", err)
 	}
 
-	response, raw, err := d.do(ctx, http.MethodPost, "/containers/create", nil, body, maxDaemonResponseBytes)
+	query := url.Values{"name": []string{name}}
+
+	response, raw, err := d.do(ctx, http.MethodPost, "/containers/create", query, body, maxDaemonResponseBytes)
 	if err != nil {
 		return "", err
 	}
@@ -248,7 +265,9 @@ func (d *daemon) logs(ctx context.Context, id string, limit int64) (stdout, stde
 	return demultiplex(response.Body, limit)
 }
 
-// remove stops and deletes a container, with its anonymous volumes.
+// remove stops and deletes a container, with its anonymous volumes. The
+// container may be named by its identifier or by the name it was created under,
+// which is what a create whose answer was lost leaves behind.
 //
 // It takes its own context so that cleanup happens even when the call's context
 // is already cancelled - a container left running because the workflow was
@@ -272,6 +291,13 @@ func (d *daemon) remove(id string, grace time.Duration) error {
 	default:
 		return classifyDaemonStatus(response, raw, "removing a container")
 	}
+}
+
+// close releases the connections this client is holding. A daemon is built per
+// call, and a manually constructed transport keeps its idle connections - and
+// their goroutines - until something says otherwise.
+func (d *daemon) close() {
+	d.http.CloseIdleConnections()
 }
 
 // do performs one request and reads a bounded response.

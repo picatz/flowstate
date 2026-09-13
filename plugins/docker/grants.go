@@ -41,6 +41,12 @@ const (
 	defaultRunTimeout  = 5 * time.Minute
 	defaultOutputLimit = 256 << 10
 	defaultCleanup     = 30 * time.Second
+
+	// defaultLogRead bounds reading a finished container's output. It is this
+	// plugin's rather than a grant's: the container has already exited, so what
+	// is left is a stream the daemon is serving, and a stalled one still has to
+	// end somewhere.
+	defaultLogRead = 2 * time.Minute
 )
 
 // grants is the operator's whole authority statement.

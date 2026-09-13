@@ -373,10 +373,21 @@ func classifyGrantRefusal(err error) error {
 	return sdk.Failed("%s", err)
 }
 
-// grantNames renders the grant names in a file, sorted and bounded, so a
-// refusal tells an author what they could have written.
-func grantNames[V any](m map[string]V) string {
-	return joinNames(slices.Sorted(maps.Keys(m)))
+// reachableHostNames is the sorted host grant names this namespace may spend.
+//
+// A refusal names these rather than every host in the file: the whole point of
+// a grant naming namespaces is that another tenant's workflows do not learn the
+// host exists, and a message listing what was not found gives that away as
+// surely as a successful call would.
+func reachableHostNames(namespace string) []string {
+	names := make([]string, 0, len(operatorGrants.Hosts))
+	for name, host := range operatorGrants.Hosts {
+		if host.reachableFrom(namespace) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // joinNames renders a list of grant names, bounded.

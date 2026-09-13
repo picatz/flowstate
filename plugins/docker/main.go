@@ -20,6 +20,7 @@ var (
 
 func main() {
 	loadOperatorGrants()
+	installEgressPolicy()
 
 	sdk.Main(sdk.Plugin{
 		Name:        "docker",
@@ -55,9 +56,18 @@ func loadOperatorGrants() {
 // grants there is no daemon and no run, and an operator who fixes the file and
 // restarts should see that in the plugin's health rather than in the first
 // workflow that fails.
+//
+// A remote daemon needs the deployment's egress policy to permit it as well,
+// and the same argument applies: an operator who granted the address but not
+// the destination should learn it here.
 func checkHealth(_ context.Context) error {
 	if operatorGrants == nil {
 		return fmt.Errorf("no usable grants: %v", grantsRefusal)
+	}
+	if operatorGrants.Daemon.Address != "" {
+		if err := requireOperatorEgress(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

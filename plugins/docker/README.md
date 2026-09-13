@@ -35,6 +35,8 @@ If that trade is not one a deployment wants, the honest alternatives are a
 remote daemon whose authority is not this host's (`address:` plus mutual TLS),
 or not installing this plugin.
 
+A remote daemon takes a second, independent operator statement: the deployment's egress policy has to permit the address, and the check happens at the dial against the addresses the name actually answers with. The worker's built-in default policy does not count — it is what a deployment runs under when nobody has decided anything about destinations, which is not a decision to hand a machine's container runtime to a workflow. A local `socket:` needs none of this; it is a file, not a destination.
+
 ## The contract
 
 Issue [#1348](https://github.com/picatz/flowstate/issues/1348) asks a container

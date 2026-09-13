@@ -105,6 +105,25 @@ func TestANamespacedGrantIsReachableOnlyFromThatNamespace(t *testing.T) {
 	}
 }
 
+// TestARefusalNamesOnlyTheGrantsThisTenantCouldSpend is the half of the tenant
+// boundary a refusal message can give away: a workflow that guesses a name gets
+// permission denied, but one that guesses wrong must not be handed the list of
+// every host another tenant was granted.
+func TestARefusalNamesOnlyTheGrantsThisTenantCouldSpend(t *testing.T) {
+	withGrants(t, twoHostAuthority(t))
+
+	_, _, err := selectGrants("tenant-b", &sshv1.RunInputs{Host: "typo", Command: "probe"})
+	if !sdk.IsNotFound(err) {
+		t.Fatalf("error is %v, want not-found", err)
+	}
+	if strings.Contains(err.Error(), "tenant-a-only") {
+		t.Errorf("the refusal names another tenant's host grant: %v", err)
+	}
+	if !strings.Contains(err.Error(), "shared") {
+		t.Errorf("the refusal does not name the grant this tenant does have: %v", err)
+	}
+}
+
 // TestACallWithNoGrantsAtAllIsRefusedBeforeAnythingElse keeps an unconfigured
 // plugin from doing anything, and tells the operator what to configure.
 func TestACallWithNoGrantsAtAllIsRefusedBeforeAnythingElse(t *testing.T) {
