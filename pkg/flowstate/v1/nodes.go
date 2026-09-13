@@ -74,12 +74,8 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 	// the one that hits it: a scope with no bare bindings at all, which is every
 	// `wait_until:` outside a loop.
 	locals := make(map[string]ref.Val, len(s.GetVars())+len(extra))
-	for name, v := range refValues(s.GetVars()) {
-		locals[name] = v
-	}
-	for name, v := range extra {
-		locals[name] = v
-	}
+	maps.Copy(locals, refValues(s.GetVars()))
+	maps.Copy(locals, extra)
 
 	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress(), s.GetTrigger())
 }
@@ -150,9 +146,7 @@ func (s *Scope) WithLocal(name string, item *Value) *Scope {
 		// whole run, and dropping it here would leave `${trigger.kind}` resolving
 		// in a step's own `if:` and empty inside a loop body two lines below it.
 		next.Trigger = s.Trigger
-		for k, v := range s.Vars {
-			next.Vars[k] = v
-		}
+		maps.Copy(next.Vars, s.Vars)
 	}
 	next.Vars[name] = item
 	return next
@@ -189,13 +183,9 @@ func (s *Scope) WithLocals(locals map[string]*Value) *Scope {
 		// whole run, and dropping it here would leave `${trigger.kind}` resolving
 		// in a step's own `if:` and empty inside a loop body two lines below it.
 		next.Trigger = s.Trigger
-		for k, v := range s.Vars {
-			next.Vars[k] = v
-		}
+		maps.Copy(next.Vars, s.Vars)
 	}
-	for k, v := range locals {
-		next.Vars[k] = v
-	}
+	maps.Copy(next.Vars, locals)
 
 	return next
 }
@@ -228,13 +218,9 @@ func (s *Scope) WithAmbientVars(vars map[string]*Value) *Scope {
 		// whole run, and dropping it here would leave `${trigger.kind}` resolving
 		// in a step's own `if:` and empty inside a loop body two lines below it.
 		next.Trigger = s.Trigger
-		for k, v := range s.AmbientVars {
-			next.AmbientVars[k] = v
-		}
+		maps.Copy(next.AmbientVars, s.AmbientVars)
 	}
-	for k, v := range vars {
-		next.AmbientVars[k] = v
-	}
+	maps.Copy(next.AmbientVars, vars)
 
 	return next
 }
@@ -426,7 +412,7 @@ func listElements(val ref.Val) ([]*Value, error) {
 	}
 
 	elems := make([]*Value, 0, size)
-	for i := int64(0); i < size; i++ {
+	for i := range size {
 		elem := lister.Get(types.Int(i))
 		if types.IsError(elem) {
 			return nil, fmt.Errorf("reading item %d: %v", i, elem)
@@ -555,9 +541,7 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 	resolvable, deferred := ResolvableInputs(task.GetName(), task.GetInputs())
 
 	inputs := make(map[string]*Value, len(task.GetInputs()))
-	for name, v := range deferred {
-		inputs[name] = v
-	}
+	maps.Copy(inputs, deferred)
 
 	ev := DefaultEvaluator()
 	// Sorted because the first failure is observable and may enter durable
@@ -759,12 +743,8 @@ func MergeOutputs(base, overlay *Workflow_StepOutputs) *Workflow_StepOutputs {
 	merged := &Workflow_StepOutputs{
 		StepValues: make(map[string]*Node_Outputs, len(base.GetStepValues())+len(overlay.GetStepValues())),
 	}
-	for k, v := range base.GetStepValues() {
-		merged.StepValues[k] = v
-	}
-	for k, v := range overlay.GetStepValues() {
-		merged.StepValues[k] = v
-	}
+	maps.Copy(merged.StepValues, base.GetStepValues())
+	maps.Copy(merged.StepValues, overlay.GetStepValues())
 	return merged
 }
 

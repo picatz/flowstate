@@ -264,8 +264,7 @@ func TestEvalStringClassifiesEveryExpressionPhaseAsExpression(t *testing.T) {
 				t.Errorf("ClassifyError(%q) = %q, want %q", tc.expr, got, ErrorKindExpression)
 			}
 
-			var exprErr *ExpressionError
-			if !errors.As(err, &exprErr) {
+			if _, ok := errors.AsType[*ExpressionError](err); !ok {
 				t.Errorf("error for %q is not an *ExpressionError: %v", tc.expr, err)
 			}
 		})

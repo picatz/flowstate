@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -241,9 +242,7 @@ func Test_httpTask_bodies(t *testing.T) {
 			server, seen := httpTaskServer(t, http.StatusOK, "ok", nil)
 
 			inputs := map[string]any{"url": server.URL}
-			for k, v := range test.inputs {
-				inputs[k] = v
-			}
+			maps.Copy(inputs, test.inputs)
 
 			_, err := runHTTPTask(t, inputs)
 			test.check(t, seen, err)
@@ -536,9 +535,7 @@ func Test_httpTask_expect(t *testing.T) {
 			server, _ := httpTaskServer(t, test.status, body, nil)
 
 			inputs := map[string]any{"url": server.URL}
-			for k, v := range test.inputs {
-				inputs[k] = v
-			}
+			maps.Copy(inputs, test.inputs)
 
 			_, err := runHTTPTask(t, inputs)
 

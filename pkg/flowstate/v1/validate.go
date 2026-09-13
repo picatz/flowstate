@@ -79,8 +79,7 @@ func Validate(m proto.Message) error {
 		return nil
 	}
 
-	var invalid *protovalidate.ValidationError
-	if errors.As(err, &invalid) {
+	if invalid, ok := errors.AsType[*protovalidate.ValidationError](err); ok {
 		return newValidationError(refl.Descriptor().FullName(), invalid)
 	}
 

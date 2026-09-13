@@ -79,7 +79,7 @@ func listRangeLibrary() cel.EnvOption {
 						fmt.Sprintf("`lists.range(%d)` would build", n), int(n)))
 				}
 				elements := make([]ref.Val, 0, n)
-				for i := types.Int(0); i < n; i++ {
+				for i := range n {
 					elements = append(elements, i)
 				}
 				return types.NewRefValList(types.DefaultTypeAdapter, elements)

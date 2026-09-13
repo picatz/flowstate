@@ -415,7 +415,7 @@ const taskPolicyIdentityTypeName = "v1.taskPolicyIdentity"
 // matches.
 func newTaskPolicyEnv() (*cel.Env, error) {
 	return cel.NewEnv(
-		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeOf(taskPolicyIdentity{})),
+		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[taskPolicyIdentity]()),
 		cel.Variable("task", cel.StringType),
 		cel.Variable("identity", cel.ObjectType(taskPolicyIdentityTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
@@ -511,5 +511,5 @@ func compileTaskPolicyRules(allow, deny []string, costLimit uint64) (taskPolicyR
 		return taskPolicyRuleSet{}, err
 	}
 
-	return taskPolicyRuleSet{Set: celrule.Set{Allow: allowRules, Deny: denyRules}}, nil
+	return taskPolicyRuleSet{Allow: allowRules, Deny: denyRules}, nil
 }

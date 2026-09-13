@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -720,8 +721,7 @@ func checkContainerValue(name string, declared InputDeclaration_Type, lit *expr.
 		return nil
 	}
 
-	var keyErr *MapKeyTypeError
-	if errors.As(err, &keyErr) {
+	if keyErr, ok := errors.AsType[*MapKeyTypeError](err); ok {
 		if declared == InputDeclaration_TYPE_LIST {
 			return fmt.Errorf("output %q is declared %s but holds a map with %s keys; "+
 				"a list reads back as a plain array, whose maps have string keys",
@@ -733,8 +733,7 @@ func checkContainerValue(name string, declared InputDeclaration_Type, lit *expr.
 			name, DeclaredTypeName(declared), keyErr.KeyType)
 	}
 
-	var depthErr *LiteralDepthError
-	if errors.As(err, &depthErr) {
+	if depthErr, ok := errors.AsType[*LiteralDepthError](err); ok {
 		// The walk stopped at the bound rather than descending to find out how
 		// much further this goes, so the sentence names the bound and not a
 		// depth. Reached before anything runs, through [BindRunInputs] — which
@@ -748,8 +747,7 @@ func checkContainerValue(name string, declared InputDeclaration_Type, lit *expr.
 			name, DeclaredTypeName(declared), depthErr.Depth)
 	}
 
-	var kindErr *LiteralKindError
-	if errors.As(err, &kindErr) {
+	if kindErr, ok := errors.AsType[*LiteralKindError](err); ok {
 		return fmt.Errorf("output %q is declared %s but holds a %s, which has no plain value to read back; "+
 			"%s", name, DeclaredTypeName(declared), kindErr.Kind, containerReadsBack(declared))
 	}
@@ -1465,10 +1463,8 @@ func checkEnumMembership(
 	}
 	got := s.StringValue
 
-	for _, choice := range values {
-		if choice == got {
-			return nil
-		}
+	if slices.Contains(values, got) {
+		return nil
 	}
 
 	// Trimmed before it is quoted, not after, and everything below reads the

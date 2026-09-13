@@ -232,7 +232,7 @@ func isCallableName(name string) bool {
 		return false
 	}
 
-	for _, segment := range strings.Split(name, ".") {
+	for segment := range strings.SplitSeq(name, ".") {
 		if segment == "" {
 			return false
 		}
