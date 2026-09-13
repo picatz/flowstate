@@ -321,6 +321,10 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	if len(extra) > 0 {
 		activation = scope.ActivationWith(ctx, extra)
 	}
+	s.mu.Lock()
+	redactText, redactValue := s.redact, s.redactValue
+	s.mu.Unlock()
+	activation = redactedActivation(activation, redactText, redactValue)
 	out, err := v1.DefaultEvaluator().EvalString(ctx, expression, libs, activation)
 	if err != nil {
 		// An author's expression failing is an ordinary event at a debugger
