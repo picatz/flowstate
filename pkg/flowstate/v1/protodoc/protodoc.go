@@ -326,7 +326,7 @@ func isSymbol(s string) bool {
 	if s == "" {
 		return false
 	}
-	for _, part := range strings.Split(s, ".") {
+	for part := range strings.SplitSeq(s, ".") {
 		if part == "" {
 			return false
 		}

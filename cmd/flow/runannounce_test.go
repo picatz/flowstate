@@ -436,7 +436,7 @@ func TestALiveViewBoundsAnUnboundedHandoverChain(t *testing.T) {
 	// stream that stays until the terminal line below.
 	const handovers = 100
 	msgs := make([]tea.Msg, 0, handovers+1)
-	for i := 0; i < handovers; i++ {
+	for i := range handovers {
 		running := response(v1.RunResponse_STATUS_RUNNING, "poll")
 		running.RunId = fmt.Sprintf("0198f1e2-0000-7000-8000-%012d", i)
 		msgs = append(msgs, watch.StateMsg{Response: running})

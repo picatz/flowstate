@@ -458,11 +458,11 @@ func varNameInPath(path string) (string, bool) {
 		}
 	case strings.HasPrefix(rest, "['"):
 		inner := strings.TrimPrefix(rest, "['")
-		end := strings.Index(inner, "']")
-		if end < 0 {
+		before, _, ok := strings.Cut(inner, "']")
+		if !ok {
 			return "", false
 		}
-		name = inner[:end]
+		name = before
 	default:
 		return "", false
 	}

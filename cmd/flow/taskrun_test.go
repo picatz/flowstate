@@ -505,7 +505,7 @@ func offlineExampleInvocations(t *testing.T, example string) [][]string {
 	t.Helper()
 
 	var invocations [][]string
-	for _, line := range strings.Split(example, "\n") {
+	for line := range strings.SplitSeq(example, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "flow task run ") {
 			continue

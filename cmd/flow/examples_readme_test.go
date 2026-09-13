@@ -26,7 +26,7 @@ func TestExamplesREADMEFirstRunCommands(t *testing.T) {
 
 	const prefix = "$ go run ./cmd/flow "
 	var commands [][]string
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		if !strings.HasPrefix(line, "$ ") {
 			continue
 		}

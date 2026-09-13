@@ -108,7 +108,7 @@ func runProgressPlugin() int {
 					// constants, as this one can, or whether it holds
 					// something built from a task's own inputs — which is
 					// exactly the mistake the walk exists to catch.
-					for i := 0; i < n; i++ {
+					for i := range n {
 						switch i % 3 {
 						case 0:
 							flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)

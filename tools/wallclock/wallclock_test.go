@@ -20,23 +20,60 @@ import (
 // the entry shrinks, so the table cannot keep an entry the tree no longer
 // has. What each of the current entries waits for:
 //
-//   - cmd/flow — a worker or server subprocess, and a browser the test
-//     never opens.
+//   - cmd/flow — serverdev and workerinternallistener wait on a server or
+//     worker subprocess. The other two spend real time without waiting on
+//     anything: browser_test.go retries removing a profile directory while the
+//     zygote, renderers and crash handler it did not launch directly finish
+//     writing into it, and workershutdown_test.go holds a window open in which
+//     the worker must still be alive.
 //   - internal/temporaltest — the supervised dev server process.
-//   - engine/deadlock_budget_test.go — a workflow task deliberately running
-//     past the deadlock budget on a real Temporal worker; workflow_slice_test.go
-//     is the child process that deliberately outlives its replay deadline.
-//   - flowdebug, netpolicy, secrets, wait_local — a wall-clock bound the test
-//     is measuring (a span's duration, a command's runtime, a wait's
-//     deadline); candidates for a bubble once the code under test takes its
-//     clock from the bubble. secrets/cache_test.go is what that looks like
-//     once done: its subtests are bubbled and its remaining entry is the fake
-//     provider's own sleep, which the analysis cannot see is called from
-//     inside one.
+//   - engine/deadlock_budget_test.go — a sleep inside a workflow goroutine
+//     that must *not* yield, since failing to yield is the thing the SDK's
+//     deadlock detector is watching for; workflow_slice_test.go is the child
+//     process that deliberately outlives its replay deadline.
+//   - netpolicy — a hold in the *test body*, not in the handler, which parks on
+//     a channel instead: it keeps the response body back so that the exported
+//     span is measurably longer than the moment its headers arrived, which is
+//     the bound the assertion reads. Unbubblable all the same, because the span
+//     it measures is timed across a real loopback socket and neither end of one
+//     is ever durably blocked.
+//   - secrets/vault — a sleep inside the fake vault's login handler, reached
+//     over a real loopback socket.
 //   - plugin — the fake plugin subprocesses in helper_test.go sleep in the
 //     *plugin* to stay alive for the host, and host_test.go and
 //     launch_test.go wait on those processes.
+//   - secrets/command_test.go — the hang a helper subprocess performs on
+//     request, in that process rather than this one.
 //   - server — the run's completion on a real dev server.
+//
+// What keeps these out of a bubble is not one rule but three, and telling them
+// apart is the work when the ratchet fires on something new:
+//
+//  1. Something outside the bubble has to make progress first — a subprocess,
+//     a dev server, a socket. A goroutine waiting on one of those is never
+//     durably blocked, so the bubble's clock would never advance and the wait
+//     would hang rather than return early.
+//  2. The assertion measures a real-clock interval across such a boundary.
+//     Netpolicy is the one: what the hold buys is a span, timed across a
+//     loopback socket, that is measurably longer than the moment its headers
+//     arrived.
+//  3. The elapsed real time *is* the mechanism, and a bubble would defeat it
+//     by spending it for free. deadlock_budget_test.go is the sharp case: it
+//     sleeps inside a workflow goroutine precisely so that it does *not* yield,
+//     and in a bubble that sleep becomes a yield, the SDK's detector never
+//     fires, and the test passes having proved nothing. The retry backoffs and
+//     observation windows in cmd/flow are the quiet case — a bubble would burn
+//     all forty of browser_test.go's attempts, and workershutdown_test.go's
+//     whole window, against a world that had not moved.
+//
+// So neither "the test is timing something" nor "there is a process somewhere
+// nearby" settles it. The question to ask of a new entry is what the bubble
+// would break. Three that answered "nothing" — a cache TTL, a wait's deadline
+// and a parked reader — became bubbles, because each was paying real time for
+// a *weaker* claim than a bubble makes: a stampede hoped for rather than
+// guaranteed, a gate assumed reached after 100ms, a goroutine census carrying
+// slack. Each is now an assertion the bubble makes exactly, and a new entry
+// here is more likely to be a fourth of those than a fourth reason.
 var wallClockSleeps = map[string]int{
 	"cmd/flow/browser_test.go":                        1,
 	"cmd/flow/serverdev_test.go":                      1,
@@ -45,17 +82,14 @@ var wallClockSleeps = map[string]int{
 	"internal/temporaltest/supervisor_linux_test.go":  1,
 	"pkg/flowstate/v1/engine/deadlock_budget_test.go": 1,
 	"pkg/flowstate/v1/engine/workflow_slice_test.go":  1,
-	"pkg/flowstate/v1/flowdebug/session_test.go":      1,
 	"pkg/flowstate/v1/netpolicy/tracing_test.go":      1,
 	"pkg/flowstate/v1/plugin/helper_test.go":          12,
 	"pkg/flowstate/v1/plugin/host_test.go":            3,
 	"pkg/flowstate/v1/plugin/launch_test.go":          2,
 	"pkg/flowstate/v1/plugin/sdk/serve_test.go":       1,
-	"pkg/flowstate/v1/secrets/cache_test.go":          1,
 	"pkg/flowstate/v1/secrets/command_test.go":        1,
 	"pkg/flowstate/v1/secrets/vault/fake_test.go":     1,
 	"pkg/flowstate/v1/server/server_test.go":          1,
-	"pkg/flowstate/v1/wait_local_test.go":             1,
 }
 
 // TestTheRepositoryWallClockSleepsOnlyGoDown holds the count in both

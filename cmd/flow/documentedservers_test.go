@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -342,8 +343,8 @@ func serverCommandsIn(document string) []documentedCommand {
 		}
 
 		preceding, comment = comment, ""
-		if strings.HasSuffix(line, `\`) {
-			current = strings.TrimSuffix(line, `\`)
+		if before, ok := strings.CutSuffix(line, `\`); ok {
+			current = before
 			continue
 		}
 		commands = append(commands, shellCommand(line, preceding))
@@ -409,9 +410,9 @@ func envConfiguredServersIn(document string) []documentedCommand {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
-		if strings.HasPrefix(line, "```") {
+		if after, ok := strings.CutPrefix(line, "```"); ok {
 			if fence == "" {
-				fence, fenceBody = strings.TrimPrefix(line, "```"), nil
+				fence, fenceBody = after, nil
 				continue
 			}
 
@@ -450,9 +451,7 @@ func envConfiguredServersIn(document string) []documentedCommand {
 
 		environment := map[string]string{}
 		for _, file := range current.envFiles {
-			for name, value := range envFiles[file] {
-				environment[name] = value
-			}
+			maps.Copy(environment, envFiles[file])
 		}
 
 		documented := shellCommand(strings.Join(fields, " "), current.comment)

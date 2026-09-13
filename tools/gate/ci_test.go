@@ -283,7 +283,7 @@ func TestFuzzSmokeRunsOnlyTheTargetsTheDiffReaches(t *testing.T) {
 	// target listed only as deep would otherwise be fuzzed for 30s on the
 	// PR lane the moment its package was touched, which is the budget
 	// decision targets.txt records in the other direction.
-	for _, name := range strings.Fields(ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]) {
+	for name := range strings.FieldsSeq(ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]) {
 		var found bool
 		for _, target := range fuzztargets.InTier(fuzztargets.TierSmoke) {
 			found = found || target.Name == name

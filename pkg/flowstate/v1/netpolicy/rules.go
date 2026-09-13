@@ -94,7 +94,7 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 	// a native type makes a rule naming `identity.nonexistent` a build-time error
 	// rather than one that silently never matches.
 	identityDecls := []cel.EnvOption{
-		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeOf(Identity{})),
+		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[Identity]()),
 		cel.Variable("identity", cel.ObjectType(identityTypeName)),
 	}
 

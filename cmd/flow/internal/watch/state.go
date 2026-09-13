@@ -392,8 +392,7 @@ func (s *State) Absorb(at time.Time, response *v1.GetResponse, err error) Progre
 
 // absorbError folds a refused poll in, deciding whether to keep asking.
 func (s *State) absorbError(at time.Time, err error) Progress {
-	var transient TransientError
-	if !errors.As(err, &transient) {
+	if _, ok := errors.AsType[TransientError](err); !ok {
 		return s.stop(err)
 	}
 

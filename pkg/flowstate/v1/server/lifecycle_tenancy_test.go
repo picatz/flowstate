@@ -50,7 +50,6 @@ func TestDirectAddressingRejectsExecutionsListWouldHide(t *testing.T) {
 		{name: "named tenant", api: mustNew(t, temporal, server.WithNamespace("acme"))},
 	}
 	for _, caller := range callers {
-		caller := caller
 		t.Run(caller.name, func(t *testing.T) {
 			calls := map[string]func() error{
 				"Get": func() error {

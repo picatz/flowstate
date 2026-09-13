@@ -513,14 +513,12 @@ func (h *Host) CheckHealth(ctx context.Context) map[string]Health {
 	)
 
 	for _, p := range plugins {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			health := p.CheckHealth(ctx)
 			mu.Lock()
 			results[p.Name()] = health
 			mu.Unlock()
-		}()
+		})
 	}
 	wg.Wait()
 

@@ -159,7 +159,7 @@ func TestStrictYAMLRefusesBillionLaughsWithoutExpanding(t *testing.T) {
 	b.WriteString("l0: &l0 \"lol\"\n")
 	for i := 1; i <= 9; i++ {
 		b.WriteString("l" + strconv.Itoa(i) + ": &l" + strconv.Itoa(i) + " [")
-		for j := 0; j < 9; j++ {
+		for j := range 9 {
 			if j > 0 {
 				b.WriteByte(',')
 			}

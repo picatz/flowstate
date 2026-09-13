@@ -260,7 +260,7 @@ func TestClaudeSessionPreparesPinnedToolchainAndHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var goVersion string
-	for _, line := range strings.Split(string(read(t, filepath.Join(root, "go.mod"))), "\n") {
+	for line := range strings.SplitSeq(string(read(t, filepath.Join(root, "go.mod"))), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && fields[0] == "go" {
 			goVersion = fields[1]
@@ -836,7 +836,7 @@ func read(t *testing.T, path string) []byte {
 }
 
 func firstNonBlankLine(source string) string {
-	for _, line := range strings.Split(source, "\n") {
+	for line := range strings.SplitSeq(source, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			return line
 		}
@@ -1426,9 +1426,9 @@ func TestThePullRequestTemplateCarriesTheSkillsHeadings(t *testing.T) {
 
 	template := read(t, filepath.Join(root, ".github", "PULL_REQUEST_TEMPLATE.md"))
 	var got []string
-	for _, line := range strings.Split(string(template), "\n") {
-		if strings.HasPrefix(line, "## ") {
-			got = append(got, strings.TrimPrefix(line, "## "))
+	for line := range strings.SplitSeq(string(template), "\n") {
+		if after, ok := strings.CutPrefix(line, "## "); ok {
+			got = append(got, after)
 		}
 	}
 

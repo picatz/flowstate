@@ -169,7 +169,7 @@ func useLine(c *cobra.Command) string {
 // decision about the help page.
 func exampleLines(c *cobra.Command) []string {
 	var lines []string
-	for _, line := range strings.Split(strings.TrimSpace(c.Example), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(c.Example), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" && (len(lines) == 0 || lines[len(lines)-1] == "") {
 			continue
@@ -555,7 +555,7 @@ func breakWords(words []word, width int) [][]word {
 func wrapProse(theme ui.Theme, base lipgloss.Style, text string, width int) string {
 	var out []string
 
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		for _, broken := range breakWords(proseWords(theme, line), width) {
 			out = append(out, renderProseLine(theme, base, broken))
 		}

@@ -105,8 +105,7 @@ func problems(t *testing.T, source []byte) []*v1.Diagnostic {
 
 	ds, err := flowfile.ValidateSource(source)
 	if err != nil {
-		var compiled flowfile.Diagnostics
-		if errors.As(err, &compiled) {
+		if compiled, ok := errors.AsType[flowfile.Diagnostics](err); ok {
 			ds = append(ds, compiled...)
 		} else {
 			ds = append(ds, flowfile.Diagnostic{Message: err.Error()})

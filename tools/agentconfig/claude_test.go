@@ -422,7 +422,7 @@ func TestHostedReviewGuidanceStaysBoundedAndSelfContained(t *testing.T) {
 			if len(data) > tc.max {
 				t.Fatalf("file is %d bytes; keep it under %d, because length dilutes the rules that matter", len(data), tc.max)
 			}
-			for _, line := range strings.Split(string(data), "\n") {
+			for line := range strings.SplitSeq(string(data), "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "@") {
 					t.Errorf("line %q uses the @import syntax, which a hosted review does not expand; inline the rule", line)
 				}
@@ -447,7 +447,7 @@ func splitList(value string) []string {
 		return nil
 	}
 	var out []string
-	for _, item := range strings.Split(value, ",") {
+	for item := range strings.SplitSeq(value, ",") {
 		if item = strings.TrimSpace(item); item != "" {
 			out = append(out, item)
 		}

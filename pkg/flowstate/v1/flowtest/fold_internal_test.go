@@ -178,8 +178,7 @@ func foldedNames() []string {
 		{"dirDefaults", reflect.TypeFor[dirDefaults]()},
 		{"Defaults", reflect.TypeFor[Defaults]()},
 	} {
-		for i := range spec.typ.NumField() {
-			field := spec.typ.Field(i)
+		for field := range spec.typ.Fields() {
 			name := field.Tag.Get("yaml")
 			if name == "" {
 				// Unexported bookkeeping carries no tag, and still has to be

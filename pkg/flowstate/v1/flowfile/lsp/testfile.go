@@ -66,8 +66,7 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		if err == nil {
 			return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{}}}
 		}
-		var defaultsErr *flowtest.DirDefaultsError
-		if errors.As(err, &defaultsErr) {
+		if defaultsErr, ok := errors.AsType[*flowtest.DirDefaultsError](err); ok {
 			err = defaultsErr.Err
 		}
 		code := codeTestFile
@@ -101,8 +100,7 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{}}}
 	}
 
-	var problems *flowtest.Diagnostics
-	if errors.As(err, &problems) {
+	if problems, ok := errors.AsType[*flowtest.Diagnostics](err); ok {
 		byURI := map[lsp.DocumentURI][]lsp.Diagnostic{doc.uri: {}}
 		for _, problem := range problems.Problems {
 			uri := doc.uri
@@ -134,8 +132,7 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 
 	// A sibling defaults syntax/read refusal predates the structured semantic
 	// collection, but its typed owner and goccy token are still authoritative.
-	var defaultsErr *flowtest.DirDefaultsError
-	if errors.As(err, &defaultsErr) {
+	if defaultsErr, ok := errors.AsType[*flowtest.DirDefaultsError](err); ok {
 		uri := fileURI(defaultsErr.Path)
 		if includedDefaults != nil && sameTestSource(defaultsErr.Path, includedDefaults) {
 			uri = includedDefaults.uri
