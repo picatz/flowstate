@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -19,9 +20,21 @@ type countingProvider struct {
 	value string
 	err   error
 
-	// delay holds a resolution open long enough for concurrent callers to pile up
-	// behind it.
-	delay time.Duration
+	// gate holds a resolution open until the test closes it, so that concurrent
+	// callers pile up behind the one that reached the provider.
+	//
+	// A channel rather than the sleep this used to be, because the sleep was a
+	// guess: 20ms was assumed long enough for fifty goroutines to arrive, which
+	// made the stampede a bet on the scheduler and the test slow by exactly that
+	// much. The tests that set it run in a synctest bubble and close it after
+	// [synctest.Wait] reports every other goroutine durably blocked — so the
+	// pile-up the assertion is about has already happened when the provider is
+	// released, rather than being hoped for. Left nil, a provider never blocks.
+	//
+	// Written through arm, not directly, so that a test which arms the gate
+	// while a resolution is already in flight is ordered rather than racing
+	// against Resolve's read of it.
+	gate chan struct{}
 }
 
 func (p *countingProvider) Scheme() string { return "test" }
@@ -29,11 +42,11 @@ func (p *countingProvider) Scheme() string { return "test" }
 func (p *countingProvider) Resolve(_ context.Context, req Request) (Secret, error) {
 	p.mu.Lock()
 	p.calls++
-	delay, err, value := p.delay, p.err, p.value
+	gate, err, value := p.gate, p.err, p.value
 	p.mu.Unlock()
 
-	if delay > 0 {
-		time.Sleep(delay)
+	if gate != nil {
+		<-gate
 	}
 
 	if err != nil {
@@ -55,6 +68,19 @@ func (p *countingProvider) set(value string, err error) {
 	defer p.mu.Unlock()
 
 	p.value, p.err = value, err
+}
+
+// arm makes the next resolution block until the returned release is called,
+// and makes releasing it idempotent so that a cleanup and an explicit call can
+// both run.
+func (p *countingProvider) arm() (release func()) {
+	gate := make(chan struct{})
+
+	p.mu.Lock()
+	p.gate = gate
+	p.mu.Unlock()
+
+	return sync.OnceFunc(func() { close(gate) })
 }
 
 // clock is a manual clock, so expiry is exercised without waiting for it.
@@ -208,50 +234,82 @@ func Test_Cache_collapsesConcurrentResolutions(t *testing.T) {
 	ref := NewRef("test", "hot")
 
 	t.Run("a cold start costs one provider call", func(t *testing.T) {
-		provider := &countingProvider{value: "shared"}
-		cache := NewCache(provider, WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			provider := &countingProvider{value: "shared"}
+			cache := NewCache(provider, WithCacheTTL(time.Minute))
 
-		// The provider is slow enough that every goroutine is waiting at once,
-		// which is exactly the cold-start stampede a worker sees at startup.
-		provider.delay = 20 * time.Millisecond
+			// The cold-start stampede a worker sees at startup: every caller
+			// arrives while the first resolution is still open.
+			release := provider.arm()
 
-		var wg sync.WaitGroup
-		for range 50 {
-			wg.Go(func() {
-				secret, err := cache.Resolve(context.Background(), Request{Ref: ref})
-				require.NoError(t, err)
-				require.Equal(t, "shared", secret.Reveal())
-			})
-		}
-		wg.Wait()
+			// A failed assertion below exits this goroutine, and a bubble
+			// whose root exited with goroutines still parked is a deadlock
+			// the runtime panics on — which would take the rest of the
+			// package's tests down with it and bury the assertion that
+			// actually failed. Releasing on the way out makes the failure
+			// report as a failure.
+			t.Cleanup(release)
 
-		require.Equal(t, 1, provider.count(),
-			"concurrent resolutions of one reference must collapse into a single lookup")
+			var wg sync.WaitGroup
+			for range 50 {
+				wg.Go(func() {
+					secret, err := cache.Resolve(context.Background(), Request{Ref: ref})
+					require.NoError(t, err)
+					require.Equal(t, "shared", secret.Reveal())
+				})
+			}
+
+			// Every caller is now parked — one in the provider, the rest on
+			// singleflight's WaitGroup — because that is what Wait returning
+			// means. Releasing the provider here is what makes the stampede a
+			// precondition of the assertion rather than something the test
+			// hopes a 20ms sleep bought it.
+			synctest.Wait()
+			require.Equal(t, 1, provider.count(),
+				"the followers reached the provider instead of piling up behind the first")
+			release()
+
+			wg.Wait()
+
+			require.Equal(t, 1, provider.count(),
+				"concurrent resolutions of one reference must collapse into a single lookup")
+		})
 	})
 
 	t.Run("expiry does not stampede either", func(t *testing.T) {
-		provider := &countingProvider{value: "first"}
-		cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
+		synctest.Test(t, func(t *testing.T) {
+			provider := &countingProvider{value: "first"}
+			cache, clk := newTestCache(t, provider, WithCacheTTL(time.Minute))
 
-		_, err := cache.Resolve(t.Context(), Request{Ref: ref})
-		require.NoError(t, err)
-		require.Equal(t, 1, provider.count())
+			_, err := cache.Resolve(t.Context(), Request{Ref: ref})
+			require.NoError(t, err)
+			require.Equal(t, 1, provider.count())
 
-		// Every entry created together expires together, so the TTL boundary is a
-		// second stampede if it is not collapsed.
-		provider.delay = 20 * time.Millisecond
-		clk.advance(2 * time.Minute)
+			// Every entry created together expires together, so the TTL boundary is a
+			// second stampede if it is not collapsed. Expiry is driven by the cache's
+			// own manual clock rather than the bubble's, since what has to elapse is
+			// the TTL; the gate parks the callers exactly as above.
+			release := provider.arm()
+			t.Cleanup(release) // as above: a failure must not deadlock the bubble
+			clk.advance(2 * time.Minute)
 
-		var wg sync.WaitGroup
-		for range 50 {
-			wg.Go(func() {
-				_, err := cache.Resolve(context.Background(), Request{Ref: ref})
-				require.NoError(t, err)
-			})
-		}
-		wg.Wait()
+			var wg sync.WaitGroup
+			for range 50 {
+				wg.Go(func() {
+					_, err := cache.Resolve(context.Background(), Request{Ref: ref})
+					require.NoError(t, err)
+				})
+			}
 
-		require.Equal(t, 2, provider.count(), "one re-read, not fifty")
+			synctest.Wait()
+			require.Equal(t, 2, provider.count(),
+				"the followers re-read instead of piling up behind the one re-resolution")
+			release()
+
+			wg.Wait()
+
+			require.Equal(t, 2, provider.count(), "one re-read, not fifty")
+		})
 	})
 
 	t.Run("a failure is still not cached under concurrency", func(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -198,23 +199,47 @@ func TestLocalSignalWithNoWaiterIsAnError(t *testing.T) {
 func TestLocalSignalCancellationIsNotATimeout(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := v1.Run(ctx, gatedLocalWorkflow(time.Hour))
-		done <- err
-	}()
+		// Ordinary WithCancel hygiene, and nothing more: every path that
+		// reaches the select below has already called cancel explicitly, so
+		// this is a no-op on all of them. It is here so that a future edit
+		// returning early still releases the context.
+		defer cancel()
 
-	time.Sleep(100 * time.Millisecond)
-	cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := v1.Run(ctx, gatedLocalWorkflow(time.Hour))
+			done <- err
+		}()
 
-	select {
-	case err := <-done:
-		require.Error(t, err, "a cancelled run reported success")
-		require.True(t, errors.Is(err, context.Canceled),
-			"a cancelled run was not reported as cancelled: %v", err)
-	case <-time.After(15 * time.Second):
-		t.Fatal("a cancelled run did not stop")
-	}
+		// Wait returns once the run is durably blocked, which for this
+		// workflow is the gate: the state a cancellation has to be told
+		// apart from a lapsed timeout. The 100ms sleep this replaces was a
+		// guess at how long reaching the gate takes, so it was both slower
+		// than the test needed and wrong on a runner slower than the guess.
+		synctest.Wait()
+		cancel()
+
+		select {
+		case err := <-done:
+			require.Error(t, err, "a cancelled run reported success")
+			require.True(t, errors.Is(err, context.Canceled),
+				"a cancelled run was not reported as cancelled: %v", err)
+		case <-time.After(15 * time.Second):
+			// Bubble time, so the wait itself costs nothing, and it is reached
+			// well before the hour the gate would otherwise sit for.
+			//
+			// It does not rescue the bubble, and it would be wrong to say so:
+			// getting here means the run ignored the cancel above and is still
+			// parked, and a bubble's clock stops once its root goroutine exits,
+			// so the runtime reports a deadlock on the way out regardless.
+			// Breaking the ctx.Done arm of waitForSignalLocally produces both,
+			// in this order. What this branch buys is that the *diagnosis* is
+			// printed first: "blocked goroutines remain" says some goroutine is
+			// stuck, where this says which claim of the test went unmet.
+			t.Fatal("a cancelled run did not stop")
+		}
+	})
 }
