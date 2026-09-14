@@ -119,14 +119,17 @@ import (
 //	what a refused var's  | nothing  | the root refusal stands for the chain, the
 //	  dependents report   |          | rule #1185 set for a refused stub's shape
 //	how a rendering hides | one pair | WithholdAll withholds, else RedactSubstrings,
-//	  what it must        | only     | plus the withheld-var rule. SIX surfaces:
+//	  what it must        | only     | plus the withheld-var rule. SEVEN surfaces:
 //	                      |          | witnesses, the autopsy, stub diagnostics, a
 //	                      |          | check's evaluator error ([checkErrorText]),
-//	                      |          | a var's own ([scrubbedVarError]), and the
+//	                      |          | a var's own ([scrubbedVarError]), the
 //	                      |          | case's ([redactedErrorText], run.go's
-//	                      |          | caseError). A seventh is a leak until it
-//	                      |          | meets this row — the sixth was, exactly as
-//	                      |          | this row predicted when it named five
+//	                      |          | caseError), and `flow validate`'s
+//	                      |          | signal-name refusal
+//	                      |          | ([File.CheckSignalNames]). An eighth is a
+//	                      |          | leak until it meets this row — the sixth
+//	                      |          | and seventh both were, exactly as this row
+//	                      |          | predicted when it named five
 //	when the posture       | before   | it is LOAD-time information: the taint
 //	  exists               | setup    | closure and the case's `secrets:` are both
 //	                      | can fail | known before anything runs, so a setup

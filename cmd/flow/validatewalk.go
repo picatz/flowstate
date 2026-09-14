@@ -335,7 +335,7 @@ func validatePluginRequirements(target validateTarget, catalog *v1.PluginCatalog
 //
 // When the test file is on disk and a case scripts signals, the workflow it
 // names is compiled and the signal names are checked against it — the same
-// check [flowtest.CheckSignalNames] applies at run time, extended to the
+// check [flowtest.File.CheckSignalNames] applies at run time, extended to the
 // validate surface so a misspelled gate is caught before `flow test` (#1443).
 // If the workflow fails to compile (plugin tasks, missing files), the signal
 // check is skipped: the workflow's own diagnostics are the workflow's concern.
@@ -368,7 +368,7 @@ func validateTestFile(target validateTarget) flowfile.Diagnostics {
 		if parseErr != nil {
 			continue
 		}
-		if err := flowtest.CheckSignalNames(test.Signals, spec); err != nil {
+		if err := file.CheckSignalNames(test, spec); err != nil {
 			diags = append(diags, flowfile.Diagnostic{Message: fmt.Sprintf("test %q: %s", test.Name, err)})
 		}
 	}
