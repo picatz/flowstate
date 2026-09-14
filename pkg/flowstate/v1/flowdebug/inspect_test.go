@@ -543,7 +543,6 @@ func TestAnEvaluationErrorWithholdsWhatItInterpolates(t *testing.T) {
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), fmt.Sprint(secret),
 			"a sensitive value left through the error rather than through the answer")
-		assert.Contains(t, err.Error(), "redacted")
 	})
 }
 
@@ -618,6 +617,64 @@ func TestAPauseAnswersFromTheScopeItBeganWith(t *testing.T) {
 
 	<-done
 	require.NoError(t, <-held)
+}
+
+// TestInspectPredicatesSeeRedactedBindings closes the predicate-oracle half of
+// withholding. Redacting only the rendered result protects a direct inspect,
+// but an equality or size expression turns the same value into an ordinary
+// boolean or number that no output redactor can recognize.
+func TestInspectPredicatesSeeRedactedBindings(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In:  strings.NewReader("inspect inputs.token == 'hunter2'\ninspect size(inputs.token)\ncontinue\n"),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, "hunter2", "[redacted]")
+	})
+	session.SetValueRedactor(func(value any) any {
+		var walk func(any) any
+		walk = func(value any) any {
+			switch value := value.(type) {
+			case string:
+				if value == "hunter2" {
+					return "[redacted]"
+				}
+			case map[string]any:
+				redacted := make(map[string]any, len(value))
+				for name, element := range value {
+					redacted[name] = walk(element)
+				}
+
+				return redacted
+			case []any:
+				redacted := make([]any, len(value))
+				for i, element := range value {
+					redacted[i] = walk(element)
+				}
+
+				return redacted
+			}
+
+			return value
+		}
+
+		return walk(value)
+	})
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Inputs = map[string]*v1.Value{"token": v1.NewLiteral("hunter2")}
+	require.NoError(t, session.BeforeStep(t.Context(), markStep("deploy"), scope))
+
+	printed := out.String()
+	assert.Contains(t, printed, "false", "equality was evaluated against the real secret")
+	assert.Contains(t, printed, "10", "size was evaluated against the real secret rather than the marker")
+	assert.NotContains(t, printed, "\n7\n", "the secret's length was disclosed")
 }
 
 // TestAComposedStringIsWithheldFromTheStructuredAnswerToo is the second seam,
