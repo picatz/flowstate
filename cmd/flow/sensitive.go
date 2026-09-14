@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -846,6 +847,94 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 	}
 
 	return response
+}
+
+// refusedRunSensitiveValues is the redaction set for a `flow run local` that is
+// refused before the run starts: a word the shell handed over that cannot be
+// the declared type, or arguments the binder refuses.
+//
+// [runSensitiveValues] cannot answer here, and its fail-closed answer is the
+// reason. It binds, and on this path the bind is the thing that failed, so it
+// would return [v1.WithheldSensitiveValues] and the refusal would print as the
+// withheld marker and nothing else — on every input mistake, on every workflow
+// declaring anything sensitive. That is the wrong direction for this surface
+// specifically: the schema's fourth redacted surface is "the sentence a failed
+// run reports", and it says the value is removed from the text rather than the
+// text being withheld, "because nothing else on a response answers 'why did
+// this fail'" (workflow.proto's `sensitive:`). Withholding it would answer a
+// mistyped argument with silence.
+//
+// So the set is built from what this process holds *without* binding: for each
+// `sensitive:` declaration, the value submitted for it, and otherwise the
+// default the file declares. Those are the two values a bind would have
+// produced, and so the two a refusal about the arguments can quote — a `must:`
+// failure reports `got <value>` for whichever of them it checked.
+//
+// A submitted name the workflow does not declare is deliberately not in the
+// set. `sensitive:` is a property of a declaration, this one has none, and the
+// refusal it earns is precisely that nothing declares it.
+//
+// The words themselves are in the set too, and they have to be. A refusal that
+// the coercion made — `--input pin=hunter2` against `type: int` — quotes a
+// word that never became a [v1.Value] at all, so no set built out of values
+// can hold it, and it is the first refusal a mistyped sensitive argument earns.
+func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submitted map[string]*v1.Value, reveal bool) v1.SensitiveValues {
+	names := v1.SensitiveInputNames(workflow)
+	if reveal || len(names) == 0 {
+		return v1.SensitiveValues{}
+	}
+
+	values := make(map[string]*v1.Value, len(names))
+	for _, declaration := range workflow.GetDeclaredInputs() {
+		if names[declaration.GetName()] && declaration.GetDefault() != nil {
+			values[declaration.GetName()] = declaration.GetDefault()
+		}
+	}
+
+	// Second, so a submitted value wins over the default it replaces, which is
+	// the order [v1.BindRunInputs] applies them in.
+	for name, value := range submitted {
+		if names[name] {
+			values[name] = value
+		}
+	}
+
+	return v1.SensitiveInputValues(values, names).WithValues(sensitiveInputWords(cmd, names)...)
+}
+
+// sensitiveInputWords is the text of every `--input <name>=<value>` this
+// invocation carries whose name is declared `sensitive:`, as the shell handed
+// it over.
+//
+// This exists for the one refusal a value set cannot otherwise reach: the
+// coercion's. `--input pin=hunter2` against `type: int` never produces a
+// [v1.Value] to put in a set, and the refusal quotes the word — so the word
+// itself joins the set as a plaintext, which is what [v1.SensitiveValues.WithValues]
+// is for.
+//
+// It reads only where the name ends, never what the value means. inputs.go's
+// header is emphatic that a second reader of --input is how one grammar
+// becomes two, and this is deliberately not one: coercion, precedence,
+// --input-file and every question about what a word *is* stay in
+// [parseInputFlag], which this function does not duplicate and must follow if
+// the `name=value` shape ever changes.
+//
+// A value given through --input-file rather than a flag is not read back here.
+// It reaches the set as a bound value by the ordinary path whenever it decodes,
+// and the one refusal that quotes it before then is a JSON number too large for
+// a float64 — a shape a credential does not take.
+func sensitiveInputWords(cmd *cobra.Command, names map[string]bool) []string {
+	flags, _ := cmd.Flags().GetStringArray("input")
+
+	words := make([]string, 0, len(flags))
+	for _, flag := range flags {
+		name, value, found := strings.Cut(flag, "=")
+		if found && names[strings.TrimSpace(name)] {
+			words = append(words, value)
+		}
+	}
+
+	return words
 }
 
 // runSensitiveValues is the redaction set for a run this process is starting:

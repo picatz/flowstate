@@ -263,21 +263,41 @@ func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message)
 // the caller's own argument reports [v1.ErrorKindInvalidInput] rather than
 // "Internal", which is what [v1.InputError] exists to make knowable.
 //
-// The error is returned unchanged whatever the format, so the exit code, the
-// sentence a person reads on stderr, and every caller that matches on the chain
-// are exactly what they were. The text shape still writes no document, for the
-// reason the started-and-failed path gives: an empty stdout is a meaningful
-// answer there.
-func refuseRunLocally(surface *ui.UI, rendering runRendering, refusal error) error {
+// The exit code and the reason are what they were whatever the format. The text
+// shape still writes no document, for the reason the started-and-failed path
+// gives: an empty stdout is a meaningful answer there.
+//
+// sensitive is the run's own redaction set, and this function applies it to
+// both places the refusal is rendered — the document on stdout and the error
+// returned for stderr. It used to apply it to neither, which is how a value an
+// author declared `sensitive:` reached a machine-readable stdout that a caller
+// commonly stores or forwards, on a command line the workflow's own `inputs:`
+// refused (Codex). The started-and-failed path a hundred lines down in
+// runlocal.go has always redacted both; this is that path's answer for the
+// refusals that never get that far. See refusedRunSensitiveValues for why the
+// set is built differently here.
+func refuseRunLocally(surface *ui.UI, rendering runRendering, sensitive v1.SensitiveValues, refusal error) error {
+	// Classified off the original chain, before the redaction below drops it.
+	// [redactFailureError] deliberately does not Unwrap — that is the whole
+	// point of it — so a classification read afterwards would report Internal,
+	// a defect in Flowstate, for the caller's own bad argument: the exact
+	// regression #1552 landed to fix.
+	kind := v1.ClassifyError(refusal).String()
+
+	redacted := redactFailureError(refusal, sensitive)
+
 	if !rendering.WantsDocument() {
-		return refusal
+		return redacted
 	}
 
 	response := &v1.GetResponse{
 		Status: v1.RunResponse_STATUS_FAILED,
 		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
-			Message: refusal.Error(),
-			Kind:    v1.ClassifyError(refusal).String(),
+			// The redacted sentence itself rather than a second pass with
+			// [redactFailureText], so the document and the stderr line cannot
+			// come to say different things about one refusal.
+			Message: redacted.Error(),
+			Kind:    kind,
 		}},
 	}
 
@@ -285,7 +305,7 @@ func refuseRunLocally(surface *ui.UI, rendering runRendering, refusal error) err
 		return err
 	}
 
-	return refusal
+	return redacted
 }
 
 // A mutation's result is an answer, so the verbs that perform one carry `--output`

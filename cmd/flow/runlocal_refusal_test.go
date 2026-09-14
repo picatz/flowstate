@@ -122,3 +122,134 @@ func TestATextFormattedRefusalWritesNoDocument(t *testing.T) {
 	assert.Contains(t, stderr, "tenant",
 		"the person reading stderr was not told which input is missing")
 }
+
+// sensitiveRefusalWorkflow declares one `sensitive:` input that a command line
+// can get wrong in two ways — a word that is not the declared type, and a value
+// that is but fails the constraint — and one ordinary input beside it, so a
+// test can tell a redaction from a withholding.
+//
+// No `default:` on pin, deliberately. A default that fails its own `must:` is
+// refused when the *file* is validated, long before a command line is read, so
+// a fixture with one never reaches the refusals under test here — it fails at
+// [loadWorkflow] with the compiler's own diagnostic about the file. That
+// diagnostic quotes the default in the clear and is meant to: it is the
+// author's own text, in the author's own file, with no run in sight, which is
+// the case pkg/flowstate/v1/constraints.go's inputValueRendering names when it
+// says a submitted value prints whole.
+const sensitiveRefusalWorkflow = `edition: v2026.3
+name: onboard
+inputs:
+  pin:
+    type: int
+    sensitive: true
+    must: this > 9999
+  region:
+    type: string
+    default: eu-west-1
+steps:
+  - id: greet
+    log:
+      message: ${"onboarding " + inputs.region}
+`
+
+// TestARefusedCommandLineDoesNotPrintASensitiveArgument is the disclosure the
+// document in TestARefusedCommandLineIsStillADocument arrived with.
+//
+// A run that starts and fails has always had its failure sentence cleared of
+// the run's own `sensitive:` values, on stdout and on stderr both — that is the
+// fourth surface `sensitive:` names in workflow.proto, and #974 is the loop that
+// put a value into a sentence nothing was looking at. A run *refused before it
+// starts* went through neither: `refuseRunLocally` copied the refusal straight
+// into `RunResponse.Error.Message` and wrote it to the machine channel a caller
+// stores or forwards (Codex).
+//
+// Two shapes, because they compose the value in two different places, and the
+// second is the one a set of *values* cannot reach: the binder's `got <value>`
+// over a submitted argument, and the coercion's, which quotes a word that never
+// became a value at all.
+func TestARefusedCommandLineDoesNotPrintASensitiveArgument(t *testing.T) {
+	t.Parallel()
+
+	for name, tt := range map[string]struct {
+		args  []string
+		value string
+	}{
+		"a submitted value that fails the declared must:": {
+			args:  []string{"--input", "pin=4321"},
+			value: "4321",
+		},
+		"a word the flag cannot coerce to the declared type": {
+			args:  []string{"--input", "pin=hunter2"},
+			value: "hunter2",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout, stderr, err := runLocal(t, sensitiveRefusalWorkflow,
+				append([]string{"--output", "json"}, tt.args...)...)
+			require.Error(t, err, "the command line is refused")
+
+			require.NotContains(t, stdout, tt.value,
+				"the value reached the document a machine caller reads")
+			require.NotContains(t, stderr, tt.value,
+				"the value reached the prose a person reads")
+			require.NotContains(t, err.Error(), tt.value,
+				"the value reached the error the command returns, which is what main prints")
+
+			// A redaction and not a withholding, which is what the schema
+			// promises for this surface: the sentence still says which input
+			// and what is wrong with it, because nothing else answers that.
+			var document struct {
+				Status string `json:"status"`
+				Error  struct {
+					Message string `json:"message"`
+					Kind    string `json:"kind"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(stdout), &document),
+				"stdout is not a single JSON document:\n%s", stdout)
+			assert.Equal(t, "STATUS_FAILED", document.Status)
+			assert.Contains(t, document.Error.Message, "pin",
+				"the refusal no longer says which input it is about")
+
+			// And the classification survives the redaction. It is read off
+			// the original chain on purpose: [redactFailureError] does not
+			// unwrap, so a kind computed after it would report Internal — a
+			// defect in Flowstate — for the caller's own argument (#1552).
+			assert.Equal(t, "InvalidInput", document.Error.Kind)
+		})
+	}
+}
+
+// TestARefusedCommandLineStillPrintsAnOrdinaryArgument is the direction the
+// change must not take with it.
+//
+// The set is the run's `sensitive:` values, not everything: a workflow that
+// declares one sensitive input must still report an ordinary one's value in the
+// clear, or the redaction has become the withholding the schema refuses. The
+// undeclared name is the sharpest case — it is the value most likely to be a
+// typo the author needs to see.
+func TestARefusedCommandLineStillPrintsAnOrdinaryArgument(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, sensitiveRefusalWorkflow, "--output", "json",
+		"--input", "pin=10000", "--input", "reigon=eu-west-1")
+	require.Error(t, err)
+
+	assert.Contains(t, stdout, "reigon",
+		"the misspelled name the refusal is about was withheld too")
+}
+
+// TestARevealedRefusalPrintsTheSensitiveArgument pins the one deliberate escape
+// hatch on this path, so it stays one decision rather than becoming a flag that
+// works on the surfaces somebody remembered.
+func TestARevealedRefusalPrintsTheSensitiveArgument(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, sensitiveRefusalWorkflow, "--output", "json",
+		"--reveal-sensitive", "--input", "pin=4321")
+	require.Error(t, err)
+
+	assert.Contains(t, stdout, "4321")
+}

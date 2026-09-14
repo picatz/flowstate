@@ -169,16 +169,31 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// does not satisfy the workflow's `inputs:` is a refusal about the command line,
 	// and reporting it after a `log:` step has already narrated two lines would make
 	// it look like the run got somewhere first.
+	// Read here rather than at its other use further down, because the two
+	// refusals below render values and this is the flag that says whether they
+	// may.
+	reveal := revealSensitiveRequested(cmd)
+
 	inputs, err := runInputs(cmd, workflow)
 	if err != nil {
 		// Through the same writer as the binder's refusals below. A word a shell
 		// handed over that cannot be the declared type is the same class of
 		// mistake as one the binder refuses, and a caller who asked for JSON is
 		// owed a document for both (#1552).
-		return refuseRunLocally(newSurface(cmd), rendering, err)
+		//
+		// With no bound arguments in the set: collection is what failed, so
+		// there are none. The words the command line carried are in it
+		// regardless, which is what covers this refusal — see
+		// refusedRunSensitiveValues.
+		return refuseRunLocally(newSurface(cmd), rendering,
+			refusedRunSensitiveValues(cmd, workflow, nil, reveal), err)
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
-		return refuseRunLocally(newSurface(cmd), rendering, err)
+		// And here the arguments exist — they were just collected — so the set
+		// is precise against them, and the binder's `got <value>` is cleared
+		// rather than the whole sentence withheld.
+		return refuseRunLocally(newSurface(cmd), rendering,
+			refusedRunSensitiveValues(cmd, workflow, inputs, reveal), err)
 	}
 
 	// A workload that waits for a signal needs something able to deliver one, or it
@@ -214,7 +229,6 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// command lost somewhere in it. Attached before the logger for exactly that
 	// reason; `narrate` is stderr itself everywhere else.
 	debugging, _ := cmd.Flags().GetBool("debug")
-	reveal := revealSensitiveRequested(cmd)
 
 	var (
 		console *debugConsole

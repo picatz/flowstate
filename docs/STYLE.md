@@ -55,7 +55,7 @@ descend from are in Part I.
 | Printing a line | `log:` | the retired `echo:` / `printf:` | the capability already existed under another name |
 | Reading a step's scalar output | `${steps.<id>.value}` | a bare `${steps.<id>}` | the six characters buy uniformity in every tool that reads outputs, and this is permanent (anti-goal 7) |
 | Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`pkg/flowstate/v1/flowfile/parse_wait.go:397`) |
-| Naming a webhook delivery for dedupe | the event's own id, `${event.body.id}`, or a delivery id the sender repeats in a header | a signature header, `${event.headers["stripe-signature"]}` | a signature is computed per attempt — a retry carries a new timestamp and a new MAC over the same event — so a key over it names the attempt and every real retry starts a second run (R10) |
+| Naming a webhook delivery for dedupe | the event's own id, `${event.body.id}`, or a delivery id the sender repeats in a header — the body when both are on offer | a signature header, `${event.headers["stripe-signature"]}` | a signature is computed per attempt — a retry carries a new timestamp and a new MAC over the same event — so a key over it names the attempt and every real retry starts a second run; and a header is outside what the signature covers, so a captured delivery resends under a key of its sender's choosing (R10) |
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
 | A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
 
@@ -396,6 +396,20 @@ signs a timestamp does the same, so a key over `Stripe-Signature` dedupes only a
 byte-identical resend and starts a run for every real retry. Measured on the
 corpus example before it was corrected: one event delivered four times produced
 three runs (#1775), which for a payment capture is a double capture.
+
+Prefer the body when the sender offers the id in both places. What a webhook
+signature covers is the body — under the generic `hmac_sha256` scheme, the body and
+nothing else — so a key read out of a header is a key nobody signed. Whoever
+captures one legitimate delivery can send those exact bytes and that exact
+signature again under a delivery id of their choosing, and each resend is a new
+key, a new run id, and a redelivery the conflict and reuse policies never see as
+one; the generic scheme signs no timestamp either, so the capture stays good
+indefinitely. Keyed inside the signed body, the resend carries the same key and
+joins the first run. Where a provider repeats its id only in a header —
+`x-github-delivery`, `x-shopify-webhook-id` — that header is still the key to use,
+because it is the only id on offer and dedupe that runs twice is worse than dedupe
+an attacker can defeat; what this refuses is reaching for the header when the
+signed body carries the same id.
 
 The validator cannot refuse it, and does not try. A key over a header genuinely
 varies with the delivery, which is all a file can prove, and reading a header is the
