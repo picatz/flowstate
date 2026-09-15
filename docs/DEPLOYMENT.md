@@ -54,9 +54,11 @@ tenant it serves — not just the tenant whose run happened to launch it.
 **What the host isolates, stated plainly (#1010):** a plugin runs as the same
 user as the worker, with the worker's full filesystem, network and kernel
 reach. The host guarantees which bytes run when pinned, that the plugin
-cannot read the worker's memory or its environment-borne credentials, cannot
-impersonate the host on its socket, and cannot outlive it. It does not
-constrain what the plugin does with the worker's own privileges — resource
+does not directly inherit the worker's environment, cannot impersonate the
+host on its socket, and cannot outlive it. The clean launch environment is not
+a confidentiality boundary: where the OS permits same-user process inspection,
+a plugin may still read the worker's environment and memory. It does not constrain
+what the plugin does with the worker's own privileges — resource
 limits, filesystem visibility and syscall filtering are the deployment's job,
 exactly as they are for the worker itself. The host isolates **by process,
 not by privilege**, and no schema vocabulary claims otherwise; see [the
