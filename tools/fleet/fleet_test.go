@@ -415,23 +415,19 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 		"protected cache was counted as headroom, so a lane would be dispatched against memory "+
 			"the kernel has been told to keep")
 
-	t.Run("a descendant cannot protect more than its ancestors allow", func(t *testing.T) {
-		// The correction that removed a whole walk. A descendant's *effective*
-		// min is capped by its ancestors' — protection is handed down — so a
-		// child declaring 4 GiB under a parent declaring zero has no hard
-		// protection at all, and summing configured floors counted memory the
-		// kernel would happily reclaim (Codex, #1134).
-		//
-		// 7 GiB, not 3: the top level protects nothing, so nothing beneath it
-		// is protected either, and its cache is headroom.
+	t.Run("a descendant is protected at its parent's reclaim boundary", func(t *testing.T) {
+		// When the parent's memory.max causes reclaim, a child's memory.min
+		// protects it from allocations in a sibling even though the reclaiming
+		// parent has no floor of its own. The parent's inactive_file value is
+		// hierarchical, so ignoring the child's floor invents 4 GiB of headroom.
 		dir := protectedLayout(t, protection{cache: 5 * gib},
 			protection{cache: 0, min: 4 * gib})
 
 		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
 
 		require.True(t, found)
-		assert.Equal(t, uint64(7*gib), free,
-			"a descendant's configured floor was counted as protection its ancestors do not grant")
+		assert.Equal(t, uint64(3*gib), free,
+			"a descendant's protected cache was counted as headroom at its parent's limit")
 	})
 
 	t.Run("unprotected cache is still headroom", func(t *testing.T) {
