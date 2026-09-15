@@ -138,6 +138,47 @@ func TestTheWaitGateFileIsLegal(t *testing.T) {
 	assert.Empty(t, diags)
 }
 
+const waitBatchFile = `edition: v2026.3
+name: wait-batch
+steps:
+  - id: orders
+    wait_for_signals:
+      name: order
+      max_batch: 10
+  - id: report
+    log:
+      message: ${string(steps.orders.count)}
+`
+
+func TestCompletionAfterASignalBatchWaitOffersItsOutputs(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	uri := "file:///wait-batch-completion.yaml"
+	c.open(uri, waitBatchFile)
+
+	at := positionOf(t, waitBatchFile, "message: ${string(steps.orders.count)}", len("message: ${string(steps.orders."))
+	got := labels(c.complete(uri, at.Line, at.Character).Items)
+	assert.ElementsMatch(t, []string{"timed_out", "deliveries", "count"}, got)
+}
+
+func TestHoverOnASignalBatchOutputDescribesTheWait(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	uri := "file:///wait-batch-hover.yaml"
+	c.open(uri, waitBatchFile)
+
+	at := positionOf(t, waitBatchFile, "message: ${string(steps.orders.count)}", len("message: ${string(steps.orders.")+1)
+	h := c.hover(uri, at.Line, at.Character)
+	require.NotNil(t, h)
+	text := hoverText(h)
+	assert.Contains(t, text, "steps.orders.count")
+	assert.NotContains(t, text, "is not registered")
+}
+
 // TestCompletionAfterAnUnshapedGateOffersTheThreeReservedNames covers
 // stepCandidate's missing wait branch from the other side of #322: before
 // this, `${steps.gate.}` on an unshaped gate offered nothing at all.
