@@ -1010,6 +1010,25 @@ func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
 	require.Contains(t, out.String(), `"steps"`)
 }
 
+// TestWatchUsesLinesWhenOnlyOutputIsATerminal prevents redirected input from
+// controlling the live view. stderr commonly remains attached to a terminal in a
+// pipeline, but bytes from that pipeline are data rather than q/escape commands.
+func TestWatchUsesLinesWhenOnlyOutputIsATerminal(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
+	surface, out, errOut := plainSurface()
+	surface.ErrCaps.TTY = true
+	surface.InputTTY = false
+
+	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, false,
+		"flowstate-workflow-3f7c", nil))
+
+	require.Len(t, reportedLines(errOut.String()), 2,
+		"redirected input entered a live view instead of producing lines:\n%s", errOut.String())
+	require.NotContains(t, errOut.String(), "q stops watching",
+		"a live view accepted commands from redirected stdin")
+	require.Contains(t, out.String(), `"steps"`)
+}
+
 // TestRunFollowsToAnyTerminalStatus is a regression test for a loop that could not
 // end.
 //
