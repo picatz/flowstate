@@ -164,13 +164,13 @@ func TestAuditReproducesTheManualAudit(t *testing.T) {
 		// shape wait shaping cannot reach: `approval` can say what the desk
 		// answered and can know nothing about the threshold.
 		requireNoFinding(t, report, path,
-			"inputs.amount_cents < inputs.approval_threshold_cents || steps.approval.outcome")
+			"inputs.amount_cents < vars.approval_threshold_cents || steps.approval.outcome")
 
 		// And the bare threshold test under it, pure input arithmetic with no step
 		// in it at all, which was spelled in both polarities across four `if:`s and
 		// an `outputs:` entry.
 		requireNoFinding(t, report, path,
-			"inputs.amount_cents >= inputs.approval_threshold_cents")
+			"inputs.amount_cents >= vars.approval_threshold_cents")
 	})
 
 }
