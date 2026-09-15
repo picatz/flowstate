@@ -277,6 +277,13 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 
 	go func() {
 		inst.waitErr = cmd.Wait()
+		// Wait reaps only the group leader. Helpers the plugin left in its
+		// process group can still be running, so clean the group while the pid
+		// is still known to name this launch. A process-group id cannot be
+		// recycled while that group has members; doing this before publishing
+		// the exit therefore reaches surviving helpers without leaving the
+		// later supervisor path to signal a reused id.
+		terminateProcess(inst.proc, false)
 		close(inst.exited)
 	}()
 
