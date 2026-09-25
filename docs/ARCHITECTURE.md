@@ -211,13 +211,13 @@ Temporal's own answer to "one handler, many workloads" is dynamic workflow regis
 workflow type name the caller started and handed raw encoded payloads. Flowstate answers
 the same need from the other end — one *static* type that takes the workload as a typed
 argument — and the `RegisterDynamicWorkflow` method on the registry fake in
-`engine/versioning_test.go:382` is empty because that is the decision, not because nothing
+`pkg/flowstate/v1/engine/versioning_test.go:382` is empty because that is the decision, not because nothing
 was decided.
 
 `engine.RegisterWorkflows` installs exactly one workflow function, `Run`, with
-`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:191-199`). `Run` takes
-a `*v1.RunState` (`engine/workflow.go:313`), so the compiled specification travels as
-data, and the interpreter dispatches on node kind (`engine/execute.go:692-720`). Which
+`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:208`). `Run` takes
+a `*v1.RunState` (`pkg/flowstate/v1/engine/workflow.go:313`), so the compiled specification travels as
+data, and the interpreter dispatches on node kind (`pkg/flowstate/v1/engine/execute.go:692-720`). Which
 workload runs is a value; how any workload runs is the function.
 
 ```mermaid
@@ -244,20 +244,25 @@ places:
   would be that registration repeated once per Flowfile anyone has ever written, and a
   worker cannot register a type for a file it has never seen.
 - **The replay corpus has a stable name.** The gate replays recorded histories through
-  `engine.RegisterWorkflows` itself (`engine/replay_test.go:102`), which works only because
+  `engine.RegisterWorkflows` itself (`pkg/flowstate/v1/engine/replay_test.go:39`), which works only because
   the type name in every recorded history is the name a production worker registers.
 
 The cost is Temporal-side and worth stating plainly: every run's WorkflowType is `Run`, so
 anything grouping by workflow type — the Web UI's type filter, `temporal workflow list
 --query 'WorkflowType=...'`, per-type metrics — sees one name for the whole fleet. Run
 metadata carries the grouping instead. A workload's own declared name is written to every
-run's memo unconditionally at submit (`server/server.go:789`, `server/server.go:804`), which
+run's memo unconditionally at submit (`pkg/flowstate/v1/server/server.go:789`, `pkg/flowstate/v1/server/server.go:804`), which
 is what populates `v1.RunSummary.Name` (`proto/flowstate/v1/service.proto:735`,
-`server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
+`pkg/flowstate/v1/server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
 deployment that has registered search attributes additionally projects it as
-`FlowstateWorkflowName` (`server/server.go:889`), index-only, for tools querying the
+`FlowstateWorkflowName` (`pkg/flowstate/v1/server/server.go:1040`), index-only, for tools querying the
 visibility store directly. The grouping exists — it is simply not Temporal's built-in type
-field.
+field. The one place the server does read an attribute back is a schedule listing: a
+deployment with registration confirmed tags each schedule with its tenant at create and asks
+Temporal for that tenant's entries plus the untagged ones (`server/schedules.go`,
+`scheduleListQuery`, #1785), so a tenant's create and listing stop paying for a namespace
+full of other tenants' schedules — as a filter only; the id derivation and the memo still
+decide ownership, and an unregistered deployment keeps the bounded walk.
 
 ### Versioning: pinned within a run, upgraded between runs
 
@@ -304,12 +309,12 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Query | a run's live position, served through `Get` and rendered by `flow get`/`flow watch` **(done)**; richer state as it earns a place |
 | Update | synchronous request/response against a running workload |
 | Child workflow | `call:` — a callee's whole compiled specification runs nested inside the caller's own execution, isolated from the caller's scope and reachable only through its declared `inputs:`/`outputs:`, resolved at compile time so filesystem access never reaches a worker **(done)**; still in the caller's own history rather than a separate one, which a *literal* Temporal child workflow would give — a call is transparent to Continue-As-New in the meantime (see DSL.md), so a callee's own steps count against the same step budget the caller's do |
-| Continue-As-New | transparent history and payload management **(done)**; a suspension-opaque block — a `for_each` with `max_parallel:`, or one inside a `parallel:` branch, a loop body or a `switch:` arm — has no seam inside it, so its items × body product is bounded by `MaxAtomicBlockActivities` before dispatch, keeping one atomic stretch under the history-event cap Temporal would otherwise force-terminate (skipping compensation) at |
+| Continue-As-New | transparent history and payload management **(done)**; a suspension-opaque block — a `parallel:` block and all its branches, or a `for_each` with `max_parallel:` or inside a parallel branch, loop body or switch arm — has no seam inside it, so the whole enclosing body's worst-case activity count is bounded by `MaxAtomicBlockActivities` before dispatch, keeping one atomic stretch under the history-event cap Temporal would otherwise force-terminate (skipping compensation) at |
 | Worker Deployment Versioning | `flow worker --deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
 | Dynamic workflow registration | not used, deliberately: one *static* interpreter type, `Run`, registered pinned by `engine.RegisterWorkflows`, with the workload arriving as a `RunState` argument rather than as a workflow type name **(done)** — which is what gives one pinned version for the whole fleet, one stable type for the replay corpus to register against, and one place determinism is enforced. The cost is that every run's WorkflowType is `Run`, so Temporal-side per-type tooling sees one name, and the workload's declared name rides in the run's memo instead. See [One interpreter, not a workflow type per workload](#one-interpreter-not-a-workflow-type-per-workload) |
-| Schedules | `triggers: { schedule: ... }` declares a cadence — cron expressions or an interval, with a time zone, jitter and an overlap policy — and `flow schedule create\|list\|describe\|delete\|pause\|resume\|trigger` acts on it **(done)**; the declaration starts nothing, because a file that begins running on merge is a surprise, and arguments are bound and type-checked once at creation rather than at each firing. Calendar specs, start/end bounds, catchup window, pause-on-failure and backfill are not surfaced yet — each is additive |
+| Schedules | `triggers: { schedule: ... }` declares a cadence — cron expressions or an interval, with a time zone, jitter and an overlap policy — and `flow schedule create\|list\|describe\|delete\|pause\|resume\|trigger` acts on it **(done)**; the declaration starts nothing, because a file that begins running on merge is a surprise, and arguments are bound and type-checked once at creation rather than at each firing. Calendar specs, start/end bounds, a catchup window and pause-on-failure are declared beside the cadence (`flowfile/triggers.go`'s schedule keys), and backfill is a creation-time request bounded in intervals and span (`flow schedule create --backfill`, `ScheduleBackfill`) **(done)** |
 | Workflow-id exclusion | `concurrency: { key:, on_conflict: }` **(done)** — at most one run of a workflow per key, decided at submit: the key resolves from the run's bound inputs, is digested with the tenant and the workflow name, and becomes the run's own workflow id, so the permit *is* the run and expires with it. `reject`/`join`/`terminate_other` map to `WorkflowIDConflictPolicy` `FAIL`/`FAIL`-and-catch/`TERMINATE_EXISTING`; `join` is a caught refusal rather than `USE_EXISTING` so that a join is a fact the server established. What is **not** surfaced is *buffering*: `buffer_one`/`buffer_all`/`cancel_other` exist only in Temporal's schedule machinery (the Schedules row's `overlap:`), which a manual `Run` never touches, so a workflow id cannot queue and the validator refuses those three words by name rather than accepting one it would not honour. For the same reason `concurrency:` cannot be combined with a webhook or a schedule trigger, whose runs are already addressed by an id of their own |
-| Memo | a run's tenant, recorded when `Run` starts it and authorized against on every later request **(done)**; a memo rather than a search attribute because it needs no cluster-side registration, so a dev server works unconfigured — the cost being that Temporal cannot filter on it, so `List` reads pages and filters them itself under its own scan and request bounds |
+| Memo | a run's tenant, recorded when `Run` starts it and authorized against on every later request **(done)**; a memo rather than a search attribute because it needs no cluster-side registration, so a dev server works unconfigured — the cost being that Temporal cannot filter on it, so `List` reads pages and filters them itself under its own scan and request bounds. A continued segment also writes where its workload began and how many segments it has run as (`engine.WorkloadStartedMemoKey`, `engine.SegmentsMemoKey`), because a listing sees one execution per workload and would otherwise date a long-running workload from its latest Continue-As-New rather than its first start (#1690) |
 | Search attributes | `flow list --filter` exists and is CEL, evaluated by the server once per execution it reads, beside the tenant check that was already there **(done)** — the vocabulary is a run's own fields and the diagnostics are the compiler's. What is *not* done is projecting labels into visibility so the store can answer part of it. That is a cost change, deliberately not a meaning change: when it lands, the translatable half of a filter becomes a visibility query and the rest stays a residual predicate, so the same filter returns the same runs whether or not a deployment registered anything. An operator turning pushdown on should not have to re-read a single saved query |
 | Cancellation scopes | per-step `undo:` (saga compensation), run in reverse deterministic registration order when a step fails or cancellation stops the run **(done)**. Concurrent children use their structural position as the ordering key: `for_each` item index or `parallel` branch index, followed by registration order within that child. Drivers merge only after the child boundary, never by completion time, including retries and Continue-As-New. `flow terminate` compensates nothing and cannot: it executes no workflow code |
 | Conditional execution | per-step `if:`, evaluated in workflow code so the branch is in history **(done)** |
@@ -318,7 +323,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Best-effort steps | per-step `continue_on_error:`, recording the failure as `${steps.<id>.error}` **(done)** |
 | Activity heartbeats | every task activity heartbeats on a ten-second ticker carrying the phase the task has reached **(done)**; periodic rather than per-phase, because a heartbeat *timeout* has to exceed the longest legitimate gap between beats and a per-phase beat would make that the whole request. The phase is a `v1.Phase`, a closed vocabulary with no constructor — heartbeat details are written into history, so invariant 7 applies and the type refuses the leak rather than a reviewer catching it. This is also how a cancellation reaches a running activity at all, which is what makes the cancellation wait in the row above short |
 | Task queues | per-*tenant* routing **(done)**: `flow server --task-queue-prefix` submits a run to `<prefix>_<namespace>`, derived from the authenticated tenant and never from the request, and `flow worker --tenant` polls exactly that queue and refuses a run belonging to anyone else — which is what makes a per-tenant worker fleet addressable rather than merely startable, and what turns a routing mistake into a failure instead of a cross-tenant execution. Unset, every run goes to the one shared queue exactly as before. The composition is unforgeable for the reason an assertion subject's `_default` is: the separator is the one character the namespace grammar forbids, so the boundary is a fact rather than a convention. Per-*step* routing — a step naming a specialized or plugin fleet — is the same mechanism one level down, and is not built |
-| Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant **(done)**; per-step controls still to come. Setting the key is verified and correctly wired — whether it is *enforced* (one tenant's large workload cannot crowd out another's) is a property of your Temporal server version and configuration, since Temporal marks `Priority`/fairness as an experimental SDK feature. See [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor) |
+| Priorities and rate limits | a run is scheduled under a fairness key taken from its authenticated tenant **(done)**; per-step controls still to come. Setting the key is verified and correctly wired. Task Queue Priority and Fairness are GA in Temporal Server 1.31+, but Fairness still has to be enabled by the deployment and is approximate within each Task Queue partition. See [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor) |
 | **Nexus** | cross-namespace and cross-team calls — both consuming and *exposing* operations |
 
 ### Nexus
@@ -454,11 +459,11 @@ flowchart LR
 Every edge is a rule with code behind it: `SecretRef` is a `Value` kind
 (`proto/flowstate/v1/value.proto:25`, `:155`), so a reference is what compilation produces;
 workflow-side evaluation refuses to resolve one (`pkg/flowstate/v1/eval.go:525-534`) and
-`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `varsecret.go:34`);
+`vars:` may not hold one at all (`v1.CheckVarsHoldNoSecretRef`, `pkg/flowstate/v1/varsecret.go:34`);
 `v1.ResolveSecret` authorizes before the store is consulted, on every resolution
-(`taskruntime.go:90-103`); and the http task reveals through a closure registered with a
+(`pkg/flowstate/v1/taskruntime.go:90-103`); and the http task reveals through a closure registered with a
 scrubber rather than through a field something can print
-(`eval_task_http_run.go:171-181`).
+(`pkg/flowstate/v1/eval_task_http_run.go:171-181`).
 
 ### Plugins
 
@@ -536,10 +541,40 @@ how the process was launched. Without the flag the answer is unchanged, because 
 server that recognised a task its author's worker may not have would move the
 error from an editor to production.
 
-What a plugin cannot do is escape policy. It resolves secrets only for schemes the
-deployment permitted, receives the tenant a workload belongs to rather than choosing
-one, and its network access is the worker's to govern. A plugin is an extension of
-the engine's capability, not an exemption from its rules.
+What a vetted first-party plugin cannot do is treat a manifest declaration as
+authority. It resolves secrets only for schemes the deployment permitted and
+receives the tenant a workload belongs to rather than choosing one. Network policy
+must be enforced on the plugin's real connection path, and the mechanism is a
+launch-time grant rather than an intention: the worker hands every plugin the
+deployment's egress policy in its environment (`plugin.Config.EgressPolicy`), and
+the SDK's `EgressPolicy`/`HTTPClient` build the governed client from it — checked
+in the dialer, re-checked on redirects, refusing rather than defaulting when the
+grant is absent — so a plugin built on that constructor is governed with no
+plugin-specific wiring. A worker with no `--egress-policy` grants the default
+policy its own built-in HTTP task runs under, marked as the default in the
+document, so "absent" means only that no worker launched this process and each
+plugin can take its own posture toward a policy nobody wrote. The SQL and git
+plugins read the same grant and apply it on their own connection paths — a
+resolved PostgreSQL socket target, a go-git transport — because those are not
+HTTP; a plugin whose protocol needs a different response or time bound takes
+`sdk.HTTPClientWithBounds`, which changes what is bounded and never what may be
+reached, and marks credentials exactly as `sdk.HTTPClient` does. A credential no
+header shows — a password inside a DSN — is the plugin's own to declare, which is
+what `sdk.WithCredentials` and the SQL plugin's dial path do. What the grant buys is that the governed path is the convenient
+one; arbitrary third-party plugin code that opens its own sockets still requires
+deployment/substrate confinement. The grant is therefore universal and
+enforcement is voluntary: the five first-party destination clients — `git`,
+`github`, `slack`, `sql`, `vcs` — consume it, and `sql` additionally refuses to
+reach a database under the default, because a database destination is not
+something a deployment can be said to have authorized by not writing a file.
+The first-party Codex plugin instead launches an operator-selected subprocess;
+the Codex CLI's own control-plane traffic always bypasses the Flowstate grant,
+which is not passed to the child. Its separate sandbox policy governs network
+access only for commands the agent starts. A deployment that must stop any
+plugin or child process leaving the governed path confines it rather than
+relying on the policy file.
+A plugin is an extension of the engine's capability, not an exemption from its
+rules.
 
 **A plugin *task* consuming a host secret is the reverse direction, and the host
 resolves it, not the plugin.** `SecretService` above is a plugin answering for a
@@ -554,10 +589,23 @@ plugin process receives a value over the socket, never a reference and never
 provider access, and every resolved value is registered with the activity's
 scrubber so an echo cannot reach a step output or a task error. An input a
 `TaskManifest` did not name is refused rather than resolved, fail-closed in both
-directions. That hand-off is sound only because "the plugin" is a process on the
-same machine, reached over a socket only the worker can open — a future remote
-plugin endpoint must not resolve-then-send the same way without a per-endpoint
-release policy deciding first whether that endpoint may receive the value at all.
+directions. The host also retains at most 256 values delivered to each plugin
+process while their calls are in flight and for five minutes after return, and
+applies the same encoded-form scrubbing to relayed stderr, reserved post-handshake
+stdout, health text, and manifest text before logging them; a `scrubbed=true`
+attribute marks a redacted record. Raw retained values are additionally bounded
+to 8 MiB before encoded forms are built. If either bound is reached entirely by
+in-flight values, the host suppresses plugin-controlled log text for that
+process rather than evicting a value that can still leak. A manifest may
+additionally put an input in
+`required_secret_inputs`; it must also be in `secret_inputs`, and the compiler, the
+control plane admitting a specification, and the host then refuse a literal before
+it can enter durable history or cross the plugin socket. That controls where
+credential material comes from, not what destination it authorizes. That hand-off
+is sound only because "the plugin" is a process on the same machine, reached over
+a socket only the worker can open — a future remote plugin endpoint must not
+resolve-then-send the same way without a per-endpoint release policy deciding
+first whether that endpoint may receive the value at all.
 
 **Scrubbing is a containment tier for accidents, and it is worth being exact about
 which failures it does and does not cover, because the two look similar until
@@ -634,8 +682,9 @@ which is what makes it likely, since a five-thousand-iteration loop is an ordina
 write. A run therefore carries a Temporal fairness key taken from its authenticated tenant,
 which dispatches each tenant a share in proportion to weight rather than to volume — setting
 the key is verified and correctly wired; whether it is *enforced* is a property of your
-Temporal server version and configuration, since Temporal marks `Priority`/fairness as an
-experimental SDK feature (see [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor)).
+Temporal server version and configuration. Task Queue Priority and Fairness are GA in
+Temporal Server 1.31+, but Fairness remains deployment-enabled and approximate within each
+Task Queue partition (see [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor)).
 Activities inherit it from the run, so it covers every task the run goes on to schedule,
 and Temporal carries it across Continue-As-New — which matters, because the workloads that
 suspend are exactly the ones that crowd a queue.
@@ -685,6 +734,56 @@ Worker → StepExecutor → TaskDef.Fn  ── resolve inputs, enforce policy, e
 The local driver short-circuits from the spec directly to the `StepExecutor`, skipping the
 control plane and Temporal. That is the entire difference between `flow run local` and a
 durable run, and invariant 3 exists to keep it that way.
+
+That agreement covers the workflow model, not the properties of the skipped
+systems. A local rehearsal proves expressions, control flow, gates, retries,
+cooperative timeout handling, and compensation; with real rather than stubbed
+tasks, it also exercises those task implementations under the local process's
+policy. It does not prove persisted history, recovery after that process or a
+worker stops, server-enforced timeout behavior when task code ignores cancellation,
+control-plane authentication and authorization, request auditing, deployment and
+plugin-version transitions, resource exhaustion, or an external system behaving
+like a test double. Those require a durable run and, where applicable, a real
+integration environment. In particular, local policy and synthetic `--as-*`
+identities rehearse workload policy; they do not exercise a deployment's caller
+authentication or control-plane access rules.
+
+### Attempt outcomes and operation identity
+
+A task failure answers several questions which must not be collapsed into one error kind:
+
+1. Did an external effect occur, not occur, partly occur, or remain unknown?
+2. Was a bounded result obtained, and did requested decoding succeed?
+3. Did that result satisfy the task's postcondition?
+4. Is another delivery safe, unsafe, or blocked on reconciliation?
+5. Does this attempt permit retry, before the step's policy and remaining budgets are
+   applied?
+
+`v1.AttemptOutcome` is the Protobuf contract for those observations. It is infrastructure
+evidence, never `Node.Outputs`, and carries no response body or plugin payload. Drivers
+intersect its retry permission with the failure classification, policy, and budget; a
+permitted outcome cannot widen any of them, while a denied or unspecified structured
+outcome fails closed. `ErrorKind` remains the compact projection shown to a person and the
+compatibility source for tasks which have not adopted structured outcomes. A postcondition
+or decoder may change the result and contract observations; neither can rewrite what
+happened externally or make an ambiguous mutation repeatable.
+
+HTTP is the first producer. A 502, 503, or 504 leaves a non-idempotent operation's effect
+unknown, so POST and PATCH stop as `UpstreamUnknown` unless
+`retry_on_unknown_outcome: true` states that the endpoint supplies its own idempotency.
+Methods RFC 9110 defines as idempotent remain repeat-safe by their HTTP semantics. A 429 is
+a refusal with no effect and may be retried; a 503's bounded `Retry-After` is scheduling
+advice only after retry permission exists. An unmet `expect:` or a failed JSON decode
+preserves those status and repeat-safety observations instead of replacing them.
+
+The call identity proposed for plugins follows the same separation. An **operation key**
+names one logical step invocation and stays stable across retries and Continue-As-New; it
+must therefore derive from tenant namespace, workflow id, the chain's first run id, and the
+full structural step address, excluding the current run id and attempt. An **attempt key**
+adds the current run id and attempt to name one try. Both are opaque digests, not
+control-plane addresses. A provider's deduplication window still defines what an operation
+key can guarantee, and possession of a key alone is never evidence that repeating an
+operation is safe.
 
 Waiting is the case where holding that line costs something and is worth it. A step that
 waits for a signal has to be signalable locally, or local runs stop being able to
@@ -737,12 +836,6 @@ not be, while both resolved from one flat namespace and the binding silently won
 that rule always had: an iterator is bare too, so it and the clock genuinely do share a
 namespace, and a body saying `${now}` would mean the item everywhere except inside a
 wait. A collision is only unrepresentable between the two halves, not within one.
-
-One wrinkle lives in the schema rather than in either driver: `Node.Outputs.named_values`
-is required, so an empty map is not something a message can say. A signal that carries
-nothing therefore travels with its payload *absent*, and the server substitutes empty
-outputs on arrival. That is what keeps `${steps.approval.timed_out}` resolving on a gate
-somebody answered with nothing to add.
 
 Suspension interacts with waiting in one direction only, and the direction is not the
 obvious one. The step budget is checked *between* nodes, after a node has returned, so a

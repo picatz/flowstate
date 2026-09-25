@@ -80,6 +80,98 @@ func typing(keys string, offers ...flowdebug.Candidate) (*debugConsole, *keyboar
 	return console, board
 }
 
+// TestTheEditorUsesTheMeasuredTerminalSize is #1183's mutation test: a line
+// wider than x/term's default 80 columns but narrower than the injected terminal
+// stays on one physical line only when the console calls Terminal.SetSize.
+func TestTheEditorUsesTheMeasuredTerminalSize(t *testing.T) {
+	t.Parallel()
+
+	const typed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz"
+
+	console, board := typing(typed + "\r\n")
+	measurements := 0
+	console.setSizeSource(func() (int, int, bool) {
+		measurements++
+
+		return 132, 43, true
+	})
+
+	line, err := console.Prompt()
+	require.NoError(t, err)
+	assert.Equal(t, typed, line)
+	assert.Equal(t, 2, measurements, "the terminal is measured at attach and again before the read")
+	assert.Equal(t, flowdebug.Prompt+typed+"\r\n", board.shown(),
+		"the editor wrapped at its 80-column default instead of the measured width")
+}
+
+// TestTheEditorRemeasuresBetweenPrompts covers a resize without SIGWINCH
+// machinery: the next read sees the new dimensions before it paints a prompt.
+func TestTheEditorRemeasuresBetweenPrompts(t *testing.T) {
+	t.Parallel()
+
+	const typed = "abcdefghijklmnopqrstuvwxyz"
+
+	console, board := typing(typed + "\r\n" + typed + "\r\n")
+	sizes := [][2]int{{132, 43}, {132, 43}, {20, 10}}
+	console.setSizeSource(func() (int, int, bool) {
+		size := sizes[0]
+		sizes = sizes[1:]
+
+		return size[0], size[1], true
+	})
+
+	first, err := console.Prompt()
+	require.NoError(t, err)
+	assert.Equal(t, typed, first)
+	firstScreen := board.shown()
+
+	second, err := console.Prompt()
+	require.NoError(t, err)
+	assert.Equal(t, typed, second)
+	assert.Empty(t, sizes, "the size source was not asked before every prompt")
+
+	secondScreen := strings.TrimPrefix(board.shown(), firstScreen)
+	assert.Equal(t, flowdebug.Prompt+"abcdefghijklm\r\nnopqrstuvwxyz\r\n", secondScreen,
+		"the second prompt still used the width measured for the first")
+}
+
+// TestInvalidTerminalSizesLeaveTheEditorUsable pins the failure direction: a
+// transient zero or invalid measurement is not handed to x/term and does not
+// make an interactive debug session fragile.
+func TestInvalidTerminalSizesLeaveTheEditorUsable(t *testing.T) {
+	t.Parallel()
+
+	console, _ := typing("continue\r\n")
+	sizes := [][2]int{{0, 24}, {-1, 24}}
+	console.setSizeSource(func() (int, int, bool) {
+		size := sizes[0]
+		sizes = sizes[1:]
+
+		return size[0], size[1], true
+	})
+
+	line, err := console.Prompt()
+	require.NoError(t, err)
+	assert.Equal(t, "continue", line)
+	assert.Empty(t, sizes)
+}
+
+// TestOnlyPositiveTerminalDimensionsAreMeasured covers both axes before either
+// the editor or a pane can treat an unusable ioctl result as a real layout.
+func TestOnlyPositiveTerminalDimensionsAreMeasured(t *testing.T) {
+	t.Parallel()
+
+	for _, size := range [][2]int{{0, 24}, {-1, 24}, {80, 0}, {80, -1}} {
+		console, _ := typing("")
+		console.measure = func() (int, int, bool) { return size[0], size[1], true }
+
+		width, height, ok := console.size()
+		assert.False(t, ok, "size %v was accepted", size)
+		assert.Zero(t, width)
+		assert.Zero(t, height)
+	}
+}
+
 // completionOver is a small stand-in for the session's own completer: it
 // filters offers by the last word, which is the shape the real one has.
 func completionOver(before string, offers []flowdebug.Candidate) flowdebug.Completion {
@@ -367,6 +459,12 @@ func TestNoConsoleWhereThereIsNoTerminal(t *testing.T) {
 			"with no console to own the line, the session writes where it always did")
 		assert.Nil(t, consoleOrNil(console),
 			"and the session is handed a genuinely nil interface, not one holding a nil pointer")
+
+		const transcript = "break at build (value)\ndebug> scope\n"
+		_, err := io.WriteString(writer, transcript)
+		require.NoError(t, err)
+		assert.Equal(t, transcript, out.String(),
+			"terminal sizing changed bytes on the redirected/scripted debug path")
 	})
 }
 

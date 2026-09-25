@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/api/field_behavior.proto";
+
+option go_package = "flowstatev1";
+
+// Type is the shape of a value, shared by declarations, descriptors, CEL
+// checking, and every projection that describes a workflow's contract.
+//
+// It is structural rather than a rendered string so only the Flowfile compiler
+// parses type expressions. Consumers of the compiled specification read this
+// message directly and cannot acquire a second type grammar. The message arm is
+// reserved for descriptor-backed user types; the compiler does not produce it
+// until that language surface exists.
+message Type {
+  // Scalar is one indivisible data kind. UINT is deliberately absent: Flowstate
+  // represents integers as signed int64 values and refuses larger unsigned
+  // values at the boundary rather than exposing a numeric kind the DSL cannot
+  // use consistently.
+  enum Scalar {
+    SCALAR_UNSPECIFIED = 0;
+    SCALAR_STRING = 1;
+    SCALAR_INT = 2;
+    SCALAR_DOUBLE = 3;
+    SCALAR_BOOL = 4;
+    SCALAR_BYTES = 5;
+    SCALAR_TIMESTAMP = 6;
+    SCALAR_DURATION = 7;
+    SCALAR_NULL_TYPE = 8;
+  }
+
+  // Map is a map with string keys and values of one declared type. String is
+  // fixed rather than another Type field because run values cross JSON
+  // boundaries, where object keys cannot be anything else.
+  message Map {
+    // Value is the type of every map value.
+    Type value = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED
+    ];
+  }
+
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // Scalar is one of the closed primitive data kinds above.
+    Scalar scalar = 1 [(buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }];
+
+    // List is the type of every element in a list.
+    Type list = 2;
+
+    // Map has string keys and values of one declared type.
+    Map map = 3;
+
+    // Enum marks a closed string set whose members remain on the declaration's
+    // sibling `values` field, where their per-value documentation belongs.
+    bool enum = 4 [(buf.validate.field).bool.const = true];
+
+    // Message is the fully qualified Protobuf name of a descriptor-backed type.
+    string message = 5 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 512
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    }];
+
+    // Dyn is a value whose more precise shape is not knowable at compile time.
+    bool dyn = 6 [(buf.validate.field).bool.const = true];
+  }
+}

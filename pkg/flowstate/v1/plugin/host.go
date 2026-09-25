@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"google.golang.org/protobuf/proto"
@@ -225,7 +226,7 @@ func (h *Host) bind(launched []*Plugin) []error {
 			if other, taken := h.taskDefs[name]; taken && other.plugin == p {
 				problems = append(problems, pluginError(p.Name(), p.Path(), fmt.Errorf(
 					"%w: declares task %q twice",
-					ErrManifest, truncate(manifest.GetName(), 64),
+					ErrManifest, textbound.Truncate(manifest.GetName(), 64),
 				)))
 				continue
 			}
@@ -475,14 +476,14 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 // that, and a deployment following it would have got a worker that discovered its
 // plugins, launched them, health-checked them, and answered `unknown task`.
 //
-// Registering into the process-global default is a one-way door — there is no
-// Unregister — so a process opens one host and keeps it until it exits. That is
-// what a worker does; it is not what a long-lived process reopening a host would
-// want, and such a process does not exist yet.
+// Registering into the process-global default is a one-way door — the registry
+// has Replace but not Unregister — so a process opens one host and keeps it
+// until it exits. That is what a worker does; it is not what a long-lived
+// process reopening a host would want, and such a process does not exist yet.
 func (h *Host) Register(tasks *flowstatev1.Registry, providers *secrets.Registry) error {
 	if tasks != nil {
 		for _, def := range h.TaskDefs() {
-			if err := tasks.Register(def); err != nil {
+			if err := tasks.Replace(def); err != nil {
 				return fmt.Errorf("plugin: registering task %q: %w", def.Name, err)
 			}
 		}
@@ -512,14 +513,12 @@ func (h *Host) CheckHealth(ctx context.Context) map[string]Health {
 	)
 
 	for _, p := range plugins {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			health := p.CheckHealth(ctx)
 			mu.Lock()
 			results[p.Name()] = health
 			mu.Unlock()
-		}()
+		})
 	}
 	wg.Wait()
 

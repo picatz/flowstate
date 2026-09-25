@@ -154,6 +154,25 @@ func TestDocumentSymbols(t *testing.T) {
 	assert.Equal(t, 11, got[2].Location.Range.End.Line)
 }
 
+func TestDocumentSymbolsAcceptQuotedAndEscapedKeysLikeTheLoader(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	c.open("file:///quoted-symbols.yaml", `"edition": v2026.3
+"name": quoted
+"st\u0065ps":
+  - "i\u0064": first
+    "l\u006fg":
+      "message": hi
+`)
+
+	got := c.symbols("file:///quoted-symbols.yaml")
+	require.Len(t, got, 1)
+	assert.Equal(t, "first", got[0].Name)
+	assert.Equal(t, "log", got[0].ContainerName)
+}
+
 // TestDocumentSymbolsNamesAnUnnamedStep checks that a step with no id still appears
 // in the outline, since an empty row is worse than a placeholder.
 //

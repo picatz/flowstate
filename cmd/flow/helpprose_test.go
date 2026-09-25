@@ -160,7 +160,7 @@ func TestASpanIsNeverBrokenAcrossAWrapPoint(t *testing.T) {
 	const text = "aaaa bbbb `flow schedule create` cccc"
 
 	for width := 12; width <= 40; width++ {
-		for _, line := range strings.Split(wrapProse(theme, lipgloss.NewStyle(), text, width), "\n") {
+		for line := range strings.SplitSeq(wrapProse(theme, lipgloss.NewStyle(), text, width), "\n") {
 			marks := strings.Count(line, "`")
 			assert.NotEqual(t, 1, marks,
 				"width %d broke a span across a line: %q", width, line)
@@ -183,7 +183,7 @@ func TestProseIsWrappedToTheWidthItPrintsAt(t *testing.T) {
 
 		require.NotContains(t, wrapped, "`", "the marks survived a styled surface")
 
-		for _, line := range strings.Split(wrapped, "\n") {
+		for line := range strings.SplitSeq(wrapped, "\n") {
 			assert.LessOrEqual(t, lipgloss.Width(line), width,
 				"a line printed wider than the measure it was wrapped to: %q", line)
 		}

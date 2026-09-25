@@ -3,6 +3,8 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 )
@@ -49,48 +51,69 @@ const MaxCallDepth = 8
 // literal — the same shape [ResolveTaskInputs] hands a task, for the same
 // reason.
 func ResolveCallArguments(ctx context.Context, arguments map[string]*Value, scope *Scope) (map[string]*Value, error) {
+	resolved, _, err := ResolveCallArgumentsWithCost(ctx, arguments, scope)
+
+	return resolved, err
+}
+
+// ResolveCallArgumentsWithCost is [ResolveCallArguments] plus the deterministic
+// CEL cost of every expression under `with:`. Literal arguments cost zero.
+//
+// A call's arguments are resolved in workflow code, and a call is the one step
+// whose body may write no history at all — a callee of `value:` steps schedules
+// nothing — so a loop over a call repeats them with nothing to bound it.
+// [ResolveTaskInputs] needs no equivalent: resolving a task's inputs is
+// immediately followed by the activity that consumes them, which is both a
+// history event and a yield.
+func ResolveCallArgumentsWithCost(ctx context.Context, arguments map[string]*Value, scope *Scope) (map[string]*Value, uint64, error) {
 	if len(arguments) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
+	var spent uint64
 	resolved := make(map[string]*Value, len(arguments))
 	ev := DefaultEvaluator()
-	for name, v := range arguments {
+	// Sorted because the first failure is observable and may enter durable
+	// state. A protobuf map has no order, so workflow-side map work must not let
+	// two runs of one specification report different failures.
+	for _, name := range slices.Sorted(maps.Keys(arguments)) {
+		v := arguments[name]
 		if _, isExpr := v.GetKind().(*Value_Expr); !isExpr {
 			resolved[name] = v
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
+		spent += cost
 		if err != nil {
-			return nil, fmt.Errorf("argument %q: %w", name, err)
+			return nil, spent, fmt.Errorf("argument %q: %w", name, err)
 		}
 		literal, err := cel.RefValueToValue(out)
 		if err != nil {
-			return nil, fmt.Errorf("argument %q: converting result: %w", name, err)
+			return nil, spent, fmt.Errorf("argument %q: converting result: %w", name, err)
 		}
 		resolved[name] = &Value{Kind: &Value_Literal{Literal: literal}}
 	}
 
-	return resolved, nil
+	return resolved, spent, nil
 }
 
 // CalleeProfile returns the profile a callee's own expressions are evaluated
 // under: the callee's, where it declares one, and the caller's otherwise.
 //
-// Exported and called from three places that all have to agree — [CallScope],
-// which stamps it on the callee's scope, and the vars evaluation each driver
-// does before that scope exists to evaluate the callee's own `vars:` against.
+// Exported so [CallScope] and the vars evaluation each driver does before that
+// scope exists resolve the same name. CallScope also uses the result while
+// binding the callee's declarations, before the scope exists.
 // A callee's `vars:` and its steps are one file evaluated under one dialect;
 // computing the profile twice, by two routes, is exactly the shape CLAUDE.md's
 // retry-attempts lesson warns about — a value with one meaning, written down
 // twice, disagreeing with itself the moment a callee that names no profile of
 // its own is called by two callers compiled against different ones.
-func CalleeProfile(caller *Scope, callee *Workflow) string {
+func CalleeProfile(callerProfile string, callee *Workflow) string {
 	if profile := callee.GetProfile(); profile != "" {
 		return profile
 	}
-	return caller.GetProfile()
+	return callerProfile
 }
 
 // CallScope returns the scope a called workflow's steps run in.
@@ -120,7 +143,8 @@ func CalleeProfile(caller *Scope, callee *Workflow) string {
 // nil is correct for a callee that declares no `vars:`, and CallScope does not
 // tell the two cases apart because there is nothing to bind either way.
 func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Value) (*Scope, error) {
-	bound, err := BindRunInputs(callee, arguments)
+	profile := CalleeProfile(caller.GetProfile(), callee)
+	bound, err := bindRunInputs(callee, profile, arguments)
 	if err != nil {
 		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
 	}
@@ -128,8 +152,6 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 	// Built from the callee's own profile where it declares one, and the caller's
 	// otherwise. A workflow that names its dialect means it, and a file that does
 	// not is being run as part of the file that called it.
-	profile := CalleeProfile(caller, callee)
-
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Inputs = bound
 	scope.AmbientVars = vars
@@ -151,6 +173,13 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 	// answers at.
 	scope.Address = caller.GetAddress()
 
+	// How the run started crosses for the same reason the identity and address
+	// do: it is a fact about the run, not a value the caller's scope resolved.
+	// A callee is still a step of the same run, and `${trigger.kind}` inside a
+	// called workflow must answer the same thing it would answer if the callee's
+	// steps were inlined. (#1422)
+	scope.Trigger = caller.GetTrigger()
+
 	return scope, nil
 }
 
@@ -171,19 +200,31 @@ func CallScope(caller *Scope, callee *Workflow, arguments, vars map[string]*Valu
 // outputs, through the same function — which is what makes a workflow's answer the
 // same whether it was run directly or called.
 func CallOutputs(ctx context.Context, callee *Workflow, scope *Scope) (*Node_Outputs, error) {
-	outputs, err := EvalRunOutputs(ctx, callee, scope)
+	outputs, _, err := CallOutputsWithCost(ctx, callee, scope)
+
+	return outputs, err
+}
+
+// CallOutputsWithCost is [CallOutputs] plus the deterministic CEL cost of the
+// callee's declared `outputs:` expressions.
+//
+// Unlike a run's own outputs, a call's are evaluated once per `call:` step, so a
+// call inside a loop repeats the whole block every iteration. See
+// [engine.executor.chargeWorkflowCost].
+func CallOutputsWithCost(ctx context.Context, callee *Workflow, scope *Scope) (*Node_Outputs, uint64, error) {
+	outputs, cost, err := EvalRunOutputsWithCost(ctx, callee, scope)
 	if err != nil {
-		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
+		return nil, cost, fmt.Errorf("calling %q: %w", callee.GetName(), err)
 	}
 	if outputs == nil {
 		// Present rather than absent: the call still ran, so its step belongs in
 		// the run's outputs exactly as any other step that ran does, whether or
 		// not it had anything to say — a `log:` step is stored the identical way.
 		// Absence is reserved for a step a condition skipped, which this is not.
-		return &Node_Outputs{NamedValues: map[string]*Value{}}, nil
+		return &Node_Outputs{NamedValues: map[string]*Value{}}, cost, nil
 	}
 
-	return &Node_Outputs{NamedValues: outputs.GetValues()}, nil
+	return &Node_Outputs{NamedValues: outputs.GetValues()}, cost, nil
 }
 
 // CheckCallDepth reports whether a call at this depth may run.

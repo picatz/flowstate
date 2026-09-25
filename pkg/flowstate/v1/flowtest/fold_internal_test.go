@@ -92,6 +92,11 @@ var foldClassification = map[string]foldedField{
 		why: "the fold's own bookkeeping: it *is* the answer to which document wrote a value, " +
 			"so it is not itself a value the fold moves",
 	},
+	"dirDefaults.doc": {
+		class: notFolded,
+		why: "the sibling's parsed source tree is diagnostic bookkeeping retained for exact positions, " +
+			"not a value folded into the suite",
+	},
 	"dirDefaults.vars": {
 		class: movedUnchanged,
 		why: "keyed, and the fold copies each name to the same name — `vars.region` addresses " +
@@ -173,8 +178,7 @@ func foldedNames() []string {
 		{"dirDefaults", reflect.TypeFor[dirDefaults]()},
 		{"Defaults", reflect.TypeFor[Defaults]()},
 	} {
-		for i := range spec.typ.NumField() {
-			field := spec.typ.Field(i)
+		for field := range spec.typ.Fields() {
 			name := field.Tag.Get("yaml")
 			if name == "" {
 				// Unexported bookkeeping carries no tag, and still has to be

@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 	"strings"
@@ -29,7 +30,11 @@ import (
 //   - Only a task input the task *applies itself*, entry by entry, accepts one.
 //     See [TaskDef.NestedSecretInputs].
 
-// MaxStructureDepth bounds how deeply a [Value_Structure] may nest.
+// MaxStructureDepth bounds how deeply a [Value_Structure] may nest, and — since
+// #1765 — how deeply an authored literal may nest too: a `vars:` entry or a
+// step `value:` written as a mapping compiles to a CEL map literal rather than
+// a structure, and every walk that spends depth on a structure spends the same
+// depth on a literal, so the two positions are one bound.
 //
 // Exported, and the only definition of this number in the module, per the
 // one-constant rule: every walk below that descends into a structure reads
@@ -125,61 +130,102 @@ const maxStructureWalkNodes = 100_000
 func CheckStructureDepth(wf *Workflow) error {
 	var violation *ValueSite
 	var violationChain []string
-	var chain []string
+	var reached *constraintBoundViolation
 	nodesLeft := maxStructureWalkNodes
 	exhausted := false
 
-	var walk func(w *Workflow, callDepth int)
-	walk = func(w *Workflow, callDepth int) {
-		if violation != nil || exhausted {
-			return
-		}
-		WalkWorkflow(w, Walk{
-			Value: func(site ValueSite) {
-				if violation != nil {
-					return
-				}
-				if structureDepth(site.Value, 0) > MaxStructureDepth {
+	type frame struct {
+		workflow  *Workflow
+		nodes     []*Node
+		callDepth int
+		chain     []string
+	}
+	stack := []frame{{workflow: wf, nodes: wf.GetSteps()}}
+
+	for len(stack) > 0 && violation == nil && !exhausted {
+		last := len(stack) - 1
+		current := stack[last]
+		stack = stack[:last]
+
+		// Workflow-level values belong to every inlined callee too. Reuse the
+		// shared direct-value helpers without entering the recursive node
+		// traversal this bounded validator must avoid.
+		if current.workflow != nil {
+			valueWalk := Walk{Value: func(site ValueSite) {
+				if v := valueDepthViolation(site.Value, 0); v != nil && violation == nil {
 					s := site
 					violation = &s
-					violationChain = slices.Clone(chain)
+					violationChain = slices.Clone(current.chain)
+					reached = v
 				}
-			},
-			Node: func(node *Node) {
-				if violation != nil || exhausted {
-					return
-				}
-				if nodesLeft <= 0 {
-					exhausted = true
-					return
-				}
-				nodesLeft--
+			}}
+			walkWorkflowValuesBeforeSteps(current.workflow, valueWalk)
+			walkWorkflowValuesAfterSteps(current.workflow, valueWalk)
+			if violation != nil {
+				break
+			}
+		}
 
-				call, ok := node.GetKind().(*Node_Call)
-				if !ok {
-					return
-				}
-				callee := call.Call.GetWorkflow()
-				if callee == nil {
-					return
-				}
+		for i := len(current.nodes) - 1; i >= 0; i-- {
+			stack = append(stack, frame{
+				nodes:     []*Node{current.nodes[i]},
+				callDepth: current.callDepth,
+				chain:     current.chain,
+			})
+		}
+		for len(stack) > 0 && stack[len(stack)-1].workflow == nil && violation == nil && !exhausted {
+			last = len(stack) - 1
+			nodeFrame := stack[last]
+			stack = stack[:last]
+			node := nodeFrame.nodes[0]
+			if node == nil {
+				continue
+			}
+			if nodesLeft <= 0 {
+				exhausted = true
+				break
+			}
+			nodesLeft--
 
-				nextDepth := callDepth + 1
-				if err := CheckCallDepth(nextDepth); err != nil {
-					// A call chain this deep is refused at execution by
-					// CheckCallDepth itself, regardless of what this walk
-					// would find beneath it — descending further would only
-					// be inspecting a callee nothing will ever run.
-					return
+			walkNodeValues(node, Walk{Value: func(site ValueSite) {
+				if v := valueDepthViolation(site.Value, 0); v != nil && violation == nil {
+					s := site
+					violation = &s
+					violationChain = slices.Clone(nodeFrame.chain)
+					reached = v
 				}
+			}})
+			if violation != nil {
+				break
+			}
 
-				chain = append(chain, node.GetId())
-				walk(callee, nextDepth)
-				chain = chain[:len(chain)-1]
-			},
-		})
+			var children [][]*Node
+			switch kind := node.GetKind().(type) {
+			case *Node_ForEach:
+				children = append(children, kind.ForEach.GetBody())
+			case *Node_Loop:
+				children = append(children, kind.Loop.GetBody())
+			case *Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					children = append(children, branch.GetSteps())
+				}
+			case *Node_Switch:
+				children = append(children, SwitchBodies(kind.Switch)...)
+			case *Node_Call:
+				callee := kind.Call.GetWorkflow()
+				nextDepth := nodeFrame.callDepth + 1
+				if callee != nil && CheckCallDepth(nextDepth) == nil {
+					chain := append(slices.Clone(nodeFrame.chain), node.GetId())
+					stack = append(stack, frame{workflow: callee, nodes: callee.GetSteps(), callDepth: nextDepth, chain: chain})
+				}
+			}
+			for i := len(children) - 1; i >= 0; i-- {
+				for j := len(children[i]) - 1; j >= 0; j-- {
+					stack = append(stack, frame{nodes: []*Node{children[i][j]}, callDepth: nodeFrame.callDepth, chain: nodeFrame.chain})
+				}
+			}
+		}
 	}
-	walk(wf, 0)
 
 	if exhausted && violation == nil {
 		return fmt.Errorf(
@@ -205,18 +251,18 @@ func CheckStructureDepth(wf *Workflow) error {
 		calledFrom = fmt.Sprintf(" (reached by calling %s)", callChainText(violationChain))
 	}
 
+	// The same sentence a submitted input past the bound gets, through the
+	// same function ([constraintBoundError]), because it is the same bound on
+	// the same resource: every walk over a value — an expression's, the secret
+	// authority's, compaction's — spends depth, and one sentence with the depth
+	// actually reached is what lets an author recognise the refusal wherever
+	// the value was written (#1765). Only the subject differs: which step and
+	// field, and the call chain it was reached through.
+	subject := where
 	if field != "" {
-		return fmt.Errorf(
-			"%s's %s nests a structure more than %d levels deep%s, which is deeper than this server can "+
-				"walk cheaply while deciding whether a step reads a secret; flatten it, or have a step "+
-				"read it from a reference instead of submitting it nested this deep",
-			where, field, MaxStructureDepth, calledFrom)
+		subject = fmt.Sprintf("%s's %s", where, field)
 	}
-	return fmt.Errorf(
-		"%s nests a structure more than %d levels deep%s, which is deeper than this server can walk "+
-			"cheaply while deciding whether a step reads a secret; flatten it, or have a step read it "+
-			"from a reference instead of submitting it nested this deep",
-		where, MaxStructureDepth, calledFrom)
+	return constraintBoundError(subject+calledFrom, reached)
 }
 
 // callChainText renders the steps a violation was reached through as
@@ -228,32 +274,6 @@ func callChainText(chain []string) string {
 		parts[i] = fmt.Sprintf("step %q", id)
 	}
 	return strings.Join(parts, " > ")
-}
-
-// structureDepth measures how many levels of [Value_Structure] nest inside v,
-// stopping early once it has already proven the answer is over the bound: the
-// caller only needs to know "too deep" versus a precise number, and stopping
-// early keeps this cheap against a value built to make it expensive.
-func structureDepth(v *Value, depth int) int {
-	if depth > MaxStructureDepth {
-		return depth
-	}
-
-	structure := v.GetStructure()
-	if structure == nil {
-		return depth
-	}
-
-	max := depth
-	for _, entry := range StructureValues(structure) {
-		if d := structureDepth(entry, depth+1); d > max {
-			max = d
-			if max > MaxStructureDepth {
-				return max
-			}
-		}
-	}
-	return max
 }
 
 // ValueHoldsSecretRef reports whether v is a secret reference or contains one at
@@ -269,12 +289,10 @@ func structureDepth(v *Value, depth int) int {
 // input and output refusals, flow test's resolver gate) fails closed rather
 // than open at depth.
 func ValueHoldsSecretRef(v *Value) bool {
-	found := false
-	walkSecretRefs(v, 0, func(*SecretRef) bool {
-		found = true
-		return false
-	})
-	return found
+	for range secretRefs(v) {
+		return true
+	}
+	return false
 }
 
 // SecretRefsIn returns every reference a task's inputs name, rendered as
@@ -293,45 +311,74 @@ func ValueHoldsSecretRef(v *Value) bool {
 func SecretRefsIn(task *Task) []string {
 	var refs []string
 	for _, value := range task.GetInputs() {
-		walkSecretRefs(value, 0, func(ref *SecretRef) bool {
+		for ref := range secretRefs(value) {
 			if ref == nil {
 				// The walk hit its depth bound: something below may be a
 				// reference it cannot name. Naming surfaces stay exact and
 				// skip it; the authority question is ValueHoldsSecretRef's,
 				// which answers conservatively.
-				return true
+				continue
 			}
 			refs = append(refs, secretRefText(ref))
-			return true
-		})
+		}
 	}
 
 	slices.Sort(refs)
 	return slices.Compact(refs)
 }
 
-// walkSecretRefs visits every reference in v, stopping early when visit says so.
+// secretRefs is every reference v holds, at any depth, in the fixed order
+// [StructureValues] reads a structure's contents in.
 //
-// Past MaxStructureDepth the walk cannot see what is below, and it visits nil to
-// say so rather than walking on or staying silent: a visitor deciding an
+// Past MaxStructureDepth the walk cannot see what is below, and it yields nil to
+// say so rather than walking on or staying silent: a consumer deciding an
 // authority or refusal question must treat "too deep to scan" as "may hold one",
-// because the compiler admits deeper nesting than this walk inspects and a
-// silent cutoff turned every consumer into a fail-open gate at depth 33
-// (#329 review). A visitor that only names references skips the nil.
-func walkSecretRefs(v *Value, depth int, visit func(*SecretRef) bool) bool {
+// because a silent cutoff turned every consumer into a fail-open gate at depth
+// 33 (#329 review). A consumer that only names references skips the nil.
+//
+// What can be that deep decides whether the nil is pedantry, and the answer is
+// the one [CollectValueRefs] already states for its own bound: no Flowfile can
+// express it. The compiler refuses a structure nested past [MaxStructureDepth],
+// and [CheckStructureDepth] refuses the same on every submit path, which
+// `pkg/flowstate/embed` and both drivers reach through [BindRunInputs].
+//
+// A plugin's outputs are the shape that does arrive without passing either.
+// `plugin`'s scrubPluginOutputs asks [ValueHoldsSecretRef] of every value an
+// out-of-process task returned, before it can become a step output in workflow
+// history, and nothing bounds how deeply that party nested what it sent. So the
+// depth here is a number the peer chooses, not one an author could write, and
+// the conservative answer is what keeps that refusal from failing open — which
+// is the same reasoning as the walk's own bound rather than a second one.
+//
+// A sequence rather than the `visit func(*SecretRef) bool` this was, for the
+// reason the fail-open history above makes sharp: both consumers below decide a
+// security question from this walk, and in the callback spelling each one wrote
+// `return true` to mean continue and `return false` to mean stop, inside a
+// function whose own answer is a bool with the opposite polarity. `continue` and
+// `break` cannot be misread that way, and the caller that wants the first hit
+// ranges and returns rather than setting a captured flag.
+func secretRefs(v *Value) iter.Seq[*SecretRef] {
+	return func(yield func(*SecretRef) bool) { yieldSecretRefs(v, 0, yield) }
+}
+
+// yieldSecretRefs is [secretRefs]'s recursion. It reports whether the walk may
+// continue, so that a consumer's `break` unwinds every frame rather than only the
+// structure that happened to hold the reference it stopped on — yielding after
+// yield has returned false is a panic, not a missed value.
+func yieldSecretRefs(v *Value, depth int, yield func(*SecretRef) bool) bool {
 	if v == nil {
 		return true
 	}
 	if depth > MaxStructureDepth {
-		return visit(nil)
+		return yield(nil)
 	}
 
 	switch kind := v.GetKind().(type) {
 	case *Value_SecretRef:
-		return visit(kind.SecretRef)
+		return yield(kind.SecretRef)
 	case *Value_Structure_:
 		for _, entry := range StructureValues(kind.Structure) {
-			if !walkSecretRefs(entry, depth+1, visit) {
+			if !yieldSecretRefs(entry, depth+1, yield) {
 				return false
 			}
 		}

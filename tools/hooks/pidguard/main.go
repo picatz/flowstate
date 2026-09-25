@@ -7,7 +7,7 @@
 //
 // Wired in .claude/settings.json as:
 //
-//	go -C "${CLAUDE_PROJECT_DIR}" run ./tools/hooks/pidguard
+//	bash "${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.sh" pidguard
 //
 // Matching is deliberately conservative, because a false positive on prose
 // would teach people to ignore the guard: quoted regions are stripped first
@@ -34,7 +34,7 @@ func main() {
 	}
 	if word := patternKill(in.Command()); word != "" {
 		hook.Deny(fmt.Sprintf(
-			"`%s` kills by pattern, and CLAUDE.md's discipline is to kill by PID, never by pattern: on this shared machine a pattern matches every sibling agent's processes, and one pattern kill once matched the compound command that contained it and ended its own shell. Record the PIDs of what you start ($!, a pidfile, or `ps -Ao pid,args` filtered by your own worktree path) and kill exactly those.",
+			"`%s` kills by pattern, and AGENTS.md's discipline is to kill by PID, never by pattern: on this shared machine a pattern matches every sibling agent's processes, and one pattern kill once matched the compound command that contained it and ended its own shell. Record the PIDs of what you start ($!, a pidfile, or `ps -Ao pid,args` filtered by your own worktree path) and kill exactly those.",
 			word))
 	}
 }

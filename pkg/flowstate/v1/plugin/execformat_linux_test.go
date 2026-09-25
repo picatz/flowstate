@@ -206,7 +206,7 @@ func TestOnlyANativeBinaryIsPinnedToItsDescriptor(t *testing.T) {
 	for name, content := range interpreted {
 		path := writeImage(t, name, content)
 
-		var logged strings.Builder
+		var logged capturedLogs
 		image, err := openExecImage(path, newCapturingLogger(t, &logged))
 		if err != nil {
 			t.Fatalf("openExecImage(%s): %v", name, err)
@@ -268,7 +268,7 @@ func TestARealHostBinaryIsPinned(t *testing.T) {
 		t.Fatalf("reading the test binary: %v", err)
 	}
 
-	var logged strings.Builder
+	var logged capturedLogs
 	image, err := openExecImage(writeImage(t, "real", content), newCapturingLogger(t, &logged))
 	if err != nil {
 		t.Fatalf("openExecImage: %v", err)
@@ -450,7 +450,7 @@ func TestTheInterpreterFallbackNamesTheLimitation(t *testing.T) {
 
 	path := writeImage(t, "scripted", []byte("#!/bin/sh\nexit 0\n"))
 
-	var logged strings.Builder
+	var logged capturedLogs
 	image, err := openExecImage(path, newCapturingLogger(t, &logged))
 	if err != nil {
 		t.Fatalf("openExecImage: %v", err)

@@ -68,7 +68,7 @@ steps:
         FLOWSTATE_EXAMPLE.md: ${inputs.content}
       message: ${inputs.message}
       # Not optional: a write always needs a credential. A secret reference,
-      # resolved inside the task, never a literal - see plugins/git/README.md,
+      # resolved by the host before the task, never a literal - see plugins/git/README.md,
       # "Authentication."
       token: ${secret('git:token')}
       url: ${inputs.url}

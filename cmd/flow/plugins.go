@@ -16,6 +16,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/picatz/flowstate/internal/covbuild"
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -48,10 +49,31 @@ const pluginSearchPathEnv = "FLOWSTATE_PLUGIN_DIR"
 // environment rather than into every command line.
 const pluginPinsEnv = "FLOWSTATE_PLUGIN_PINS"
 
+// pluginEnvFileEnv names a per-plugin environment file the same way
+// --plugin-env-file does, mirroring [pluginPinsEnv] for a container image that
+// bakes its configuration into the environment rather than into every command
+// line.
+const pluginEnvFileEnv = "FLOWSTATE_PLUGIN_ENV"
+
+// pluginMaxCallTimeoutEnv raises the host's ceiling on one plugin call, in the
+// same env-var shape the two above take, for the same reason: a container image
+// bakes it in rather than repeating it on every command line.
+//
+// It exists because the ceiling is a bound this deployment imposes on work an
+// author asked for, and [plugin.Config.MaxCallTimeout] says an operator may
+// raise it. A shipped binary that read it nowhere would make that sentence
+// false and leave an operator whose plugin legitimately runs longer than the
+// default with nothing to do about it. Unset keeps [plugin.DefaultMaxCallTimeout].
+const pluginMaxCallTimeoutEnv = "FLOWSTATE_PLUGIN_MAX_CALL_TIMEOUT"
+
 // pluginFlags is what a command was told about plugins.
 type pluginFlags struct {
 	// dirs are the directories to discover in, in precedence order.
 	dirs []string
+
+	// quiet moves the per-plugin "loaded plugin" line from the account
+	// stream to the debug one; see [startPluginsQuietly].
+	quiet bool
 
 	// only, when non-empty, pins exactly which plugins may launch. A name here
 	// with no binary behind it is an error rather than a silent omission, because
@@ -67,12 +89,23 @@ type pluginFlags struct {
 	// only user is root — and no other one.
 	allowInsecureDirs bool
 
+	// env feeds [plugin.Config.EnvByPlugin] directly: for the names it holds,
+	// the variables that plugin's processes are launched with. Built by
+	// [pluginFlagsOf] from --plugin-env-file and --plugin-env together.
+	env map[string][]string
+
 	// pinnedDigests feeds [plugin.Config.PinnedDigests] directly: for the names
 	// it holds, the digest the binary answering to that name must have. Built
 	// by [pluginFlagsOf] from --plugin-pins and --plugin-pin together; see
 	// those flags' help for the merge and #1010 for why this surface exists at
 	// all.
 	pinnedDigests map[string]string
+
+	// egressPolicy is the exact operator policy snapshot already parsed by this
+	// process for the built-in http task, fed to [plugin.Config.EgressPolicy]
+	// so that every launched plugin is governed by the policy this deployment
+	// governs its own outbound traffic with.
+	egressPolicy []byte
 }
 
 // pluginFlagsOf reads them off the command being run.
@@ -88,6 +121,9 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
 	pinFlags, _ := cmd.Flags().GetStringArray("plugin-pin")
 	pinsFile, _ := cmd.Flags().GetString("plugin-pins")
+	envFlags, _ := cmd.Flags().GetStringArray("plugin-env")
+	envFile, _ := cmd.Flags().GetString("plugin-env-file")
+	egressPolicy := egressPolicySnapshot(cmd)
 
 	// The $FLOWSTATE_PLUGIN_DIR fallback is bound at registration time, in
 	// addPluginFlags, as the flag's own default — not here — so that the
@@ -105,7 +141,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	// --plugin-catalog rather than refusing the run.
 	if pluginCatalogPath(cmd) != "" {
 		var named []string
-		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins"} {
+		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins", "plugin-env", "plugin-env-file"} {
 			if cmd.Flags().Changed(name) {
 				named = append(named, "--"+name)
 			}
@@ -237,13 +273,116 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 		}
 	}
 
+	env, err := pluginEnvOf(envFile, envFlags)
+	if err != nil {
+		return pluginFlags{}, err
+	}
+
+	// Environment with nowhere to look is refused for the reason a --plugin
+	// pin and a digest pin are, just above: [pluginFlags.configured] never sees
+	// a directory, [startPlugins] returns early, and nothing is launched or
+	// configured. An operator who wrote a grants path for a plugin would
+	// otherwise get a worker that read it, said nothing, and ran none of it -
+	// which for `docker` and `ssh` is the difference between configured
+	// authority and no plugin at all.
+	if len(absolute) == 0 && len(env) > 0 {
+		remedy := "pass --plugin-dir <directory> as well, or set $" + pluginSearchPathEnv
+		if editorOnly {
+			remedy = "pass --plugin-dir <absolute directory> as well"
+		}
+
+		return pluginFlags{}, newUsageError(fmt.Errorf(
+			"a plugin environment is configured for %s, and there is nowhere to look for the plugin it configures: "+
+				"%s. A configured plugin is never quietly skipped",
+			strings.Join(slices.Sorted(maps.Keys(env)), ", "), remedy))
+	}
+
 	return pluginFlags{
 		dirs:              absolute,
 		only:              only,
 		schemes:           schemes,
 		allowInsecureDirs: allowInsecure,
 		pinnedDigests:     pins,
+		env:               env,
+		egressPolicy:      egressPolicy,
 	}, nil
+}
+
+// pluginEnvOf builds [plugin.Config.EnvByPlugin] from an environment file and
+// repeatable --plugin-env entries together.
+//
+// The same merge [pluginPinsOf] performs, for the same reasons: the file is the
+// base, the flag extends it for configuring one plugin without maintaining a
+// file, and one variable set for one plugin by both sources is refused rather
+// than resolved by which source ran last. The effective value would otherwise
+// depend on an order nothing about the command line states.
+//
+// Whether a key names a plugin that could exist, and whether the grant fits a
+// launch environment, is [plugin.Config]'s to answer — one check for every
+// source, reached through [plugin.NewHost].
+func pluginEnvOf(envFile string, envFlags []string) (map[string][]string, error) {
+	base := map[string]map[string]string{}
+	if envFile != "" {
+		data, err := readBoundedFile(envFile, "a plugin environment file", maxPluginEnvFileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("reading plugin environment %s: %w", envFile, err)
+		}
+
+		cfg, err := plugin.ParseEnvConfig(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing plugin environment %s: %w", envFile, err)
+		}
+
+		for name, vars := range cfg.Env {
+			base[name] = maps.Clone(vars)
+		}
+	}
+
+	fromFile := make(map[string]map[string]bool, len(base))
+	for name, vars := range base {
+		fromFile[name] = make(map[string]bool, len(vars))
+		for key := range vars {
+			fromFile[name][key] = true
+		}
+	}
+
+	for _, entry := range envFlags {
+		name, assignment, found := strings.Cut(entry, "=")
+		if !found {
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-env %q is not of the form plugin=KEY=VALUE", entry))
+		}
+
+		key, value, found := strings.Cut(assignment, "=")
+		if !found || key == "" {
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-env %q is not of the form plugin=KEY=VALUE: %q is not a KEY=VALUE assignment",
+				entry, assignment))
+		}
+
+		if _, ok := base[name][key]; ok {
+			if fromFile[name][key] {
+				return nil, newUsageError(fmt.Errorf(
+					"--plugin-env-file and --plugin-env both set %s for %q. A variable set twice is "+
+						"ambiguous even when the two values agree — remove one", key, name))
+			}
+
+			return nil, newUsageError(fmt.Errorf(
+				"--plugin-env sets %s for %q more than once. A variable set twice is ambiguous "+
+					"even when the two values agree — remove one", key, name))
+		}
+
+		if base[name] == nil {
+			base[name] = map[string]string{}
+		}
+		base[name][key] = value
+	}
+
+	if len(base) == 0 {
+		return nil, nil
+	}
+
+	return plugin.EnvConfig{Env: base}.ByPlugin(), nil
 }
 
 // pluginPinsOf builds [Config.PinnedDigests] from a pins file and repeatable
@@ -259,7 +398,7 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 func pluginPinsOf(pinsFile string, pinFlags []string) (map[string]string, error) {
 	var base map[string]string
 	if pinsFile != "" {
-		data, err := os.ReadFile(pinsFile)
+		data, err := readBoundedFile(pinsFile, "a plugin pins file", maxPluginPinsBytes)
 		if err != nil {
 			return nil, fmt.Errorf("reading plugin pins %s: %w", pinsFile, err)
 		}
@@ -277,9 +416,7 @@ func pluginPinsOf(pinsFile string, pinFlags []string) (map[string]string, error)
 	}
 
 	out := make(map[string]string, len(base)+len(pinFlags))
-	for name, digest := range base {
-		out[name] = digest
-	}
+	maps.Copy(out, base)
 
 	for _, entry := range pinFlags {
 		name, digest, found := strings.Cut(entry, "=")
@@ -326,7 +463,7 @@ func ambientPluginSearchPath() string { return os.Getenv(pluginSearchPathEnv) }
 // the directory it was launched from.
 func splitSearchPath(value string) []string {
 	var out []string
-	for _, part := range strings.Split(value, string(os.PathListSeparator)) {
+	for part := range strings.SplitSeq(value, string(os.PathListSeparator)) {
 		if part != "" {
 			out = append(out, part)
 		}
@@ -350,14 +487,43 @@ func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 
 // host builds a host for these flags. The caller owns closing it.
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
+	// Refused rather than ignored: an operator who wrote this meant to change
+	// the ceiling, and silently keeping the default would leave them believing
+	// a longer call is allowed when it is not.
+	var maxCallTimeout time.Duration
+	if raw := strings.TrimSpace(os.Getenv(pluginMaxCallTimeoutEnv)); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s=%q is not a duration: %w", pluginMaxCallTimeoutEnv, raw, err)
+		}
+		if parsed <= 0 {
+			return nil, fmt.Errorf("%s=%q must be greater than zero", pluginMaxCallTimeoutEnv, raw)
+		}
+		maxCallTimeout = parsed
+	}
+
 	return plugin.NewHost(plugin.Config{
 		SearchPath:              f.dirs,
 		AllowInsecureSearchPath: f.allowInsecureDirs,
 		Only:                    f.only,
 		PinnedDigests:           f.pinnedDigests,
-		PermittedSchemes:        f.schemes,
-		HostVersion:             version,
-		Logger:                  logger,
+		// What this deployment configured each plugin with, reaching that
+		// plugin alone. Unlike Env below it is operator-written, so it is
+		// forwarded on every run rather than only under coverage.
+		EnvByPlugin:      f.env,
+		PermittedSchemes: f.schemes,
+		HostVersion:      version,
+		Logger:           logger,
+
+		// Zero keeps plugin.DefaultMaxCallTimeout; see the constant above for
+		// why this is reachable from a shipped binary at all.
+		MaxCallTimeout: maxCallTimeout,
+		// Every plugin, not the ones this file can name. The host encodes it
+		// into the launch environment under one variable, and a plugin reads it
+		// back through sdk.EgressPolicy — so a third-party plugin inherits the
+		// deployment's policy with no wiring here, which is what the two
+		// per-plugin variables this replaced could never do (#1332).
+		EgressPolicy: f.egressPolicy,
 		// pluginEnv (pkg/flowstate/v1/plugin/launch.go) deliberately strips a
 		// launched plugin down to the protocol variables plus whatever an
 		// operator names here — GOCOVERDIR is not ambient by design. Forward
@@ -391,6 +557,16 @@ func addPluginFlags(cmd *cobra.Command) {
 		"path to a YAML pins file (default $"+pluginPinsEnv+"), the file form of --plugin-pin "+
 			"for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; "+
 			"merged with any --plugin-pin, and a name given by both is refused")
+	cmd.Flags().StringArray("plugin-env", nil,
+		"configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches "+
+			"that plugin alone and nothing else this worker launches. A plugin environment is "+
+			"readable to anything running as this user, so name a path to a file rather than a "+
+			"secret value")
+	cmd.Flags().String("plugin-env-file", os.Getenv(pluginEnvFileEnv),
+		"path to a YAML environment file (default $"+pluginEnvFileEnv+"), the file form of "+
+			"--plugin-env for a deployment configuring more than a couple of plugins: "+
+			"`env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by "+
+			"both is refused")
 }
 
 // pluginTrustAnnotation marks a command that does not trust its surroundings to
@@ -511,7 +687,7 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	host, err := flags.host(pluginLogger(surface))
+	host, err := flags.host(pluginLogger(cmd, surface))
 	if err != nil {
 		return err
 	}
@@ -608,8 +784,20 @@ func yesNo(b bool) string {
 // plugin failing to launch is an account of what happened, and the answer is the
 // catalog. Piping this command into jq must not interleave a plugin's log lines
 // with the document.
-func pluginLogger(surface *ui.UI) *slog.Logger {
-	return slog.New(slog.NewTextHandler(surface.Err, &slog.HandlerOptions{Level: slog.LevelWarn}))
+//
+// Warnings by default and everything under -v, because the level was the whole
+// of what the flag did here: the host's account of what it discovered, launched
+// and skipped is written at Debug and Info, and a handler pinned at Warn
+// discarded all of it however loudly an operator asked. `--verbose` is
+// documented as "enable verbose logging", and this is the one stream on these
+// commands it had nothing to say about.
+func pluginLogger(cmd *cobra.Command, surface *ui.UI) *slog.Logger {
+	level := slog.LevelWarn
+	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+		level = slog.LevelDebug
+	}
+
+	return slog.New(slog.NewTextHandler(surface.Err, &slog.HandlerOptions{Level: level}))
 }
 
 // inputFields converts described fields back into the shape the renderer takes.
@@ -669,6 +857,21 @@ func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.Pl
 	return startPluginsWithFlags(cmd, secretProviders, flags)
 }
 
+// startPluginsQuietly is [startPlugins] for a verb that reads plugins and runs
+// nothing — `validate`, `compile`, `fix` — where the "loaded plugin" line
+// belongs to the debug stream rather than the account one: nothing those
+// verbs print is a run a reader has to tell apart from a worker that found no
+// plugins, and a line on stderr that no transcript shows is the thing a
+// person diffing against the documentation trips over (#1673).
+func startPluginsQuietly(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.PluginCatalog, func(), error) {
+	flags, err := pluginFlagsOf(cmd)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	flags.quiet = true
+	return startPluginsWithFlags(cmd, secretProviders, flags)
+}
+
 func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry, flags pluginFlags) (*v1.PluginCatalog, func(), error) {
 	noop := func() {}
 
@@ -678,7 +881,7 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 
 	surface := newSurface(cmd)
 
-	host, err := flags.host(pluginLogger(surface))
+	host, err := flags.host(pluginLogger(cmd, surface))
 	if err != nil {
 		return nil, noop, err
 	}
@@ -701,6 +904,16 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 
 		return nil, noop, err
 	}
+	if err := checkSQLPluginSecurityContract(host.Plugins()); err != nil {
+		stop()
+
+		return nil, noop, err
+	}
+	if err := checkLegacyPluginSecretContracts(host.Plugins()); err != nil {
+		stop()
+
+		return nil, noop, err
+	}
 
 	if err := host.Register(v1.DefaultRegistry(), secretProviders); err != nil {
 		stop()
@@ -718,8 +931,15 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 		// On the account stream, at startup, naming what each plugin added.
 		// A step failing with `unknown task` and a worker that quietly found no
 		// plugins look identical from a Flowfile, and this is what tells them
-		// apart without a debugger.
-		infraLogger().Info("loaded plugin",
+		// apart without a debugger. A verb that runs nothing says it at debug,
+		// through the plugin logger, which is the one that reads --verbose:
+		// the infrastructure logger's floor is Info, so a debug record sent
+		// there would be dropped for a reader who asked for it (#1831).
+		logger, level := infraLogger(), slog.LevelInfo
+		if flags.quiet {
+			logger, level = pluginLogger(cmd, surface), slog.LevelDebug
+		}
+		logger.Log(cmd.Context(), level, "loaded plugin",
 			"plugin", p.GetName(),
 			"version", p.GetVersion(),
 			"path", p.GetPath(),
@@ -727,6 +947,88 @@ func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry
 	}
 
 	return catalog, stop, nil
+}
+
+// checkSQLPluginSecurityContract prevents a partially upgraded deployment from
+// pairing this host with the pre-egress-policy SQL binary. SQL is singled out by
+// its own manifest name (rather than its renameable executable name) and must
+// assert the two claims this host enforces before either task can be registered.
+//
+// The protocol version is a separate gate and does not replace this one. It
+// refuses a plugin built against a retired launch contract, which is a statement
+// about what the two processes may assume of each other; this is a statement
+// about what one particular plugin promises to enforce, and a rebuilt SQL binary
+// speaking the current version could still be one that makes neither claim.
+//
+// This is deliberately not satisfied by the egress environment grant alone:
+// an old SQL process ignores unknown environment and would otherwise retain
+// unrestricted PostgreSQL and SQLite access. The current SQL plugin both makes
+// these claims and refuses to start without a valid policy snapshot.
+func checkSQLPluginSecurityContract(plugins []*plugin.Plugin) error {
+	for _, p := range plugins {
+		if err := checkSQLManifestSecurityContract(p.Manifest()); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkSQLManifestSecurityContract(manifest *pluginv1.PluginManifest) error {
+	if manifest.GetName() != "sql" {
+		return nil
+	}
+
+	for _, name := range []string{"query", "exec"} {
+		var task *pluginv1.TaskManifest
+		for _, candidate := range manifest.GetTasks() {
+			if candidate.GetName() == name {
+				task = candidate
+				break
+			}
+		}
+		if task == nil || !slices.Contains(task.GetRequiredSecretInputs(), "dsn") {
+			return fmt.Errorf(
+				"SQL plugin is not compatible with this host's security contract: task sql.%s must require dsn as a whole secret reference; upgrade flowstate-plugin-sql together with the host",
+				name,
+			)
+		}
+	}
+
+	return nil
+}
+
+// checkLegacyPluginSecretContracts keeps rolling upgrades fail closed. A new
+// plugin refuses an unresolved token defensively, so old-host/new-plugin is
+// safe. This is the other direction: a new host must not register an old
+// first-party plugin that still resolves token inside the task without the
+// caller's namespace or the host scrubber.
+func checkLegacyPluginSecretContracts(plugins []*plugin.Plugin) error {
+	for _, p := range plugins {
+		if err := checkLegacyPluginSecretManifest(p.Manifest()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkLegacyPluginSecretManifest(manifest *pluginv1.PluginManifest) error {
+	switch manifest.GetName() {
+	case "git", "vcs", "github":
+	default:
+		return nil
+	}
+
+	for _, task := range manifest.GetTasks() {
+		if !slices.Contains(task.GetSecretInputs(), "token") ||
+			!slices.Contains(task.GetRequiredSecretInputs(), "token") {
+			return fmt.Errorf(
+				"%s plugin is not compatible with this host's secret security contract: task %s.%s must resolve token through the host; upgrade flowstate-plugin-%s together with the host",
+				manifest.GetName(), manifest.GetName(), task.GetName(), manifest.GetName())
+		}
+	}
+
+	return nil
 }
 
 // pluginShutdownGrace bounds how long a worker waits for its plugins to exit.

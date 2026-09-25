@@ -1,5 +1,7 @@
 package flowstatev1
 
+import "maps"
+
 // PartialTranscript is what a *failed* run hands back alongside its failure: the
 // record of what it did before it stopped.
 //
@@ -54,9 +56,7 @@ func PartialTranscript(accumulated *Workflow_StepOutputs) *Workflow_StepOutputs 
 	out := &Workflow_StepOutputs{
 		StepValues: make(map[string]*Node_Outputs, len(accumulated.GetStepValues())),
 	}
-	for id, values := range accumulated.GetStepValues() {
-		out.StepValues[id] = values
-	}
+	maps.Copy(out.StepValues, accumulated.GetStepValues())
 
 	return out
 }

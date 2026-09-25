@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -21,19 +22,20 @@ import (
 func TestPendingActivitiesProjectWhatTemporalReports(t *testing.T) {
 	t.Parallel()
 
-	next := timestamppb.New(time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC))
+	scheduledAt := timestamppb.New(time.Date(2026, 7, 31, 4, 0, 0, 0, time.UTC))
+	retryAt := timestamppb.New(time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC))
 
 	out, _ := mustNew(t, nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
 		PendingActivities: []*workflowpb.PendingActivityInfo{
 			{
+				State:       enumspb.PENDING_ACTIVITY_STATE_SCHEDULED,
 				Attempt:     5,
 				LastFailure: &failurepb.Failure{Message: "task \"http\" failed: connection refused"},
-				// Both, because the point is which one is read. Temporal sets
-				// `ScheduledTime` on every pending activity and it is a
-				// different fact; a projection reading it would pass this case
-				// on the wrong value and fail the one below.
-				ScheduledTime:           timestamppb.New(time.Date(2026, 7, 31, 4, 0, 0, 0, time.UTC)),
-				NextAttemptScheduleTime: next,
+				// Deliberately distinct to prove exact field selection. The
+				// faithful Temporal state fixtures in the conformance test below
+				// keep these equal during retry backoff.
+				ScheduledTime:           scheduledAt,
+				NextAttemptScheduleTime: retryAt,
 			},
 		},
 	})
@@ -43,74 +45,104 @@ func TestPendingActivitiesProjectWhatTemporalReports(t *testing.T) {
 		"the climbing attempt count is the signature of a stuck run, and it was dropped")
 	assert.Contains(t, out[0].GetLastFailure(), "connection refused",
 		"the failure message is the diagnosis, and it was dropped")
-	assert.Equal(t, next.AsTime(), out[0].GetNextAttemptScheduledTime().AsTime())
+	assert.Equal(t, retryAt.AsTime(), out[0].GetNextAttemptScheduledTime().AsTime())
 }
 
-// TestARunningAttemptHasNoNextAttemptTime is the half that gives the field its
-// meaning, and it was missing.
+// TestPendingActivityNextAttemptTimeConformance makes the projection's semantic
+// contract executable across the Temporal states that distinguish it.
 //
 // [v1.PendingActivity.NextAttemptScheduledTime] promises to be unset while an
-// attempt is running, which is what lets a reader tell a step waiting out its
-// backoff from one working. Temporal says the same thing about
-// `next_attempt_schedule_time`: "If activity is currently scheduled or started
-// it will be null."
-//
-// It was filled from `scheduled_time` instead — a field with no documentation
-// that Temporal sets for *any* pending activity, so presence meant nothing and
-// every reader had to compare against its own clock. `flow timeline`'s retry
-// note was written that way and paid for it: a backlogged retry whose due time
-// had passed read as silence (Codex, #1142).
-//
-// The assertion is on the running case rather than the waiting one because only
-// this direction can fail. A projection reading the wrong field still produces
-// *a* time for an activity that is waiting.
-func TestARunningAttemptHasNoNextAttemptTime(t *testing.T) {
+// attempt is queued or running and present only during retry backoff. Temporal's
+// Describe projection sets ScheduledTime in every one of those states; reading
+// that old, wrong source therefore fails the waiting and running cases here.
+func TestPendingActivityNextAttemptTimeConformance(t *testing.T) {
 	t.Parallel()
 
-	out, _ := mustNew(t, nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
-		PendingActivities: []*workflowpb.PendingActivityInfo{
-			{
-				Attempt: 3,
-				// What a running attempt looks like: Temporal scheduled it, and
-				// there is no *next* attempt because this one has not finished.
-				ScheduledTime: timestamppb.New(time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC)),
-				LastFailure:   &failurepb.Failure{Message: "the attempt before this one failed"},
+	scheduledAt := timestamppb.New(time.Date(2026, 7, 31, 4, 0, 0, 0, time.UTC))
+	startedAt := timestamppb.New(time.Date(2026, 7, 31, 4, 1, 0, 0, time.UTC))
+	retryAt := timestamppb.New(time.Date(2026, 7, 31, 5, 0, 0, 0, time.UTC))
+	retryStartedAt := timestamppb.New(time.Date(2026, 7, 31, 5, 1, 0, 0, time.UTC))
+	previousFailure := &failurepb.Failure{Message: "the previous attempt failed"}
+
+	tests := []struct {
+		name string
+		info *workflowpb.PendingActivityInfo
+		want *timestamppb.Timestamp
+	}{
+		{name: "absent"},
+		{
+			name: "first attempt waiting for a worker",
+			info: &workflowpb.PendingActivityInfo{
+				State:         enumspb.PENDING_ACTIVITY_STATE_SCHEDULED,
+				Attempt:       1,
+				ScheduledTime: scheduledAt,
 			},
 		},
-	})
-
-	require.Len(t, out, 1)
-	assert.Nil(t, out[0].GetNextAttemptScheduledTime(),
-		"a running attempt was given a next-attempt time, so nothing downstream can tell it "+
-			"apart from one waiting out a backoff")
-	assert.Contains(t, out[0].GetLastFailure(), "failed",
-		"the previous attempt's failure travels with a running attempt, which is why the "+
-			"failure alone cannot decide whether a step is waiting")
-}
-
-func TestNothingPendingIsAbsentNotEmpty(t *testing.T) {
-	t.Parallel()
-
-	// Nil rather than an empty slice, so protojson renders the field as [] via
-	// EmitUnpopulated and a consumer distinguishes nothing by length alone —
-	// and so the common case allocates nothing.
-	empty, truncated := mustNew(t, nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{})
-	assert.Nil(t, empty)
-	assert.False(t, truncated)
-}
-
-func TestARunningAttemptHasNoInventedSchedule(t *testing.T) {
-	t.Parallel()
-
-	out, _ := mustNew(t, nil).pendingActivities(&workflowservice.DescribeWorkflowExecutionResponse{
-		PendingActivities: []*workflowpb.PendingActivityInfo{
-			{Attempt: 2, LastFailure: &failurepb.Failure{Message: "timed out"}},
+		{
+			name: "first attempt running",
+			info: &workflowpb.PendingActivityInfo{
+				State:           enumspb.PENDING_ACTIVITY_STATE_STARTED,
+				Attempt:         1,
+				ScheduledTime:   scheduledAt,
+				LastStartedTime: startedAt,
+			},
 		},
-	})
+		{
+			name: "retry waiting through backoff",
+			info: &workflowpb.PendingActivityInfo{
+				State:                   enumspb.PENDING_ACTIVITY_STATE_SCHEDULED,
+				Attempt:                 2,
+				ScheduledTime:           retryAt,
+				LastFailure:             previousFailure,
+				NextAttemptScheduleTime: retryAt,
+			},
+			want: retryAt,
+		},
+		{
+			name: "retry due and waiting for a worker",
+			info: &workflowpb.PendingActivityInfo{
+				State:         enumspb.PENDING_ACTIVITY_STATE_SCHEDULED,
+				Attempt:       2,
+				ScheduledTime: retryAt,
+				LastFailure:   previousFailure,
+			},
+		},
+		{
+			name: "retry running",
+			info: &workflowpb.PendingActivityInfo{
+				State:           enumspb.PENDING_ACTIVITY_STATE_STARTED,
+				Attempt:         2,
+				ScheduledTime:   retryAt,
+				LastStartedTime: retryStartedAt,
+				LastFailure:     previousFailure,
+			},
+		},
+	}
 
-	require.Len(t, out, 1)
-	assert.Nil(t, out[0].GetNextAttemptScheduledTime(),
-		"an attempt running right now has no next schedule, and a zero time reads as 1970")
+	server := mustNew(t, nil)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &workflowservice.DescribeWorkflowExecutionResponse{}
+			if tc.info != nil {
+				resp.PendingActivities = []*workflowpb.PendingActivityInfo{tc.info}
+			}
+
+			out, truncated := server.pendingActivities(resp)
+			assert.False(t, truncated)
+			if tc.info == nil {
+				assert.Nil(t, out)
+				return
+			}
+
+			require.Len(t, out, 1)
+			if tc.want == nil {
+				assert.Nil(t, out[0].GetNextAttemptScheduledTime())
+				return
+			}
+			require.NotNil(t, out[0].GetNextAttemptScheduledTime())
+			assert.Equal(t, tc.want.AsTime(), out[0].GetNextAttemptScheduledTime().AsTime())
+		})
+	}
 }
 
 // TestAStuckFanOutIsReportedWithoutBeingWholeOfIt bounds a projection whose

@@ -10,8 +10,10 @@ import (
 
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -27,6 +29,13 @@ import (
 // compiled in.
 func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstatev1.TaskDef, error) {
 	name := manifest.GetName()
+	for _, required := range manifest.GetRequiredSecretInputs() {
+		if !slices.Contains(manifest.GetSecretInputs(), required) {
+			return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf(
+				"task %q requires input %q to be a secret reference but does not declare it in secret_inputs",
+				textbound.Truncate(name, 64), textbound.Truncate(required, 64)))
+		}
+	}
 
 	// The def is registered under the name an author writes, which is the
 	// manifest's name qualified by the plugin's: `slack.post` for the `post`
@@ -37,12 +46,16 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 
 	inputs, err := messageDescriptor(manifest.GetInputDescriptor(), manifest.GetInputMessage(), cfg)
 	if err != nil {
-		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q inputs: %w", truncate(name, 64), err))
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q inputs: %w", textbound.Truncate(name, 64), err))
 	}
 
 	outputs, err := messageDescriptor(manifest.GetOutputDescriptor(), manifest.GetOutputMessage(), cfg)
 	if err != nil {
-		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q outputs: %w", truncate(name, 64), err))
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q outputs: %w", textbound.Truncate(name, 64), err))
+	}
+
+	if err := checkManifestInputNames(inputs, manifest, name, p); err != nil {
+		return flowstatev1.TaskDef{}, err
 	}
 
 	return flowstatev1.TaskDef{
@@ -76,7 +89,8 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// can say so. Enforcement itself still reads the manifest directly,
 		// closed over below in taskFunc — this copy is for visibility, not for
 		// the resolve-or-refuse decision.
-		SecretInputs: manifest.GetSecretInputs(),
+		SecretInputs:         manifest.GetSecretInputs(),
+		RequiredSecretInputs: manifest.GetRequiredSecretInputs(),
 
 		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
 		// .CredentialInputs for a plugin task's secret inputs — see the
@@ -87,12 +101,40 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// what routes a step using one to the identity-aware activity
 		// regardless of which task it names. A plugin task with a secret input
 		// is already covered by the same scan a built-in task's `bearer:` is.
-		Fn: p.taskFunc(manifest),
+		Fn: p.taskFunc(manifest, outputs),
 	}, nil
 }
 
+// checkManifestInputNames verifies that every name in the manifest's
+// input-claim lists is a field of the reconstructed input descriptor.
+// Defense in depth: the SDK checks at build time; this catches a
+// malicious or buggy plugin at the host boundary.
+func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pluginv1.TaskManifest, name string, p *Plugin) error {
+	check := func(list []string, label string) error {
+		for _, entry := range list {
+			if inputs == nil || inputs.Fields().ByName(protoreflect.Name(entry)) == nil {
+				return pluginError(p.name, p.path, fmt.Errorf(
+					"task %q %s names %q which is not a field of its input message",
+					textbound.Truncate(name, 64), label, textbound.Truncate(entry, 64)))
+			}
+		}
+		return nil
+	}
+
+	if err := check(manifest.GetDeferredInputs(), "deferred_inputs"); err != nil {
+		return err
+	}
+	if err := check(manifest.GetExpressionInputs(), "expression_inputs"); err != nil {
+		return err
+	}
+	if err := check(manifest.GetSecretInputs(), "secret_inputs"); err != nil {
+		return err
+	}
+	return check(manifest.GetRequiredSecretInputs(), "required_secret_inputs")
+}
+
 // taskFunc returns the function that executes a task by asking the plugin to.
-func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc {
+func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor protoreflect.MessageDescriptor) flowstatev1.TaskFunc {
 	// Two names for one task, each used where it is true. The wire carries the
 	// bare manifest name, because that is what the plugin calls it; every error
 	// carries the qualified one, because that is what the author wrote and what
@@ -101,6 +143,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 	qualified := p.name + "." + name
 	needsScope := manifest.GetNeedsScope()
 	secretInputs := manifest.GetSecretInputs()
+	requiredSecretInputs := manifest.GetRequiredSecretInputs()
 
 	return func(ctx context.Context, inputs map[string]*flowstatev1.Value, scope *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 		ctx = telemetryBaggage(ctx, p.name, qualified)
@@ -120,13 +163,34 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		// the response, and the error — is registered against from here on.
 		// See [resolvePluginSecretInputs] for why this is where it has to
 		// happen, and for the boundary this local transport depends on.
-		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, inputs)
+		var releaseLogSecrets []func()
+		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, requiredSecretInputs, inputs, func(secret secrets.Secret) {
+			releaseLogSecrets = append(releaseLogSecrets, inst.stderrSecrets.add(secret))
+		})
 		if err != nil {
 			callErr = err
 			return nil, err
 		}
+		defer func() {
+			for _, release := range releaseLogSecrets {
+				release()
+			}
+		}()
 
 		identity, _ := IdentityFromContext(ctx)
+		if scope.GetLocal() {
+			// RunWithInputs owns Scope.Local and sets it unconditionally. That
+			// makes the local dispatch boundary authoritative even for an
+			// embedder that did not construct its optional identity through the
+			// CLI's NewLocalWorkloadIdentity path. Clone before overriding so one
+			// local call cannot make a context identity sticky for another call.
+			if identity == nil {
+				identity = &flowstatev1.WorkloadIdentity{}
+			} else {
+				identity = proto.Clone(identity).(*flowstatev1.WorkloadIdentity)
+			}
+			identity.Mode = flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL
+		}
 
 		request := &pluginv1.ExecuteRequest{
 			Task: &flowstatev1.Task{
@@ -171,6 +235,13 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		if err := scrubPluginOutputs(scrubber, outputs); err != nil {
 			callErr = err
 			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, err)
+		}
+		if !manifest.GetShapesOutputs() {
+			if err := checkOutputContract(outputDescriptor, outputs); err != nil {
+				scrubbed := scrubber.ScrubError(err)
+				callErr = scrubbed
+				return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, scrubbed)
+			}
 		}
 
 		return outputs, nil
@@ -361,7 +432,9 @@ func resolvePluginSecretInputs(
 	ctx context.Context,
 	taskName string,
 	declared []string,
+	required []string,
 	inputs map[string]*flowstatev1.Value,
+	registerForLogs func(secrets.Secret),
 ) (map[string]*flowstatev1.Value, *secrets.Scrubber, error) {
 	scrubber := secrets.NewScrubber()
 
@@ -370,21 +443,33 @@ func resolvePluginSecretInputs(
 	}
 
 	resolved := make(map[string]*flowstatev1.Value, len(inputs))
+	var resolvedSecrets []secrets.Secret
 	for name, v := range inputs {
 		ref, isWholeRef := v.GetKind().(*flowstatev1.Value_SecretRef)
 
 		switch {
+		case slices.Contains(required, name) && !isWholeRef:
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
+				"input %q must be a whole secret reference such as ${secret('env:NAME')}, never a literal; "+
+					"literal secret or connection material is stored in workflow history", name))
+
 		case isWholeRef && slices.Contains(declared, name):
 			secret, err := flowstatev1.ResolveSecret(ctx, ref.SecretRef)
 			if err != nil {
+				// The same three answers the built-in http task gives, through
+				// the same predicates: a denial is permanent, an unreachable
+				// store or a required audit sink that could not write is worth
+				// another attempt. A plugin task's secret inputs get no
+				// different treatment (Codex, picatz/flowstate#1394).
 				kind := flowstatev1.ErrorKindPolicyDenied
-				if secrets.Retryable(err) {
+				if secrets.Retryable(err) || flowstatev1.AuditRecorderUnavailable(err) {
 					kind = flowstatev1.ErrorKindUpstream
 				}
 				return nil, nil, flowstatev1.NewTaskError(taskName, kind, fmt.Errorf(
 					"resolving input %q (%s): %w", name, secretRefText(ref.SecretRef), err))
 			}
 			scrubber.Add(secret)
+			resolvedSecrets = append(resolvedSecrets, secret)
 			resolved[name] = &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: &expr.Value{
 				Kind: &expr.Value_StringValue{StringValue: secret.Reveal()},
 			}}}
@@ -401,6 +486,11 @@ func resolvePluginSecretInputs(
 
 		default:
 			resolved[name] = v
+		}
+	}
+	if registerForLogs != nil {
+		for _, secret := range resolvedSecrets {
+			registerForLogs(secret)
 		}
 	}
 
@@ -650,9 +740,13 @@ func scrubFieldValue(
 // error.
 func taskError(task, plugin string, err error, scrubber *secrets.Scrubber) error {
 	kind := kindForCode(err)
+	callerDeadlineExceeded := callerDeadlineExceededFromDetails(err)
+	if callerDeadlineExceeded {
+		kind = flowstatev1.ErrorKindTimeout
+	}
 
 	verdict, said := verdictFromDetails(err)
-	if said {
+	if said && !callerDeadlineExceeded {
 		switch {
 		case verdict.unknownOutcome:
 			// Named explicitly rather than inferred from "permanent and the code
@@ -687,11 +781,37 @@ func taskError(task, plugin string, err error, scrubber *secrets.Scrubber) error
 	scrubbed := scrubber.ScrubError(err)
 
 	taskErr := flowstatev1.NewTaskError(task, kind, fmt.Errorf("plugin %q: %w", plugin, scrubbed))
-	if said && verdict.retryable {
+	if said && verdict.retryable && !callerDeadlineExceeded {
 		taskErr.RetryAfter = verdict.retryAfter
 	}
 
 	return taskErr
+}
+
+// callerDeadlineExceededFromDetails reads the serving side's account that the
+// request context's inherited deadline, rather than a plugin-owned backend
+// deadline, ended the task. The distinction cannot be recovered from
+// CodeDeadlineExceeded itself, so an absent or malformed detail means no claim.
+func callerDeadlineExceededFromDetails(err error) bool {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return false
+	}
+	if connectErr.Code() != connect.CodeDeadlineExceeded {
+		return false
+	}
+
+	for _, detail := range connectErr.Details() {
+		value, err := detail.Value()
+		if err != nil {
+			continue
+		}
+		provenance, ok := value.(*pluginv1.TaskErrorProvenance)
+		if ok && provenance.GetCallerDeadlineExceeded() {
+			return true
+		}
+	}
+	return false
 }
 
 // kindForCode maps a Connect status code onto the engine's error kinds.
@@ -792,8 +912,12 @@ func verdictFromDetails(err error) (pluginVerdict, bool) {
 			retryable:      response.GetRetryable(),
 			unknownOutcome: response.GetUnknownOutcome(),
 		}
-		if d := response.GetRetryAfter().AsDuration(); d > 0 && d <= maxPluginRetryAfter {
-			verdict.retryAfter = d
+		if d := response.GetRetryAfter().AsDuration(); d > 0 {
+			// Keep an untrusted plugin from parking a step indefinitely, but
+			// saturate rather than discard a larger hint. Discarding falls back
+			// to the workflow's usually much shorter backoff and can exhaust
+			// every attempt before the backend's window opens again.
+			verdict.retryAfter = min(d, maxPluginRetryAfter)
 		}
 
 		return verdict, true

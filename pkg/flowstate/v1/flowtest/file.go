@@ -202,6 +202,11 @@ const (
 	// declare.
 	MaxSecretsPerTest = 200
 
+	// MaxChecksPerTest bounds how many CEL claims one effective test may
+	// evaluate. The written pieces are checked before table and defaults
+	// expansion can multiply them, then the effective case is checked again.
+	MaxChecksPerTest = 200
+
 	// MaxAllowUnreachedPerFile bounds how many `coverage.allow_unreached`
 	// entries one file may declare. A workflow has few branches a suite cannot
 	// reach, and a file recording hundreds is a record that has stopped meaning
@@ -260,6 +265,31 @@ type File struct {
 	// Go carries none, exactly as it carries no substitution: those doors
 	// evaluate nothing, so there is nothing for a taint to travel through.
 	varsWithheld withheldVars
+
+	// doc is the parsed YAML this file was decoded from, kept so that a failure
+	// found while *running* a case can be placed in the file the way a problem
+	// found while loading one already is.
+	//
+	// The loader built this to locate its own diagnostics and then dropped it,
+	// which is why every run-time failure reached an editor as line 0, column 0
+	// (#1558). It is the same document and the same [document.positionOf], so
+	// the two kinds of finding agree about where a key is rather than computing
+	// it twice.
+	//
+	// Nil for a [File] built in Go rather than parsed: there is no text to point
+	// at, and [caseAnchor] answers nothing rather than guessing — the rule
+	// [document.positionOf] already keeps.
+	doc *document
+
+	// sources say where each of Tests was written, index for index.
+	//
+	// Not derivable from the index: a table's rows expand into the flat list, so
+	// case i may have been written at `tests[3].cases[2]` — see [caseSource],
+	// whose own doc says recomputing this afterward is impossible. The loader
+	// already carries it for its own diagnostics; keeping it is what lets a
+	// run-time failure be placed at the case that actually claimed it rather
+	// than at whatever `tests[i]` happens to be (#1558).
+	sources []caseSource
 
 	// Defaults are the inputs, stubs, and signal sender a file states once for
 	// every case, rather than pasting into each (issue #416). Each case
@@ -459,8 +489,9 @@ type TriggerDelivery struct {
 	// *.test.yaml lives in — the same rule [Test.Workflow] follows.
 	//
 	// The file is one JSON document with `headers` and `body`, because a
-	// delivery is both: an idempotency key is usually a signature header, so a
-	// fixture holding only a body could not exercise the key at all. It is read
+	// delivery is both: verification reads a signature header and a key may
+	// read a header of its own, so a fixture holding only a body could not
+	// exercise either. It is read
 	// under [v1.MaxWebhookPayloadBytes], the bound a live receiver will apply to
 	// a request body.
 	Payload string `yaml:"payload"`
@@ -825,6 +856,27 @@ type SignalScript struct {
 	// exists precisely so a malformed identity is not rendered as a gate
 	// nobody answered.
 	Sender *ScriptedIdentity `yaml:"sender"`
+
+	// DeliveryID names the webhook delivery this signal stands in for, so a
+	// case can rehearse a *redelivery* — the ordinary webhook case, and the one
+	// a gate must not answer twice.
+	//
+	// It is [v1.SignalSender.delivery_id], carried into the delivery exactly as
+	// the receiver carries the digest it computes, and read by the same
+	// [v1.ConsumeDeliveryID] both drivers dedupe with. Two scripted signals
+	// sharing one value are one delivery arriving twice: the first reaches
+	// whichever gate is waiting, the second is dropped, and a later
+	// `wait_for_signal:` — the next turn of a `loop:` — is not answered by it.
+	//
+	// Empty is what every case that is not about a webhook writes, and it
+	// deduplicates nothing: a signal with no delivery id is a `flow signal`,
+	// and two of those are two answers.
+	//
+	// It is a plain string here rather than a digest computed from something,
+	// because a case is rehearsing what a delivery *is*, not how the receiver
+	// names it — the digest arithmetic is [v1.WebhookDeliveryID]'s and is
+	// exercised where deliveries are actually replayed (`trigger:`).
+	DeliveryID string `yaml:"delivery_id"`
 }
 
 // ScriptedIdentity is an identity a case names, either the sender of a
@@ -875,9 +927,8 @@ type ScriptedIdentity struct {
 // a failure is "positioned to the test file" ([v1.TestCase]); #923 settled it
 // the other way.
 //
-// An identity a case inherited - a signal sender folded in from `defaults:` -
-// is refused with the same words and no position, because this document did not
-// write it. See [document.positionOf].
+// An identity inherited from a sibling `testdefaults.yaml` is positioned by
+// that sibling's retained document tree, never by borrowing a line in the suite.
 //
 // Both rules are fail-closed readings of a policy that would otherwise refuse
 // silently, at a gate, a whole virtual day later:
@@ -930,6 +981,14 @@ func checkScriptedIdentity(p *problems, r site, where string, identity *Scripted
 // step's private intermediate values — there is no field for one — the same
 // restraint the transcript-vs-outputs distinction already draws elsewhere.
 type Expectation struct {
+	// fromEntry records which scalar or collection fields reached this case
+	// from its table entry rather than from the row itself. [mergeExpectation]
+	// sets it on the effective row, and load-time checks use it to judge the
+	// entry once at the key the author wrote instead of once per expanded row
+	// at keys that do not exist. Check accumulates, so its provenance travels
+	// on each [CheckClaim] instead.
+	fromEntry expectationProvenance
+
 	// Outputs, when set, must equal the workflow's declared `outputs:`
 	// exactly — every named output present with the expected value, and no
 	// unexpected one. Ignored when Failed is true, on the same reasoning
@@ -1034,6 +1093,36 @@ type Expectation struct {
 	Check []CheckClaim `yaml:"check"`
 }
 
+// claimsNothing reports whether no field of the expectation was written: not
+// the empty `expect: {}`, and not an `expect:` block that was left out. A
+// written-empty collection whose emptiness asserts something — `outputs: {}`
+// is "no outputs", `ran: []` is "nothing ran" — is a claim and counts, which
+// is why those are tested for nil rather than for length. `check: []` asserts
+// nothing, an empty list of predicates being no predicate, and is tested for
+// length.
+func (e *Expectation) claimsNothing() bool {
+	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
+		e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && e.Ran == nil &&
+		e.Skipped == nil && e.Others == "" && len(e.Check) == 0
+}
+
+// expectationProvenance is the writer of each field in an effective table
+// row. Kept per field because a row may override one entry expectation while
+// inheriting the rest; a mark on the whole expectation would either repeat the
+// inherited mistakes or hide the row's own.
+type expectationProvenance struct {
+	outputs        bool
+	inputs         bool
+	refused        bool
+	idempotencyKey bool
+	failed         bool
+	errorContains  bool
+	compensated    bool
+	ran            bool
+	skipped        bool
+	others         bool
+}
+
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
 // point of the field is to state absence, so there is exactly one thing to say.
 const OthersSkipped = "skipped"
@@ -1075,6 +1164,31 @@ func LoadSourceAt(data []byte, path string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadSourceAt(data, path, dd)
+}
+
+// LoadSourceAtWithDefaults is [LoadSourceAt] when the caller holds newer bytes
+// for the directory's testdefaults.yaml than the filesystem does. The language
+// server is that caller: diagnostics must describe both live editor buffers,
+// including unsaved defaults, while preserving the loader's one grammar and
+// provenance rules.
+func LoadSourceAtWithDefaults(data []byte, path string, defaults []byte) (*File, error) {
+	if len(data) > MaxTestFileBytes {
+		return nil, fmt.Errorf("%s: %d bytes exceeds the %d byte limit for a test file",
+			path, len(data), MaxTestFileBytes)
+	}
+	defaultsPath := filepath.Join(filepath.Dir(path), DirDefaultsName)
+	dd, err := parseDirDefaults(defaults, defaultsPath)
+	if err != nil {
+		return nil, err
+	}
+	return loadSourceAt(data, path, dd)
+}
+
+// loadSourceAt applies a directory contribution already read and decoded.
+// Both public byte doors above end here, so only the source of the defaults
+// bytes differs; folding and every semantic check remain shared.
+func loadSourceAt(data []byte, path string, dd *dirDefaults) (*File, error) {
 
 	file, refused := parseSourceWith(data, dd, true)
 	if refused != nil {
@@ -1165,10 +1279,21 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 
 	var file File
 	if err := decodeStrict(data, &file); err != nil {
-		return nil, yamlProblem(err)
+		refused := yamlProblem(err)
+		// The decoder says which key it did not know and nothing about which
+		// it would have; the tree it was decoding says where the key was
+		// written, and the file's own shape says what is legal there (#1669).
+		refused.Problems[0].Message += unknownKeyRemedy(err, parsed)
+
+		return nil, refused
 	}
 
-	p := newProblems(newDocument(parsed))
+	// One document, read by both kinds of finding: the loader's own problems
+	// below, and — through [File.doc] — the failures a case produces when it
+	// runs (#1558).
+	file.doc = newDocument(parsed)
+
+	p := newProblems(file.doc)
 	tests := at("tests")
 
 	if len(file.Tests) == 0 {
@@ -1225,7 +1350,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// `stubs:` appends, so afterwards an index alone no longer says which
 	// document wrote the entry it addresses.
 	moved := dd.combineInto(&file)
-	p.wrote(moved.file, moved.paths)
+	p.wrote(moved.file, moved.doc, moved.paths)
 
 	// Vars validate, evaluate and substitute first, before tables expand and
 	// before `defaults:` is checked: a computed var is evaluated exactly once
@@ -1249,21 +1374,28 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	// Done here rather than at run time so everything downstream — the
 	// per-test checks below, coverage, `--run`, the Go subtests — keeps
 	// reading one flat list of effective cases and needs no notion of a table.
-	expanded, sources := expandTableEntries(p, file.Tests)
-	file.Tests = expanded
+	expandedCount := 0
+	for _, test := range file.Tests {
+		if test.Cases == nil {
+			expandedCount++
 
-	// The bound is on the runs, not on the written entries: a row is a whole
-	// case, so an entry with four hundred rows costs what four hundred cases
-	// cost. Checked after expansion for that reason, and the diagnostic says
-	// "once its rows are counted" because the limit is otherwise confusing to
-	// read in a file whose `tests:` list is three items long.
-	if len(file.Tests) > MaxTestsPerFile {
+			continue
+		}
+		expandedCount += len(test.Cases)
+	}
+	if expandedCount > MaxTestsPerFile {
+		// Count before expansion: [mergeRow] copies inherited stubs and
+		// checks into each row, so checking only the finished slice would do
+		// the amplification this limit exists to prevent before refusing it.
 		p.report(site{at: tests},
 			"this file declares %d cases once its `cases:` rows are counted, more than the limit of %d",
-			len(file.Tests), MaxTestsPerFile)
+			expandedCount, MaxTestsPerFile)
 
 		return nil, p.err()
 	}
+	expanded, sources := expandTableEntries(p, file.Tests)
+	file.Tests = expanded
+	file.sources = sources
 
 	// Validated then merged before anything below bounds or checks a case, so
 	// every per-test check runs against the effective test a case actually
@@ -1322,6 +1454,13 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 
 			continue
 		}
+		if len(test.Expect.Check) > MaxChecksPerTest {
+			p.report(r.in(source.path.field("expect").field("check")),
+				"test %q declares %d checks, more than the limit of %d",
+				test.Name, len(test.Expect.Check), MaxChecksPerTest)
+
+			continue
+		}
 		for _, reference := range slices.Sorted(maps.Keys(test.Secrets)) {
 			// Checked while the reference is still text, so a malformed
 			// `secrets:` key fails when the file loads rather than the first
@@ -1362,6 +1501,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 				signal.Sender,
 			)
 		}
+		twins := newStubTwins()
 		for j := range test.Stubs {
 			stub := &test.Stubs[j]
 			// A stub [mergeDefaults] copied in from the `defaults:` block was
@@ -1376,9 +1516,14 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			if judgedAtTheBlock {
 				continue
 			}
-			checkStubShape(p, r.in(where), fmt.Sprintf("test %q stub %d", test.Name, j+1), stub)
+			label := fmt.Sprintf("test %q stub %d", test.Name, j+1)
+			if !checkStubShape(p, r.in(where), label, stub) {
+				continue
+			}
+			twins.note(p, r.in(where), label, stub)
 		}
 		checkOthers(p, r, test)
+		checkClaims(p, r, test)
 		checkTrigger(p, r, test, requireWorkflow)
 	}
 
@@ -1400,8 +1545,9 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 // The two counts exist because merging shifts indices. A case's own stubs come
 // first in the merged list and its own check claims come last, so a merged
 // index inside those runs addresses something the case wrote, and one outside
-// them addresses something it inherited — which has no position in this
-// document, and must not borrow the case's.
+// them addresses something it inherited — which must not borrow the case's
+// position. A directory default has its sibling tree; a case-level inherited
+// value with no source address remains unpositioned.
 type caseSource struct {
 	// path addresses the case in the source.
 	path loc
@@ -1547,10 +1693,73 @@ func stubTargetKey(s *Stub) string {
 	return target + "\x00" + s.Where
 }
 
+// stubTwins refuses, within one list of stubs, a stub that selects the same
+// call the same way as an earlier *unbounded* one (#1668): the same target
+// and the same `where:`, byte for byte, behind a stub with no `times:`. Two
+// such stubs can never both be reached — the first to be tried answers every
+// call the second could — so the second is dead, and a dead stub is the
+// copy-paste mistake it looks like rather than something the run should
+// tolerate as "never answered" after the fact.
+//
+// A stub with `times:` is the one deliberate shape this must not refuse: it
+// drains, and the next stub for the same call is what answers afterwards —
+// `examples/conditional-and-retry` fails a step once and then lets it
+// succeed exactly so. Only an unbounded stub is recorded as the one that
+// shadows what follows.
+//
+// Both stubs are named at their own positions, each pointing at the other,
+// so a reader arriving from either line sees the pair. Only a stub whose
+// shape was found coherent is noted; a targetless one was refused already.
+type stubTwins struct {
+	first map[string]stubTwin
+}
+
+type stubTwin struct {
+	at    site
+	label string
+}
+
+func newStubTwins() *stubTwins { return &stubTwins{first: make(map[string]stubTwin)} }
+
+// note records one stub, and reports the pair when an earlier stub in the
+// same list selected the same call the same way.
+func (t *stubTwins) note(p *problems, at site, label string, s *Stub) {
+	key := stubTargetKey(s)
+	earlier, seen := t.first[key]
+	if !seen {
+		// Only a stub with no times: at all: checkStubShape refused a
+		// times: at or below zero a moment ago, and a twin diagnostic on
+		// top of that refusal would be a second sentence about one mistake.
+		if s.Times == nil {
+			t.first[key] = stubTwin{at: at, label: label}
+		}
+		return
+	}
+	filter := "no where:"
+	if s.Where != "" {
+		filter = "where: " + s.Where
+	}
+	p.report(earlier.at,
+		"%s (%s, %s) is selected again, the same way, by %s below; two stubs the same call would match "+
+			"cannot both be reached, so one of them never answers — delete one, or give them different where: filters",
+		earlier.label, stubTarget(s), filter, label)
+	p.report(at,
+		"%s (%s, %s) selects the same call the same way as %s above; two stubs the same call would match "+
+			"cannot both be reached, so this one never answers — delete one, or give them different where: filters",
+		label, stubTarget(s), filter, earlier.label)
+}
+
 // checkOthers refuses an `expect.others:` value that is not the one thing the
 // field is allowed to say, named by its position (CLAUDE.md, "diagnostics are a
 // feature"). Empty is fine: it means the `ran:` claim stays open.
 func checkOthers(p *problems, r site, test *Test) {
+	// A table entry's value was judged once before expansion, at the entry's
+	// own key and with the entry's identity. The copy on an effective row has
+	// no row key to point at and must not spend another diagnostic on the same
+	// writer. A row override carries no mark and is still judged here.
+	if test.Expect.fromEntry.others {
+		return
+	}
 	switch test.Expect.Others {
 	case "", OthersSkipped:
 		return
@@ -1560,6 +1769,25 @@ func checkOthers(p *problems, r site, test *Test) {
 				"which asserts every step not named in `ran:` was skipped",
 			test.Name, test.Expect.Others, OthersSkipped)
 	}
+}
+
+// checkClaims refuses a case whose `expect:` claims nothing (#1669). Such a
+// case is green whatever the run produced beyond finishing, and nothing else
+// notices: `--fail-on-warning` has no warning to promote, and the closed-claim
+// principle behind `others: skipped` — adding a step fails loudly — does not
+// reach a case that asserts no step at all. A case that means only "the run
+// completes" says so with `failed: false`, which is a claim the format already
+// has and the refusal names.
+func checkClaims(p *problems, r site, test *Test) {
+	if !test.Expect.claimsNothing() {
+		return
+	}
+	// At the key: an empty flow mapping has no value token to point at, and
+	// the key is the thing the author has to add to anyway.
+	p.reportKey(r.in(r.at.field("expect")),
+		"test %q expect: claims nothing, so the case passes whatever the run produces; "+
+			"name a claim (ran:, outputs:, check:, ...) or, for a case that only proves the run completes, write `failed: false`",
+		test.Name)
 }
 
 // checkTrigger refuses a trigger case that cannot mean what it says, when the
@@ -1706,9 +1934,9 @@ func checkTriggerContext(p *problems, r site, test *Test, trigger *TriggerDelive
 // Named the way the rest of this loader names a diagnostic — the field a
 // reader has to look at (`defaults.inputs.version`,
 // `defaults.stubs[0].returns.reference`, `defaults.sender.claims`) — and
-// positioned at it as well, where this document is the one that wrote it. A
-// default folded in from a directory's `testdefaults.yaml` has no position in
-// this file, and reports none rather than borrowing the suite's.
+// positioned in the document that wrote it. A default folded in from a
+// directory's `testdefaults.yaml` uses that sibling's retained tree rather than
+// borrowing the suite's position.
 // Reports false when the stub count stopped it, which the loader takes as a
 // refusal of the whole document rather than one more diagnostic: an
 // over-limit block is copied into every case a moment later, so this is the
@@ -1728,11 +1956,18 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 
 		return false
 	}
+	if len(d.Check) > MaxChecksPerTest {
+		p.report(site{at: base.field("check")},
+			"defaults declares %d checks, more than the limit of %d", len(d.Check), MaxChecksPerTest)
+
+		return false
+	}
 	checkNoExpressions(p, site{at: base.field("workflow")}, "defaults.workflow", defaultsAreFixtures, d.Workflow, 0)
 	for _, name := range slices.Sorted(maps.Keys(d.Inputs)) {
 		checkNoExpressions(p, site{at: base.field("inputs").field(name)},
 			"defaults.inputs."+name, defaultsAreFixtures, d.Inputs[name], 0)
 	}
+	twins := newStubTwins()
 	for i := range d.Stubs {
 		s := &d.Stubs[i]
 		index, elsewhere := from.stubWrittenElsewhere(i)
@@ -1755,6 +1990,7 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 		if !checkStubShape(p, spot, where, s) {
 			continue
 		}
+		twins.note(p, spot, where, s)
 		checkNoExpressions(p, spot.in(spot.at.field("where")), where+".where", defaultsAreFixtures, s.Where, 0)
 		checkNoExpressions(p, spot.in(spot.at.field("returns")), where+".returns", defaultsAreFixtures, s.Returns, 0)
 	}
@@ -1791,13 +2027,6 @@ const (
 	// defaultsAreFixtures is #416's rule, in the block it was written for.
 	defaultsAreFixtures fixtureRule = "a test file's `defaults:` is a fixture, so it may not hold an " +
 		"expression. Write the literal value, or move it into the case that needs it"
-
-	// varsFenceWholeValues is the same refusal where an expression *is* legal —
-	// as the whole value, never inside a structure, which is the rule every
-	// reference position in a test file already follows.
-	varsFenceWholeValues fixtureRule = "a var holds a literal, or one whole-value `${...}` expression; " +
-		"a fence inside a structure is not evaluated. State it literally, or build the structure in " +
-		"one expression: `${{'region': vars.base.region}}`"
 )
 
 // checkNoExpressions descends a value and refuses every string that carries a

@@ -161,6 +161,11 @@ type Frame struct {
 	// network-attached session answering the same question the same way.
 	Steps []flowdebug.Step
 
+	// StepLabels overrides a row only where assembling its individually safe
+	// qualifier and id recreated text the pause redactor withholds. Map presence
+	// is distinct from an empty replacement, which must remain empty.
+	StepLabels map[int]string
+
 	// StepsBefore and StepsAfter are how many steps the window left out on
 	// each side, so an elision can say how many rather than that there were
 	// some.
@@ -209,7 +214,7 @@ type Frame struct {
 // between stops has no scope to answer against, and drawing a frame of its last
 // one would report a position the run has left.
 func Snapshot(ctx context.Context, session *flowdebug.Session, layout Layout) (Frame, bool) {
-	at, paused := session.Paused()
+	at, index, total, paused := session.PausedStepPosition()
 	if !paused {
 		return Frame{}, false
 	}
@@ -221,12 +226,23 @@ func Snapshot(ctx context.Context, session *flowdebug.Session, layout Layout) (F
 	// The workflow is what makes the position resolvable across a `call:`; the
 	// session answers -1 rather than guessing when it cannot tell (see
 	// [flowdebug.Session.StepPosition]).
-	index, total := session.StepPosition(at.Workflow, positionStep(at))
 	first, last := window(total, index, paneRows(layout.Height))
 
 	list := session.Steps(first, last-first)
 
 	frame.Steps = list.Steps
+	for i, qualifier := range qualifiers(list.Steps) {
+		label := list.Steps[i].ID
+		if qualifier != "" {
+			label = qualifier + "." + label
+		}
+		if redacted := list.RedactText(label); redacted != label {
+			if frame.StepLabels == nil {
+				frame.StepLabels = make(map[int]string)
+			}
+			frame.StepLabels[i] = redacted
+		}
+	}
 	frame.StepsBefore = list.Offset
 	frame.StepsAfter = list.Total - list.Offset - len(list.Steps)
 	frame.StepsTotal = list.Total
@@ -306,18 +322,6 @@ func capValue(text string) string {
 	}
 
 	return string(runes[:MaxValueRunes]) + " (cut)"
-}
-
-// positionStep is the step a position names, or "" where it names none.
-//
-// An autopsy is a real pause with no step to be at — the run is over — so it
-// windows the front of the list rather than pointing into it.
-func positionStep(at flowdebug.Position) string {
-	if at.Autopsy {
-		return ""
-	}
-
-	return at.Step
 }
 
 // Layout is the space the panes have.
@@ -465,7 +469,8 @@ func stepRows(frame Frame, theme ui.Theme, symbols ui.SymbolSet) []string {
 		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d earlier", symbols.Ellipsis, frame.StepsBefore)))
 	}
 	for i, step := range frame.Steps {
-		rows = append(rows, stepRow(step, i == frame.Held, qualify[i], theme, symbols))
+		label, overridden := frame.StepLabels[i]
+		rows = append(rows, stepRow(step, i == frame.Held, qualify[i], label, overridden, theme, symbols))
 	}
 	if frame.StepsAfter > 0 {
 		rows = append(rows, theme.Muted.Render(fmt.Sprintf("  %s %d later", symbols.Ellipsis, frame.StepsAfter)))
@@ -578,10 +583,12 @@ func window(n, at, budget int) (first, last int) {
 // "the status is the word RUNNING, and the mark beside it only helps the eye
 // find the row". Removing every colour and every mark from this pane loses
 // emphasis and no information.
-func stepRow(step flowdebug.Step, held bool, qualifier string, theme ui.Theme, symbols ui.SymbolSet) string {
+func stepRow(step flowdebug.Step, held bool, qualifier, label string, overridden bool, theme ui.Theme, symbols ui.SymbolSet) string {
 	gutter := " "
 	name := step.ID
-	if qualifier != "" {
+	if overridden {
+		name = label
+	} else if qualifier != "" {
 		// The qualifier first, muted, because the id is still the name: a
 		// reader scanning the column is looking for `build`, and the prefix is
 		// there to tell two of them apart rather than to be read.

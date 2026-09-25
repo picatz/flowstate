@@ -39,6 +39,10 @@ type remoteRef struct {
 // rather than sending an empty username, the same fail-safe direction
 // cloneBounded takes.
 func listRemoteRefs(ctx context.Context, u *url.URL, token func() string, username string) ([]remoteRef, error) {
+	if err := requireEgressPolicy(); err != nil {
+		return nil, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -103,7 +107,7 @@ func findRemoteRef(refs []remoteRef, name string) (remoteRef, bool) {
 func gitLsRemote(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	var in gitv1.LsRemoteInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 
 	repoURL, err := validateRepositoryURL(in.GetUrl())

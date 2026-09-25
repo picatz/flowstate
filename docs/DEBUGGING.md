@@ -16,6 +16,12 @@ doors, so a habit learned at one carries to the others:
 | a person, debugging a real local run | `flow run local --debug <workflow>` | the same prompt, over a real run |
 | an agent | the `flowstate_debug` MCP tool | the same session, driven by a script |
 
+These are local surfaces. The architecture's [driver parity
+boundary](ARCHITECTURE.md#execution-model) names what they prove and what still needs
+a durable or integration run. Inspect a durable run with [`flow get` and `flow
+timeline`](#reading-a-durable-run); operate a shared service using the
+[deployment guide](DEPLOYMENT.md).
+
 ## The commands
 
 The vocabulary is the one a debugger has had since `dbx`, which is the point —
@@ -26,10 +32,12 @@ nothing here is worth learning twice.
 | `step`, `s` | run this step, stop at the next. An empty line does the same. |
 | `continue`, `c` | run to the next breakpoint, or to the end |
 | `until <step-id>`, `u` | run to that step without stopping in between |
+| `until <step-id> if <expr>` | run to that step, stopping only where the expression holds |
 | `break <step-id>`, `b` | stop there whenever it is reached |
 | `break <step-id> if <expr>` | stop there only when the expression holds |
 | `delete <step-id>`, `d` | remove that breakpoint |
 | `breakpoints` | list them |
+| `backtrace`, `bt` | list the current step and the `call:` chain that reached it |
 | `inspect <expr>`, `p` | evaluate a CEL expression against the paused run |
 | `complete <partial-command>` | list what could be written at the end of that text |
 | `scope` | list what the run can name right now |
@@ -235,6 +243,9 @@ applies here rather than a second, weaker one.
   the final render withhold its transcript, naming `--reveal-sensitive`. Say the
   reveal out loud, or do not attach a debugger — there is no third answer where
   the debugger quietly shows what the renderer would have hidden.
+- `flow dap` makes the same refusal before starting the local run. An editor can
+  state the deliberate reveal as `"revealSensitive": true` in its launch
+  configuration, or whoever starts the adapter can pass `--reveal-sensitive`.
 - Under `flow test --debug` and `flowstate_debug`, the case's own redaction
   posture applies to **everything the session prints** — each step's account as
   it arrives, every `inspect` answer, and the autopsy's failures — so a
@@ -398,6 +409,9 @@ cannot park a production run forever, and a policy for who may attach — and it
 is [#928](https://github.com/picatz/flowstate/issues/928)'s slice 2. Today the
 debugger is a local-driver instrument, which is where authoring happens.
 
-DAP, so that an editor's own debug UI drives this, is the front after MCP.
+DAP landed: `flow dap` serves the same session to an editor's own debug UI over
+stdio, with function breakpoints on step ids — see
+[EDITORS.md](EDITORS.md#stepping-a-run-flow-dap). The VS Code extension does not
+yet contribute a debug type for it (#585).
 
 [`DefaultCostLimit`]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#DefaultCostLimit

@@ -53,17 +53,22 @@ func TestAnUnusedStubWarnsWithoutFailing(t *testing.T) {
 }
 
 // TestFailOnWarningPromotesTheWarningToTheExitCode is the opt-in half: the
-// report is identical — the case still reads passed, the warning is the same
-// sentence — and only the exit code moves, exactly the `--coverage-required`
-// shape.
+// warning is the same sentence and the machine report still says the case
+// passed, but the case's own line reads FAIL with the warning beneath it
+// (#1668) — a reader who watches the lines must not see green two lines
+// above the red total the summary prints — and the exit code moves, exactly
+// the `--coverage-required` shape.
 func TestFailOnWarningPromotesTheWarningToTheExitCode(t *testing.T) {
 	dir := writeWarningFixture(t)
 
 	res := runFlow(t, "test", "--no-color", "--fail-on-warning", dir)
 	require.Error(t, res.Err, "an unused stub must fail the run once the flag opts in")
-	assert.Contains(t, res.Stdout, "PASS",
-		"the verdict is untouched; the flag moves the exit code, not the report")
+	assert.Contains(t, res.Stdout, "FAIL  ",
+		"the case that fails on a warning fails on its own line")
+	assert.NotContains(t, res.Stdout, "PASS  ",
+		"a case the flag fails must not read as passed")
 	assert.Contains(t, res.Stdout, `never consulted`)
+	assert.Contains(t, res.Stdout, "1 case failed on warnings", "the summary line is unchanged")
 }
 
 // TestWarningsRideTheMachineReport: one encoder, no second rendering — the

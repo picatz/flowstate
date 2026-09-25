@@ -1,0 +1,11 @@
+edition: v2026.3
+name: stubs
+
+steps:
+  - id: greet
+    log:
+      message: hello
+
+  - id: part
+    log:
+      message: goodbye

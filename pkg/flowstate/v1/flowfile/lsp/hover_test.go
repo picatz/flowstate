@@ -872,7 +872,7 @@ func TestHoverDoesNotClaimEveryDeferredInputIsAnExpression(t *testing.T) {
 	// written as an expression" does not contain. It passed on exactly the mutation
 	// it named. Found by making that change and watching it stay green.
 	var claim string
-	for _, paragraph := range strings.Split(text, "\n\n") {
+	for paragraph := range strings.SplitSeq(text, "\n\n") {
 		if strings.Contains(paragraph, "written as an expression") {
 			claim = paragraph
 			break

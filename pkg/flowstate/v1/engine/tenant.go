@@ -82,8 +82,8 @@ func (t *tenantInterceptor) InterceptWorkflow(
 	ctx workflow.Context, next interceptor.WorkflowInboundInterceptor,
 ) interceptor.WorkflowInboundInterceptor {
 	return &tenantWorkflowInbound{
-		WorkflowInboundInterceptorBase: interceptor.WorkflowInboundInterceptorBase{Next: next},
-		namespace:                      t.namespace,
+		Next:      next,
+		namespace: t.namespace,
 	}
 }
 
@@ -91,8 +91,8 @@ func (t *tenantInterceptor) InterceptActivity(
 	ctx context.Context, next interceptor.ActivityInboundInterceptor,
 ) interceptor.ActivityInboundInterceptor {
 	return &tenantActivityInbound{
-		ActivityInboundInterceptorBase: interceptor.ActivityInboundInterceptorBase{Next: next},
-		namespace:                      t.namespace,
+		Next:      next,
+		namespace: t.namespace,
 	}
 }
 

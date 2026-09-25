@@ -1,18 +1,31 @@
+# Headers are a value this file sends; a nested result is a value it gets back.
+# `httpbin.org/anything` echoes the request it was handed, which is what lets one
+# small file hold both halves — the two headers go out under the names written
+# here, and arrive back addressed by those same names two levels inside the
+# response.
+#
+# Reading them off the response is the only way a file can show that `headers:`
+# arrived. Written the other way round — a step logging the header map it is
+# about to send — the file would be agreeing with itself.
 edition: v2026.3
 name: headers-and-nested
-vars:
-  nested: '${{"outer": {"inner": "value"}}}'
 steps:
   - id: web
     http:
+      # `headers:` is a map handed to the task as written. Header names are
+      # case-insensitive on the wire and come back canonicalized, so the echo is
+      # indexed below by `X-From` whatever casing is typed here.
       headers:
         X-From: Flowstate
         X-Env: dev
       method: GET
+      # Without `parse_json:` the body stays text, and there is no
+      # `steps.web.json` to select into at all.
+      parse_json: true
       url: https://httpbin.org/anything
-  - id: report_status
+
+  # Two levels into the parsed result: the object the response is, then the
+  # header map inside it.
+  - id: echoed
     log:
-      message: ${string(steps.web.status_code)}
-  - id: pick
-    log:
-      message: ${vars.nested["outer"]["inner"]}
+      message: ${"the server saw X-From=%s and X-Env=%s".format([steps.web.json.headers["X-From"], steps.web.json.headers["X-Env"]])}

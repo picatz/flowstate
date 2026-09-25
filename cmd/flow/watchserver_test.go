@@ -166,10 +166,20 @@ func TestWatchFollowsARealRunningExecution(t *testing.T) {
 	// one per move, which is the discipline this shape holds.
 	account := errOut.String()
 	lines := reportedLines(account)
-	require.Len(t, lines, 2,
-		"a real run on two steps under one status produced %d line(s):\n%s", len(lines), account)
-	require.Contains(t, lines[0], "on first")
-	require.Contains(t, lines[1], "on waiting",
+	// A current submission performs task-capability admission before its first
+	// step. The poller may observe that bounded RUNNING phase as one initial line
+	// with no position; after that there is still exactly one line per move.
+	require.GreaterOrEqual(t, len(lines), 2,
+		"a real run on two steps produced too few lines:\n%s", account)
+	require.LessOrEqual(t, len(lines), 3,
+		"a real run on two steps produced more than one admission line plus its two moves:\n%s", account)
+	if len(lines) == 3 {
+		require.NotContains(t, lines[0], " on ",
+			"the extra pre-step line claimed a position rather than reporting admission")
+	}
+	moves := lines[len(lines)-2:]
+	require.Contains(t, moves[0], "on first")
+	require.Contains(t, moves[1], "on waiting",
 		"the run moved and the account said nothing, which is the whole feature")
 
 	for _, line := range lines {

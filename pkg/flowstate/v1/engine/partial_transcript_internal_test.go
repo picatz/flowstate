@@ -50,8 +50,7 @@ func exhaustionSpanningProbe(ctx workflow.Context, st *v1.RunState) (*v1.Workflo
 	if err == nil {
 		return nil, fmt.Errorf("expected the run to fail, it succeeded")
 	}
-	var continued *workflow.ContinueAsNewError
-	if errors.As(err, &continued) {
+	if _, ok := errors.AsType[*workflow.ContinueAsNewError](err); ok {
 		return nil, err
 	}
 
@@ -141,8 +140,7 @@ func TestRunWorkflowLoopExhaustionAcrossCAN(t *testing.T) {
 				require.True(t, env.IsWorkflowCompleted())
 
 				err := env.GetWorkflowError()
-				var continued *workflow.ContinueAsNewError
-				if errors.As(err, &continued) {
+				if continued, ok := errors.AsType[*workflow.ContinueAsNewError](err); ok {
 					next := &v1.RunState{}
 					require.NoError(t, converter.GetDefaultDataConverter().FromPayloads(continued.Input, &next))
 					state = next

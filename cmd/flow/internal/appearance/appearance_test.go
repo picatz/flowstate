@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -118,8 +119,8 @@ func record(t *testing.T, tape, flowBin string) string {
 // golden should hold only the second kind of thing.
 func lastFrame(raw string) string {
 	frames := strings.Split(raw, frameSeparator)
-	for i := len(frames) - 1; i >= 0; i-- {
-		frame := strings.TrimRight(frames[i], " \n")
+	for _, frame := range slices.Backward(frames) {
+		frame := strings.TrimRight(frame, " \n")
 		frame = strings.TrimLeft(frame, "\n")
 		if frame != "" {
 			return frame + "\n"

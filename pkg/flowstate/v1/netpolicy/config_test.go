@@ -2,6 +2,7 @@ package netpolicy
 
 import (
 	"crypto/tls"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -216,9 +217,9 @@ egress:
 	if _, ok := c.denyPorts[8443]; !ok {
 		t.Fatalf("deny_ports: got %v", c.denyPorts)
 	}
-	if len(p.requestRules.allow) != 1 || len(p.requestRules.deny) != 1 {
+	if len(p.requestRules.Allow) != 1 || len(p.requestRules.Deny) != 1 {
 		t.Fatalf("rules: got %d allow, %d deny in the request scope",
-			len(p.requestRules.allow), len(p.requestRules.deny))
+			len(p.requestRules.Allow), len(p.requestRules.Deny))
 	}
 	if c.maxRedirects != 2 {
 		t.Fatalf("max_redirects: got %d", c.maxRedirects)
@@ -270,5 +271,70 @@ func TestConfigRefusesAnEmptyAllowlist(t *testing.T) {
 	}
 	if _, err := cfg.Policy(); err != nil {
 		t.Fatalf("an empty deny list was refused, though absent and empty deny the same nothing: %v", err)
+	}
+}
+
+func TestParseConfigRefusesANullAllowlist(t *testing.T) {
+	t.Parallel()
+
+	for name, doc := range map[string]string{
+		"schemes":          "egress:\n  schemes: null\n",
+		"allow_networks":   "egress:\n  allow_networks:\n",
+		"allow_ports":      "egress:\n  allow_ports: null\n",
+		"allow":            "egress:\n  allow:\n",
+		"allow_json":       `{"egress":{"allow":null}}`,
+		"allow_ports_json": `{"egress":{"allow_ports":null}}`,
+	} {
+		_, err := ParseConfig([]byte(doc))
+		if err == nil {
+			t.Fatalf("%s: a null allowlist was read as absent, silently widening the policy", name)
+		}
+		if !strings.Contains(err.Error(), strings.TrimSuffix(name, "_json")) {
+			t.Fatalf("%s: the error does not name the null field: %v", name, err)
+		}
+	}
+}
+
+// TestDeploymentDefaultIsCarriedAndChangesNothingAboutTheRules pins both halves
+// of the marker a worker signs its own default policy with (#1332): a plugin
+// reading the document learns where it came from, and a document that says so
+// still describes exactly the policy it would describe without the key.
+//
+// The second half is what keeps the marker from becoming a rule. It is
+// provenance, and provenance that quietly permitted or denied anything would be
+// a permission written in a field nobody reads as one.
+func TestDeploymentDefaultIsCarriedAndChangesNothingAboutTheRules(t *testing.T) {
+	t.Parallel()
+
+	marked, err := ParseConfig([]byte("deployment_default: true\negress:\n  allow_loopback: true\n"))
+	if err != nil {
+		t.Fatalf("parsing a marked document: %v", err)
+	}
+	if !marked.DeploymentDefault {
+		t.Fatal("deployment_default did not survive the parse, so a plugin cannot tell the worker's own default from an operator's file")
+	}
+
+	plain, err := ParseConfig([]byte("egress:\n  allow_loopback: true\n"))
+	if err != nil {
+		t.Fatalf("parsing an unmarked document: %v", err)
+	}
+	if plain.DeploymentDefault {
+		t.Fatal("an unmarked document claimed to be the deployment default")
+	}
+
+	if !reflect.DeepEqual(marked.Egress, plain.Egress) {
+		t.Fatal("the marker changed the egress section it is supposed to say nothing about")
+	}
+
+	markedOpts, err := marked.Options()
+	if err != nil {
+		t.Fatalf("options from a marked document: %v", err)
+	}
+	plainOpts, err := plain.Options()
+	if err != nil {
+		t.Fatalf("options from an unmarked document: %v", err)
+	}
+	if len(markedOpts) != len(plainOpts) {
+		t.Fatalf("the marker produced %d options where the same policy without it produces %d", len(markedOpts), len(plainOpts))
 	}
 }

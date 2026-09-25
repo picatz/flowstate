@@ -287,9 +287,7 @@ func analyzePackage(fset *token.FileSet, files []source) ([]Finding, int) {
 	// in the second file neither counted nor reported (Codex, #1126).
 	aliases := map[string]string{}
 	for _, from := range files {
-		for name, handle := range from.aliases {
-			aliases[name] = handle
-		}
+		maps.Copy(aliases, from.aliases)
 	}
 	for i := range files {
 		files[i].aliases = aliases
