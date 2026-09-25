@@ -869,20 +869,20 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// the substring backstop catches "Bearer " + secret. An empty value is
 	// skipped — replacing the empty string would mark every position in
 	// every line while protecting nothing.
-	sensitive = sensitive.WithValues(slices.Collect(maps.Values(test.Secrets))...)
+	//
+	// Both spellings, for the same reason as entrySecretMaterial and
+	// vars.withheld.text below: `casePosture` already carries this same
+	// material through `bothSpellings`, and the assignment a few lines down
+	// replaces that posture wholesale rather than extending it, so a secret
+	// holding a tab, a newline, a quote or a backslash — bound to a stub's
+	// input and echoed into a step's body, say — printed escaped from a
+	// check witness once the run's own inputs bound (Codex, exact-head
+	// review on #2066).
+	sensitive = sensitive.WithValues(bothSpellings(slices.Collect(maps.Values(test.Secrets)))...)
 
 	// A table row's entry's secret plaintext, which [Test.entrySecretMaterial]
 	// carries past `Secrets`' own whole-or-nothing rule for redaction only
-	// (#2041). `casePosture` above already includes it, through the same
-	// `bothSpellings` every other value in this posture goes through — a
-	// secret holding a tab, a newline, a quote or a backslash prints escaped
-	// from a diagnostic that renders it with `%q`, and the escaped spelling
-	// is a spelling of the secret (Codex on #2040's finding, repeated here).
-	// The assignment two lines down replaces that posture wholesale rather
-	// than extending it, so without this line a row that replaced its
-	// entry's `secrets:` would withhold the entry's material — in only one
-	// of its two spellings — until the run's own inputs bind, and lose it
-	// entirely for every exit after (Codex).
+	// (#2041) — both spellings, for the same reason as `test.Secrets` above.
 	sensitive = sensitive.WithValues(bothSpellings(test.entrySecretMaterial)...)
 
 	// And what a computed var inherited from one (#1072, repair 4). The
@@ -892,20 +892,23 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// in a witness in the clear. The taint is decided at load, by reference
 	// rather than by inspecting a value ([withheldFrom]), and this is where it
 	// becomes the one redaction set every surface of this case already shares.
-	//
-	// Both spellings for the same reason as entrySecretMaterial two lines up
-	// (Codex): `casePosture` already carries `vars.withheld.text` through
-	// `bothSpellings`, and #2041 widened that text to include a literal
-	// secret-seeded var, not only a computed one, so a literal seed holding a
-	// tab, a newline, a quote or a backslash needs the identical treatment
-	// once this rebuild replaces the posture that already had it.
+	// Both spellings, for the same reason as `test.Secrets` above — #2041
+	// widened this text to include a literal secret-seeded var, not only a
+	// computed one, so it needs the identical treatment.
 	sensitive = sensitive.WithValues(bothSpellings(vars.withheld.text)...)
 
-	// The posture widens to the case's own set here, which is a superset of what
-	// it was: `sensitive` now carries the file's withheld material as well as the
-	// run's inputs and secrets. Every exit taken from this point on renders
-	// through the fuller one, and every exit before it through what was already
-	// known — which is the whole of the ordering fix, in one assignment.
+	// The posture widens to the case's own set here. `sensitive` is built fresh
+	// from the run's own inputs (sensitiveNativeValues) and then, in the three
+	// assignments above, made to carry every value casePosture already carried
+	// too — not by extending that posture, but by re-deriving the same material
+	// a second time and replacing it outright. That second construction is
+	// exactly how one comes to withhold less than the other (casePosture's own
+	// doc gives the general rule); three review rounds on #2041 found it three
+	// times, once per value casePosture carries, which is the shape #2079 tracks
+	// as its own defect rather than a checklist to keep re-deriving correctly.
+	// Every exit taken from this point on renders through this fuller set, and
+	// every exit before it through what was already known — which is the whole
+	// of the ordering fix, in one assignment.
 	posture = sensitive
 
 	// A debugging session prints what the transcript prints, so it withholds

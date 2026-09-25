@@ -879,6 +879,61 @@ outputs: {}
 		"the positive control: the substring backstop must still have fired")
 }
 
+// TestACasesOwnSecretSurvivesEscapedInThePostBindPosture is the same gap one
+// level down from the two table tests above, for the plainest case there is:
+// an ordinary case's own inline `secrets:`, no table and no `vars:` at all.
+// `test.Secrets` joins the run-time posture too (line 863's own comment), and
+// it had the identical missing-bothSpellings gap independent reviewers found
+// on entrySecretMaterial and vars.withheld.text, since all three are rebuilt
+// in the same three-line stretch.
+func TestACasesOwnSecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
+	t.Parallel()
+
+	// A tab, for the same reason every escaping test in this file uses one.
+	const secret = "sk-live\tstubsec-5512"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bearer-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      bearer: ${secret('env:TOKEN')}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n"+
+		"  - name: the stub body echoes the resolved secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:TOKEN: \"sk-live\\tstubsec-5512\"\n"+
+		"    stubs:\n"+
+		"      - task: http\n"+
+		"        returns:\n"+
+		"          status_code: 200\n"+
+		"          body: ${'Bearer ' + inputs.bearer}\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.call.body == 'nope'\n"+
+		"          because: false on purpose, so the post-run witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, secret, "the raw plaintext reached a post-run witness")
+	assert.NotContains(t, rendered, `sk-live\tstubsec-5512`,
+		"the case's own `secrets:` printed its %q-escaped spelling in the clear once the stub echoed it into a step's output")
+	assert.Contains(t, rendered, `Bearer [redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
 func TestATaintedStructuredLeafIsWithheldFromStubDiagnostics(t *testing.T) {
 	t.Parallel()
 

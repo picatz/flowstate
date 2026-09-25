@@ -527,15 +527,18 @@ func TestValidateRedactsASignalNameFromAnotherCasesLiteralSecretSeed(t *testing.
 }
 
 // TestValidateRedactsASignalNameFromAnEntrysSecretWhenARowDeclaresItsOwn is
-// #2041's table route: `mergeRow` replaced a row's `secrets:` wholesale
-// rather than merged it, so a row declaring even one secret of its own lost
-// every secret its entry declared from the posture that row's diagnostics
-// render through.
+// #2041's table route: a row's `secrets:` replaces its entry's `Secrets` map
+// wholesale (deliberately — see table.go's own doc), which used to also drop
+// the entry's plaintext from the posture that row's diagnostics render
+// through, since nothing else carried it. `flowtest`'s unexported
+// `entrySecretMaterial` is what protects it now, read once per entry and
+// shared by every row for redaction only, independent of what `Secrets`
+// itself binds.
 //
 // The entry's secret is a plain literal rather than a `${vars.x}` reference,
-// so nothing but `test.Secrets` protects it, which proves this route
-// independently of the cross-case one above — the var-taint closure would
-// otherwise cover a var-seeded secret regardless of how `secrets:` merges.
+// so the var-taint closure never reaches it — proving this route
+// independently of the cross-case one above, which that closure would
+// otherwise cover regardless of how `secrets:` merges.
 func TestValidateRedactsASignalNameFromAnEntrysSecretWhenARowDeclaresItsOwn(t *testing.T) {
 	t.Parallel()
 

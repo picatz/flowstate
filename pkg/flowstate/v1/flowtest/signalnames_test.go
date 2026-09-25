@@ -217,14 +217,16 @@ tests:
 }
 
 // TestSignalFromAnEntrysSecretIsWithheldWhenARowDeclaresItsOwn is #2041's
-// table route: `mergeRow` used to replace a row's `secrets:` wholesale rather
-// than merge it, so a row declaring even one secret of its own lost every
-// secret its entry declared from the posture that row rendered through.
+// table route: a row's `secrets:` replaces its entry's `Secrets` map
+// wholesale (deliberately — see table.go's own doc), which used to also drop
+// the entry's plaintext from the posture that row rendered through, since
+// nothing else carried it. `flowtest`'s unexported `entrySecretMaterial` is
+// what protects it now, read once per entry and shared by every row for
+// redaction only, independent of what `Secrets` itself binds.
 //
-// The entry's secret is a plain literal, not a `${vars.x}` reference, so
-// nothing but `test.Secrets` protects it — proving this route independently
-// of the cross-case one above, which the var-taint closure would otherwise
-// also cover.
+// The entry's secret is a plain literal, not a `${vars.x}` reference, so the
+// var-taint closure never reaches it — proving this route independently of
+// the cross-case one above, which that closure would otherwise also cover.
 func TestSignalFromAnEntrysSecretIsWithheldWhenARowDeclaresItsOwn(t *testing.T) {
 	t.Parallel()
 
