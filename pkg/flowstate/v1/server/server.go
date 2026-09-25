@@ -1632,19 +1632,31 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 				// an exact retry returned the incumbent above — so this
 				// collision is a genuinely different submission, and
 				// `on_conflict:` says it replaces what it found.
-				options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
-
-				run, err = temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+				//
+				// Not a bare reissue: two submissions racing this same
+				// collision could each destroy the run the other just
+				// started under Temporal's unconditional TERMINATE_EXISTING.
+				// [FlowstateServer.claimAfterTerminatingOther] closes that
+				// window (#1966) by terminating only the specific run this
+				// call observed, and converges two racing identical
+				// submissions on one answer rather than letting each
+				// destroy the other's.
+				resp, err := s.claimAfterTerminatingOther(
+					ctx, temporal, workflowID, already.RunId, options, state, submission, asSubmitted)
 				if err != nil {
-					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
+					return nil, err
 				}
 
-				return connect.NewResponse(&v1.RunResponse{
-					WorkflowId:               workflowID,
-					RunId:                    run.GetRunID(),
-					Status:                   v1.RunResponse_STATUS_RUNNING,
-					SpecificationAsSubmitted: proto.Bool(asSubmitted),
-				}), nil
+				if resp.GetReused() {
+					// A second record for a second decision, for the same
+					// reason the retry arm above records one: this response
+					// names a run this call did not itself start.
+					if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+						return nil, err
+					}
+				}
+
+				return connect.NewResponse(resp), nil
 			}
 
 			if onConflict == v1.Concurrency_ON_CONFLICT_JOIN {

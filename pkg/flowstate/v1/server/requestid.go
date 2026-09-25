@@ -9,10 +9,14 @@ import (
 
 	"connectrpc.com/connect"
 	"go.temporal.io/api/common/v1"
+	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
 // [RunRequest.request_id]'s server half: what a request id establishes about a
@@ -198,6 +202,130 @@ func (s *FlowstateServer) reusedSubmission(ctx context.Context, workflowID, runI
 	}
 
 	return resp, true, nil
+}
+
+// maxTerminateOtherRounds bounds [FlowstateServer.claimAfterTerminatingOther]'s
+// terminate-and-verify loop, so two submissions that keep displacing one
+// another cannot livelock a request forever (invariant 5). A two-way race —
+// the only shape the acceptance criteria of #1966 ask for — resolves in one
+// extra round; this leaves headroom for a third caller racing the same id
+// before turning a genuine pile-up into a fast, legible refusal rather than a
+// hung request.
+const maxTerminateOtherRounds = 4
+
+// claimAfterTerminatingOther is `on_conflict: terminate_other`'s reissue for
+// a request-addressed submission whose probe found an incumbent that is not
+// its own retry — #1966.
+//
+// # The race this closes
+//
+// Temporal's WorkflowIDConflictPolicy offers no compare-and-terminate:
+// TERMINATE_EXISTING destroys whatever is current at the id and starts a new
+// run, unconditionally. Two submissions that both probed the same stale
+// incumbent and both concluded "this is a different submission, replace it"
+// could each issue that unconditional reissue — the first starts run A, the
+// second, issued after, destroys A and starts run B. One request_id then
+// answers two different callers with two different run ids, and the first
+// caller holds a run id that has already been terminated.
+//
+// # The fix, built from what the client already offers
+//
+// [client.Client.TerminateWorkflow] takes a specific run id, and a run id is
+// a permanent identity: asking Temporal to terminate one can never reach a
+// *different*, later run at the same workflow id, whatever that later run's
+// state — a run id that has already closed answers [serviceerror.NotFound]
+// ("already completed") rather than letting the call touch whatever now
+// holds the id. That is a real, if manual, compare-and-terminate: "terminate
+// the run I observed, and nothing else," proved against a real Temporal
+// namespace rather than assumed from the SDK's doc comment.
+//
+// So this replaces the incumbent it observed by that specific run id —
+// "already gone" is as good an outcome as "just terminated it," since both
+// mean the id is no longer held by the run this call observed — and then
+// claims the id with FAIL rather than TERMINATE_EXISTING. FAIL cannot
+// destroy a sibling's fresh start; it discovers one. A run discovered this
+// way is resolved exactly like the retry arm in [FlowstateServer.Run]:
+// [FlowstateServer.reusedSubmission] cannot tell "the run this call just
+// started" from "an identical submission's run that beat this one to the id"
+// apart, because both carry the same recorded digests — which is exactly
+// #1966's answer: two racing, byte-identical submissions converge on
+// whichever run is actually current, and neither response names a run the
+// other call destroyed.
+//
+// A run discovered this way that is *not* a matching submission is a third,
+// genuinely different one that reached the id first, and `on_conflict:`
+// still says it is replaced — the loop repeats against it, bounded so two
+// submissions that keep displacing each other cannot loop forever.
+//
+// submission must not be nil: this is reachable only from the request-id arm
+// of [FlowstateServer.Run], which is the one case that can produce the
+// [serviceerror.WorkflowExecutionAlreadyStarted] this function is called to
+// resolve under `on_conflict: terminate_other` — a submission-less request
+// under that policy is given TERMINATE_EXISTING outright and never reaches
+// this reissue at all.
+func (s *FlowstateServer) claimAfterTerminatingOther(
+	ctx context.Context,
+	temporal client.Client,
+	workflowID, incumbentRunID string,
+	options client.StartWorkflowOptions,
+	state *v1.RunState,
+	submission *submissionKey,
+	asSubmitted bool,
+) (*v1.RunResponse, error) {
+	for round := 0; round < maxTerminateOtherRounds; round++ {
+		if err := temporal.TerminateWorkflow(ctx, workflowID, incumbentRunID,
+			"flowstate: superseded by a different submission under `on_conflict: terminate_other`"); err != nil {
+			// Already gone — terminated by a racing sibling's own round, or
+			// finished on its own between the probe and here — is success
+			// for this call's purpose: the id must not still be held by the
+			// run it observed, and it is not. Anything else is this
+			// server's own failure to report as one.
+			var notFound *serviceerror.NotFound
+			if !errors.As(err, &notFound) {
+				return nil, connect.NewError(connect.CodeInternal,
+					fmt.Errorf("terminating the run this submission replaces: %w", err))
+			}
+		}
+
+		options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+		run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+		if err == nil {
+			return &v1.RunResponse{
+				WorkflowId:               workflowID,
+				RunId:                    run.GetRunID(),
+				Status:                   v1.RunResponse_STATUS_RUNNING,
+				SpecificationAsSubmitted: proto.Bool(asSubmitted),
+			}, nil
+		}
+
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if !errors.As(err, &already) {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
+		}
+
+		resp, retry, err := s.reusedSubmission(ctx, workflowID, already.RunId, submission)
+		if err != nil {
+			return nil, err
+		}
+		if retry {
+			return &v1.RunResponse{
+				WorkflowId:               workflowID,
+				RunId:                    resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+				Status:                   getWorkflowExecutionStatus(resp),
+				Reused:                   true,
+				SpecificationAsSubmitted: proto.Bool(false),
+			}, nil
+		}
+
+		// Neither this call's own fresh start nor a matching sibling: a
+		// third submission reached the id first. `on_conflict:` still says
+		// it is replaced — loop, now against that run.
+		incumbentRunID = already.RunId
+	}
+
+	return nil, connect.NewError(connect.CodeAborted, fmt.Errorf(
+		"workflow %q kept being replaced by a different submission before this one could claim it (%d attempts)",
+		workflowID, maxTerminateOtherRounds))
 }
 
 // memoString reads one string-valued memo field the way [memoStarter] reads
