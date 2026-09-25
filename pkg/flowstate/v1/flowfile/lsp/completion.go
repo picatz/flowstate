@@ -147,7 +147,7 @@ var dslKeys = map[string][]dslKey{
 			"The callee runs isolated: its steps see only its bound arguments (`with:`) and the profile, not this file's steps or `vars:`. " +
 			"What it declares in its own `outputs:` comes back under this step's id, the way a task's would."},
 		{name: "value", detail: "expression", docs: "Names a computed value, so a fact the file states once can be read everywhere it matters. " + oneStepKind + "\n\n" +
-			"```yaml\n- id: cleared_to_move\n  value: ${" + v1.InputsRoot + ".amount_cents < " + v1.InputsRoot + ".approval_threshold_cents || " +
+			"```yaml\n- id: cleared_to_move\n  value: ${" + v1.InputsRoot + ".amount_cents < " + v1.VarsRoot + ".approval_threshold_cents || " +
 			v1.StepsRoot + ".approval.outcome == \"approved\"}\n```\n\n" +
 			"Read as `${" + v1.StepsRoot + ".<id>." + v1.ValueOutput + "}`: an ordinary named output called `" + v1.ValueOutput + "`, not a special whole-step form, so every tool that reads outputs reads this one the same way. " +
 			"Negation is `${!" + v1.StepsRoot + ".cleared_to_move." + v1.ValueOutput + "}`: one spelling of the fact and one `!`, instead of a hand-expanded complement that can drift from the thing it negates.\n\n" +
