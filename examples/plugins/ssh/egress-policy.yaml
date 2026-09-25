@@ -1,0 +1,15 @@
+# The second operator statement, and it is not optional: this plugin refuses
+# the worker's built-in default policy outright.
+#
+# A default policy is what a deployment runs under when nobody has decided
+# anything about destinations, which is not a decision to permit executing
+# commands on a machine. So a deployment that wants remote execution says so
+# twice - a grants file that names the host, and this document permitting the
+# ssh scheme and that host - and neither statement is the plugin's to write.
+egress:
+  # Without this, nothing here can connect: ssh is not in the default scheme
+  # allowlist, exactly as postgres is not.
+  schemes: [ssh]
+  allow:
+    - host == "web1.prod.example.com"
+  allow_ports: [22]

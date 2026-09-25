@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/cel-go/common/types/ref"
@@ -32,6 +36,12 @@ import (
 // forgets this rule and asserts against `now == 0` fails immediately rather
 // than by accident continuing to pass.
 var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// maxCaseWallTime is the real-time backstop for a case whose virtual clock
+// cannot make progress, such as an untimed signal wait with no matching script.
+const maxCaseWallTime = 30 * time.Second
+
+var errCaseWallTime = errors.New("case wall-clock limit exceeded")
 
 // RunOptions is what a caller may vary about a suite run. The zero value is
 // the run every door has always performed: every case, written order only,
@@ -159,7 +169,7 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 			load: func() (*v1.Workflow, error) {
 				workflow, parsed, err := flowfile.ParseFile(identity)
 				if err != nil {
-					return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
+					return nil, fmt.Errorf("loading workflow %q: %w%s", test.Workflow, err, missingWorkflowRemedy(identity))
 				}
 				positions = parsed
 				return workflow, nil
@@ -205,13 +215,26 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	filtered := 0
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
-	for _, test := range file.Tests {
+	warningBudget := newSuiteWarningBudget()
+	for i, test := range file.Tests {
+		// Where every failure this case produces is placed in the file that
+		// claimed it, whatever path inside the case built it. One call here
+		// rather than a lookup at each of the fifteen sites that construct a
+		// failure — see [caseAnchor.place] (#1558).
+		anchor := anchorFor(file, i)
+
 		if opts.Select != nil && !opts.Select(test.Name) {
 			filtered++
 			continue
 		}
 
 		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			// Budgeted before placing, so the omission marker the budget
+			// substitutes is placed in the file by the same call as the
+			// warnings it stands in for.
+			stopped.Warnings = warningBudget.take(stopped.GetWarnings())
+			anchor.place(stopped.GetFailures())
+			anchor.place(stopped.GetWarnings())
 			report.Cases = append(report.Cases, stopped)
 			transcripts = append(transcripts, nil)
 
@@ -219,8 +242,13 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		l, identity := loaderFor(&test)
+		caseCtx := ctx
+		cancel := func() {}
+		if opts.Debugger == nil {
+			caseCtx, cancel = caseContextWithin(ctx, maxCaseWallTime)
+		}
 
-		result, spec, transcript, account := schedules.run(ctx,
+		result, spec, transcript, account := schedules.run(caseCtx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
 				// The account is recorded only for runs whose account is
 				// kept. Under an exploring budget, [scheduleAccumulator.run]
@@ -238,6 +266,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				return runCase(ctx, &test, l.deliveryPath, l.load, record,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 			})
+		cancel()
+		result.Warnings = warningBudget.take(result.GetWarnings())
+		anchor.place(result.GetFailures())
+		anchor.place(result.GetWarnings())
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
@@ -308,6 +340,47 @@ func pathlessRefusal(test *Test) error {
 			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Trigger.Payload)
 	}
 	return nil
+}
+
+// maxSiblingCandidates bounds how much of a directory the remedy below reads:
+// the directory is the author's, and a suggestion is worth a page of names,
+// not a tree.
+const maxSiblingCandidates = 256
+
+// missingWorkflowRemedy is the did-you-mean for a `workflow:` that names no
+// file (#1669): every other name in the format gets one, and a path was the
+// one an author types by hand most. The candidates are the Flowfiles beside
+// the one that was named — `.yaml` and `.yml`, not the `*.test.yaml` suites,
+// which are never what `workflow:` means — so the suggestion is a file that
+// exists rather than a spelling that is merely near. Empty when the file
+// exists (the failure was something else), when the directory cannot be
+// read, or when nothing is near.
+func missingWorkflowRemedy(identity string) string {
+	if _, err := os.Stat(identity); !errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	entries, err := os.ReadDir(filepath.Dir(identity))
+	if err != nil {
+		return ""
+	}
+
+	var candidates []string
+	for _, entry := range entries {
+		if len(candidates) >= maxSiblingCandidates {
+			break
+		}
+		name := entry.Name()
+		if entry.IsDir() || strings.HasSuffix(name, ".test.yaml") ||
+			(!strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml")) {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+
+	if suggestion, ok := nearest.Name(filepath.Base(identity), candidates); ok {
+		return fmt.Sprintf("; did you mean %q?", suggestion)
+	}
+	return ""
 }
 
 // workflowPathIn and deliveryPathIn are [WorkflowPath] and [DeliveryPath] for
@@ -505,6 +578,13 @@ func RunSourceWith(ctx context.Context, label string, workflowSource, testSource
 	})
 }
 
+// caseContextWithin gives every schedule explored for one non-interactive case
+// a shared real-time backstop.
+func caseContextWithin(base context.Context, wallTime time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(base, wallTime,
+		fmt.Errorf("%w after %s", errCaseWallTime, wallTime))
+}
+
 // runCase runs one test and reports its verdict. load resolves the workflow
 // this case runs against — from a sibling file for [RunFile], from bytes
 // submitted directly for [RunSource] — which is the entire seam between the
@@ -570,8 +650,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// needed here too, because a *literal* var named from `secrets:` is
 	// deliberately not in [withheldVars] (see [withheldMaterial]) and would
 	// otherwise reach a setup failure through the value it was substituted into.
-	posture := sensitiveInputs{}.WithValues(
-		append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...)...)
+	posture := casePosture(test, vars)
 
 	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
 	// surface in vars.go's containment table, and the one its own row predicted
@@ -640,6 +719,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	// A scripted signal naming a gate the workflow never waits on is the same
+	// shape: the delivery disappears, the gate times out, and the case passes
+	// green — a test certifying behaviour nobody wrote (#1443).
+	if err := checkSignalNames(test.Signals, workflow); err != nil {
+		caseError("%s", err)
+		return
+	}
+
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
 		caseError("%s", err)
@@ -680,7 +767,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
 	// timing can put a real task's Fn in this run's path. See [caseRegistry].
-	ctx = v1.NewContextWithRegistry(ctx, caseRegistry(stubs, v1.SensitiveInputNames(workflow)))
+	unstubbed := &unstubbedTasks{}
+
+	registry, err := caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow, unstubbed)
+	if err != nil {
+		caseError("%s", err)
+		return
+	}
+	ctx = v1.NewContextWithRegistry(ctx, registry)
 
 	inputs := v1.NewNamedValues(test.Inputs)
 
@@ -911,6 +1005,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// them (issue #453), and `expect.ran`/`expect.skipped` read the same record,
 	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
+	if errors.Is(context.Cause(ctx), errCaseWallTime) {
+		caseError("%s", context.Cause(ctx))
+		result.Passed = false
+
+		return
+	}
 
 	// An abandoned run is not a verdict about the workflow, whatever the case
 	// expected. `quit` ends the run wherever it stands, so a case declaring
@@ -950,7 +1050,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			for _, failure := range result.Failures {
 				rendered = append(rendered, failure.GetField()+": "+failure.GetMessage())
 			}
-			scope := postRunScope(workflow, bound, outputs)
+			scope := postRunScope(ctx, workflow, bound, outputs)
 			examiner.Autopsy(ctx, scope, autopsyExtras(ctx, scope, vars, runErr, sensitive), rendered)
 		}
 	}
@@ -964,6 +1064,16 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if runErr == nil {
 		result.Warnings = unusedStubWarnings(stubs)
 	}
+
+	// Whatever the run's verdict, and ahead of the idle-stub account above:
+	// a stub this case never declared is a hole its author has to close
+	// before anything the case asserts means what it appears to.
+	result.Warnings = append(unstubbed.warnings(), result.Warnings...)
+
+	// Whatever the verdict too: a case stub shadowing a filtered default is
+	// a fact about the file, knowable without the run, and it stays true on
+	// a run that failed.
+	result.Warnings = append(shadowedDefaultWarnings(stubs), result.Warnings...)
 
 	return
 }
@@ -1014,7 +1124,9 @@ func swapRegistry(taskNames []string) func() {
 			continue
 		}
 		originals[name] = saved{existed: false}
-		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name)})
+		// nil recorder: this entry is the fail-closed placeholder the comment
+		// above describes, and it is never called — nothing to record.
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name, nil)})
 	}
 
 	return func() {
@@ -1030,8 +1142,10 @@ func swapRegistry(taskNames []string) func() {
 
 // caseRegistry returns the registry one case executes against: every task this
 // build registers, with its Fn replaced by the case's stub or by a fail-closed
-// refusal, plus a synthetic definition for any stubbed name the build does not
-// have.
+// refusal, plus a synthetic definition for every workflow requirement the build
+// does not have. That includes an intentionally unstubbed plugin task on a
+// skipped branch: capability admission can establish that dispatch has a
+// fail-closed implementation without making the branch run.
 //
 // A fresh registry per case rather than a mutation of the shared one. That is
 // what makes `flow test`'s central promise — no task runs for real — a
@@ -1041,7 +1155,7 @@ func swapRegistry(taskNames []string) func() {
 // and nothing this case does can leak into anyone else's. Issue #195 is what
 // happens without it — a real DNS lookup escaped a supposedly stubbed http task
 // under concurrency, because a swapped global is only ever swapped for a window.
-func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool) *v1.Registry {
+func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]bool, workflow *v1.Workflow, unstubbed *unstubbedTasks) (*v1.Registry, error) {
 	registry := v1.NewRegistry()
 
 	// Every task this build registers, stubbed or not, which is what makes
@@ -1050,9 +1164,9 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 	for _, def := range v1.DefaultRegistry().All() {
 		replacement := def
 		if stub, ok := stubs[def.Name]; ok {
-			replacement.Fn = stub.fn(def.Name, sensitiveInputNames)
+			replacement.Fn = stub.fn(def.Name, sensitiveInputNames, unstubbed)
 		} else {
-			replacement.Fn = unstubbedTaskFn(def.Name)
+			replacement.Fn = unstubbedTaskFn(def.Name, unstubbed)
 		}
 		_ = registry.Register(replacement)
 	}
@@ -1063,17 +1177,169 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 		if _, already := registry.Lookup(name); already {
 			continue
 		}
-		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name, sensitiveInputNames)})
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name, sensitiveInputNames, unstubbed)})
 	}
 
-	return registry
+	required, err := v1.RequiredTaskNames(workflow)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range required {
+		if _, already := registry.Lookup(name); already {
+			continue
+		}
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name, unstubbed)})
+	}
+
+	return registry, nil
+}
+
+// unstubbedTasks records which tasks a case invoked without declaring a stub
+// for them.
+//
+// The refusal [unstubbedTaskFn] returns is an ordinary step failure on the
+// wire, which is the whole difficulty: `continue_on_error: true` tolerates a
+// *dependency's* failure and cannot tell one apart from the harness's own
+// "you forgot a stub", so a case whose every unstubbed invocation was
+// tolerated passed green, asserting outputs about a run in which nothing was
+// ever exercised (#1296). The invocations were visible only in a failing
+// case's transcript.
+//
+// So the fact is recorded where it is synthesized. The harness knows it made
+// this error; nothing downstream can recover that from a tolerated failure.
+//
+// Locked because two `parallel:` branches may invoke the same unstubbed task
+// at once — the same reason [stubbedTask] holds one, and the same short
+// critical section.
+type unstubbedTasks struct {
+	mu sync.Mutex
+
+	// seen holds one entry per task-and-step pair, because a warning that
+	// names only the task cannot be acted on when two steps run it and one of
+	// them is stubbed by `step:`. The step is the engine's own
+	// ([v1.TaskStepFromContext]) rather than a second channel of the same
+	// fact, and it is empty for an invocation the engine recorded no step for
+	// — a compensation runs off the run-level context — which the rendering
+	// below says rather than inventing one.
+	seen map[unstubbedAt]struct{}
+}
+
+// unstubbedAt is one invocation's identity: the task, the step that ran it,
+// and which of the two holes it fell down — no stub declared for the task at
+// all, or stubs declared and none of them answering this invocation.
+type unstubbedAt struct {
+	task string
+	step string
+
+	// unmatched distinguishes the second door, which is the one a `step:`
+	// stub opens: binding one puts its *task* in the stub set, so a sibling
+	// step running that task never reaches [unstubbedTaskFn] — the matcher
+	// scan refuses it instead, and a `continue_on_error:` sibling swallows
+	// that refusal exactly like an undeclared one. The first stub answered,
+	// so no idle-stub warning fires either (Codex, #1356).
+	unmatched bool
+}
+
+// record notes one invocation of a task no stub was declared for.
+func (u *unstubbedTasks) record(ctx context.Context, name string) {
+	u.at(ctx, name, false)
+}
+
+// recordUnmatched notes one invocation that declared stubs did not answer.
+func (u *unstubbedTasks) recordUnmatched(ctx context.Context, name string) {
+	u.at(ctx, name, true)
+}
+
+// at records one invocation, at the step serving it.
+func (u *unstubbedTasks) at(ctx context.Context, name string, unmatched bool) {
+	if u == nil {
+		return
+	}
+
+	step, _ := v1.TaskStepFromContext(ctx)
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if u.seen == nil {
+		u.seen = map[unstubbedAt]struct{}{}
+	}
+	u.seen[unstubbedAt{task: name, step: step, unmatched: unmatched}] = struct{}{}
+}
+
+// warnings is the account a case owes about its own scaffolding, in the shape
+// [unusedStubWarnings] answers with: a hole in the case rather than in the
+// run, so the verdict is untouched and `--fail-on-warning` is where a suite
+// opts into treating one as fatal.
+//
+// Reported however the run ended, unlike an idle stub. An idle stub on a
+// failed run is unjudgeable — the run may simply not have reached it — but an
+// invocation *happened*: it is a fact about what this case ran, and the run's
+// verdict cannot make it untrue.
+func (u *unstubbedTasks) warnings() []*v1.Diagnostic {
+	if u == nil {
+		return nil
+	}
+
+	u.mu.Lock()
+	at := make([]unstubbedAt, 0, len(u.seen))
+	for one := range u.seen {
+		at = append(at, one)
+	}
+	u.mu.Unlock()
+
+	// Ordered, not walked: the report must read identically on every run.
+	sort.Slice(at, func(i, j int) bool {
+		if at[i].task != at[j].task {
+			return at[i].task < at[j].task
+		}
+
+		return at[i].step < at[j].step
+	})
+
+	warnings := make([]*v1.Diagnostic, 0, len(at))
+	for _, one := range at {
+		// True whichever way the run ended. An earlier wording said the step
+		// had tolerated the refusal, which is the case this exists for but
+		// not the only one it reports: a run that *failed* on the refusal
+		// earns the warning too, and telling its author their Flowfile
+		// tolerated something it did not is a diagnostic that lies. What is
+		// true in both is that the case declared no stub and the task
+		// therefore did nothing.
+		where := ""
+		if one.step != "" {
+			where = fmt.Sprintf(" at step %q", one.step)
+		}
+
+		// The two holes need different fixes, so they are told apart: one
+		// asks for a stub, the other for a stub that reaches this step.
+		missing := fmt.Sprintf("with no stub declared for it, so it did nothing and this case "+
+			"asserts about a run that never exercised it; add a `stubs:` entry naming %q", one.task)
+		if one.unmatched {
+			missing = "and no declared stub answered it, so it did nothing and this case asserts " +
+				"about a run that never exercised it; widen a `where:`/`step:`, or add a stub for this step"
+		}
+
+		warnings = append(warnings, &v1.Diagnostic{
+			Field:   "stubs",
+			Step:    one.step,
+			Message: fmt.Sprintf("task %q was invoked%s %s", one.task, where, missing),
+		})
+	}
+
+	return warnings
 }
 
 // unstubbedTaskFn is what a registered task's Fn becomes for the duration of
 // a case that declares no stub for it: a failure naming the task, rather than
 // whatever the real one would have done.
-func unstubbedTaskFn(name string) v1.TaskFunc {
+//
+// It also tells seen about the invocation, so a refusal a `continue_on_error:`
+// step swallowed still reaches the report. See [unstubbedTasks].
+func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
+		seen.record(ctx, name)
+
 		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, fmt.Errorf(
 			"flow test: task %q was invoked, but this case declares no stub for it; "+
 				"add a `stubs:` entry naming %q — flow test never lets an unstubbed task run for real",
@@ -1135,7 +1401,11 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		if s.Sender != nil {
 			subject = s.Sender.Subject
 		}
-		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload, sender: scriptedSender(s.Sender), senderSubject: subject})
+		jobs = append(jobs, job{
+			name: s.Name, at: at, payload: s.Payload,
+			sender:        scriptedSender(s.Sender, s.DeliveryID),
+			senderSubject: subject,
+		})
 	}
 
 	done := make(chan struct{}, len(jobs))
@@ -1218,12 +1488,19 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 // delivery, and no server did. A rehearsal that filled it in with the case's
 // own epoch was reporting an acceptance that never happened, which is the same
 // mistake in a second field.
-func scriptedSender(s *ScriptedIdentity) *v1.SignalSender {
-	if s == nil {
-		return v1.LocalSignalSender()
+//
+// deliveryID is the case's optional `delivery_id:` ([SignalScript.DeliveryID]),
+// set on whichever sender is built: a redelivery is a fact about the delivery,
+// not about who is standing in for whom, so a case may rehearse one with a
+// `sender:` or without.
+func scriptedSender(s *ScriptedIdentity, deliveryID string) *v1.SignalSender {
+	sender := v1.LocalSignalSender()
+	if s != nil {
+		sender = v1.RehearsalSignalSender(scriptedIdentity(s))
 	}
+	sender.DeliveryId = deliveryID
 
-	return v1.RehearsalSignalSender(scriptedIdentity(s))
+	return sender
 }
 
 // scriptedIdentity renders a [ScriptedIdentity] as the [v1.WorkloadIdentity] a
@@ -1287,6 +1564,36 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 	topNames := candidates(top)
 	allNames := candidates(all)
 
+	// The two sets a name can be real in without being claimable here. Both
+	// used to fall through to the did-you-mean below, which told an author to
+	// retype a name that was already right — a false sentence about their file,
+	// which is worse than an unhelpful one (#1441).
+	//
+	// Built on first miss rather than up front, unlike top and all above. Those
+	// two decide whether there *is* a miss, so every case pays for them; these
+	// two only word one, and a case whose names are all good — which is every
+	// passing case, on every run — should not walk the specification twice more,
+	// once of them into every callee (Copilot, #1632).
+	var (
+		containers map[string]bool
+		inCallee   map[string]calleeStep
+	)
+	misplaced := func(step string) (kind string, owner calleeStep, found bool) {
+		if containers == nil {
+			containers = map[string]bool{}
+			parallelContainers(spec.GetSteps(), containers)
+			inCallee = calleeSteps(spec)
+		}
+		if containers[step] {
+			return "parallel", calleeStep{}, true
+		}
+		if owner, exists := inCallee[step]; exists {
+			return "callee", owner, true
+		}
+
+		return "", calleeStep{}, false
+	}
+
 	checkTop := func(field, step string) error {
 		if top[step] {
 			return nil
@@ -1295,6 +1602,25 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 			return fmt.Errorf("expect.%s names step %q, which is a loop body step: its outputs travel "+
 				"inside the loop's own results and never appear in the top-level transcript this claim "+
 				"is judged against; assert the loop's results through expect.outputs", field, step)
+		}
+		switch kind, owner, found := misplaced(step); {
+		// A `parallel:` step is real — the transcript names it, the debugger
+		// breaks on it — and records nothing under its own id, because the
+		// branches are the work. So the claim cannot be judged, and the reason
+		// is its kind rather than its spelling.
+		case found && kind == "parallel":
+			return fmt.Errorf("expect.%s names step %q, which is a parallel container: it groups "+
+				"branches and records no outputs of its own, so no claim about it can be checked; "+
+				"name the branch steps that ran instead", field, step)
+
+		// Spelled exactly as the callee spells it, about a workflow this file
+		// does not declare. Step ids are local to a Flowfile, so this stays a
+		// refusal; what changes is that it says where the step lives.
+		case found:
+			return fmt.Errorf("expect.%s names step %q, which lives in workflow %q — reached by this "+
+				"workflow's %q step, not declared by it — and this claim is judged against the "+
+				"workflow under test; assert what the call produced through expect.outputs",
+				field, step, owner.workflow, owner.callStep)
 		}
 		if suggestion, ok := nearest.Name(step, topNames); ok {
 			return fmt.Errorf("expect.%s names unknown step %q; did you mean %q?", field, step, suggestion)
@@ -1350,10 +1676,8 @@ func containsCallStep(nodes []*v1.Node) bool {
 				}
 			}
 		case *v1.Node_Switch:
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				if containsCallStep(body) {
-					return true
-				}
+			if slices.ContainsFunc(v1.SwitchBodies(kind.Switch), containsCallStep) {
+				return true
 			}
 		case *v1.Node_ForEach:
 			if containsCallStep(kind.ForEach.GetBody()) {
@@ -1366,6 +1690,34 @@ func containsCallStep(nodes []*v1.Node) bool {
 		}
 	}
 	return false
+}
+
+// parallelContainers records the id of every `parallel:` step at any depth.
+//
+// Separate from [collectAllStepIDs] and [topLevelStepUniverse] rather than
+// folded into either, because a container is deliberately in neither: it
+// records no outputs under its own id, so adding it to a universe would make
+// `others: skipped` demand an account of a step that can never produce one.
+// What it is for is telling a real id apart from a typo, which is a question
+// about the *file* rather than about the transcript.
+func parallelContainers(nodes []*v1.Node, out map[string]bool) {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			out[node.GetId()] = true
+			for _, branch := range kind.Parallel.GetBranches() {
+				parallelContainers(branch.GetSteps(), out)
+			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				parallelContainers(body, out)
+			}
+		case *v1.Node_ForEach:
+			parallelContainers(kind.ForEach.GetBody(), out)
+		case *v1.Node_Loop:
+			parallelContainers(kind.Loop.GetBody(), out)
+		}
+	}
 }
 
 // collectAllStepIDs records every step id the workflow declares, at any depth —
@@ -1399,6 +1751,142 @@ func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
 	}
 }
 
+// checkSignalNames refuses a scripted signal whose name no
+// `wait_for_signal:`/`wait_for_signals:` in the compiled workflow declares.
+//
+// The reasoning is the same as [checkExpectationNames]: a signal delivered to a
+// name nobody waits on disappears, the gate times out, and the case passes
+// green — a test certifying behaviour nobody wrote. The signal surface is worse,
+// because the case does not even fail: the timeout is treated as the gate's own
+// outcome, and an `expect.outputs` written against the timed-out value succeeds.
+//
+// The set is [v1.SignalNames], which walks calls: a signal declared only inside
+// a callee's workflow is a legitimate delivery target, because the callee's
+// gates belong to this run. See [v1.SignalNames] for why the set is static.
+func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
+	if len(signals) == 0 {
+		return nil
+	}
+
+	declared := v1.SignalNames(spec)
+	if len(declared) == 0 {
+		return fmt.Errorf("signals[0].name %q: this workflow declares no signal gates "+
+			"(no wait_for_signal: or wait_for_signals: step), so no scripted signal can reach anything",
+			signals[0].Name)
+	}
+
+	set := map[string]bool{}
+	for _, name := range declared {
+		set[name] = true
+	}
+
+	sorted := make([]string, len(declared))
+	copy(sorted, declared)
+	sort.Strings(sorted)
+
+	for i, s := range signals {
+		if set[s.Name] {
+			continue
+		}
+		if suggestion, ok := nearest.Name(s.Name, sorted); ok {
+			return fmt.Errorf("signals[%d].name %q matches no gate this workflow waits on; did you mean %q?",
+				i, s.Name, suggestion)
+		}
+		return fmt.Errorf("signals[%d].name %q matches no gate this workflow waits on; "+
+			"the declared gates are: %s", i, s.Name, strings.Join(sorted, ", "))
+	}
+
+	return nil
+}
+
+// casePosture is what one case's rendered text may not carry, as much of it as
+// is knowable before the case runs: the material a `vars:` entry withholds, and
+// the case's own `secrets:` plaintext.
+//
+// One function because it has two callers that must not drift. [runCase]
+// establishes it before anything can fail; [File.CheckSignalNames] renders
+// through it for a caller that reaches the same check with no run at all. A
+// second construction of "what this case withholds" is how one of them comes to
+// withhold less than the other.
+func casePosture(test *Test, vars fileVars) sensitiveInputs {
+	return sensitiveInputs{}.WithValues(
+		bothSpellings(append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...))...)
+}
+
+// bothSpellings is each value as written and, where they differ, as a `%q`
+// rendering escapes it.
+//
+// The value set matches by content, and %q *transforms* content: a value
+// holding a newline, a tab, a quote or a backslash is rewritten before the
+// redaction ever reads the sentence, so a search for the plaintext finds
+// nothing and the escaped spelling prints (Codex). An escaped secret is a
+// secret — `sk\tlive` is one keystroke from `sk<tab>live`.
+//
+// Both spellings rather than un-escaping the rendered line, because the line
+// is prose with a quoted fragment inside it and there is no un-escaping that
+// without knowing which part was quoted. Adding the second spelling needs to
+// know nothing about the sentence.
+func bothSpellings(values []string) []string {
+	out := make([]string, 0, len(values)*2)
+	for _, value := range values {
+		out = append(out, value)
+
+		// Trimmed of the quotes strconv adds: what appears in the rendered
+		// line is the escaped body, inside quotes the sentence supplied.
+		if quoted := strconv.Quote(value); quoted != `"`+value+`"` {
+			out = append(out, quoted[1:len(quoted)-1])
+		}
+	}
+
+	return out
+}
+
+// CheckSignalNames reports a scripted signal in test that names no gate the
+// compiled workflow waits on. It is the exported face of [checkSignalNames],
+// for a caller that compiles the workflow itself — `flow validate` — rather
+// than reaching the check through [RunFile].
+//
+// A method on the [File], and not a function over the signals alone, because
+// what it returns is rendered text and the file is what decides which text may
+// be rendered. A signal's name is a fixture position: `name: ${vars.token}` is
+// substituted at load exactly as a `secrets:` value is, so one string can be a
+// case's secret *and* the name this refusal quotes with %q. The run-time caller
+// has always cleared that through [runCase]'s caseError; this renders through
+// the same pair, so `flow validate` is not the seventh surface vars.go's
+// containment table predicted would be a leak until it met the row (Codex).
+//
+// The chain stops here, as it does at every other rendering in this package:
+// what a caller is owed is the sentence, and returning the redacted text
+// wrapped around the original would hand the unredacted one back to anything
+// that unwraps.
+func (f *File) CheckSignalNames(test *Test, spec *v1.Workflow) error {
+	err := checkSignalNames(test.Signals, spec)
+	if err == nil {
+		return nil
+	}
+
+	posture := casePosture(test, fileVars{values: f.Vars, withheld: f.varsWithheld})
+
+	// And the run's own sensitive values, which [runCase] adds to its posture
+	// once the inputs are bound. Nothing is bound here — there is no run — but
+	// this caller compiled the workflow in order to check the names against
+	// it, so it holds both the declaration and the case's `inputs:`, which is
+	// what that set is built from. Without this a case that binds a
+	// `sensitive:` input and scripts the same literal as a signal name is
+	// covered at run time and not at validate time (Copilot).
+	if names := v1.SensitiveInputNames(spec); len(names) > 0 {
+		var material []string
+		for name, value := range test.Inputs {
+			if names[name] {
+				collectVarStrings(value, 0, &material)
+			}
+		}
+		posture = posture.WithValues(bothSpellings(material)...)
+	}
+
+	return errors.New(redactedErrorText(err.Error(), posture))
+}
+
 // assertExpectation compares a run's outcome against what the case declared,
 // returning one diagnostic per unmet expectation.
 //
@@ -1416,6 +1904,18 @@ func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
 // one is at least visibly broken.
 func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error, sensitive sensitiveInputs) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
+	renderedRunErr := "<nil>"
+	if runErr != nil {
+		// Under WithholdAll the task/stub boundary has already shaped the
+		// diagnostic, preserving author-written expressions while withholding
+		// values it could not enumerate. Replacing that safe message wholesale
+		// would erase the only actionable detail. Otherwise this is the outer
+		// substring backstop for material carried here by a computed var.
+		renderedRunErr = runErr.Error()
+		if !sensitive.WithholdAll() {
+			renderedRunErr = redactedErrorText(renderedRunErr, sensitive)
+		}
+	}
 
 	failed := runErr != nil
 	switch {
@@ -1424,8 +1924,8 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		// expected to fail and did not, or expected to succeed and did not.
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
-			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %v)",
-				*want.Failed, failed, runErr),
+			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %s)",
+				*want.Failed, failed, renderedRunErr),
 		})
 	case want.Failed == nil && failed:
 		// No expectation named this outcome as possible, so the case gets
@@ -1435,15 +1935,15 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
 			Message: fmt.Sprintf(
-				"the run failed unexpectedly, and this case's expect.failed was not set to declare that it should: %v", runErr),
+				"the run failed unexpectedly, and this case's expect.failed was not set to declare that it should: %s", renderedRunErr),
 		})
 	}
 	if want.ErrorContains != "" {
 		if runErr == nil || !strings.Contains(runErr.Error(), want.ErrorContains) {
 			failures = append(failures, &v1.Diagnostic{
 				Field: "expect.error_contains",
-				Message: fmt.Sprintf("expected the run's error to contain %q, got: %v",
-					want.ErrorContains, runErr),
+				Message: fmt.Sprintf("expected the run's error to contain %q, got: %s",
+					want.ErrorContains, renderedRunErr),
 			})
 		}
 	}
@@ -1700,7 +2200,7 @@ func compareOutputs(want map[string]any, got map[string]*v1.Value, sensitive sen
 				Field: "expect.outputs",
 				Value: name,
 				Message: fmt.Sprintf("output %q: expected %s, got %s",
-					name, redactedScalarText(wantVal, sensitive), redactedScalarText(gotNative, sensitive)),
+					name, typedText(wantVal, sensitive), typedText(gotNative, sensitive)),
 			})
 		}
 	}

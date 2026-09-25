@@ -23,6 +23,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -239,8 +240,9 @@ func TestADeliveryStartsARun(t *testing.T) {
 	assert.Equal(t, `"flowstate://webhook#order-webhook/storefront"`, string(memo["flowstate.starter"].GetData()),
 		"the run does not record the trigger as its principal")
 
-	// And the delivery id is not the idempotency key: the usual key is a
-	// signature header, and a memo is durable and broadly readable.
+	// And the delivery id is not the idempotency key: a key is whatever the
+	// author's expression read from the delivery, and a memo is durable and
+	// broadly readable.
 	assert.NotContains(t, string(memo["flowstate.delivery"].GetData()), "evt_start",
 		"the raw idempotency key was written into durable history")
 }
@@ -284,6 +286,59 @@ func TestARedeliveryDoesNotStartASecondRun(t *testing.T) {
 		"a redelivery after the run completed started a second run")
 }
 
+// TestARetrySignedAfreshJoinsTheRun is the receiver's half of
+// [conformance.WebhookRedeliveryCases]: a provider's real retry — the same body
+// under a fresh `Stripe-Signature` — joins the run the first delivery started,
+// which the byte-identical resend above cannot prove. Before the corpus example
+// keyed on the body's id, this table read three runs for one event (#1775).
+func TestARetrySignedAfreshJoinsTheRun(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	key := secrets.NewSecret(secrets.NewRef("env", "STRIPE_WEBHOOK_SECRET"), webhookSecret)
+
+	for _, test := range conformance.WebhookRedeliveryCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			t.Parallel()
+
+			receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
+				"", []*v1.Workflow{test.Workflow}, keyStore(t, webhookSecret))
+			require.NoError(t, err)
+
+			path := "/webhooks/" + test.Workflow.GetName() + "/" + test.Trigger().GetName()
+
+			var first server.AcceptedDelivery
+			for attempt := range test.SignedAt {
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(test.Body)))
+				for name, value := range test.Headers(key, time.Now(), attempt) {
+					req.Header.Set(name, value)
+				}
+
+				recorder := httptest.NewRecorder()
+				receiver.ServeHTTP(recorder, req)
+				resp := recorder.Result()
+
+				if attempt == 0 {
+					require.Equal(t, http.StatusAccepted, resp.StatusCode, "the first delivery did not start a run")
+					first = readAccepted(t, resp)
+					require.False(t, first.Joined)
+					continue
+				}
+
+				require.Equal(t, http.StatusOK, resp.StatusCode,
+					"attempt %d was not answered as a redelivery: %s", attempt, test.Why)
+
+				accepted := readAccepted(t, resp)
+				assert.True(t, accepted.Joined, "attempt %d started a run of its own: %s", attempt, test.Why)
+				assert.Equal(t, first.WorkflowID, accepted.WorkflowID)
+				assert.Equal(t, first.RunID, accepted.RunID, "attempt %d landed on a different run", attempt)
+			}
+		})
+	}
+}
+
 // TestConcurrentRedeliveriesStartOneRun is the claim a dedupe has to make and the
 // one a local table with a time window cannot: two deliveries of one event
 // arriving at the same instant produce one run.
@@ -308,9 +363,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 	)
 	start := make(chan struct{})
 	for range arrivals {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			<-start
 			resp := deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed)
@@ -326,7 +379,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 			mu.Lock()
 			results = append(results, accepted)
 			mu.Unlock()
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -541,9 +594,19 @@ func TestAReceiverRefusesAWorkflowItCannotServe(t *testing.T) {
 	noTriggers := orderWebhookWorkflow()
 	noTriggers.Triggers = nil
 
+	structuralOnly := orderWebhookWorkflow()
+	structuralOnly.DeclaredOutputs = []*v1.OutputDeclaration{{
+		Name:  "answer",
+		Value: v1.NewLiteral("ok"),
+		ValueType: &v1.Type{Kind: &v1.Type_Scalar_{
+			Scalar: v1.Type_SCALAR_STRING,
+		}},
+	}}
+
 	for name, workflows := range map[string][]*v1.Workflow{
 		"a scheme this build cannot verify": {unknownScheme},
 		"a workflow declaring no webhooks":  {noTriggers},
+		"a structural-only declaration":     {structuralOnly},
 		"two workflows under one name":      {orderWebhookWorkflow(), orderWebhookWorkflow()},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -715,7 +778,9 @@ func TestAWebhookServedWorkflowIsTrustedForRun(t *testing.T) {
 // same way an ordinary workflow's steps would.
 func breakGlassWebhookWorkflowFor(tenant string) *v1.Workflow {
 	workflow := webhookOnlyWorkflowWithManualDenied()
-	workflow.Triggers.Manual.AllowedPrincipals = []string{tenant + "-oncall@example.com"}
+	workflow.Triggers.Manual.AllowedPrincipals = []string{
+		"https://issuer.example.com#" + tenant + "-oncall@example.com",
+	}
 	workflow.Triggers.Manual.Denied = false
 	return workflow
 }
@@ -785,7 +850,7 @@ func TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother(t *testing.T)
 	// If the trusted lookup ever fell through to *any* entry under this name —
 	// a name-only key, or team-b's registration simply overwriting team-a's in
 	// the map — this request would be authorized against team-b's
-	// `allowed_principals`, which does not name `team-a-oncall@example.com`,
+	// `allowed_principals`, which does not name team-a's qualified oncall principal,
 	// and would be refused. Succeeding here is what proves team-a reached its
 	// own entry rather than team-b's.
 	ctxA := auth.ContextWithPrincipal(t.Context(), auth.Principal{

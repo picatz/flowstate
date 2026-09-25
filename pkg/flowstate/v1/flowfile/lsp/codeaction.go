@@ -151,11 +151,22 @@ func codeActions(doc *document, params codeActionParams) []codeAction {
 	if !doc.speaksFlowfile() {
 		return nil // see [document.speaksFlowfile]
 	}
-	if doc.tooLarge || doc.parseErr != nil {
-		// A document the server did not analyze, or one that is not YAML at all.
-		// Fix would refuse the second outright, and offering an action computed
-		// from text nobody could parse is the failure mode formatting avoids for
-		// the same reason.
+	if doc.tooLarge {
+		// A document the server did not analyze: there is nothing to derive an
+		// action from.
+		return nil
+	}
+	if doc.parseErr != nil {
+		// Not YAML at all, so Fix would refuse it outright, and offering a
+		// migration computed from text nobody could parse is the failure mode
+		// formatting avoids for the same reason. The one action left is the
+		// syntax diagnostic's own edit, when the validator measured one: the
+		// quoting of an unquoted ternary (#1683), which is what makes the
+		// document parse. It carries a range the validator read from the
+		// source line, not from a tree, so it is offerable where nothing else is.
+		if wants(params.Context.Only, lsp.CAKQuickFix) {
+			return suggestedEditActions(doc, params)
+		}
 		return nil
 	}
 

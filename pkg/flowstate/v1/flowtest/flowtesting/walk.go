@@ -2,6 +2,7 @@ package flowtesting
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -197,8 +198,14 @@ func (w *Walk) Names() []flowdebug.Names {
 
 // isRunOver reports the one error a walk treats as an answer rather than a
 // failure.
+//
+// By identity, not by text. The sentinel is what the session returns, so
+// [errors.Is] is exact; a text match would also take any other failure that
+// happened to quote the sentence — a wrapper reporting a different problem
+// beside this one — and end the walk as a success on a run that failed
+// (#1671).
 func isRunOver(err error) bool {
-	return err != nil && strings.Contains(err.Error(), flowdebug.ErrRunOver.Error())
+	return errors.Is(err, flowdebug.ErrRunOver)
 }
 
 // ranCase is what the helper goroutine reports back: the case's result, or the

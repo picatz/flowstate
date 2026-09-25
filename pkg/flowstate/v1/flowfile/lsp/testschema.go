@@ -52,8 +52,7 @@ func yamlKeys(t reflect.Type) []string {
 		return nil
 	}
 	keys := make([]string, 0, t.NumField())
-	for i := range t.NumField() {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		if f.PkgPath != "" {
 			// Unexported: goccy cannot set it and does not offer it as a key.
 			// [flowtest.Stub.fromDefaults] and [flowtest.CheckClaim.fromDefaults]
@@ -179,6 +178,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "at", detail: "duration", docs: "When to deliver it, as a duration from the moment the run started — \"5m\", \"1h30m\". Empty delivers it immediately."},
 		{name: "payload", detail: "map", docs: "What the signal carries, read back under `${<step>.payload}` exactly as `flow signal`'s would be."},
 		{name: "sender", detail: "map", docs: "Who this signal stands in for, checked against the workflow's own declared `signals:` policy exactly as a real delivery is."},
+		{name: "delivery_id", detail: "string", docs: "Names the webhook delivery this signal stands in for, so a case can rehearse a redelivery. Two entries sharing one value are one delivery arriving twice: the second answers no gate."},
 	},
 	testLevelIdentity: {
 		{name: "subject", detail: "string", docs: "The caller this identity stands in for, matched against a policy rule's `subject:` as `<issuer>#<subject>`."},

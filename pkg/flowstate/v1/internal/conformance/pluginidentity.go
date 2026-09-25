@@ -45,6 +45,7 @@ func PluginIdentityTaskDef(needsScope bool) v1.TaskDef {
 				"present":   v1.NewLiteral(present),
 				"subject":   v1.NewLiteral(identity.GetSubject()),
 				"namespace": v1.NewLiteral(identity.GetNamespace()),
+				"mode":      v1.NewLiteral(int64(identity.GetMode())),
 			}}, nil
 		},
 	}

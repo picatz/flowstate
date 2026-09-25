@@ -12,29 +12,40 @@ regenerated.
 stood up. The rest address durable runs, which only a server has, and say so
 rather than failing opaquely when `--address` was not given.
 
-| Tool | Answers | Request message |
-|---|---|---|
-| `flowstate_validate` | locally | `flowstate.v1.ValidateRequest` |
-| `flowstate_compile` | locally | `flowstate.v1.CompileRequest` |
-| `flowstate_get_catalog` | locally | `flowstate.v1.GetCatalogRequest` |
-| `flowstate_run` | via a server | `flowstate.v1.RunRequest` |
-| `flowstate_get` | via a server | `flowstate.v1.GetRequest` |
-| `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` |
-| `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` |
-| `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` |
-| `flowstate_list` | via a server | `flowstate.v1.ListRequest` |
-| `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` |
-| `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` |
-| `flowstate_create_schedule` | via a server | `flowstate.v1.CreateScheduleRequest` |
-| `flowstate_list_schedules` | via a server | `flowstate.v1.ListSchedulesRequest` |
-| `flowstate_describe_schedule` | via a server | `flowstate.v1.DescribeScheduleRequest` |
-| `flowstate_delete_schedule` | via a server | `flowstate.v1.DeleteScheduleRequest` |
-| `flowstate_pause_schedule` | via a server | `flowstate.v1.PauseScheduleRequest` |
-| `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` |
-| `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` |
-| `flowstate_run_local` | locally | — |
-| `flowstate_test` | locally | — |
-| `flowstate_debug` | locally | — |
+Every proto-derived RPC tool advertises an `outputSchema` for its response and
+answers with two forms of one document. The text block is the document
+`--output json` prints, so a `jq` expression written against the CLI reads an
+agent's answer unchanged: a run's outputs are `steps.<id>.<output>` and a value
+is the value, not CEL's tagged encoding of one. `structuredContent` carries the
+same answer in the schema's own protojson. A schema-aware client can therefore
+pass a successful `flowstate_compile` `workflow` result directly to
+`flowstate_run`. Both forms are counted against the surface's size limit
+because both leave the process. Local-only tools keep their purpose-built text
+contracts and do not advertise a schema-owned result message.
+
+| Tool | Answers | Request message | Response message |
+|---|---|---|---|
+| `flowstate_validate` | locally | `flowstate.v1.ValidateRequest` | `flowstate.v1.ValidateResponse` |
+| `flowstate_compile` | locally | `flowstate.v1.CompileRequest` | `flowstate.v1.CompileResponse` |
+| `flowstate_get_catalog` | locally | `flowstate.v1.GetCatalogRequest` | `flowstate.v1.GetCatalogResponse` |
+| `flowstate_run` | via a server | `flowstate.v1.RunRequest` | `flowstate.v1.RunResponse` |
+| `flowstate_get` | via a server | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
+| `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
+| `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
+| `flowstate_signal_with_start` | via a server | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
+| `flowstate_list` | via a server | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
+| `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
+| `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` | `flowstate.v1.TerminateResponse` |
+| `flowstate_create_schedule` | via a server | `flowstate.v1.CreateScheduleRequest` | `flowstate.v1.CreateScheduleResponse` |
+| `flowstate_list_schedules` | via a server | `flowstate.v1.ListSchedulesRequest` | `flowstate.v1.ListSchedulesResponse` |
+| `flowstate_describe_schedule` | via a server | `flowstate.v1.DescribeScheduleRequest` | `flowstate.v1.DescribeScheduleResponse` |
+| `flowstate_delete_schedule` | via a server | `flowstate.v1.DeleteScheduleRequest` | `flowstate.v1.DeleteScheduleResponse` |
+| `flowstate_pause_schedule` | via a server | `flowstate.v1.PauseScheduleRequest` | `flowstate.v1.PauseScheduleResponse` |
+| `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` | `flowstate.v1.ResumeScheduleResponse` |
+| `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` | `flowstate.v1.TriggerScheduleResponse` |
+| `flowstate_run_local` | locally | — | — |
+| `flowstate_test` | locally | — | — |
+| `flowstate_debug` | locally | — | — |
 
 ## `flowstate_validate`
 
@@ -188,7 +199,7 @@ It answers with no run id. The cluster takes the action after answering, so what
 
 Execute a Flowfile immediately, in this process, with no server and no Temporal, the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in production, and the answer is the same document flowstate_get returns for a durable run.
 
-Fail-closed by default: network egress from `http:` steps is denied and no secret scheme is registered unless the operator started this server with the flags that permit them (--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments can widen that, so a denied request means the server was not configured for it, not that the workflow is wrong.
+Fail-closed by default: network egress is denied — from `http:` steps and from plugin tasks alike, since this server grants its plugins the same denying policy it enforces on itself — and no secret scheme is registered unless the operator started this server with the flags that permit them (--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments can widen that, so a denied request means the server was not configured for it, not that the workflow is wrong.
 
 What it does not prove: durability. A local run has no run id, nothing can watch it, it does not survive this process, Continue-As-New compaction never happens, and parallel steps are rehearsed rather than genuinely distributed. Submit the compiled specification with flowstate_run when the rehearsal is right.
 

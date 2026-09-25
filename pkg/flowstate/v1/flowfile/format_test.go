@@ -472,7 +472,13 @@ func deepVarsSource(levels int) string {
 func TestFormatAcceptsWhatValidateAccepts(t *testing.T) {
 	t.Parallel()
 
-	for _, levels := range []int{29, 30, 32} {
+	// 31 rather than 32 at the top: deepVarsSource nests `levels` maps under
+	// `k:` and then one more map for `leaf: 1`, so 31 key levels is a literal
+	// exactly [v1.MaxStructureDepth] maps deep — the deepest value an author
+	// can write in any position since #1765 bounded `vars:` literals with the
+	// same walk an input's `default:` gets, where the leaves of the last map
+	// are the level that counts.
+	for _, levels := range []int{29, 30, 31} {
 		src := deepVarsSource(levels)
 
 		workflow, err := flowfile.Unmarshal([]byte(src))

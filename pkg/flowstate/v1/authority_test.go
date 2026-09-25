@@ -23,3 +23,16 @@ func TestCredentialTargetsAreCheckedBeforeExecution(t *testing.T) {
 	require.ErrorContains(t, v1.ValidateCredentialTargets(workflow, []string{"partner"}),
 		`step "call": credential target "aws-prod" is not configured`)
 }
+
+func TestUndoCredentialTargetsAreCheckedBeforeExecution(t *testing.T) {
+	workflow := &v1.Workflow{Name: "w", Steps: []*v1.Node{{
+		Id: "create", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+		Undo: &v1.Compensation{Task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
+			"credential": v1.NewValue("aws-prod"),
+		}}},
+	}}}
+
+	require.NoError(t, v1.ValidateCredentialTargets(workflow, []string{"aws-prod", "partner"}))
+	require.ErrorContains(t, v1.ValidateCredentialTargets(workflow, []string{"partner"}),
+		`step "create": credential target "aws-prod" is not configured`)
+}

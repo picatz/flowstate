@@ -1,0 +1,23 @@
+version: v1
+managed:
+  enabled: true
+  override:
+    GO_PACKAGE:
+      flowstate/v1/value.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+# Generated with the locally installed protoc-gen-go rather than a remote
+# plugin, so regenerating needs no network.
+#
+# # Regenerating
+#
+#   GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
+#
+#   # from the repository root, with protoc-gen-go on $PATH:
+#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/jose/proto\n' > buf.work.yaml
+#   go tool -modfile=tools/external/go.mod buf generate \
+#     --template plugins/jose/buf.gen.yaml --path plugins/jose/proto/jose -o plugins/jose
+#   git checkout -- buf.work.yaml
+plugins:
+  - plugin: go
+    out: gen
+    opt:
+      - paths=source_relative

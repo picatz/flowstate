@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sourcegraph/go-lsp"
@@ -62,37 +63,46 @@ func TestHoverAnsweredWhenItArrivesWithDidOpen(t *testing.T) {
 	// is not competing with the rest of the package for cores.
 
 	// A fresh connection each round, because the race is at the front of a
-	// document's life and only happens once per document.
+	// document's life and only happens once per document. Each round is its
+	// own bubble, so the goroutines one round leaves behind cannot be counted
+	// as the next round's.
 	for round := range 5 {
-		c := newClient(t)
-		c.initialize()
-
-		// require.NotNilf below is not a substitute: [documentStore.await]'s
-		// build deadline is 2s, and a build that lands just under that ceiling
-		// still answers non-nil and correct — a wall-clock threshold loose
-		// enough to tolerate scheduling jitter on a contended box is also loose
-		// enough for that failure mode to pass under it, which is the bug this
-		// test exists to catch wearing a passing assertion's clothes. So this
-		// asks the store directly rather than timing the round trip: hoverTrace
-		// records whether the wait that answered this hover ever gave up
-		// because [documentBuildTimeout] expired, as opposed to finding the
-		// document already landed. A hover racing an in-flight build honestly
-		// is allowed to wait — that is the mechanism #317 needs — but it must
-		// never be the deadline that ends the wait for a document that arrived
-		// in the same breath as its didOpen.
-		var boundExpired atomic.Bool
-		c.server.docs.setAwaitTrace(func(expired bool) { boundExpired.Store(expired) })
-
-		uri := "file:///race-open.yaml"
-		c.openNoWait(uri, raceSource)
-
-		at := positionOf(t, raceSource, "for_each:", 0)
-		got := c.hover(uri, at.Line, at.Character)
-
-		require.NotNilf(t, got, "round %d: hover answered null for a document the client had already opened", round)
-		assert.Containsf(t, hoverText(got), "for_each", "round %d", round)
-		assert.Falsef(t, boundExpired.Load(), "round %d: hover's wait ended because documentBuildTimeout expired rather than because the document was found built, which the elapsed-time check this replaced could not tell apart from a fast answer", round)
+		synctest.Test(t, func(t *testing.T) { hoverRacesDidOpen(t, round) })
 	}
+}
+
+// hoverRacesDidOpen is one round of [TestHoverAnsweredWhenItArrivesWithDidOpen].
+func hoverRacesDidOpen(t *testing.T, round int) {
+	c := newClient(t)
+	c.initialize()
+
+	// require.NotNilf below is not a substitute: [documentStore.await]'s
+	// build deadline is 2s, and a build that lands just under that ceiling
+	// still answers non-nil and correct — a wall-clock threshold loose
+	// enough to tolerate scheduling jitter on a contended box is also loose
+	// enough for that failure mode to pass under it, which is the bug this
+	// test exists to catch wearing a passing assertion's clothes. So this
+	// asks the store directly rather than timing the round trip: hoverTrace
+	// records whether the wait that answered this hover ever gave up
+	// because [documentBuildTimeout] expired, as opposed to finding the
+	// document already landed. A hover racing an in-flight build honestly
+	// is allowed to wait — that is the mechanism #317 needs — but it must
+	// never be the deadline that ends the wait for a document that arrived
+	// in the same breath as its didOpen. Inside the bubble that deadline is
+	// virtual and passes only once every goroutine is blocked, so it firing
+	// here means the document never landed at all, not that a build was slow.
+	var boundExpired atomic.Bool
+	c.server.docs.setAwaitTrace(func(expired bool) { boundExpired.Store(expired) })
+
+	uri := "file:///race-open.yaml"
+	c.openNoWait(uri, raceSource)
+
+	at := positionOf(t, raceSource, "for_each:", 0)
+	got := c.hover(uri, at.Line, at.Character)
+
+	require.NotNilf(t, got, "round %d: hover answered null for a document the client had already opened", round)
+	assert.Containsf(t, hoverText(got), "for_each", "round %d", round)
+	assert.Falsef(t, boundExpired.Load(), "round %d: hover's wait ended because documentBuildTimeout expired rather than because the document was found built, which the elapsed-time check this replaced could not tell apart from a fast answer", round)
 }
 
 // TestHoverOnNeverOpenedDocumentAnswersNull is the other direction, and the one
@@ -102,21 +112,27 @@ func TestHoverAnsweredWhenItArrivesWithDidOpen(t *testing.T) {
 // never coming is not: a client asking about a URI it never opened gets null, and
 // gets it without the connection stalling. Fail closed here means answer, not
 // block.
+//
+// The bound on the wait is virtual: inside the bubble the five seconds pass the
+// instant every goroutine is blocked, so a hover that hangs is reported at once
+// rather than after the grace the store gives a document on its way.
 func TestHoverOnNeverOpenedDocumentAnswersNull(t *testing.T) {
-	c := newClient(t)
-	c.initialize()
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
 
-	done := make(chan *lsp.Hover, 1)
-	go func() {
-		done <- c.hover("file:///never-opened.yaml", 3, 5)
-	}()
+		done := make(chan *lsp.Hover, 1)
+		go func() {
+			done <- c.hover("file:///never-opened.yaml", 3, 5)
+		}()
 
-	select {
-	case got := <-done:
-		assert.Nil(t, got, "a document the client never opened has no hover")
-	case <-time.After(5 * time.Second):
-		t.Fatal("hover on a never-opened document did not return: the wait has no bound")
-	}
+		select {
+		case got := <-done:
+			assert.Nil(t, got, "a document the client never opened has no hover")
+		case <-time.After(5 * time.Second):
+			t.Fatal("hover on a never-opened document did not return: the wait has no bound")
+		}
+	})
 }
 
 // TestHoverThroughAChangeStormAnswersFromTheLatestVersion covers the join of the
@@ -146,6 +162,10 @@ func TestHoverOnNeverOpenedDocumentAnswersNull(t *testing.T) {
 // an ordered hook ahead of the goroutine, which lives in the connection's
 // construction rather than in this package.
 func TestHoverThroughAChangeStormAnswersFromTheLatestVersion(t *testing.T) {
+	synctest.Test(t, testHoverThroughAChangeStorm)
+}
+
+func testHoverThroughAChangeStorm(t *testing.T) {
 	c := newClient(t)
 	c.initialize()
 
@@ -191,13 +211,11 @@ func TestHoverThroughAChangeStormAnswersFromTheLatestVersion(t *testing.T) {
 
 	// The burst coalesces onto the last change rather than onto whichever
 	// goroutine happened to finish last.
-	require.Eventually(t, func() bool {
-		doc, ok := c.serverDoc(uri)
-		return ok && doc.text == latest
-	}, 5*time.Second, 10*time.Millisecond, "the document did not settle on the newest text")
+	synctest.Wait()
+	doc, ok := c.serverDoc(uri)
+	require.True(t, ok, "the document is gone")
+	require.Equal(t, latest, doc.text, "the document did not settle on the newest text")
 
 	// And asking again answers from it.
-	require.Eventually(t, func() bool {
-		return strings.Contains(hoverText(c.hover(uri, at.Line, at.Character)), "final_marker")
-	}, 5*time.Second, 10*time.Millisecond, "hover kept answering from a version older than the last change")
+	require.Contains(t, hoverText(c.hover(uri, at.Line, at.Character)), "final_marker", "hover kept answering from a version older than the last change")
 }

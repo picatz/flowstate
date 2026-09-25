@@ -1,16 +1,21 @@
 package server_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
+
+const manualTestIssuer = "https://issuer.example.com"
 
 // `manual:` enforced by the handler, and the trigger it records on the run.
 //
@@ -29,13 +34,100 @@ func narrowedWorkflow() *v1.Workflow {
 		Profile: v1.CurrentProfile,
 		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{
 			RequireReason:     true,
-			AllowedPrincipals: []string{"oncall@example.com"},
+			AllowedPrincipals: []string{manualTestIssuer + "#oncall@example.com"},
 		}},
 		Steps: []*v1.Node{{
 			Id:   "rotate",
 			Kind: &v1.Node_Value{Value: v1.NewLiteral("rotated")},
 		}},
 	}
+}
+
+// TestManualStartHandlersUseIssuerQualifiedPrincipals is the two-issuer
+// collision at both production creation boundaries. The subjects are identical;
+// only the authenticated issuer differs. Replacing either handler argument with
+// identity.GetSubject(), or comparing only the suffix after '#', admits issuer B
+// and fails this test.
+func TestManualStartHandlersUseIssuerQualifiedPrincipals(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := mustNew(t, temporal)
+
+	workflow := &v1.Workflow{
+		Name:    "issuer-scoped-manual-start",
+		Profile: v1.CurrentProfile,
+		Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{
+			AllowedPrincipals: []string{"https://issuer-a.example.com#runner"},
+		}},
+		Steps: []*v1.Node{{
+			Id: "mutation",
+			Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+				Name: "mutate",
+			}}}},
+		}},
+	}
+	issuerA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer: "https://issuer-a.example.com", Subject: "runner",
+	})
+	issuerB := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer: "https://issuer-b.example.com", Subject: "runner",
+		Claims: map[string]any{"access_token": "must-not-appear"},
+	})
+
+	for _, test := range []struct {
+		name string
+		call func(context.Context, string) error
+	}{
+		{
+			name: "Run",
+			call: func(ctx context.Context, _ string) error {
+				_, err := flowstate.Run(ctx, connect.NewRequest(&v1.RunRequest{Workflow: workflow}))
+				return err
+			},
+		},
+		{
+			name: "SignalWithStart",
+			call: func(ctx context.Context, key string) error {
+				_, err := flowstate.SignalWithStart(ctx, connect.NewRequest(&v1.SignalWithStartRequest{
+					EntityKey: key,
+					Workflow:  workflow,
+					Name:      "mutate",
+				}))
+				return err
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.NoError(t, test.call(issuerA, "manual-qualified-allowed"),
+				"issuer A's exact qualified principal was refused")
+			err := test.call(issuerB, "manual-qualified-denied")
+			require.Error(t, err, "issuer B reused issuer A's allowed subject")
+			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+			assert.Contains(t, err.Error(), "https://issuer-b.example.com#runner")
+			assert.NotContains(t, err.Error(), "must-not-appear",
+				"manual-start denial leaked an arbitrary verified claim")
+		})
+	}
+
+	mtls := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer: "flowstate:mtls/mesh", Subject: "spiffe://example.test/ns/ops/sa/runner",
+	})
+	mtlsWorkflow := proto.Clone(workflow).(*v1.Workflow)
+	mtlsWorkflow.GetTriggers().GetManual().AllowedPrincipals = []string{
+		"flowstate:mtls/mesh#spiffe://example.test/ns/ops/sa/runner",
+	}
+	_, err := flowstate.Run(mtls, connect.NewRequest(&v1.RunRequest{Workflow: mtlsWorkflow}))
+	require.NoError(t, err, "an mTLS principal's configured issuer and SAN-derived subject did not form its stable ID")
+
+	anonymousWorkflow := proto.Clone(workflow).(*v1.Workflow)
+	anonymousWorkflow.GetTriggers().GetManual().AllowedPrincipals = []string{
+		auth.AnonymousIssuer + "#" + auth.AnonymousSubject,
+	}
+	_, err = flowstate.Run(auth.ContextWithPrincipal(t.Context(), auth.AnonymousPrincipal()),
+		connect.NewRequest(&v1.RunRequest{Workflow: anonymousWorkflow}))
+	require.Error(t, err, "the insecure anonymous development identity satisfied a manual-start allowlist")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
 // TestRunRefusesAManualStartTheWorkflowNarrowedAway is the refusal, from outside.

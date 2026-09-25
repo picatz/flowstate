@@ -62,7 +62,14 @@ triggers:
     # delivery is at-least-once by nature: without a dedupe key every retried
     # delivery is a second run, and "this integration will not retry" is not a
     # thing a file may assume silently.
-    idempotency_key: ${event.headers["stripe-signature"]}
+    #
+    # The event's id, and deliberately not the signature header. Stripe signs
+    # every retry afresh — a new `t=` and a new MAC over the same body, for up to
+    # three days of retries — so a key over `Stripe-Signature` names the attempt
+    # rather than the event: it dedupes a byte-identical resend, which a
+    # provider never sends, and starts a fresh capture for every real retry.
+    # `flow lint` reports that shape (docs/STYLE.md, R10).
+    idempotency_key: ${event.body.id}
 
     # The call site. `event` is the delivery — `event.headers` and `event.body` —
     # and it is bound here and nowhere else in the language: a step that wants the

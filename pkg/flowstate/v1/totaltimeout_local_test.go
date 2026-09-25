@@ -35,4 +35,19 @@ func TestTotalTimeoutEndsTheStepLocal(t *testing.T) {
 
 	conformance.AssertTotalTimeoutEndedTheStep(t, "the local driver", out.GetStepValues()["poll"], attempts.Load())
 	conformance.AssertTotalTimeoutSuppressesWidening(t, "the local driver")
+
+	_, err = v1.Run(ctx, conformance.TotalTimeoutFailureWorkflow("total-timeout-failure-local", "poll"))
+	require.Error(t, err)
+	conformance.AssertTotalTimeoutFailure(t, "the local driver", v1.ClassifyError(err), err.Error())
+
+	var cause *v1.TaskError
+	require.ErrorAs(t, err, &cause,
+		"the dependency's last structured failure must remain reachable beneath the overall timeout")
+	require.Equal(t, v1.ErrorKindUpstream, cause.Kind)
+	require.ErrorContains(t, cause, conformance.TotalTimeoutFailure)
+
+	_, err = v1.Run(ctx, conformance.TotalTimeoutExhaustionWorkflow("total-timeout-exhaustion-local", "poll"))
+	require.Error(t, err)
+	conformance.AssertTotalTimeoutLeavesAttemptExhaustionAlone(
+		t, "the local driver", v1.ClassifyError(err), err.Error())
 }

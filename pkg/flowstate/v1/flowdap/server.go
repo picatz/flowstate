@@ -53,12 +53,13 @@ type Server struct {
 	// as though it meant something.
 	reference int
 
-	// scopes maps a variablesReference back to the group it was minted for.
+	// scopes maps a variablesReference back to the group and pause it was
+	// minted for.
 	// Rebuilt at every stop: a reference is only meaningful for the pause it
 	// was handed out during, and answering a stale one with the current scope
 	// would report the run's position as the answer to a question about a
 	// different one.
-	scopes map[int]string
+	scopes map[int]scopeReference
 
 	// stream is where responses and events go.
 	stream Stream
@@ -81,6 +82,10 @@ type Server struct {
 	// program is what the client's launch configuration named, read once the
 	// launch request arrives and only meaningful after [Server.Launched].
 	program string
+	// revealSensitive is the editor-facing launch choice paired with program.
+	// Policy remains the command's: this package carries the client's explicit
+	// choice but does not decide what a workflow may disclose.
+	revealSensitive bool
 
 	// ended guards the terminated/exited pair, because two things can learn
 	// the run is over — a movement that meets [flowdebug.ErrRunOver], and
@@ -92,12 +97,17 @@ type Server struct {
 	exit int
 }
 
+type scopeReference struct {
+	group      string
+	generation uint64
+}
+
 // NewServer returns a server that drives session over stream.
 func NewServer(session *flowdebug.Session, stream Stream) *Server {
 	return &Server{
 		session:  session,
 		stream:   stream,
-		scopes:   map[int]string{},
+		scopes:   map[int]scopeReference{},
 		launched: make(chan struct{}),
 		entered:  make(chan struct{}),
 	}
@@ -140,6 +150,17 @@ func (s *Server) Program() string {
 	defer s.mu.Unlock()
 
 	return s.program
+}
+
+// RevealSensitive reports whether the client's launch configuration explicitly
+// permits values declared sensitive to be shown by the debugger.
+//
+// Read after [Server.Launched] fires, for the same ordering reason as [Server.Program].
+func (s *Server) RevealSensitive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.revealSensitive
 }
 
 // Output puts text in the client's debug console.
@@ -242,12 +263,14 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		// adapter serves whatever the editor points it at, which is the whole
 		// shape of a `launch.json`.
 		var asked struct {
-			Program string `json:"program"`
+			Program         string `json:"program"`
+			RevealSensitive bool   `json:"revealSensitive"`
 		}
 		_ = json.Unmarshal(request.Arguments, &asked)
 
 		s.mu.Lock()
 		s.program = asked.Program
+		s.revealSensitive = asked.RevealSensitive
 		s.mu.Unlock()
 
 		// Answered and nothing more. The run starts at `configurationDone`,
@@ -273,10 +296,10 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.reply(request, threadsBody{Threads: []thread{{ID: runThreadID, Name: "run"}}})
 
 	case "stackTrace":
-		s.reply(request, s.stackTrace())
+		s.reply(request, s.stackTrace(request.Arguments))
 
 	case "scopes":
-		s.reply(request, s.scopeList())
+		s.reply(request, s.scopeList(request.Arguments))
 
 	case "variables":
 		s.reply(request, s.variables(ctx, request.Arguments))
@@ -391,7 +414,7 @@ func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug
 
 		s.emit("output", map[string]string{
 			"category": "stderr",
-			"output":   "flowdap: " + err.Error() + "\n",
+			"output":   s.session.RedactText("flowdap: " + err.Error() + "\n"),
 		})
 
 		return
@@ -406,35 +429,75 @@ func (s *Server) move(ctx context.Context, step func(context.Context) (flowdebug
 	})
 }
 
-// stackTrace is where the run is, as the one frame it has.
-func (s *Server) stackTrace() stackTraceBody {
-	at, paused := s.session.Paused()
-	if !paused {
+// stackTrace is the run's shared, already-redacted call-chain rendering rather
+// than one reconstructed from adapter state or a live redactor.
+func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
+	var asked struct {
+		StartFrame int `json:"startFrame"`
+		Levels     int `json:"levels"`
+	}
+	if len(arguments) != 0 {
+		if err := json.Unmarshal(arguments, &asked); err != nil || asked.StartFrame < 0 || asked.Levels < 0 {
+			return stackTraceBody{StackFrames: []stackFrame{}}
+		}
+	}
+
+	labels, err := s.session.BacktraceLabels()
+	if err != nil {
 		// An empty stack rather than a refusal: a client asks for this
 		// speculatively, and "the run is not stopped" is exactly what no frames
 		// means.
 		return stackTraceBody{StackFrames: []stackFrame{}}
 	}
+	if len(labels) == 0 {
+		if at, paused := s.session.Paused(); paused && at.Autopsy {
+			// An autopsy has no current step or call chain, but it does retain a
+			// readable scope. Keep the synthetic frame DAP requires as the address
+			// for that scope; it describes adapter presentation, not engine state.
+			frames := []stackFrame{{ID: 1, Name: "after the run"}}
+			return stackTraceBody{StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels), TotalFrames: 1}
+		}
 
-	name := at.Step
-	switch {
-	case at.Autopsy:
-		// The run is over and its scope is still readable, which is a real
-		// position to be at and one no step id describes.
-		name = "after the run"
-	case at.Kind != "":
-		name = fmt.Sprintf("%s (%s)", at.Step, at.Kind)
+		return stackTraceBody{StackFrames: []stackFrame{}}
+	}
+
+	frames := make([]stackFrame, 0, len(labels))
+	for i, label := range labels {
+		frames = append(frames, stackFrame{ID: i + 1, Name: label})
 	}
 
 	return stackTraceBody{
-		StackFrames: []stackFrame{{ID: runThreadID, Name: name}},
-		TotalFrames: 1,
+		StackFrames: frameWindow(frames, asked.StartFrame, asked.Levels),
+		TotalFrames: len(frames),
 	}
 }
 
+func frameWindow(frames []stackFrame, start, levels int) []stackFrame {
+	if start >= len(frames) {
+		return []stackFrame{}
+	}
+	end := len(frames)
+	if levels > 0 && levels < len(frames)-start {
+		end = start + levels
+	}
+
+	return frames[start:end]
+}
+
 // scopeList is what the paused run can name, one DAP scope per group.
-func (s *Server) scopeList() scopesBody {
-	groups, err := s.session.Scope()
+func (s *Server) scopeList(arguments json.RawMessage) scopesBody {
+	var asked struct {
+		FrameID int `json:"frameId"`
+	}
+	if err := json.Unmarshal(arguments, &asked); err != nil || asked.FrameID != 1 {
+		// Caller frames identify the chain but are not paused scopes. Returning
+		// the innermost values for those, a missing frame, or malformed input
+		// would put a correct value under the wrong frame, which is worse than
+		// an explicitly empty pane.
+		return scopesBody{Scopes: []scope{}}
+	}
+
+	groups, generation, err := s.session.ScopeAtPause()
 	if err != nil {
 		return scopesBody{Scopes: []scope{}}
 	}
@@ -448,7 +511,7 @@ func (s *Server) scopeList() scopesBody {
 		// handed out with reference zero is one a client will not ask about.
 		s.reference++
 		reference := s.reference
-		s.scopes[reference] = group.Group
+		s.scopes[reference] = scopeReference{group: group.Group, generation: generation}
 		scopes = append(scopes, scope{
 			Name:               group.Group,
 			VariablesReference: reference,
@@ -467,60 +530,33 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 	_ = json.Unmarshal(arguments, &asked)
 
 	s.mu.Lock()
-	group, known := s.scopes[asked.VariablesReference]
+	reference, known := s.scopes[asked.VariablesReference]
 	s.mu.Unlock()
 
 	if !known {
 		return variablesBody{Variables: []variable{}}
 	}
 
-	groups, err := s.session.Scope()
+	wireScope, err := s.session.ScopeGroupProtoAt(ctx, reference.group, MaxScopeVariables, reference.generation)
 	if err != nil {
 		return variablesBody{Variables: []variable{}}
 	}
 
-	var names []string
-	root := ""
-	for _, candidate := range groups {
-		if candidate.Group == group {
-			names = candidate.Names
-
-			// The session's own answer for what these names hang from, rather
-			// than a switch here over its group names. This adapter kept one,
-			// and its comment said what was wrong with it — "the same fact read
-			// for a different renderer" is a parallel declaration, and a second
-			// pane renderer would have made it a third (#928 slice 1).
-			root = candidate.Root
-
-			break
-		}
+	if len(wireScope.GetGroups()) == 0 {
+		return variablesBody{Variables: []variable{}}
 	}
+	wireGroup := wireScope.GetGroups()[0]
 
-	variables := make([]variable, 0, min(len(names), MaxScopeVariables)+1)
-	for i, name := range names {
-		if i == MaxScopeVariables {
-			variables = append(variables, variable{
-				Name:  "…",
-				Value: fmt.Sprintf("%d more, not rendered", len(names)-MaxScopeVariables),
-			})
-
-			break
+	variables := make([]variable, 0, len(wireGroup.GetBindings())+1)
+	for _, binding := range wireGroup.GetBindings() {
+		text := binding.GetRendered()
+		if binding.GetError() != "" {
+			text = "(" + binding.GetError() + ")"
 		}
-
-		expression := name
-		if root != "" {
-			expression = root + "." + name
-		}
-
-		text, _, evalErr := s.session.Evaluate(ctx, expression)
-		if evalErr != nil {
-			// The name is real — the run told us so — and only its value could
-			// not be produced. Saying so beats dropping the row, which would
-			// make the pane disagree with the scope listing beside it.
-			text = "(" + evalErr.Error() + ")"
-		}
-
-		variables = append(variables, variable{Name: name, Value: text})
+		variables = append(variables, variable{Name: binding.GetName(), Value: text})
+	}
+	if omitted := int(wireGroup.GetTotal()) - len(wireGroup.GetBindings()); omitted > 0 {
+		variables = append(variables, variable{Name: "…", Value: fmt.Sprintf("%d more, not rendered", omitted)})
 	}
 
 	return variablesBody{Variables: variables}
@@ -530,8 +566,21 @@ func (s *Server) variables(ctx context.Context, arguments json.RawMessage) varia
 func (s *Server) evaluate(ctx context.Context, request inbound) {
 	var asked struct {
 		Expression string `json:"expression"`
+		FrameID    *int   `json:"frameId"`
 	}
-	_ = json.Unmarshal(request.Arguments, &asked)
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+		s.fail(request, "invalid evaluate arguments")
+
+		return
+	}
+	if asked.FrameID != nil && *asked.FrameID != 1 {
+		// Caller frames carry only call-chain identity. Evaluating against the
+		// innermost scope for one would put a real callee value under a caller,
+		// the same misattribution scopeList refuses.
+		s.fail(request, "that stack frame has no readable scope")
+
+		return
+	}
 
 	text, _, err := s.session.Evaluate(ctx, asked.Expression)
 	if err != nil {
@@ -566,25 +615,51 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 	//
 	// It replaces the set for the same reason the method does: a client sends
 	// everything it has each time one changes.
-	names := make([]string, 0, len(asked.Breakpoints))
-	answers := make([]breakpoint, 0, len(asked.Breakpoints))
+	requested := make([]string, 0, len(asked.Breakpoints))
 	for _, want := range asked.Breakpoints {
-		name := strings.TrimSpace(want.Name)
+		requested = append(requested, strings.TrimSpace(want.Name))
+	}
+	notices, setErr := s.session.SetBreakpointsWithNotices(requested)
+
+	answers := make([]breakpoint, 0, len(asked.Breakpoints))
+	for i, name := range requested {
 		if name == "" {
 			answers = append(answers, breakpoint{Message: "a breakpoint here is a step id, and this one is empty"})
 
 			continue
 		}
 
-		names = append(names, name)
+		// Answered per breakpoint rather than by refusing the set, which is the
+		// difference between a client showing one hollow marker and a client
+		// losing every marker it has. DAP has a field for exactly this, and a
+		// breakpoint on a step this run cannot reach is what it is for: it comes
+		// back unverified, carrying the reason the prompt would have printed,
+		// instead of verified and silently never taken (#1367).
+		//
+		// It reports only what the session's inventory knows, and `flow dap`
+		// builds its session before there is one: the workflow arrives in the
+		// client's own launch configuration as `program` (cmd/flow/dap.go), so at
+		// construction there is nothing to check a name against and every name
+		// fails open. That is the documented empty-inventory rule rather than an
+		// oversight here, and it is why this is right where the inventory exists —
+		// an embedder that passes Options.Steps, and the tests below — and latent
+		// where it does not. Closing that gap means giving a session its steps
+		// after construction and re-reporting breakpoints already answered, which
+		// is the editor-front work #1297 owns (Copilot, #1627).
+		if notices[i].Unknown {
+			answers = append(answers, breakpoint{Message: notices[i].Message})
+
+			continue
+		}
+
 		answers = append(answers, breakpoint{Verified: true})
 	}
 
-	if err := s.session.SetBreakpoints(names); err != nil {
+	if setErr != nil {
 		// The set was refused whole, so no entry may claim to be verified: the
 		// alternative is a person watching for stops at breakpoints the session
 		// never took.
-		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), err.Error())}
+		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), setErr.Error())}
 	}
 
 	return breakpointsBody{Breakpoints: answers}

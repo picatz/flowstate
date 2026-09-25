@@ -87,18 +87,67 @@
 // The host creates a directory only its own user can enter, mode 0700, and
 // assigns a socket path inside it. It launches the binary with an explicit argv
 // and no shell, in its own process group, with an environment carrying: a magic
-// cookie, the protocol versions the host speaks, the socket path, a per-launch
-// secret generated from crypto/rand, and the number of an inherited file
-// descriptor.
+// cookie, the protocol versions the host speaks, the socket path, and the
+// numbers of two inherited file descriptors — one carrying a per-launch secret
+// generated from crypto/rand, one that closes when the host exits.
+//
+// That environment also carries the deployment's egress policy, base64-encoded —
+// the grant every plugin receives, the same bytes the built-in http task runs
+// under, bounded at 64 KiB before encoding. A worker with no operator policy
+// grants its own default instead of nothing, written as a document marked
+// `deployment_default: true`, so set-but-empty is a policy whose document is
+// empty and unset means only that no worker launched the process; the reader
+// fails closed on unset rather than treating it as permission.
+//
+// The grant is what protocol version 5 added to the launch environment and the
+// marker is what version 6 added to the grant, so a plugin that predates either
+// is refused at the handshake rather than launched under a contract it does not
+// implement. The marker needed its own number because netpolicy's parser is
+// strict: a version 5 plugin refuses the whole document over the unknown key,
+// which would arrive as an operator's policy being malformed rather than as two
+// builds that cannot work together. See [Config.EgressPolicy] and the sdk
+// package's EgressPolicy.
+//
+// When that policy sets `proxy_from_environment`, the launch environment also
+// carries the worker's own HTTP_PROXY, HTTPS_PROXY and NO_PROXY (and their
+// lowercase spellings), verbatim. Those are not protocol variables — every HTTP
+// stack already reads them — but they are granted rather than inherited, for the
+// same reason the policy is: an environment built from nothing has no proxy in
+// it, so a plugin honouring a proxy policy would dial straight past the proxy
+// its operator requires. When the policy does not proxy, none of them cross.
+//
+// The secret is on a descriptor rather than in the environment, and any language
+// that can inherit one can read it: the host writes the token and a single "\n"
+// to a pipe, closes its end before the plugin starts, and names the read end's
+// number in FLOWSTATE_PLUGIN_TOKEN_FD. The plugin reads that descriptor to EOF,
+// takes everything before the newline, and closes it — so the token does not
+// stay reachable through /proc/<pid>/fd, and does not travel to anything the
+// plugin itself launches. There is nothing to wait for and nothing to write
+// back. What made the environment the wrong place is that a variable cannot be
+// withdrawn — on Linux /proc/<pid>/environ shows the block the kernel copied at
+// execve(2), so a secret delivered there is readable for as long as the plugin
+// runs, no matter how promptly the plugin unsets it, and it is collected by
+// anything that sweeps environments into a diagnostic bundle or a core dump.
+//
+// That read is bounded in both directions, because a plugin cannot know that the
+// process which launched it is the host it expects: at most 512 bytes, the
+// newline included, and at most five seconds, after which the plugin refuses to
+// serve rather than waiting. Neither bound covers the other. Bytes alone leave a
+// launcher that writes half a line and closes nothing waiting forever; time
+// alone lets one that writes without stopping decide what this process
+// allocates. An implementation in another language needs both.
 //
 // The plugin checks the cookie. Without it — someone ran the binary from a
 // shell — it prints an explanation to stderr and exits, rather than printing a
 // handshake line and speaking a binary protocol into a terminal. It then picks
 // the highest protocol version it shares with the host, or exits saying it
-// cannot serve any of them. It listens on the assigned path, sets the socket to
-// mode 0600, and prints one line to stdout:
+// cannot serve any of them; a plugin built against a host that still put the
+// secret in the environment shares no version with this one, and each side
+// refuses at that point naming both numbers rather than failing later over a
+// credential that is not where it looked. It reads the token, listens on the
+// assigned path, sets the socket to mode 0600, and prints one line to stdout:
 //
-//	FLOWSTATE-PLUGIN|1|2|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|5|unix|/var/folders/.../s
 //
 // After that line the plugin never uses stdout again; everything else it says
 // goes to stderr, which the host reads line by line and logs attributed to that

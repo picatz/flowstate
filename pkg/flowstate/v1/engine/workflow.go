@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +8,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type ErrRunFailed struct {
@@ -24,9 +24,11 @@ type ErrRunFailed struct {
 	// records for the same failure.
 	//
 	// It travels as a field rather than as a wrapped cause because this type has
-	// no Unwrap on purpose: Temporal's failure converter walks the unwrap chain
-	// into the failure it persists, and what this deliberately flattens must stay
-	// flattened.
+	// no general wrapped cause: Temporal's failure converter walks the unwrap
+	// chain into the failure it persists, and what this deliberately flattens
+	// must stay flattened. The sole exception is a ScheduleToClose expiry during
+	// retry backoff, whose last application failure is retained below as the
+	// structured evidence for the budget judgement (#1163).
 	Recorded string
 
 	// recordedFromTask reports whether Recorded came from a classified task
@@ -64,11 +66,18 @@ type ErrRunFailed struct {
 	// [classifyRunError], which is what puts it where a client can read it —
 	// this field only carries it there.
 	Kind v1.ErrorKind
+
+	// cause is populated only for #1163's server shape. Most run failures remain
+	// deliberately flattened; this one must retain the last attempt's classified
+	// dependency failure beneath the outer Timeout classification.
+	cause error
 }
 
 func (e *ErrRunFailed) Error() string {
 	return fmt.Sprintf("engine: flowstate run failed: %s", e.Message)
 }
+
+func (e *ErrRunFailed) Unwrap() error { return e.cause }
 
 // errorKind reports e's classification, defaulting to [v1.ErrorKindInternal]
 // when nothing along the way classified it — the same default
@@ -134,6 +143,55 @@ func nodeFailed(err error) error {
 	return failedAt(err, "")
 }
 
+// preStepFailed reports a failure of one of the activities a run executes
+// before its first step, translating the one shape of it that nothing else in
+// the chain classifies. `what` names that work in the run's own words and is
+// the half of the sentence a person reads.
+//
+// These activities — the run's `vars:`, the pinned-plugin admission check — are
+// scheduled before the executor exists, so their failures leave [runWorkflow]
+// without passing through [nodeFailed], and [classifyRunError] rewraps only an
+// [ErrRunFailed]. Whatever this returns unchanged therefore reaches the client
+// as itself. For a classified failure that is exactly right: it arrives as a
+// [temporal.ApplicationError] carrying the kind the activity decided and the
+// sentence the local driver gives for the same file, and wrapping it would
+// prepend a position the local driver does not, over a failure that already
+// classified itself.
+//
+// A timeout is the shape that needed this, because nothing anywhere classifies
+// one. It reached the server's own fallback (server.failureError) as a bare
+// [temporal.TimeoutError], and that fallback reads one as the *run's* execution
+// timeout — correctly, on the rule that a step's timeout is always translated
+// before it gets there (#788). These were the paths still reaching it
+// untranslated, so a run whose `vars:` or plugin admission timed out before its
+// first step ran was reported as "this run exceeded its execution timeout" and
+// classified with the permanent run-level kind: a budget named that had not
+// fired, and a permanent verdict on the one run where nothing has happened yet
+// and restarting is safe.
+//
+// Translated, it is what it is — a failed run whose pre-step work did not
+// finish — and [recordedStepKind] answers [v1.ErrorKindTimeout] for it exactly
+// as it does for a step, so its retryability is the activity's own policy's
+// rather than a judgement about a run that never started.
+//
+// A `call:`'s own `vars:` needs none of this: that dispatch is made from inside
+// the executor and already returns through [nodeFailed] (execute.go), which is
+// the same wrapping by a shorter route.
+func preStepFailed(err error, what string) error {
+	if _, ok := errors.AsType[*temporal.TimeoutError](err); !ok {
+		return err
+	}
+
+	// [durableStepTimeoutError] rather than a second wrapper meaning the same
+	// thing: it carries a translated sentence for [ErrRunFailed.Message] while
+	// [durableStepTimeoutError.Unwrap] leaves the Temporal error underneath
+	// reachable, which is what keeps recordedStepKind's answer the activity's.
+	return nodeFailed(&durableStepTimeoutError{
+		err:     err,
+		message: "timed out: " + what,
+	})
+}
+
 // failedAt builds the run failure, optionally prefixed by a position.
 func failedAt(err error, position string) error {
 	recorded, fromTask := recordedStepError(err)
@@ -195,13 +253,20 @@ func failedAt(err error, position string) error {
 	// The step's own account — an exhausted loop's iterations, a failed switch's
 	// selection — read off the raw error at the one site it is raised (that
 	// step's own nodeFailed). A propagating re-wrap hands this function an
-	// [ErrRunFailed], which has no Unwrap on purpose, so the assertion fails
-	// there and the record stays with the entry it belongs to.
+	// [ErrRunFailed], which does not implement StepFailureRecord, so the assertion
+	// fails there and the record stays with the entry it belongs to.
 	var recordedOwn *v1.Node_Outputs
 	if account, ok := err.(v1.StepFailureRecord); ok {
 		// The envelope-free text this driver already extracted, never the
 		// error's own words: see [v1.StepFailureRecord].
 		recordedOwn = account.Record(recorded)
+	}
+
+	var cause error
+	if inner != nil {
+		cause = inner.cause
+	} else if retained, expired := durableStepBackoffApplicationFailure(err); expired {
+		cause = retained
 	}
 
 	return &ErrRunFailed{
@@ -210,6 +275,7 @@ func failedAt(err error, position string) error {
 		recordedFromTask: fromTask,
 		recordedOwn:      recordedOwn,
 		Kind:             recordedStepKind(err),
+		cause:            cause,
 	}
 }
 
@@ -238,8 +304,7 @@ func recordedStepError(err error) (string, bool) {
 	// Every application error reaching a step's tolerance came from
 	// activityError, which builds it from a classified task failure and puts the
 	// canonical text in the message.
-	var app *temporal.ApplicationError
-	if errors.As(err, &app) {
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 		return app.Message(), true
 	}
 
@@ -270,15 +335,13 @@ func recordedStepError(err error) (string, bool) {
 // non-nil error it does not otherwise recognize) is the right answer for a
 // failure that crossed the boundary in a shape nothing here expected.
 //
-// A [temporal.TimeoutError] is checked before the application error, and the
+// [durableStepTimeoutType] is checked before the application error, and the
 // order is the same line [durableStepTimeoutMessage] draws for the same reason,
-// stated there at length: a schedule-to-close budget that expires after a
-// retryable failure wraps the last attempt's [temporal.ApplicationError] as the
-// timeout's own cause, and `errors.As` walks straight through to find it — so
-// asking about an application error first answers with the stale prior
-// attempt's classification and hides that the budget is what ended the step.
-// The message and the kind must name the same fact, and they now decide it the
-// same way round.
+// stated there at length: whether Temporal returns a TimeoutError around the
+// last attempt or an ActivityError with RetryState TIMEOUT, errors.As can still
+// reach the stale [temporal.ApplicationError] underneath — so asking about the
+// application error first hides that the budget ended the step. The message and
+// kind must name the same fact, and they decide it in one helper.
 //
 // Every timeout type is one answer, not only the two a step's policy names.
 // [durableStepTimeoutMessage] returns err untranslated for schedule-to-start
@@ -293,13 +356,11 @@ func recordedStepKind(err error) v1.ErrorKind {
 		return run.Kind
 	}
 
-	var timeoutErr *temporal.TimeoutError
-	if errors.As(err, &timeoutErr) {
+	if _, imposed := durableStepTimeoutType(err); imposed {
 		return v1.ErrorKindTimeout
 	}
 
-	var app *temporal.ApplicationError
-	if errors.As(err, &app) {
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok {
 		if kind, ok := v1.ParseErrorKind(app.Type()); ok {
 			return kind
 		}
@@ -334,7 +395,7 @@ const defaultMaxStepsPerRun = 200
 // passed to NewContinueAsNewErrorWithOptions, and a workflow's own dispatch
 // table always points at the registered name.
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
-	workflowName := st.GetWorkflow().GetName()
+	workflowName := st.GetMetricWorkflowName()
 
 	// #917's run-lifecycle metrics. Recorded here, around the whole of this
 	// segment, rather than inside runWorkflow: this is the one function every
@@ -429,12 +490,28 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		return nil, fmt.Errorf("register state query: %w", err)
 	}
 
+	// A continued segment says where the workload began and how many segments
+	// it has run as, in its memo, so that a listing — which sees one execution
+	// per workload and reads nothing but visibility — reports the workload's
+	// start rather than the segment's (#1690). A first segment writes nothing:
+	// its own start is the workload's and its count is one, which is what a
+	// reader assumes of a run with no such memo. See [WorkloadStartedMemoKey].
+	if err := recordChain(ctx, st); err != nil {
+		return nil, fmt.Errorf("record the workload's chain: %w", err)
+	}
+
 	// Before anything this segment does, including the vars activity below: a
 	// worker that may not run this workload must not evaluate its `vars:` either.
 	// See engine/plugins.go for why the check is split the way it is, and why this
 	// is per segment rather than per run: Continue-As-New is where a run can land
 	// on a worker that was not in the fleet when it started.
 	if err := admitPlugins(ctx, st.GetWorkflow()); err != nil {
+		return nil, err
+	}
+	// The same segment boundary, after the richer plugin contract so a plugin
+	// rollout mismatch keeps its version/digest diagnostic. This checks every
+	// task the program can reach before vars or a first effect is evaluated.
+	if err := admitTaskCapabilities(ctx, st.GetWorkflow()); err != nil {
 		return nil, err
 	}
 
@@ -491,12 +568,41 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			// could take without being refused.
 			Identity: st.GetIdentity(),
 		}).Get(ctx, &evaluated); err != nil {
-			return nil, err
+			return nil, preStepFailed(err, "the workflow's vars: did not finish evaluating")
 		}
 		vars = evaluated.GetAmbientVars()
 		st.Vars = vars
 	}
 	position.setVars(vars)
+
+	// A continuation is a history command, so introducing a new reason to emit
+	// one must be versioned. Old histories take the pre-#1882 path until they
+	// complete or cross an already-recorded Continue-As-New boundary; new
+	// executions accumulate deterministic workflow-side CEL cost from their
+	// first segment.
+	//
+	// Version 2 is a second set of reasons rather than a second implementation
+	// of the first, which is why it bumps rather than reusing version 1: #1919
+	// shipped version 1, so open executions recorded it, and those segments
+	// charged a `value:` step and nothing else and never suspended at a skipped
+	// step. A worker running this build replays them and must reach the same
+	// commands — charging a condition or a `for_each`'s `items:` in a replayed
+	// prefix could cross the threshold at a boundary the history has an
+	// activity at, and the run would wedge on a nondeterminism error rather
+	// than fail visibly.
+	var (
+		sliceCost              *uint64
+		everyExpressionCharged bool
+	)
+	carriesHeld := workflow.GetVersion(ctx, heldFailureCarryChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+	switch workflow.GetVersion(ctx, workflowSliceCostChange, workflow.DefaultVersion, 2) {
+	case workflow.DefaultVersion:
+	case 1:
+		sliceCost = new(uint64)
+	default:
+		sliceCost = new(uint64)
+		everyExpressionCharged = true
+	}
 
 	// Execute through the recursive executor, which handles nested control flow
 	// and records where to resume if the run has to be continued as new.
@@ -511,13 +617,45 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
-		budget: stepsBudget,
-		resume: resumeFrames(st),
+		scope:                  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
+		budget:                 stepsBudget,
+		resume:                 resumeFrames(st),
+		sliceCost:              sliceCost,
+		everyExpressionCharged: everyExpressionCharged,
+		carriesHeld:            carriesHeld,
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
-		signals:    &signalCarry{pending: st.GetPendingSignals()},
+		signals: &signalCarry{
+			pending: st.GetPendingSignals(),
+
+			// And the delivery ids earlier segments already answered gates
+			// with. Carried for the reason the pending list is: a `loop:`
+			// around a gate outlives a segment, so a run that forgot what it
+			// had consumed would take a redelivery on the far side of a
+			// suspension — the one case a receiver-side table could not catch
+			// either, since it is the run's own history that decides it.
+			consumed: st.GetConsumedDeliveryIds(),
+		},
+
+		// The run's debug lease, if anybody takes one. Built per segment and
+		// holding no lease to begin with, which is the honest starting state
+		// rather than a gap: a *held* lease and a Continue-As-New cannot
+		// coexist — the boundary that holds is visited before a step and the
+		// budget is checked after one — so a segment always begins unheld. What
+		// can survive the seam is an ask the run accepted delivery of and has
+		// not yet acted on, and that travels in `PendingSignals` exactly as an
+		// early-arriving approval does. See debuglease.go.
+		debug: &debugControl{
+			run: runAddress(ctx),
+
+			// Read from the run's own specification rather than from the memo,
+			// because workflow code cannot see a memo — and it does not need
+			// to: this is the presence question, and the two copies agree about
+			// presence by construction. See [debugControl.declared].
+			declared: st.GetWorkflow().GetDebug() != nil,
+		},
+
 		progress:   position,
 		detailsCtx: detailsCtx,
 		waits:      parked,
@@ -567,7 +705,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// Failing the run when an output cannot be computed is deliberate: an output
 		// is the answer the caller asked for, and a run that cannot produce it has not
 		// succeeded.
-		runOutputs, outputsErr := v1.EvalRunOutputs(context.Background(), st.GetWorkflow(), exec.scope)
+		runOutputs, outputsErr := v1.EvalRunOutputs(evalContext(), st.GetWorkflow(), exec.scope)
 		if outputsErr == nil {
 			stepOutputs.RunOutputs = runOutputs
 			if sizeErr := v1.CheckRunResultSize(stepOutputs); sizeErr != nil {
@@ -597,15 +735,45 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// a signal channel it never read. A workload whose approval arrived
 		// while it was on an earlier step would otherwise resume with the
 		// approval gone and wait forever.
-		pending := drainSignals(ctx, st.Workflow, exec.signals.pending)
+		pending := drainSignals(ctx, st.Workflow, exec.signals.pending, exec.signals.consumed)
+
+		// And the one channel the engine owns rather than the specification. A
+		// pause ask buffered when this segment ran out of budget would otherwise
+		// be dropped at the seam — a `flow signal` that reported success and did
+		// nothing — which is precisely the failure drainSignals exists to
+		// prevent, on a channel [v1.SignalNames] cannot know about.
+		//
+		// Skipped entirely for a run whose workflow declares no `debug:`, which
+		// is every run written before that field existed: on those, the same
+		// name may be an ordinary signal the specification waits for, and this
+		// drain would take it. See [debugControl.declared].
+		pending, drainErr := drainDebugAsks(ctx, pending, exec.debug)
+		if drainErr != nil {
+			return v1.PartialTranscript(stepOutputs),
+				compensate(ctx, exec, &ErrRunFailed{Message: drainErr.Error()})
+		}
 
 		next := &v1.RunState{
-			Workflow:    st.Workflow,
-			Outputs:     carry,
-			StepsBudget: int32(stepsBudget),
-			Frames:      exec.frames,
+			Workflow:           st.Workflow,
+			Outputs:            carry,
+			StepsBudget:        int32(stepsBudget),
+			Frames:             exec.frames,
+			MetricWorkflowName: st.GetMetricWorkflowName(),
 
 			PendingSignals: pending,
+
+			// The webhook delivery ids this run has taken at a gate, add-only
+			// and already ring-bounded by [v1.ConsumeDeliveryID] as they were
+			// recorded. Weighed by [v1.CheckRunStateSize] along with everything
+			// else below, which is the bound that actually protects the run.
+			ConsumedDeliveryIds: exec.signals.consumed,
+
+			// Where the workload began and how many segments it has run as,
+			// carried so the next segment can write them to its memo — see
+			// [recordChain]. The first segment reads its own start off its
+			// history here, once, and every later one copies it.
+			WorkloadStartedAt: workloadStartedAt(ctx, st),
+			Segment:           st.GetSegment() + 1,
 
 			// Evaluated once for the whole run, not once per segment. A continued
 			// run takes whichever interpreter version is current (invariant 10), so
@@ -793,13 +961,13 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 	// and nothing else, which is the string the local driver appends to its own
 	// failure — the one value that has to be identical for a local run to rehearse
 	// what a compensated production run will say.
-	var inner *ErrRunFailed
-	if errors.As(err, &inner) {
+	if inner, ok := errors.AsType[*ErrRunFailed](err); ok {
 		return &ErrRunFailed{
 			Message:          inner.Message + v1.UndoSummary(results),
 			Recorded:         inner.Recorded,
 			recordedFromTask: inner.recordedFromTask,
 			Kind:             inner.Kind,
+			cause:            inner.cause,
 		}
 	}
 
@@ -893,7 +1061,62 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 	if len(frames) > 1 && from > 0 {
 		from--
 	}
-	return compactOutputsForRemainingSteps(spec.GetSteps(), from, outputs, spec.GetDeclaredOutputs())
+	return keepHeldOutputs(frames, outputs,
+		compactOutputsForRemainingSteps(spec.GetSteps(), from, outputs, spec.GetDeclaredOutputs()))
+}
+
+// keepHeldOutputs restores the transcript entries of the steps whose failures
+// cross the seam held.
+//
+// A held failure is a step that already ran, already failed, and whose failure
+// [executor.recordOutcome] already filed under its own id — the entry a
+// [v1.PartialTranscript] shows a person when the run stops there. Nothing
+// *remaining* mentions that step, which is the whole reason its failure is held
+// rather than raised, so the reference walk above prunes it: right for an output
+// no expression can still read, wrong for the record of the failure the resumed
+// segment is about to raise.
+//
+// Without this a run that suspended between the hold and the raise reports that
+// failure with the failing step missing from its transcript, while a run that
+// did not suspend reports it with the step present — the seam changing what the
+// run reports, which is the one thing #1968 exists to stop.
+//
+// The entry is restored whole rather than narrowed. A held step's entry is a
+// failure record ([v1.StepFailureRecord]), which is bounded by what
+// [failedStepOutputs] writes and is the thing being read; a reference walk's
+// field subset is the wrong shape for a reader that is not an expression.
+//
+// Only the run's own frame, because only its step ids name entries in these
+// outputs. A failure can be held at any depth whose scope is a representable
+// level, which is the top level and a callee's — a `for_each` body, a `loop:`
+// body, a `parallel` branch and a `switch:` body each run a suspend level
+// deeper, which is the property this rests on — and a callee records under
+// its own scope, carried wholesale in [v1.Frame.CallOutputs] and never
+// compacted, so its held step's entry needs no rescuing here. Step ids are
+// unique within a workflow and not across them, so walking every frame against
+// this one map would restore an unrelated top-level step that happened to share
+// a callee's id: an entry compaction correctly pruned, charged against
+// [v1.CheckRunStateSize], which refuses the continuation rather than truncating.
+func keepHeldOutputs(frames []*v1.Frame, full, trimmed *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
+	if len(frames) == 0 {
+		return trimmed
+	}
+
+	for _, failure := range frames[0].GetHeldFailures() {
+		entry, ok := full.GetStepValues()[failure.GetStepId()]
+		if !ok {
+			continue
+		}
+		if trimmed == nil {
+			trimmed = &v1.Workflow_StepOutputs{}
+		}
+		if trimmed.StepValues == nil {
+			trimmed.StepValues = map[string]*v1.Node_Outputs{}
+		}
+		trimmed.StepValues[failure.GetStepId()] = entry
+	}
+
+	return trimmed
 }
 
 // failedStepOutputs records a failure as a step's outputs.
@@ -1120,4 +1343,66 @@ func RunAddressFrom(workflowID, firstRunID, currentRunID string) *v1.RunAddress 
 	}
 
 	return &v1.RunAddress{WorkflowId: workflowID, RunId: runID}
+}
+
+// WorkloadStartedMemoKey and SegmentsMemoKey are the memo fields a continued
+// segment writes about the chain it belongs to: when the workload's first
+// segment started, as RFC 3339 with nanoseconds, and how many segments the
+// workload has run as, this one included.
+//
+// In the memo rather than only in [v1.RunState], because a listing reads
+// visibility and nothing else — it sees the current segment's execution and
+// its memo, and would otherwise report the segment's own start as the
+// workload's (#1690). Written through [workflow.UpsertMemo], which the server
+// carries across Continue-As-New along with the rest of the memo, so the
+// values a segment writes are also what the next segment starts with.
+//
+// Declared here, where they are written, and read by the server's listing and
+// Get; the server imports this package, not the other way round.
+const (
+	WorkloadStartedMemoKey = "flowstate.workloadStartedAt"
+	SegmentsMemoKey        = "flowstate.segments"
+)
+
+// recordChain writes the chain's memo on a continued segment that knows where
+// its workload began, and nothing otherwise.
+//
+// Only a continued segment, so a workload that never continues pays no history
+// event for this at all. Only one handed a start, so a chain whose first segment
+// predates [v1.RunState.workload_started_at] writes neither value: a count
+// that began partway through the chain would be wrong by however many segments
+// came before, and a reader told nothing knows to fall back to the segment's own
+// start, which is what it did before this existed.
+func recordChain(ctx workflow.Context, st *v1.RunState) error {
+	started := st.GetWorkloadStartedAt()
+	if st.GetSegment() == 0 || started == nil {
+		return nil
+	}
+
+	return workflow.UpsertMemo(ctx, map[string]any{
+		WorkloadStartedMemoKey: started.AsTime().UTC().Format(time.RFC3339Nano),
+		SegmentsMemoKey:        st.GetSegment() + 1,
+	})
+}
+
+// workloadStartedAt is when the workload began, for the next segment to carry:
+// what this segment was handed, or — on a first segment, which was handed
+// nothing — its own start as the history records it.
+//
+// A first segment is one that continued from nothing, read off the history
+// rather than off [v1.RunState.segment], because a segment continued into by an
+// interpreter that predates that field carries zero there too. Such a segment
+// hands on nothing rather than its own start, which would be a lie about the
+// workload; its chain stays unrecorded, as [recordChain] says.
+func workloadStartedAt(ctx workflow.Context, st *v1.RunState) *timestamppb.Timestamp {
+	if started := st.GetWorkloadStartedAt(); started != nil {
+		return started
+	}
+
+	info := workflow.GetInfo(ctx)
+	if info.ContinuedExecutionRunID != "" {
+		return nil
+	}
+
+	return timestamppb.New(info.WorkflowStartTime)
 }

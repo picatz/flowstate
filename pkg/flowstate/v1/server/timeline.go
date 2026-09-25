@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	enums "go.temporal.io/api/enums/v1"
@@ -12,6 +11,7 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -673,28 +673,19 @@ func (s *FlowstateServer) decodedFailureMessage(failure *failurepb.Failure) stri
 // does not.
 const unreadableFailure = "(failure message unavailable: encoded with a codec this server cannot read)"
 
-// boundedFailure is a failure's message, cut to [maxTimelineFailureBytes].
+// boundedFailure is a failure's message, cut to [maxTimelineFailureBytes] by
+// [textbound.Cut], so the cut cannot leave invalid UTF-8 for `-o json` and MCP
+// to refuse.
 //
-// At a rune boundary rather than a byte offset, for the reason
-// `flowtest.truncateRuneSafe` gives: a byte cut through a multi-byte sequence
-// produces invalid UTF-8, which protojson refuses to encode as a string at all
-// — so one overlong message would fail the whole answer's marshalling rather
-// than shorten its own row, on the surface (`-o json`, and MCP) where that
-// matters most.
-//
-// The cut is stated in the text. A message silently shortened is a diagnosis a
-// reader may act on believing they have all of it.
+// The cut is stated in the text rather than with textbound's bare "...": a
+// message silently shortened is a diagnosis a reader may act on believing they
+// have all of it.
 func boundedFailure(message string) string {
 	if len(message) <= maxTimelineFailureBytes {
 		return message
 	}
 
-	cut := maxTimelineFailureBytes
-	for cut > 0 && !utf8.RuneStart(message[cut]) {
-		cut--
-	}
-
-	return message[:cut] + "…(truncated)"
+	return textbound.Cut(message, maxTimelineFailureBytes) + "…(truncated)"
 }
 
 // summaryText reads the label the interpreter wrote onto a command.

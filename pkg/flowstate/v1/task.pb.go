@@ -36,9 +36,12 @@ const (
 	// Unspecified reads as LEVEL_INFO, so a `log:` that says nothing about level
 	// is the ordinary case rather than an error.
 	Task_Log_LEVEL_UNSPECIFIED Task_Log_Level = 0
-	Task_Log_LEVEL_INFO        Task_Log_Level = 1
-	Task_Log_LEVEL_WARN        Task_Log_Level = 2
-	Task_Log_LEVEL_ERROR       Task_Log_Level = 3
+	// Info records ordinary progress or operational context.
+	Task_Log_LEVEL_INFO Task_Log_Level = 1
+	// Warn records a condition worth attention without changing task success.
+	Task_Log_LEVEL_WARN Task_Log_Level = 2
+	// Error records an error condition but does not itself fail the task or run.
+	Task_Log_LEVEL_ERROR Task_Log_Level = 3
 )
 
 // Enum value maps for Task_Log_Level.
@@ -264,6 +267,9 @@ func (*Task_HTTP) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 1}
 }
 
+// Inputs describes one message written to the run's durable log. Omitting
+// level records the message at info level, and fields may be absent when the
+// message has no structured attributes.
 type Task_Log_Inputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Message is the line a person reads. It is the whole point, so it is the
@@ -384,6 +390,9 @@ func (*Task_Log_Outputs) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_task_proto_rawDescGZIP(), []int{0, 0, 1}
 }
 
+// Inputs describes the outbound request and how its response is accepted and
+// shaped. Secret references remain unresolved until worker-side use; absent
+// optional controls use the defaults documented on their fields.
 type Task_HTTP_Inputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Url is where the request goes, written as an absolute URI.
@@ -501,9 +510,12 @@ type Task_HTTP_Inputs struct {
 	// variables `outputs` sees.
 	//
 	// The default is unchanged and needs no expression: 2xx succeeds, 4xx fails
-	// permanently, 5xx is retried. This is for the cases that default cannot
-	// express: a 404 that means "not there yet, and that is fine", or an API
-	// that answers 200 with an error in the body:
+	// permanently, and repeat-safe 5xx responses are retried. This expression
+	// changes only whether the response satisfies the step's contract; it does
+	// not replace status classification or make an ambiguous mutation safe to
+	// repeat. This is for the cases that default cannot express: a 404 that
+	// means "not there yet, and that is fine", or an API that answers 200 with
+	// an error in the body:
 	//
 	//	expect: ${status_code == 200 || status_code == 404}
 	//	expect: ${status_code == 200 && !json.error}
@@ -525,6 +537,10 @@ type Task_HTTP_Inputs struct {
 	// taken effect, so by default it is not retried: doing the operation twice is
 	// worse than surfacing a failure that might have resolved on its own. Set
 	// this when the endpoint is idempotency-keyed and a retry is therefore safe.
+	//
+	// The same rule applies when a 502, 503, or 504 response cannot establish
+	// whether the mutation reached or committed at the origin. `expect:` and
+	// `parse_json:` do not override it.
 	//
 	// It does not affect a request that never connected, which is retried for any
 	// method because it cannot have taken effect.
@@ -654,6 +670,9 @@ func (x *Task_HTTP_Inputs) GetRetryOnUnknownOutcome() bool {
 	return false
 }
 
+// Outputs contains response data only after the response is accepted as
+// successful. Json is absent unless parsing was requested, and output shaping
+// may replace these defaults with the selected values.
 type Task_HTTP_Outputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// StatusCode is the status the response carried.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -99,7 +100,7 @@ func ExprError(s string) error {
 		return fenceError(s)
 	}
 	if value := v1.NewExpr(inner); value.Error() != nil {
-		_, message := celFailure(value.Error(), Span{}, inner)
+		_, message := celFailure(value, Span{}, inner)
 		if containsFence(inner) {
 			return fmt.Errorf("invalid expression %q: %s; %s", inner, message, interpolationHelp)
 		}
@@ -229,8 +230,9 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 	case *ast.StringNode:
 		return c.scalarString(n, node.Value, path, r, exprCtx)
 	case *ast.LiteralNode:
-		// A block scalar: | or >. Its text is a string like any other.
-		return c.scalarString(n, blockText(node), path, r, exprCtx)
+		// A block scalar: | or >. Its text is a string like any other, once the
+		// newline YAML itself appended is not mistaken for text the author wrote.
+		return c.scalarString(n, blockScalarText(blockText(node)), path, r, exprCtx)
 	case *ast.MappingNode, *ast.MappingValueNode, *ast.SequenceNode:
 		return c.composite(n, path, r)
 	default:
@@ -240,6 +242,46 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 		}
 		return &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
 	}
+}
+
+// blockScalarText drops the newline a block scalar's default chomping appended,
+// when what is left is exactly one fence.
+//
+// `value: |` followed by `${1 + 1}` is the natural spelling for an expression
+// that needs a line of its own, and it used to produce the *string* `"2\n"`:
+// the kept newline made the scalar a fence plus other text, which is
+// interpolation, so the value was `string(1 + 1) + "\n"`. Every step of that did
+// what it was specified to do and the answer was still one nobody wrote — and
+// `flow validate` said ok, because interpolating is legal. An `if:` written this
+// way was worse: the string `"true\n"` is refused at run time as not a bool,
+// after validation passed (#1445).
+//
+// A newline YAML appended is not text the author wrote, so the fence decides,
+// and the value is typed as the expression exactly as `|-` already gives.
+//
+// Two things are deliberately left alone. A scalar holding a fence *and* other
+// text (`${x}\nunits`) still interpolates, because there the newline sits
+// between things the author did write. And more than one trailing newline is
+// `|+` — chomping the author asked for explicitly — so those keep meaning what
+// they say.
+func blockScalarText(text string) string {
+	trimmed, chomped := strings.CutSuffix(text, "\n")
+	if !chomped || strings.HasSuffix(trimmed, "\n") {
+		return text
+	}
+
+	// Only when dropping it leaves a whole value: the same question
+	// [scalarString] is about to ask, asked here so that nothing else changes
+	// shape when the answer is no.
+	segs, err := scanInterpolation(trimmed)
+	if err != nil {
+		return text
+	}
+	if _, whole := wholeValueFence(segs, trimmed); !whole {
+		return text
+	}
+
+	return trimmed
 }
 
 // blockText returns the text of a block scalar, written with | or >.
@@ -309,6 +351,11 @@ func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bo
 		// The raw text rather than the scan's, because `$${` is the escape a
 		// *value* spells a literal fence with, and this is not a value — it is
 		// CEL source, where those characters are already CEL's to interpret.
+		//
+		// Noted as unfenced before it is compiled, because the compiled value
+		// cannot say so afterwards and a diagnostic about a bare word in it
+		// needs to — see [Positions.Unfenced].
+		c.pos.recordUnfenced(path)
 		return c.expression(n, text, path, r, placement)
 	}
 
@@ -336,8 +383,8 @@ func (c *compiler) interpolation(n ast.Node, text string, segs []segment, path s
 
 		span := spanOfFence(n, text, sg)
 		val := v1.NewExpr(sg.text)
-		if err := val.Error(); err != nil {
-			at, msg := celFailure(err, span, sg.text)
+		if val.Error() != nil {
+			at, msg := celFailure(val, span, sg.text)
 			c.report(at, r, "is not a valid expression: %s", msg)
 			return nil
 		}
@@ -355,12 +402,12 @@ func (c *compiler) interpolation(n ast.Node, text string, segs []segment, path s
 	c.recordExpr(path, spanOfNode(n))
 
 	val := v1.NewExpr(src)
-	if err := val.Error(); err != nil {
+	if val.Error() != nil {
 		// Unreachable while every fence parses and every literal is quoted, and
 		// so reported against the whole value rather than guessed at: a position
 		// invented for an impossible case is the wrong-position failure one
 		// surface over from `flow fix` corruption.
-		_, msg := celFailure(err, spanOfNode(n), src)
+		_, msg := celFailure(val, spanOfNode(n), src)
 		c.report(spanOfNode(n), r, "is not a valid expression: %s", msg)
 		return nil
 	}
@@ -379,8 +426,8 @@ func (c *compiler) expression(n ast.Node, src, path string, r ref, placement sec
 	c.recordExpr(path, span)
 
 	val := v1.NewExpr(src)
-	if err := val.Error(); err != nil {
-		at, msg := celFailure(err, span, src)
+	if val.Error() != nil {
+		at, msg := celFailure(val, span, src)
 		if containsFence(src) {
 			// A second fence inside the first: "${a} ${b}" opens at the start and
 			// closes at the end, so it parses as one expression and fails inside.
@@ -485,7 +532,22 @@ func (c *compiler) composite(n ast.Node, path string, r ref) *v1.Value {
 	if lit == nil {
 		return nil
 	}
-	return &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
+	value := &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
+
+	// The one depth bound, applied where a mapping becomes a literal. A `vars:`
+	// entry or a step `value:` written as data compiles to a CEL map literal,
+	// which [compiler.structureValue]'s bound never saw, so the only thing
+	// stopping a 63-level literal was the document's own [maxDepth] — while an
+	// input's `default:` refused the same literal at 33 with a sentence naming
+	// the reason: expressions over the value walk it (#1765). Refused here with
+	// that sentence, so the three positions an author can write a mapping in
+	// answer alike, and the compiled specification carries nothing deeper than
+	// [v1.MaxStructureDepth] whichever way it was spelled.
+	if err := v1.CheckValueDepth("value", path, value); err != nil {
+		c.report(spanOfNode(n), r, "%s", err)
+		return nil
+	}
+	return value
 }
 
 // scalarHoldsFence reports whether one scalar holds an expression anywhere in
@@ -524,10 +586,8 @@ func (c *compiler) containsExpr(n ast.Node) bool {
 	case *ast.LiteralNode:
 		return scalarHoldsFence(blockText(node))
 	case *ast.SequenceNode:
-		for _, v := range node.Values {
-			if c.containsExpr(v) {
-				return true
-			}
+		if slices.ContainsFunc(node.Values, c.containsExpr) {
+			return true
 		}
 	case *ast.MappingNode:
 		for _, v := range node.Values {
@@ -746,7 +806,7 @@ func (c *compiler) celTextString(n ast.Node, text string, r ref) (string, bool) 
 			}
 			span := spanOfFence(n, text, sg)
 			if val := v1.NewExpr(sg.text); val.Error() != nil {
-				at, msg := celFailure(val.Error(), span, sg.text)
+				at, msg := celFailure(val, span, sg.text)
 				c.report(at, r, "is not a valid expression: %s", msg)
 				return "", false
 			}
@@ -780,7 +840,14 @@ func quoteCELString(s string) string {
 // The location is dropped: the diagnostic carries a position in the Flowfile,
 // which is where the author is looking, and "<input>:1:7" alongside it reads like
 // a second, contradictory answer.
-var celErrorPattern = regexp.MustCompile(`ERROR: <input>:(\d+):(\d+): (.*)`)
+//
+// The line may be -1: that is where cel-go reports a parser limit (recursion,
+// code-point size), which is a fact about the whole expression rather than a
+// character in it. Matched rather than left to fall through, because the message
+// after that position is a sentence with its own colon ("expression recursion
+// limit exceeded: 250"), and reading the last cause out of it kept only the
+// number (#1766).
+var celErrorPattern = regexp.MustCompile(`ERROR: <input>:(-?\d+):(\d+): (.*)`)
 
 // celFailure narrows an expression's compile failure to the character at fault
 // and strips the wrapping that says only that a CEL expression failed to parse.
@@ -789,8 +856,17 @@ var celErrorPattern = regexp.MustCompile(`ERROR: <input>:(\d+):(\d+): (.*)`)
 // name the last token an author wrote when the parser ran out of input. Nothing
 // else here reads it, and a caller that does not have it may pass "": the
 // translation loses one clause and stays correct.
-func celFailure(err error, span Span, src string) (Span, string) {
-	text := err.Error()
+func celFailure(val *v1.Value, span Span, src string) (Span, string) {
+	// The structured message rather than [v1.Value.Error]'s rendering of it.
+	// That rendering appends " (code: CODE_INTERNAL)", and [lastCause] below
+	// reads the text after the final ": " — so a cel-go failure reported
+	// without the position prefix came back as the bare word "CODE_INTERNAL)",
+	// the code's name and its closing parenthesis standing in for the cause an
+	// author needed (#1291). The field carries the same text with no rendering
+	// to undo, which is the one source of truth rather than a format parsed
+	// back apart.
+	text := val.GetError().GetMessage()
+
 	match := celErrorPattern.FindStringSubmatch(text)
 	if match == nil {
 		return span, lastCause(text)
@@ -819,6 +895,11 @@ func celFailure(err error, span Span, src string) (Span, string) {
 
 // lastCause returns the innermost message of a wrapped error, so that a reader
 // sees what went wrong rather than the chain of functions that noticed.
+//
+// It is given a [v1.Value_Error.Message], never a rendered error: the messages
+// there are genuine wrapper chains ("failed to create CEL expression: failed
+// to parse CEL expression: ..."), where the last segment is the cause. See
+// [celFailure] for what reading a rendered error instead cost.
 func lastCause(text string) string {
 	if i := strings.LastIndex(text, ": "); i >= 0 && i+2 < len(text) {
 		return text[i+2:]

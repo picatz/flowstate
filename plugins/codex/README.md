@@ -43,8 +43,20 @@ go build -o /path/to/plugins/flowstate-plugin-codex ./plugins/codex
 
 ## Configuration
 
-Four environment variables, all read by the worker process this plugin runs
-inside - never by a Flowfile, and none ever searched on `$PATH`:
+Four environment variables, read by this plugin's own process - never by a
+Flowfile, and none ever searched on `$PATH`.
+
+A plugin inherits nothing of the worker's environment, so each is named to the
+worker that launches this plugin, not exported into the shell that starts it:
+
+```console
+$ flow worker --plugin-dir /path/to/plugins \
+    --plugin-env codex=FLOWSTATE_CODEX_BIN=/usr/local/bin/codex
+```
+
+`--plugin-env-file` is the same configuration as a YAML document for a
+deployment that would otherwise repeat the flag; see
+[docs/PLUGINS.md](../../docs/PLUGINS.md#being-configured-by-an-operator).
 
 - `FLOWSTATE_CODEX_BIN` (**required**) - the absolute path to a real `codex`
   binary. `codex.exec` refuses every call, and this plugin's own health
@@ -76,6 +88,20 @@ directory this plugin creates per call, holding nothing but
 `FLOWSTATE_CODEX_BASE_CONFIG`'s own bytes if that variable is set, and
 destroyed when the run ends. codex never sees the worker user's own
 `~/.codex/config.toml` or `auth.json` - see `ephemeral.go` and `process.go`.
+
+## Execution-mode posture
+
+Writable `codex.exec` runs deliberately keep their filesystem side effects in
+a local rehearsal. The host-attested execution mode is not filesystem or
+network authorization: the operator's sandbox ceiling decides whether a task
+may select a mutating mode; the working-context root and separate network grant
+further constrain `WORKSPACE_WRITE`. `DANGER_FULL_ACCESS` deliberately carries
+the worker user's wider authority and is named accordingly. These sandbox knobs
+govern commands the agent starts; the Codex CLI's own control-plane traffic does
+not enforce Flowstate's egress grant in any mode. A rehearsal is not a dry run
+once the operator admits either mode. The fake-Codex subprocess tests make real
+temporary-workspace edits without credentials or a production caller, including
+`TestCodexExecResetWorkingContextEnablesARetriedPatch`.
 
 ## Examples, kept honest
 
@@ -183,7 +209,12 @@ plugin's design:
   read out of it. Setting this input discards those edits (tracked and
   untracked alike) before this run's own baseline is read, restoring
   `working_context` to the commit it is already checked out at - not a
-  different one; there is no ref or sha to name here. It reuses the same
+  different one; there is no ref or sha to name here. Because that discarding
+  is a write, the request has to select a `sandbox_mode` that permits writing
+  and stay inside the operator's own ceiling: `SANDBOX_MODE_READ_ONLY` is that
+  ceiling as much as it is the author's request, and a task input that mutates
+  the checkout beneath it would be a Flowfile widening a grant deployment
+  configuration did not give. It reuses the same
   hardened git invocation and the same `gitWorktreeIsPlain` containment
   check `computePatch` and `observeWorkspace` already run, so a
   `working_context` that fails that check (a subdirectory of a larger
@@ -201,7 +232,7 @@ plugin's design:
   not use Exec.Run for the process launch." The library's `ThreadEvent`/
   `ThreadItem` decoding types are still used as-is.
 
-## Secrets: the first task built entirely against secret_inputs
+## Secrets: a task built entirely against secret_inputs
 
 `api_key` is declared in `codex.exec`'s `secret_inputs` (see `main.go`), so
 a Flowfile writes `api_key: ${secret('env:OPENAI_API_KEY')}` and this task's
@@ -211,11 +242,10 @@ under the caller's identity before this task ever runs (see
 plugin process never holds a `flowstate.v1.SecretRef` or a secret provider
 of its own.
 
-This is a real difference from `plugins/vcs` and `plugins/github`, both of
-which predate `secret_inputs` and each stand up their own secret scheme
-(`vcs:...`, `github:...`) resolved from the worker's own environment. This
-plugin has no `Secrets` field in its `sdk.Plugin{}` at all - there is
-nothing for it to resolve.
+Like the git, vcs, github, and SQL plugins, task credential consumption uses
+the host's `secret_inputs` path. This plugin has no `Secrets` field in its
+`sdk.Plugin{}` at all because it does not also provide a compatibility or
+dynamic secret backend of its own.
 
 What `secret_inputs` does not do, and what this plugin does on top of it,
 belt over suspenders: every task-level error and every output field this
@@ -236,11 +266,11 @@ process unresolved. It does not stop a Flowfile author from writing
 value that started as a literal and a value the host just resolved from a
 reference are the same shape, an already-resolved `flowstate.v1.Value`
 holding a literal string, and nothing in the wire format lets this task
-tell them apart. `plugins/vcs`'s own `tokenFromValue` can refuse a literal
-because that plugin resolves its own scheme and sees the `SecretRef` before
-resolving it; a task built against `secret_inputs` cannot do the equivalent
-check itself. See `exec.go`'s `apiKeyFromValue` for where this is recorded
-in code, not only here.
+tell them apart. Tasks whose credential must never be literal add
+`required_secret_inputs`; `codex.exec` deliberately has not made that
+compatibility change, so it cannot do the equivalent check itself. See
+`exec.go`'s `apiKeyFromValue` for where this is recorded in code, not only
+here.
 
 ## Bounds
 

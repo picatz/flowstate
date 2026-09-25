@@ -2,13 +2,22 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha512"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
@@ -171,6 +180,101 @@ func TestJWTInspectWithTheSigningKeyVerifiesTheSignature(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	require.Equal(t, false, result["signatureValid"])
+}
+
+// TestJWTInspectRefusesAnUnsignedAlgorithm pins the verification allowlist to
+// the configured key rather than the untrusted alg header. Passing "none" to
+// the JOSE library as an explicitly allowed algorithm would let the token make
+// the verification policy agree with its own lack of a signature.
+func TestJWTInspectRefusesAnUnsignedAlgorithm(t *testing.T) {
+	keyPath := generateTestKey(t, t.TempDir(), "2026-08")
+	encode := base64.RawURLEncoding.EncodeToString
+	unsigned := encode([]byte(`{"alg":"none","kid":"2026-08"}`)) + "." +
+		encode([]byte(`{"sub":"attacker"}`)) + "."
+
+	stdout, _, err := runJWTInspectInto(t, unsigned, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, false, result["signatureValid"])
+}
+
+func TestJWTInspectAcceptsAnRSAAlgorithmCompatibleWithTheKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "rsa.pem")
+	_, _, err := runKeysGenerateInto(t, "algorithm", string(jwa.RS256), "out", keyPath)
+	require.NoError(t, err)
+	private, err := readPrivateKeyPEM(keyPath)
+	require.NoError(t, err)
+
+	token, err := signJWT("rsa", jwa.RS384, private, jwt.ClaimsSet{jwt.Subject: "worker"})
+	require.NoError(t, err)
+	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, true, result["signatureValid"],
+		"a PKCS#8 RSA key is compatible with every supported RSA signature algorithm")
+}
+
+func TestJWTInspectAcceptsAP521KeyForES512(t *testing.T) {
+	private, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	require.NoError(t, err)
+	keyPath := writeECDSATestKey(t, private, "p521.pem")
+	token := signES512TestToken(t, private, "p521")
+
+	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, true, result["signatureValid"],
+		"inspection accepts the verification key families supported by the production verifier")
+}
+
+func TestJWTInspectRejectsES512WithAP256Key(t *testing.T) {
+	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	keyPath := writeECDSATestKey(t, private, "p256.pem")
+	token := signES512TestToken(t, private, "p256")
+	parsed, err := jwt.ParseString(token)
+	require.NoError(t, err)
+	require.NoError(t, parsed.VerifySignature([]jwa.Algorithm{jwa.ES512}, map[string]any{"p256": &private.PublicKey}),
+		"the JOSE verifier accepts the cryptographic signature, so inspection must enforce the JWA curve contract")
+
+	stdout, _, err := runJWTInspectInto(t, token, "key", keyPath)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+	require.Equal(t, false, result["signatureValid"],
+		"inspection must reject a curve and algorithm combination the production verifier refuses")
+}
+
+func writeECDSATestKey(t *testing.T, private *ecdsa.PrivateKey, name string) string {
+	t.Helper()
+
+	der, err := x509.MarshalPKCS8PrivateKey(private)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
+	return path
+}
+
+func signES512TestToken(t *testing.T, private *ecdsa.PrivateKey, kid string) string {
+	t.Helper()
+
+	encode := base64.RawURLEncoding.EncodeToString
+	signingInput := encode(fmt.Appendf(nil, `{"alg":"ES512","kid":%q}`, kid)) + "." + encode([]byte(`{"sub":"worker"}`))
+	digest := sha512.Sum512([]byte(signingInput))
+	r, s, err := ecdsa.Sign(rand.Reader, private, digest[:])
+	require.NoError(t, err)
+	const width = 66 // ES512's fixed-width P-521 coordinates, including zero padding.
+	signature := make([]byte, 2*width)
+	r.FillBytes(signature[:width])
+	s.FillBytes(signature[width:])
+	return signingInput + "." + encode(signature)
 }
 
 // TestJWTInspectVerifiesByTheTokensOwnKeyIDNotTheKeyFileName is the regression

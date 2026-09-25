@@ -1,0 +1,11 @@
+# Deliberately local-only policy for the SQL example. Production deployments
+# should replace both the host and network with their database's exact values.
+egress:
+  schemes: [postgres]
+  allow:
+    - host == "localhost" && port == 5432
+  allow_networks:
+    - 127.0.0.0/8
+    - ::1/128
+  allow_ports: [5432]
+  min_tls_version: "1.2"

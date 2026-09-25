@@ -22,7 +22,7 @@ import (
 func sqlExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	var in sqlv1.ExecInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 
 	if err := validateEngine(in.GetEngine()); err != nil {
@@ -44,7 +44,7 @@ func sqlExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flows
 	callCtx, cancel := context.WithTimeout(ctx, queryTimeout*time.Second)
 	defer cancel()
 
-	db, err := openDB(in.GetEngine(), dsn)
+	db, err := openDB(callCtx, in.GetEngine(), dsn, scrubber)
 	if err != nil {
 		return nil, scrubber.ScrubError(err)
 	}

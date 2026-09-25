@@ -37,6 +37,7 @@ func TestADeliveryThatIsNotARegularFileIsRefused(t *testing.T) {
 tests:
   - name: a delivery that is not a file
     workflow: ./workflow.yaml
+    expect: {failed: false}
     trigger:
       webhook: stripe
       payload: ./endless.json
@@ -59,6 +60,7 @@ func TestADeliveryDirectoryIsRefused(t *testing.T) {
 tests:
   - name: a delivery that is a directory
     workflow: ./workflow.yaml
+    expect: {failed: false}
     trigger:
       webhook: stripe
       payload: ./notafile.json

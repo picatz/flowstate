@@ -4,9 +4,11 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/picatz/jose/pkg/header"
@@ -301,7 +303,6 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-
 		alg, err := token.Header.Algorithm()
 		if err != nil {
 			return fmt.Errorf("token header: %w", err)
@@ -317,12 +318,47 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 		if kid == "" {
 			kid = keyIDFromPath(keyPath)
 		}
-		verifyErr := token.VerifySignature([]jwa.Algorithm{alg}, map[string]any{kid: public})
-		valid := verifyErr == nil
+		// The token chooses its own alg header, so it cannot also choose what
+		// verification operation is acceptable for the configured key. In
+		// particular, explicitly allowing "none" or an HMAC algorithm here can
+		// turn an unsigned or attacker-MACed token into a successful inspection.
+		// Use the production verifier's asymmetric allowlist and apply its key
+		// compatibility rules before asking JOSE to verify. An RSA PKCS#8 key
+		// does not encode one JWA algorithm, so pinning it to RS256 would also
+		// reject valid RS384, RS512, and RSA-PSS signatures.
+		valid := verificationKeySuitableFor(public, alg) &&
+			token.VerifySignature([]jwa.Algorithm{alg}, map[string]any{kid: public}) == nil
 		result.Valid = &valid
 	}
 
 	return writeInspectResult(surface, result)
+}
+
+// verificationKeySuitableFor mirrors the production verifier's key-family,
+// curve, and RSA work bounds. JOSE verifies ECDSA with the supplied curve but
+// does not require the JWA algorithm's standard curve, so this check must happen
+// before a token can choose its verification operation through its alg header.
+func verificationKeySuitableFor(public crypto.PublicKey, alg jwa.Algorithm) bool {
+	if !slices.Contains(auth.DefaultAlgorithms(), alg) {
+		return false
+	}
+
+	switch alg {
+	case jwa.RS256, jwa.RS384, jwa.RS512, jwa.PS256, jwa.PS384, jwa.PS512:
+		key, ok := public.(*rsa.PublicKey)
+		return ok && key.N.BitLen() >= 2048 && key.N.BitLen() <= 8192
+	case jwa.ES256:
+		key, ok := public.(*ecdsa.PublicKey)
+		return ok && key.Curve == elliptic.P256()
+	case jwa.ES512:
+		key, ok := public.(*ecdsa.PublicKey)
+		return ok && key.Curve == elliptic.P521()
+	case jwa.EdDSA:
+		_, ok := public.(ed25519.PublicKey)
+		return ok
+	default:
+		return false
+	}
 }
 
 func writeInspectResult(surface *ui.UI, result inspectResult) error {

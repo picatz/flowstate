@@ -1,0 +1,9 @@
+vars:
+  default_audience: operators
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+  check:
+    - '!run.failed'
