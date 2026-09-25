@@ -252,23 +252,51 @@ func (a withholdingActivation) ResolveName(name string) (any, bool) {
 	}
 
 	if value, ok := value.(ref.Val); ok {
-		redact := a.redactValue
-		if redact == nil {
-			redact = func(value any) any { return textRedactedTree(value, a.redactText) }
-		}
-		native, converted := redactedNative(value, redact)
+		native, converted := redactedNative(value, a.redactValue)
 		if !converted {
 			return types.String("[redacted]"), true
 		}
 
-		return types.DefaultTypeAdapter.NativeToValue(native), true
+		return types.DefaultTypeAdapter.NativeToValue(a.withText(native)), true
 	}
 
+	return types.DefaultTypeAdapter.NativeToValue(a.withText(a.structural(value))), true
+}
+
+// structural is value through the installed value redactor, or value
+// unchanged when this pause has none — the equality-based half.
+// [withholdingActivation.withText] is the substring backstop applied
+// afterward either way, never a substitute for it.
+func (a withholdingActivation) structural(value any) any {
 	if a.redactValue == nil {
-		return types.DefaultTypeAdapter.NativeToValue(textRedactedTree(value, a.redactText)), true
+		return value
 	}
 
-	return types.DefaultTypeAdapter.NativeToValue(a.redactValue(value)), true
+	return a.redactValue(value)
+}
+
+// withText applies the text redactor over every leaf of native, map keys
+// included, as a second pass over whatever [withholdingActivation.structural]
+// already produced.
+//
+// [SensitiveValues.RedactTree] — the redactor `flow test` installs
+// (`flowtest/stub.go:935-963`) — matches a leaf by *equality*, so a value
+// composed from a withheld secret before this binding was ever built, such as
+// a step output computed as `"Bearer " + inputs.token`, is not itself the
+// secret and passes the structural pass whole. That binding then reaches CEL
+// exactly as written, and a predicate over it — `steps.deploy.header ==
+// 'Bearer hunter2'` — turns into a truthful boolean no output redactor can
+// see, because what leaked was never in the printed answer at all. Applying
+// the text redactor here, before a binding reaches CEL, is what closes that:
+// it is the same composition [Session.evaluateIn] already applies to its own
+// result, pulled down to cover every name an expression can resolve and not
+// only the one it returns.
+func (a withholdingActivation) withText(native any) any {
+	if a.redactText == nil {
+		return native
+	}
+
+	return textRedactedTree(native, a.redactText)
 }
 
 func (a withholdingActivation) Parent() cel.Activation {
@@ -285,7 +313,12 @@ func textRedactedTree(value any, redact func(string) string) any {
 	case map[string]any:
 		redacted := make(map[string]any, len(value))
 		for name, element := range value {
-			redacted[name] = textRedactedTree(element, redact)
+			// Keys too. A sensitive value used as a key is the material just
+			// as much as one used as a value — the fail-closed, text-only
+			// fallback (no value redactor installed) walked every element but
+			// left every key as written, so a secret used as a key survived a
+			// session with no way to redact it structurally.
+			redacted[redact(name)] = textRedactedTree(element, redact)
 		}
 
 		return redacted

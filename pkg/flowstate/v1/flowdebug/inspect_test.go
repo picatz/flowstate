@@ -737,6 +737,111 @@ func TestAComposedStringIsWithheldFromTheStructuredAnswerToo(t *testing.T) {
 	<-done
 }
 
+// TestInspectPredicateOnAComposedBindingIsWithheld closes the predicate-oracle
+// gap left when only the equality-based value redactor is composed onto a
+// binding, and the text backstop never runs before CEL sees it.
+//
+// [Session.evaluateIn] already applies the text redactor to its own *result*
+// (`inspect.go:evaluateIn`), which is what
+// TestAComposedStringIsWithheldFromTheStructuredAnswerToo proves for an
+// expression composed *inside* the CEL text, such as `"Bearer " + inputs.token`.
+// This is the other half: a binding that was already composed before the run
+// ever paused — an ordinary step output such as `header: "Bearer hunter2"` —
+// is not itself the secret, so the equality-based value redactor lets it
+// through untouched, and a predicate comparing it whole
+// (`steps.deploy.header == 'Bearer hunter2'`) becomes a truthful boolean no
+// output redactor can recognise, because nothing about a boolean's own
+// rendering contains the secret substring (Codex, #2011 review).
+func TestInspectPredicateOnAComposedBindingIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(
+			"inspect steps.deploy.header == 'Bearer hunter2'\n" +
+				"inspect steps.deploy.header\n" +
+				"continue\n",
+		),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	// Both seams as `flow test` installs them: equality at the value,
+	// substring over rendered text. Neither alone recognises a string
+	// composed from the secret rather than equal to it.
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, "hunter2", "[redacted]")
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && text == "hunter2" {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			// Already composed, the way a real step output would be —
+			// nothing here is literally equal to the bare token.
+			"deploy": {NamedValues: map[string]*v1.Value{"header": v1.NewLiteral("Bearer hunter2")}},
+		},
+	})
+	require.NoError(t, session.BeforeStep(t.Context(), markStep("next"), scope))
+
+	printed := out.String()
+	assert.NotContains(t, printed, "true\n",
+		"the predicate matched the real composed value, so it is an oracle for the secret")
+	assert.Contains(t, printed, "false",
+		"the predicate against a withheld binding should have printed false")
+	assert.NotContains(t, printed, "hunter2",
+		"the composed binding reached inspect's own answer with the secret still in it")
+}
+
+// TestInspectMapKeyOracleInTextOnlyFallback closes the other P1: the
+// fail-closed, text-only fallback (only [Session.SetRedactor] installed, no
+// [Session.SetValueRedactor]) walked every map's elements but copied every key
+// unchanged, so a secret used as a map key survived a session with no way to
+// redact it structurally — and `exists(k, ...)` over that map is a predicate
+// oracle for the key exactly as an oracle over a value is.
+func TestInspectMapKeyOracleInTextOnlyFallback(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(
+			"inspect inputs.lookup.exists(k, k == 'hunter2')\n" +
+				"inspect inputs.lookup\n" +
+				"continue\n",
+		),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	// Deliberately the reachable, text-only configuration: no value redactor
+	// installed, so the structural half cannot recognise the key at all and
+	// everything depends on the substring backstop.
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, "hunter2", "[redacted]")
+	})
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Inputs = map[string]*v1.Value{
+		"lookup": v1.NewLiteralMap(map[string]any{"hunter2": true}),
+	}
+	require.NoError(t, session.BeforeStep(t.Context(), markStep("next"), scope))
+
+	printed := out.String()
+	assert.NotContains(t, printed, "true\n",
+		"exists() found the real key, so an unredacted map key is a predicate oracle")
+	assert.Contains(t, printed, "false",
+		"exists() over a redacted key should have printed false")
+	assert.NotContains(t, printed, "hunter2",
+		"the map's own key reached inspect's answer with the secret still in it")
+}
+
 // TestScopeNamesEveryRootARunCanReach is the class rather than the instance.
 //
 // This collector has now been short a root twice — `inputs` in one round,
