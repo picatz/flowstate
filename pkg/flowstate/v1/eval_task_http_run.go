@@ -1041,7 +1041,7 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// history, so scrub them before parsing, expectation evaluation, logging or
 		// output shaping can observe them. Scrubbing only transport errors protects
 		// the exceptional path and leaves the successful echo path wide open.
-		respBody = []byte(scrubber.Scrub(string(respBody)))
+		respBody = scrubber.ScrubBytes(respBody)
 		for name, values := range httpResp.Header {
 			for i := range values {
 				values[i] = scrubber.Scrub(values[i])

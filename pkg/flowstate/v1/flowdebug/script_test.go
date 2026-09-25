@@ -1,6 +1,7 @@
 package flowdebug_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -298,6 +299,29 @@ func TestCheckScriptBoundsWhatItReports(t *testing.T) {
 
 	assert.Len(t, problems, flowdebug.MaxScriptProblems, "the report is not bounded at the bound")
 	assert.Equal(t, wrong, total, "the count of what was found does not survive the bound")
+}
+
+// TestCheckScriptBoundsInventoryWorkAfterTheReportIsFull keeps the complete
+// problem count without requiring every omitted step diagnostic to search and
+// render the workflow's inventory.
+func TestCheckScriptBoundsInventoryWorkAfterTheReportIsFull(t *testing.T) {
+	t.Parallel()
+
+	const wrong = flowdebug.MaxScriptProblems * 3
+
+	lines := make([]string, wrong)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("break absent-%d", i)
+	}
+	steps := make([]string, 10_000)
+	for i := range steps {
+		steps[i] = fmt.Sprintf("declared-%d", i)
+	}
+
+	problems, total := flowdebug.CheckScript(lines, steps)
+
+	assert.Len(t, problems, flowdebug.MaxScriptProblems)
+	assert.Equal(t, wrong, total, "omitted step diagnostics were not counted")
 }
 
 // TestARecordedScriptIsAScriptThisWillAccept is the round trip, and the claim

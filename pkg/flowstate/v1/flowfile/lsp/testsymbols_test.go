@@ -1,12 +1,85 @@
 package lsp
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestTestDocumentSymbolsHandlesManySiblingCases exercises the shape that
+// once called keyPath for every name and rescanned all earlier siblings. The
+// forward path tracker makes this linear in the number of entries.
+func TestTestDocumentSymbolsHandlesManySiblingCases(t *testing.T) {
+	t.Parallel()
+
+	const count = 10_000
+	var text strings.Builder
+	text.WriteString("tests:\n")
+	for i := range count {
+		fmt.Fprintf(&text, "  - name: c%d\n", i)
+	}
+
+	doc := newDocument("file:///large.test.yaml", 1, text.String(), nil)
+	got := testDocumentSymbols(doc)
+
+	require.Len(t, got, count)
+	assert.Equal(t, "c0", got[0].Name)
+	assert.Equal(t, "c9999", got[count-1].Name)
+}
+
+// TestTestDocumentSymbolsScansEachLineOnce is the mechanism the linear-time
+// claim actually rests on, checked by counting rather than by timing — the
+// same convention flowdebug's TestTheStepListIsAnsweredAsAWindow uses, and for
+// the same reason: a timing assertion flakes on a busy machine, and an
+// allocation count moves with the runtime, but a count of a named operation is
+// exact.
+//
+// TestTestDocumentSymbolsHandlesManySiblingCases above proves
+// [testDocumentSymbols] returns the right 10,000 symbols; it cannot tell a
+// linear scan from the quadratic one it replaced, since both produce the same
+// answer, only at different cost. An earlier version of this test drove
+// [keyPathTracker.advance] directly rather than going through
+// [testDocumentSymbols], which proved the tracker's own pop/push bound but not
+// that testDocumentSymbols actually uses it — reverting testDocumentSymbols to
+// call keyPath per name line (the O(document²) shape #2006 fixes) left that
+// version green, which is the same gap a Copilot review on this PR named about
+// the test before it.
+//
+// [indentOfCalls] is the counted operation this one drives through the real
+// path: see its own doc comment for why it is the site where the two shapes'
+// cost actually diverges. Not t.Parallel() — the counter is a package-wide
+// total, and an unrelated test calling into this package's line-scanning code
+// while this one reads a before/after delta would pollute it; a sequential
+// (non-parallel) test's body runs with no other test's body executing
+// concurrently, in or out of this package's other t.Parallel() tests, which is
+// what makes the delta exact rather than merely likely.
+func TestTestDocumentSymbolsScansEachLineOnce(t *testing.T) {
+	const count = 10_000
+	var text strings.Builder
+	text.WriteString("tests:\n")
+	for i := range count {
+		fmt.Fprintf(&text, "  - name: c%d\n", i)
+	}
+
+	doc := newDocument("file:///large.test.yaml", 1, text.String(), nil)
+
+	before := indentOfCalls.Load()
+	got := testDocumentSymbols(doc)
+	scanned := indentOfCalls.Load() - before
+
+	require.Len(t, got, count, "the scan under test changed the answer, not just its cost")
+
+	lines := uint64(doc.index.lineCount())
+	assert.LessOrEqual(t, scanned, 3*lines,
+		"testDocumentSymbols called indentOf %d times over a %d-line document — a "+
+			"small constant multiple of the line count is the linear-scan claim; "+
+			"anything past it is the O(document²) per-name-line keyPath rescan #2006 "+
+			"replaced with keyPathTracker", scanned, lines)
+}
 
 // TestTestDocumentSymbolsNamesEachCase: a suite with two independent cases
 // (no `cases:` rows) gets one symbol per `tests:` entry, named by its own
