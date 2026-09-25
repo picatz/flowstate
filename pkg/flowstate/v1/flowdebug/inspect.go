@@ -413,6 +413,18 @@ func textRedactedTree(value any, redact func(string) string) any {
 
 		return redacted
 	default:
+		// A string is redacted directly, not through its JSON rendering.
+		// json.Marshal escapes a quote or a backslash inside the string, so
+		// a secret containing one — `Bearer pa"ss` — renders as `Bearer
+		// pa\"ss`, and the substring search below would look for the
+		// unescaped text inside an escaped one and never find it, leaving
+		// exactly the binding this function exists to withhold. This is
+		// the same reason [withheldLeaves] applies redact to a string leaf
+		// directly rather than through [nativeText].
+		if text, ok := value.(string); ok {
+			return redact(text)
+		}
+
 		if rendered := nativeText(value); redact(rendered) != rendered {
 			return "[redacted]"
 		}

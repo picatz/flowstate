@@ -842,6 +842,65 @@ func TestInspectMapKeyOracleInTextOnlyFallback(t *testing.T) {
 		"the map's own key reached inspect's answer with the secret still in it")
 }
 
+// TestInspectPredicateOnAQuotedSecretIsWithheld closes a third form of the
+// same predicate-oracle class, found on this PR's own fix: a secret
+// containing a character JSON escapes — a quote or a backslash — was not
+// caught by the text backstop at all.
+//
+// `textRedactedTree`'s scalar case rendered a leaf through `nativeText`
+// (json.Marshal) before searching it for the sensitive substring. A secret
+// composed into `Bearer pa"ss` renders as `Bearer pa\"ss`, and the raw,
+// unescaped substring `pa"ss` the redactor searches for is not contiguous
+// in that escaped text — so the search found nothing, the leaf passed
+// through unredacted, and a predicate comparing the whole binding against
+// the guessed value answered truthfully (Codex, #2011 review, second
+// round).
+func TestInspectPredicateOnAQuotedSecretIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	const secret = `pa"ss`
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(
+			`inspect steps.deploy.header == 'Bearer pa"ss'` + "\n" +
+				"continue\n",
+		),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	// Both seams, exactly as `flow test` installs them: equality at the
+	// exact secret, substring over rendered text. The composed header is
+	// not equal to the bare secret, so only the text seam can catch it.
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, secret, "[redacted]")
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && text == secret {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"deploy": {NamedValues: map[string]*v1.Value{"header": v1.NewLiteral("Bearer " + secret)}},
+		},
+	})
+	require.NoError(t, session.BeforeStep(t.Context(), markStep("next"), scope))
+
+	printed := out.String()
+	assert.NotContains(t, printed, "true\n",
+		"the predicate matched the real composed value, so a quote in the secret defeated the text backstop")
+	assert.Contains(t, printed, "false",
+		"the predicate against a withheld binding should have printed false")
+	assert.NotContains(t, printed, secret,
+		"the composed binding reached inspect's own answer with the secret still in it")
+}
+
 // TestScopeNamesEveryRootARunCanReach is the class rather than the instance.
 //
 // This collector has now been short a root twice — `inputs` in one round,
