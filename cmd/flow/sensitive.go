@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -899,7 +901,10 @@ func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submit
 		}
 	}
 
-	return v1.SensitiveInputValues(values, names).WithValues(sensitiveInputWords(cmd, names)...)
+	words := sensitiveInputWords(cmd, names)
+	words = append(words, sensitiveInputFileWords(cmd, names)...)
+
+	return v1.SensitiveInputValues(values, names).WithValues(words...)
 }
 
 // sensitiveInputWords is the text of every `--input <name>=<value>` this
@@ -919,10 +924,12 @@ func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submit
 // [parseInputFlag], which this function does not duplicate and must follow if
 // the `name=value` shape ever changes.
 //
-// A value given through --input-file rather than a flag is not read back here.
-// It reaches the set as a bound value by the ordinary path whenever it decodes,
-// and the one refusal that quotes it before then is a JSON number too large for
-// a float64 — a shape a credential does not take.
+// A value given through --input-file rather than a flag is not read back
+// here. It reaches the set as a bound value by the ordinary path whenever it
+// decodes; the one refusal that quotes it before then — a JSON number too
+// large for the declared type to carry — is [sensitiveInputFileWords]'s
+// instead, because it has to read the file to reach it and this function
+// deliberately does not (#2044).
 func sensitiveInputWords(cmd *cobra.Command, names map[string]bool) []string {
 	flags, _ := cmd.Flags().GetStringArray("input")
 
@@ -931,6 +938,85 @@ func sensitiveInputWords(cmd *cobra.Command, names map[string]bool) []string {
 		name, value, found := strings.Cut(flag, "=")
 		if found && names[strings.TrimSpace(name)] {
 			words = append(words, value)
+		}
+	}
+
+	return words
+}
+
+// sensitiveInputFileWords is the raw text of every JSON number nested inside
+// a declared-sensitive field of --input-file's document, collected before
+// [valueFromJSON] would convert any of it.
+//
+// This exists for the one refusal [inputsFromJSON] can produce that a bound
+// [*v1.Value] can never carry: a number past what an int64 or a float64 can
+// hold — `{"pin":1e999}` against `sensitive: true, type: int` — fails inside
+// [normalizeJSON] before a [*v1.Value] exists at all, and the refusal quotes
+// the number's own decoded text verbatim (#2044). No later refusal on this
+// path reaches this function at all: a value that *does* convert reaches the
+// binder as a submitted value, covered by the ordinary value half of the
+// set, and a type mismatch the binder itself refuses names a declared type,
+// never the raw value (#1552's own argument for why a coercion refusal is the
+// one class that has to quote the word).
+//
+// A file that does not exist, does not parse, or is not a JSON object of
+// arguments contributes nothing here. That is not fail-open: the refusal
+// [inputsFromFile] returns in each of those cases is a syntax position or an
+// open error, never a value, so there is nothing this function could have
+// redacted from it, and returning early costs the caller nothing it needed.
+// Reading the file a second time, after [runInputs] already tried and
+// failed to, is the cost of building this half of the set at all: a rare,
+// refusal-only path, and the read is bounded exactly as the first one was.
+func sensitiveInputFileWords(cmd *cobra.Command, names map[string]bool) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	path, _ := cmd.Flags().GetString("input-file")
+	if path == "" {
+		return nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	data, err := readInputsFile(path, f)
+	if err != nil {
+		return nil
+	}
+
+	fields, err := decodeInputJSONObject(data)
+	if err != nil {
+		return nil
+	}
+
+	var words []string
+	for name, value := range fields {
+		if names[name] {
+			words = collectJSONNumberWords(value, words)
+		}
+	}
+
+	return words
+}
+
+// collectJSONNumberWords appends the raw text of every json.Number nested in
+// decoded to words, walking maps and lists the same way [normalizeJSON] does
+// — so this reaches the identical set of numbers a conversion failure there
+// could quote, at any nesting depth a struct or list input holds one.
+func collectJSONNumberWords(decoded any, words []string) []string {
+	switch value := decoded.(type) {
+	case json.Number:
+		return append(words, string(value))
+	case map[string]any:
+		for _, child := range value {
+			words = collectJSONNumberWords(child, words)
+		}
+	case []any:
+		for _, child := range value {
+			words = collectJSONNumberWords(child, words)
 		}
 	}
 
