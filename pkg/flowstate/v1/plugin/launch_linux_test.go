@@ -4,6 +4,7 @@ package plugin
 
 import (
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +12,8 @@ import (
 )
 
 func TestExitedPluginDoesNotLeaveProcessGroupChildren(t *testing.T) {
+	requireProcOrSkip(t)
+
 	pidFile := t.TempDir() + "/child-pid"
 	cfg := testConfig(t, pluginDir(t, "exit-with-child"))
 	cfg.Env = append(cfg.Env, "FLOWSTATE_TEST_CHILD_PID_FILE="+pidFile)
@@ -37,6 +40,8 @@ func TestExitedPluginDoesNotLeaveProcessGroupChildren(t *testing.T) {
 // by [escalateAbandonedGroup] — proving that path runs rather than only
 // existing.
 func TestExitedPluginsStubbornChildIsEventuallyKilled(t *testing.T) {
+	requireProcOrSkip(t)
+
 	pidFile := t.TempDir() + "/child-pid"
 	cfg := testConfig(t, pluginDir(t, "exit-with-stubborn-child"))
 	cfg.Env = append(cfg.Env, "FLOWSTATE_TEST_CHILD_PID_FILE="+pidFile)
@@ -65,6 +70,76 @@ func TestExitedPluginsStubbornChildIsEventuallyKilled(t *testing.T) {
 	if !waitFor(t, cfg.ShutdownGrace+5*time.Second, func() bool { return processGoneOrZombie(t, pid) }) {
 		t.Errorf("helper process %d, which ignores SIGTERM, was never killed after its "+
 			"plugin leader exited", pid)
+	}
+}
+
+// TestEscalateAbandonedGroupReturnsPromptlyForACompliantHelper is the
+// timing half of the polling fix: a helper that actually dies from the
+// plain SIGTERM its caller already sent must not make this function sleep
+// through the whole grace period regardless of that. Sleeping the whole
+// period held this goroutine's belief that a pid still named the signalled
+// group long after the kernel was free to hand that pid to an unrelated
+// process's group — exactly the window [terminateProcess]'s own doc warns
+// pid reuse opens (Codex, #2008 review, second round).
+func TestEscalateAbandonedGroupReturnsPromptlyForACompliantHelper(t *testing.T) {
+	cmd := exec.Command("/bin/sleep", "30")
+	isolateProcessGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting helper: %v", err)
+	}
+
+	// Reaped concurrently, the moment it actually exits — the real shape
+	// [processGroupAlive] sees for a helper like this one, which is an
+	// orphan reparented to a subreaper or init once its own plugin leader
+	// is gone, not a direct child of whatever calls this test. A helper
+	// left as this test's own direct child and reaped only after this
+	// function returns would sit as a zombie — still "alive" to
+	// [processGroupAlive]'s signal-0 probe — for the whole grace period
+	// regardless of how quickly it actually died, which would be a defect
+	// in this fixture rather than in the polling this test exists to prove.
+	reaped := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(reaped)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-reaped
+	})
+
+	// Exactly what the waiter goroutine already did before ever calling
+	// this: signal the group once, gracefully.
+	if err := terminateProcess(cmd.Process, false); err != nil {
+		t.Fatalf("terminateProcess: %v", err)
+	}
+
+	const grace = 5 * time.Second
+
+	started := time.Now()
+	escalateAbandonedGroup(cmd.Process, grace)
+	elapsed := time.Since(started)
+
+	if elapsed >= time.Second {
+		t.Errorf("escalateAbandonedGroup took %s against a %s grace period for a helper "+
+			"that obeys SIGTERM; it should return within a few poll intervals of the "+
+			"helper actually dying, not sleep through the whole grace period", elapsed, grace)
+	}
+}
+
+// requireProcOrSkip skips the calling test where /proc is not mounted —
+// some minimal or restricted Linux containers run without it.
+//
+// [processGoneOrZombie] reads a pid's own /proc/<pid>/stat file and treats
+// its absence as "gone", which is correct when /proc exists and that one
+// pid's entry does not, but wrong when /proc itself is missing: every pid
+// then reads as gone whether the helper actually died or not, and a test
+// built on that would pass without the mechanism it claims to have
+// exercised ever running (Codex, #2008 review, second round, advisory).
+func requireProcOrSkip(t *testing.T) {
+	t.Helper()
+
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skipf("/proc is not available: %v", err)
 	}
 }
 

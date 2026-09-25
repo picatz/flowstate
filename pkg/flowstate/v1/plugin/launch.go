@@ -295,7 +295,9 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 		// (`instance.stop`, below) is gated on the leader still being
 		// alive, which by now it never is again. Finish independently of
 		// stop ever being called, on the same grace period stop would have
-		// given it.
+		// given it — polled, not slept through in one piece, so a helper
+		// that behaves is not what pays for the wait; see
+		// [escalateAbandonedGroup].
 		escalateAbandonedGroup(inst.proc, cfg.ShutdownGrace)
 	}()
 
@@ -588,6 +590,22 @@ func (i *instance) waitExit(ctx context.Context, grace time.Duration) bool {
 	}
 }
 
+// escalationPollInterval is how often [escalateAbandonedGroup] re-checks a
+// signalled group rather than sleeping through the whole grace period once.
+//
+// A compliant helper that obeys the SIGTERM already sent typically frees its
+// pid within milliseconds of it, not within the whole grace period — and
+// once it does, that pid is exactly what [terminateProcess]'s own doc names
+// as reusable within minutes on a busy host. Sleeping the whole grace period
+// regardless would hold this goroutine's belief that pid still names the
+// group it signalled long after the kernel is free to hand it to an
+// unrelated process's group, and this goroutine's own SIGKILL at the end
+// would then reach whatever that pid now names instead (Codex, #2008
+// review, second round). Polling narrows that window to this interval, on
+// the process actually having died, rather than to the whole grace period
+// on every escalation — including the common one, a helper that behaves.
+const escalationPollInterval = 20 * time.Millisecond
+
 // escalateAbandonedGroup finishes what the group leader's own exit signal
 // could not: a helper it left behind that traps or ignores SIGTERM.
 //
@@ -599,13 +617,24 @@ func (i *instance) waitExit(ctx context.Context, grace time.Duration) bool {
 // leader having gone first.
 //
 // A group with nothing left in it is the common case and this returns at
-// once: [processGroupAlive] is one signal-0 syscall, not a sleep.
+// once: [processGroupAlive] is one signal-0 syscall, not a sleep. Once a
+// group is seen alive it is polled rather than slept through — see
+// [escalationPollInterval] — so a helper that behaves is only ever a few
+// polls away from this returning too, not the whole grace period; only one
+// that is still alive at the deadline pays for a SIGKILL.
 func escalateAbandonedGroup(proc *os.Process, grace time.Duration) {
 	if proc == nil || !processGroupAlive(proc.Pid) {
 		return
 	}
 
-	time.Sleep(grace)
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !processGroupAlive(proc.Pid) {
+			return
+		}
+
+		time.Sleep(escalationPollInterval)
+	}
 
 	if processGroupAlive(proc.Pid) {
 		terminateProcess(proc, true)
