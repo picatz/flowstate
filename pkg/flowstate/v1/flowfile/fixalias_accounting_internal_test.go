@@ -365,16 +365,18 @@ func aliasChainBlankBomb(depth, blanks int) string {
 // line == "" { return append(out, line), true }`, skipping the charge for
 // every caller at once) allocates a stable 2627 MiB before the *same*
 // charge finally catches it once enough non-blank lines alone cross
-// maxBytes. A narrower reintroduction at the one call site that used to
-// lack this charge — [aliasInliner.expandRange]'s blank-line arm appending
-// directly instead of going through appendLine — allocates less, since it
-// only un-charges that one path rather than every blank line this rewrite
-// ever appends, but still a stable 337 MiB, caught the same way. The
-// ceiling sits at roughly 3x the fixed figure — close enough to leave
-// little room for a next narrower variant to slip under it, comfortably
-// below the smaller of the two measured mutants — so a reintroduction of
-// finding 4, in either shape measured here, fails this test on allocation
-// rather than merely costing more.
+// maxBytes. A narrower reintroduction at the one call site that charges a
+// blank line on its own — [aliasInliner.spliceBlock]'s blank-line arm
+// appending "" directly instead of going through appendLine — allocates
+// less, since it only un-charges that one path, but still a stable 337
+// MiB, caught the same way. [aliasInliner.expandRange]'s plain-copy charge
+// is not load-bearing in the same way: spliceBlock charges every line of
+// the range again as it shifts it, so dropping expandRange's charge
+// measures about 64 MiB, flat, and is still refused by spliceBlock's
+// charge; this test does not, and need not, catch it. The ceiling sits at
+// roughly 3x the fixed figure, below both measured mutants, so either of
+// those reintroductions of finding 4 fails this test on allocation rather
+// than merely costing more.
 func TestFixRefusesABlankLineBombBeforeMaterializingIt(t *testing.T) {
 	// Not parallel: it reads process-wide allocation counters, and a sibling
 	// test allocating alongside it would be charged to this one.
