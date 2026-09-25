@@ -43,7 +43,7 @@ jobs:
           # loosening allow-licenses, so a genuinely unlicensed dependency is
           # still refused.
           #
-          # The five below are dependencies this tree already carries in the
+          # The six below are dependencies this tree already carries in the
           # root module's own graph. They are refused here only because their
           # SPDX expression is *compound*, and allow-licenses matches a whole
           # expression rather than each term: `BSD-3-Clause AND
@@ -55,6 +55,9 @@ jobs:
           # of single identifiers. They appear now because a pull request that
           # adds a plugin module changes a manifest that requires them, and the
           # root manifest they already sit in is not part of that diff.
+          # golang.org/x/term joined the list at v0.46.0 (#2056): the same
+          # PATENTS-beside-BSD compound the other golang.org/x/* modules carry,
+          # newly detected on that release rather than a different licence.
           allow-dependencies-licenses: >-
             pkg:golang/..%2F..,
             pkg:golang/../..,
@@ -62,7 +65,8 @@ jobs:
             pkg:golang/golang.org/x/exp,
             pkg:golang/golang.org/x/net,
             pkg:golang/golang.org/x/sync,
-            pkg:golang/golang.org/x/sys
+            pkg:golang/golang.org/x/sys,
+            pkg:golang/golang.org/x/term
           # No comment on the pull request: posting one needs a token that
           # can write pull requests, and the check's own log and the
           # step summary already say what was refused and why.
