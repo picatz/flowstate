@@ -2,6 +2,8 @@ package flowstatev1
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -262,6 +264,76 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 		size, MaxSignalPayloadBytes)
 }
 
+// CheckSignalPayloadDepth reports whether a signal's payload nests within
+// [MaxStructureDepth], field by field, in the sentence the submit door
+// refuses an input with.
+//
+// [CheckSignalPayloadSize]'s sibling, called wherever it is and for the
+// other dimension of the same choice: a payload's depth is the sender's, and
+// 64 KiB is room for a few thousand levels. A payload that passed the byte
+// bound alone became the waiting step's outputs — evaluated by that step's
+// `outputs:` and by every later `${steps.<id>.<output>}` — and so entered
+// the run's history through the one door a run input could not use (#1770).
+// The refusal lands synchronously, on the party who chose the shape, before
+// any round trip.
+//
+// Both drivers call this — the server's Signal and SignalWithStart doors, the
+// webhook bridge, and [LocalSignals.DeliverFrom] for `flow run local` and
+// `flow test` — so a rehearsal refuses exactly what production refuses
+// (invariant 3). Fields are walked in name order so the refusal names the
+// same field every time.
+func CheckSignalPayloadDepth(payload *Node_Outputs) error {
+	values := payload.GetNamedValues()
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if err := CheckValueDepth("signal payload field", name, values[name]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// CheckTaskOutputDepth reports whether a task's result nests within
+// [MaxStructureDepth], field by field, in the sentence
+// [taskOutputConstraintBoundError] words for a task's own result rather than
+// the one [CheckValueDepth] words for a caller's submitted value.
+//
+// [CheckSignalPayloadDepth]'s sibling, for the fourth door #1770 named: a
+// task's own result is a value an outside party (a plugin, or a service an
+// `http` task called) chose the shape of, evaluated by exactly the
+// expressions the input door's refusal names — the step's `outputs:` and
+// every later `${steps.<id>.<output>}`. [checkTaskOutputElementBound],
+// called alongside this at the same seam, already walks a Literal-kind
+// value for depth as well as element count; what it does not see is a
+// Structure-kind value, since it reads `values[name].GetLiteral()` and skips
+// a name that is not one. [Node_Outputs] does not forbid a task from
+// returning one, so this closes that gap by sharing [valueDepthViolation]'s
+// walk with [CheckValueDepth] rather than adding a second one that only
+// half-agrees with it — but wording the refusal with
+// [taskOutputConstraintBoundError], not [CheckValueDepth]'s own formatter:
+// this is the task's own result, not a value the workflow submitted, the
+// same distinction [checkTaskOutputElementBound] already draws from
+// [inputSideConstraintBoundError] for the element bound. That formatter also
+// never names the field, only the task — sidestepping the field name
+// entirely rather than bounding its length before interpolating it, since a
+// plugin's response can carry that name up to the transport limit.
+//
+// Called from [Task.EvalInScope], the one choke point every task's result
+// returns through on both drivers — see [checkTaskOutputElementBound]'s own
+// doc for why that placement is what makes the built-in and plugin bridges
+// agree by construction. Fields are walked in name order so a result
+// tripping this on more than one field refuses for the same one every time.
+func CheckTaskOutputDepth(taskName string, out *Node_Outputs) error {
+	values := out.GetNamedValues()
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if violation := valueDepthViolation(values[name], 0); violation != nil {
+			return taskOutputConstraintBoundError(taskName, violation)
+		}
+	}
+
+	return nil
+}
+
 // encodedPayloadSize reports a ProtoJSON byte length for m — deliberately not
 // proto.Size's binary estimate, and, since #911, deliberately not the encoding
 // flowstate now writes either.
@@ -449,9 +521,21 @@ func CheckTaskOutputSize(out *Node_Outputs) error {
 // element bound, a for_each at its trip ceiling), and a contended host turns
 // that second into more. A budget the rehearsal passes and production fails
 // would make local runs lie about what production will do, so there is one
-// value and every worker reads it: large enough that work at a documented
-// bound fits with margin on a busy host, small enough that a genuinely
-// wedged workflow goroutine is still caught quickly (#431).
+// value and every worker reads it: large enough that one bounded workflow-side
+// unit fits with margin on a busy host, small enough that a genuinely wedged
+// workflow goroutine is still caught quickly (#431). The durable executor ends
+// its in-memory scheduler slice between steps and loop iterations, and continues
+// as new only when deterministic value-expression CEL cost reaches the
+// workflow-slice budget, so consecutive bounded units do not combine into one
+// unbounded slice and cheap iterations do not each add history (#1882).
+//
+// What happens when the budget is exceeded is the other half of the decision,
+// and it lives beside the SDK type it needs: engine.WorkerWorkflowPanicPolicy
+// fails the run rather than retrying the task forever (#1769). An individual
+// expression that could spend this budget deterministically is refused before
+// it runs — the element bound in cellistbound.go — and workflow-side units are
+// separated by the scheduler handoff above, so the policy is the last line,
+// not the first.
 const WorkerDeadlockDetectionTimeout = 5 * time.Second
 
 // DefaultWorkerStopTimeout is how long `flow worker` gives the Temporal SDK to
@@ -469,3 +553,35 @@ const WorkerDeadlockDetectionTimeout = 5 * time.Second
 // default stop grace is 10s) has to raise it or the container's SIGKILL will
 // still land before the drain finishes — see docs/DEPLOYMENT.md.
 const DefaultWorkerStopTimeout = 2 * time.Minute
+
+// What a schedule may ask of a cluster, before the cluster is asked.
+//
+// A schedule is the one shape where Flowstate itself chooses a run's volume: a
+// tenant admitted by the trust policy writes a cadence once, and every firing
+// after that starts a run under their fairness key with nobody present and no
+// request for admission control to see. docs/DEPLOYMENT.md's "Noisy neighbor"
+// leaves run volume to Temporal's namespace rate limits, which bound what a
+// tenant can submit; these two bound what a tenant can *arrange*, which is the
+// dimension a rate limit on requests never sees.
+const (
+	// MinScheduleInterval is the shortest cadence a schedule may fire at.
+	//
+	// A minute, because it is the resolution ordinary cron has and the
+	// resolution at which a schedule is still a schedule rather than a polling
+	// loop: a workload that needs to run every second wants a `loop:` inside
+	// one run, where it is bounded by that run's own budget, not a durable
+	// Temporal schedule starting a fresh run each second for as long as
+	// nobody deletes it. Checked by `flow validate`, by `flow schedule create`
+	// and by the server, with one sentence — see [CheckScheduleTrigger].
+	MinScheduleInterval = time.Minute
+
+	// MaxSchedulesPerNamespace is how many schedules one tenant may hold.
+	//
+	// Counted at CreateSchedule through the same listing a tenant's own `flow
+	// schedule list` reads, so what is refused is exactly what the tenant can
+	// see. A hundred is chosen to be past any real tenant rather than to be a
+	// budget: schedules are created one at a time by people, and a tenant
+	// arranging its hundred-and-first standing instruction has either
+	// forgotten the first hundred or is not arranging work at all.
+	MaxSchedulesPerNamespace = 100
+)

@@ -43,6 +43,7 @@ var notAtAutopsy = map[string]string{
 	"delete":      "there are no breakpoints to remove once nothing will be reached",
 	"breakpoints": "listing them says nothing about a run that has finished",
 	"info":        "it describes the step the run is stopped at, and it is stopped at none",
+	"backtrace":   "the run is over, so there is no active call chain to list",
 }
 
 // TestEveryVerbIsDecidedAtTheAutopsy reads [Session.Autopsy]'s switch out of the

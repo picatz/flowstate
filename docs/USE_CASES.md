@@ -16,6 +16,18 @@ examples/`, and includes at least one refusal-path case - a rejection, a
 timeout, an unattested signal, or a failure that triggers saga compensation -
 not only the happy path. Run them all with `flow test examples/`.
 
+## Not a fit
+
+A list of fits without misfits reads as marketing. The shapes below are the
+ones a reader in this portfolio's audience most often brings, and each has a
+better home; [the comparison](COMPARISON.md) says why in one row each.
+
+- A workflow that is mostly code: the Temporal SDK directly.
+- Container-per-step batch on Kubernetes: Argo Workflows.
+- A fully managed service inside one cloud: Step Functions.
+- Builds and test suites: your CI system.
+- A visual editor and a broad connector catalog: Windmill, n8n, or Airflow.
+
 ## [Financial settlement](../examples/enterprise-fund-transfer/workflow.yaml)
 
 **Business problem:** move money between two accounts, requiring a

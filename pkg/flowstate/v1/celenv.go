@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,10 +12,12 @@ import (
 	"time"
 
 	"github.com/google/cel-go/cel"
+	celconfig "github.com/google/cel-go/common/env"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Flowstate evaluates every CEL expression through this file. Expressions come
@@ -44,6 +47,13 @@ import (
 // instead of exhausting the worker.
 const DefaultCostLimit uint64 = 1_000_000
 
+// DefaultWorkflowSliceCost is the accumulated workflow-side CEL cost a
+// durable workflow segment may spend before it continues as new at the next
+// representable boundary. It is deliberately below [DefaultCostLimit]: that
+// limit bounds one expression, while this one keeps a sequence of individually
+// valid expressions inside Temporal's workflow-task and deadlock budgets.
+const DefaultWorkflowSliceCost uint64 = 500_000
+
 // DefaultInterruptCheckFrequency is how many evaluation steps elapse between
 // context cancellation checks.
 //
@@ -60,6 +70,11 @@ type Limits struct {
 	// which should be used only in tests.
 	Cost uint64
 
+	// WorkflowSliceCost is the accumulated workflow-side CEL cost between
+	// durable segments. Zero disables cost-triggered segmentation and should be
+	// used only in evaluator tests that do not execute a workflow.
+	WorkflowSliceCost uint64
+
 	// InterruptCheckFrequency is how many evaluation steps elapse between
 	// context cancellation checks. Zero disables cancellation checking.
 	InterruptCheckFrequency uint
@@ -70,6 +85,7 @@ type Limits struct {
 func DefaultLimits() Limits {
 	return Limits{
 		Cost:                    DefaultCostLimit,
+		WorkflowSliceCost:       DefaultWorkflowSliceCost,
 		InterruptCheckFrequency: DefaultInterruptCheckFrequency,
 	}
 }
@@ -90,6 +106,12 @@ func (l Limits) programOptions() []cel.ProgramOption {
 	if l.InterruptCheckFrequency > 0 {
 		opts = append(opts, cel.InterruptCheckFrequency(l.InterruptCheckFrequency))
 	}
+	// Unconditional, unlike the two above: the element bound is #204's constant,
+	// not a limit a caller tunes, and an evaluator with no cost budget (a test's)
+	// must still refuse a list an expression manufactured past it. See
+	// cellistbound.go for why the bound sits on the program rather than in any
+	// one library.
+	opts = append(opts, cel.CustomDecorator(boundListResults))
 	return opts
 }
 
@@ -104,6 +126,11 @@ type Evaluator struct {
 	// envs caches environments by extension-library set. Keys are the
 	// canonical library-set string produced by libsKey.
 	envs sync.Map // map[string]*envResult
+
+	// programs caches compiled programs for specification-owned expressions,
+	// so a loop body's `if:` is compiled once rather than once per iteration.
+	// See [Evaluator.EvalParsed] for what is cached and why only that path.
+	programs programCache
 }
 
 // envResult is a memoized environment construction, successful or not. Failures
@@ -214,15 +241,42 @@ func checkLibraries(libs []string) error {
 // The activation may be a map[string]any or a cel.Activation, matching the CEL
 // runtime's own contract.
 func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activation any) (ref.Val, error) {
-	prg, err := env.Program(ast, e.limits.programOptions()...)
+	ordered, err := orderMapComprehensionsAST(ast)
+	if err != nil {
+		return nil, &ExpressionError{Err: fmt.Errorf("prepare expression: %w", err)}
+	}
+	programEnv, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
+	if err != nil {
+		return nil, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
+	}
+	prg, err := programEnv.Program(ordered, e.limits.programOptions()...)
 	if err != nil {
 		return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 	}
-	out, _, err := prg.ContextEval(ctx, activation)
-	if err != nil {
-		return nil, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
+	return evalProgram(ctx, prg, activation)
+}
+
+// evalProgram runs a compiled program and classifies its failure, which is the
+// half of evaluation [Evaluator.Eval] and [Evaluator.EvalParsed] must share so
+// a cached expression cannot fail with different words than an uncached one.
+func evalProgram(ctx context.Context, prg cel.Program, activation any) (ref.Val, error) {
+	out, _, err := evalProgramWithCost(ctx, prg, activation)
+	return out, err
+}
+
+// evalProgramWithCost runs a compiled program and returns the actual cost CEL
+// tracked under [Limits.Cost]. A missing cost is zero, which is possible only
+// for evaluators whose tests deliberately disable cost tracking.
+func evalProgramWithCost(ctx context.Context, prg cel.Program, activation any) (ref.Val, uint64, error) {
+	out, details, err := prg.ContextEval(ctx, activation)
+	var cost uint64
+	if details != nil && details.ActualCost() != nil {
+		cost = *details.ActualCost()
 	}
-	return out, nil
+	if err != nil {
+		return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
+	}
+	return out, cost, nil
 }
 
 // An ExpressionError reports that a CEL expression failed to compile or to
@@ -269,11 +323,205 @@ func (e *ExpressionError) Unwrap() error { return e.Err }
 
 // EvalParsed evaluates a previously parsed expression, of the form carried in a
 // compiled workflow specification, against the given activation.
+//
+// The compiled program is cached, keyed on the identity of the two things it
+// was compiled from: the environment (already interned per library set by
+// [Evaluator.Env]) and the parsed expression itself. Identity is the right key
+// here and only here — the engine holds one *expr.ParsedExpr per expression
+// site in a loaded specification and hands the same pointer back on every
+// iteration, so a `for_each` over 10,000 items pays one compilation for a body
+// step's `if:` instead of 10,000 (measured at ~16.5µs and ~9.8KB each on the
+// path #1111 records). Specification expressions are immutable once loaded,
+// which is what makes a pointer a truthful key. [Evaluator.Eval] and
+// [Evaluator.EvalString] stay uncached on purpose: their ASTs are freshly
+// built per call — a REPL or `inspect` reparse — so identity would never
+// repeat and every entry would be churn.
+//
+// A cache hit changes where compilation happens and nothing else: the program
+// options carrying the cost budget and interrupt frequency are compiled in, so
+// a cached program enforces the same limits, and per-evaluation state lives in
+// the evaluation rather than the program, which is what makes sharing one
+// program across goroutines sound.
 func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
+	out, _, err := e.EvalParsedWithCost(ctx, env, parsed, activation)
+	return out, err
+}
+
+// EvalParsedWithCost is [Evaluator.EvalParsed] plus the deterministic actual
+// cost reported by CEL for this evaluation.
+func (e *Evaluator) EvalParsedWithCost(ctx context.Context, env *cel.Env, parsed *expr.ParsedExpr, activation any) (ref.Val, uint64, error) {
 	if parsed == nil {
-		return nil, fmt.Errorf("parsed expression is nil")
+		return nil, 0, fmt.Errorf("parsed expression is nil")
 	}
-	return e.Eval(ctx, env, cel.ParsedExprToAst(parsed), activation)
+
+	key := programKey{env: env, parsed: parsed}
+	prg, ok := e.programs.get(key)
+	if !ok {
+		programEnv, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
+		if err != nil {
+			return nil, 0, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
+		}
+		prg, err = programEnv.Program(cel.ParsedExprToAst(orderMapComprehensions(parsed)), e.limits.programOptions()...)
+		if err != nil {
+			return nil, 0, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
+		}
+		// Two goroutines missing on the same key both compile and both store;
+		// the loser's program is garbage. That costs one compilation, which is
+		// the price of not holding a lock across env.Program. The charge is
+		// the expression's own encoded size — the author-controlled half of
+		// what an entry retains, and a proportional proxy for the compiled
+		// half — measured here on the miss path where a compilation already
+		// dwarfs it.
+		e.programs.put(key, prg, proto.Size(parsed))
+	}
+	return evalProgramWithCost(ctx, prg, activation)
+}
+
+// DefaultProgramCacheSize bounds how many compiled programs an [Evaluator]
+// retains, and DefaultProgramCacheBytes bounds what they weigh.
+//
+// Two bounds because the author controls two resources. The number of
+// distinct expression sites a worker evaluates over its lifetime is the
+// deployment's choice, not any one caller's: every loaded specification
+// contributes its sites for as long as runs reference them, across tenants
+// and across time — that is the entry count. But each site's *size* is the
+// author's too, and an entry count alone is not a memory bound: 1,024 sites
+// near [MaxSpecBytes] would retain on the order of a gigabyte, each entry
+// pinning its specification-owned parsed expression through the key and a
+// compiled program that scales with it, surviving the runs that loaded them
+// (Codex, #1274). So every entry is charged its parsed expression's encoded
+// size against the byte budget, and an expression bigger than the whole
+// budget is simply never cached — it compiles per evaluation, as everything
+// did before the cache, rather than evicting the entire working set to sit
+// alone in it.
+//
+// Least-recently-used eviction under both bounds keeps the sites current
+// runs are actually iterating; an evicted site is recompiled on next use, so
+// eviction costs a miss and never an answer.
+const (
+	DefaultProgramCacheSize  = 1024
+	DefaultProgramCacheBytes = 32 << 20
+)
+
+// programKey identifies a compiled program by what it was compiled from. Both
+// halves are pointer identities: the environment is interned per library set,
+// and the parsed expression is owned by a loaded specification — see
+// [Evaluator.EvalParsed] for why that identity is truthful. Program options are
+// not part of the key because they are fixed per [Evaluator] at construction.
+type programKey struct {
+	env    *cel.Env
+	parsed *expr.ParsedExpr
+}
+
+// programCache is a mutex-guarded LRU of compiled programs. The zero value is
+// ready to use, which keeps a zero [Evaluator] working the way it always has.
+//
+// A single lock rather than something cleverer: the guarded section is a map
+// lookup and a list splice, three orders of magnitude cheaper than the
+// compilation a hit avoids, and one lock is the spelling whose behavior under
+// -race needs no argument.
+type programCache struct {
+	mu      sync.Mutex
+	entries map[programKey]*list.Element
+	order   *list.List // front is most recently used, back is next to evict
+
+	// retained sums the charged bytes of everything held, and maxBytes is
+	// the budget it is kept under — [DefaultProgramCacheBytes] when zero,
+	// set smaller only by tests that would otherwise parse megabytes to
+	// reach an eviction.
+	retained int
+	maxBytes int
+
+	// stores counts entries actually stored. It is what lets a test prove a
+	// repeated evaluation was served rather than recompiled-and-restored:
+	// entry count alone cannot tell those apart, since storing over an
+	// existing key leaves it unchanged — the vacuity a first draft of the
+	// cache's own tests shipped with.
+	stores int
+}
+
+// programEntry is what an order element carries: the key rides along so
+// eviction can delete the map entry without a reverse index, and the charged
+// bytes so eviction can return them to the budget.
+type programEntry struct {
+	key   programKey
+	prg   cel.Program
+	bytes int
+}
+
+// get returns the cached program for key, marking it most recently used.
+func (c *programCache) get(key programKey) (cel.Program, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	elem, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	c.order.MoveToFront(elem)
+	return elem.Value.(*programEntry).prg, true
+}
+
+// put stores a compiled program for key charged at the given bytes, evicting
+// least recently used entries until both bounds hold. Storing over an
+// existing key keeps the newest program, so a racing double-compile resolves
+// to one retained entry. A program charged more than the whole budget is not
+// stored at all: its caller compiles per evaluation, which is the pre-cache
+// behavior, instead of the working set being evicted to make room for one
+// tenant's largest expression.
+func (c *programCache) put(key programKey, prg cel.Program, bytes int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	budget := c.maxBytes
+	if budget == 0 {
+		budget = DefaultProgramCacheBytes
+	}
+	if bytes > budget {
+		return
+	}
+
+	c.stores++
+
+	if c.entries == nil {
+		c.entries = make(map[programKey]*list.Element)
+		c.order = list.New()
+	}
+
+	if elem, ok := c.entries[key]; ok {
+		entry := elem.Value.(*programEntry)
+		c.retained += bytes - entry.bytes
+		entry.prg, entry.bytes = prg, bytes
+		c.order.MoveToFront(elem)
+	} else {
+		c.entries[key] = c.order.PushFront(&programEntry{key: key, prg: prg, bytes: bytes})
+		c.retained += bytes
+	}
+
+	for c.order.Len() > DefaultProgramCacheSize || c.retained > budget {
+		oldest := c.order.Back()
+		entry := oldest.Value.(*programEntry)
+		c.order.Remove(oldest)
+		delete(c.entries, entry.key)
+		c.retained -= entry.bytes
+	}
+}
+
+// len reports how many programs the cache holds, for tests that assert the
+// bound holds.
+func (c *programCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// storeCount reports how many programs were ever stored, for tests that
+// assert reuse: evaluations past a site's first that stored nothing were
+// served from the cache.
+func (c *programCache) storeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stores
 }
 
 // EvalParsedBase evaluates a previously parsed expression in the workflow's
@@ -285,11 +533,18 @@ func (e *Evaluator) EvalParsed(ctx context.Context, env *cel.Env, parsed *expr.P
 // poorer dialect than the `cel` step beside them. One profile is what removes that,
 // and this is where most of the file feels it.
 func (e *Evaluator) EvalParsedBase(ctx context.Context, profile string, parsed *expr.ParsedExpr, activation any) (ref.Val, error) {
+	out, _, err := e.EvalParsedBaseWithCost(ctx, profile, parsed, activation)
+	return out, err
+}
+
+// EvalParsedBaseWithCost is [Evaluator.EvalParsedBase] plus the deterministic
+// actual cost reported by CEL for this evaluation.
+func (e *Evaluator) EvalParsedBaseWithCost(ctx context.Context, profile string, parsed *expr.ParsedExpr, activation any) (ref.Val, uint64, error) {
 	env, err := e.ProfileEnv(profile)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return e.EvalParsed(ctx, env, parsed, activation)
+	return e.EvalParsedWithCost(ctx, env, parsed, activation)
 }
 
 // ProfileEnv returns the environment a named profile describes.
@@ -366,6 +621,18 @@ func libsKey(libs []string) string {
 // the packages cannot share a constant without an import cycle.
 const stringsExtensionVersion = 5
 
+// listsExtensionVersion pins the lists extension library, for the reason
+// [stringsExtensionVersion] records — and with one edge sharper here: this
+// build declares names of its own inside the library's namespace (`sum` and
+// `reduce`, celfold.go), so an unpinned `ext.Lists()` would let a future cel-go
+// release claim the same names and either change what a workflow's `.sum()`
+// means or refuse to construct the environment at all, as a side effect of
+// `go get -u`.
+// Three is the highest version cel-go v0.31.0 implements, so pinning it changes
+// nothing today; raising it is the same reviewed decision the strings pin
+// describes.
+const listsExtensionVersion = 3
+
 // extensionLibraries maps the library names a workflow may enable to the
 // environment options that provide them.
 //
@@ -374,9 +641,10 @@ const stringsExtensionVersion = 5
 var extensionLibraries = map[string][]cel.EnvOption{
 	"bindings":       {ext.Bindings()},
 	"comprehensions": {ext.TwoVarComprehensions()},
+	"digest":         {digestLibrary()},
 	"encoders":       {ext.Encoders()},
 	"json":           {jsonLibrary()},
-	"lists":          {ext.Lists()},
+	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), foldLibrary(), listRangeLibrary()},
 	"math":           {ext.Math()},
 	"optional":       {cel.OptionalTypes()},
 	"protos":         {ext.Protos()},
@@ -418,19 +686,19 @@ func ExtensionLibraries() []string {
 // names a fixed membership, the compiler records which one a spec was built for,
 // and a worker resolves that name rather than asking what it happens to have.
 
-// CurrentProfile is the language profile this build evaluates against.
+// CurrentProfile is the language profile this build compiles against.
 //
-// Not yet recorded per run, and the distinction is the whole of what is left to
-// do. A profile *name* freezes a membership, which is what makes "pinned per run"
-// possible — but nothing stores which profile a spec was compiled against, so
-// every expression is evaluated against whatever profile the worker running it
-// calls current. Today that is safe because there is exactly one; the day a second
-// exists it stops being, and the field and the threading have to land before then.
+// The flowfile compiler stamps it into `Workflow.profile`, and every
+// evaluation site resolves the profile the *spec* records, through
+// [Evaluator.EvalParsedBase] — so an expression is evaluated against the
+// vocabulary it was checked against rather than whatever the worker running it
+// calls current, and a worker handed a name it does not know refuses in
+// [ProfileLibraries] instead of guessing.
 //
-// The first attempt at this added `Workflow.profile` and then hardcoded
-// CurrentProfile at both evaluation sites, so the value was recorded and never
-// read. That is worse than not recording it: the schema claimed a guarantee the
-// engine did not honour. Backed out rather than shipped half-wired.
+// The first attempt at that threading added `Workflow.profile` and then
+// hardcoded CurrentProfile at both evaluation sites, so the value was recorded
+// and never read — the schema claiming a guarantee the engine did not honour.
+// Backed out rather than shipped half-wired, and landed whole.
 const CurrentProfile = "2026.1"
 
 // OriginalProfile is what a spec compiled before profiles existed evaluates as.
@@ -451,13 +719,24 @@ const OriginalProfile = "2026.1"
 // recorded in a spec, its membership is frozen. Adding libraries means adding a
 // *new* profile, so that a run compiled against the old one keeps the vocabulary
 // it was checked against.
+//
+// The freeze is about what a run can observe. A library brings *runtime* names,
+// and a recorded run resolves those names every time it evaluates, so membership
+// is frozen from the day a spec can record the profile. A parse-time macro whose
+// expansion spells only vocabulary the profile already evaluates is different in
+// kind: a compiled spec carries the expansion rather than the name, so no stored
+// run and no worker can tell whether the build evaluating it ever heard of the
+// macro — a worker predating it still evaluates every spec that uses it. Such a
+// macro may join the current profile (`sum` and `reduce`, celfold.go, are two);
+// anything that declares a runtime name, however small, still means a new
+// profile.
 var profiles = map[string][]string{
 	// The first profile is every library this build shipped with when profiles
 	// were introduced, which is also every library that existed. That is a
 	// coincidence of timing rather than a rule: the second profile will differ
 	// from "everything available" the moment a library is added.
 	CurrentProfile: {
-		"bindings", "comprehensions", "encoders", "json", "lists",
+		"bindings", "comprehensions", "digest", "encoders", "json", "lists",
 		"math", "optional", "protos", "regex", "sets", "strings",
 	},
 }
@@ -469,16 +748,12 @@ var profiles = map[string][]string{
 // expressions in it mean, and guessing is how a run quietly starts computing
 // something else — the fail-closed rule, applied to the language itself.
 //
-// This refusal has no caller that can reach it yet, because nothing passes a
-// profile a spec chose. It is here because the refusal is the hard part to add
-// later under pressure, not because it is exercised today.
+// Reachable from every evaluation site: the profile passed in is the one the
+// spec records, so a spec compiled by a newer build against a profile this
+// worker does not know is refused here, before anything guesses at what its
+// expressions mean.
 func ProfileLibraries(profile string) ([]string, error) {
-	if profile == "" {
-		// A spec compiled before this field existed, which can only have come from
-		// a build whose one vocabulary was the original — so that is what it gets,
-		// permanently, rather than whatever this build happens to call current.
-		profile = OriginalProfile
-	}
+	profile = canonicalProfile(profile)
 
 	libs, ok := profiles[profile]
 	if !ok {
@@ -488,6 +763,16 @@ func ProfileLibraries(profile string) ([]string, error) {
 			profile, strings.Join(profileNames(), ", "))
 	}
 	return slices.Clone(libs), nil
+}
+
+// canonicalProfile maps a spec written before profiles existed to the original
+// vocabulary it was compiled against. Keeping that normalization here gives
+// profile-keyed caches the same identity [ProfileLibraries] resolves.
+func canonicalProfile(profile string) string {
+	if profile == "" {
+		return OriginalProfile
+	}
+	return profile
 }
 
 // profileNames returns the known profile names, sorted, for diagnostics.
@@ -510,9 +795,68 @@ func ProfileNames() []string {
 	return profileNames()
 }
 
+// ProfileConfig serializes env — an environment built for the named profile —
+// as a YAML-serializable [env.Config] document.
+//
+// google/cel-go v0.31.0's Env.ToConfig reconstructs every registered singleton
+// library on a bare environment to diff its overloads against the configured
+// ones, discarding the reconstruction error (cel-go cel/env.go:219-227). The
+// profile's "regex" library enables ext.Regex() together with
+// cel.OptionalTypes(), but cel-go tracks them as two independent singleton
+// libraries and reconstructs "cel.lib.ext.regex" alone — which ext.Regex()
+// itself refuses ("regex library requires the optional library") — so
+// ToConfig panics on a nil environment instead of returning that error. This
+// performs the same isolated construction with its error checked, so the
+// known gap is reported rather than crashing the caller, and recovers any
+// other library's reconstruction panic generically. See #1854 and the
+// upstream row tracked in #1862.
+func ProfileConfig(env *cel.Env, name string) (*celconfig.Config, error) {
+	if _, regexErr := cel.NewCustomEnv(ext.Regex()); regexErr != nil {
+		if slices.Contains(env.Libraries(), "cel.lib.ext.regex") {
+			return nil, fmt.Errorf("cel: profile %q cannot be serialized: library %q does not "+
+				"construct on cel-go's isolated bare environment (%w); see #1854", name, "cel.lib.ext.regex", regexErr)
+		}
+	}
+
+	return recoverToConfig(name, func() (*celconfig.Config, error) { return env.ToConfig(name) })
+}
+
+// recoverToConfig calls fn — env.ToConfig for every caller but a test — and
+// converts a panic into an error.
+//
+// The second line of defense: the regex/optional check above names the one
+// dependency gap this cel-go version is known to hit, but env.ToConfig's own
+// bug is "any registered library whose isolated reconstruction panics", not
+// "regex specifically", and there is no way to enumerate every library that
+// could develop the same problem in a future cel-go bump. A separate function
+// rather than an inline defer so a test can drive a synthetic panic through
+// this exact recovery without needing a second real cel-go dependency gap to
+// exist.
+func recoverToConfig(name string, fn func() (*celconfig.Config, error)) (cfg *celconfig.Config, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cfg, err = nil, fmt.Errorf("cel: profile %q: env.ToConfig panicked reconstructing a "+
+				"registered library in isolation (%v); see #1854", name, r)
+		}
+	}()
+	return fn()
+}
+
 // buildEnv constructs a CEL environment enabling the named extension libraries.
 func buildEnv(libs []string) (*cel.Env, error) {
 	opts := make([]cel.EnvOption, 0, len(libs)+len(durationLibrary())+1)
+
+	// These validators reject literal calls that are guaranteed to fail at run
+	// time. They belong on the shared profile environment so every checker —
+	// ordinary Flowfile expressions, call arguments, and must constraints —
+	// inherits exactly the same policy. Mixed aggregate literals remain valid:
+	// list and map values are dynamically typed, and homogeneity is not a
+	// runtime-correctness requirement.
+	opts = append(opts, cel.ASTValidators(
+		cel.ValidateDurationLiterals(),
+		cel.ValidateTimestampLiterals(),
+		cel.ValidateRegexLiterals(),
+	))
 
 	// Always present rather than opt-in, unlike the libraries below. A
 	// `wait_until:` step has no `libs:` key to enable anything with — the

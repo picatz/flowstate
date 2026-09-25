@@ -573,8 +573,7 @@ func (r *scopedResolver) Resolve(ctx context.Context, ref Ref) (Secret, error) {
 	if err != nil {
 		// A provider written elsewhere may not name the reference, which every
 		// resolution failure is documented to do.
-		var resolveErr *ResolveError
-		if !errors.As(err, &resolveErr) {
+		if _, ok := errors.AsType[*ResolveError](err); !ok {
 			err = &ResolveError{Ref: ref, Err: err}
 		}
 		return Secret{}, err

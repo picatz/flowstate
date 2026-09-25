@@ -3,10 +3,12 @@ package lsp
 import (
 	"testing"
 
+	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
 // These tests pin the positional model, because every feature's precision depends
@@ -321,6 +323,15 @@ edition: v2026.3
 			}},
 		},
 		{
+			name: "quoted keys keep their semantic outline names",
+			src: `"st\u0065ps":
+  - "i\u0064": first
+    "l\u006fg":
+      'message': hi
+`,
+			want: []outlineStep{{id: "first", taskName: "log", inputKeys: []string{"message"}}},
+		},
+		{
 			name: "a comment does not end a step",
 			// The comment sits between the step's keys rather than between `task:`
 			// and `name:`, there being no level in between any more. It is the same
@@ -395,4 +406,165 @@ edition: v2026.3
 			assert.Equal(t, tt.want, keyPath(ix, tt.line))
 		})
 	}
+}
+
+func TestScanKeyLineDecodesQuotedKeysAtLoaderBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		line     string
+		wantKey  string
+		wantRaw  string
+		wantRest string
+		want     bool
+	}{
+		{name: "bare behavior", line: "  - bare.key-2 : value # tail", wantKey: "bare.key-2", wantRaw: "bare.key-2", wantRest: " value # tail", want: true},
+		{name: "double quoted escape", line: `  "st\u0065ps": # comment`, wantKey: "steps", wantRaw: `"st\u0065ps"`, wantRest: " # comment", want: true},
+		{name: "single quoted escape", line: `'it''s: # data': value`, wantKey: "it's: # data", wantRaw: `'it''s: # data'`, wantRest: " value", want: true},
+		{name: "colon and comment inside double quotes", line: `"a: b # c": value`, wantKey: "a: b # c", wantRaw: `"a: b # c"`, wantRest: " value", want: true},
+		{name: "empty quoted key is legal YAML", line: `"": value`, wantKey: "", wantRaw: `""`, wantRest: " value", want: true},
+		{name: "unclosed double quote", line: `"steps: value`, want: false},
+		{name: "unclosed single quote", line: `'steps: value`, want: false},
+		{name: "invalid YAML escape", line: `"st\qeps": value`, want: false},
+		{name: "comment between key and colon", line: `"steps" # not a mapping: value`, want: false},
+		{name: "text between key and colon", line: `"steps" nope: value`, want: false},
+		{name: "explicit key remains unsupported", line: `? "steps"`, want: false},
+		{name: "anchored key remains unsupported", line: `&key steps: value`, want: false},
+		{name: "bare key grammar does not broaden", line: `two words: value`, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := scanKeyLine(tt.line)
+			assert.Equal(t, tt.want, ok)
+			if !tt.want {
+				return
+			}
+			assert.Equal(t, tt.wantKey, got.key)
+			assert.Equal(t, tt.wantRest, got.rest)
+			assert.Equal(t, tt.wantRaw, tt.line[got.keyStart:got.keyEnd],
+				"source offsets must remain on the quoted spelling")
+			assert.Equal(t, ':', rune(tt.line[got.colon]))
+		})
+	}
+}
+
+func TestKeyPathDecodesQuotedKeys(t *testing.T) {
+	t.Parallel()
+
+	const src = `"st\u0065ps":
+  - "id": a
+    'l''og':
+      "headers: literal":
+        value: here
+`
+	ix := newLineIndex(src)
+	assert.Equal(t, []string{"steps", "l'og", "headers: literal"}, keyPath(ix, 4))
+}
+
+func TestQuotedKeySemanticsMatchTheStrictTestLoader(t *testing.T) {
+	t.Parallel()
+
+	const src = `"t\u0065sts":
+  - "na\u006de": smoke
+    expect: {failed: false}
+`
+	loaded, err := flowtest.LoadSource([]byte(src))
+	require.NoError(t, err)
+	require.Len(t, loaded.Tests, 1)
+	assert.Equal(t, "smoke", loaded.Tests[0].Name)
+
+	testsKey, ok := scanKeyLine(`"t\u0065sts":`)
+	require.True(t, ok)
+	nameKey, ok := scanKeyLine(`  - "na\u006de": smoke`)
+	require.True(t, ok)
+	assert.Equal(t, "tests", testsKey.key)
+	assert.Equal(t, "name", nameKey.key)
+}
+
+// TestAValueTheParserRewroteHasNoInnerPositions is the named regression for the
+// defect [FuzzLSPDocumentEdits] found in CI, from the model's side.
+//
+// A plain scalar has no escapes, so nothing ever asked whether its decoded text
+// was the source it was cut from — and it is not when the source holds a byte
+// that is not UTF-8, which the parser replaces with U+FFFD, three bytes for one.
+// The fence after it was mapped by adding an offset into the longer text to the
+// value's start in the shorter source, two bytes late, into the middle of the
+// emoji; and a range with an end inside a rune ran backwards once converted to
+// UTF-16. The value's own contract ([value.inline]) is that an offset into the
+// text is the same place in the document, and the honest answer where it is not
+// is the fence's whole range, which is what the diagnostic gets here.
+func TestAValueTheParserRewroteHasNoInnerPositions(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{"a plain scalar holding a byte that is not UTF-8", "\\Lé\xff${😀}\\n "},
+		{"a double-quoted scalar holding an escape", "\"\\n${😀}\""},
+		{"a single-quoted scalar holding a doubled quote", "'it''s ${😀}'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var docs documentStore
+			doc := docs.open("untitled:rewritten.yaml", 1,
+				"edition: v2026.3\nname: r\nsteps:\n- id: a\n  log:\n    message: "+tc.text+"\n", nil)
+			require.NotNil(t, doc.parsed)
+			require.Len(t, doc.parsed.steps, 1)
+			message := doc.parsed.steps[0].input("message")
+			require.NotNil(t, message)
+			require.NotNil(t, message.value)
+			assert.False(t, message.value.inline,
+				"the decoded text %q is not the source, so no offset into it names a place in the document", message.value.text)
+			require.Len(t, message.value.fences, 1)
+
+			// The emoji is not something an expression can contain, so the
+			// fence draws a diagnostic; with no inner positions to map it to,
+			// it covers the fence as written — and runs forwards.
+			var found bool
+			for _, d := range diagnose(doc) {
+				if d.Code != codeCELSyntax {
+					continue
+				}
+				found = true
+				assert.Equal(t, message.value.fences[0].rng, d.Range, "%s", d.Message)
+				requireForwardRange(t, d.Range, "a published diagnostic")
+			}
+			require.True(t, found, "the emoji in the fence must draw a CEL diagnostic")
+		})
+	}
+}
+
+// TestAnEscapeFreeQuotedScalarKeepsItsInnerPositions is the direction the
+// regression above must not take with it: a quoted scalar whose decoded text
+// is the source between the quotes still maps every offset, so a diagnostic
+// inside its fence underlines the token and not the whole fence.
+func TestAnEscapeFreeQuotedScalarKeepsItsInnerPositions(t *testing.T) {
+	t.Parallel()
+
+	var docs documentStore
+	doc := docs.open("untitled:quoted.yaml", 1,
+		"edition: v2026.3\nname: q\nsteps:\n- id: a\n  log:\n    message: \"é ${1 @ 2}\"\n", nil)
+	require.NotNil(t, doc.parsed)
+	message := doc.parsed.steps[0].input("message")
+	require.NotNil(t, message)
+	require.NotNil(t, message.value)
+	assert.True(t, message.value.inline)
+
+	var ranges []lsp.Range
+	for _, d := range diagnose(doc) {
+		if d.Code == codeCELSyntax {
+			ranges = append(ranges, d.Range)
+		}
+	}
+	// `    message: "é ${1 @ 2}"`: the `@` is the 20th UTF-16 unit on line 5,
+	// one past where a byte count would put it.
+	require.NotEmpty(t, ranges)
+	assert.Equal(t, lsp.Range{
+		Start: lsp.Position{Line: 5, Character: 20},
+		End:   lsp.Position{Line: 5, Character: 21},
+	}, ranges[0])
 }

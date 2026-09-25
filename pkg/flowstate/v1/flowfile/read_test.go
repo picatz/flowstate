@@ -47,6 +47,21 @@ func TestParseFileRefusesANonRegularFileWithoutReadingIt(t *testing.T) {
 	assert.Contains(t, err.Error(), "is not a regular file")
 }
 
+// TestParseFileRefusesADirectoryWithAnActionableMessage pins the directory arm
+// of the non-regular-file check: a directory is the common case (a trailing
+// slash on a path), and the error names what to do rather than why the engine
+// cannot proceed.
+func TestParseFileRefusesADirectoryWithAnActionableMessage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	_, _, err := flowfile.ParseFile(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is a directory")
+	assert.Contains(t, err.Error(), "name the Flowfile inside it")
+}
+
 // TestParseFileRefusesAnOversizedFile is the size half: the file is written one
 // byte past the limit, which only a stream capped at limit+1 can notice at
 // exactly that point, rather than a size read afterward from a fully materialized
@@ -149,7 +164,7 @@ steps:
 
 	_, _, err := flowfile.ParseFile(caller)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "is not a regular file")
+	assert.Contains(t, err.Error(), "is a directory")
 }
 
 // TestCallRefusesAnOversizedCallee is the size half for the callee read.

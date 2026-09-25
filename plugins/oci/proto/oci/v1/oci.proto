@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package oci.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/oci/gen/oci/v1;ociv1";
+
+import "flowstate/v1/value.proto";
+import "google/api/expr/v1alpha1/value.proto";
+
+// ResolveInputs names an image and asks the registry what it actually is.
+//
+// A tag is a name somebody can move; a digest is the bytes. Resolving one to
+// the other is the first step of every workflow that decides whether to run
+// something, and it is deliberately a separate step from running it: what a
+// deployment approves and what it later executes are the same bytes only when
+// the digest travels between them.
+message ResolveInputs {
+  // Reference is registry/repository, optionally with :tag or @digest. The
+  // registry is required and never inferred: an image whose home is implied by
+  // the tooling is an image whose supply chain depends on whose tooling ran.
+  string reference = 1;
+
+  // Platform selects one image out of a multi-platform index, as os/arch with
+  // an optional /variant - "linux/amd64", "linux/arm64/v8". Left empty, an
+  // index resolves to the index's own digest, which is the right answer for
+  // promotion and the wrong one for "what will this node run".
+  string platform = 2;
+
+  // Username is the registry account the credential belongs to. It is an
+  // ordinary input because a username is not a secret and naming it in the
+  // workflow is how a reader sees which identity a step acts as.
+  string username = 3;
+
+  // Password is the registry credential - a password, a personal access token,
+  // an identity token. The task requires this entire input to be a secret
+  // reference, which the host resolves before execution, so it never enters
+  // durable history. Left unset, the request is anonymous, which is what a
+  // public repository wants.
+  flowstate.v1.Value password = 4;
+}
+
+// ResolveOutputs is what the registry says this reference is.
+message ResolveOutputs {
+  // Reference is the canonical digest-pinned form, registry/repository@digest,
+  // ready to be carried into a later step or an approval record verbatim.
+  string reference = 1;
+
+  // Digest is the manifest's own content digest, "sha256:" and 64 lower-case
+  // hexadecimal characters.
+  string digest = 2;
+
+  // MediaType distinguishes a single-platform manifest from an index, and an
+  // image from some other artifact.
+  string media_type = 3;
+
+  // Size is the manifest's length in bytes.
+  int64 size = 4;
+
+  // Registry and Repository are the reference's parts, so a later step can
+  // build a sibling reference without reparsing a string.
+  string registry = 5;
+  string repository = 6;
+
+  // Platform is the platform this resolution selected, empty when none was
+  // asked for. PlatformMatched distinguishes "the index held this platform"
+  // from "none was requested": a false with a platform asked for is never
+  // returned, because an unmatched platform is a refusal, not an output.
+  string platform = 7;
+  bool platform_matched = 8;
+}
+
+// ReferrersInputs asks what is attached to an image: signatures, SBOMs,
+// in-toto attestations, anything else pushed with a subject.
+//
+// This is the OCI distribution specification's referrers API, which is how an
+// artifact says "I am about those bytes" without a tag convention.
+message ReferrersInputs {
+  // Reference must be digest-pinned - registry/repository@digest. A referrer
+  // set is a statement about specific bytes, and asking for the referrers of a
+  // tag would answer about whatever the tag pointed at when the call landed.
+  string reference = 1;
+
+  // ArtifactType filters the set to one kind of attachment, such as
+  // "application/vnd.in-toto+json". The registry is asked to filter; a registry
+  // that declines to is filtered here, so the result means the same thing
+  // either way.
+  string artifact_type = 2;
+
+  // Limit bounds how many referrers are returned. Zero takes the default; the
+  // task's own ceiling is what a workflow cannot raise past.
+  int32 limit = 3;
+
+  string username = 4;
+  flowstate.v1.Value password = 5;
+}
+
+// ReferrersOutputs is the bounded attachment set.
+message ReferrersOutputs {
+  // Referrers are descriptors, each a map with digest, media_type,
+  // artifact_type, size and annotations - the descriptor fields the
+  // distribution specification defines, and nothing invented beside them.
+  repeated google.api.expr.v1alpha1.Value referrers = 1;
+
+  // Count is how many were returned, and Truncated says the registry had more:
+  // a workflow deciding "no attestation is present" must be able to tell that
+  // from "the first page held none of this artifact type".
+  int64 count = 2;
+  bool truncated = 3;
+}
+
+// BlobInputs fetches one content-addressed blob - an attestation, an SBOM, a
+// manifest's config - and proves it is the blob that was asked for.
+message BlobInputs {
+  // Reference is registry/repository@digest naming the blob's own digest, not
+  // an image's. What comes back is hashed as it is read and refused if it does
+  // not match; a blob is the one case where the caller already knows what the
+  // bytes must be.
+  string reference = 1;
+
+  // MaxBytes bounds the download. Zero takes the default; a value over the
+  // task's ceiling is refused rather than quietly lowered, because a workflow
+  // that asked for more than it gets would read a truncated document as a
+  // complete one.
+  int64 max_bytes = 2;
+
+  // ParseJson decodes the blob as JSON into `json`, for the attestation and
+  // SBOM documents this task exists to read. A blob that is not valid JSON is
+  // a refusal rather than an empty parse.
+  bool parse_json = 3;
+
+  string username = 4;
+  flowstate.v1.Value password = 5;
+}
+
+// BlobOutputs is the verified blob.
+message BlobOutputs {
+  // Digest is the digest the bytes actually hashed to, which is the digest
+  // that was asked for: this task fails rather than return any other.
+  string digest = 1;
+
+  // Size is the blob's length in bytes.
+  int64 size = 2;
+
+  // Content is the blob as text when it is valid UTF-8, empty when it is not.
+  string content = 3;
+
+  // Json is the decoded document when parse_json was set, and null otherwise.
+  google.api.expr.v1alpha1.Value json = 4;
+
+  // MediaType is what the registry said the bytes are, which is a hint from the
+  // party serving them rather than a fact about their content.
+  string media_type = 5;
+}

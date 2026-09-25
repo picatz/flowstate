@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/google/cel-go/cel"
 )
@@ -200,9 +201,7 @@ func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value, toler
 			continue
 		}
 		named := make(map[string]*Value, len(outputs.GetNamedValues())+1)
-		for name, v := range outputs.GetNamedValues() {
-			named[name] = v
-		}
+		maps.Copy(named, outputs.GetNamedValues())
 		named[StepErrorItemOutput] = bound
 		decorated[id] = &Node_Outputs{NamedValues: named}
 	}
@@ -211,12 +210,8 @@ func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value, toler
 	}
 
 	out := &Workflow_StepOutputs{StepValues: make(map[string]*Node_Outputs, len(iteration.GetStepValues()))}
-	for id, outputs := range iteration.GetStepValues() {
-		out.StepValues[id] = outputs
-	}
-	for id, outputs := range decorated {
-		out.StepValues[id] = outputs
-	}
+	maps.Copy(out.StepValues, iteration.GetStepValues())
+	maps.Copy(out.StepValues, decorated)
 	return out
 }
 
@@ -230,11 +225,24 @@ func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value, toler
 // follows through [EvalConditionInScope], which this delegates to so the two cannot
 // diverge about what "a condition" is.
 func EvalLoopUntil(ctx context.Context, loop *Loop, scope *Scope) (bool, error) {
-	stop, err := EvalConditionInScope(ctx, loop.GetUntil(), scope)
+	stop, _, err := EvalLoopUntilWithCost(ctx, loop, scope)
+
+	return stop, err
+}
+
+// EvalLoopUntilWithCost is [EvalLoopUntil] plus the deterministic CEL cost of
+// evaluating the stop condition.
+//
+// A loop evaluates `until:` once per iteration, and an iteration that schedules
+// no activity writes no history, so this is spending a segment has no other
+// record of — see [EvalConditionInScopeWithCost], which it delegates to for the
+// same reason it delegates the rule about what a condition is.
+func EvalLoopUntilWithCost(ctx context.Context, loop *Loop, scope *Scope) (bool, uint64, error) {
+	stop, cost, err := EvalConditionInScopeWithCost(ctx, loop.GetUntil(), scope)
 	if err != nil {
-		return false, fmt.Errorf("evaluating until: %w", err)
+		return false, cost, fmt.Errorf("evaluating until: %w", err)
 	}
-	return stop, nil
+	return stop, cost, nil
 }
 
 // EvalLoopValue evaluates one of a loop's carried-state expressions — [Loop.initial]
@@ -251,23 +259,32 @@ func EvalLoopUntil(ctx context.Context, loop *Loop, scope *Scope) (bool, error) 
 // A literal input is passed through untouched, which is the common case for
 // `initial:` (`init: ${”}`).
 func EvalLoopValue(ctx context.Context, scope *Scope, v *Value) (*Value, error) {
+	value, _, err := EvalLoopValueWithCost(ctx, scope, v)
+
+	return value, err
+}
+
+// EvalLoopValueWithCost is [EvalLoopValue] plus the deterministic CEL cost of
+// evaluating the carried-state expression. An absent or literal value costs
+// zero.
+func EvalLoopValueWithCost(ctx context.Context, scope *Scope, v *Value) (*Value, uint64, error) {
 	switch v.GetKind().(type) {
 	case nil:
-		return nil, nil
+		return nil, 0, nil
 	case *Value_Literal:
-		return v, nil
+		return v, 0, nil
 	case *Value_Expr:
-		out, err := DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
+		out, cost, err := DefaultEvaluator().EvalParsedBaseWithCost(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
 		if err != nil {
-			return nil, err
+			return nil, cost, err
 		}
 		literal, err := cel.RefValueToValue(out)
 		if err != nil {
-			return nil, fmt.Errorf("converting result: %w", err)
+			return nil, cost, fmt.Errorf("converting result: %w", err)
 		}
-		return &Value{Kind: &Value_Literal{Literal: literal}}, nil
+		return &Value{Kind: &Value_Literal{Literal: literal}}, cost, nil
 	default:
-		return nil, fmt.Errorf("unsupported loop value kind %T", v.GetKind())
+		return nil, 0, fmt.Errorf("unsupported loop value kind %T", v.GetKind())
 	}
 }
 
@@ -279,14 +296,22 @@ func EvalLoopValue(ctx context.Context, scope *Scope, v *Value) (*Value, error) 
 // not exist yet, which is exactly why `initial:` is where it is *defined*. Returns
 // nil for a loop that carries no state, which binds no name.
 func LoopInitialState(ctx context.Context, loop *Loop, scope *Scope) (*Value, error) {
+	state, _, err := LoopInitialStateWithCost(ctx, loop, scope)
+
+	return state, err
+}
+
+// LoopInitialStateWithCost is [LoopInitialState] plus the deterministic CEL cost
+// of evaluating `initial:`.
+func LoopInitialStateWithCost(ctx context.Context, loop *Loop, scope *Scope) (*Value, uint64, error) {
 	if !LoopCarriesState(loop) {
-		return nil, nil
+		return nil, 0, nil
 	}
-	v, err := EvalLoopValue(ctx, scope, loop.GetInitial())
+	v, cost, err := EvalLoopValueWithCost(ctx, scope, loop.GetInitial())
 	if err != nil {
-		return nil, fmt.Errorf("evaluating initial: %w", err)
+		return nil, cost, fmt.Errorf("evaluating initial: %w", err)
 	}
-	return v, nil
+	return v, cost, nil
 }
 
 // LoopNextState evaluates a loop's [Loop.update] expression against the scope the
@@ -298,14 +323,25 @@ func LoopInitialState(ctx context.Context, loop *Loop, scope *Scope) (*Value, er
 // `${state + steps.tick.amount}` folds it into the accumulator. Returns nil for a
 // loop that carries no state, where there is nothing to advance.
 func LoopNextState(ctx context.Context, loop *Loop, scope *Scope) (*Value, error) {
+	state, _, err := LoopNextStateWithCost(ctx, loop, scope)
+
+	return state, err
+}
+
+// LoopNextStateWithCost is [LoopNextState] plus the deterministic CEL cost of
+// evaluating `update:`.
+//
+// Evaluated once per iteration like `until:`, and charged for the same reason:
+// an iteration that schedules nothing leaves no other trace of having run.
+func LoopNextStateWithCost(ctx context.Context, loop *Loop, scope *Scope) (*Value, uint64, error) {
 	if !LoopCarriesState(loop) {
-		return nil, nil
+		return nil, 0, nil
 	}
-	v, err := EvalLoopValue(ctx, scope, loop.GetUpdate())
+	v, cost, err := EvalLoopValueWithCost(ctx, scope, loop.GetUpdate())
 	if err != nil {
-		return nil, fmt.Errorf("evaluating update: %w", err)
+		return nil, cost, fmt.Errorf("evaluating update: %w", err)
 	}
-	return v, nil
+	return v, cost, nil
 }
 
 // LoopStateOutputs shapes a loop's per-iteration results and its final carried state

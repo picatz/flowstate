@@ -48,10 +48,12 @@ func TestEmbeddedDescriptorSetCarriesSourceInfo(t *testing.T) {
 		"flowstate/v1/reports.proto":       false,
 		"flowstate/v1/run.proto":           false,
 		"flowstate/v1/schedule.proto":      false,
+		"flowstate/v1/schema.proto":        false,
 		"flowstate/v1/service.proto":       false,
 		"flowstate/v1/signal.proto":        false,
 		"flowstate/v1/task.proto":          false,
 		"flowstate/v1/trigger.proto":       false,
+		"flowstate/v1/type.proto":          false,
 		"flowstate/v1/value.proto":         false,
 		"flowstate/v1/workflow.proto":      false,
 	}
@@ -107,6 +109,54 @@ func TestCommentFindsProse(t *testing.T) {
 			t.Errorf("Comment(%q) still carries comment markers: %q", name, got)
 		}
 	}
+}
+
+func TestManualAllowedPrincipalsDocumentationIsIssuerQualified(t *testing.T) {
+	comment, ok := Comment("flowstate.v1.ManualTrigger.allowed_principals")
+	if !ok {
+		t.Fatal("manual allowed_principals has no descriptor documentation")
+	}
+	for _, want := range []string{"<issuer>#<subject>", "Principal.ID", "exactly one", "Bare subjects are invalid"} {
+		if !strings.Contains(comment, want) {
+			t.Errorf("manual allowed_principals descriptor documentation does not contain %q:\n%s", want, comment)
+		}
+	}
+}
+
+// A leading comment belongs to the declaration immediately below it. Presence
+// alone did not catch RunState's prose being copied above WorkloadIdentity,
+// where generated API documentation attributed both descriptions to the
+// identity message and left RunState unnamed.
+func TestDocumentedTopLevelDeclarationsNameThemselves(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	check := func(declaration protoreflect.Descriptor) {
+		name := declaration.FullName()
+		comment, ok := CommentOf(declaration)
+		if !ok {
+			if declaration.ParentFile().Package() == "flowstate.v1" {
+				t.Errorf("Comment(%q) = _, false; want prose", name)
+			}
+			return
+		}
+		if want := string(name.Name()) + " "; !strings.HasPrefix(comment, want) {
+			t.Errorf("Comment(%q) starts with %q; want its own declaration name %q", name, FirstSentence(comment), name.Name())
+		}
+	}
+	files.RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		for i, declarations := 0, file.Messages(); i < declarations.Len(); i++ {
+			check(declarations.Get(i))
+		}
+		for i, declarations := 0, file.Enums(); i < declarations.Len(); i++ {
+			check(declarations.Get(i))
+		}
+		for i, declarations := 0, file.Services(); i < declarations.Len(); i++ {
+			check(declarations.Get(i))
+		}
+		return true
+	})
 }
 
 // Fail closed: every way of asking for something that is not there answers the

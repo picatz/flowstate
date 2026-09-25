@@ -1,0 +1,69 @@
+edition: v2026.3
+tests:
+  - name: a passing suite reaches the approver and is released
+    workflow: ./workflow.yaml
+    inputs:
+      suite: smoke
+      expected_approver: release-manager@example.com
+    starter:
+      subject: ci-bot@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: release-approved
+        payload:
+          approved: true
+        sender:
+          subject: release-manager@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - step: tests
+        returns:
+          exit_code: 0
+          stdout: "12 passed in 4.21s\n"
+          stderr: ""
+          truncated: false
+          image: ghcr.io/acme/api-tests@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+          run: smoke-test
+    expect:
+      ran: [tests, passed, approval]
+      outputs:
+        passed: true
+        image: ghcr.io/acme/api-tests@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+        output: "12 passed in 4.21s\n"
+        released: true
+
+  - name: a failing suite still reaches the approver, and is not released
+    workflow: ./workflow.yaml
+    inputs:
+      suite: smoke
+      expected_approver: release-manager@example.com
+    starter:
+      subject: ci-bot@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: release-approved
+        payload:
+          approved: false
+        sender:
+          subject: release-manager@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - step: tests
+        returns:
+          exit_code: 1
+          stdout: "2 failed, 10 passed in 4.44s\n"
+          stderr: ""
+          truncated: false
+          image: ghcr.io/acme/api-tests@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+          run: smoke-test
+    expect:
+      ran: [tests, passed, approval]
+      outputs:
+        passed: false
+        image: ghcr.io/acme/api-tests@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+        output: "2 failed, 10 passed in 4.44s\n"
+        released: false

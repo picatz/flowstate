@@ -65,6 +65,38 @@ func TestCompileWritesTheSpecificationTheCompilerProduces(t *testing.T) {
 	}
 }
 
+// TestCompileAcceptsPluginTasksFromEitherDescriptorSource pins both authoring
+// postures: a developer may launch the plugin they have, while CI and reviewers
+// may consume the checked-in catalog without executing it.
+func TestCompileAcceptsPluginTasksFromEitherDescriptorSource(t *testing.T) {
+	bin := buildFlowBinary(t)
+	catalog := pluginCatalogFor(t, bin)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"catalog", []string{"--" + pluginCatalogFlag, catalog}},
+		{"plugin directory", []string{"--plugin-dir", buildExamplePluginDir(t)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"compile"}, tc.args...)
+			args = append(args, exampleGreetWorkflow)
+			res := runFlowBinary(t, bin, args...)
+
+			require.NoError(t, res.Err, "a declared plugin task did not compile:\n%s", res.Output())
+			var workflow v1.Workflow
+			require.NoError(t, protojson.Unmarshal([]byte(res.Stdout), &workflow),
+				"the compiled specification is not a workflow document:\n%s", res.Stdout)
+			require.NotEmpty(t, workflow.GetSteps())
+			assert.Equal(t, "example.greet", workflow.GetSteps()[0].GetTask().GetName(),
+				"the compiled specification does not carry the plugin task")
+			assert.NotContains(t, res.Output(), "no plugin task",
+				"the descriptor source did not reach compilation:\n%s", res.Output())
+		})
+	}
+}
+
 // TestCompileRefusesAFileWithProblems pins all four halves of a refusal, because
 // three of them passing is still a broken pipeline.
 //

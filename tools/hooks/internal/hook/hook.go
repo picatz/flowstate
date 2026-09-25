@@ -26,11 +26,10 @@
 // grant, so it must never emit "allow" — that would make a blind guard a
 // permission escalation precisely when it has nothing to vouch for.
 //
-// Parsing is deliberately lenient, and lenient means silent: these guards
-// are advisory, so an input the parser does not recognize allows rather
-// than blocks. They are not a security boundary (a session that can edit
-// files can edit anything); they encode habits from CLAUDE.md at the moment
-// a mistake is cheapest to undo, with a message naming the right move.
+// Parsing is deliberately lenient, and lenient means silent: an input the
+// parser does not recognize allows rather than blocks. These hooks are not a
+// security boundary (a session that can edit files can edit anything); each
+// guard chooses whether its recognized failure modes advise or deny.
 package hook
 
 import (
@@ -126,10 +125,8 @@ func Advise(context string) {
 // this hook not run at all — and also writes reason to stderr so it is
 // visible even where systemMessage is not rendered. It exists for a guard
 // whose check could not run at all (a dependency down, an API unreachable)
-// and that must fail open rather than block on a check it never performed —
-// see mergeguard (#498), whose posture is fail open, loudly: never claim a
-// check passed when it did not run, say plainly what was skipped, and never
-// grant more than the hook's own absence would have granted. An earlier
+// and that must fail open rather than block on a check it never performed.
+// An earlier
 // version of this function emitted permissionDecision: "allow", which does
 // not mean neutral fail-open under the hook contract — it bypasses the
 // permission prompt outright, turning a blind check into a merge that

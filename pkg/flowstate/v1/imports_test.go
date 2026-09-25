@@ -50,6 +50,15 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 //     dependencies of its own; the cheapest edge to remove and the one that
 //     buys the least.
 //
+//   - celrule — the compile-and-decide half of a CEL allow/deny rule set,
+//     which taskpolicy.go's task-shape policy shares with auth's assumption
+//     and secret rules and netpolicy's egress rules (#1708). Before this edge
+//     each of the four carried its own copy of that machinery, and the copies
+//     had drifted on what a rule that cannot be evaluated means; one package
+//     is what keeps a fix to one of them a fix to all of them. It is a leaf
+//     whose only import is cel-go, which this package already inherits for
+//     the interpreter, so the edge adds nothing to what an importer pulls in.
+//
 //   - metricschema — the metric vocabulary the task instruments record through
 //     (#526). The one edge added *after* this ratchet existed, so it owes the
 //     argument the table asks for.
@@ -84,6 +93,9 @@ var allowedSelfImports = map[string][]string{
 		"entity.go",
 		"eval_task_http_run.go",
 		"taskruntime.go",
+	},
+	"celrule": {
+		"taskpolicy.go",
 	},
 	"metricschema": {
 		"eval.go",

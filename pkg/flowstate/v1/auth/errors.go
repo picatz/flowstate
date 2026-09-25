@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/picatz/flowstate/internal/textbound"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // Sentinel errors returned by this package. Callers distinguish failures with
@@ -67,6 +70,18 @@ var (
 	// when a trust policy or the settings it is built with are not usable, and
 	// by an [Authenticator] with no verifier at all.
 	ErrInvalidPolicy = errors.New("auth: invalid authentication configuration")
+
+	// ErrPolicySyntax is returned by [ParsePolicy], wrapped beside
+	// [ErrInvalidPolicy], when the document could not be decoded as a policy
+	// at all — as opposed to decoding and then failing [Policy.Validate].
+	//
+	// The distinction exists for a reader that must not repeat what the
+	// decoder says. A decoder's error quotes the malformed source, and the
+	// source may be a credential a caller handed over in the policy's place;
+	// a validation failure names a field and a rule and quotes at most a value
+	// the policy declared. `flow auth check` redacts the first and reports the
+	// second (picatz/flowstate#1693).
+	ErrPolicySyntax = errors.New("auth: policy could not be decoded")
 
 	// ErrDelegatedToken is returned when a token carries an RFC 8693 delegation
 	// claim — "act" or "may_act" — that this deployment has nowhere to map and
@@ -338,6 +353,65 @@ func (e *ClaimMismatchError) Unwrap() error {
 	return ErrClaimMismatch
 }
 
+// IssuerBlockedError reports that fetching an issuer's OpenID Connect
+// discovery document or JSON Web Key Set was refused by the identity egress
+// policy rather than the issuer failing to answer. It wraps
+// [ErrIssuerUnavailable] so existing errors.Is checks still match, but names
+// the denied hop (already redacted by [netpolicy.DenyError]), the rule
+// responsible, and the trust policy's egress: section as the remedy.
+type IssuerBlockedError struct {
+	Issuer string
+	Deny   *netpolicy.DenyError
+}
+
+func (e *IssuerBlockedError) Error() string {
+	hop := e.Deny.Hop
+	if hop == "" {
+		hop = e.Deny.Target
+	}
+	return fmt.Sprintf("%v: issuer %q fetch of %s blocked by identity egress policy: %v; "+
+		"configure the trust policy's egress: section to allow this fetch: %s",
+		ErrIssuerUnavailable, e.Issuer, hop, e.Deny, egressRemedy(e.Deny))
+}
+
+// egressRemedy names the `egress:` setting that would have admitted the denied
+// fetch, so the refusal is one sentence that, followed literally, makes the
+// next attempt succeed (#1694). The setting is the policy's own answer,
+// [netpolicy.DenyError.Admits], filled in by the check that made the
+// decision; this only phrases it for the trust policy's section. A loopback
+// rehearsal fails the scheme check first, so that case names `allow_loopback:`
+// too rather than refusing the same file twice. A refusal no setting admits —
+// a link-local or cloud metadata address, a port in `deny_ports:`, a network
+// in `deny_networks:` — says so, since widening the allow lists would not help.
+func egressRemedy(deny *netpolicy.DenyError) string {
+	switch deny.Admits {
+	case "schemes":
+		return "add `schemes: [http, https]` to admit a plain-http fetch (what a loopback rehearsal needs; " +
+			"a loopback address also needs `allow_loopback: true`)"
+	case "allow_loopback":
+		return "set `allow_loopback: true` to admit an issuer on this machine"
+	case "allow_private_networks":
+		return "set `allow_private_networks: true` to admit an in-cluster issuer, or name its network in `allow_networks:`"
+	case "allow_networks":
+		return "add the issuer's network to `allow_networks:`"
+	case "allow_ports":
+		return "add the port to `allow_ports:`"
+	}
+	switch deny.Reason {
+	case netpolicy.ReasonAddress:
+		return "no setting admits this address: a link-local or cloud metadata address never is, and a network in " +
+			"`deny_networks:` stays denied; point the issuer at a routable address"
+	case netpolicy.ReasonPort:
+		return "the port is in `deny_ports:`, which wins over `allow_ports:`"
+	}
+	return "the section's `schemes:`, `allow_loopback:`, `allow_private_networks:` and `allow_networks:` " +
+		"are the settings that widen it"
+}
+
+func (e *IssuerBlockedError) Unwrap() []error {
+	return []error{ErrIssuerUnavailable, e.Deny}
+}
+
 // AmbiguousIssuerError reports a credential that more than one trust policy
 // entry admits. It wraps [ErrAmbiguousIdentity].
 //
@@ -479,6 +553,9 @@ func publicReason(err error) string {
 	case errors.Is(err, ErrClaimMismatch):
 		return "token is not accepted by the trust policy"
 	case errors.Is(err, ErrIssuerUnavailable):
+		if _, ok := errors.AsType[*IssuerBlockedError](err); ok {
+			return "issuer keys are blocked by the identity egress policy"
+		}
 		return "issuer keys are temporarily unavailable"
 	case errors.Is(err, ErrInvalidSignature),
 		errors.Is(err, ErrUnknownKey),
@@ -500,12 +577,51 @@ func publicReason(err error) string {
 	}
 }
 
-// truncate bounds a value taken from a token before it is placed in an error
-// message, so that a trusted-but-hostile issuer cannot flood an operator's
-// logs with a single claim.
-func truncate(s string, limit int) string {
-	if len(s) <= limit {
-		return s
+// AssumptionFailedError reports that the assumption policy permitted a target
+// and obtaining or applying the credential then failed: the assertion could not
+// be minted, the relying party refused or could not be reached, or the
+// credential could not be presented on the request.
+//
+// It exists to separate "the policy said no" from "the policy said yes and the
+// rest went wrong", which are the same error to a caller reading only the
+// message. A caller that records what the policy decided
+// (picatz/flowstate#1379) needs the second case to be recognizable: the
+// decision happened, so it belongs in the trail, and an IdP outage would
+// otherwise erase exactly the allows an operator investigating that outage came
+// to read.
+//
+// It deliberately does not wrap [ErrAssumeDenied]: nothing was refused. It
+// unwraps to the original failure, so [Retryable] and every errors.Is check
+// against [ErrExchangeFailed], [ErrExchangeUnavailable] and the rest answer for
+// it exactly as they answered for the bare value it replaced.
+type AssumptionFailedError struct {
+	// Target is the credential target the policy permitted.
+	Target string
+
+	// Err is the failure that followed: a mint, an exchange, or applying the
+	// credential to the request.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *AssumptionFailedError) Error() string {
+	return fmt.Sprintf("auth: the assumption policy permitted %q and obtaining the credential then failed: %v",
+		textbound.Truncate(e.Target, 128), e.Err)
+}
+
+// Unwrap returns the original failure.
+func (e *AssumptionFailedError) Unwrap() error { return e.Err }
+
+// assumptionFailed marks a failure that happened after the assumption policy
+// allowed the request, and passes a success (nil) through.
+//
+// Every exit from [Broker.Credential] below the policy call, and the apply in
+// [Broker.Authorize], go through this: those are exactly the paths on which a
+// decision was made and something else then failed.
+func assumptionFailed(target string, err error) error {
+	if err == nil {
+		return nil
 	}
-	return strings.ToValidUTF8(s[:limit], "") + "..."
+
+	return &AssumptionFailedError{Target: target, Err: err}
 }

@@ -84,8 +84,10 @@ func runInstruments() (metric.Int64Counter, metric.Float64Histogram, metric.Int6
 // which carries no outcome yet.
 func RunMetricAttributes(workflowName, driver, outcome, errorType string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
-		attribute.String(metricschema.WorkflowName, workflowName),
 		attribute.String(metricschema.Driver, driver),
+	}
+	if workflowName != "" {
+		attrs = append(attrs, attribute.String(metricschema.WorkflowName, workflowName))
 	}
 
 	if outcome != "" {

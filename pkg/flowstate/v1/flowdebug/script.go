@@ -239,11 +239,20 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 	for _, id := range steps {
 		known[id] = struct{}{}
 	}
-	names := make([]string, 0, len(known))
-	for name := range known {
-		names = append(names, name)
+
+	// Sorted once for the whole script rather than per refused line. A script
+	// may carry up to [MaxScriptCommands] of them, and every one would
+	// otherwise re-copy and re-sort the workflow's whole inventory before
+	// anything ran (Codex, #1347). The order itself is load-bearing, not
+	// tidiness: [nearest.Name] keeps the first candidate at the best distance,
+	// so an unsorted list makes the suggestion depend on map iteration order —
+	// unstable between runs of this command, and different from the prompt,
+	// which answers the identical question over the same ids.
+	candidates := make([]string, 0, len(known))
+	for id := range known {
+		candidates = append(candidates, id)
 	}
-	slices.Sort(names)
+	slices.Sort(candidates)
 
 	report := func(line, column int, format string, args ...any) {
 		total++
@@ -298,16 +307,27 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 		switch command.verb {
 		case "until":
-			target := strings.TrimSpace(rest)
-			if target == "" {
+			id, condition, conditional, err := splitCondition(rest, grammarUntil)
+			if err != nil {
+				report(number, verbColumn, "until: %v", err)
+
+				continue
+			}
+			if id == "" {
 				report(number, verbColumn, "%s", usageUntil)
 
 				continue
 			}
-			checkStepArgument(report, number, line, target, known, names, len(problems) < MaxScriptProblems)
+			// The shape check `break` explains below, for the same grammar.
+			if conditional && strings.TrimSpace(condition) == "" {
+				report(number, verbColumn, "until %s: "+usageCondition, id, grammarUntil)
+
+				continue
+			}
+			checkStepArgument(report, number, line, id, known, candidates, len(problems) < MaxScriptProblems)
 
 		case "break":
-			id, condition, conditional, err := splitCondition(rest)
+			id, condition, conditional, err := splitCondition(rest, grammarBreak)
 			if err != nil {
 				report(number, verbColumn, "break: %v", err)
 
@@ -327,11 +347,11 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 			// answerable here is the one shape that is wrong in every scope:
 			// an `if` with nothing after it.
 			if conditional && strings.TrimSpace(condition) == "" {
-				report(number, verbColumn, "break %s: %s", id, usageCondition)
+				report(number, verbColumn, "break %s: "+usageCondition, id, grammarBreak)
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known, names, len(problems) < MaxScriptProblems)
+			checkStepArgument(report, number, line, id, known, candidates, len(problems) < MaxScriptProblems)
 
 		case "inspect":
 			if strings.TrimSpace(rest) == "" {
@@ -351,6 +371,16 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 // the workflow — including a `call:`'s callee, which `cmd/flow`'s stepIDs
 // follows precisely because a breakpoint there is one the run genuinely stops
 // at.
+// names is [CheckScript]'s sorted candidate list, built once for the whole
+// script: see there for why it is sorted and why it is not rebuilt here.
+//
+// detail is false once the report has already reached [MaxScriptProblems]. A
+// refused id past the cap is still counted — [CheckScript]'s report closure
+// does that regardless — but the suggestion search below is [nearest.Name]
+// scanning every candidate, and the fallback is [stepList] rendering the same
+// list: work sized to the workflow's inventory that a script may trigger once
+// per refused line, up to [MaxScriptCommands] of them, for a diagnostic the
+// report cannot retain past the cap (Codex, #2003).
 func checkStepArgument(
 	report func(line, column int, format string, args ...any),
 	number int,
@@ -369,9 +399,6 @@ func checkStepArgument(
 
 	column := columnOf(line, argumentOffset(line))
 	if !detail {
-		// Keep counting every problem so a bounded report never looks like a
-		// short one, but do not spend workflow-inventory-sized work preparing a
-		// diagnostic the report cannot retain.
 		report(number, column, "no step named %q", id)
 
 		return
@@ -453,14 +480,21 @@ func verbList() string {
 // [MaxScopeNames] is the bound rather than a number of this function's own,
 // because it is the same question that constant already answers — how many
 // names one line may list before it stops being scannable — asked about a
-// different list. The caller supplies the normalized, sorted inventory so it
-// is paid for once per script rather than once per invalid command.
-func stepList(names []string) string {
-	if len(names) > MaxScopeNames {
-		return quote(names[:MaxScopeNames]) + fmt.Sprintf(" and %d more", len(names)-MaxScopeNames)
+// different list.
+//
+// The ids arrive sorted and are read rather than copied. The order is
+// load-bearing — a map's would make one refusal read differently on every run
+// — but both callers already hold an ordering built once, [CheckScript]'s
+// candidates and [Session.declared], so sorting here would only redo it. That
+// matters because a refused command is not recorded: an input can repeat an
+// unknown id past [MaxScriptCommands], and each repeat would pay
+// O(steps log steps) again (Codex, #1347).
+func stepList(sorted []string) string {
+	if len(sorted) > MaxScopeNames {
+		return quote(sorted[:MaxScopeNames]) + fmt.Sprintf(" and %d more", len(sorted)-MaxScopeNames)
 	}
 
-	return quote(names)
+	return quote(sorted)
 }
 
 // quote renders names as a comma-separated list of quoted words.

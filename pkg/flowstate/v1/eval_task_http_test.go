@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -241,9 +242,7 @@ func Test_httpTask_bodies(t *testing.T) {
 			server, seen := httpTaskServer(t, http.StatusOK, "ok", nil)
 
 			inputs := map[string]any{"url": server.URL}
-			for k, v := range test.inputs {
-				inputs[k] = v
-			}
+			maps.Copy(inputs, test.inputs)
 
 			_, err := runHTTPTask(t, inputs)
 			test.check(t, seen, err)
@@ -282,6 +281,37 @@ func Test_httpTask_parseJSON(t *testing.T) {
 		var taskErr *TaskError
 		require.ErrorAs(t, err, &taskErr)
 		require.False(t, taskErr.Retryable(), "the body will not become json on a retry")
+		require.Equal(t, AttemptOutcome_RESULT_DECODE_FAILED, taskErr.Outcome.GetResult())
+		require.Equal(t, AttemptOutcome_CONTRACT_NOT_EVALUATED, taskErr.Outcome.GetContract())
+	})
+
+	t.Run("a transient status survives a json decode failure", func(t *testing.T) {
+		server, _ := httpTaskServer(t, http.StatusServiceUnavailable, `<html>try later</html>`,
+			http.Header{"Retry-After": []string{"7"}})
+
+		_, err := runHTTPTask(t, map[string]any{"url": server.URL, "parse_json": true})
+
+		var taskErr *TaskError
+		require.ErrorAs(t, err, &taskErr)
+		require.Equal(t, ErrorKindUpstream, taskErr.Kind)
+		require.True(t, taskErr.Retryable())
+		require.Equal(t, 7*time.Second, RetryAfter(err))
+		require.Equal(t, AttemptOutcome_EFFECT_UNKNOWN, taskErr.Outcome.GetEffect())
+		require.Equal(t, AttemptOutcome_RESULT_DECODE_FAILED, taskErr.Outcome.GetResult())
+		require.Equal(t, AttemptOutcome_CONTRACT_NOT_EVALUATED, taskErr.Outcome.GetContract())
+		require.Equal(t, AttemptOutcome_REPEAT_SAFETY_SAFE, taskErr.Outcome.GetRepeatSafety())
+	})
+
+	t.Run("a permanent status stays permanent on a json decode failure", func(t *testing.T) {
+		server, _ := httpTaskServer(t, http.StatusNotFound, `<html>missing</html>`, nil)
+
+		_, err := runHTTPTask(t, map[string]any{"url": server.URL, "parse_json": true})
+
+		var taskErr *TaskError
+		require.ErrorAs(t, err, &taskErr)
+		require.Equal(t, ErrorKindInvalidInput, taskErr.Kind)
+		require.False(t, taskErr.Retryable())
+		require.Equal(t, AttemptOutcome_RESULT_DECODE_FAILED, taskErr.Outcome.GetResult())
 	})
 
 	t.Run("an outputs expression can read the parsed body", func(t *testing.T) {
@@ -447,6 +477,20 @@ func Test_httpTask_expect(t *testing.T) {
 				// The author described what success looks like; this endpoint answered
 				// in a way they said is wrong, and repeating will not change its mind.
 				require.False(t, taskErr.Retryable())
+				require.Equal(t, AttemptOutcome_CONTRACT_UNSATISFIED, taskErr.Outcome.GetContract())
+				require.Equal(t, AttemptOutcome_RETRY_PERMISSION_DENIED, taskErr.Outcome.GetRetryPermission())
+			},
+		},
+		{
+			name:    "an unmet expectation preserves a transient status",
+			status:  http.StatusServiceUnavailable,
+			inputs:  map[string]any{"expect": NewExpr("response.status_code == 200")},
+			wantErr: "does not accept",
+			check: func(t *testing.T, taskErr *TaskError) {
+				require.Equal(t, ErrorKindUpstream, taskErr.Kind)
+				require.True(t, taskErr.Retryable())
+				require.Equal(t, AttemptOutcome_CONTRACT_UNSATISFIED, taskErr.Outcome.GetContract())
+				require.Equal(t, AttemptOutcome_RETRY_PERMISSION_PERMITTED, taskErr.Outcome.GetRetryPermission())
 			},
 		},
 		{
@@ -491,9 +535,7 @@ func Test_httpTask_expect(t *testing.T) {
 			server, _ := httpTaskServer(t, test.status, body, nil)
 
 			inputs := map[string]any{"url": server.URL}
-			for k, v := range test.inputs {
-				inputs[k] = v
-			}
+			maps.Copy(inputs, test.inputs)
 
 			_, err := runHTTPTask(t, inputs)
 
@@ -513,15 +555,61 @@ func Test_httpTask_expect(t *testing.T) {
 	}
 }
 
+func Test_httpTask_ambiguousResponseDoesNotAuthorizeMutationReplay(t *testing.T) {
+	statuses := []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, status := range statuses {
+			for _, optIn := range []bool{false, true} {
+				name := fmt.Sprintf("%s_%d_opt_in_%t", method, status, optIn)
+				t.Run(name, func(t *testing.T) {
+					header := http.Header{}
+					if status == http.StatusServiceUnavailable {
+						header.Set("Retry-After", "5")
+					}
+					server, _ := httpTaskServer(t, status, "try later", header)
+					inputs := map[string]any{"url": server.URL, "method": method}
+					if optIn {
+						inputs["retry_on_unknown_outcome"] = true
+					}
+
+					_, err := runHTTPTask(t, inputs)
+
+					var taskErr *TaskError
+					require.ErrorAs(t, err, &taskErr)
+					require.Equal(t, AttemptOutcome_EFFECT_UNKNOWN, taskErr.Outcome.GetEffect())
+					if method == http.MethodPost && !optIn {
+						require.Equal(t, ErrorKindUpstreamUnknown, taskErr.Kind)
+						require.False(t, RetryPermitted(err))
+						require.Equal(t, AttemptOutcome_REPEAT_SAFETY_REQUIRES_RECONCILIATION,
+							taskErr.Outcome.GetRepeatSafety())
+						require.Zero(t, RetryAfter(err))
+						return
+					}
+
+					require.Equal(t, ErrorKindUpstream, taskErr.Kind)
+					require.True(t, RetryPermitted(err))
+					require.Equal(t, AttemptOutcome_REPEAT_SAFETY_SAFE, taskErr.Outcome.GetRepeatSafety())
+					if status == http.StatusServiceUnavailable {
+						require.Equal(t, 5*time.Second, RetryAfter(err))
+					}
+				})
+			}
+		}
+	}
+}
+
 func Test_httpTask_retryAfter(t *testing.T) {
 	tests := []struct {
 		name   string
 		status int
 		header string
+		expect bool
 		want   time.Duration
 	}{
 		{name: "429 with seconds", status: http.StatusTooManyRequests, header: "30", want: 30 * time.Second},
 		{name: "503 with seconds", status: http.StatusServiceUnavailable, header: "5", want: 5 * time.Second},
+		{name: "429 with unmet expect", status: http.StatusTooManyRequests, header: "30", expect: true, want: 30 * time.Second},
+		{name: "503 with unmet expect", status: http.StatusServiceUnavailable, header: "5", expect: true, want: 5 * time.Second},
 		{name: "no header", status: http.StatusTooManyRequests, header: ""},
 		{name: "unparsable", status: http.StatusTooManyRequests, header: "soon"},
 		{name: "beyond the cap is ignored", status: http.StatusTooManyRequests, header: "86400"},
@@ -535,12 +623,17 @@ func Test_httpTask_retryAfter(t *testing.T) {
 				header.Set("Retry-After", test.header)
 			}
 			server, _ := httpTaskServer(t, test.status, "slow down", header)
+			inputs := map[string]any{"url": server.URL}
+			if test.expect {
+				inputs["expect"] = NewExpr("response.status_code == 200")
+			}
 
-			_, err := runHTTPTask(t, map[string]any{"url": server.URL})
+			_, err := runHTTPTask(t, inputs)
 
 			var taskErr *TaskError
 			require.ErrorAs(t, err, &taskErr)
 			require.Equal(t, test.want, taskErr.RetryAfter)
+			require.Equal(t, test.want, RetryAfter(err))
 		})
 	}
 }
@@ -764,4 +857,63 @@ func Test_httpTask_defaultOutputsDoubleCarryIsOverTheSizeBound(t *testing.T) {
 	require.Contains(t, err.Error(), "byte limit")
 	require.Contains(t, err.Error(), "outputs: input",
 		"the diagnosis must point at the remedy: select fields instead of carrying the whole response")
+}
+
+// Test_httpTask_requestBodyFraming pins what the request body looks like on the
+// wire, in both directions the credential-gating reorder moved through.
+//
+// The body is attached to a request that was already constructed, rather than
+// handed to [http.NewRequestWithContext], so the framing rules that constructor
+// applies are this file's to get right. Two of them are load-bearing and neither
+// is visible from the body bytes alone:
+//
+//   - An author's explicitly empty body must go out as Content-Length: 0. A
+//     non-nil Body with ContentLength 0 reads as *unknown* length
+//     ([http.Request.outgoingLength]), which the transport frames as
+//     Transfer-Encoding: chunked — a different request to a signing scheme, or to
+//     a peer that refuses chunked.
+//   - GetBody must be able to produce the body again, or a redirected POST
+//     arrives at the second hop with nothing in it.
+func Test_httpTask_requestBodyFraming(t *testing.T) {
+	t.Run("an explicitly empty body is framed by length, not chunked", func(t *testing.T) {
+		var contentLength, transferEncoding string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			contentLength = r.Header.Get("Content-Length")
+			transferEncoding = strings.Join(r.TransferEncoding, ",")
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(server.Close)
+
+		_, err := runHTTPTask(t, map[string]any{
+			"method": http.MethodPost,
+			"url":    server.URL,
+			"body":   "",
+		})
+		require.NoError(t, err)
+		require.Equal(t, "0", contentLength)
+		require.Empty(t, transferEncoding, "an empty body is a known length, so nothing is chunked")
+	})
+
+	t.Run("a body survives a redirect, which is what GetBody is for", func(t *testing.T) {
+		var secondHop string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/start" {
+				http.Redirect(w, r, "/next", http.StatusTemporaryRedirect)
+				return
+			}
+			body, _ := io.ReadAll(r.Body)
+			secondHop = string(body)
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(server.Close)
+
+		_, err := runHTTPTask(t, map[string]any{
+			"method": http.MethodPost,
+			"url":    server.URL + "/start",
+			"json":   map[string]any{"a": 1},
+		})
+		require.NoError(t, err)
+		require.JSONEq(t, `{"a":1}`, secondHop,
+			"a 307 replays the body, so the second hop must receive it rather than an empty request")
+	})
 }

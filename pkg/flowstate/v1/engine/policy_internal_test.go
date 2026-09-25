@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -142,4 +143,46 @@ func TestAStepWaitsForItsOwnCancellation(t *testing.T) {
 	assert.True(t, declared.WaitForCancellation,
 		"a step that declares a retry or a timeout stopped waiting for its own "+
 			"cancellation, so declaring an ordinary policy silently reopened the window")
+}
+
+// TestTheActivityPolicyDropsRunOnlyKinds is the other half of the split
+// [v1.PermanentErrorKinds]' doc describes, asserted where the filtering happens.
+//
+// That list is the complete public answer to "may this be resubmitted", so it
+// carries [v1.ErrorKindRunTimeout]. Temporal's NonRetryableErrorTypes is a
+// different question — it matches the type an activity attached to a failure —
+// and no activity can attach that one: it is synthesized run-side from
+// Temporal's own timeout, at the point the server reads a finished run's
+// failure. Shipping it here would put a string in every step's retry policy
+// that Temporal matches against every failure and never matches.
+//
+// Asserted in both directions, because a filter that removed too much would be
+// the defect [nonRetryableErrorTypes]' own doc records: a permanent kind missing
+// from the policy is a deterministic failure retried to exhaustion.
+func TestTheActivityPolicyDropsRunOnlyKinds(t *testing.T) {
+	t.Parallel()
+
+	types := nonRetryableErrorTypes()
+
+	require.NotContains(t, types, v1.ErrorKindRunTimeout.String(),
+		"no activity can fail with a kind synthesized run-side, so Temporal can never match it")
+
+	// Every other permanent kind still reaches Temporal, which is the direction
+	// that costs a retry budget when it is wrong.
+	for _, kind := range v1.PermanentErrorKinds() {
+		if runOnlyErrorKinds[kind] {
+			continue
+		}
+
+		require.Contains(t, types, kind.String(),
+			"a permanent kind missing here is retried to exhaustion, kind=%s", kind)
+	}
+
+	// And the exclusion set names only kinds the public list actually carries: an
+	// entry naming a kind that is not permanent at all would be filtering nothing
+	// while reading as though it were.
+	for kind := range runOnlyErrorKinds {
+		require.Contains(t, v1.PermanentErrorKinds(), kind,
+			"the exclusion set names a kind the permanent enumeration does not, kind=%s", kind)
+	}
 }

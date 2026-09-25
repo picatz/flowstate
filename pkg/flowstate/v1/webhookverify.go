@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -85,6 +86,41 @@ const WebhookReplayWindow = 5 * time.Minute
 // body each, chosen by the sender, which is the shape of an amplifier. Eight is
 // far past any rotation and short of anything that costs a receiver.
 const maxSignaturesPerHeader = 8
+
+// maxStripeHeaderParts bounds how many comma-delimited fields a Stripe header
+// may make the verifier inspect. The HTTP header byte limit does not imply this
+// bound: one value made entirely of commas fits under that limit while containing
+// roughly a million fields. Stripe emits only a timestamp and one v1 field per
+// active signing secret, so this leaves ample room for rotation and future fields.
+const maxStripeHeaderParts = 32
+
+// The classes a delivery is refused under, for a receiver that records
+// refusals by class rather than by sentence (#1774).
+//
+// Sentinels wrapped into the refusals below rather than a typed error, because
+// the one consumer asks one question — which class — and errors.Is answers it
+// without the prose changing shape. The prose stays what a log line carries;
+// the class is what an audit record carries, and never the prose.
+var (
+	// ErrWebhookSignatureMissing: no signature header for a declared scheme.
+	ErrWebhookSignatureMissing = errors.New("the delivery carried no signature")
+
+	// ErrWebhookSignatureInvalid: a signature was presented and did not match,
+	// or its header was not in the form the scheme defines.
+	ErrWebhookSignatureInvalid = errors.New("the signature did not verify")
+
+	// ErrWebhookReplayWindow: the signed timestamp is outside
+	// [WebhookReplayWindow] of the receiver's clock.
+	ErrWebhookReplayWindow = errors.New("the signed timestamp is outside the replay window")
+
+	// ErrWebhookTooManySignatures: the signature header carried more candidates
+	// than its scheme's bound admits.
+	ErrWebhookTooManySignatures = errors.New("the signature header carries too many fields")
+
+	// ErrWebhookKeyUnresolved: the trigger declares a scheme this deployment
+	// resolved no key for, so nothing could be checked.
+	ErrWebhookKeyUnresolved = errors.New("no key was resolved for a declared scheme")
+)
 
 // VerifyWebhookDelivery reports whether a delivery satisfies what its trigger
 // declared.
@@ -173,8 +209,8 @@ func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secr
 	}
 
 	if unresolved != "" {
-		return fmt.Errorf("webhook %q verifies with %q and this deployment resolved no key for it, "+
-			"so the delivery cannot be checked and is refused", trigger.GetName(), unresolved)
+		return fmt.Errorf("%w: webhook %q verifies with %q and this deployment resolved no key for it, "+
+			"so the delivery cannot be checked and is refused", ErrWebhookKeyUnresolved, trigger.GetName(), unresolved)
 	}
 
 	return failed
@@ -256,7 +292,7 @@ func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte
 	// early return here would therefore reveal that this route exists.
 	expected := signWebhookPayload(key, body)
 	if supplied == "" {
-		return fmt.Errorf("the delivery carried no %s header", WebhookSignatureHeader)
+		return fmt.Errorf("%w: the delivery carried no %s header", ErrWebhookSignatureMissing, WebhookSignatureHeader)
 	}
 
 	for _, candidate := range splitSignatures(strings.TrimPrefix(supplied, hmacPrefix)) {
@@ -269,7 +305,8 @@ func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte
 		}
 	}
 
-	return fmt.Errorf("no signature in %s matched the body under this deployment's key", WebhookSignatureHeader)
+	return fmt.Errorf("%w: no signature in %s matched the body under this deployment's key",
+		ErrWebhookSignatureInvalid, WebhookSignatureHeader)
 }
 
 // verifyStripe checks Stripe's `Stripe-Signature` construction.
@@ -283,10 +320,17 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	supplied := webhookHeader(headers, StripeSignatureHeader)
 
 	var (
-		timestamp  string
-		signatures []string
+		timestamp    string
+		signatures   []string
+		tooManyParts bool
 	)
-	for _, part := range strings.Split(supplied, ",") {
+	partsSeen := 0
+	for part := range strings.SplitSeq(supplied, ",") {
+		partsSeen++
+		if partsSeen > maxStripeHeaderParts {
+			tooManyParts = true
+			break
+		}
 		name, value, found := strings.Cut(strings.TrimSpace(part), "=")
 		if !found {
 			continue
@@ -326,15 +370,22 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	expected := signWebhookPayload(key, []byte(signingTimestamp), stripeSignedSeparator, body)
 
 	if supplied == "" {
-		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
+		return fmt.Errorf("%w: the delivery carried no %s header", ErrWebhookSignatureMissing, StripeSignatureHeader)
+	}
+
+	if tooManyParts {
+		return fmt.Errorf("%w: the %s header contains more than %d fields",
+			ErrWebhookTooManySignatures, StripeSignatureHeader, maxStripeHeaderParts)
 	}
 
 	if timestamp == "" || len(signatures) == 0 {
-		return fmt.Errorf("the %s header is not `t=<unix seconds>,v1=<hex>`", StripeSignatureHeader)
+		return fmt.Errorf("%w: the %s header is not `t=<unix seconds>,v1=<hex>`",
+			ErrWebhookSignatureInvalid, StripeSignatureHeader)
 	}
 
 	if secondsErr != nil {
-		return fmt.Errorf("the %s header's timestamp is not a whole number of seconds", StripeSignatureHeader)
+		return fmt.Errorf("%w: the %s header's timestamp is not a whole number of seconds",
+			ErrWebhookSignatureInvalid, StripeSignatureHeader)
 	}
 
 	// Both directions. A delivery from the future is as much a sign of a forged
@@ -347,8 +398,8 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 		skew = -skew
 	}
 	if skew > WebhookReplayWindow {
-		return fmt.Errorf("the %s header's timestamp is %s away from now, outside the %s replay window",
-			StripeSignatureHeader, skew.Round(time.Second), WebhookReplayWindow)
+		return fmt.Errorf("%w: the %s header's timestamp is %s away from now, outside the %s replay window",
+			ErrWebhookReplayWindow, StripeSignatureHeader, skew.Round(time.Second), WebhookReplayWindow)
 	}
 
 	// signingTimestamp was built from the parsed seconds rather than from the
@@ -364,8 +415,8 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 		}
 	}
 
-	return fmt.Errorf("no v1 signature in %s matched the signed payload under this deployment's key",
-		StripeSignatureHeader)
+	return fmt.Errorf("%w: no v1 signature in %s matched the signed payload under this deployment's key",
+		ErrWebhookSignatureInvalid, StripeSignatureHeader)
 }
 
 // signWebhookPayload is [signHMACSHA256], reached through a variable so that
@@ -430,12 +481,12 @@ func SignStripeBody(key secrets.Secret, body []byte, at time.Time) string {
 // mid-rotation emits. Bounded by [maxSignaturesPerHeader] because each candidate
 // costs an HMAC over the whole body and the count is the sender's choice.
 func splitSignatures(value string) []string {
-	parts := strings.Split(value, ",")
-	if len(parts) > maxSignaturesPerHeader {
-		parts = parts[:maxSignaturesPerHeader]
-	}
-	for i, part := range parts {
-		parts[i] = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), hmacPrefix))
+	parts := make([]string, 0, maxSignaturesPerHeader)
+	for part := range strings.SplitSeq(value, ",") {
+		parts = append(parts, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), hmacPrefix)))
+		if len(parts) == maxSignaturesPerHeader {
+			break
+		}
 	}
 
 	return parts

@@ -51,7 +51,23 @@ triggers:
     # assumed — see `examples/webhook-trigger` for the named-scheme case.
     verify:
       hmac_sha256: ${secret('env:CHARGEBACK_PROVIDER_SECRET')}
-    idempotency_key: ${event.headers["x-delivery-id"]}
+
+    # The event's own id, out of the body, and the reason is the scheme two
+    # lines up. `hmac_sha256` signs the raw body and nothing else: no
+    # timestamp, so no replay window, and no header. A key read from a header
+    # is therefore a key the signature does not cover — whoever captured one
+    # legitimate delivery can send those exact bytes and that exact signature
+    # again under a delivery id of their choosing, and every resend is a new
+    # key, a new run id, and a run the conflict and reuse policies never see
+    # as a redelivery (Codex). Keyed inside the signed body, a resend is the
+    # same key and joins the first run, which is what dedupe is for.
+    #
+    # Not a rule against header keys: R10 names `x-github-delivery` and
+    # `x-shopify-webhook-id` as the right key for those providers, because a
+    # header repeated on a retry is the only id they offer. It is a rule about
+    # this file — a fictional provider verified generically, where the body is
+    # ours to define and the signature covers it.
+    idempotency_key: ${event.body.id}
     with:
       dispute_id: ${event.body.dispute_id}
       outcome: ${event.body.outcome}

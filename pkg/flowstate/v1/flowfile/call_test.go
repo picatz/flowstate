@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -37,6 +38,38 @@ outputs:
   greeting:
     value: ${'hello ' + inputs.tenant}
 `
+
+func TestValidateUsesTheInheritedProfileForCalleeConstraints(t *testing.T) {
+	must := "true"
+	callee := &v1.Workflow{
+		Name: "legacy-callee",
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name: "value", Type: v1.InputDeclaration_TYPE_STRING, Must: &must,
+		}},
+		Steps: []*v1.Node{{
+			Id: "noop",
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("unused")},
+			}},
+		}},
+	}
+	caller := &v1.Workflow{
+		Name:    "new-caller",
+		Profile: "2099.9",
+		Steps: []*v1.Node{{
+			Id: "call",
+			Kind: &v1.Node_Call{Call: &v1.Call{
+				Workflow: callee,
+				Arguments: map[string]*v1.Value{
+					"value": v1.NewLiteral("value"),
+				},
+			}},
+		}},
+	}
+
+	diagnostics := flowfile.Validate(caller)
+	require.ErrorContains(t, diagnostics, `unknown language profile "2099.9"`)
+}
 
 // TestCallCompiles pins the ordinary case: a call resolves relative to the
 // calling file, embeds the callee whole, and type-checks `with:` against what
@@ -307,6 +340,30 @@ steps:
 	require.NotEmpty(t, ds, "a literal with: argument over the element bound was accepted at compile time")
 	require.Contains(t, ds.Error(), "records")
 	require.Contains(t, ds.Error(), "list elements")
+}
+
+func TestCallArgumentWithAnInvalidLiteralIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+name: callee
+inputs:
+  subject:
+    type: bool
+steps:
+  - id: done
+    value: ok
+`)
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
+name: caller
+steps:
+  - id: invoke
+    call: ./callee.yaml
+    with:
+      subject: ${'abc'.matches('[')}
+`)
+
+	diagnostics := mustValidate(t, caller)
+	require.ErrorContains(t, diagnostics, "invalid matches argument")
 }
 
 // TestCallArgumentAtTheElementBoundAccepted is the boundary: exactly the

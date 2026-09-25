@@ -32,14 +32,37 @@ const (
 	attrAction       = "flowstate.audit.action"
 	attrDecision     = "flowstate.audit.decision"
 	attrRPC          = "flowstate.audit.rpc"
+	attrMCPTool      = "flowstate.audit.mcp.tool"
 	attrResourceKind = "flowstate.audit.resource.kind"
 	attrResourceKey  = "flowstate.audit.resource.key"
 	attrDenyCode     = "flowstate.audit.deny_code"
-	attrSubject      = "flowstate.audit.identity.subject"
-	attrIssuer       = "flowstate.audit.identity.issuer"
-	attrNamespace    = "flowstate.audit.identity.namespace"
-	attrDeployment   = "flowstate.audit.identity.deployment"
-	attrClaims       = "flowstate.audit.identity.claims"
+
+	// The worker's half (picatz/flowstate#1379). Spelled flat, like deny_code
+	// and unlike the dotted identity keys, because they are fields of the
+	// record rather than of something inside it.
+	attrEnforcementPoint = "flowstate.audit.enforcement_point"
+	attrRule             = "flowstate.audit.rule"
+	attrAttempt          = "flowstate.audit.attempt"
+	attrDispatchID       = "flowstate.audit.dispatch_id"
+
+	// A webhook delivery's three: the delivery the record is about, whether
+	// an acceptance joined an existing run, and how many refusals a bounded
+	// refusal record stands for. See AuditRecord.delivery_id, joined and
+	// count.
+	attrDeliveryID = "flowstate.audit.delivery_id"
+	attrJoined     = "flowstate.audit.joined"
+	attrCount      = "flowstate.audit.count"
+
+	// The server-minted request id a control-plane record carries, flat for
+	// the same reason: it is a field of the record.
+	attrCorrelationID = "flowstate.audit.correlation_id"
+
+	attrSubject    = "flowstate.audit.identity.subject"
+	attrIssuer     = "flowstate.audit.identity.issuer"
+	attrNamespace  = "flowstate.audit.identity.namespace"
+	attrDeployment = "flowstate.audit.identity.deployment"
+	attrIssuerName = "flowstate.audit.identity.issuer_name"
+	attrRole       = "flowstate.audit.identity.role"
 )
 
 // NewLogEmitter sends records through an audit-owned LoggerProvider.
@@ -76,10 +99,17 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	// proto/flowstate/v1/audit.proto.
 	out.SetBody(attribute.StringValue(EventName))
 
-	if record.GetDecision() == v1.AuditDecision_AUDIT_DECISION_DENY {
+	switch record.GetDecision() {
+	case v1.AuditDecision_AUDIT_DECISION_DENY:
 		out.SetSeverity(otellog.SeverityWarn)
 		out.SetSeverityText("WARN")
-	} else {
+	case v1.AuditDecision_AUDIT_DECISION_INTERNAL_ERROR:
+		// The server's failure, not the caller's refusal: the severity a
+		// collector pages on, for the same reason the process log line is
+		// ERROR.
+		out.SetSeverity(otellog.SeverityError)
+		out.SetSeverityText("ERROR")
+	default:
 		out.SetSeverity(otellog.SeverityInfo)
 		out.SetSeverityText("INFO")
 	}
@@ -87,10 +117,72 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	attrs := []attribute.KeyValue{
 		attribute.String(attrAction, record.GetAction().String()),
 		attribute.String(attrDecision, record.GetDecision().String()),
-		attribute.String(attrRPC, record.GetRpc()),
 		attribute.String(attrResourceKind, record.GetResourceKind().String()),
 		attribute.String(attrResourceKey, record.GetResourceKey()),
 		attribute.String(attrDenyCode, record.GetDenyCode().String()),
+	}
+	if record.GetRpc() != "" {
+		attrs = append(attrs, attribute.String(attrRPC, record.GetRpc()))
+	}
+	if record.GetMcpTool() != "" {
+		attrs = append(attrs, attribute.String(attrMCPTool, record.GetMcpTool()))
+	}
+	// Present exactly on an enforcement record, which is how a consumer tells
+	// the two halves of one trail apart: absent rather than UNSPECIFIED,
+	// because a query for the worker's decisions should select on the
+	// attribute existing rather than on a sentinel value. The schema's own
+	// message rule holds the same line from the other side — an enforcement
+	// point and an action are never both set.
+	if record.GetEnforcementPoint() != v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED {
+		attrs = append(attrs, attribute.String(attrEnforcementPoint, record.GetEnforcementPoint().String()))
+	}
+
+	// Present only on a record about a dispatch attempt, for the reason the
+	// enforcement point is: a consumer separating one attempt's decision from
+	// another's should select on the attribute existing rather than on a zero.
+	if record.GetAttempt() != 0 {
+		attrs = append(attrs, attribute.Int64(attrAttempt, int64(record.GetAttempt())))
+	}
+	if record.GetDispatchId() != "" {
+		attrs = append(attrs, attribute.String(attrDispatchID, record.GetDispatchId()))
+	}
+
+	// Present only on a webhook delivery's records, for the reason the
+	// attempt is: a consumer selecting the receiver's decisions should select
+	// on the attribute existing rather than on a zero every other record
+	// carries too. The count is emitted whenever the seam set one, including
+	// a count of one, so that "refusals per route per hour" is a plain sum
+	// over the attribute with no record left out of it.
+	if record.GetDeliveryId() != "" {
+		attrs = append(attrs, attribute.String(attrDeliveryID, record.GetDeliveryId()))
+	}
+	if record.GetJoined() {
+		attrs = append(attrs, attribute.Bool(attrJoined, true))
+	}
+	if record.GetCount() > 0 {
+		attrs = append(attrs, attribute.Int64(attrCount, int64(record.GetCount())))
+	}
+
+	// Present when the request had one, which is every control-plane record a
+	// server with the recover interceptor writes; absent on enforcement
+	// records and on a handler driven with no interceptor in front of it.
+	if record.GetCorrelationId() != "" {
+		attrs = append(attrs, attribute.String(attrCorrelationID, record.GetCorrelationId()))
+	}
+
+	// Verbatim, because it is the operator's own rule and the seam that set it
+	// already bounded it and held it to "only a rule that matched" — see
+	// AuditRecord.rule for what that excludes. Truncating or normalizing here
+	// would make a collector's copy of a decision disagree with stderr's.
+	if record.GetRule() != "" {
+		attrs = append(attrs, attribute.String(attrRule, record.GetRule()))
+	}
+
+	if record.GetIssuerName() != "" {
+		attrs = append(attrs, attribute.String(attrIssuerName, record.GetIssuerName()))
+	}
+	if record.GetRole() != "" {
+		attrs = append(attrs, attribute.String(attrRole, record.GetRole()))
 	}
 
 	if identity := record.GetIdentity(); identity != nil {
@@ -100,18 +192,6 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 			attribute.String(attrNamespace, identity.GetNamespace()),
 			attribute.String(attrDeployment, identity.GetDeployment()),
 		)
-
-		if claims := identity.GetClaims(); len(claims) > 0 {
-			// Already bounded by WorkloadIdentity's own schema — 32 pairs, and
-			// only the claims an operator configured as relevant — so this
-			// copies what was attested rather than deciding again what may be
-			// carried.
-			pairs := make([]attribute.KeyValue, 0, len(claims))
-			for key, value := range claims {
-				pairs = append(pairs, attribute.String(key, value))
-			}
-			attrs = append(attrs, attribute.Map(attrClaims, pairs...))
-		}
 	}
 
 	out.AddAttributes(attrs...)

@@ -72,13 +72,15 @@ func TestTrustedIssuerFieldsAreAccountedFor(t *testing.T) {
 	ignored := map[string]string{
 		"Name":           "a label, and reported rather than compared",
 		"Role":           "granted after an entry has already won",
+		"Actions":        "granted after an entry has already won",
 		"Namespace":      "determined after admission; failure rejects, never falls through",
 		"NamespaceClaim": "same",
 		"NamespaceMap":   "same",
 		"JWKSURL":        "entries sharing an issuer must already agree on it (Policy.Validate)",
+		"JWKSFile":       "entries sharing an issuer must already agree on it (Policy.Validate)",
 	}
 
-	fields := reflect.VisibleFields(reflect.TypeOf(TrustedIssuer{}))
+	fields := reflect.VisibleFields(reflect.TypeFor[TrustedIssuer]())
 	for _, field := range fields {
 		_, isCompared := compared[field.Name]
 		_, isIgnored := ignored[field.Name]
@@ -106,7 +108,7 @@ func TestClaimRuleFieldsAreAccountedFor(t *testing.T) {
 		"Claim": "claimRulesCover pairs rules by it before ruleImplies is asked anything",
 	}
 
-	fields := reflect.VisibleFields(reflect.TypeOf(ClaimRule{}))
+	fields := reflect.VisibleFields(reflect.TypeFor[ClaimRule]())
 	for _, field := range fields {
 		_, isCompared := compared[field.Name]
 		_, isIgnored := ignored[field.Name]

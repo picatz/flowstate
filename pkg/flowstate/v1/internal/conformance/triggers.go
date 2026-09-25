@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
+
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // Cases for a declared `triggers:` block, run by both execution drivers.
@@ -48,6 +52,11 @@ import (
 // stripeWebhookDeclaration is the trigger both cases below carry: a well-formed
 // one, so that nothing either driver might do with it is excused by it being
 // malformed.
+//
+// Keyed on the event id in the body, which is the shape the corpus example
+// teaches and the only one that dedupes a real retry: Stripe signs every
+// redelivery afresh, so a key over `Stripe-Signature` would name the attempt
+// rather than the event. See [WebhookRedeliveryCases].
 func stripeWebhookDeclaration() *v1.Triggers {
 	return &v1.Triggers{
 		Webhooks: []*v1.WebhookTrigger{{
@@ -57,7 +66,7 @@ func stripeWebhookDeclaration() *v1.Triggers {
 					SecretRef: &v1.SecretRef{Scheme: "env", Name: "STRIPE_WEBHOOK_SECRET"},
 				}},
 			},
-			IdempotencyKey: v1.NewExpr(`event.headers["stripe-signature"]`),
+			IdempotencyKey: v1.NewExpr(`event.body.id`),
 			Arguments: map[string]*v1.Value{
 				"order_id": v1.NewExpr(`event.body.data.object.metadata.order_id`),
 			},
@@ -136,6 +145,126 @@ func deliveredInputs() map[string]*v1.Value {
 	return inputs
 }
 
+// WebhookSignalDeliveryCases is the bridge's mapping half, shaped as a
+// delivery a gate reads rather than as inputs a run starts with.
+//
+// [WebhookDeliveryCases]' twin, and it cannot be one of them: a [Case] hands a
+// workflow its bound inputs, and there is no inputs-shaped thing here — the
+// delivery becomes a *payload*, which reaches a run only by being delivered to
+// a channel. So it borrows [SignalDedupeCase]'s carrier, whose two callers
+// already deliver the way each driver delivers, and is run by
+// [AssertSignalDedupeCases] alongside that table.
+//
+// The claim is the one [WebhookDeliveryCases] makes for a start, one boundary
+// over: a payload's `true` is a bool and its `4200` is an int by the time a
+// gate's `outputs:` reads them, on both drivers, because both read what
+// [v1.BindWebhookTriggerSignal] produced rather than what a test wrote down.
+func WebhookSignalDeliveryCases() []SignalDedupeCase {
+	return []SignalDedupeCase{
+		{
+			Name:       "a delivery's mapped payload reads the same at a gate on both drivers",
+			SignalName: "stage-approved",
+			Workflow:   bridgedWorkflow(),
+			Deliveries: []SignalDedupeDelivery{
+				{DeliveryID: "evt-91", Payload: bridgedPayload()},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"gate": {NamedValues: map[string]*v1.Value{
+					"decision": v1.NewLiteral("approved 4200"),
+				}},
+			}},
+			Why: "the mapping is evaluated once, by the receiver, and what it produced has to " +
+				"mean the same thing to a gate under either driver; a payload number taken as a " +
+				"float would render `4200.0` on one side of that seam and not the other",
+		},
+	}
+}
+
+// bridgedWorkflow is the workflow a delivery *answers* in
+// [WebhookDeliveryCases]: a gate, the `signals:` rule that lets a webhook reach
+// it, and the `signal:` block that maps one.
+//
+// The mapping half of the bridge is what a shared case can carry. Which run a
+// delivery reaches, and whether that run's policy admits it, are the receiver's
+// and are asserted there; what both drivers must agree about is what the
+// payload *becomes* by the time a gate reads it — a JSON `true` is a bool on
+// both sides, exactly as `4200` is an int for a start.
+func bridgedWorkflow() *v1.Workflow {
+	return &v1.Workflow{
+		Name:    "webhook-bridged",
+		Profile: v1.CurrentProfile,
+		Signals: map[string]*v1.SignalPolicy{
+			"stage-approved": {Allow: []*v1.SignalPolicyRule{{
+				Subject: v1.QualifiedSubject(v1.WebhookPrincipalIssuer,
+					v1.WebhookTriggerSubject("webhook-bridged", "storefront")),
+			}}},
+		},
+		Triggers: &v1.Triggers{Webhooks: []*v1.WebhookTrigger{{
+			Name: "storefront",
+			Verify: map[string]*v1.Value{
+				v1.WebhookSchemeHMACSHA256: {Kind: &v1.Value_SecretRef{
+					SecretRef: &v1.SecretRef{Scheme: "env", Name: "STOREFRONT_WEBHOOK_SECRET"},
+				}},
+			},
+			IdempotencyKey: v1.NewExpr(`event.body.id`),
+			Signal: &v1.WebhookTrigger_Signal{
+				Name:      "stage-approved",
+				Correlate: v1.NewExpr(`event.body.order.id`),
+				Arguments: map[string]*v1.Value{
+					"approved": v1.NewExpr(`event.body.action == "approve"`),
+					"amount":   v1.NewExpr(`event.body.order.total_cents`),
+				},
+			},
+		}}},
+		Steps: []*v1.Node{{
+			Id: "gate",
+			Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Timeout: durationpb.New(time.Minute),
+				Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+					Name: "stage-approved",
+					Outputs: map[string]*v1.Value{
+						"decision": v1.NewExpr(
+							`payload.approved ? "approved " + string(payload.amount) : "held"`),
+					},
+				}},
+			}},
+		}},
+	}
+}
+
+// bridgedPayload is what one delivery to that trigger carries into the gate.
+//
+// Computed by [v1.BindWebhookTriggerSignal] rather than written out, for
+// [deliveredInputs]' reason: the case then asserts what *the mapping produces*
+// reaches a gate identically on both drivers, rather than asserting that two
+// hand-written literals do. The body is decoded the way a stored delivery and a
+// live one are both decoded, so `4200` arrives as whatever a real payload's
+// `4200` arrives as.
+func bridgedPayload() map[string]*v1.Value {
+	const payload = `{"id":"evt_91","action":"approve","order":{"id":"ord-h1x9","total_cents":4200}}`
+
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	decoder.UseNumber()
+
+	var body any
+	if err := decoder.Decode(&body); err != nil {
+		return nil
+	}
+
+	wf := bridgedWorkflow()
+	_, delivered, _, err := v1.BindWebhookTriggerSignal(context.Background(), wf,
+		wf.GetTriggers().GetWebhooks()[0], v1.WebhookDelivery{
+			Headers:  map[string]string{"x-flowstate-signature": "0f0f"},
+			Body:     v1.NormalizeDeliveryNumbers(body),
+			Verified: true,
+		})
+	if err != nil {
+		return nil
+	}
+
+	return delivered.GetNamedValues()
+}
+
 // WebhookDeliveryCases are the shared cases for a run started by a delivery.
 //
 // Both drivers run every one of them, and both are handed exactly the inputs the
@@ -157,6 +286,116 @@ func WebhookDeliveryCases() []Case {
 				}},
 			}},
 		},
+	}
+}
+
+// A WebhookRedeliveryCase is one event a provider delivers more than once, the
+// way a provider actually retries it: the same body every time, signed afresh
+// for each attempt.
+//
+// # Why the key is the body's id and not the signature
+//
+// The receiver's dedupe is right by construction — the idempotency key names
+// the event, the workflow id is derived from it, and the cluster's uniqueness on
+// that id joins a redelivery to the run its first delivery started. What that
+// design cannot survive is the wrong *name*. Stripe, like every provider that
+// signs a timestamp, computes a new `Stripe-Signature` for every retry of one
+// event: a new `t=`, a new MAC over `<t>.<body>`, and the same `id` in the body,
+// for up to three days of retries. A key over the header therefore dedupes the
+// one case a provider never produces — a byte-identical resend — and starts a
+// fresh run for every real retry, which for a payment capture is a double
+// capture. Measured before this corpus existed: one event delivered four times
+// produced three runs (#1775).
+//
+// So the case holds one body and several signing instants, and the claim is
+// that every attempt evaluates the key to [WebhookRedeliveryCase.ExpectedKey]:
+// the same key is the same workflow id is the same run. The consumers assert
+// it where each path derives an identity from the key — the mapping
+// ([v1.BindWebhookTriggerInputs]), the served receiver (`Joined` on every
+// attempt after the first), and `flow test`'s offline replay — because a
+// rehearsal that named a retry differently from production would be the
+// rehearsal lying about the file in front of the author.
+type WebhookRedeliveryCase struct {
+	// Name says what the case is about, and becomes the subtest name.
+	Name string
+
+	// Workflow declares the trigger the deliveries are addressed to: its first
+	// (and only) webhook, verified under [v1.WebhookSchemeStripe].
+	Workflow *v1.Workflow
+
+	// Body is the one payload every attempt carries, byte for byte. A provider
+	// retries the event it has, not a re-rendering of it.
+	Body []byte
+
+	// SignedAt holds one entry per attempt: how far from the receiver's clock
+	// the attempt's `Stripe-Signature` timestamp sits. A retry is signed later
+	// than the delivery it repeats; a byte-identical resend is signed at the
+	// same instant. Every offset must fall inside [v1.WebhookReplayWindow], or
+	// the attempt is refused for a reason this case is not about.
+	SignedAt []time.Duration
+
+	// ExpectedKey is what every attempt must evaluate `idempotency_key:` to.
+	ExpectedKey string
+
+	// Why is the sentence a failure prints beside the case name.
+	Why string
+}
+
+// Trigger is the webhook the deliveries are addressed to.
+func (c WebhookRedeliveryCase) Trigger() *v1.WebhookTrigger {
+	return c.Workflow.GetTriggers().GetWebhooks()[0]
+}
+
+// Headers returns the headers of one attempt, signed under key with the
+// attempt's timestamp measured from now.
+//
+// Computed by [v1.SignStripeBody] rather than stored, so the attempt is signed
+// by the same arithmetic the receiver verifies with and against whichever
+// clock the consumer's receiver keeps — the served receiver's wall clock, or
+// `flow test`'s fixed epoch.
+func (c WebhookRedeliveryCase) Headers(key secrets.Secret, now time.Time, attempt int) map[string]string {
+	return map[string]string{
+		v1.StripeSignatureHeader: v1.SignStripeBody(key, c.Body, now.Add(c.SignedAt[attempt])),
+		"Content-Type":           "application/json",
+	}
+}
+
+// WebhookRedeliveryCases are the shared cases for one event delivered more than
+// once.
+func WebhookRedeliveryCases() []WebhookRedeliveryCase {
+	return []WebhookRedeliveryCase{
+		{
+			// The table from #1775, as a case: a first delivery, two retries
+			// signed a second apart the way Stripe signs them, and a
+			// byte-identical resend. Every one of them is the same event.
+			Name:        "a retry signed afresh is named the same event as its first delivery",
+			Workflow:    redeliveredWorkflow(),
+			Body:        []byte(`{"id":"evt_same_event","type":"charge.captured","data":{"object":{"metadata":{"order_id":"ord_H1x9"}}}}`),
+			SignedAt:    []time.Duration{0, time.Second, 2 * time.Second, 0},
+			ExpectedKey: "evt_same_event",
+			Why: "a provider signs every retry afresh — a new timestamp and a new MAC over the same " +
+				"body — so a key that varied with the signature would name the attempt rather than " +
+				"the event, and each retry would start a run of its own",
+		},
+	}
+}
+
+// redeliveredWorkflow is the workflow [WebhookRedeliveryCases] deliver to:
+// the corpus example's own shape, keyed on the event id the sender repeats.
+func redeliveredWorkflow() *v1.Workflow {
+	return &v1.Workflow{
+		Name:     "webhook-redelivered",
+		Profile:  v1.CurrentProfile,
+		Triggers: stripeWebhookDeclaration(),
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name:     "order_id",
+			Type:     v1.InputDeclaration_TYPE_STRING,
+			Required: true,
+		}},
+		Steps: []*v1.Node{{
+			Id:   "record",
+			Kind: &v1.Node_Value{Value: v1.NewExpr(`"order " + inputs.order_id`)},
+		}},
 	}
 }
 

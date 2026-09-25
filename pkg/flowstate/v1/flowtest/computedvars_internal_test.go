@@ -188,7 +188,7 @@ var varReferenceSites = map[string]struct {
 		answer: func(t *testing.T, spell func(string) string) string {
 			t.Helper()
 
-			name, reads := claimReadsWithheld(v1.DefaultEvaluator(),
+			name, reads := claimReadsWithheld(v1.DefaultEvaluator(), everyProfileLibrary(),
 				"{'known': 1}["+spell("token")+"] == 1", withheldVars{names: []string{"token"}})
 
 			return fmt.Sprintf("%s/%v", name, reads)
@@ -205,6 +205,85 @@ func declaredFrom(t *testing.T, fence string) map[string]*varDeclaration {
 	file := &File{Vars: map[string]any{"token": "s3cr3t", "probe": fence}}
 
 	return file.declareVars(newProblems(nil))
+}
+
+func TestVarDependenciesStopAtWholeFileEdgeBound(t *testing.T) {
+	t.Parallel()
+
+	nodes := map[string]varNode{
+		"big[0]": {path: varPath{{key: "big"}, {index: 0, list: true}}},
+		"big[1]": {path: varPath{{key: "big"}, {index: 1, list: true}}},
+		"big[2]": {path: varPath{{key: "big"}, {index: 2, list: true}}},
+	}
+	remaining := 2
+	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, &remaining)
+
+	assert.False(t, withinBound)
+	assert.Nil(t, deps)
+	assert.Zero(t, remaining)
+}
+
+func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
+	t.Parallel()
+
+	leaves := make([]any, maxVarExpressions+1)
+	for i := range leaves {
+		leaves[i] = "${size(vars.big)}"
+	}
+	file := &File{Vars: map[string]any{"big": leaves}}
+	p := newProblems(nil)
+
+	assert.Nil(t, file.declareVars(p))
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "more than 200 computed var leaves")
+}
+
+// sharedTableSource is a file whose `vars:` hold one literal table of
+// `leaves` elements and `readers` computed vars each reading it whole — the
+// one shape both sides of [maxVarDependencyEdges] take, differing only in
+// magnitude: leaves × readers dependency edges.
+func sharedTableSource(leaves, readers int) []byte {
+	var b strings.Builder
+	b.WriteString("vars:\n  data: [")
+	for i := range leaves {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%d", i)
+	}
+	b.WriteString("]\n")
+	for i := range readers {
+		fmt.Fprintf(&b, "  a%03d: \"${vars.data}\"\n", i)
+	}
+	b.WriteString("tests:\n  - name: loads\n    workflow: ./workflow.yaml\n    expect:\n      failed: true\n")
+	return []byte(b.String())
+}
+
+// TestASharedTableReadByEveryVarIsAdmitted pins the legitimate side of the
+// edge budget: 199 vars each deriving from one 600-element table — an
+// ordinary "state the table once, alias it everywhere" fixture — is 119,400
+// edges, which a budget of maxExpandedNodes refused (#1275 review). The full
+// load must accept it and evaluate every reader.
+func TestASharedTableReadByEveryVarIsAdmitted(t *testing.T) {
+	t.Parallel()
+
+	file, err := LoadSource(sharedTableSource(600, 199))
+	require.NoError(t, err)
+	assert.Len(t, file.Vars["a000"], 600)
+	assert.Len(t, file.Vars["a198"], 600)
+}
+
+// TestQuadraticSharedTableFanOutIsRefused pins the attack side: 100 vars each
+// reading a 20,000-element table is 2,000,000 edges inside every other bound
+// ([MaxVarsPerFile], [maxVarExpressions], [maxExpandedNodes]), and the load
+// must refuse it by the whole-file edge budget, naming the limit.
+func TestQuadraticSharedTableFanOutIsRefused(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadSource(sharedTableSource(20_000, 100))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("computed vars have more than %d dependency edges", maxVarDependencyEdges))
 }
 
 // TestEverySiteRecognisesBothSpellings is the audit. `vars.token` and
@@ -249,14 +328,17 @@ func TestReadsVarRecognisesWhatTheGrammarBinds(t *testing.T) {
 		want varRead
 		ok   bool
 	}{
-		"dotted":                {expr: "vars.token", want: varRead{name: "token"}, ok: true},
-		"bracket":               {expr: "vars['token']", want: varRead{name: "token", bracket: true}, ok: true},
-		"bracket, double quote": {expr: `vars["token"]`, want: varRead{name: "token", bracket: true}, ok: true},
+		"dotted":                {expr: "vars.token", want: varRead{name: "token", path: varPath{{key: "token"}}}, ok: true},
+		"bracket":               {expr: "vars['token']", want: varRead{name: "token", path: varPath{{key: "token"}}, bracket: true}, ok: true},
+		"bracket, double quote": {expr: `vars["token"]`, want: varRead{name: "token", path: varPath{{key: "token"}}, bracket: true}, ok: true},
 		"a dynamic index":       {expr: "vars[vars.which]", want: varRead{dynamic: true, bracket: true}, ok: true},
-		"a selection into one":  {expr: "vars.order.region", want: varRead{name: "order"}, ok: false},
-		"the bare root":         {expr: "vars", ok: false},
-		"another root":          {expr: "steps.x", ok: false},
-		"an index of not-vars":  {expr: "other['token']", ok: false},
+		"a numeric root index":  {expr: "vars[0]", want: varRead{dynamic: true, bracket: true}, ok: true},
+		"a selection into one": {expr: "vars.order.region", want: varRead{name: "order", path: varPath{
+			{key: "order"}, {key: "region"},
+		}}, ok: true},
+		"the bare root":        {expr: "vars", ok: false},
+		"another root":         {expr: "steps.x", ok: false},
+		"an index of not-vars": {expr: "other['token']", ok: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -509,6 +591,39 @@ func TestRedactedVarsWithholdsAWithheldVarWhole(t *testing.T) {
 		"a var the file does not withhold is shown, or the autopsy stops being useful")
 }
 
+func TestRedactedVarsWithholdsOnlyATaintedStructuredLeaf(t *testing.T) {
+	t.Parallel()
+
+	vars := fileVars{
+		values: map[string]any{
+			"request": map[string]any{
+				"Authorization": "Bearer s3cr3t",
+				"Accept":        "application/json",
+			},
+		},
+		withheld: withheldVars{names: []string{"request.Authorization"}},
+	}
+
+	shown := redactedVars(vars, sensitiveInputs{}.WithValues("s3cr3t"))
+	request := shown["request"].(map[string]any)
+	assert.Equal(t, sensitiveMarker, request["Authorization"])
+	assert.Equal(t, "application/json", request["Accept"],
+		"the autopsy preserves the literal container and withholds only its tainted leaf")
+}
+
+func TestRedactedVarsStillRedactsAnExactSensitiveMapKey(t *testing.T) {
+	t.Parallel()
+
+	vars := fileVars{values: map[string]any{
+		"request": map[string]any{"zq": "visible"},
+	}}
+
+	shown := redactedVars(vars, sensitiveInputs{}.WithValues("zq"))
+	request := shown["request"].(map[string]any)
+	assert.Equal(t, map[string]any{v1.SensitiveMarker: "visible"}, request,
+		"an exact sensitive key below the substring floor must still redact")
+}
+
 // TestWithheldCoversAPathAndNotItsNeighbour is the prefix test, written where
 // the answers differ: `vars.token` and `vars.tokenish` share a prefix, and a
 // naive [strings.HasPrefix] withholds a var the file never said to withhold —
@@ -536,4 +651,39 @@ func TestWithheldCoversAPathAndNotItsNeighbour(t *testing.T) {
 	} {
 		assert.Equal(t, want, withheld.covers(path), "covers(%q)", path)
 	}
+}
+
+func TestWithheldLeafCoversItselfAndItsContainerButNotASibling(t *testing.T) {
+	t.Parallel()
+
+	withheld := withheldVars{names: []string{"request.headers.Authorization"}}
+	for path, want := range map[string]bool{
+		"vars.request":                       false,
+		"vars.request.headers":               false,
+		"vars.request.headers.Authorization": true,
+		"vars.request.headers.Accept":        false,
+		"vars.request.other":                 false,
+	} {
+		assert.Equal(t, want, withheld.covers(path), "covers(%q)", path)
+	}
+	name, touched := withheld.coveredRead(varPath{{key: "request"}}, true)
+	assert.True(t, touched, "an evaluator error derived from a parent must still fail closed")
+	assert.Equal(t, "request.headers.Authorization", name)
+}
+
+func TestWithheldLeafPathQuotesACELReservedMapKey(t *testing.T) {
+	t.Parallel()
+
+	path := varPath{{key: "request"}, {key: "true"}}
+	assert.Equal(t, `request["true"]`, path.String())
+
+	withheld := withheldVars{names: []string{path.String()}}
+	name, covered := withheld.coveredName(`vars.request["true"]`)
+	assert.True(t, covered)
+	assert.Equal(t, `request["true"]`, name)
+
+	name, covered = claimReadsWithheld(v1.DefaultEvaluator(), everyProfileLibrary(),
+		`[0][size(vars.request["true"])] == 1`, withheld)
+	assert.True(t, covered, "a transformed evaluator error must fail closed for a reserved-key leaf")
+	assert.Equal(t, `request["true"]`, name)
 }

@@ -50,9 +50,19 @@ import (
 // somebody edits the caller — and reaching one degrades to "position not known",
 // which is the honest answer and never a wrong line.
 const (
-	// maxLookupSteps bounds the work one position lookup may do. A lookup
-	// follows aliases and expands merge keys, which is the same breadth an
-	// expansion bomb multiplies.
+	// maxLookupSteps bounds the work one *pass* of position lookups may do. A
+	// lookup follows aliases and expands merge keys, which is the same breadth
+	// an expansion bomb multiplies.
+	//
+	// Shared across the pass rather than granted afresh to each lookup, because
+	// the number of lookups is chosen by the same document the steps are: a
+	// runtime failure is reported per expected output, and locating a mapping
+	// key scans that mapping from its start, so N entries cost N scans of a
+	// mapping N long. A budget reset for every one of them bounds none of that
+	// — 33,000 outputs inside the file's own megabyte spend half a billion
+	// visits (#1119). One budget for the pass is what makes the aggregate the
+	// thing bounded, and running out degrades to "position not known", which
+	// this file's own rule already calls the honest answer.
 	maxLookupSteps = 100_000
 
 	// maxAliasDepth bounds how far one alias chain is followed while resolving
@@ -192,22 +202,21 @@ func newDocument(file *ast.File) *document {
 // CLAUDE.md's standard is that a false diagnostic is worse than an unplaced
 // one; here it would be a false *position* on a true diagnostic, which sends an
 // author to correct working text.
-func (d *document) positionOf(path loc) (position, bool) {
-	_, value, ok := d.find(path)
+func (d *document) positionOf(path loc, budget *int) (position, bool) {
+	_, value, ok := d.find(path, budget)
 	if !ok {
 		return position{}, false
 	}
-	budget := maxLookupSteps
 
-	return startOf(d.resolve(value, &budget))
+	return startOf(d.resolve(value, budget))
 }
 
 // positionOfKey is [document.positionOf] pointing at the key rather than the
 // value, for a diagnostic whose subject is the name an author wrote: a var
 // whose name CEL could never read back, an `allow_unreached` entry with no
 // reason, a `secrets:` reference that does not parse.
-func (d *document) positionOfKey(path loc) (position, bool) {
-	key, _, ok := d.find(path)
+func (d *document) positionOfKey(path loc, budget *int) (position, bool) {
+	key, _, ok := d.find(path, budget)
 	if !ok || key == nil {
 		return position{}, false
 	}
@@ -219,15 +228,14 @@ func (d *document) positionOfKey(path loc) (position, bool) {
 // node of its last step.
 //
 // The key is nil where the last step is a sequence index, which has no key.
-func (d *document) find(path loc) (key, value ast.Node, ok bool) {
+func (d *document) find(path loc, budget *int) (key, value ast.Node, ok bool) {
 	if d == nil || d.body == nil || len(path) == 0 {
 		return nil, nil, false
 	}
 
-	budget := maxLookupSteps
 	node := d.body
 	for _, step := range path {
-		node = d.resolve(node, &budget)
+		node = d.resolve(node, budget)
 		if node == nil {
 			return nil, nil, false
 		}
@@ -240,7 +248,7 @@ func (d *document) find(path loc) (key, value ast.Node, ok bool) {
 
 			continue
 		}
-		k, v, found := d.entry(node, step.name, &budget, 0)
+		k, v, found := d.entry(node, step.name, budget, 0)
 		if !found {
 			return nil, nil, false
 		}

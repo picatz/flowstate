@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "flowstatev1";
+
+// The options a task's own schema may set on its declarations, read by the
+// host wherever it renders or checks that schema: `flow tasks`, the editor's
+// hover and completion, the MCP catalog, the reference documentation, and
+// `flow validate`. A plugin's .proto imports this file and sets them on the
+// declarations they describe; nothing about the plugin's build has to be
+// repeated on the host's side, because the descriptor the plugin already ships
+// carries the option with the declaration it annotates.
+//
+// This file imports only descriptor.proto so that a plugin's schema can import
+// it without pulling the rest of the engine's schema into the descriptor set
+// it sends; the engine provides this file itself, so the import travels as a
+// name rather than as bytes.
+
+extend google.protobuf.EnumValueOptions {
+  // test_only marks an enum value the declaring program compiles into its
+  // test builds only, and whose released builds refuse at the point of use.
+  //
+  // A closed enum is supposed to name exactly the choices a build carries, but
+  // a build can carry a value for its own hermetic tests that it will not run
+  // for a user: an embedded database an SQL plugin's tests exercise the
+  // dialect logic against, which a released binary refuses because opening one
+  // grants the worker's filesystem to the workflow. Without this option the
+  // catalog advertised that value on every surface and `flow validate`
+  // accepted it, and the refusal came at dispatch (#1692).
+  //
+  // The host does not advertise a value marked here and does not accept it: it
+  // is left out of the choices every surface lists, and a Flowfile naming it
+  // is refused where it is written, saying the value is test-only, rather than
+  // at dispatch. The declaring program still refuses it at the point of use,
+  // as it did before; this option moves the refusal earlier, it does not
+  // replace it.
+  bool test_only = 50000;
+}
