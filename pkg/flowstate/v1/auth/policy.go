@@ -1354,18 +1354,17 @@ func validateIssuerURL(issuer string) error {
 	}
 
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		// Redacted like every refusal in [ValidateHTTPSURL], and for a sharper
-		// reason: this is the refusal a credential misread as `host:port`
-		// actually reaches, whether or not a path slash comes first.
-		// `https://acct9:2024?s3cr3t@host` passes every check above — url.Parse
-		// calls 2024 a port and finds no userinfo — and is refused here, for
-		// the query the rest of the credential became. So does
-		// `https://acct9:2024/s3c?r3t@host`, which mixes the delimiters: past
+		// Redacted like every refusal in [ValidateHTTPSURL]. Past
 		// picatz/flowstate#2038, [ValidateHTTPSURL]'s own credentials check
-		// also widens its search once it finds a non-loopback port, but only
-		// across the *path* — `s3c` here, no `@` in it — so that a credential
-		// whose tail crossed into the query, as this one did, is still this
-		// check's to catch rather than being silently missed by neither.
+		// already searches the query and fragment along with the path once
+		// the authority is ambiguous (see the comment on that check), so a
+		// credential misread as `host:port` no longer reaches this refusal
+		// at all for a non-loopback issuer — `https://acct9:2024?s3cr3t@host`
+		// is refused there, for the credential, before parsing gets this
+		// far. What still reaches here is a query or fragment with nothing
+		// ambiguous behind it: an issuer with no port at all
+		// (`https://issuer.example.com?tenant=a`), or one on a loopback host,
+		// which that check exempts.
 		//
 		// Read as malformed, which is the one place that is true of a URL
 		// url.Parse accepted. An issuer *is* its identifier: one carrying a
@@ -1389,6 +1388,50 @@ func validateIssuerURL(issuer string) error {
 // names the setting in the caller's own vocabulary, so a refusal says what the
 // operator has to change rather than what this function is called.
 func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
+	return validateHTTPSURL(rawURL, field, true)
+}
+
+// validateComposedHTTPSURL is [ValidateHTTPSURL] without its
+// ambiguous-authority credential search — every other check, including a
+// parse error, a missing host, literal userinfo, and the https-or-loopback
+// scheme rule, still runs. For a URL this package composed itself: a base
+// that already passed [ValidateHTTPSURL] in full, with an operator-supplied
+// field appended through [url.PathEscape].
+//
+// PathEscape guarantees what makes the skip safe: it escapes every
+// character with a role in URL structure — "/", "?", "#", and the ":" a
+// port needs — so the appended field cannot introduce a new one of those or
+// move where the authority the base already named ends. What it does not
+// escape is "@" and the ":" a userinfo delimiter would use, since both are
+// valid, unescaped pchar (RFC 3986 §3.3,
+// https://www.rfc-editor.org/rfc/rfc3986#section-3.3) — which is exactly
+// the credential-shaped content [ValidateHTTPSURL]'s search exists to
+// catch, and exactly what a real resource identifier legitimately contains:
+// gcpExchanger.impersonate builds
+// `.../serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken`
+// this way, an operator-configured service account email in the path, not
+// a credential in the authority.
+//
+// Before picatz/flowstate#2038 widened that search past one path segment,
+// this shape passed it by accident; after, an `iam_endpoint` on a
+// non-loopback port loaded but failed every impersonation request, quoting
+// a misleading "must not include credentials" refusal for a URL that both
+// carries no credential and that this package, not an operator, built
+// character for character from an already-validated base. Skipping the
+// search here — rather than widening what [ValidateHTTPSURL] itself
+// accepts, which would reopen the same door for a URL an operator writes
+// by hand — is what restores that endpoint, without asking the shared
+// check to trust a value it cannot tell apart from the misread it exists to
+// refuse.
+func validateComposedHTTPSURL(rawURL, field string) (*url.URL, error) {
+	return validateHTTPSURL(rawURL, field, false)
+}
+
+// validateHTTPSURL is the shared implementation behind [ValidateHTTPSURL]
+// and [validateComposedHTTPSURL]. checkAmbiguousAuthority selects the
+// ambiguous-authority credential search; see the doc on each exported
+// entry point for what runs either way and why one caller skips it.
+func validateHTTPSURL(rawURL, field string, checkAmbiguousAuthority bool) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		// What every refusal here quotes, rather than rawURL itself. One of
@@ -1459,43 +1502,61 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	// it, which is why url.Parse's reading of `acct9:2024` as the whole
 	// authority is correct by the grammar: userinfo written with an
 	// unescaped `/` is not valid syntax either way. What is not correct is
-	// trusting that reading here: once a port is present, there is no bound
-	// on how many further `/` characters a leaked password's remainder
-	// crosses before reaching the real `@` and host, so an earlier version
-	// of this check that searched only the first path segment (the run up to
-	// the next `/`) was refusing `acct9:2024/s3cr3t@host` while missing
-	// `acct9:2024//s3cr3t@host` (an empty first segment, Codex) and
-	// `acct9:2024/s3cr3t/foo@host` (the tail one segment further in,
-	// Copilot) just as completely. The whole path is searched instead —
-	// everything url.Parse calls Path, stopping at the query or fragment
-	// exactly as [validateIssuerURL] does for the shape with no path slash
-	// at all (see the comment there) — which is provably complete against
-	// this misread: whatever the leaked password's remainder crossed, it is
-	// somewhere in this one region.
+	// trusting that reading once the authority is ambiguous this way at all.
 	//
-	// That completeness is also the cost: a URL whose port is genuinely
-	// correct and whose path genuinely, coincidentally carries an `@` —
-	// `https://host:8443/path@thing`, or a real API shape like Google's
+	// Ambiguous is [hostCarriesPortDelimiter], not parsed.Port() != "":
+	// `https://acct9:/s3cr3t@host` has Host `acct9:` and Port() == "", the
+	// empty string being a valid (if useless) port, so a colon with nothing
+	// after it named no port by that test and slipped through accepted
+	// (flowstate-reviewer, urlprobe). What actually makes the authority
+	// ambiguous is the colon itself, whether or not digits follow it: it is
+	// url.Parse's signal that this segment might be `host:port` rather than
+	// the whole of a userinfo the author wrote without one, so it is what
+	// this check keys on. An IPv6 literal's own colons do not count — a
+	// bracketed host like `[::1]` is unambiguous on its own — so
+	// [hostCarriesPortDelimiter] looks past the closing bracket, not at the
+	// raw Host string.
+	//
+	// Once the authority is ambiguous, there is no bound on how much of the
+	// rest of the raw string a leaked password's remainder crosses before
+	// reaching the real `@` and host: past the first `/`, into a later
+	// segment, past a `?` into the query, or past a `#` into the fragment.
+	// Two narrower searches were each shown incomplete before this one:
+	// only the first path segment missed a doubled path slash
+	// (`acct9:2024//s3cr3t@host`, an empty first segment, Codex) and a tail
+	// one segment further in (`acct9:2024/s3cr3t/foo@host`, Copilot); the
+	// whole path but not the query left `acct9:2024?s3cr3t@host` accepted
+	// for every caller except the issuer field, whose own query-and-fragment
+	// check happened to catch it (Codex again). So the search this check
+	// runs is [urlWithoutCredentials]'s own greedy one — everything from
+	// past the authority to the end of the raw string, path, query and
+	// fragment together — which is complete against every shape found so
+	// far; nothing here claims completeness beyond that.
+	//
+	// That width is also the cost: a URL whose port is genuinely correct and
+	// whose path, query or fragment genuinely, coincidentally carries an
+	// `@` — `https://host:8443/path@thing`, or a real API shape like
+	// Google's
 	// `.../serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken`
-	// — is textually identical to the misread and is refused alongside it.
-	// Nothing past the parsed string says which the author meant, so this
-	// fails closed per AGENTS.md invariant 6 rather than guess. An operator
-	// who needs that exact shape configures the endpoint without an explicit
-	// port, which is how every production OIDC issuer and Google's own real
-	// IAM Credentials API endpoint (https://iamcredentials.googleapis.com,
-	// no port) are already written — parsed.Port() stays empty for either,
-	// so this check does not run at all.
+	// reached through a non-default, non-loopback port — is textually
+	// identical to the misread and is refused alongside it. Nothing past the
+	// parsed string says which the author meant, so this fails closed per
+	// AGENTS.md invariant 6 rather than guess. An operator who needs that
+	// exact shape configures the endpoint without an explicit port, which is
+	// how every production OIDC issuer and Google's own real IAM
+	// Credentials API endpoint (https://iamcredentials.googleapis.com, no
+	// port) are already written; gcpExchanger's own composed request URL is
+	// exempted from this check entirely rather than asked to satisfy it —
+	// see the comment on [validateComposedHTTPSURL].
 	//
-	// Loopback is the one exemption, on the same footing as the plain-http
-	// loopback exemption below rather than a new decision: a target dialed
-	// at its own literal loopback address cannot be "the wrong host" in the
-	// sense this check exists to prevent — the request never leaves the
-	// machine either way — and this repository's own test suite (GCP
-	// impersonation against a local relying party, TestGCPExchanger and
-	// TestGCPExchangerBoundsServiceAccountExpiry) needs a port to reach one.
-	if parsed.Port() != "" && !isLoopbackHost(parsed.Hostname()) {
-		if lastUserinfoDelimiter(parsed.EscapedPath()) >= 0 {
-			return nil, fmt.Errorf("%s %q must not include credentials", field, urlWithoutCredentials(rawURL, true))
+	// Loopback is the one exemption written into this check itself, on the
+	// same footing as the plain-http loopback exemption below rather than a
+	// new decision: a target dialed at its own literal loopback address
+	// cannot be "the wrong host" in the sense this check exists to prevent
+	// — the request never leaves the machine either way.
+	if checkAmbiguousAuthority && hostCarriesPortDelimiter(parsed.Host) && !isLoopbackHost(parsed.Hostname()) {
+		if wide := urlWithoutCredentials(rawURL, true); wide != rawURL {
+			return nil, fmt.Errorf("%s %q must not include credentials", field, wide)
 		}
 	}
 
@@ -1610,16 +1671,17 @@ const urlCredentialsMarker = "[redacted]"
 // widens the search past it.
 //
 // [ValidateHTTPSURL]'s own credentials check is the third caller of that wider
-// search, and the one exception to "stops at the first slash by default":
-// `http://acct9:2024/s3cr3t@host` is the port misread with the rest of the
-// credential in what url.Parse calls the path, textually identical to
-// `http://host:8443/path@thing` above. Past picatz/flowstate#2038, that
-// function stops trusting the first-slash stop once url.Parse found a
-// non-loopback port, detecting the shape by searching the whole path itself
-// (not this helper's narrower before-first-slash region) before ever calling
-// this one — this call only builds the redacted message once that check has
-// already decided to refuse. See the comment on that check for why the
-// search had to widen from one path segment to the whole path.
+// search, and the one exception to "stops at the first slash by default" that
+// runs unconditionally rather than only once a caller has already decided the
+// string is malformed: `http://acct9:2024/s3cr3t@host` is the port misread
+// with the rest of the credential in what url.Parse calls the path,
+// textually identical to `http://host:8443/path@thing` above. Past
+// picatz/flowstate#2038, that check calls this function with malformed=true
+// directly — not the narrower before-first-slash region — once
+// [hostCarriesPortDelimiter] and a non-loopback host say the authority is
+// ambiguous, and refuses whenever that widened search finds anything at all.
+// See the comment on that check for what "ambiguous" means and why the
+// search had to widen from one path segment to the whole remainder.
 func urlWithoutCredentials(rawURL string, malformed bool) string {
 	rest := rawURL
 	prefix := ""
@@ -1730,6 +1792,32 @@ func urlParseReason(err error) error {
 	}
 
 	return err
+}
+
+// hostCarriesPortDelimiter reports whether parsed.Host, as url.Parse split
+// it, carries a ":" that could introduce a port — outside an IPv6 literal's
+// own brackets, whether or not anything (or anything numeric) follows it.
+//
+// Not parsed.Port() != "": url.Parse("https://acct9:/x").Host is "acct9:"
+// and Port() is "", the empty string being a valid (if useless) port, so a
+// colon with nothing after it names no port by that test and reads exactly
+// like a host with none at all — accepting `https://acct9:/s3cr3t@host` for
+// want of digits after the colon (flowstate-reviewer, urlprobe). The colon
+// itself is url.Parse's signal that this segment might be host:port rather
+// than the whole of a userinfo the author wrote without one, regardless of
+// what, if anything, comes after it.
+//
+// "[2001:db8::1]" carries three colons and none of them is this one: an
+// IPv6 literal's brackets are themselves the part of the grammar that says
+// so, which is why they are skipped over here rather than trusted to the
+// bare presence of ":" in the whole Host string.
+func hostCarriesPortDelimiter(host string) bool {
+	if strings.HasPrefix(host, "[") {
+		if end := strings.IndexByte(host, ']'); end >= 0 {
+			host = host[end+1:]
+		}
+	}
+	return strings.ContainsRune(host, ':')
 }
 
 // isLoopbackHost reports whether a URL host names the local machine.

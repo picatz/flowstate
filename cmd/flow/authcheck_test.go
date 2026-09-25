@@ -285,44 +285,53 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 			absent:  []string{password, "acct9"},
 		},
 		// A password whose leading run is all digits parses as a *port*, so
-		// the URL is well formed, carries no userinfo by url.Parse's reading,
-		// and passes every check in ValidateHTTPSURL — the refusal an operator
-		// sees is validateIssuerURL's, about the query the rest of the
-		// credential became, and it used to carry the whole thing
-		// (flowstate-reviewer).
+		// the URL is well formed and carries no userinfo by url.Parse's
+		// reading. Past picatz/flowstate#2038, auth.ValidateHTTPSURL's own
+		// credentials check catches this directly — the authority is
+		// ambiguous (a colon that could introduce a port is present) and an
+		// `@` survives in the query — rather than deferring to
+		// validateIssuerURL, which used to be the refusal an operator saw
+		// here and carried the whole credential doing it (flowstate-reviewer).
 		"a credential url.Parse reads as a port": {
 			issuer:  "https://acct9:2024?" + password + "@issuer.example.com",
-			wantErr: "must not include a query string or fragment",
+			wantErr: "must not include credentials",
 			absent:  []string{password, "acct9"},
 		},
 		// Both misreads at once: digit-leading password (so url.Parse calls it
 		// a port and the URL is well formed) and a percent-encoded delimiter.
+		// auth.ValidateHTTPSURL's search recognizes `%40` the same as a
+		// literal `@`.
 		"a port misread whose delimiter is percent-encoded": {
 			issuer:  "https://acct9:2024?" + password + "%40issuer.example.com",
-			wantErr: "must not include a query string or fragment",
+			wantErr: "must not include credentials",
 			absent:  []string{password, "acct9"},
 		},
 		// The delimiters mixed: the slash keeps the URL parseable, so nothing
 		// upstream calls it malformed, and it puts the rest of the credential
-		// past where a before-first-slash read stops. An issuer carrying a
-		// query is not a usable issuer, so this refusal reads it greedily.
-		//
-		// Still reaches here after picatz/flowstate#2038:
-		// auth.ValidateHTTPSURL's own credentials check only searches the
-		// first *path* segment for the misread's tail (so that a real port
-		// followed by a path `@` several segments deep, as GCP's
-		// service-account endpoints write one, is not refused alongside it —
-		// see the comment on that check). The query in this shape puts the
-		// credential's tail outside the path entirely, so it is still this
-		// check, not that one, that catches it.
+		// past where a before-first-slash read used to stop. Past
+		// picatz/flowstate#2038, auth.ValidateHTTPSURL's own credentials
+		// check searches the whole of the path, query and fragment together
+		// once the authority is ambiguous, so this reaches it directly too —
+		// see the comment on that check.
 		"a port misread whose credential spans a slash and a query": {
 			issuer:  "https://acct9:2024/s3c?" + password + "@issuer.example.com",
-			wantErr: "must not include a query string or fragment",
+			wantErr: "must not include credentials",
 			absent:  []string{password, "acct9"},
 		},
 		"the same misread with a fragment": {
 			issuer:  "https://acct9:007#" + password + "@issuer.example.com",
-			wantErr: "must not include a query string or fragment",
+			wantErr: "must not include credentials",
+			absent:  []string{password, "acct9"},
+		},
+		// A colon with nothing after it: url.Parse reads Host as `acct9:`
+		// and Port() as "", the empty string being a valid (if useless)
+		// port — a shape url.Parse's own Port() cannot distinguish from a
+		// host with no port at all, so auth.ValidateHTTPSURL keys on the
+		// colon itself rather than on Port() != "" (flowstate-reviewer,
+		// urlprobe).
+		"a port misread behind an empty port": {
+			issuer:  "https://acct9:/" + password + "@issuer.example.com",
+			wantErr: "must not include credentials",
 			absent:  []string{password, "acct9"},
 		},
 	} {

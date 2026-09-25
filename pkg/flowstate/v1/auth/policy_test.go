@@ -552,14 +552,26 @@ func TestValidateHTTPSURL(t *testing.T) {
 			// A password whose leading run is all digits: url.Parse calls it a
 			// *port*, so the URL is well formed and there is no userinfo, and
 			// the rest of the credential lands past the delimiter where the
-			// strict reading stopped. Under https this
-			// function accepts it and validateIssuerURL refuses the query —
-			// see TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL,
-			// which drives that path end to end. Here it is refused a step
-			// earlier, for its scheme, on one of the lines this change touches.
-			name:       "a credential read as a port under plain http",
+			// strict reading stopped, in the query this time rather than the
+			// path. Past picatz/flowstate#2038's widened search, this
+			// function's own credentials check catches it directly — the
+			// authority is ambiguous (a port is present) and the query holds
+			// an `@` — rather than deferring to validateIssuerURL or falling
+			// through to the scheme check.
+			name:       "a credential read as a port, in the query, under plain http",
 			url:        "http://acct9:2024?s3cr3t@issuer.example.com",
-			wantErr:    "must use https",
+			wantErr:    `issuer "http://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The same shape under https, so the credentials check is not
+			// merely arriving ahead of a scheme refusal that would have
+			// caught it anyway: this used to pass every check in this
+			// function and reach validateIssuerURL, which refused it for the
+			// query rather than the credential.
+			name:       "a credential read as a port, in the query, under https",
+			url:        "https://acct9:2024?s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
@@ -577,12 +589,13 @@ func TestValidateHTTPSURL(t *testing.T) {
 			// Both misreads at once, which is the shape that slipped between
 			// two searches looking for one spelling each: a digit-leading
 			// password makes this well formed, so the greedy branch never
-			// runs, and the delimiter is encoded, so the strict one found no
-			// `@`. Refused a layer up for its query —
-			// see the cmd/flow test for that path — and here for its scheme.
-			name:       "a percent-encoded delimiter behind a port misread",
+			// ran under the pre-picatz/flowstate#2038 code, and the delimiter
+			// is encoded, so the strict one found no `@`. Past that fix, the
+			// credentials check's own widened search recognizes `%40` the
+			// same as a literal `@` and catches it directly.
+			name:       "a percent-encoded delimiter behind a port misread, in the query",
 			url:        "http://acct9:2024?s3cr3t%40issuer.example.com",
-			wantErr:    "must use https",
+			wantErr:    `issuer "http://[redacted]%40issuer.example.com" must not include credentials`,
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
@@ -700,6 +713,71 @@ func TestValidateHTTPSURL(t *testing.T) {
 			url:        "https://acct9:2024//s3cr3t@issuer.example.com",
 			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
 			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// A colon with nothing after it: url.Parse reads Host as
+			// `acct9:` and Port() as "", the empty string being a valid (if
+			// useless) port, so testing Port() != "" missed this shape
+			// entirely — the authority is exactly as ambiguous as
+			// `acct9:2024`, just with no digits after the colon
+			// (flowstate-reviewer, urlprobe).
+			name:       "a credential behind an empty port",
+			url:        "https://acct9:/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The empty-port shape again, with the credential's tail in the
+			// query instead of the path.
+			name:       "a credential behind an empty port, in the query",
+			url:        "https://acct9:?s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The credential's tail split across a path segment and a query,
+			// so neither half alone contains an `@`: `s3` is the path, and
+			// `cr3t@host` is the query. A search bounded to only the path
+			// misses this the same way one bounded to the query alone would.
+			name:       "a credential whose tail crosses from the path into the query",
+			url:        "https://acct9:2024/s3?cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t", "cr3t"},
+		},
+		{
+			// The credential's tail in the fragment, past a `#` this time
+			// rather than a `?` — the same shape, the third delimiter.
+			name:       "a credential whose tail is in the fragment",
+			url:        "https://acct9:2024#s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// An IPv6 authority with a real, non-loopback port and the same
+			// path-based misread: [hostCarriesPortDelimiter] has to look
+			// past the literal's own brackets rather than finding the first
+			// ":" in Host, or every bracketed IPv6 host would read as
+			// ambiguous regardless of whether a port follows the brackets.
+			name:       "a credential behind a port on an IPv6 authority",
+			url:        "https://[2001:db8::1]:2024/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"2001:db8::1", "s3cr3t"},
+		},
+		{
+			// The negative direction of the same case: a bracketed IPv6
+			// authority with no port at all is not ambiguous — there is no
+			// "host:port" reading of a bare "[2001:db8::1]" to confuse with
+			// a misread userinfo — so a path `@` past it is the ordinary
+			// kind, like the plain-hostname case above.
+			name: "an IPv6 authority with no port keeps an at sign in its path",
+			url:  "https://[2001:db8::1]/a@b",
+		},
+		{
+			// An IPv6 loopback authority with a real port: the loopback
+			// exemption applies here exactly as it does for a IPv4 or named
+			// loopback host.
+			name: "the loopback exemption covers an IPv6 loopback authority too",
+			url:  "https://[::1]:2024/s3cr3t@issuer.example.com",
 		},
 		{
 			// The shape both the segment-scoped cases above exist to
