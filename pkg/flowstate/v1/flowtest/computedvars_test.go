@@ -693,6 +693,247 @@ tests:
 			"repair 4 withholds")
 }
 
+// TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening drives Codex's
+// review finding on #2041: `runCase` establishes its posture from
+// [casePosture] — which includes a table row's [Test.entrySecretMaterial] —
+// before anything can fail, but then *replaces* it wholesale with a freshly
+// built `sensitive` set once the run's inputs bind, rather than extending it
+// (see run.go's own comment on that assignment). Without also adding
+// entrySecretMaterial to that rebuilt set, a row that replaced its entry's
+// `secrets:` would withhold the entry's plaintext only until bind and print
+// it in the clear in every witness after — a check's, in particular, since a
+// check is judged after the run completes.
+func TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening(t *testing.T) {
+	t.Parallel()
+
+	const entrySecret = "sk-live-entry-postbind-9931"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: forwarder
+inputs:
+  tag:
+    type: string
+steps:
+  - id: echo
+    value: ${inputs.tag}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: entry
+    workflow: ./workflow.yaml
+    secrets:
+      env:VENDOR_TOKEN: `+entrySecret+`
+    cases:
+      - name: row
+        secrets:
+          env:ROW_TOKEN: row-material-2210
+        inputs:
+          tag: `+entrySecret+`
+        expect:
+          check:
+            - that: steps.echo.value == 'nope'
+              because: false on purpose, so the post-run witness renders
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, entrySecret,
+		"the row replaced its entry's `secrets:`, but its entry's plaintext still reached a post-run witness (#2041)")
+}
+
+// TestATableRowsEntrySecretSurvivesEscapedInThePostBindPosture is the escaping
+// half of the same gap (Codex, on the previous fix for this one): a check
+// witness renders a string with Go's `%q`, which rewrites a tab, a newline, a
+// quote or a backslash before the redaction set ever reads the line, so the
+// entry's material must be redacted in both spellings post-bind exactly as
+// [casePosture] already redacts it pre-bind — see [bothSpellings].
+//
+// The workflow concatenates a prefix onto the secret rather than passing it
+// through whole, deliberately: a witness value *equal* to a sensitive value
+// is caught by [SensitiveValues.RedactTree]'s value comparison before %q
+// ever runs, which would pass this test even without [bothSpellings]. Only a
+// composite string exercises the substring backstop the escaping actually
+// bears on.
+func TestATableRowsEntrySecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
+	t.Parallel()
+
+	// A tab: YAML carries one inside a double-quoted scalar, and %q renders
+	// it `\t` — a different byte sequence than the raw material, so only the
+	// escaped spelling ever appears in the rendered witness.
+	const entrySecret = "sk-live\tescaped-8821"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: forwarder
+inputs:
+  tag:
+    type: string
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.tag}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n"+
+		"  - name: entry\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:VENDOR_TOKEN: \"sk-live\\tescaped-8821\"\n"+
+		"    cases:\n"+
+		"      - name: row\n"+
+		"        secrets:\n"+
+		"          env:ROW_TOKEN: row-material-2210\n"+
+		"        inputs:\n"+
+		"          tag: \"sk-live\\tescaped-8821\"\n"+
+		"        expect:\n"+
+		"          check:\n"+
+		"            - that: steps.echo.value == 'nope'\n"+
+		"              because: false on purpose, so the post-run witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, entrySecret, "the raw plaintext reached a post-run witness")
+	assert.NotContains(t, rendered, `sk-live\tescaped-8821`,
+		"the row replaced its entry's `secrets:`, but the entry's %q-escaped spelling still reached a post-run witness — "+
+			"only its raw spelling was in the redaction set, and %q never produces that byte sequence")
+	// The positive control: the substring backstop working at all, once the
+	// escaped spelling is in the set, is `prefix-[redacted]` — proof this
+	// witness was reached and redacted rather than absent from the report.
+	assert.Contains(t, rendered, `prefix-[redacted]`)
+}
+
+// TestACrossCaseLiteralSeedSurvivesEscapedAfterInputBinding is the escaping
+// half of #2041's cross-case fix, on the same gap as the two tests above:
+// `vars.withheld.text` (which now includes a literal secret-seeded var, not
+// only a computed one) is added to the run's own posture without
+// [bothSpellings], so a check witness rendering it with Go's `%q` disclosed
+// the escaped spelling for a case that never named the secret itself.
+func TestACrossCaseLiteralSeedSurvivesEscapedAfterInputBinding(t *testing.T) {
+	t.Parallel()
+
+	// A tab, for the same reason the entry-secret tests above use one: %q
+	// rewrites it to a different byte sequence than the raw material.
+	const token = "sk-live\tcrosscase-6602"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: forwarder
+inputs:
+  tag:
+    type: string
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.tag}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "vars:\n"+
+		"  token: \"sk-live\\tcrosscase-6602\"\n"+
+		"tests:\n"+
+		"  - name: the case that holds the secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:VENDOR_TOKEN: ${vars.token}\n"+
+		"    expect:\n"+
+		"      outputs: {}\n"+
+		"  - name: the case that never named the secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    inputs:\n"+
+		"      tag: ${vars.token}\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.echo.value == 'nope'\n"+
+		"          because: false on purpose, so the post-run witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+	c := report.GetCases()[1]
+	require.Equal(t, "the case that never named the secret", c.GetName())
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, token, "the raw plaintext reached a post-run witness")
+	assert.NotContains(t, rendered, `sk-live\tcrosscase-6602`,
+		"a var seeded from another case's `secrets:` printed its %q-escaped spelling in the clear (#2041)")
+	assert.Contains(t, rendered, `prefix-[redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
+// TestACasesOwnSecretSurvivesEscapedInThePostBindPosture is the same gap one
+// level down from the two table tests above, for the plainest case there is:
+// an ordinary case's own inline `secrets:`, no table and no `vars:` at all.
+// `test.Secrets` joins the run-time posture too (line 863's own comment), and
+// it had the identical missing-bothSpellings gap independent reviewers found
+// on entrySecretMaterial and vars.withheld.text, since all three are rebuilt
+// in the same three-line stretch.
+func TestACasesOwnSecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
+	t.Parallel()
+
+	// A tab, for the same reason every escaping test in this file uses one.
+	const secret = "sk-live\tstubsec-5512"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bearer-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      bearer: ${secret('env:TOKEN')}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n"+
+		"  - name: the stub body echoes the resolved secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:TOKEN: \"sk-live\\tstubsec-5512\"\n"+
+		"    stubs:\n"+
+		"      - task: http\n"+
+		"        returns:\n"+
+		"          status_code: 200\n"+
+		"          body: ${'Bearer ' + inputs.bearer}\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.call.body == 'nope'\n"+
+		"          because: false on purpose, so the post-run witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, secret, "the raw plaintext reached a post-run witness")
+	assert.NotContains(t, rendered, `sk-live\tstubsec-5512`,
+		"the case's own `secrets:` printed its %q-escaped spelling in the clear once the stub echoed it into a step's output")
+	assert.Contains(t, rendered, `Bearer [redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
 func TestATaintedStructuredLeafIsWithheldFromStubDiagnostics(t *testing.T) {
 	t.Parallel()
 

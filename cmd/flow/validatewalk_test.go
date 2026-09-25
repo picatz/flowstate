@@ -483,3 +483,91 @@ steps:
 		"a value bound to a `sensitive:` input reached the signal-name diagnostic")
 	require.Contains(t, res.Output(), "matches no gate")
 }
+
+// TestValidateRedactsASignalNameFromAnotherCasesLiteralSecretSeed is #2041's
+// cross-case route: `token` is a literal var, named straight from the first
+// case's `secrets:` with no `${...}` fence of its own, and the second case
+// never declares a `secrets:` entry at all. It only reaches `token` through
+// `${vars.token}` substitution, so nothing but the file-wide withheld set
+// protects it — and that set used to exclude a literal seed on the assumption
+// its plaintext reached only the case that named it, which substitution makes
+// false: a fixture position may put `${vars.x}` in any case in the file.
+func TestValidateRedactsASignalNameFromAnotherCasesLiteralSecretSeed(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-crosstest-1234"
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(gatedWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(
+		"vars:\n"+
+			"  token: "+secret+"\n"+
+			"tests:\n"+
+			"  - name: the case that holds the secret\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    secrets:\n"+
+			"      env:VENDOR_TOKEN: ${vars.token}\n"+
+			"    expect:\n"+
+			"      ran: [gate]\n"+
+			"  - name: the case that never named the secret\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    signals:\n"+
+			"      - name: ${vars.token}\n"+
+			"        at: 1s\n"+
+			"        payload: {}\n"+
+			"    expect:\n"+
+			"      ran: [gate]\n"), 0o600))
+
+	res := runFlow(t, "validate", dir)
+	require.Error(t, res.Err, "the scripted signal names no gate, so this must be refused")
+
+	require.NotContains(t, res.Output(), secret,
+		"a var seeded from one case's `secrets:` printed in full for another (#2041)")
+	require.Contains(t, res.Output(), "matches no gate")
+}
+
+// TestValidateRedactsASignalNameFromAnEntrysSecretWhenARowDeclaresItsOwn is
+// #2041's table route: a row's `secrets:` replaces its entry's `Secrets` map
+// wholesale (deliberately — see table.go's own doc), which used to also drop
+// the entry's plaintext from the posture that row's diagnostics render
+// through, since nothing else carried it. `flowtest`'s unexported
+// `entrySecretMaterial` is what protects it now, read once per entry and
+// shared by every row for redaction only, independent of what `Secrets`
+// itself binds.
+//
+// The entry's secret is a plain literal rather than a `${vars.x}` reference,
+// so the var-taint closure never reaches it — proving this route
+// independently of the cross-case one above, which that closure would
+// otherwise cover regardless of how `secrets:` merges.
+func TestValidateRedactsASignalNameFromAnEntrysSecretWhenARowDeclaresItsOwn(t *testing.T) {
+	t.Parallel()
+
+	const entrySecret = "sk-live-entrymat-8821"
+	const rowSecret = "sk-live-rowown-4402"
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(gatedWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(
+		"tests:\n"+
+			"  - name: entry\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    secrets:\n"+
+			"      env:VENDOR_TOKEN: "+entrySecret+"\n"+
+			"    cases:\n"+
+			"      - name: row\n"+
+			"        secrets:\n"+
+			"          env:ROW_TOKEN: "+rowSecret+"\n"+
+			"        signals:\n"+
+			"          - name: "+entrySecret+"\n"+
+			"            at: 1s\n"+
+			"            payload: {}\n"+
+			"        expect:\n"+
+			"          ran: [gate]\n"), 0o600))
+
+	res := runFlow(t, "validate", dir)
+	require.Error(t, res.Err, "the scripted signal names no gate, so this must be refused")
+
+	require.NotContains(t, res.Output(), entrySecret,
+		"a row declaring its own `secrets:` lost the entry's from its posture (#2041)")
+	require.Contains(t, res.Output(), "matches no gate")
+}
