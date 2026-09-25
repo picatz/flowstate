@@ -49,6 +49,44 @@ func withRacerID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, racerIDKey, id)
 }
 
+// raceOutcome is what [raceTerminateOther]'s interceptor observed about the
+// two racers' terminate calls, for the assertion that exactly one of them
+// actually ended the incumbent and the other found it already gone.
+type raceOutcome struct {
+	mu          sync.Mutex
+	terminateOK map[string]bool // racer -> did its terminate call return nil
+}
+
+func (o *raceOutcome) set(racer string, ok bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.terminateOK == nil {
+		o.terminateOK = map[string]bool{}
+	}
+	o.terminateOK[racer] = ok
+}
+
+// exactlyOneTerminated asserts that of the two racers, exactly one actually
+// ended the incumbent (a nil TerminateWorkflow error) and the other's
+// terminate call found it already gone — the direct evidence that both
+// reached the reissue, rather than one never having to terminate anything
+// because the other's fresh start answered it through the ordinary retry
+// arm first (#2061's review, finding 2).
+func (o *raceOutcome) exactlyOneTerminated(t *testing.T) {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	require.Len(t, o.terminateOK, 2, "both racers should have reached a terminate call on the incumbent")
+	ended := 0
+	for _, ok := range o.terminateOK {
+		if ok {
+			ended++
+		}
+	}
+	require.Equal(t, 1, ended, "exactly one racer's terminate call should have actually ended the incumbent")
+}
+
 // raceTerminateOther dials a client whose gRPC interceptor forces two
 // `on_conflict: terminate_other` reissues into #1966's interleaving, once
 // armed with the workflow id and the specific incumbent run id both racers
@@ -60,7 +98,19 @@ func withRacerID(ctx context.Context, id string) context.Context {
 // and gated on [racerIDKey], so only the two calls under test are ever held
 // back; everything else this client sends, including the call that creates
 // the incumbent in the first place, passes straight through.
-func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client, arm func(workflowID, incumbentRunID string)) {
+//
+// Two gates, not one (#2061's review, finding 2). Holding back only the
+// second racer's terminate call is not enough on its own: nothing then stops
+// the *first* racer's probe, terminate and claim from completing entirely
+// before the second racer's own probe has even reached Temporal, in which
+// case the second racer's probe finds the first racer's fresh run directly,
+// answers through [FlowstateServer.Run]'s ordinary retry arm, and this
+// file's own discovery path — the thing #1966 fixed — never runs at all. So
+// every terminate call first waits for *both* racers' probes to have
+// returned, which is the fact the issue's own race depends on ("both probes
+// land before either reissue completes"), and only then does the
+// second-terminate-waits-for-the-first-claim gate apply.
+func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client, arm func(workflowID, incumbentRunID string), outcome *raceOutcome) {
 	t.Helper()
 
 	var (
@@ -70,9 +120,15 @@ func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client,
 		terminated     = map[string]bool{}
 	)
 
+	outcome = &raceOutcome{}
+
+	var probesReturned atomic.Int32
+	bothProbesReturned := make(chan struct{})
+	var closeProbesOnce sync.Once
+
 	var termCalls atomic.Int32
 	firstClaimStarted := make(chan struct{})
-	var closeOnce sync.Once
+	var closeClaimOnce sync.Once
 
 	watch := func(
 		ctx context.Context, method string, req, reply any,
@@ -88,6 +144,12 @@ func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client,
 			if term, ok := req.(*workflowservice.TerminateWorkflowExecutionRequest); ok &&
 				term.GetWorkflowExecution().GetRunId() == runID {
 
+				select {
+				case <-bothProbesReturned:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+
 				// The first of the two racers' terminate calls to arrive
 				// proceeds immediately; the second waits for the first
 				// racer's own replacement claim to have gone out and come
@@ -95,7 +157,11 @@ func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client,
 				// necessarily finds this run already gone rather than
 				// racing to end it too.
 				if termCalls.Add(1) == 2 {
-					<-firstClaimStarted
+					select {
+					case <-firstClaimStarted:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
 				}
 
 				err := invoker(ctx, method, req, reply, cc, opts...)
@@ -103,6 +169,7 @@ func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client,
 				mu.Lock()
 				terminated[racer] = true
 				mu.Unlock()
+				outcome.set(racer, err == nil)
 
 				return err
 			}
@@ -121,8 +188,15 @@ func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client,
 
 				err := invoker(ctx, method, req, reply, cc, opts...)
 
-				if wasTerminated {
-					closeOnce.Do(func() { close(firstClaimStarted) })
+				if !wasTerminated {
+					// A probe, not a post-terminate claim: count it, and once
+					// both racers' probes are back, every terminate call
+					// above may proceed.
+					if probesReturned.Add(1) >= 2 {
+						closeProbesOnce.Do(func() { close(bothProbesReturned) })
+					}
+				} else if wasTerminated {
+					closeClaimOnce.Do(func() { close(firstClaimStarted) })
 				}
 
 				return err
@@ -149,7 +223,7 @@ func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client,
 		mu.Unlock()
 	}
 
-	return temporal, arm
+	return temporal, arm, outcome
 }
 
 // TestTwoIdenticalTerminateOtherSubmissionsConvergeOnOneRun is #1966's
@@ -162,7 +236,7 @@ func TestTwoIdenticalTerminateOtherSubmissionsConvergeOnOneRun(t *testing.T) {
 	plain, namespace := newTemporalNamespace(t)
 	startWorker(t, plain)
 
-	racing, arm := raceTerminateOther(t, namespace)
+	racing, arm, outcome := raceTerminateOther(t, namespace)
 	s := mustNew(t, racing, server.WithNamespace("acme"))
 
 	// The stale incumbent both racers will probe and find genuinely
@@ -210,6 +284,7 @@ func TestTwoIdenticalTerminateOtherSubmissionsConvergeOnOneRun(t *testing.T) {
 	// other started) is what actually happened.
 	require.True(t, first.GetReused() != second.GetReused(),
 		"exactly one of the two responses should name the run it itself started")
+	outcome.exactlyOneTerminated(t)
 
 	live, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: first.GetWorkflowId()}))
 	require.NoError(t, err)
@@ -232,7 +307,7 @@ func TestADifferentTerminateOtherSubmissionStillReplacesUnderTheRace(t *testing.
 	plain, namespace := newTemporalNamespace(t)
 	startWorker(t, plain)
 
-	racing, arm := raceTerminateOther(t, namespace)
+	racing, arm, outcome := raceTerminateOther(t, namespace)
 	s := mustNew(t, racing, server.WithNamespace("acme"))
 
 	incumbent, err := s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
@@ -270,6 +345,7 @@ func TestADifferentTerminateOtherSubmissionStillReplacesUnderTheRace(t *testing.
 	require.False(t, second.GetReused(), "a genuinely different submission was answered as a retry")
 	require.NotEqual(t, first.GetRunId(), second.GetRunId(),
 		"two different submissions were joined onto the one run, rather than each starting its own")
+	outcome.exactlyOneTerminated(t)
 
 	// Exactly one of the two runs this test started is the one still live —
 	// the other, whichever caller was answered with it, was replaced in
@@ -284,4 +360,109 @@ func TestADifferentTerminateOtherSubmissionStillReplacesUnderTheRace(t *testing.
 	statuses := []v1.RunResponse_Status{firstDesc.Msg.GetStatus(), secondDesc.Msg.GetStatus()}
 	require.ElementsMatch(t, []v1.RunResponse_Status{v1.RunResponse_STATUS_RUNNING, v1.RunResponse_STATUS_TERMINATED}, statuses,
 		"exactly one of the two different submissions' runs should have survived the race")
+}
+
+// TestClaimSurvivesCallerContextCancellation is #2061's review finding 1.
+//
+// Closing #1966's race gave up the old single-call TERMINATE_EXISTING's own
+// atomicity: terminating the incumbent and claiming the id are now two
+// separate round trips, so a caller context that ends *between* them — a
+// load balancer resetting the connection, an operator's Ctrl-C, a
+// client-side deadline — must not be allowed to abandon the id with nothing
+// running at it, which would be a strictly worse outcome than the race this
+// server closed. [FlowstateServer.claimAfterTerminatingOther] answers this
+// by committing under a context of its own once it terminates something; this
+// is the test for that commitment.
+//
+// The interceptor cancels the caller's context the instant the terminate
+// call for the incumbent returns — landing exactly in the window the review
+// named — and the claim that follows still has to produce a replacement.
+func TestClaimSurvivesCallerContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	plain, namespace := newTemporalNamespace(t)
+	startWorker(t, plain)
+
+	var (
+		mu             sync.Mutex
+		incumbentRunID string
+		cancelCaller   context.CancelFunc
+	)
+
+	watch := func(
+		ctx context.Context, method string, req, reply any,
+		cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption,
+	) error {
+		term, isTerminate := req.(*workflowservice.TerminateWorkflowExecutionRequest)
+
+		mu.Lock()
+		runID := incumbentRunID
+		mu.Unlock()
+
+		if !isTerminate || runID == "" || term.GetWorkflowExecution().GetRunId() != runID {
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}
+
+		err := invoker(ctx, method, req, reply, cc, opts...)
+
+		// The terminate landed: simulate the caller vanishing at precisely
+		// this point, rather than hoping a real disconnect lines up here.
+		mu.Lock()
+		cancel := cancelCaller
+		mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+
+		return err
+	}
+
+	racing, err := client.Dial(client.Options{
+		HostPort:  devServer.FrontendHostPort(),
+		Namespace: namespace,
+		Logger:    newTestingLogger(t),
+		ConnectionOptions: client.ConnectionOptions{
+			DialOptions: []grpc.DialOption{grpc.WithChainUnaryInterceptor(watch)},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(racing.Close)
+
+	s := mustNew(t, racing, server.WithNamespace("acme"))
+
+	incumbent, err := s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: proto.String("cancel-incumbent"),
+	}))
+	require.NoError(t, err)
+	waitUntilParkedAtTheGate(t, plain, incumbent.Msg.GetWorkflowId())
+
+	mu.Lock()
+	incumbentRunID = incumbent.Msg.GetRunId()
+	mu.Unlock()
+
+	callerCtx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	mu.Lock()
+	cancelCaller = cancel
+	mu.Unlock()
+
+	resp, err := s.Run(callerCtx, connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: proto.String("cancel-replacement"),
+	}))
+	require.NoError(t, err,
+		"the caller's context was cancelled right after the terminate landed; the claim committed to after it must not be abandoned")
+	require.False(t, resp.Msg.GetReused())
+
+	// t.Context() rather than the now-cancelled callerCtx: asking again
+	// afterward is a fresh request, the same as any other caller checking on
+	// the run.
+	live, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: resp.Msg.GetWorkflowId()}))
+	require.NoError(t, err)
+	require.Equal(t, resp.Msg.GetRunId(), live.Msg.GetRunId())
+	require.Equal(t, v1.RunResponse_STATUS_RUNNING, live.Msg.GetStatus(),
+		"the incumbent was terminated and the caller's cancellation left nothing to replace it")
 }

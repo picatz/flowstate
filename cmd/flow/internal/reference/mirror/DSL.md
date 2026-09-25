@@ -5598,6 +5598,16 @@ implemented as a refusal caught rather than as Temporal's `USE_EXISTING`, becaus
 started the run it is reporting. Every fact this server states is one it established;
 `SignalWithStart` decides its own `created` from the same error.
 
+`terminate_other` is the one arm two concurrent submissions carrying a
+`request_id` can race, since replacing what is there is the one thing this
+key does that is not simply "answer from what is already there." The server
+still answers both callers with one run — an identical submission converges
+on whichever wins the race rather than each destroying the other's start,
+and a genuinely different one still replaces the incumbent as if it had
+arrived second. A submission that keeps losing a live race past a small,
+bounded number of rounds is refused `Aborted` rather than retried forever;
+retrying the request answers it (#1966).
+
 ### Submit-time, which is why both drivers agree
 
 Nothing inside a run reads this block. It is consumed once, by the server choosing

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 	"go.temporal.io/api/common/v1"
@@ -213,6 +214,25 @@ func (s *FlowstateServer) reusedSubmission(ctx context.Context, workflowID, runI
 // hung request.
 const maxTerminateOtherRounds = 4
 
+// claimAfterTerminatingOtherTimeout bounds the commitment
+// [FlowstateServer.claimAfterTerminatingOther] makes once it has terminated a
+// run: the caller's own context stops being a safe signal to give up by, once
+// giving up would leave the id it just vacated empty rather than merely
+// answer them late. [recordContext] (webhook.go) bounds a different
+// after-the-fact commitment the identical way, for the identical reason.
+//
+// Generous against a slow Temporal round trip and the retries below; short
+// enough that a genuinely unreachable cluster still gives up rather than
+// pinning this goroutine forever.
+const claimAfterTerminatingOtherTimeout = 30 * time.Second
+
+// claimStartRetryDelay is how long [claimStart] waits between a transient
+// start failure and retrying it. The SDK's own transport layer already
+// retries a single dropped frame; this is for whatever survives that, so it
+// does not need to be short — only short enough that a handful of attempts
+// still fit inside [claimAfterTerminatingOtherTimeout].
+const claimStartRetryDelay = 200 * time.Millisecond
+
 // claimAfterTerminatingOther is `on_conflict: terminate_other`'s reissue for
 // a request-addressed submission whose probe found an incumbent that is not
 // its own retry — #1966.
@@ -257,12 +277,41 @@ const maxTerminateOtherRounds = 4
 // still says it is replaced — the loop repeats against it, bounded so two
 // submissions that keep displacing each other cannot loop forever.
 //
+// # Once committed, this does not give up because the caller did
+//
+// The old, single-call TERMINATE_EXISTING reissue was atomic: Temporal itself
+// guaranteed the id was never left holding nothing. Terminating a specific
+// run and then claiming the id separately gives that up unless something
+// here puts it back — a caller context cancelled between the two (a load
+// balancer resetting the connection, an operator's Ctrl-C, a client-side
+// deadline) must not leave the id terminated with nothing to replace it,
+// which would be a strictly worse outcome than the race this function
+// exists to close. So every terminate-and-claim round after the first line
+// of this function runs under a context of this call's own — the caller's
+// values, none of their cancellation, bounded by
+// [claimAfterTerminatingOtherTimeout] so an unreachable cluster still gives
+// up rather than pinning the goroutine forever — and [claimStart] retries a
+// transient failure to claim within that bound rather than surfacing the
+// first one. See #2061's review.
+//
+// What that does not cover: this server's own process ending between the
+// terminate below and the claim it commits to. No context, caller-scoped or
+// not, survives that — it is the one window nothing server-side can close,
+// the same residual risk `on_conflict: terminate_other`'s old single-call
+// form already carried between *its* two effects (the terminate and the
+// start Temporal performs atomically, but which a crash mid-flight on
+// Temporal's own side could still separate). It is bounded to one RPC's
+// duration rather than left open-ended, and `flow list` finds the id simply
+// empty rather than corrupted if it is ever hit.
+//
 // submission must not be nil: this is reachable only from the request-id arm
 // of [FlowstateServer.Run], which is the one case that can produce the
 // [serviceerror.WorkflowExecutionAlreadyStarted] this function is called to
 // resolve under `on_conflict: terminate_other` — a submission-less request
 // under that policy is given TERMINATE_EXISTING outright and never reaches
-// this reissue at all.
+// this reissue at all. Checked rather than assumed, so a future caller that
+// gets this wrong sees a clear error instead of a nil-pointer panic inside
+// [FlowstateServer.reusedSubmission].
 func (s *FlowstateServer) claimAfterTerminatingOther(
 	ctx context.Context,
 	temporal client.Client,
@@ -272,8 +321,16 @@ func (s *FlowstateServer) claimAfterTerminatingOther(
 	submission *submissionKey,
 	asSubmitted bool,
 ) (*v1.RunResponse, error) {
+	if submission == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New(
+			"claimAfterTerminatingOther: called with no submission recorded, which should be unreachable under on_conflict: terminate_other"))
+	}
+
+	commit, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimAfterTerminatingOtherTimeout)
+	defer cancel()
+
 	for round := 0; round < maxTerminateOtherRounds; round++ {
-		if err := temporal.TerminateWorkflow(ctx, workflowID, incumbentRunID,
+		if err := temporal.TerminateWorkflow(commit, workflowID, incumbentRunID,
 			"flowstate: superseded by a different submission under `on_conflict: terminate_other`"); err != nil {
 			// Already gone — terminated by a racing sibling's own round, or
 			// finished on its own between the probe and here — is success
@@ -288,7 +345,7 @@ func (s *FlowstateServer) claimAfterTerminatingOther(
 		}
 
 		options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
-		run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+		run, err := claimStart(commit, temporal, options, state)
 		if err == nil {
 			return &v1.RunResponse{
 				WorkflowId:               workflowID,
@@ -303,7 +360,7 @@ func (s *FlowstateServer) claimAfterTerminatingOther(
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
 		}
 
-		resp, retry, err := s.reusedSubmission(ctx, workflowID, already.RunId, submission)
+		resp, retry, err := s.reusedSubmission(commit, workflowID, already.RunId, submission)
 		if err != nil {
 			return nil, err
 		}
@@ -326,6 +383,33 @@ func (s *FlowstateServer) claimAfterTerminatingOther(
 	return nil, connect.NewError(connect.CodeAborted, fmt.Errorf(
 		"workflow %q kept being replaced by a different submission before this one could claim it (%d attempts)",
 		workflowID, maxTerminateOtherRounds))
+}
+
+// claimStart attempts to start the replacement run, retrying a transient
+// failure within ctx's own bound rather than surfacing the first one: the
+// terminate before this call already vacated the id, so giving up on one
+// blip would leave it empty rather than merely slow to fill. A start that
+// answers [serviceerror.WorkflowExecutionAlreadyStarted] is returned
+// immediately without retrying — it is the expected outcome when a sibling
+// claimed the id first, not a failure to recover from.
+func claimStart(ctx context.Context, temporal client.Client, options client.StartWorkflowOptions, state *v1.RunState) (client.WorkflowRun, error) {
+	for {
+		run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+		if err == nil {
+			return run, nil
+		}
+
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if errors.As(err, &already) {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(claimStartRetryDelay):
+		}
+	}
 }
 
 // memoString reads one string-valued memo field the way [memoStarter] reads

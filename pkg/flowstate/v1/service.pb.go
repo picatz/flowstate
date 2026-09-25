@@ -233,6 +233,19 @@ type RunRequest struct {
 	// payload with "done" would be worse than no key at all. Choose a new value
 	// for a new submission.
 	//
+	// # Concurrent submissions under `terminate_other`
+	//
+	// Two submissions racing this field under a `concurrency:` block whose
+	// `on_conflict:` is `terminate_other` still answer with one run between
+	// them — identical submissions converge on whichever wins the race, and a
+	// genuinely different one still replaces what it found, exactly as a
+	// sequential retry would. Resolving that without Temporal's own
+	// compare-and-terminate primitive costs a small, bounded number of extra
+	// rounds when the collision is real; a submission still displacing another
+	// after that bound is refused `Aborted` rather than left retrying forever,
+	// which a caller sees as a request to try again rather than as an
+	// idempotency-key failure.
+	//
 	// # Grammar
 	//
 	// A UUID or a caller-chosen string of 1 to 128 ASCII letters, digits and
