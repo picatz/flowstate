@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -92,6 +93,38 @@ func TestArgumentOffsetPointsAtTheWordAfterTheVerb(t *testing.T) {
 		assert.Equal(t, test.column, columnOf(test.line, argumentOffset(test.line)),
 			"the argument column is wrong for %q", test.line)
 	}
+}
+
+// TestCheckStepArgumentSkipsSuggestionWorkPastTheCap is the assertion
+// [CheckScript]'s report cap needs and [TestCheckScriptBoundsInventoryWorkAfterTheReportIsFull]
+// cannot give it on its own: that test's problem count and total hold whether
+// or not [checkStepArgument] still pays for a suggestion search and an
+// inventory render on every refused line past [MaxScriptProblems] — `report`
+// already drops what it does not keep, so a regression there would leave that
+// test green. `detail` is the seam: called directly, off the same typo, with
+// detail true and false, the two calls must render different messages, and
+// the false one must be the plain refusal even though a suggestion is one
+// edit away for the taking.
+func TestCheckStepArgumentSkipsSuggestionWorkPastTheCap(t *testing.T) {
+	t.Parallel()
+
+	known := map[string]struct{}{"build": {}, "deploy": {}}
+	names := []string{"build", "deploy"}
+
+	var messages []string
+	report := func(_, _ int, format string, args ...any) {
+		messages = append(messages, fmt.Sprintf(format, args...))
+	}
+
+	checkStepArgument(report, 1, "break biuld", "biuld", known, names, true)
+	checkStepArgument(report, 2, "break biuld", "biuld", known, names, false)
+
+	require.Len(t, messages, 2, "each call should report exactly one message")
+	assert.Equal(t, `no step named "biuld": did you mean "build"?`, messages[0],
+		"detail=true did not compute the suggestion it should have found")
+	assert.Equal(t, `no step named "biuld"`, messages[1],
+		"detail=false rendered a suggestion or the workflow's inventory — exactly "+
+			"the per-line, inventory-sized work MaxScriptProblems exists to bound")
 }
 
 // TestAColumnCountsCharactersRatherThanBytes, which is what every other

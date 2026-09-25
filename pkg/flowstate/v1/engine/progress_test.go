@@ -1,12 +1,15 @@
 package engine_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdkpb "go.temporal.io/api/sdk/v1"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -88,6 +91,52 @@ func TestARunningRunSaysWhichStepItIsOn(t *testing.T) {
 		"the run had finished one step and did not say so")
 }
 
+// askAtFirstActivity registers a query to fire the instant the run's first
+// activity is about to execute, rather than guessing how far the workflow
+// goroutine gets inside some fixed duration.
+//
+// [setProgressQuery] is synchronous workflow code that runs unconditionally
+// before any activity call — see workflow.go's "Registered before anything
+// else happens, including the vars activity below" — so an activity starting
+// is an observable fact about the SDK's own dispatcher (it only starts one
+// once the workflow has run past that registration and yielded) rather than
+// a guess about wall-clock margin. [askDuring]'s original 1ms version of this
+// test flaked under full-tree parallel load (#1980): a guessed duration
+// proves nothing about ordering, only about how much CPU time a goroutine
+// happened to get before something else fired. `SetOnActivityStartedListener`
+// runs on the same environment dispatch loop `RegisterDelayedCallback` does
+// (both post through `env.postCallback`, which `dispatch_unknown_task_test.go`
+// also relies on), so this is the same safe-to-call-QueryWorkflow-from-inside
+// shape, just keyed to an event instead of a duration.
+func askAtFirstActivity(t *testing.T, env *testsuite.TestWorkflowEnvironment) (*v1.RunProgress, *error) {
+	t.Helper()
+
+	got := &v1.RunProgress{}
+	var asked bool
+	var queryErr error
+
+	env.SetOnActivityStartedListener(func(*activity.Info, context.Context, converter.EncodedValues) {
+		if asked {
+			return
+		}
+		asked = true
+
+		encoded, err := env.QueryWorkflow(engine.ProgressQuery)
+		if queryErr = err; err != nil {
+			return
+		}
+		queryErr = encoded.Get(got)
+	})
+
+	t.Cleanup(func() {
+		if queryErr == nil && !asked {
+			t.Error("no activity ever started, so this test asserted on an empty answer")
+		}
+	})
+
+	return got, &queryErr
+}
+
 // TestProgressIsAnsweredWhileTheRunIsStillSettingUp is why the handler is registered
 // before the vars activity rather than beside the executor.
 //
@@ -97,13 +146,14 @@ func TestARunningRunSaysWhichStepItIsOn(t *testing.T) {
 // a window answering with an error that reads like a broken worker rather than like a
 // run that has not got anywhere.
 //
-// The window is real but small, so this asks during it: the query lands while the run
-// is between starting and reaching its first step.
+// The window is real but small, so this asks during it: the query fires the instant
+// the vars activity — this workflow's only one — starts, which [askAtFirstActivity]
+// gets from Temporal's own test environment rather than from a guessed duration.
 func TestProgressIsAnsweredWhileTheRunIsStillSettingUp(t *testing.T) {
 	t.Parallel()
 
 	env := newWaitEnv(t)
-	atStart, queryErr := askDuring(t, env, time.Millisecond)
+	atStart, queryErr := askAtFirstActivity(t, env)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
 		Name:  "asked-immediately",
