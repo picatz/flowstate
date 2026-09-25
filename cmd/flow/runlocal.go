@@ -186,14 +186,14 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// regardless, which is what covers this refusal — see
 		// refusedRunSensitiveValues.
 		return refuseRunLocally(newSurface(cmd), rendering,
-			refusedRunSensitiveValues(cmd, workflow, nil, reveal), err)
+			refusedRunSensitiveValues(cmd, workflow, nil, err, reveal), err)
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
 		// And here the arguments exist — they were just collected — so the set
 		// is precise against them, and the binder's `got <value>` is cleared
 		// rather than the whole sentence withheld.
 		return refuseRunLocally(newSurface(cmd), rendering,
-			refusedRunSensitiveValues(cmd, workflow, inputs, reveal), err)
+			refusedRunSensitiveValues(cmd, workflow, inputs, err, reveal), err)
 	}
 
 	// A workload that waits for a signal needs something able to deliver one, or it

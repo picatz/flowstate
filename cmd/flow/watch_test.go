@@ -1541,6 +1541,33 @@ func TestAWatchReportsEveryChangeItWouldRender(t *testing.T) {
 			after:  running(func(*v1.GetResponse) {}),
 		},
 		{
+			name: "retry starts running",
+			before: running(func(r *v1.GetResponse) {
+				r.PendingActivities[0].NextAttemptScheduledTime = timestamppb.New(observed)
+			}),
+			after: running(func(*v1.GetResponse) {}),
+		},
+		{
+			name:   "running attempt starts waiting to retry",
+			before: running(func(*v1.GetResponse) {}),
+			after: running(func(r *v1.GetResponse) {
+				r.PendingActivities[0].NextAttemptScheduledTime = timestamppb.New(observed)
+			}),
+		},
+		{
+			// pendingActivityLines appends the phase whenever one is reported;
+			// an identity that leaves it out suppresses a heartbeat moving from
+			// "requesting" to "reading the response".
+			name:   "running attempt's phase changes",
+			before: running(func(r *v1.GetResponse) { r.PendingActivities[0].Phase = "requesting" }),
+			after:  running(func(r *v1.GetResponse) { r.PendingActivities[0].Phase = "reading the response" }),
+		},
+		{
+			name:   "running attempt starts reporting a phase",
+			before: running(func(*v1.GetResponse) {}),
+			after:  running(func(r *v1.GetResponse) { r.PendingActivities[0].Phase = "requesting" }),
+		},
+		{
 			// The same hole one field over, which predates the retries' one.
 			name:   "gates become partial",
 			before: running(func(*v1.GetResponse) {}),

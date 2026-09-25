@@ -268,6 +268,65 @@ type documentStore struct {
 	// identical to one answered from memory once you're only counting
 	// milliseconds. Nil in production, where the call costs nothing.
 	awaitTrace func(boundExpired bool)
+
+	// closeGate, when set, is called by [documentStore.close] with uri before
+	// the delete runs, and blocks until told to proceed. It exists for a test
+	// that needs a same-URI didOpen provably held behind an in-flight didClose
+	// rather than merely hoping the scheduler cooperates: hold the close here,
+	// send the reopen, and show the store still has not changed until the gate
+	// is released. Nil in production, where the call costs nothing.
+	closeGate func(uri lsp.DocumentURI)
+
+	// tail is, for each URI with a didOpen, didChange or didClose still queued
+	// or in flight, the channel that operation closes once its handler
+	// returns. The next same-URI notification's goroutine waits on it before
+	// touching the store — see [documentStore.enqueue] — which is what makes
+	// the three apply in the arrival order the protocol implies regardless of
+	// how jsonrpc2.AsyncHandler schedules the goroutines behind them (#1986).
+	// Deleted the moment nothing is queued behind it, so a long-running
+	// connection's memory is bounded by URIs currently in flight rather than
+	// by every URI it has ever seen.
+	tail map[lsp.DocumentURI]chan struct{}
+}
+
+// enqueue returns the channel uri's next document notification must wait on
+// before its handler may touch the store, and the function that operation
+// calls once its handler returns — which both releases whatever is chained
+// behind it and retires uri's entry when nothing is.
+//
+// wait is nil for the first notification a URI has queued, since there is
+// nothing to wait on; a caller checks for that rather than receiving from a
+// nil channel, which would block forever.
+//
+// Called from [FlowfileServer.announceInbound] on the connection's read loop,
+// before a document notification's handler is dispatched onto its own
+// goroutine — the one place per-URI arrival order still exists once
+// jsonrpc2.AsyncHandler takes over dispatch. Each call chains behind whatever
+// the previous call for the same URI returned, so the wait channels form a
+// queue in wire arrival order, and a goroutine that waits on one before
+// working is serialized behind its predecessor no matter which of the two
+// the scheduler would otherwise have run first.
+func (s *documentStore) enqueue(uri lsp.DocumentURI) (wait <-chan struct{}, done func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	wait = s.tail[uri]
+	mine := make(chan struct{})
+	if s.tail == nil {
+		s.tail = make(map[lsp.DocumentURI]chan struct{})
+	}
+	s.tail[uri] = mine
+
+	return wait, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		close(mine)
+		// Only retire the entry if nothing has queued behind this one since —
+		// a later enqueue already replaced it, and that call owns retiring it.
+		if s.tail[uri] == mine {
+			delete(s.tail, uri)
+		}
+	}
 }
 
 // setAwaitTrace installs the test hook described on [documentStore.awaitTrace].
@@ -277,6 +336,15 @@ func (s *documentStore) setAwaitTrace(f func(boundExpired bool)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.awaitTrace = f
+}
+
+// setCloseGate installs the test hook described on [documentStore.closeGate].
+// Locked because it is set from a different goroutine than the one that will
+// read it inside [documentStore.close].
+func (s *documentStore) setCloseGate(f func(uri lsp.DocumentURI)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeGate = f
 }
 
 // beginBuild records that a document notification for uri is being handled.
@@ -407,21 +475,27 @@ func (s *documentStore) await(ctx context.Context, disconnected <-chan struct{},
 }
 
 // open records a newly opened document and returns it, or the document already
-// stored when this open has been overtaken.
+// stored when this open would move it backwards.
 //
-// The version guard is [documentStore.change]'s, for the same reason: the
-// connection wraps the handler in jsonrpc2.AsyncHandler, which starts a
-// goroutine per message and gives up the arrival ordering the protocol
-// guarantees. An open whose goroutine is scheduled behind a change would
-// otherwise replace the edited document with the opened text at version 1 --
-// an editor that takes the first keystrokes and then silently reverts them,
-// answering hover and diagnostics from pre-edit text until the next one lands.
+// The version guard is [documentStore.change]'s, for the same reason: a caller
+// that mutates a URI's document without going through the per-URI queue
+// [documentStore.enqueue] serializes — every didOpen, didChange and didClose
+// the connection actually serves is one such caller, but this package's own
+// tests drive the store directly and are not — has no ordering guarantee of
+// its own, and a stale open must not silently revert a newer edit. Without the
+// guard, an open applied out of turn would replace the edited document with
+// the opened text at version 1 -- an editor that takes the first keystrokes
+// and then silently reverts them, answering hover and diagnostics from
+// pre-edit text until the next change lands.
 //
-// A document still in the store means this open was overtaken, because the
-// protocol requires didClose before a document is opened again and
-// [documentStore.close] removes it. So a close-then-open always applies, and an
-// open that finds an incumbent is either reordered or a client re-opening
-// without closing; neither is a reason to move the document backwards.
+// A document still in the store means this open was overtaken. The protocol
+// requires didClose before a document is opened again, [documentStore.close]
+// removes it, and the connection's serialization guarantees a same-URI
+// reopen's handler is not even dispatched until that close has finished
+// (#1986) — so a real reopen never finds an incumbent there. What is left to
+// find one is a client re-opening without closing, or a caller bypassing the
+// serialization the connection provides; neither is a reason to move the
+// document backwards.
 func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, tasks *v1.Registry) *document {
 	// Announced before the parse and retired after the result is stored, so a
 	// request that arrives in between waits for this rather than reading past it.
@@ -579,7 +653,27 @@ func (s *documentStore) getByFilesystemPath(path string) (*document, bool) {
 }
 
 // close forgets a document.
+//
+// It used to be the one mutation here with no ordering of its own:
+// [lsp.DidCloseTextDocumentParams] carries only a TextDocumentIdentifier, not
+// a version the way open and change have, so a close reordered behind the
+// didOpen that reopened the same URI deleted the document the reopen had just
+// established (#1986). That gap is closed one layer up, not here — every
+// didOpen, didChange and didClose the connection serves is queued per URI by
+// [documentStore.enqueue] before this is ever called, so by the time a
+// same-URI reopen's handler is dispatched, the close that precedes it in
+// arrival order has already run to completion. What was once this function's
+// own problem is now simply never true of it: close always applies to
+// whatever the store currently holds for uri, because nothing queued behind
+// it could have landed first.
 func (s *documentStore) close(uri lsp.DocumentURI) {
+	s.mu.Lock()
+	gate := s.closeGate
+	s.mu.Unlock()
+	if gate != nil {
+		gate(uri)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if doc := s.docs[uri]; doc != nil {
