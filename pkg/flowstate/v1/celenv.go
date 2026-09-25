@@ -207,20 +207,22 @@ type extendedEnvResult struct {
 // Measured, not guessed: runtime.MemStats around 2,000 extensions of one
 // already-referenced base environment showed ~10.4 KiB of heap retained and
 // ~91 allocations paid per extension. That is the marginal cost when the
-// base is pinned elsewhere anyway — every in-tree call site's base comes
-// from e.envs, which already holds it for the Evaluator's lifetime. It is
+// base is pinned elsewhere anyway — every in-tree call site's base is
+// already interned for the process's lifetime, in e.envs or in an extension
+// of one (mustEnvs, httpResponseEnvs). It is
 // not the whole cost an entry can retain: env.Extend's result keeps its
 // base alive through its own parent field (cel-go's [cel.Env.parent]), so an
 // entry whose base is not otherwise referenced — an arbitrary environment an
 // embedder builds and hands to the exported [Evaluator.Eval] once — pins
 // that whole base for as long as the entry lives. A base built for every
 // profile library, the largest this build has, measured at ~75.7 KiB the
-// same way. Worst case for 256 entries of the largest, otherwise-unreferenced
-// shape is then on the order of 256 × (75.7 + 10.4) KiB ≈ 22 MiB — well
+// same way. Worst case for 256 entries of the largest in-tree,
+// otherwise-unreferenced shape is then on the order of 256 × (75.7 + 10.4) KiB ≈ 22 MiB — well
 // under [DefaultProgramCacheBytes]'s 32 MiB, the closest precedent in this
 // file for what a caller-triggered cache may retain, and still far past what
 // the in-tree call sites ever approach, where the marginal ~10.4 KiB is the
-// true added cost.
+// true added cost. An embedder's own environment can be larger than any
+// in-tree shape; the entry count, not a byte figure, is what this bounds.
 const maxExtendedEnvs = 256
 
 // extendedEnvCache is a mutex-guarded, capacity-bounded map of extended

@@ -138,11 +138,14 @@ func TestEvalParsedWithCostReusesTheExtendedEnvironment(t *testing.T) {
 }
 
 // TestEvalReusesTheExtendedEnvironmentAndStillEnforcesCost is the safety half
-// of the memo: a cached extension must keep enforcing the cost limit it was
-// built with, exactly like a freshly built one would — a cache that dropped
-// the limit would be a security regression dressed as a speedup, the same
-// property TestCachedProgramStillEnforcesTheCostBudget pins for the program
-// cache.
+// of the memo: an evaluation built on a cached extended environment still
+// fails over budget, exactly like one built on a fresh extension. The budget
+// that fails it here is the program-level [cel.CostLimit] from
+// Limits.programOptions — the expression ranges over a list, which the
+// extension's own map-ordering bound never reaches — so this proves the
+// cache does not bypass the program budget, the property
+// TestCachedProgramStillEnforcesTheCostBudget pins for the program cache. The
+// extension's own bound is pinned by TestCanonicalMapOrderingIsChargedForItsWork.
 func TestEvalReusesTheExtendedEnvironmentAndStillEnforcesCost(t *testing.T) {
 	t.Parallel()
 
