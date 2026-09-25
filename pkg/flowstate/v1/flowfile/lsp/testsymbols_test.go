@@ -31,7 +31,7 @@ func TestTestDocumentSymbolsHandlesManySiblingCases(t *testing.T) {
 	assert.Equal(t, "c9999", got[count-1].Name)
 }
 
-// TestKeyPathTrackerPopsAtMostOncePerLine is the mechanism the linear-time
+// TestTestDocumentSymbolsScansEachLineOnce is the mechanism the linear-time
 // claim actually rests on, checked by counting rather than by timing — the
 // same convention flowdebug's TestTheStepListIsAnsweredAsAWindow uses, and for
 // the same reason: a timing assertion flakes on a busy machine, and an
@@ -41,38 +41,44 @@ func TestTestDocumentSymbolsHandlesManySiblingCases(t *testing.T) {
 // TestTestDocumentSymbolsHandlesManySiblingCases above proves
 // [testDocumentSymbols] returns the right 10,000 symbols; it cannot tell a
 // linear scan from the quadratic one it replaced, since both produce the same
-// answer, only at different cost — a Copilot review on this PR asked for an
-// operation-count or bounded performance check instead. [keyPathTracker.advance]
-// pops before it pushes and returns the popped-down path as enclosing, so the
-// number of keys popped on one call is exactly the shrink from the path's
-// length before the call to len(enclosing). Summed over a whole scan, that
-// total can never exceed the total number of keys ever pushed, which can never
-// exceed the number of lines — the amortized argument the type's own doc
-// comment states ("each key is pushed and popped at most once"), pinned here
-// as a count instead of left as prose.
-func TestKeyPathTrackerPopsAtMostOncePerLine(t *testing.T) {
-	t.Parallel()
-
+// answer, only at different cost. An earlier version of this test drove
+// [keyPathTracker.advance] directly rather than going through
+// [testDocumentSymbols], which proved the tracker's own pop/push bound but not
+// that testDocumentSymbols actually uses it — reverting testDocumentSymbols to
+// call keyPath per name line (the O(document²) shape #2006 fixes) left that
+// version green, which is the same gap a Copilot review on this PR named about
+// the test before it.
+//
+// [indentOfCalls] is the counted operation this one drives through the real
+// path: see its own doc comment for why it is the site where the two shapes'
+// cost actually diverges. Not t.Parallel() — the counter is a package-wide
+// total, and an unrelated test calling into this package's line-scanning code
+// while this one reads a before/after delta would pollute it; a sequential
+// (non-parallel) test's body runs with no other test's body executing
+// concurrently, in or out of this package's other t.Parallel() tests, which is
+// what makes the delta exact rather than merely likely.
+func TestTestDocumentSymbolsScansEachLineOnce(t *testing.T) {
 	const count = 10_000
-	lines := make([]string, 0, count+1)
-	lines = append(lines, "tests:")
+	var text strings.Builder
+	text.WriteString("tests:\n")
 	for i := range count {
-		lines = append(lines, fmt.Sprintf("  - name: c%d", i))
+		fmt.Fprintf(&text, "  - name: c%d\n", i)
 	}
 
-	var (
-		tracker keyPathTracker
-		pops    int
-	)
-	for _, line := range lines {
-		before := len(tracker)
-		enclosing := tracker.advance(line)
-		pops += before - len(enclosing)
-	}
+	doc := newDocument("file:///large.test.yaml", 1, text.String(), nil)
 
-	assert.LessOrEqual(t, pops, len(lines),
-		"the tracker popped more keys across the scan than lines exist to have pushed them, "+
-			"which is exactly the per-line rescanning this type replaces")
+	before := indentOfCalls.Load()
+	got := testDocumentSymbols(doc)
+	scanned := indentOfCalls.Load() - before
+
+	require.Len(t, got, count, "the scan under test changed the answer, not just its cost")
+
+	lines := uint64(doc.index.lineCount())
+	assert.LessOrEqual(t, scanned, 3*lines,
+		"testDocumentSymbols called indentOf %d times over a %d-line document — a "+
+			"small constant multiple of the line count is the linear-scan claim; "+
+			"anything past it is the O(document²) per-name-line keyPath rescan #2006 "+
+			"replaced with keyPathTracker", scanned, lines)
 }
 
 // TestTestDocumentSymbolsNamesEachCase: a suite with two independent cases
