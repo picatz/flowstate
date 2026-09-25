@@ -913,6 +913,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          # A supersession is not a failure to be scored the same way: the
+          # ref's concurrency group cancels an in-progress run when a newer
+          # push lands (deliberately, for a pull request — see the
+          # concurrency: block above), and the cancelled run's own head will
+          # never be evaluated for merging, only the superseding push's will.
+          # That makes it categorically different from a job this diff
+          # actually broke, and issue #2030 is exactly that it read as
+          # identical to one without opening the run's log. The check still
+          # fails here — a cancelled job proved nothing, so there is still
+          # nothing to justify a pass with, and fail-closed does not bend for
+          # this — but the message says which one it is, right in the
+          # annotation the Checks tab already shows, so a reader never has to
+          # fetch a log to tell them apart.
+          if [ "${PLAN_RESULT}" = "cancelled" ]; then
+            echo "::error::the plan job was cancelled, not failed — a newer push superseded this run before it finished; this check still fails because a cancelled plan established nothing, but it is not evidence anything is broken, see the superseding push's own run instead"
+            exit 1
+          fi
           if [ "${PLAN_RESULT}" != "success" ]; then
             echo "::error::the plan job did not succeed (result: ${PLAN_RESULT}), so nothing is established about this diff and this check fails rather than reporting a pass it cannot justify"
             exit 1
@@ -927,6 +944,9 @@ jobs:
           # Direction one: every job the plan named must have the result the
           # plan implies. `true:success` and `false:skipped` are the only two
           # readings that mean the gate looked at what it was meant to.
+          # `cancelled` gets its own two cases, ahead of the general ones
+          # below, purely to say why in the annotation — see the comment
+          # above the plan-result check; the verdict for either is still red.
           while read -r job want; do
             got=$(printf '%s' "${RESULTS}" | jq -r --arg j "$job" '.[$j].result // "absent"')
             case "${want}:${got}" in
@@ -934,6 +954,12 @@ jobs:
                 echo "ok       ${job}: ran and passed" ;;
               false:skipped)
                 echo "ok       ${job}: skipped, and the plan says this diff cannot reach it" ;;
+              true:cancelled)
+                echo "::error::${job} was selected by the plan for this diff but was cancelled, not failed — a newer push superseded this run before it finished; this check still fails, but it is not evidence anything is broken, see the superseding push's own run instead"
+                status=1 ;;
+              false:cancelled)
+                echo "::error::${job} was not selected by the plan but reports cancelled — a newer push superseded this run before that job's if: condition could even be evaluated; this check still fails, but it is not evidence anything is broken, see the superseding push's own run instead"
+                status=1 ;;
               true:*)
                 echo "::error::${job} was selected by the plan for this diff but its result was '${got}'"
                 status=1 ;;

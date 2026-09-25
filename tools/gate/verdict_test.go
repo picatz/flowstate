@@ -199,3 +199,42 @@ func TestAPlanThatDidNotSucceedFailsTheVerdict(t *testing.T) {
 		t.Errorf("an empty plan passed the verdict vacuously:\n%s", out)
 	}
 }
+
+// TestASupersededPlanFailsTheVerdictAndSaysSo is #2030: a plan cancelled by a
+// newer push superseding this run reads, at a glance, exactly like a plan
+// that failed on its own merits — both are a red `verdict` — and telling them
+// apart cost a log fetch every time. The check must still fail (a cancelled
+// plan established nothing, so there is still nothing to justify a pass
+// with), but the annotation the Checks tab already shows must now say which
+// one this is.
+func TestASupersededPlanFailsTheVerdictAndSaysSo(t *testing.T) {
+	plan := samplePlan()
+	ok, out := runVerdict(t, "cancelled", plan, fullResults(plan))
+	if ok {
+		t.Fatalf("a cancelled plan must still fail the verdict:\n%s", out)
+	}
+	if !strings.Contains(out, "cancelled") || !strings.Contains(out, "superseded") {
+		t.Errorf("the failure should name supersession, not just non-success, so it reads differently from a real failure without opening a log:\n%s", out)
+	}
+	if strings.Contains(out, "did not succeed") {
+		t.Errorf("a cancelled plan should not get the generic did-not-succeed message meant for an actual failure:\n%s", out)
+	}
+}
+
+// TestASupersededSelectedJobFailsTheVerdictAndSaysSo is the same case one
+// level down: the plan itself published its decisions, but a job it selected
+// was cancelled — the shape a superseding push produces when it lands after
+// `plan` finished but before a downstream job did.
+func TestASupersededSelectedJobFailsTheVerdictAndSaysSo(t *testing.T) {
+	plan := samplePlan()
+	results := fullResults(plan)
+	results["test"] = "cancelled"
+
+	ok, out := runVerdict(t, "success", plan, results)
+	if ok {
+		t.Fatalf("a cancelled selected job must still fail the verdict:\n%s", out)
+	}
+	if !strings.Contains(out, "test was selected by the plan") || !strings.Contains(out, "superseded") {
+		t.Errorf("the failure should name the job and supersession, not read as an ordinary bad result:\n%s", out)
+	}
+}
