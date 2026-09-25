@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"errors"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
 )
@@ -80,6 +82,166 @@ func asyncIDs(started []*asyncStep) []string {
 	return ids
 }
 
+// heldFailure is an async step a debug ask joined early whose failure has not
+// been raised yet: the id it was written under, and what the join heard.
+//
+// It exists because joining early removes the step from the outstanding set,
+// and that set is what [v1.AsyncJoinTargets] consults to decide which steps a
+// node's references have to wait for. A failure the walk is holding therefore
+// has to stay *addressable* under its own id, or a later node that mentions it
+// would find nothing to join and run — which is the debugger changing what the
+// run computes, the thing the holding was introduced to prevent.
+type heldFailure struct {
+	id  string
+	err error
+}
+
+// heldIDs names the steps whose failures are held, in the order they were
+// joined, so a reference to one is found exactly as a reference to an
+// outstanding step is. Order is written order, since map iteration is not
+// something workflow code may depend on.
+func heldIDs(held []heldFailure) []string {
+	ids := make([]string, 0, len(held))
+	for _, failure := range held {
+		ids = append(ids, failure.id)
+	}
+
+	return ids
+}
+
+// heldAcross converts the failures this scope is holding into the durable shape
+// that crosses a Continue-As-New.
+//
+// Everything a resumed segment needs to raise the failure exactly as the segment
+// that heard it would have: the message a person reads at the run's own failure,
+// the classification a client reads back, the driver-independent sentence an
+// author's expression compares, and the flag that decides whether an enclosing
+// level prepends its own position to that sentence. [ErrRunFailed] flattens its
+// cause, so none of these can be re-derived from a chain on the far side.
+//
+// What is deliberately *not* carried is `ErrRunFailed.cause`, the one structured
+// inner failure #1163 retains beneath a ScheduleToClose expiry. It is reachable
+// only through `Unwrap`, the outer `Kind` that a client reads does cross, and
+// carrying an arbitrary nested error durably is a schema question of its own. A
+// held failure of that shape therefore reports its own classification and loses
+// the inner attempt's — a narrowing, recorded here rather than discovered later.
+//
+// `ErrRunFailed.recordedOwn` is not carried either, and needs no narrowing note
+// of its own: an `async:` step must be a task ([v1.CheckAsyncPlacement]), and
+// that field is only ever set for a step with an account of its own — an
+// exhausted loop or a failed switch — so a held failure never has one. The
+// step's transcript entry is durable regardless, which is what `keepHeldOutputs`
+// keeps through the seam.
+//
+// A failure that is not an [ErrRunFailed] is carried by its text rather than
+// dropped: losing one is the defect this mechanism exists to prevent.
+func heldAcross(held []heldFailure) []*v1.HeldFailure {
+	if len(held) == 0 {
+		return nil
+	}
+
+	carried := make([]*v1.HeldFailure, 0, len(held))
+	for _, failure := range held {
+		entry := &v1.HeldFailure{StepId: failure.id, Message: failure.err.Error()}
+
+		var run *ErrRunFailed
+		if errors.As(failure.err, &run) {
+			entry.Message = run.Message
+			entry.Kind = string(run.Kind)
+			entry.Recorded = run.Recorded
+			entry.RecordedFromTask = run.recordedFromTask
+		}
+
+		carried = append(carried, entry)
+	}
+
+	return carried
+}
+
+// heldFrom rebuilds what a previous segment was holding.
+//
+// Every field is taken from the frame rather than recovered from the scope. An
+// earlier shape read the recorded sentence back out of [RunState.outputs] on the
+// grounds that it was already durable there, which was true of *a* sentence and
+// not of this one: what a step records is written without a position, and what
+// an enclosing level composes from is written with one unless it came from a
+// classified task failure. Deriving either from the other made a run that
+// suspended report differently from a run that did not.
+func heldFrom(carried []*v1.HeldFailure) []heldFailure {
+	if len(carried) == 0 {
+		return nil
+	}
+
+	held := make([]heldFailure, 0, len(carried))
+	for _, entry := range carried {
+		held = append(held, heldFailure{
+			id: entry.GetStepId(),
+			err: &ErrRunFailed{
+				Message:          entry.GetMessage(),
+				Kind:             v1.ErrorKind(entry.GetKind()),
+				Recorded:         entry.GetRecorded(),
+				recordedFromTask: entry.GetRecordedFromTask(),
+			},
+		})
+	}
+
+	return held
+}
+
+// holdingWith composes one scope's hold with whatever an enclosing scope
+// published, for [executor.holdingFailure].
+//
+// A function rather than a closure written at the registration site because the
+// composition is the whole of the claim: a boundary inside a `for_each`, a
+// `loop:` or a called workflow emits its continuation while the scope holding
+// the failure sits above it on the stack and its own hold is empty, so an answer
+// that reported only the innermost scope would let exactly those boundaries
+// through. Written out, it can be exercised without a workflow context.
+//
+// The hold is taken by pointer because the scope keeps appending to it after
+// this is registered: the debug drain hears failures as the walk goes on, and a
+// predicate over a copy would answer for the scope as it was at its first step.
+func holdingWith(outer func() bool, held *[]heldFailure) func() bool {
+	return func() bool {
+		return len(*held) > 0 || (outer != nil && outer())
+	}
+}
+
+// drainRaises decides what a debug drain propagates when one of its joins
+// reports a cancellation.
+//
+// Written order decides which failure a scope reports, and a failure already
+// held was written before the step that was cancelled — so it is the one to
+// raise, exactly as the scope-end join would have raised it. Returning the
+// cancellation instead would make a debugged run close CANCELED and take its
+// cancellation compensations where the same run without an ask closes FAILED
+// and takes its failure ones: the debugger changing what the run computes,
+// which is the one thing it may never do (#1119).
+//
+// The cancellation is discarded rather than held, and that is the asymmetry
+// worth naming: what crosses a Continue-As-New is rebuilt as an [ErrRunFailed],
+// so a held cancellation would come back a run failure. It needs no holding
+// anyway — the deferred scope drain waits the coroutine out, and a scope that
+// is leaving publishes nothing.
+func drainRaises(held []heldFailure, cancelled error) error {
+	if len(held) > 0 {
+		return held[0].err
+	}
+
+	return cancelled
+}
+
+// takeHeld reports the failure held under id, if any.
+func takeHeld(held []heldFailure, id string) (error, bool) {
+	for _, failure := range held {
+		if failure.id == id {
+			return failure.err, true
+		}
+	}
+
+	return nil, false
+}
+
 // takeAsync removes one outstanding step from the set and returns it with the
 // rest, preserving the order of what is left.
 func takeAsync(started []*asyncStep, id string) (*asyncStep, []*asyncStep) {
@@ -131,13 +293,18 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			// The *same* position, not a nested one: an async step is a step of
 			// this level that happens to run alongside the ones after it, so its
 			// commands are labelled exactly as they would be run in order.
-			path:      e.path,
-			budget:    e.budget,
-			signals:   e.signals,
-			undo:      e.undo,
-			undoSlot:  &slot,
-			undoScope: e.undoScope,
-			callDepth: e.callDepth,
+			path:                   e.path,
+			budget:                 e.budget,
+			sliceCost:              e.sliceCost,
+			everyExpressionCharged: e.everyExpressionCharged,
+			carriesHeld:            e.carriesHeld,
+			holdingFailure:         e.holdingFailure,
+			signals:                e.signals,
+			debug:                  e.debug,
+			undo:                   e.undo,
+			undoSlot:               &slot,
+			undoScope:              e.undoScope,
+			callDepth:              e.callDepth,
 
 			// Not carried, for the reason a parallel branch does not carry it:
 			// no one outstanding step is the position of the run, and a query

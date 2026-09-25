@@ -197,3 +197,289 @@ func TestValidateDirectoryWalkDoesNotReadAnOversizedFileWhole(t *testing.T) {
 	require.Contains(t, out, "workflow.yaml")
 	require.NotContains(t, out, "huge.yaml")
 }
+
+// TestValidateReportsMisspelledSignalNameInTestFile is #1443's validate-surface
+// claim: `flow validate` compiles the referenced workflow and checks each
+// scripted signal's name against its declared gates, so a typo is caught before
+// `flow test` rather than passing green with a signal delivered into the void.
+func TestValidateReportsMisspelledSignalNameInTestFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`
+edition: v2026.3
+name: gated
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approve
+      timeout: 10s
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`
+tests:
+  - name: misspelled signal
+    workflow: ./workflow.yaml
+    signals:
+      - name: aprove
+        at: 1s
+        payload: {}
+    expect:
+      outputs: {}
+`), 0o600))
+
+	out, err := validateOutput(t, dir)
+	require.Error(t, err, "output: %s", out)
+	require.Contains(t, out, `"aprove"`)
+	require.Contains(t, out, "approve")
+}
+
+// gatedWorkflow waits on one signal, so a scripted signal naming anything else
+// is refused by the check `flow validate` runs over a test file (#1443).
+const gatedWorkflow = `edition: v2026.3
+name: gated
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approve
+      timeout: 10s
+`
+
+// TestValidateDoesNotPrintASecretSubstitutedIntoASignalName is the leak the
+// signal-name check arrived with.
+//
+// A file's `vars:` are substituted into fixture positions at load, and
+// `signals[].name` is one of them exactly as a case's `secrets:` value is — so
+// one var can be both, which is an ordinary way to write a fixture that signs
+// and then signals with the same material. When such a name matches no gate,
+// `checkSignalNames` quotes it with %q, and this command wrote that sentence
+// straight to a terminal and into its `-o json` report. `flow test` clears the
+// identical sentence against the identical posture; `flow validate` did not,
+// which is one value with one meaning rendered two ways (Codex).
+//
+// Both streams and both formats, because the diagnostic reaches stdout as text
+// and travels again inside the machine report.
+func TestValidateDoesNotPrintASecretSubstitutedIntoASignalName(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-9f4c2a7e"
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(gatedWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(
+		"vars:\n"+
+			"  token: "+secret+"\n"+
+			"tests:\n"+
+			"  - name: the gate is signalled\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    secrets:\n"+
+			"      env:VENDOR_TOKEN: ${vars.token}\n"+
+			"    signals:\n"+
+			"      - name: ${vars.token}\n"+
+			"        at: 1s\n"+
+			"        payload: {}\n"+
+			"    expect:\n"+
+			"      ran: [gate]\n"), 0o600))
+
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+
+			res := runFlow(t, "validate", "-o", format, dir)
+			require.Error(t, res.Err, "the scripted signal names no gate, so this must be refused")
+
+			require.NotContains(t, res.Output(), secret,
+				"a value the case declares under `secrets:` reached the validate output")
+			require.NotContains(t, res.Err.Error(), secret,
+				"nor the error the command returns, which is what main prints")
+
+			// A redaction, not a withholding: the author still has to be able
+			// to see which case and which position the refusal is about.
+			require.Contains(t, res.Output(), "the gate is signalled")
+			require.Contains(t, res.Output(), "matches no gate")
+		})
+	}
+}
+
+// TestValidateRedactsASignalNameInATableRow is the same leak reached through a
+// `cases:` row rather than a plain test.
+//
+// Rows are expanded at load, and a row that declares no `secrets:` inherits the
+// entry's, so the posture a row's diagnostic is rendered under is the entry's
+// too. Worth its own case because `validateTestFile` walks the *expanded*
+// tests: if it ever walked the unexpanded ones, a row's signal name would be
+// checked against a posture built from a test that is not the one it came from.
+func TestValidateRedactsASignalNameInATableRow(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-row-4b21e"
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(gatedWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(
+		"vars:\n"+
+			"  token: "+secret+"\n"+
+			"tests:\n"+
+			"  - name: the gate is signalled\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    secrets:\n"+
+			"      env:VENDOR_TOKEN: ${vars.token}\n"+
+			"    cases:\n"+
+			"      - name: by the wrong name\n"+
+			"        signals:\n"+
+			"          - name: ${vars.token}\n"+
+			"            at: 1s\n"+
+			"            payload: {}\n"+
+			"        expect:\n"+
+			"          ran: [gate]\n"), 0o600))
+
+	res := runFlow(t, "validate", dir)
+	require.Error(t, res.Err, "the scripted signal names no gate, so this must be refused")
+
+	require.NotContains(t, res.Output(), secret,
+		"a row inherited its entry's secrets, and the diagnostic printed one anyway")
+	require.Contains(t, res.Output(), "matches no gate")
+}
+
+// TestValidateRedactsASignalNameDerivedFromASecret covers the other half of the
+// posture: not a case's `secrets:` plaintext, but the material a `vars:` entry
+// is withheld for because it was computed from one.
+//
+// `${'gate-' + vars.token}` is tainted by the secret it reads, so the loader
+// records its whole value as withheld material — and a signal name substituted
+// from it is that material, reaching the diagnostic under a different name.
+// The two halves are separate lists inside the posture, so a redaction built
+// from only one of them would pass the test above and leak here.
+func TestValidateRedactsASignalNameDerivedFromASecret(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-derived-77c0"
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(gatedWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(
+		"vars:\n"+
+			"  token: "+secret+"\n"+
+			"  gate: \"${'gate-' + vars.token}\"\n"+
+			"tests:\n"+
+			// The seed lives on a different case, deliberately. With the
+			// `secrets:` entry on the signalling case, its own plaintext is in
+			// the posture and the substring backstop clears `gate-<secret>`
+			// without the withheld half ever being consulted — the test would
+			// pass with that half deleted (flowstate-reviewer).
+			"  - name: the case that holds the secret\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    secrets:\n"+
+			"      env:VENDOR_TOKEN: ${vars.token}\n"+
+			"    expect:\n"+
+			"      ran: [gate]\n"+
+			"  - name: the gate is signalled\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    signals:\n"+
+			"      - name: ${vars.gate}\n"+
+			"        at: 1s\n"+
+			"        payload: {}\n"+
+			"    expect:\n"+
+			"      ran: [gate]\n"), 0o600))
+
+	res := runFlow(t, "validate", dir)
+	require.Error(t, res.Err)
+
+	require.NotContains(t, res.Output(), secret,
+		"the secret a withheld var was computed from reached the diagnostic")
+	require.NotContains(t, res.Output(), "gate-"+secret,
+		"the withheld var's own material reached the diagnostic")
+	require.Contains(t, res.Output(), "matches no gate")
+}
+
+// TestValidateRedactsASignalNameEscapedByQuoting is the escaping half of the
+// containment rule, which the value set cannot see on its own.
+//
+// `checkSignalNames` quotes the offending name with %q, and %q *transforms* a
+// value holding a newline, a tab, a quote or a backslash before the redaction
+// ever reads the sentence. The posture searches for the plaintext as written,
+// which no longer occurs in it, so the escaped spelling printed — and an
+// escaped secret is a secret (Codex).
+func TestValidateRedactsASignalNameEscapedByQuoting(t *testing.T) {
+	t.Parallel()
+
+	// A tab, because YAML can carry one inside a double-quoted scalar and %q
+	// renders it `\t`. The assertion is against the escaped spelling, since
+	// the raw one is not what reaches the output.
+	const secret = "sk-live\tescaped-9f31"
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(gatedWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(
+		"vars:\n"+
+			"  token: \"sk-live\\tescaped-9f31\"\n"+
+			"tests:\n"+
+			"  - name: the gate is signalled\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    secrets:\n"+
+			"      env:VENDOR_TOKEN: ${vars.token}\n"+
+			"    signals:\n"+
+			"      - name: ${vars.token}\n"+
+			"        at: 1s\n"+
+			"        payload: {}\n"+
+			"    expect:\n"+
+			"      ran: [gate]\n"), 0o600))
+
+	res := runFlow(t, "validate", dir)
+	require.Error(t, res.Err)
+
+	require.NotContains(t, res.Output(), secret,
+		"the plaintext reached the output")
+	require.NotContains(t, res.Output(), `sk-live\tescaped-9f31`,
+		"the %q-escaped spelling of the secret reached the output")
+	require.Contains(t, res.Output(), "matches no gate")
+}
+
+// TestValidateRedactsASignalNameFromASensitiveInput is the half of the posture
+// only this caller can build.
+//
+// `runCase` widens its posture with the run's own sensitive values once the
+// inputs are bound, so at run time a `sensitive:` input scripted as a signal
+// name is already covered. `flow validate` never runs anything — but it does
+// compile the workflow to check the names against it, so it holds both the
+// declaration and the case's `inputs:`, which is everything needed to cover
+// the same values without a run (Copilot).
+func TestValidateRedactsASignalNameFromASensitiveInput(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-bound-3e77"
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: gated
+inputs:
+  token:
+    type: string
+    sensitive: true
+    required: true
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approve
+      timeout: 10s
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(
+		"tests:\n"+
+			"  - name: the gate is signalled\n"+
+			"    workflow: ./workflow.yaml\n"+
+			"    inputs:\n"+
+			"      token: "+secret+"\n"+
+			"    signals:\n"+
+			"      - name: "+secret+"\n"+
+			"        at: 1s\n"+
+			"        payload: {}\n"+
+			"    expect:\n"+
+			"      ran: [gate]\n"), 0o600))
+
+	res := runFlow(t, "validate", dir)
+	require.Error(t, res.Err)
+
+	require.NotContains(t, res.Output(), secret,
+		"a value bound to a `sensitive:` input reached the signal-name diagnostic")
+	require.Contains(t, res.Output(), "matches no gate")
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"sync"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
@@ -20,19 +21,27 @@ import (
 // follow rather than a second spelling.
 const auditRequiredFlag = "audit-required"
 
-// addAuditRequiredFlag registers --audit-required on a server command.
+// addAuditRequiredFlag registers --audit-required on a command that runs a
+// deployment.
 //
-// Called once per command (`flow server`, `flow server dev`) rather than
-// shared through a persistent flag on a parent, in the same shape every other
-// server-only flag in this file takes.
+// Called once per command (`flow server`, `flow server dev`, `flow mcp serve`,
+// `flow worker`) rather than shared through a persistent flag on a parent, in
+// the same shape every other serving-only flag in this file takes.
+//
+// The help says "operation" rather than "request" because
+// picatz/flowstate#1379 put this flag on `flow worker`, where the decisions it
+// governs are a task dispatching, a secret being read, a request leaving and a
+// credential being assumed — none of which is an inbound request, and all of
+// which the same posture has to cover for a deployment to be able to state it
+// once.
 func addAuditRequiredFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool(auditRequiredFlag, false,
-		"fail a request whose authorization decision could not be written to every audit sink, "+
-			"trading availability for a complete trail: an operator's collector outage becomes an "+
-			"outage of this service rather than a gap in the record. Auditing itself is always on — "+
-			"stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/"+
-			"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's "+
-			"own failure does to the caller")
+		"fail an operation whose authorization or enforcement decision could not be written to "+
+			"every audit sink, trading availability for a complete trail: an operator's collector "+
+			"outage becomes an outage of this service rather than a gap in the record. Auditing "+
+			"itself is always on — stderr carries every decision unconditionally, and "+
+			"OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only "+
+			"decides what a sink's own failure does to the caller")
 }
 
 // auditState mirrors [telemetryState]: a package-level fact — the process's one
@@ -91,16 +100,23 @@ func startAudit(ctx context.Context, required bool) (*audit.Recorder, error) {
 // stays the only place that decides whether this has already run.
 func initAudit(ctx context.Context, required bool) (*audit.Recorder, func(context.Context), error) {
 	opts := []audit.Option{}
+	shutdowns := []func(context.Context){}
 	if required {
 		opts = append(opts, audit.Required())
+	} else {
+		// Best-effort auditing must not turn a stalled process logger into RPC
+		// backpressure. Keep the unconditional stderr floor, but put its writes
+		// behind a bounded queue; Required mode deliberately retains the
+		// synchronous default because returning success must prove the write.
+		stderr, flush := audit.NewAsyncWriterEmitter(os.Stderr, audit.DefaultWriterQueueSize)
+		opts = append(opts, audit.WithoutStderr(), audit.WithEmitter(stderr))
+		shutdowns = append(shutdowns, func(ctx context.Context) { _ = flush(ctx) })
 	}
 
 	config, err := telemetryConfigFromEnv()
 	if err != nil {
 		return nil, nil, err
 	}
-
-	shutdown := func(context.Context) {}
 
 	if config.logs {
 		res, err := telemetryResource(ctx)
@@ -127,7 +143,7 @@ func initAudit(ctx context.Context, required bool) (*audit.Recorder, func(contex
 
 		provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(processor), sdklog.WithResource(res))
 		opts = append(opts, audit.WithEmitter(audit.NewLogEmitter(provider)))
-		shutdown = func(ctx context.Context) { _ = provider.Shutdown(ctx) }
+		shutdowns = append(shutdowns, func(ctx context.Context) { _ = provider.Shutdown(ctx) })
 	}
 
 	recorder, err := audit.NewRecorder(opts...)
@@ -135,18 +151,22 @@ func initAudit(ctx context.Context, required bool) (*audit.Recorder, func(contex
 		return nil, nil, err
 	}
 
+	shutdown := func(ctx context.Context) {
+		for _, stop := range shutdowns {
+			stop(ctx)
+		}
+	}
 	return recorder, shutdown, nil
 }
 
 // flushAudit pushes whatever the audit OTel sink has buffered before the
-// process leaves.
+// process leaves, including records accepted by the asynchronous best-effort
+// stderr sink.
 //
 // Mirrors [flushTelemetry]: best-effort, safe to call when auditing was never
-// started, and safe to call twice. The stderr sink needs no flush — every write
-// is synchronous — so this only matters when OTel logs are configured and
-// running a non-required (batched) processor; the required path already
-// exported synchronously at every call, and Shutdown here is only closing the
-// exporter's connection cleanly.
+// started, and safe to call twice. Required stderr and OTel paths already
+// export synchronously at every call; shutdown still closes connections and
+// gives the best-effort stderr queue a bounded chance to drain.
 func flushAudit() {
 	auditState.mu.Lock()
 	shutdown := auditState.shutdown

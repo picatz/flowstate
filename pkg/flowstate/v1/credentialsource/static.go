@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -142,7 +143,7 @@ func (s *staticTokenSource) read(now time.Time) (Token, error) {
 
 	if s.audience != "" {
 		audiences := unverifiedAudiences(parsed.Claims)
-		if !containsAudience(audiences, s.audience) {
+		if !slices.Contains(audiences, s.audience) {
 			return Token{}, fmt.Errorf("%w: the token in %s is addressed to %s, not %q; %s",
 				ErrSourceUnusable, s.variable, describeAudiences(audiences), s.audience, s.audienceHint)
 		}
@@ -190,15 +191,6 @@ func unverifiedAudiences(claims jwt.ClaimsSet) []string {
 	default:
 		return nil
 	}
-}
-
-func containsAudience(audiences []string, want string) bool {
-	for _, audience := range audiences {
-		if audience == want {
-			return true
-		}
-	}
-	return false
 }
 
 // describeAudiences renders the "aud" claim for a diagnostic. A token with no

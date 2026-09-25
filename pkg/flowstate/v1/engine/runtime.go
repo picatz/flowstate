@@ -9,6 +9,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 )
 
 // TaskRuntimeConfig is the immutable configuration owned by one worker: the
@@ -25,10 +26,11 @@ import (
 // which the last worker to be constructed won. One thing carrying everything one
 // worker owns cannot disagree with itself about which worker it belongs to.
 type TaskRuntimeConfig struct {
-	store   *secrets.Store
-	policy  *auth.SecretPolicy
-	broker  *auth.Broker
-	catalog *v1.PluginCatalog
+	store     *secrets.Store
+	policy    *auth.SecretPolicy
+	broker    *auth.Broker
+	catalog   *v1.PluginCatalog
+	taskNames []string
 }
 
 // NewTaskRuntimeConfig validates and assembles worker task capabilities.
@@ -102,9 +104,16 @@ func (a taskActivities) context(ctx context.Context, identity *v1.WorkloadIdenti
 // local driver, which never has a nil auth.WorkloadIdentity to begin with.
 func orEmptyIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
 	if identity == nil {
-		return &v1.WorkloadIdentity{}
+		identity = &v1.WorkloadIdentity{}
 	}
-	return identity
+
+	// RunState is durable-driver input and may have been serialized by a client
+	// built after mode was added. The worker, not that input, is authoritative
+	// for plugin transport: every activity here is production, and no mode
+	// claimed in the run identity is allowed to forge another answer.
+	forwarded := proto.Clone(identity).(*v1.WorkloadIdentity)
+	forwarded.Mode = v1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION
+	return forwarded
 }
 
 // Both heartbeat, exactly as the three in activities.go do, and that is not

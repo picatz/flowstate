@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -211,8 +212,22 @@ func coerceInput(name, raw string, declaration *v1.InputDeclaration) (*v1.Value,
 // inputCoercionError says what was given, what the file declared, and what the
 // declared type looks like written down.
 func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, wants string) error {
-	return fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
-		name, raw, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration))
+	// A [v1.InputError] for the same reason the binder's own refusals are one:
+	// this is the caller's argument being refused, and an unclassified refusal
+	// is reported by [v1.ClassifyError] as Internal — a defect in Flowstate
+	// (#1552). It is the *only* refusal of this class that never reaches the
+	// binder, because a word a shell handed over cannot be coerced to the
+	// declared type at all, so nothing downstream would classify it.
+	//
+	// Got is left unset on purpose. What arrived is a shell word with no type
+	// yet, and naming one — "string", because that is what characters are —
+	// would report a type nobody declared and this function never decided.
+	return &v1.InputError{
+		Input:    name,
+		Declared: v1.DeclaredTypeName(declaration.GetType()),
+		Err: fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
+			name, raw, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration)),
+	}
 }
 
 // describedAs renders a declaration's description as a clause, for the reason the
@@ -238,12 +253,46 @@ func exampleJSONFor(t v1.InputDeclaration_Type) string {
 
 // inputsFromFile reads a JSON object of arguments.
 func inputsFromFile(path string, declared map[string]*v1.InputDeclaration) (map[string]*v1.Value, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading --input-file: %w", err)
 	}
+	defer f.Close()
+
+	data, err := readInputsFile(path, f)
+	if err != nil {
+		return nil, err
+	}
 
 	return inputsFromJSON(path, data, declared)
+}
+
+// maxInputFileBytes bounds an inputs file at the size [v1.CheckSubmissionSize]
+// weighs the arguments against. The JSON text is not the encoded size the check
+// measures, but a document over the whole submission budget cannot come under it
+// once decoded, so the read is refused before the parse and the [v1.Value]
+// conversion are built for a document the check would only refuse later
+// (invariant 5: the bound is spent where the memory is).
+const maxInputFileBytes = v1.MaxSpecBytes
+
+// readInputsFile reads an inputs document through the bound, the same shape as
+// every other file the CLI reads: maxInputFileBytes+1, so a file of exactly the
+// limit is accepted and one byte more is visibly too large rather than quietly
+// cut short. Split from [inputsFromFile] so a test can hand it a counting reader.
+func readInputsFile(path string, r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxInputFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading --input-file: %w", err)
+	}
+	if len(data) > maxInputFileBytes {
+		return nil, fmt.Errorf(
+			"--input-file %s is over the %d byte limit the workflow and the inputs it is run with "+
+				"share; nothing past the limit was read. A run carries both across every suspension, so a large "+
+				"value belongs somewhere a step can fetch it rather than in the arguments",
+			path, maxInputFileBytes)
+	}
+
+	return data, nil
 }
 
 // inputsFromJSON turns a JSON object into the map a run is started with.

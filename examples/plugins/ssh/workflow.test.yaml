@@ -1,0 +1,85 @@
+edition: v2026.3
+tests:
+  - name: an approved restart runs and the status is read back
+    workflow: ./workflow.yaml
+    inputs:
+      host: web-prod
+      service: nginx.service
+      expected_approver: sre-oncall@example.com
+    starter:
+      subject: deploy-bot@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: restart-approved
+        payload:
+          approved: true
+        sender:
+          subject: sre-oncall@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: sre
+    stubs:
+      - step: before
+        returns:
+          exit_code: 3
+          stdout: "○ nginx.service - nginx\n     Active: inactive (dead)\n"
+          stderr: ""
+          truncated: false
+          host: web-prod
+          command: service-status
+      - step: restart
+        returns:
+          exit_code: 0
+          stdout: ""
+          stderr: ""
+          truncated: false
+          host: web-prod
+          command: restart-service
+      - step: after
+        returns:
+          exit_code: 0
+          stdout: "● nginx.service - nginx\n     Active: active (running)\n"
+          stderr: ""
+          truncated: false
+          host: web-prod
+          command: service-status
+    expect:
+      ran: [params, before, approval, go_ahead, restart, after]
+      outputs:
+        restarted: true
+        status_before: "○ nginx.service - nginx\n     Active: inactive (dead)\n"
+        status_after: "● nginx.service - nginx\n     Active: active (running)\n"
+
+  - name: an unapproved restart changes nothing
+    workflow: ./workflow.yaml
+    inputs:
+      host: web-prod
+      service: nginx.service
+      expected_approver: sre-oncall@example.com
+    starter:
+      subject: deploy-bot@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: restart-approved
+        payload:
+          approved: false
+        sender:
+          subject: sre-oncall@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: sre
+    stubs:
+      - step: before
+        returns:
+          exit_code: 0
+          stdout: "● nginx.service - nginx\n     Active: active (running)\n"
+          stderr: ""
+          truncated: false
+          host: web-prod
+          command: service-status
+    expect:
+      ran: [params, before, approval, go_ahead]
+      outputs:
+        restarted: false
+        status_before: "● nginx.service - nginx\n     Active: active (running)\n"
+        status_after: ""

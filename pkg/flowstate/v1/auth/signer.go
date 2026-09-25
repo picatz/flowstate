@@ -14,6 +14,8 @@ import (
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwt"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // MaxSignatureBytes is the largest compact JWS an [Issuer] accepts from a
@@ -194,7 +196,7 @@ func NewProviderSigningKey(ctx context.Context, signer Signer, public crypto.Pub
 		return SigningKey{}, fmt.Errorf("%w: signing key needs an id", ErrInvalidPolicy)
 	case strings.ContainsAny(id, " \t\n\r"):
 		return SigningKey{}, fmt.Errorf("%w: signing key id %q must not contain whitespace",
-			ErrInvalidPolicy, truncate(id, 64))
+			ErrInvalidPolicy, textbound.Truncate(id, 64))
 	}
 
 	// Through the same function every other published key goes through, so a
@@ -207,7 +209,7 @@ func NewProviderSigningKey(ctx context.Context, signer Signer, public crypto.Pub
 
 	if declared := signer.Algorithm(); declared != algorithm {
 		return SigningKey{}, fmt.Errorf("%w: signer %q signs %q but the public key given for it is used with %q",
-			ErrInvalidPolicy, truncate(id, 64), truncate(string(declared), 32), algorithm)
+			ErrInvalidPolicy, textbound.Truncate(id, 64), textbound.Truncate(string(declared), 32), algorithm)
 	}
 
 	// The size bound is applied by wrapping the method value once, here, so
@@ -267,7 +269,7 @@ func boundedSign(signer Signer, id string) func(context.Context, jwt.ClaimsSet) 
 
 		if len(raw) > MaxSignatureBytes {
 			return "", fmt.Errorf("%w: signer %q returned %d bytes, over the %d byte limit",
-				ErrMalformedToken, truncate(id, 64), len(raw), MaxSignatureBytes)
+				ErrMalformedToken, textbound.Truncate(id, 64), len(raw), MaxSignatureBytes)
 		}
 
 		return raw, nil
@@ -294,13 +296,13 @@ func provePossession(ctx context.Context, sign func(context.Context, jwt.ClaimsS
 	raw, err := sign(ctx, jwt.ClaimsSet{proofClaim: true})
 	if err != nil {
 		return fmt.Errorf("%w: signer %q could not sign the start-up proof of possession: %w",
-			ErrInvalidPolicy, truncate(id, 64), err)
+			ErrInvalidPolicy, textbound.Truncate(id, 64), err)
 	}
 
 	token, err := jwt.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("%w: signer %q did not return a compact JWS: %w",
-			ErrInvalidPolicy, truncate(id, 64), err)
+			ErrInvalidPolicy, textbound.Truncate(id, 64), err)
 	}
 
 	// A relying party fetches the key set and selects by "kid". A signer that
@@ -312,15 +314,15 @@ func provePossession(ctx context.Context, sign func(context.Context, jwt.ClaimsS
 	switch kid := headerString(token.Header, header.KeyID); {
 	case kid == "":
 		return fmt.Errorf("%w: signer %q stamps no %q header, so nothing in an assertion names the key that signed it",
-			ErrInvalidPolicy, truncate(id, 64), header.KeyID)
+			ErrInvalidPolicy, textbound.Truncate(id, 64), header.KeyID)
 	case kid != id:
 		return fmt.Errorf("%w: signer %q stamps kid %q; a relying party selects the published key by that header, so the two have to agree",
-			ErrInvalidPolicy, truncate(id, 64), truncate(kid, 64))
+			ErrInvalidPolicy, textbound.Truncate(id, 64), textbound.Truncate(kid, 64))
 	}
 
 	if err := token.VerifySignature([]jwa.Algorithm{algorithm}, map[string]any{id: public}); err != nil {
 		return fmt.Errorf("%w: the public key given for signer %q does not verify what that signer signs: %w",
-			ErrInvalidPolicy, truncate(id, 64), err)
+			ErrInvalidPolicy, textbound.Truncate(id, 64), err)
 	}
 
 	return nil

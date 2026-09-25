@@ -40,6 +40,7 @@ headings below, not this list.*
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
   - [`triggers:` — the file declares a cadence, a person creates it *(landed)*](#triggers--the-file-declares-a-cadence-a-person-creates-it-landed)
   - [`triggers:` as a list of call sites — `webhook:` *(landed)*](#triggers-as-a-list-of-call-sites--webhook-landed)
+  - [A `webhook:` may answer a gate instead of starting a run — `signal:` *(landed)*](#a-webhook-may-answer-a-gate-instead-of-starting-a-run--signal-landed)
   - [`manual:` narrows, and the body can read how a run started](#manual-narrows-and-the-body-can-read-how-a-run-started)
   - [`${...}` stays; `!expr` is refused](#-stays-expr-is-refused)
   - [`value:` landed, on the evidence the refusal asked for (#411)](#value-landed-on-the-evidence-the-refusal-asked-for-411)
@@ -144,6 +145,13 @@ headings below, not this list.*
   - [Three answers, because an id can give three](#three-answers-because-an-id-can-give-three)
   - [Submit-time, which is why both drivers agree](#submit-time-which-is-why-both-drivers-agree)
   - [What it does not do](#what-it-does-not-do)
+- [The fourteenth round: `debug:`, and the hold that ends by itself](#the-fourteenth-round-debug-and-the-hold-that-ends-by-itself)
+  - [The spelling](#the-spelling-5)
+  - [It *is* the `signals:` policy, not a shape beside it](#it-is-the-signals-policy-not-a-shape-beside-it)
+  - [Absent denies, which is the opposite of `signals:`](#absent-denies-which-is-the-opposite-of-signals)
+  - [The hold is leased, and the lease is what makes this safe](#the-hold-is-leased-and-the-lease-is-what-makes-this-safe)
+  - [One name the engine takes back](#one-name-the-engine-takes-back)
+  - [What it does not do yet](#what-it-does-not-do-yet)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -623,6 +631,34 @@ checker — `inputs`, `outputs`, `check:`, and `env.Check` land together or not 
 
 This is slower to a demo and faster to something trustworthy.
 
+*Since written:* `outputs:` shipped as `declared_outputs` without the `type:` half, so
+for several rounds a workflow declared its arguments and left its result undeclared —
+half a signature, and the half a caller reads. `type:` (and `values:`, for `type: enum`)
+is now on an output too, in the same vocabulary an input uses and reading the same
+enum, optional forever so that every declaration written before it stays legal. The
+paragraph above is the reason it did not ship as decoration: `flow validate` refuses a
+declared type that contradicts what it can see about `value:` — a literal, a closed
+expression, a bare `${inputs.<name>}` — and stays quiet where an expression over step
+outputs types as `dyn`, while the value the run computed is checked against the
+declaration by `EvalRunOutputs` before it is reported, on both drivers. Structured and
+named types are still #637's and #177's questions; this is the anonymous floor they
+stand on. See `examples/computed-outputs/`.
+
+*Since written, again (#1764):* **a `float` is a finite number.** A double can hold
+NaN and the infinities and JSON cannot spell them, so a declared `float` that carried
+one reached the run document — every `-o json`, `flow get` and MCP reader — as the
+schema's tagged encoding beside plain numbers, and a non-finite number in a durable
+record is almost always an upstream defect (a division by zero, an overflow) rather
+than an answer. So the declaration refuses them, at the boundary that owns it and on
+both drivers: `--input f=NaN` is refused at submit with `input "f" is declared float
+but was given NaN, which is not a finite number`, and a declared `float` output that
+computes one fails the run at completion with the same sentence about the output. A
+value *nobody* declared — a bare `value: ${0.0 / 0.0}` — is not refused; the run
+document spells it as the string `"NaN"`, `"Infinity"` or `"-Infinity"`, protojson's
+own spelling, and never as `{"literal": {"doubleValue": …}}`. An expression that can
+divide its way to a non-number says what it means instead, which is what
+`examples/computed-outputs/`'s `coverage:` guard is for.
+
 ### `state:` gets a byte bound now, not an open question
 
 The proposal flags a bound on entity `state:` as an open question. It is not one.
@@ -716,27 +752,31 @@ The remaining option — routing every evaluation through an activity — has a 
 worth having a number for, since "a round trip per condition" is the kind of estimate
 that gets repeated without being checked.
 
-Counted at `Evaluator.Eval` (`celenv.go`), which is where a compiled program is
+Counted at `evalProgramWithCost` (`celenv.go`), which is where a compiled program is
 actually run and where every path — a condition, a loop's `items:`, a step's `vars:`,
-a task's inputs — arrives. Counting the entry points instead does not work, and the
-first version of this table did exactly that: `EvalConditionInScope` on a step with no
-`if:` returns without evaluating anything, so a call to it is not an evaluation.
-Counted that way `hello-world` reported 2 and contains no expressions at all, every
-row was inflated two- to four-fold, and `ResolveItems` — a loop's `items:`, the one
-expression whose cost multiplies — was not among the three entry points and so was
-missed entirely. A count of the places evaluation is *asked for* is not a count of
-evaluation.
+a task's inputs — arrives. This sentence named `Evaluator.Eval` until #1990 tried to
+measure through it and got zero for every row: a compiled Flowfile carries a
+`ParsedExpr`, so a run goes through `Evaluator.EvalParsedWithCost`, and `Eval` is
+reached only by an expression handed over as text. Both funnel into
+`evalProgramWithCost`, which is what makes it the one place to count.
+
+Counting the *entry points* instead does not work either, and the first version of
+this table did exactly that: `EvalConditionInScope` on a step with no `if:` returns
+without evaluating anything, so a call to it is not an evaluation. Counted that way
+`hello-world` reported 2 and contains no expressions at all, every row was inflated
+two- to four-fold, and `ResolveItems` — a loop's `items:`, the one expression whose
+cost multiplies — was not among the three entry points and so was missed entirely.
+A count of the places evaluation is *asked for* is not a count of evaluation.
 
 Over the shipped corpus, per run:
 
 | workflow | evaluations | of which workflow `vars:` |
 |---|---|---|
 | `hello-world` | 0 | 0 |
-| `http-form`, `simple-http-multi-step` | 1 | 0 |
+| `headers-and-nested`, `http-form`, `simple-http-multi-step` | 1 | 0 |
 | `hello-world-multi-step`, `http-output-shaping` | 2 | 0 |
 | `string-formatting` | 2 | 1 |
 | `conditional-and-retry`, `http-json` | 3 | 0 |
-| `headers-and-nested` | 3 | 1 |
 | `expressions`, `http-expect` | 4 | 0 |
 | `approval-gate` | 5 | 0 |
 | `wait-until-a-moment` | 5 | 1 |
@@ -1133,7 +1173,7 @@ holds that claim rather than assuming it.
 change — deciding them later is the Terraform `optional()` mistake this document
 already refused once.
 
-- **Workflow-level `vars:`** — constants and start-time derivations, referenced
+- **Workflow-level `vars:`** — literals, operators, and the profile's functions, referenced
   rooted: `${vars.region}`. Rooted because ambient, per principle 5.
 - **Step-level `vars:`** — private bindings, referenced bare within the step:
   `${modified}`. Bare because author-chosen and lexically local, the same standing
@@ -1405,6 +1445,23 @@ The checker is deliberately generous: `L`, `W`, `15#3` and `?` are cron syntax i
 not model, and it lets them through rather than inventing a restriction Flowstate does
 not have.
 
+Two more things are wrong on every cluster, and both are refused with a line. A cadence
+faster than **one minute** — `every: 1s`, a seven-field expression whose seconds field
+names more than one second, an `@every 30s`, a calendar with several `second:` values —
+is refused naming the value written and the floor (`MinScheduleInterval`). A schedule is
+a standing instruction that starts a run each time it fires, under a tenant's fairness
+key, with nobody present; a workload that has to do something every second wants a loop
+inside one run, where it is bounded by that run's own budget. Because the cadences in one
+block are unioned, the floor is also checked across them: two cadences that fire on
+different seconds of the minute are refused together even when each is slow enough alone,
+since nothing short of evaluating them can prove they never share a minute — align them on
+one second, or write the union as one expression. And an expression whose day-of-month and
+month can never agree, `0 0 31 2 *`, is refused as one that can never fire, because Temporal
+would create it and it would start nothing, forever, with zero runs as the only evidence.
+The server holds `flow schedule create` to both with the same sentences, and to a count:
+one tenant may hold at most 100 schedules (`MaxSchedulesPerNamespace`), refused past that
+with `ResourceExhausted` — see `docs/DEPLOYMENT.md`, "Noisy neighbor".
+
 **Bounded recovery: the window, the catch-up, and what happens after a failure.** The
 same block accepts four more keys, and each one exists to make a schedule's behavior
 after something has gone wrong a thing somebody wrote down rather than a default they
@@ -1511,7 +1568,7 @@ inputs:
 triggers:
   - webhook: stripe
     verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
-    idempotency_key: ${event.headers["stripe-signature"]}
+    idempotency_key: ${event.body.id}     # the event id, never the signature: see below
     with:
       order_id: ${event.body.data.object.metadata.order_id}
       amount:   ${event.body.data.object.amount}
@@ -1577,9 +1634,15 @@ and evaluating one against sample deliveries proves nothing — the same evidenc
 condemns `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`, which
 varies exactly where its author intends, and this check also runs where a live
 delivery is bound, not only in an editor. Write a key over a value the sender
-repeats on a retry and the question does not arise. What the validator does *not* do is resolve
-anything: whether the secret exists and whether this deployment has that scheme
-configured are a deployment's answers.
+repeats on a retry and the question does not arise. That value is the event's own
+id — `${event.body.id}` for Stripe — or a delivery id a provider repeats in a header
+for the purpose (`x-shopify-webhook-id`), and never a signature header: a provider
+signs every retry afresh, with a new timestamp and a new MAC over the same body, so
+`${event.headers["stripe-signature"]}` names the attempt rather than the event, dedupes
+only a byte-identical resend, and starts a run for every real retry. `flow lint`
+reports that shape (`R10/signature-header-key`, docs/STYLE.md). What the validator
+does *not* do is resolve anything: whether the secret exists and whether this
+deployment has that scheme configured are a deployment's answers.
 
 **Declaring is not serving.** A file declares a webhook; a deployment decides whether
 *this* installation serves it, because staging must not fire the production webhook.
@@ -1616,7 +1679,7 @@ tests:
       payload: ./testdata/stripe-charge.json   # one JSON document: headers and body
     expect:
       inputs: { order_id: ord_H1x9, amount: 4200 }
-      idempotency_key: t=1577836800,v1=922e…
+      idempotency_key: evt_3PqLd2X1
 
   - name: an unverifiable delivery is refused, and no run happens
     workflow: ./workflow.yaml
@@ -1644,6 +1707,145 @@ is one fact written down twice. `examples/webhook-trigger` is the worked example
 its third case replays a captured delivery with an edited body and asserts the
 arithmetic refuses it — and it runs in CI like the rest.
 
+### A `webhook:` may answer a gate instead of starting a run — `signal:` *(landed)*
+
+The block above turns a delivery into a *start*. The other thing an integration wants
+is the opposite direction: a run is already parked at a `wait_for_signal:`, somebody
+clicks a button in Slack, and that click has to reach the gate. That is a `signal:`
+block where the entry would otherwise write `with:`:
+
+```yaml
+signals:
+  stage-approved:
+    allow:
+      - subject: flowstate://webhook#deploy-gate/slack-approval
+
+triggers:
+  - webhook: slack-approval
+    verify:
+      hmac_sha256: ${secret('vault:slack/signing')}
+    idempotency_key: ${event.body.trigger_id}
+    signal:
+      name: stage-approved                                  # a signal this file waits for
+      correlate: ${event.body.actions[0].value}             # the run's entity key
+      with:
+        approved: ${event.body.actions[0].action_id == "approve"}
+```
+
+**`signal:` and `with:` are mutually exclusive**, refused together with a positioned
+diagnostic rather than resolved by precedence. One binds a new run's `inputs:` and the
+other answers a run that is already waiting; whichever a precedence rule picked, the
+other would be a key an author wrote and nothing read, which is the shape
+[docs/STYLE.md](STYLE.md)'s R6 refuses.
+
+**`correlate:` yields the run's *entity key*, not its workflow id.** The receiver
+composes the address the way `RunRequest.entity_key` and
+`SignalWithStartRequest.entity_key` compose it — the deployment's own namespace joined
+to this key — so the grammar is the entity-key grammar (lowercase letters, digits and
+dashes) and a delivery cannot reach a run addressed any other way. A workflow id lifted
+out of a payload was the obvious alternative and is refused: a payload is sender-shaped,
+neither verification scheme signs headers, and an id read from one would let a key
+holder name any run in the tenant. Like `idempotency_key:`, the expression must
+name `event` — a `correlate:` that cannot vary with the delivery addresses one run for
+every delivery this webhook will ever receive — and the same residual applies: naming
+the delivery is provable, depending on it is not.
+
+**The gate's `signals:` policy must name the trigger, and this is the one place the
+zero case is closed.** A signal name with no `signals:` entry admits any sender; that
+is the deliberate opt-in rule everywhere else, and it is not tolerable on a route
+anybody can POST to, where "any sender" means "whoever holds one signing key". So
+`flow validate` refuses a `signal:` whose name has no explicit policy with a rule that
+could admit the trigger's principal:
+
+```
+webhook "slack-approval" answers signal "stage-approved", which declares no `signals:`
+policy; a signal with no policy admits any sender, and this one is answerable by
+whoever holds this webhook's signing key
+```
+
+The principal is the *trigger*: `flowstate://webhook#<workflow>/<trigger>`, issued by
+a scheme no identity provider can mint, so a rule naming a webhook cannot collide with
+one naming a person. It is the same principal the receiver already records as a
+webhook-started run's starter, checked by the same `authorizeSignal` and
+`SignalPolicyCheck` a `flow signal` goes through — there is no second policy language
+here. What a signature attests is possession of a key rather than a person, so
+`distinct_from_starter:` on a bridged gate separates triggers rather than humans, and
+a workflow that needs two distinct people either side of a gate cannot get them from a
+webhook today.
+
+**A bridge addresses itself from bytes its own `verify:` signs, and has to prove
+it.** `hmac_sha256` signs the raw body; `stripe` signs `<timestamp>.<body>`. Neither
+covers arbitrary request headers, so anybody who has once seen a valid delivery can
+replay that exact body and signature with a header rewritten. On a trigger that
+*starts* a run that is bounded — the only things a header moves are the run's own id
+and its inputs, which the key holder could have sent anyway — but on a bridge it
+chooses somebody else's parked gate, and mints the delivery id the replay ring
+recognizes.
+
+So under such a scheme, every `event` in `correlate:` and in the trigger's
+`idempotency_key:` must be a `body` read — `${event.body.order_id}`,
+`${event.body["order"]["id"]}`, `${event["body"].order}` — and anything else is
+refused where it is written:
+
+```
+webhook "slack-approval" writes a `signal.correlate:` this deployment cannot prove
+reads only signed bytes: it uses `event.headers`, and hmac_sha256 signs a delivery's
+body and not its headers
+```
+
+**It is an allow-list on purpose.** A rule that hunted for `event.headers` instead
+would prove nothing about what it accepted: `${[event].map(e, e.headers["x"])[0]}`
+reaches a header with no `headers` selection over `event` anywhere in it, and so do
+the ternary, map-literal and list-index spellings of the same aliasing. Requiring the
+proof makes the whole class unexpressible, because an alias has to mention the root
+somewhere first. The cost is that `${[event][0].body.id}` is refused too, even though
+it happens to be harmless — the root left the rule's sight, and what came back cannot
+be shown to be what went in.
+
+The scheme half reads a per-scheme table rather than scheme names, so a scheme that
+does cover headers admits header-derived addressing the day it lands. A trigger with
+no `signal:` is untouched — `examples/webhook-trigger` keys on Stripe's own signature
+header, and still may.
+
+**A bridge answers only its own workflow's gates.** An entity key is composed from
+the tenant and the key alone, so `order-123` names one run per tenant however many
+workflows use that key — and the policy a delivery is checked against is the *target
+run's*, whose zero case admits any sender. The receiver therefore refuses a delivery
+whose run records a different workflow than the one whose webhook was addressed: the
+file-level rule closes the zero case for the file that declares the bridge and can
+say nothing about anybody else's file. A run that records no workflow name at all —
+one started before a deployment wrote it down — is refused for the same reason.
+
+**`with:` is passed through, for now.** A `wait_for_signal:` declares no signature for
+what it accepts — it takes whatever shape arrives and shapes it with its own
+`outputs:` — so nothing checks these names against anything, in either direction. That
+is why the spelling is `with:` rather than `payload:`: when a wait grows an `accepts:`
+declaration, the call site is already written the way every other call site in this
+language is written, and the check becomes the same two-directional check a trigger's
+`with:` already gets against `inputs:`. Until then, the names are the author's to keep
+consistent, and `outputs:` on the wait is where a payload is given a shape.
+
+**A redelivery answers one gate, not two.** Webhook delivery is at-least-once, so the
+same click arrives twice as a matter of course. With a single gate that is harmless;
+with a `loop:` around the wait it is not, because a replay would answer the *next*
+turn — a stage approved by nobody. The run therefore records the delivery ids it has
+consumed and drops a repeat at intake, on both drivers, bounded as a ring at 128 and
+weighed with the rest of the run's carried state. Nothing an author writes turns this
+on; a delivery is deduped because it is a delivery. The receiver keeps no table of its
+own, and answers a redelivery exactly as it answered the first: 200, the same
+`joined` shape a redelivered *start* gets, because the run existed either way.
+
+A delivery whose `correlate:` names no run in this tenant is refused with a 404 and a
+`Retry-After`, and one the gate's policy will not take is refused with a 403 — precise
+rather than levelled, because reaching either means having already signed the body.
+Every refusal *before* that point is the one status and one sentence the start path
+gives, with the same timing.
+
+`examples/webhook-approval-bridge` is the worked example, and its `flow test` cases are
+the readable statement of all three claims: a click approves a stage, the same click
+delivered twice approves one, and a click from a sender the policy does not name never
+reaches the gate at all.
+
 ### `manual:` narrows, and the body can read how a run started
 
 Two halves of one decision, and the line between them is the most important sentence in
@@ -1660,12 +1862,14 @@ start that already works:
 triggers:
   - webhook: payments
     verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
-    idempotency_key: ${event.headers["stripe-signature"]}
-    with: { order_id: ${event.body.id} }
+    idempotency_key: ${event.body.id}
+    with: { order_id: ${event.body.data.object.metadata.order_id} }
 
   - manual:
       require_reason: true                    # a start must say why, recorded on the run
-      allowed_principals: [oncall@example.com] # and be made by one of these attested subjects
+      # Exact stable caller IDs: <issuer>#<subject>. Bare subjects are rejected
+      # because the same subject can exist under more than one trusted issuer.
+      allowed_principals: ["https://issuer.example.com#oncall@example.com"]
 ```
 
 and refusal is something you write down, on one line:
@@ -1688,6 +1892,16 @@ be developed locally is not one anybody will maintain. Enforcement is the server
 the boundary, against an identity it authenticated and the `--reason` the caller gave —
 the same placement `signals:` policy already has, and the same rule that keeps egress
 policy out of the validator.
+
+Each `allowed_principals` entry is the exact stable identity
+`<issuer>#<subject>` established by OIDC or identity-bearing mTLS authentication.
+That spelling has exactly one `#` separator; an identity containing `#` in either
+half cannot be represented ambiguously and therefore cannot satisfy an allowlist.
+Existing bare-subject entries are invalid rather than being reinterpreted as global
+subjects; qualify them with the issuer configured in the server's auth policy. The
+`--insecure-no-auth` development identity cannot satisfy a non-empty allowlist. Omit
+the allowlist for an intentionally open development server; never use that posture on
+a shared network.
 
 **Trigger context is readable for behaviour.** A run reads how it started under a root of
 its own:
@@ -1840,7 +2054,11 @@ the retired `cel:` task was this capability filed in the wrong category). It is
 evaluated in workflow code, in written order, against exactly what a task's inputs
 written in the same position would see: `vars.<name>`, `inputs.<name>`, the outputs
 of steps already run, and any name an enclosing loop or the step's own `vars:` bound.
-It schedules nothing.
+It schedules nothing. The durable executor yields its deterministic workflow
+scheduler between steps and continues as new at a step boundary only when their
+accumulated CEL cost reaches the workflow-slice budget, so a long chain of
+individually bounded values remains bounded as a group without adding one history
+event per value.
 
 #### The read form is `${steps.<id>.value}`, and that was the decision
 
@@ -1988,7 +2206,7 @@ Where the discriminant's domain is a property of the file — today, a wait's
 shaped output or a `value:` step whose shaping expression is built from string
 literals through conditionals and the read-side optional idioms (`optMap`,
 `optFlatMap`, `orValue`), the approval gate's own expression among them;
-enum-typed inputs extend the tier when they land — the validator checks the
+enum-typed inputs extend the tier — the validator checks the
 whole dispatch, every diagnostic fatal like every other in this language. A
 shaping expression that reaches for `value()`, or for anything else the walk
 does not read, still validates — it simply drops back to an open domain, silent
@@ -2181,8 +2399,9 @@ not a failing step forty minutes in. It is also what gives `flow validate` and t
 language server a schema source for `slack.post` on a machine that has the plugin,
 and the compiled spec a place to record what a run was compiled against — the
 profile-pinning logic, extended to the task surface, which replay will eventually
-demand. It lands with Phase 3, where `call:` forces the cross-file question anyway;
-the dotted-key *shape rule* is reserved now, while it costs one sentence. Task-queue
+demand. It landed with `plugins:`, where `call:` forces the cross-file question
+anyway; the dotted-key *shape rule* was reserved early, while it cost one sentence.
+Task-queue
 routing — a plugin task running on a specialized worker — stays a deployment
 concern and never becomes a Flowfile spelling.
 
@@ -2195,7 +2414,7 @@ What shipped is the spelling and its enforcement — the host registers
 own qualifier, `Task.name` admits at most one dot, and a dotted key naming an
 uninstalled plugin is diagnosed as an installation question rather than a spelling
 one. The `plugins:` version header, the submit-time catalog check, and the language
-server's two-level completion tree remain Phase 3 as planned.
+server's two-level completion tree have since landed.
 
 ### `exec:` will be built-in, denied by default
 
@@ -2239,7 +2458,7 @@ policy is, in its own reviewed change.
 | `value:` | **landed (#411)**, node kind, read as `${steps.<id>.value}` | nothing; the corpus proved otherwise, since `vars:` cannot read a step or an input |
 | `assert:` | held | `if:` + failure, pending Phase 2 `check:` |
 | `!expr` | refused | whole-value `${...}`, fence-optional where the schema knows |
-| plugin tasks | dotted keys, `plugins:` header in Phase 3 | — |
+| plugin tasks | dotted keys, `plugins:` header (**landed**) | — |
 
 Registry today: **`log`, `http`**. End state, once `exec` has its policy: **`log`,
 `http`, `exec`** — small enough to memorize, which is the property worth copying from
@@ -2377,15 +2596,13 @@ Worth noticing what is absent: no `cel:`, no `expr:` nested inside anything, no
 response names, and no evaluator branding anywhere an author looks. CEL is doing
 all of the work and none of the talking.
 
-And the CI-pipeline corpus entry, which is the same language plus the Phase 3
+And the CI-pipeline corpus entry, which is the same language plus the landed
 plugin surface and a policied `exec` — the file that makes "could be used for CI"
-a demonstration rather than a claim. **It does not compile today, deliberately:** it is
-the acceptance target for Phase 3, and this build answers it with `unknown key
-"plugins"`, the installation-question diagnostic for `github.clone` (`no plugin task
-"github.clone" is registered here; if the "github" plugin is installed on the worker
-this will run on, the file is fine…`), and `unknown task "exec"`. That is the corpus
-rule working as intended — a design that has not landed, kept visible — rather than a
-file that has gone stale.
+a demonstration rather than a claim. **It does not compile today, deliberately:**
+the `plugins:` header and plugin task resolution have landed, but the acceptance
+target still requires `exec`, and this build answers it with `unknown task "exec"`.
+That is the corpus rule working as intended — a design that has not landed, kept
+visible — rather than a file that has gone stale.
 
 The fence says `(proposed)` rather than plain `yaml`, which is how the corpus check
 tells a design sketch from a documented file: every plain `yaml` block opening with
@@ -2559,13 +2776,9 @@ contract, which has since shipped as `declared_outputs`
 (`examples/computed-outputs/`), is the only route by which a run can report a
 computed result at the run level.
 
-The `plugins:`
-header and dotted-key resolution land in Phase 3 with `call:`. `exec` lands only
+The `plugins:` header and dotted-key resolution have landed. `exec` lands only
 with its policy, gated the way workflow-side evaluation is gated on Worker
-Versioning: a capability that assumes a posture verifies it or stays off. The
-`Host.Register` seam — one call wide — is the highest-leverage unbuilt item in this
-document, because the catalog it populates is what every surface in principle 12
-reads.
+Versioning: a capability that assumes a posture verifies it or stays off.
 
 ## The third round: versions in flight, and what the engine already knows
 
@@ -2825,7 +3038,7 @@ $ echo $?
 1
 ```
 
-A run explaining itself, forever (spec-in-run live; plugin resolution Phase 3):
+A run explaining itself, forever (spec-in-run live; plugin resolution landed):
 
 ```
 $ flow inspect 018f3c2e --provenance
@@ -3409,6 +3622,13 @@ lives after the body, where the thing it tests exists. `wait_until:` refuses a
 boolean for the mirror-image reason (nothing it waits on changes while it blocks);
 `loop:` requires one, because everything it tests changes every iteration.
 
+Each iteration also ends the durable executor's current workflow-scheduler slice.
+The handoff is deterministic; the loop continues as new at an iteration boundary
+only when accumulated `value:` expression cost reaches the workflow-slice budget.
+A loop of pure workflow-side steps therefore cannot consume the worker's deadlock
+budget as one unbroken slice, and cheap iterations do not each become Temporal
+history growth.
+
 ### State: one carried value, named bare, updated explicitly
 
 This was the crux, and three decisions settle it.
@@ -3733,25 +3953,31 @@ shared cases (`conformance.ForEachTripCountCases`, two verified callers) assert 
 is *reached* rather than only not exceeded: a list of exactly the ceiling runs, and
 the case checks that every one of those iterations was recorded.
 
-A `for_each` that runs as one **atomic stretch of history** carries a second bound,
-on the product the trip count multiplies into. A sequential top-level `for_each` is
-paced: every body step counts against the step budget, and every iteration boundary
-is a Continue-As-New seam where the engine also reads Temporal's own
-history-pressure hint. Declare `max_parallel:` above one — or write the loop inside
-a `parallel:` branch, another loop's body, or a `switch:` arm, where suspension is
-already illegal — and that pacing disappears: the whole fan-out runs with no seam
-inside it, in a single execution whose history Temporal terminates at 51,200
-events. A termination delivers no workflow task, so the run's compensation log
-never executes — which is why 1,000 items over a 60-step body, every number inside
-the bounds above, must not be allowed to start. So when a `for_each` will run
-atomically, both drivers weigh `len(items) ×` the body's worst-case activity count
-against `v1.MaxAtomicBlockActivities` (5,000 — sized under the event cap at the
+A **suspension-opaque stretch of history** carries a second bound on all the work
+before its next Continue-As-New seam. A sequential top-level `for_each` is paced:
+every body step counts against the step budget, and every iteration boundary is a
+seam where the engine also reads Temporal's own history-pressure hint. Declare
+`max_parallel:` above one — or write the loop inside a `parallel:` branch, another
+loop's body, or a `switch:` arm, where suspension is already illegal — and that
+pacing disappears. A `parallel:` block is suspension-opaque too: all of its branches
+dispatch before the join, so their combined work is one segment rather than one
+segment per branch. Temporal terminates an execution whose history reaches 51,200
+events, delivering no workflow task in which compensation could run. That is why
+neither 1,000 items over a 60-step body nor 100 parallel branches of 100 tasks may
+start as one block. Both drivers therefore weigh the whole enclosing atomic body —
+including sibling `parallel:` blocks and nested `for_each` products — against
+`v1.MaxAtomicBlockActivities` before dispatch. An atomic `for_each` uses its resolved
+`len(items) ×` body count; the other bodies use their static worst-case count.
+`flow validate` reports every statically oversized segment, and submission repeats
+the check for hand-built Protobuf specifications; the execution checks remain as
+backstops and for item counts known only after expression evaluation. The
+ceiling is 5,000, sized under the event cap at the
 worst dispatch shape the atomic placements admit, sequential, where every activity
 costs its own three events plus a workflow-task triplet to dispatch the next;
-headroom spent in the safe direction) at
-the same pre-dispatch moment `v1.CheckForEachItems` runs, and refuse the crossing
-with one shared sentence naming the step, the item count, the per-iteration count
-and the ceiling (`v1.AtomicBlockActivitiesError`). The body is weighed at static
+headroom is spent in the safe direction. Atomic `for_each` refusals preserve the
+shared sentence naming the step, item count, per-iteration count and ceiling
+(`v1.AtomicBlockActivitiesError`); enclosing-body refusals preserve
+`v1.AtomicBlockBodyActivitiesError`. The body is weighed at static
 worst case — a `switch:` counts its widest arm, a `call:` its callee, a nested loop
 its ceiling times its body, an `if:` is assumed to hold, a task with `undo:` counts
 twice because the compensation is a second activity the same execution schedules
@@ -3762,8 +3988,9 @@ because the alternative to refusing a little early is a termination that skips
 compensation. The remedies are the sentence's: run the loop sequentially at the top
 level so it paces itself, narrow `items:`, shrink the body, or page the work across
 runs as `examples/paged-fan-out` does. The shared cases
-(`conformance.ForEachAtomicBlockCases`, two verified callers) assert exactly-at
-runs and one-item-past is refused, in both atomic placements. The concurrent join
+(`conformance.ForEachAtomicBlockCases` and `conformance.ParallelAtomicBlockCases`,
+each with two verified callers) assert exactly-at runs and the first crossing is
+refused before dispatch, including sibling parallel blocks. The concurrent join
 also copies each iteration's step count back into the run's budget, so the seams
 *after* a concurrent block weigh what it actually ran rather than counting the
 whole fan-out as one step.
@@ -4028,24 +4255,13 @@ examples was already `required: true`, so the difference does not show here —
 but it is a difference, and the diagnostic asks a person to look rather than
 have `flow fix` decide silently.
 
-One gap the move opens, honestly stated: `pattern:`'s own regex was checked
-by [`CheckInputConstraintShape`](../pkg/flowstate/v1/constraints.go) —
-`regexp.Compile` against the declaration alone — so an unusable pattern was
-reported at load time even on a declaration with no example and no default to
-check it against. `must:`'s regex only reaches `regexp.Compile` inside
-`matches()`, which CEL evaluates rather than type-checks: `CompileMustExpression`
-parses and type-checks the *expression*, but a string literal argument to a
-function is just a string as far as the type checker is concerned, so
-`must: this.matches('[')` compiles clean and only fails once something
-evaluates it — an example, a default, or a submitted value. `flow validate`
-still catches it at author time for every declaration that carries an example
-or a default, which is the shape every constrained input in this repository's
-own examples has, but an input with neither would carry an unusable regex
-silently until the first run that submits a value for it. Closing that gap
-fully would mean teaching the type checker to evaluate a literal regex
-argument to `matches()` specifically, which is more machinery than this move
-asked for and is left as a known, written-down difference rather than quietly
-accepted.
+Literal regexes in `must:` retain `pattern:`'s author-time safety:
+`CompileMustExpression` runs CEL's checked-AST regex validator, so
+`must: this.matches('[')` is refused even when the declaration has no example,
+default, or submitted value. The same checking environment validates literal
+duration and timestamp conversions. Mixed list and map literals remain valid;
+their dynamic element values are part of the language and do not create a
+guaranteed runtime failure.
 
 *Since written, a fourth time:* **`min:`/`max:` and `unique:` are retired — V2 and
 V3 of the DSL audit (#234), which V1 above unblocked.** Both followed `pattern:`
@@ -5418,6 +5634,134 @@ acceptance criteria were amended by the implementation: composing `overlap:` and
 **It does not lock a span of steps inside a run**, or anything shared between two
 different workflows. Both need a run able to reach another run, which no node kind
 can do — the open half of #913, and the author-side case for #133's Update.
+
+## The fourteenth round: `debug:`, and the hold that ends by itself
+
+A durable run could be watched and could not be stopped. `flow watch` renders a live
+view and `ProgressQuery` answers where a run has got to, but nothing could hold one
+still long enough to look at it — so the one workflow shape most worth inspecting,
+the production run behaving unlike its rehearsal, was the one nobody could inspect.
+
+The grep came first here too, and it decided the shape rather than decorating it.
+"Somebody outside the run acts on it, and the workflow's own policy says who" is a
+question this language already answers, in `signals:`. So `debug:` is not a new
+vocabulary for the same question; it is that vocabulary, asked about a different
+verb.
+
+### The spelling
+
+```yaml
+edition: v2026.3
+name: deploy-gate
+debug:
+  allow:
+    - claims:
+        team: sre
+  distinct_from_starter: true
+steps:
+  - id: ship
+    log:
+      message: shipping
+```
+
+A top-level block beside `signals:`, because it answers the same shape of question
+about the same outside world, and because an auditor asking "who may act on this run
+from outside" should find both answers in one place. One policy rather than a map:
+a signal policy is per name, and there is exactly one thing to debug — this run.
+
+### It *is* the `signals:` policy, not a shape beside it
+
+`allow:` is the same list of alternative rules, with the same `subject:`,
+`namespace:`, `claims:` and `subject: ${...}`, matched against the same attested
+sender by the same check, refused by the same narrowing rule, and reported by the
+same diagnostics — with the field path naming `debug:` rather than a stanza the
+author did not write.
+
+That is the #726 lesson applied before the fact rather than after it. A fourth
+spelling of "this claim must carry this value" was the mistake that section is a
+worked example of, and this stanza would have been the fourth.
+
+What reuse costs, stated: the message is named for signals, so an author meeting
+`debug:` has to be told once that its grammar is `signals:`'s. That is a sentence of
+documentation against a hand-maintained second claims vocabulary, and it is the
+trade already decided.
+
+### Absent denies, which is the opposite of `signals:`
+
+A signal name with no policy is unconstrained, because authorization there is opt-in
+and failing closed the day it landed would have denied every existing workflow's next
+delivery for a policy nobody had written. Nothing has ever been able to pause a
+durable run, so there is no prior behaviour to keep and no compatibility argument to
+make — and the only reachable default is the fail-closed one.
+
+So a workflow with no `debug:` cannot be paused by anybody, including whoever started
+it. `flow fmt` will not add an empty stanza to say so, because a file that gained one
+would mean something different from the file it was written as.
+
+### The hold is leased, and the lease is what makes this safe
+
+An ask pauses the run at its next *step boundary* — never mid-activity, and never at
+a place the run is in several positions at once — under a lease that names its
+holder, says when it lapses, and resumes the run when it does. A debugger who closes
+their laptop cannot wedge a release, which is the property that makes pausing
+production a thing an operator can allow at all.
+
+The bounds are two readings of one number. No single ask may hold longer than the
+longest an ordinary step may legitimately take across all its attempts; and no
+*session* may, however often its holder asks again, because a per-ask ceiling bounds
+one ask and how many asks arrive is the holder's own choice.
+
+A second caller asking for a run somebody else is holding is refused rather than
+queued, and an ask arriving in the very moment a hold ends takes the *next* boundary
+rather than that one — so a line of debuggers cannot take turns at a single step
+either. What all of it buys is the sentence worth remembering: **a debugged run
+advances at least one step per lease, however many asks arrive from however many
+callers.**
+
+Every part of it is attributable. The holder is the identity the server attested,
+never anything the ask said; the acceptance time is the server's own clock; pause,
+renewal, refusal and expiry each land in the run's record naming who and why.
+
+### One name the engine takes back
+
+Every ask travels as an ordinary signal, on one channel named `flowstate_debug`, so
+the policy gate, the attested sender, the payload bound and the audit record are the
+ones every signal already goes through rather than a second set written for
+debugging.
+
+One channel rather than one per ask, and that is a correctness property rather than
+tidiness. A run drains its channels one at a time, so a channel per verb would make
+the *engine's* loop order decide which of two interleaved asks won — somebody who
+resumed and then paused would have the later pause applied first and released by the
+earlier resume, and their run would walk on when they had asked it to stop. One
+channel has one queue, filled in the order history records, so what an ask does is
+decided by when it arrived. The ask itself is named in the payload.
+
+That makes the whole `flowstate_` prefix the engine's. A workflow may no longer wait
+for a signal whose name begins with it, nor declare a `signals:` policy for one — a
+gate on that channel would be answered by an ask to pause the run. Both are refused
+in the compiler with a line and a column, and again at the server for a specification
+built by hand.
+
+A workflow written before this stanza existed keeps whatever it had. The debug
+machinery reads nothing at all on a run whose file declares no `debug:`, which is
+every run that predates it — so a workload that was using one of those names as an
+ordinary signal goes on being answered by it.
+
+### What it does not do yet
+
+**It has no verbs.** Stage two of the debugger arc is the hold: pause, renew, resume,
+expire. Inspecting a paused run's scope, stepping, and breakpoints are the attach
+surface, and they arrive with it.
+
+**It does not narrow.** The recorded decision is that a file declares and a deployment
+may narrow but never widen; the widening half is refused today by the ceiling being
+in workflow code, where no caller reaches it, and there is no deployment surface for
+the narrowing half yet.
+
+**It says nothing about local runs.** `flow run local --debug` holds the author's own
+process, which costs the author and nobody else, so it is unleased and needs no
+policy — the same trust model `flow test` already has.
 
 ## The standing rule
 

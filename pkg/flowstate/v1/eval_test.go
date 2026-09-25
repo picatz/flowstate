@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +47,27 @@ func TestRunWorkflow(t *testing.T) {
 			fmt.Println("\n" + string(b) + "\n")
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
+	}
+}
+
+// TestUnavailableTaskCapabilitiesAreRefusedBeforeEffects is the local caller
+// of the shared admission case. The registry is run-scoped on purpose: using
+// DefaultRegistry here would let a rehearsal claim tasks it cannot dispatch.
+func TestUnavailableTaskCapabilitiesAreRefusedBeforeEffects(t *testing.T) {
+	var effects atomic.Int32
+	tc, effect, missing := conformance.TaskCapabilityAdmissionCase(func() { effects.Add(1) })
+
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(effect))
+	ctx := v1.NewContextWithRegistry(t.Context(), registry)
+
+	out, err := v1.Run(ctx, tc.Workflow)
+	require.Zero(t, effects.Load(), "the first effect ran before capability refusal")
+	require.Error(t, err)
+	require.Nil(t, out, "admission refusal must have no partial transcript")
+	require.ErrorContains(t, err, tc.ExpectedErrorContains)
+	for _, name := range missing {
+		require.ErrorContains(t, err, name)
 	}
 }
 
@@ -192,13 +214,35 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 	}
 	require.NoError(t, registry.Register(conformance.ErrorKindTimeoutTaskDef()))
 
-	for _, tc := range conformance.ErrorKindCases(baseURL) {
+	cases := conformance.ErrorKindCases(baseURL)
+	for _, tc := range cases {
+		if tc.TaskDef != nil {
+			require.NoError(t, registry.Register(*tc.TaskDef))
+		}
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			_, err := v1.Run(v1.NewContextWithRegistry(t.Context(), registry), tc.Workflow)
 			require.Error(t, err, "the case must fail the run outright")
 			require.Equal(t, tc.ExpectedKind, v1.ClassifyError(err))
+			if tc.Attempts != nil {
+				require.Equal(t, tc.ExpectedAttempts, tc.Attempts(),
+					"the driver's retry behavior disagrees with this error kind's permanence")
+			}
 		})
 	}
+}
+
+// TestRunWorkflowHTTPAttemptOutcome is the local caller of the shared
+// ambiguous-mutation case. The durable caller lives in engine/workflow_test.go.
+func TestRunWorkflowHTTPAttemptOutcome(t *testing.T) {
+	tc := conformance.NewHTTPAttemptOutcomeCase(t)
+
+	_, err := v1.Run(t.Context(), tc.Workflow)
+	require.Error(t, err)
+	require.Equal(t, v1.ErrorKindUpstreamUnknown, v1.ClassifyError(err))
+	require.Equal(t, int32(1), tc.Attempts(), "an ambiguous POST must not be delivered again")
 }
 
 // TestRunWorkflowTaskPolicy covers #187 slice 1's task-shape policy in the
@@ -403,6 +447,91 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputDepth covers the local driver's half of #1947: a
+// task's own result carrying a [v1.Value_Structure] nested deeper than
+// [v1.MaxStructureDepth] — the shape [checkTaskOutputElementBound]'s
+// literal-only walk cannot see at all, and the residual gap
+// [v1.CheckTaskOutputDepth] closes.
+//
+// The same cases run against the durable driver in the engine package — see
+// the identically-named test there. Both reach the bound through the one
+// function every task's call funnels through, [v1.Task.EvalInScope], which is
+// what invariant 3 asks a shared case to hold the two drivers to.
+func TestRunWorkflowTaskOutputDepth(t *testing.T) {
+	conformance.RegisterDeepStructureOutputTask(t)
+
+	for _, test := range conformance.TaskOutputDepthCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a task result past the depth bound must be refused")
+				require.Contains(t, err.Error(), "levels deep",
+					"the refusal must name the resource it reached")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
+// TestRunWorkflowExpressionElementBound covers the local driver's half of
+// #1769: a list manufactured inside an expression past the element bound.
+//
+// The same cases run against the durable driver in the engine package — see
+// the identically-named test there. Both reach the bound through the one
+// evaluator every expression compiles under ([v1.Limits.programOptions]), and
+// the elapsed-time assertion is the half of the claim that was the defect: at
+// eb8172f the local driver *completed* the issue's file in fourteen seconds
+// while the durable one never completed it, so agreeing on failure is not
+// enough — both must refuse before the quadratic work runs.
+//
+// The bound on that elapsed time is relative: the allowed case builds exactly
+// the list the bound permits, so it is the work a refusal may cost, measured
+// on the same machine under the same load. The durable driver's twin failed an
+// absolute three seconds on a loaded CI runner (#1831's first run), and the
+// same number here is the same trap. The allowed cases run first so the
+// reference exists before a refusal is judged against it.
+func TestRunWorkflowExpressionElementBound(t *testing.T) {
+	cases := conformance.ExpressionElementBoundCases()
+
+	var reference time.Duration
+	for _, test := range cases {
+		if test.ExpectFailure {
+			continue
+		}
+		t.Run(test.Name, func(t *testing.T) {
+			started := time.Now()
+			out, err := v1.Run(t.Context(), test.Workflow)
+			elapsed := time.Since(started)
+
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+			reference = max(reference, elapsed)
+		})
+	}
+	require.Positive(t, reference, "no allowed case ran, so there is no work to measure a refusal against")
+
+	for _, test := range cases {
+		if !test.ExpectFailure {
+			continue
+		}
+		t.Run(test.Name, func(t *testing.T) {
+			started := time.Now()
+			_, err := v1.Run(t.Context(), test.Workflow)
+			elapsed := time.Since(started)
+
+			require.Error(t, err, "a list built past the element bound must be refused")
+			require.Contains(t, err.Error(), test.ExpectedErrorContains)
+			// A refusal costs at most the fold up to the bound; several times
+			// the allowed run is a case that went on working after it refused
+			// — the same rule and margin as cellistbound_test.go's.
+			require.Less(t, elapsed, 3*reference+200*time.Millisecond,
+				"the refusal landed only after the work it exists to prevent (allowed run: %v)", reference)
+		})
+	}
+}
+
 // TestRunWorkflowTaskOutputSizeBound covers the local driver's half of #787:
 // a single task's result weighing more than Temporal will store as an
 // activity result. The local driver has no server to refuse an oversized
@@ -528,6 +657,24 @@ func TestRunWorkflowAtomicBlockBound(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowParallelAtomicBlockBound(t *testing.T) {
+	for _, test := range conformance.ParallelAtomicBlockCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "an over-ceiling atomic body must be refused")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains,
+					"the refusal must name the enclosing step")
+				require.Contains(t, err.Error(), v1.AtomicBlockBodyActivitiesError(v1.MaxAtomicBlockActivities).Error(),
+					"both drivers must preserve the shared refusal sentence")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowCall covers `call:` in the local driver.
 //
 // The same cases run against the durable driver in the engine package — see
@@ -538,7 +685,11 @@ func TestRunWorkflowAtomicBlockBound(t *testing.T) {
 func TestRunWorkflowCall(t *testing.T) {
 	for _, test := range conformance.CallCases() {
 		t.Run(test.Name, func(t *testing.T) {
-			out, err := v1.Run(t.Context(), test.Workflow)
+			ctx := t.Context()
+			if test.Trigger != nil {
+				ctx = v1.NewContextWithTrigger(ctx, test.Trigger)
+			}
+			out, err := v1.Run(ctx, test.Workflow)
 			if test.ExpectFailure {
 				require.Error(t, err, "the call was expected to be refused")
 				return
@@ -567,6 +718,24 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 	for _, test := range conformance.InputOutputCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				// An output that cannot satisfy its own declaration fails the
+				// run, so a case about that has no outputs to compare — only
+				// the sentence, which must be the same one the durable driver
+				// gives.
+				require.Error(t, err, "the run was expected to fail")
+				require.Contains(t, err.Error(), test.ExpectedErrorContains)
+				if test.ExpectedErrorOmits != "" {
+					require.NotContains(t, err.Error(), test.ExpectedErrorOmits,
+						"the failure text carries something this case says it must not")
+				}
+				if test.ExpectedErrorMaxBytes > 0 {
+					require.Less(t, len(err.Error()), test.ExpectedErrorMaxBytes,
+						"the failure text is larger than this case's bound")
+				}
+
+				return
+			}
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 		})
@@ -591,6 +760,23 @@ func TestRunWorkflowValue(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestWorkflowSlicesCompleteLocally is the local half of #1882's consecutive
+// pure-work cases. The durable half runs the identical case set against a real
+// Temporal server and additionally bounds the history it produced.
+func TestWorkflowSlicesCompleteLocally(t *testing.T) {
+	for _, test := range conformance.WorkflowSliceCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.NoError(t, err)
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+				return
+			}
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 		})
 	}
@@ -753,6 +939,42 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
 			require.Error(t, err, "the submission was accepted")
 			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
+// TestRunWorkflowValueDepthRefused is the local driver's half of the depth
+// bound on a literal the specification carries (#1765): a `vars:` or step
+// `value:` literal nested past [v1.MaxStructureDepth] is refused at submit,
+// in the sentence a submitted input past the same bound is refused in.
+func TestRunWorkflowValueDepthRefused(t *testing.T) {
+	for _, test := range conformance.ValueDepthRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+		})
+	}
+}
+
+// TestRunWorkflowOutputValueRefused is the local driver's half of the submit
+// boundary for a declared output whose value is already known to be wrong.
+//
+// Run through [v1.RunWithInputs] rather than [v1.BindRunInputs] directly, which
+// is what makes it a claim about the driver rather than about the checker: the
+// workflow carries a step, so a refusal that did not happen at submit would run
+// it. See [conformance.OutputValueRefusalCases] for why a literal is answerable
+// here at all when a computed output is not.
+func TestRunWorkflowOutputValueRefused(t *testing.T) {
+	for _, test := range conformance.OutputValueRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			_, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+			if test.Omits != "" {
+				require.NotContains(t, err.Error(), test.Omits,
+					"the refusal carries something this case says it must not")
+			}
 		})
 	}
 }

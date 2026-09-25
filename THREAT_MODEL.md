@@ -77,12 +77,22 @@ egress, secret, and task-shape policies permit that tenant, and nothing else. Ca
 consume budget: a legal Flowfile may `sleep: 24h`, loop to its declared
 `max_iterations`, or fetch large bodies.
 
-**A co-tenant.** Cannot address another tenant's runs through the API: one `ownedBy`
-check covers every addressed verb and answers `NotFound` rather than
-`PermissionDenied`, so a probe learns nothing (`pkg/flowstate/v1/server/lifecycle.go:46`,
-`:85`, `:104`). Can read another tenant's history if both execute in the same
-Temporal namespace and they have substrate access, because the Flowstate API's
-tenancy governs the Flowstate API and nothing downstream of it.
+**A co-tenant.** Cannot address another tenant's runs through the API: one
+`authorizeRunDecision` gate covers every addressed verb, accepts only Flowstate's
+`Run` workflow type, and then applies `ownedBy`. Both membership and tenant
+mismatches answer `NotFound` rather than `PermissionDenied`, so a probe learns
+nothing. `List` applies the same workflow-type membership rule and the same
+`ownedBy`, so the two stay coherent by construction. `ownedBy` requires positive
+provenance: an execution with no tenant memo is refused for every caller,
+including the default tenant, rather than resolved into whichever caller has no
+namespace — a memo-less execution of the same `Run` type name is not
+distinguishable, from what Temporal records, from another application in a
+shared namespace that happens to register it (#1896). Nothing has ever been
+released, so this deployment accepts that a pre-tenancy Flowstate run, had one
+ever existed, would be orphaned by the same rule. A caller can still read
+another tenant's history if both execute in the same Temporal namespace and
+they have substrate access, because the Flowstate API's tenancy governs the
+Flowstate API and nothing downstream of it.
 
 **A network attacker on egress paths.** Sees and can answer requests a task makes.
 Bounded by categorical address denial, per-hop redirect re-checks with the https to
@@ -101,7 +111,12 @@ not contained and is not claimed to be: separate processes buy protection agains
 crash or a runtime bug, not against code doing deliberately what its author wrote
 (`docs/ARCHITECTURE.md:470-481`, `docs/DEPLOYMENT.md:35-51`). It reaches every
 tenant that worker serves. It does not inherit the worker's environment: plugin
-environments are built from nothing (`pkg/flowstate/v1/plugin/launch.go:500`).
+environments are built from nothing, plus the deployment's egress policy and —
+only when that policy sets `proxy_from_environment` — the worker's own
+HTTP_PROXY, HTTPS_PROXY and NO_PROXY, which a plugin then reaches the network
+through. A proxy URL may carry userinfo, so under that policy a plugin is handed
+the deployment's proxy credential along with the routing it is for
+(`pkg/flowstate/v1/plugin/launch.go:644`).
 
 **A caller with a stolen token.** Acts fully as that principal until the token
 expires. Bounded by audience (`pkg/flowstate/v1/auth/policy.go:88`), by optional
@@ -154,19 +169,36 @@ asymmetric algorithms are verifiable, so no HMAC token can be checked against an
 issuer's public key (`pkg/flowstate/v1/auth/policy.go:192-231`). A verified caller
 whose namespace claim is missing or fails the namespace grammar is rejected, never
 admitted to a default tenant (`:119-142`, `:345`). Unauthenticated error text never
-describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). Submitted
+describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). An issuer
+entry may grant an exact allowlist from the schema-owned control-plane action
+vocabulary. An omitted allowlist preserves unrestricted legacy behavior; an empty
+one grants nothing, role names grant nothing, and token `scope`/`scp` claims are not
+authority. Enforcement is shared by every WorkflowService RPC at the audit seam and
+records a policy denial before returning `PermissionDenied`
+(`pkg/flowstate/v1/server/audit.go:60-75`). Submitted
 specifications are size-bounded at submit (`pkg/flowstate/v1/size.go:39`, `:103`),
 and `List` is bounded by executions read and by requests made
-(`pkg/flowstate/v1/server/list.go:51`, `:63`).
+(`pkg/flowstate/v1/server/list.go:56`, `:68`).
 
-**Limits.** `flow server` speaks cleartext HTTP only: there is no TLS flag and no
-`ListenAndServeTLS` call, so the bearer token is on the wire in the clear unless TLS
-is terminated in front of it (`docs/DEPLOYMENT.md:490-496`,
-`cmd/flow/main.go:719`). The CLI refuses to send a token over plaintext to anything
-but this machine (`cmd/flow/credentials.go:63`), which protects the client, not the
-server's own posture. `--insecure-no-auth` admits everyone as anonymous and is a
+**Limits.** `flow server` serves plain HTTP when it is given no certificate, and it
+refuses to do that on any address but loopback unless `--tls-terminated-upstream`
+asserts that something in front of it either terminates TLS or bounds who can reach
+the address at all: a reverse proxy, an Ingress, a load balancer, or a container's
+published-port binding, which is the case the documented Compose deployment relies
+on (`examples/observability/docker-compose.yaml` publishes every port on
+`127.0.0.1` while the container listens on `0.0.0.0`, and nothing terminates TLS)
+(`cmd/flow/tls.go`, `refusePlaintextListener`). In-process TLS is
+`--tls-cert-file`/`--tls-key-file` with `--tls-min-version` floored at 1.2, and ACME
+issuance is the `--tls-acme-*` flags (`cmd/flow/acme.go`, wired beside the static
+loader in `cmd/flow/main.go`). So the bearer token is on the wire in the clear in
+exactly two cases: loopback, and a deployment that asserted an upstream terminator
+or a reachability boundary — an assertion the process cannot verify, which is why
+the flag's help text is the whole of the control. The CLI
+refuses to send a token over plaintext to anything but this machine
+(`cmd/flow/credentials.go:63`), which protects the client, not the server's own
+posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read at `cmd/flow/main.go:148`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:767`;
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1700`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, `docs/DEPLOYMENT.md:306-311`).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
@@ -189,16 +221,76 @@ delivery is known genuine — unknown workflow, unknown trigger, bad signature �
 status and one sentence, with an HMAC spent on the unrouted path so the timings
 match. A run's id is a digest over tenant, workflow, trigger and idempotency key, so
 a redelivery joins rather than duplicating and a key cannot address another tenant's
-run or be read back out of the id.
+run or be read back out of the id. Every decision on this path is written to the
+audit trail as a `WEBHOOK_DELIVERY` enforcement record — an acceptance against the
+run it started or answered, a refusal against the route by class, bounded to one
+record per class per route per minute with a count so the unauthenticated path
+cannot amplify into the sink (`docs/DEPLOYMENT.md` "Audit trail",
+`pkg/flowstate/v1/server/webhookaudit.go`).
 
-**Limits.** The route is cleartext like the rest of the server, so a signature and
-body are on the wire in the clear unless TLS is terminated in front. Verification
+A trigger declaring `signal:` answers a gate instead of starting a run, over the
+same route and past the same verification. What that adds is one authorization and
+one address, both decided by the server: the delivery acts as the principal the
+receiver already mints (`flowstate://webhook#<workflow>/<trigger>`, the receiver's
+namespace) and is checked by `authorizeSignal`/`SignalPolicyCheck` — the function
+`flow signal` is checked by, unchanged — while the run it reaches is composed by
+`EntityWorkflowID` from the receiver's own namespace and the entity key
+`correlate:` evaluates to, never from a workflow id in the payload. The signal
+zero case is closed for this route in two places, because the file can only close
+half of it: a `signal:` whose name has no `signals:` rule that could admit its
+trigger is refused when the file compiles and again when the receiver registers it,
+and the receiver refuses a delivery whose addressed run records a *different*
+workflow than the one whose webhook was addressed. That second half is not optional
+— an entity key carries no workflow component, so tenancy alone lets `order-123`
+name a run of any workflow in the tenant, and the policy consulted is the target
+run's, whose own zero case admits anyone. It also bounds the 404/403 split: the
+existence oracle it forms covers the runs of the one workflow the sender already
+holds a key for, rather than the tenant's whole entity-key space. A run recording no
+workflow name is refused rather than guessed at.
+
+Neither scheme signs arbitrary request headers, so a bridge may not address itself
+from them. The rule is an allow-list rather than a search: under such a scheme every
+occurrence of `event` in `correlate:` and `idempotency_key:` must be a `body` read,
+so a bare root, a root inside a list or map literal, a root passed to a function or
+used as a comprehension's range are all refused when the file compiles. Searching for
+`event.headers` instead proved nothing about what it accepted — a comprehension, a
+ternary, a map literal or a list index each alias the root and reach a header with no
+`headers` selection over `event` anywhere in the expression — and requiring the proof
+makes that whole class unexpressible without tracking aliases. The replay this closes
+needs no key at all: one observed delivery, its body and signature reused with a
+rewritten header, would otherwise pick a different gate and mint a delivery id the
+run's ring has never seen. A delivery the run has already consumed is dropped
+by the engine at intake, on both drivers, against a bounded add-only set of
+delivery-id digests carried in `RunState`; the receiver keeps no ledger.
+
+**Limits.** The route inherits the listener's TLS posture above: with no certificate
+configured, a signature and body are on the wire in the clear unless something in
+front of the listener terminates TLS or bounds who can reach it, which is what
+`--tls-terminated-upstream` asserts and the process cannot verify. Verification
 proves possession of a shared key, not the sender's identity: anyone holding the key
 can deliver. `--secret-require-namespace` is incompatible with the receiver, which
 resolves in the deployment's own tenant.
 
+The bridge inherits that identity limit and does not narrow it: a delivery attests
+the trigger, so `distinct_from_starter:` on a bridged gate separates triggers rather
+than people, and nothing on this path establishes *who clicked* — a workflow needing
+two distinct humans either side of a gate cannot get them from a webhook. Anyone
+holding one trigger's key can answer any gate that trigger's `signals:` rules admit,
+in that trigger's workflow, for any run whose entity key they can name; the entity
+key is attacker-supplied in the sense that it comes from a signed payload, so it is
+as trustworthy as the key holder and no more. The consumed-id set is per run and
+bounded at `MaxPendingSignals`: a replay is caught while the id is still in the
+window, and a run that has answered more than that many deliveries since has
+evicted it. Post-verification refusals are precise rather than levelled — an
+unaddressed delivery answers 404 and a policy refusal 403 — which is safe only
+because reaching either requires having already signed the body.
+
 **Planned.** Per-trigger rate limits, enable and disable per deployment beyond the
-flag, and stored deliveries for replay, #490, not landed.
+flag, and stored deliveries for replay, #490, not landed. For the bridge: a wait-side
+`accepts:` declaration, so a payload's shape is checked against a signature rather
+than passed through (#96), and asymmetric schemes that could attest a person rather
+than a key holder — the evidence that would make `distinct_from_starter:` mean on
+this route what it means everywhere else.
 
 ### Server to worker
 
@@ -230,8 +322,10 @@ relative search path, or one writable by any user other than its owner (group
 or world), is refused, with
 `--allow-insecure-plugin-dir` as the named escape hatch
 (`pkg/flowstate/v1/plugin/doc.go:50-52`, `docs/DEPLOYMENT.md:508-515`). Plugin
-environments are built from nothing rather than inherited
-(`pkg/flowstate/v1/plugin/launch.go:500`). Secret inputs a plugin task consumes are
+environments are built from nothing rather than inherited, save for the egress
+grant and, under a policy that sets `proxy_from_environment`, the worker's proxy
+variables — whose URLs may carry userinfo
+(`pkg/flowstate/v1/plugin/launch.go:644`). Secret inputs a plugin task consumes are
 resolved host-side, before `Execute`, and only for inputs the `TaskManifest` named;
 an unnamed input is refused (`docs/ARCHITECTURE.md:432-448`). Responses from a
 plugin are byte-bounded at the RoundTripper, below the RPC library, so no error path
@@ -296,21 +390,44 @@ TLS 1.2 with verified certificates; bounds request, dial, handshake and header
 phases; caps the body; and re-checks policy at every redirect hop, refusing an https
 to http downgrade (`pkg/flowstate/v1/netpolicy/netpolicy.go:9-20`, `:155`, `:499`).
 Address checks run in the dialer against the address actually dialed, so a
-DNS-rebinding answer gains nothing (`:26-31`, `:441`). CEL rules are compiled and
+DNS-rebinding answer gains nothing (`:26-31`, `:441`). A host that is already an
+IP literal is classified before the resolver or a socket is touched, with the
+dialer's own verdict, so a loopback or private literal is refused the same way on
+a host that cannot open that address family; a non-canonical IPv4 spelling
+(`127.1`, `0x7f.0.0.1`) is refused rather than resolved
+(`checkLiteralHost`, `legacyIPv4`; #1768). CEL rules are compiled and
 type-checked when configuration loads, deny beats allow, and a rule that errors
 denies (`:91-111`). Rules may key on the run's identity, including namespace, so one
 worker can serve two tenants with different reach
 (`pkg/flowstate/v1/eval_task_http_run.go:316`, `docs/DEPLOYMENT.md:153-166`).
 
-**Limits.** This is enforced *inside* the Go `http` task
-(`pkg/flowstate/v1/eval_task_http_def.go:30`, `:66`). That is honest exactly while
-every task is our code, which is #341 invariant 1 stated as a limit: the moment a
-task is a container running arbitrary code, in-process enforcement is theater,
-because the code opens its own sockets. A plugin task's network access is the
-worker's to govern by whatever the operating system provides, not by netpolicy. With
-a proxy configured the dialer never sees the target, so the check weakens to a
-pre-resolution one (`pkg/flowstate/v1/netpolicy/netpolicy.go:33-37`), which is why
-proxies are off unless named.
+**Limits.** HTTP enforcement lives *inside* the Go `http` task
+(`pkg/flowstate/v1/eval_task_http_run.go:595`, `:833`). The first-party SQL plugin
+composes the deployment's grant onto pgx's real TCP dial path: every host and
+address is checked before connection, checked DNS answers are pinned, and the
+actual address is categorically rechecked immediately before each dial. PostgreSQL
+is denied when the grant is absent or is the deployment default; SQLite is denied
+because its authority is the worker filesystem rather than a socket. The other
+four first-party plugins whose Go implementations open network connections also
+enforce the grant on those actual paths: Slack and GitHub through the SDK-governed
+HTTP transport, and git and vcs through the governed transport installed into
+go-git
+(`plugins/slack/post.go`, `plugins/github/client.go`, `plugins/git/clone.go`,
+`plugins/vcs/clone.go`). A worker with no operator policy grants these processes
+the same marked default its built-in HTTP task uses. This is actual enforcement
+in vetted first-party dial paths, but it remains voluntary plugin behavior, not
+plugin-process confinement. A third-party plugin can ignore the SDK and open its
+own socket. The first-party Codex plugin is also a subprocess exception: the
+spawned Codex CLI does not carry or enforce Flowstate's destination grant, so its
+own control-plane traffic bypasses that grant in every sandbox mode
+(`plugins/codex/process.go:104-130`). Codex's separate sandbox policy controls
+whether agent-started commands also get network access; an operator may permit
+that access or `danger-full-access` (`plugins/codex/policy.go:178-187`). A
+deployment that must constrain either process uses its operating-system or
+substrate boundary rather than treating policy vocabulary as a sandbox. With an
+HTTP proxy configured the dialer never sees the target, so the HTTP check weakens
+to a pre-resolution one (`pkg/flowstate/v1/netpolicy/netpolicy.go:33-37`), which
+is why proxies are off unless named.
 
 **Planned.** Boundary enforcement compiling the same policy file to a network
 namespace plus enforcing proxy, with a tier that cannot enforce refusing to
@@ -346,14 +463,20 @@ constructor because heartbeat details are written into history
 
 **Limits.** Everything that legitimately goes into history goes in unsealed. History
 confidentiality today is whatever the cluster's database and filesystem encryption
-provide; every `DataConverter` in the tree is the default one and no seam exists for
-an operator to supply a codec (`docs/ARCHITECTURE.md:663-678`). Nothing is
-forgettable: there is no erasure path.
+provide. The codec seam is a prototype: one resolution point (`cmd/flow/codec.go`)
+feeds the Temporal client options `flow server` and `flow worker` build, with
+failure-path encoding forced on whenever a codec is configured
+(`pkg/flowstate/v1/payloadcodec`, the payload paragraphs of `docs/ARCHITECTURE.md`),
+but the lookup behind it always returns the null codec and no flag or plugin
+supplies another, so a stock deployment cannot configure history encryption until
+that lookup ships. `flow run local` resolves and validates the same configuration
+and applies it nowhere, because an in-process run has no persisted boundary for a
+codec to sit on. Nothing is forgettable: there is no erasure path.
 
-**Planned.** The codec slot wired into both drivers' client construction identically,
-null codec by default, with failure-path encoding enabled whenever a codec is
-configured, #353 A.1 (design record #113, gap #271), not landed. `flow shred` and
-crypto-shredding, #353 A.2, not landed.
+**Planned.** A shipped encrypting codec, and a claim-check offload codec for
+payloads too large for history — the seam they occupy landed; the codecs are #353
+A.1 (design record #113, gap #271), not landed. `flow shred` and crypto-shredding,
+#353 A.2, not landed.
 
 ### Editor and agent tooling to workspace
 
@@ -379,7 +502,7 @@ Compose the pieces rather than treating this as a separate topic.
 **What exists today.** `flow mcp` projects every WorkflowService RPC as a tool by
 walking the service descriptor (`cmd/flow/mcp.go:32-48`), serves three embedded docs
 resources whose content is the repository's own, compiled in through
-`cmd/flow/internal/reference` (`cmd/flow/mcpresources.go:40-48`,
+`cmd/flow/internal/reference` (`cmd/flow/internal/mcp/resources.go:39-49`,
 `cmd/flow/internal/reference/reference.go:38`), and offers `flowstate_run_local`,
 which executes a model-composed Flowfile in this process.
 
@@ -555,19 +678,32 @@ is already in `pkg/flowstate/v1/auth/` has landed.
 
 **Honest gaps, all present-tense.**
 
-1. No history confidentiality. No codec seam exists (#113, #271; #353 A.1 specifies
-   it).
+1. No history confidentiality by default. The codec seam exists
+   (`pkg/flowstate/v1/payloadcodec`) and only the null codec ships; an encrypting or
+   offloading codec is #113, #271; #353 A.1 specifies it.
 2. No erasure. Nothing forgets (#353 A.2).
-3. `flow server` is cleartext HTTP; TLS must be terminated in front of it
-   (`docs/DEPLOYMENT.md:490-496`).
+3. `flow server` serves plaintext when given no certificate, and refuses to do so off
+   loopback unless `--tls-terminated-upstream` asserts a terminator or another
+   reachability boundary in front — an assertion it cannot verify
+   (`cmd/flow/tls.go`); in-process TLS and ACME exist.
 4. Egress enforcement is in-process and therefore honest only while every task is our
    code (#341 invariant 1).
 5. A launched plugin is trusted code with the worker's authority
    (`docs/ARCHITECTURE.md:470-481`).
 6. Task-shape policy's zero case permits everything
    (`pkg/flowstate/v1/taskpolicy.go:133-146`).
-7. Policy denials are recorded; allows are not, so a transcript cannot answer "why was
-   this permitted" (#353 principle 2, workstream D).
+7. The worker records its own decisions — task dispatch, secret access, the built-in
+   `http` task's egress, credential assumption — through the same recorder
+   `flow server` uses, and `--audit-required` refuses an action whose record cannot
+   be written at every seam that decides before it acts. The egress and assumption
+   records are written after the effect they permit, which the schema states and the
+   seams classify rather than hide (#1379; #353 principle 2, workstream D). Three
+   things the gap still holds. A first-party plugin enforces the same
+   `--egress-policy` in its own process, and nothing running there can reach this
+   worker's recorder, so the traffic is governed and only the record is missing
+   (#1399). A permitted redirect hop gets no record of its own; the allow names the
+   destination the workload addressed (#1397). And `flow run local` installs no
+   recorder at all, deliberately (`pkg/flowstate/v1/audit`'s package doc).
 8. The stdio agent surface authenticates the process, not the request (#350, #337).
 9. No token revocation, inbound or outbound, within a credential's lifetime.
 10. Windows is an authoring platform, not a worker platform; plugins are AF_UNIX only

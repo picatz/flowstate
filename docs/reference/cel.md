@@ -17,7 +17,7 @@ library to a future build must not change what an expression already stored
 in a run's specification means, so a profile is a fixed, named membership
 rather than "everything this build happens to have."
 
-- **`2026.1`** (what this build evaluates against) admits: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`
+- **`2026.1`** (what this build evaluates against) admits: `bindings`, `comprehensions`, `digest`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`
 
 ## Functions and macros
 
@@ -42,6 +42,7 @@ a macro, so this column is derived from it directly.
 | `comprehensions` | `transformList` | macro | `[1, 2].transformList(i, v, v * 2)` | — |
 | `comprehensions` | `transformMap` | macro | `{'a': 1}.transformMap(k, v, v * 10)` | — |
 | `comprehensions` | `transformMapEntry` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` | — |
+| `digest` | `digest.sha256` | function | — | `digest.sha256(bytes) -> string`<br>`digest.sha256(string) -> string` |
 | `encoders` | `base64.decode` | function | — | `base64.decode(string) -> bytes` |
 | `encoders` | `base64.encode` | function | — | `base64.encode(bytes) -> string` |
 | `encoders` | `json.encode` | function | — | `json.encode(dyn) -> string` |
@@ -49,10 +50,12 @@ a macro, so this column is derived from it directly.
 | `lists` | `distinct` | function | — | `list(<T>).distinct() -> list(<T>)` |
 | `lists` | `flatten` | function | — | `list(dyn).flatten(int) -> list(dyn)`<br>`list(list(<T>)).flatten() -> list(<T>)` |
 | `lists` | `lists.range` | function | — | `lists.range(int) -> list(int)` |
+| `lists` | `reduce` | macro | `[1, 2, 3].reduce(a, v, 0, a + v)` | — |
 | `lists` | `reverse` | function | — | `list(<T>).reverse() -> list(<T>)`<br>`string.reverse() -> string` |
 | `lists` | `slice` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
 | `lists` | `sort` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
 | `lists` | `sortBy` | macro | `[3, 1, 2].sortBy(v, v)` | — |
+| `lists` | `sum` | macro | `[1, 2, 3].sum()` | — |
 | `math` | `greatest` | macro | `math.greatest(1, 2)` | — |
 | `math` | `least` | macro | `math.least(3, 4)` | — |
 | `math` | `math.abs` | function | — | `math.abs(double) -> double`<br>`math.abs(int) -> int`<br>`math.abs(uint) -> uint` |
@@ -165,10 +168,34 @@ payload.?approved.hasValue()
 
 ### Filtering and transforming a list without a loop
 
-`filter` and `map` are macros — expanded when the file compiles — so a list comprehension costs nothing at evaluation time beyond the work it does. Chained, they read left to right: keep what matters, then compute what is kept.
+`filter` and `map` are macros — expanded when the file compiles — so a list comprehension costs nothing at evaluation time beyond the work it does. Chained, they read left to right: keep what matters, then compute what is kept. When a comprehension ranges over a map, Flowstate visits keys in ascending key order (false before true; then integers, unsigned integers, and strings by value). The order is identical in local runs and Temporal replays; sort explicitly when a different business order matters.
 
 ```cel
 [1, 2, 3, 4, 5].filter(n, n % 2 == 0).map(n, n * n)
+```
+
+### Totalling a list without a loop
+
+`sum` folds a list with `+`, expanded when the file compiles like `filter` and `map` — so a numeric total is one expression instead of a `loop:` carrying an index and a running sum through durable history, with the off-by-one that shape invites. Chained after `map` it reads left to right: keep what matters, pick the number, add them up. An empty list sums to `0`, and a list `+` cannot add — a string beside an int — fails the evaluation rather than guessing. Only a list may be folded: a map must select its values explicitly, for example `m.map(k, k).sort().map(k, m[k]).sum()`. `loop:` remains the right tool when the fold's body does real work; see examples/loop-accumulate.
+
+```cel
+steps.paid.value.map(o, o.amount_cents).sum()
+```
+
+### A fold whose combiner is not +
+
+`reduce` is the general form `sum` is the special case of: name the accumulator and the element, give the seed, write the combining expression. Reach for `map(...).sum()` first — it answers the naming and seeding questions for you — and for `reduce` when the combiner is not `+`: a product, a running maximum, a fold whose seed carries meaning. An empty list folds to the seed, verbatim.
+
+```cel
+steps.factors.value.reduce(p, v, 1, p * v)
+```
+
+### Naming content by its SHA-256 digest
+
+`digest.sha256` returns Flowstate's canonical `sha256:<lower-case hex>` content digest for a string's UTF-8 bytes or a bytes value. Use it for checksums, content identity, and stable idempotency components. A plain digest proves that two byte sequences match; it does not prove who supplied them. It is not a signature, MAC, password hash, or credential-protection mechanism.
+
+```cel
+digest.sha256(response.body)
 ```
 
 ### Building one message from several values

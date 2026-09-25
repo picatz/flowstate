@@ -24,7 +24,7 @@ func TestRunLocal_ConcurrentDifferentTasksDoNotInterfere(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines)
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
@@ -60,7 +60,7 @@ steps:
 				return
 			}
 
-			for i := 0; i < itersPerGoroutine; i++ {
+			for i := range itersPerGoroutine {
 				outputs, runErr := RunLocal(context.Background(), workflow, RunOptions{Tasks: tasks})
 				if runErr != nil {
 					errs <- fmt.Errorf("goroutine %d iter %d: RunLocal: %w", g, i, runErr)
@@ -94,7 +94,7 @@ func TestRunLocal_ConcurrentInstallAndRunDoNotInterfere(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines)
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
@@ -169,7 +169,7 @@ func TestTasksInstall_ConcurrentSameNameOnlyOneWins(t *testing.T) {
 	errs := make(chan error, goroutines)
 
 	start := make(chan struct{})
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()

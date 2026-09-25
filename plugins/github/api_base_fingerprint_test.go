@@ -22,9 +22,6 @@ import (
 // reports pointing the client at.
 func apiBaseFor(t *testing.T, token, baseURL string) string {
 	t.Helper()
-	if err := installEgressPolicy(); err != nil {
-		t.Fatalf("installEgressPolicy: %v", err)
-	}
 	_, base, err := newClient(token, baseURL)
 	if err != nil {
 		t.Fatalf("newClient(%q, %q): %v", token, baseURL, err)

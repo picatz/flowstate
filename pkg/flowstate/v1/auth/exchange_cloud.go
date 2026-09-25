@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
@@ -132,7 +133,7 @@ func NewAWSExchanger(cfg AWSConfig) (Exchanger, error) {
 		return nil, fmt.Errorf("%w: %s exchanger needs a role ARN", ErrInvalidPolicy, name)
 	}
 	if !strings.HasPrefix(cfg.RoleARN, "arn:") {
-		return nil, fmt.Errorf("%w: %s exchanger role %q is not an ARN", ErrInvalidPolicy, name, truncate(cfg.RoleARN, 64))
+		return nil, fmt.Errorf("%w: %s exchanger role %q is not an ARN", ErrInvalidPolicy, name, textbound.Truncate(cfg.RoleARN, 64))
 	}
 
 	endpoint := cfg.Endpoint
@@ -140,7 +141,7 @@ func NewAWSExchanger(cfg AWSConfig) (Exchanger, error) {
 	case endpoint != "":
 	case cfg.Region != "":
 		if strings.ContainsAny(cfg.Region, "/?#@") {
-			return nil, fmt.Errorf("%w: %s exchanger region %q is not a region name", ErrInvalidPolicy, name, truncate(cfg.Region, 32))
+			return nil, fmt.Errorf("%w: %s exchanger region %q is not a region name", ErrInvalidPolicy, name, textbound.Truncate(cfg.Region, 32))
 		}
 		endpoint = fmt.Sprintf("https://sts.%s.amazonaws.com/", cfg.Region)
 	default:
@@ -517,7 +518,7 @@ func NewGCPExchanger(cfg GCPConfig) (Exchanger, error) {
 		}
 		if !strings.Contains(cfg.ServiceAccountEmail, "@") {
 			return nil, fmt.Errorf("%w: %s exchanger service account %q is not an email address",
-				ErrInvalidPolicy, name, truncate(cfg.ServiceAccountEmail, 64))
+				ErrInvalidPolicy, name, textbound.Truncate(cfg.ServiceAccountEmail, 64))
 		}
 
 		// Checked under impersonation for the same reason iam_endpoint above is:

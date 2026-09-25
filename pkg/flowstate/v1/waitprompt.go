@@ -319,7 +319,11 @@ func resolveReach(value *Value, bindings map[string]promptReach) promptReach {
 		return reach
 	}
 
-	for name := range promptFreeIdentifiers(value) {
+	free, tooDeep := promptFreeIdentifiers(value)
+	// Already opaque from promptInputReach above when the value is too deep;
+	// said again here so the two walks cannot drift apart on the answer.
+	reach.opaque = reach.opaque || tooDeep
+	for name := range free {
 		if bound, ok := bindings[name]; ok {
 			reach = reach.merge(bound)
 		}
@@ -597,13 +601,14 @@ func (w *promptWalk) check(value *Value, bindings map[string]promptReach, stepID
 // promptFreeIdentifiers returns the bare names a prompt reads. See
 // [resolveReach], which is the only caller and which says what they are followed
 // into.
-func promptFreeIdentifiers(value *Value) map[string]struct{} {
-	free := make(map[string]struct{})
-	for _, e := range promptExpressions(value, 0) {
+func promptFreeIdentifiers(value *Value) (free map[string]struct{}, tooDeep bool) {
+	free = make(map[string]struct{})
+	expressions, tooDeep := promptExpressions(value, 0)
+	for _, e := range expressions {
 		collectFreeIdentifiers(e, map[string]struct{}{}, free)
 	}
 
-	return free
+	return free, tooDeep
 }
 
 // promptInputReach reports which inputs a prompt names, and whether it reaches
@@ -617,7 +622,11 @@ func promptFreeIdentifiers(value *Value) map[string]struct{} {
 func promptInputReach(value *Value) (named map[string]bool, opaque bool) {
 	named = make(map[string]bool)
 
-	for _, e := range promptExpressions(value, 0) {
+	// A structure too deep to walk is a reach this walk cannot name, the same
+	// answer an `inputs[key]` gets: what it does not return, it cannot vouch for.
+	expressions, tooDeep := promptExpressions(value, 0)
+	opaque = tooDeep
+	for _, e := range expressions {
 		walkInputReach(e, named, &opaque)
 	}
 
@@ -627,31 +636,42 @@ func promptInputReach(value *Value) (named map[string]bool, opaque bool) {
 // promptExpressions collects every parsed expression a prompt value holds,
 // descending structures for [holdsSecretRef]'s reason: a structure's entries are
 // values in their own right, so an expression can sit arbitrarily deep in one.
-func promptExpressions(value *Value, depth int) []*expr.Expr {
+//
+// tooDeep reports a structure nested past [maxVarScanDepth], which the walk did
+// not descend. The expressions below that point are not in the result, and a
+// caller must not read their absence as "reaches nothing": this returned nil
+// there and said nothing, so a prompt whose reach into a sensitive input sat
+// under the bound was passed — the silent cutoff that turns a check into a
+// fail-open gate at depth 33, which [holdsSecretRef]'s comment warns of and
+// every other walk over a value answers by failing closed (#1725).
+func promptExpressions(value *Value, depth int) (out []*expr.Expr, tooDeep bool) {
 	if depth > maxVarScanDepth {
-		return nil
+		return nil, true
 	}
 
 	switch kind := value.GetKind().(type) {
 	case *Value_Expr:
-		return []*expr.Expr{kind.Expr.GetExpr()}
+		return []*expr.Expr{kind.Expr.GetExpr()}, false
 	case *Value_Structure_:
-		var out []*expr.Expr
 		switch structure := kind.Structure.GetKind().(type) {
 		case *Value_Structure_List_:
 			for _, element := range structure.List.GetValues() {
-				out = append(out, promptExpressions(element, depth+1)...)
+				below, deep := promptExpressions(element, depth+1)
+				out = append(out, below...)
+				tooDeep = tooDeep || deep
 			}
 		case *Value_Structure_Map_:
 			for _, entry := range structure.Map.GetEntries() {
-				out = append(out, promptExpressions(entry, depth+1)...)
+				below, deep := promptExpressions(entry, depth+1)
+				out = append(out, below...)
+				tooDeep = tooDeep || deep
 			}
 		}
 
-		return out
+		return out, tooDeep
 	}
 
-	return nil
+	return nil, false
 }
 
 // walkInputReach records every named reach into `inputs` and sets opaque for

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -210,13 +211,7 @@ func readFileBounded(p string) (data []byte, truncated bool, err error) {
 // a message that says what the shape means instead of leaving a caller to
 // find out from whichever half happened to fail first.
 func checkStdinArg(paths []string) error {
-	hasStdin := false
-	for _, p := range paths {
-		if p == stdinArg {
-			hasStdin = true
-			break
-		}
-	}
+	hasStdin := slices.Contains(paths, stdinArg)
 	if !hasStdin || len(paths) == 1 {
 		return nil
 	}
@@ -337,15 +332,46 @@ func validatePluginRequirements(target validateTarget, catalog *v1.PluginCatalog
 // workflow file is) from one that exists and does not parse, which is a fact
 // about the file and belongs in the same report a workflow's own diagnostics
 // travel in.
+//
+// When the test file is on disk and a case scripts signals, the workflow it
+// names is compiled and the signal names are checked against it — the same
+// check [flowtest.File.CheckSignalNames] applies at run time, extended to the
+// validate surface so a misspelled gate is caught before `flow test` (#1443).
+// If the workflow fails to compile (plugin tasks, missing files), the signal
+// check is skipped: the workflow's own diagnostics are the workflow's concern.
 func validateTestFile(target validateTarget) flowfile.Diagnostics {
-	var err error
+	var (
+		file *flowtest.File
+		err  error
+	)
 	if target.data != nil {
-		_, err = flowtest.LoadSource(target.data)
+		file, err = flowtest.LoadSource(target.data)
 	} else {
-		_, err = flowtest.Load(target.path)
+		file, err = flowtest.Load(target.path)
 	}
 	if err != nil {
 		return flowfile.Diagnostics{{Message: err.Error()}}
 	}
-	return nil
+
+	if target.path == "" || target.data != nil {
+		return nil
+	}
+
+	var diags flowfile.Diagnostics
+	for i := range file.Tests {
+		test := &file.Tests[i]
+		if len(test.Signals) == 0 || test.Workflow == "" {
+			continue
+		}
+		wfPath := flowtest.WorkflowPath(target.path, test)
+		spec, _, parseErr := flowfile.ParseFile(wfPath)
+		if parseErr != nil {
+			continue
+		}
+		if err := file.CheckSignalNames(test, spec); err != nil {
+			diags = append(diags, flowfile.Diagnostic{Message: fmt.Sprintf("test %q: %s", test.Name, err)})
+		}
+	}
+
+	return diags
 }

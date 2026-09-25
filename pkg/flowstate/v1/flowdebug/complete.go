@@ -8,8 +8,20 @@ import (
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
+)
+
+const (
+	// MaxCompletionBytes bounds the string RenderCompletion materializes. The
+	// MCP transcript has its own bound, but it sees this string only after the
+	// renderer has built it.
+	MaxCompletionBytes = 64 << 10
+
+	// MaxCompletionCandidateBytes keeps one attacker-chosen name from setting
+	// an enormous padding width for every other candidate.
+	MaxCompletionCandidateBytes = 256
 )
 
 // Completion is what the session offers at one cursor position.
@@ -124,7 +136,7 @@ func (s *Session) Complete(line string, pos int) Completion {
 		//
 		// Read from the same helper the command parses with, so the prompt and
 		// the parser cannot disagree about where the expression begins.
-		if _, condition, conditional, err := splitCondition(rest); err == nil && conditional {
+		if _, condition, conditional, err := splitCondition(rest, grammarBreak); err == nil && conditional {
 			return s.offerExpression(subject, condition)
 		}
 
@@ -735,26 +747,47 @@ func (s *Session) breakpointIDs() []string {
 func RenderCompletion(answer Completion) string {
 	width := 0
 	for _, candidate := range answer.Candidates {
-		width = max(width, len(candidate.Text))
+		width = max(width, min(len(candidate.Text), MaxCompletionCandidateBytes))
 	}
 
 	var out strings.Builder
+	out.Grow(min(MaxCompletionBytes, len(answer.Candidates)*(width+32)))
+	const more = "… and more, not listed\n"
 	for _, candidate := range answer.Candidates {
+		text := capCompletionField(candidate.Text, MaxCompletionCandidateBytes)
+		detail := capCompletionField(candidate.Detail, MaxCompletionCandidateBytes)
+		line := text + "\n"
 		if candidate.Detail == "" {
-			out.WriteString(candidate.Text + "\n")
-
-			continue
+			// Keep the unadorned form above.
+		} else {
+			line = padRight(text, width) + "   " + detail + "\n"
 		}
-		out.WriteString(padRight(candidate.Text, width) + "   " + candidate.Detail + "\n")
+		if out.Len()+len(line) > MaxCompletionBytes-len(more) {
+			out.WriteString(more)
+
+			return out.String()
+		}
+		out.WriteString(line)
 	}
 	if answer.Truncated {
 		// Said out loud, because a list somebody scans for a name that is not
 		// in it should tell them the list was cut rather than let them
 		// conclude the name does not exist.
-		out.WriteString("… and more, not listed\n")
+		out.WriteString(more)
 	}
 
 	return out.String()
+}
+
+// capCompletionField truncates to limit bytes, marker included, without
+// splitting a UTF-8 encoding. The marker is the single-rune "…" rather than
+// textbound's "..." so a cut name costs one column in the completion list.
+func capCompletionField(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+
+	return textbound.Cut(s, limit-len("…")) + "…"
 }
 
 // padRight pads to width, for the column a detail starts at.

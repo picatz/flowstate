@@ -167,13 +167,24 @@ func TestRecordReplayCorpus(t *testing.T) {
 func recordRunChain(ctx context.Context, tb testing.TB, c client.Client, workflowID, runID string) []*historypb.History {
 	tb.Helper()
 
+	const (
+		maxSegments = 100
+		maxEvents   = 1000
+	)
+
 	var chain []*historypb.History
+	events := 0
 	for runID != "" {
+		require.Less(tb, len(chain), maxSegments,
+			"run chain %s exceeded the %d-segment collection bound", workflowID, maxSegments)
 		history := &historypb.History{}
 		iter := c.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 		for iter.HasNext() {
 			event, err := iter.Next()
 			require.NoError(tb, err)
+			events++
+			require.LessOrEqual(tb, events, maxEvents,
+				"run chain %s exceeded the %d-event collection bound", workflowID, maxEvents)
 			history.Events = append(history.Events, event)
 		}
 		require.NotEmpty(tb, history.GetEvents(), "run %s of %s has no history", runID, workflowID)

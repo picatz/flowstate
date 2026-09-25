@@ -43,10 +43,13 @@ description: Fans out over a list of access grants, pulls last-used evidence for
 # against," which is the case here.
 #
 # Evidence gathering here is `http` against a simulated IAM read endpoint.
-# A production version would more likely use the `github.*` or `git.*`
-# read-tier plugin tasks (#214) against real infrastructure state; this file
-# stays on `http` so it runs, and its test passes, without a plugin process -
-# see docs/USE_CASES.md for the honest note on why.
+# A production version would use `scim.user_list` and `scim.user_get` against
+# the organization's real directory, and close the loop with
+# `scim.user_deactivate` once a reviewer refuses - see
+# examples/plugins/scim for that version, which also shows the write being
+# made conditional on the version the reviewer's evidence was read at. This
+# file stays on `http` so it runs, and its test passes, without a plugin
+# process - see docs/USE_CASES.md for the honest note on why.
 inputs:
   access_grants:
     type: list

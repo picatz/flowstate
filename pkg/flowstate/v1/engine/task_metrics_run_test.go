@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -28,6 +29,19 @@ func TestRunWorkflowTaskMetrics(t *testing.T) {
 	outputs, err := runTaskMetricWorkflow(t)
 
 	conformance.AssertTaskMetrics(t, reader, metricschema.DriverDurable, outputs, err)
+}
+
+// TestRetryingTaskMetrics is the durable caller of the shared retry case.
+func TestRetryingTaskMetrics(t *testing.T) {
+	var attempts atomic.Int32
+	registry := v1.DefaultRegistry()
+	require.NoError(t, registry.Register(conformance.TaskSpanRetryTaskDef(&attempts)))
+	t.Cleanup(func() { registry.Unregister(conformance.TaskSpanRetryTaskName) })
+
+	reader := conformance.RecordMetrics(t)
+	outputs, err := runTaskMetricWorkflowNamed(t, conformance.TaskSpanRetryWorkflow())
+
+	conformance.AssertTaskRetryMetrics(t, reader, metricschema.DriverDurable, outputs, err)
 }
 
 // TestRunWorkflowRecordsNoMetricsWithoutAMeterProvider is the durable half of
@@ -81,6 +95,12 @@ func TestADurableTaskPanicIsRecordedAsAFailure(t *testing.T) {
 func runTaskMetricWorkflow(t *testing.T) (*v1.Workflow_StepOutputs, error) {
 	t.Helper()
 
+	return runTaskMetricWorkflowNamed(t, conformance.TaskMetricWorkflow())
+}
+
+func runTaskMetricWorkflowNamed(t *testing.T, workflow *v1.Workflow) (*v1.Workflow_StepOutputs, error) {
+	t.Helper()
+
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(engine.Run)
@@ -88,7 +108,7 @@ func runTaskMetricWorkflow(t *testing.T) (*v1.Workflow_StepOutputs, error) {
 	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: conformance.TaskMetricWorkflow()})
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: workflow})
 	require.True(t, env.IsWorkflowCompleted())
 
 	if err := env.GetWorkflowError(); err != nil {
