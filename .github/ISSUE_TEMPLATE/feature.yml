@@ -1,0 +1,28 @@
+name: Capability
+description: Something an author, operator, or agent needs and cannot express or reach today.
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, what you tried, and where it stops. Show the Flowfile or command you wished worked.
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: Desired outcome
+      description: The observable behavior after the work. AGENTS.md invariant 8 applies: authors can express it, validation and tooling understand it, both drivers execute it, documentation teaches the canonical form.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Conditions a reviewer or a test can evaluate.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and dependencies
+      description: Existing spellings of the concept (search docs/DSL.md first), related issues, compatibility or security considerations.

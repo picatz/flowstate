@@ -17,16 +17,13 @@
 package reachable
 
 import (
-	"context"
-	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/picatz/flowstate/internal/covbuild"
+	"github.com/picatz/flowstate/internal/pluginreachtest"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
@@ -127,20 +124,65 @@ func TestAFlowfileCanNameTheSQLPluginsTasks(t *testing.T) {
 		}
 	})
 
+	t.Run("both SQL tasks refuse a literal DSN before compilation", func(t *testing.T) {
+		for name, source := range map[string][]byte{"sql.query": querySource, "sql.exec": execSource} {
+			t.Run(name, func(t *testing.T) {
+				literal := "literal-dsn-must-not-enter-history"
+				changed := strings.Replace(string(source), "${secret('env:SQL_DSN')}", literal, 1)
+				diags, err := flowfile.ValidateSource([]byte(changed))
+				if err != nil {
+					t.Fatalf("ValidateSource: unexpected error: %v", err)
+				}
+				got := diagnosticText(diags)
+				if !strings.Contains(got, "whole secret reference") {
+					t.Fatalf("literal DSN diagnostics = %q, want required-secret refusal", got)
+				}
+				if strings.Contains(got, literal) {
+					t.Fatalf("literal DSN leaked into diagnostics: %q", got)
+				}
+			})
+		}
+	})
+
 	t.Run("engine is a closed enum, checked like a built-in's", func(t *testing.T) {
 		// engine is Engine in sql.v1.QueryInputs; the only way the validator
 		// can know its choices is the descriptor this plugin shipped over
 		// its socket at launch, reconstructed by the host.
 		wrongEngine, err := flowfile.ValidateSource([]byte(strings.Replace(
-			string(querySource), "ENGINE_SQLITE", "ENGINE_ORACLE", 1)))
+			string(querySource), "ENGINE_POSTGRES", "ENGINE_ORACLE", 1)))
 		if err != nil {
 			t.Fatalf("ValidateSource: unexpected error: %v", err)
 		}
 		if len(wrongEngine) == 0 {
 			t.Error("\"ENGINE_ORACLE\" was accepted for engine, which this build does not support")
 		}
-		if !strings.Contains(diagnosticText(wrongEngine), "sqlite") || !strings.Contains(diagnosticText(wrongEngine), "postgres") {
-			t.Errorf("the diagnostic does not list what this build supports; diagnostics:\n%s", diagnosticText(wrongEngine))
+		if got := diagnosticText(wrongEngine); !strings.Contains(got, "postgres") {
+			t.Errorf("the diagnostic does not list what this build supports; diagnostics:\n%s", got)
+		} else if strings.Contains(got, "sqlite") {
+			t.Errorf("the diagnostic offers sqlite, which a released build refuses at dispatch (#1692); diagnostics:\n%s", got)
+		}
+	})
+
+	t.Run("sqlite is refused where it is written, not at dispatch", func(t *testing.T) {
+		// ENGINE_SQLITE carries `(flowstate.v1.test_only) = true` in
+		// sql.proto, and the mark rides in the descriptor to the host, which
+		// is the only way `flow validate` can know that a value spelled
+		// correctly is one this build will not run (#1692). Before the mark
+		// the first thing a person without Postgres tried was accepted here
+		// and refused by the plugin process.
+		for _, spelling := range []string{"ENGINE_SQLITE", "sqlite"} {
+			diags, err := flowfile.ValidateSource([]byte(strings.Replace(
+				string(querySource), "ENGINE_POSTGRES", spelling, 1)))
+			if err != nil {
+				t.Fatalf("ValidateSource: unexpected error: %v", err)
+			}
+			got := diagnosticText(diags)
+			if len(diags) == 0 {
+				t.Fatalf("%q was accepted for engine; the refusal would come at dispatch", spelling)
+			}
+			if !strings.Contains(got, "test builds") || !strings.Contains(got, "postgres") {
+				t.Errorf("the refusal of %q does not say the value is test-only and name the choices; diagnostics:\n%s", spelling, got)
+			}
 		}
 	})
 
@@ -186,96 +228,21 @@ func TestAFlowfileCanNameTheSQLPluginsTasks(t *testing.T) {
 }
 
 func buildPlugin(t *testing.T, output string) {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-
-	// -cover only when internal/covbuild says coverage was asked for, which
-	// is `make coverage` and nothing else. This binary is a real subprocess:
-	// without instrumentation every line it runs is invisible to the harness
-	// that launched it, and this plugin's end-to-end path runs nowhere else.
-	args := append([]string{"build"}, covbuild.BuildArgs()...)
-	args = append(args, "-o", output, sqlModule)
-
-	cmd := exec.CommandContext(ctx, "go", args...)
-	if wd, err := os.Getwd(); err == nil {
-		cmd.Dir = wd
-	}
-
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building the sql plugin: %v: %s", err, out)
-	}
+	pluginreachtest.BuildPlugin(t, sqlModule, output)
 }
 
 func readExample(t *testing.T, name string) []byte {
-	t.Helper()
-
-	data, err := os.ReadFile(filepath.Join(exampleDir, name))
-	if err != nil {
-		t.Fatalf("reading the example workflow: %v", err)
-	}
-	return data
+	return pluginreachtest.ReadFile(t, filepath.Join(exampleDir, name))
 }
 
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, info.Mode())
-}
+var copyFile = pluginreachtest.CopyFile
 
 func openHost(t *testing.T, cfg plugin.Config) *plugin.Host {
-	t.Helper()
-
-	// A plugin's environment is built from scratch rather than inherited
-	// (see plugin.pluginEnv), so the coverage destination reaches the
-	// process only if it is named here. Empty unless FLOWSTATE_COVERDIR is
-	// set, which makes this a no-op outside `make coverage`.
-	cfg.Env = append(cfg.Env, covbuild.Env()...)
-
-	host, err := plugin.NewHost(cfg)
-	if err != nil {
-		t.Fatalf("NewHost: %v", err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		host.Close(ctx)
-	})
-
-	if err := host.Open(context.Background()); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	return host
+	return pluginreachtest.OpenHost(t, cfg)
 }
 
 func diagnosticText(diags flowfile.Diagnostics) string {
-	var b strings.Builder
-	for _, d := range diags {
-		b.WriteString(d.Message)
-		b.WriteString("\n")
-	}
-	return b.String()
+	return pluginreachtest.DiagnosticText(diags)
 }
 
-func testLogger(t *testing.T) *slog.Logger {
-	t.Helper()
-	return slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Helper()
-	defer func() { _ = recover() }()
-	w.t.Log(strings.TrimRight(string(p), "\n"))
-	return len(p), nil
-}
+var testLogger = pluginreachtest.Logger

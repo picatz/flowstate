@@ -8,6 +8,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestUUIDConstraintUsesTheSharedVocabulary(t *testing.T) {
+	t.Parallel()
+
+	rules := &validate.FieldRules{Type: &validate.FieldRules_String_{String_: &validate.StringRules{
+		WellKnown: &validate.StringRules_Uuid{Uuid: true},
+	}}}
+	assert.Equal(t, []string{"a UUID"}, constraintPhrases(rules))
+}
+
 // TestExclusiveBoundsKeepTheirWords pins the difference between gt and gte at
 // the surface an author reads: a field constrained `gt: 0` refuses zero, so
 // describing it as "at least 0" would teach the one value validation rejects.

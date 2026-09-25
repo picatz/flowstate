@@ -19,3 +19,9 @@ import (
 func pinToDescriptor(f *os.File, _ fs.FileInfo) (*os.File, string, error) {
 	return f, "", errors.New("this platform cannot execute an already-open descriptor")
 }
+
+// prepareForExec is unnecessary where the image is executed by path rather
+// than through a descriptor in the child table.
+func (im *execImage) prepareForExec([]*os.File) error {
+	return nil
+}

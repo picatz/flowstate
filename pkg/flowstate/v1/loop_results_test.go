@@ -259,7 +259,7 @@ func TestAccumulateLoopResult(t *testing.T) {
 		var results []*v1.Workflow_StepOutputs
 		bytes := 0
 		var err error
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			results, bytes, err = v1.AccumulateLoopResult(results, bytes, bigIteration(100))
 			require.NoError(t, err)
 		}
@@ -312,7 +312,7 @@ func TestAccumulateForEachResult(t *testing.T) {
 		var results []*v1.Workflow_StepOutputs
 		bytes := 0
 		var err error
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			results, bytes, err = v1.AccumulateForEachResult(results, bytes, bigIteration(100))
 			require.NoError(t, err)
 		}

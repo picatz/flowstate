@@ -1,0 +1,16 @@
+# The fallthrough the merge rules promise: an unfiltered default answers what
+# the case's filtered stub does not, and nothing warns (#1668).
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a filtered case stub ahead of a catch-all default
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+    expect:
+      ran: [greet, part]

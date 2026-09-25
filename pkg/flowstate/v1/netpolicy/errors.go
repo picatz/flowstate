@@ -88,14 +88,52 @@ type DenyError struct {
 	Target string
 
 	// Detail names the specific rule, category, or constraint responsible for
-	// the denial, such as "loopback", "cloud metadata", or the source text of a
-	// CEL rule.
+	// the denial, such as "loopback addresses are not allowed", "cloud metadata
+	// addresses are not allowed, even inside an allowed network", or the source
+	// text of a CEL rule. It is prose for a person, not a key for a program:
+	// a caller that needs to know which setting was decisive reads Admits.
 	Detail string
+
+	// Admits names the `egress:` setting that would have admitted what was
+	// refused, as a configuration file spells it — "schemes", "allow_loopback",
+	// "allow_private_networks", "allow_networks", "allow_ports" — so a caller
+	// composing a remedy repeats the decision the policy made rather than
+	// re-deriving it from Detail's prose (#1694). It is set where the decision
+	// is made, by the check that knows which of its own inputs was decisive.
+	//
+	// Empty when no setting admits the target: a cloud metadata, link-local,
+	// multicast or unspecified address, which the file has no key for; an
+	// address inside deny_networks or a port inside deny_ports, which win over
+	// their allow lists; and every refusal that is not about the policy's
+	// shape, such as a rule that matched or could not be evaluated.
+	Admits string
 
 	// Err is the underlying cause, when the denial came from something failing
 	// rather than from a rule matching. A rule that could not be evaluated puts
 	// the evaluation error here, so a caller can inspect it with errors.As.
 	Err error
+
+	// Hop is the redacted URL of the request this decision was about, when the
+	// decision was made about one.
+	//
+	// Target is not always that URL: for an address, a port or a scheme
+	// refusal it is the attribute that was rejected — "203.0.113.9:443" — and
+	// a caller that must name the destination cannot recover it from that. Set
+	// at [Policy.checkRequestHop] and [Policy.controlDial], the two places a
+	// hop enters the policy, so the destination a denial names is the hop that
+	// was refused rather than the URL the caller originally asked for
+	// (picatz/flowstate#1379).
+	//
+	// Empty for a denial made outside a request, such as [Policy.CheckAddr]'s.
+	Hop string
+
+	// AfterRedirect reports that an earlier request in this redirect chain
+	// reached its peer before this hop was refused, which means the caller's
+	// original request was sent. [RateLimitedError.AfterRedirect] and
+	// [UndecidedError.AfterRedirect] carry the same fact for the same reason:
+	// a caller must not replay a non-idempotent request as though nothing had
+	// happened.
+	AfterRedirect bool
 }
 
 // Error implements the error interface.
@@ -139,6 +177,11 @@ type RateLimitedError struct {
 	// sense that no server said it, but derived from the bucket's own state
 	// rather than guessed.
 	RetryAfter time.Duration
+
+	// AfterRedirect reports that an earlier request in this redirect chain
+	// reached its peer before this hop was held back. Callers use it to avoid
+	// replaying a non-idempotent original request as though nothing was sent.
+	AfterRedirect bool
 }
 
 // Error implements the error interface.
@@ -166,3 +209,81 @@ func (e *BodyTooLargeError) Error() string {
 
 // Unwrap returns [ErrBodyTooLarge] so every size denial matches a single sentinel.
 func (e *BodyTooLargeError) Unwrap() error { return ErrBodyTooLarge }
+
+// UndecidedError reports that this policy was interrupted before it reached a
+// verdict: the caller's context was cancelled or expired while a rule was being
+// evaluated, so the request is neither permitted nor refused.
+//
+// It exists because "no decision" and "denied" are different facts, and only one
+// of them may be written down as a decision. [ruleFailure] has always returned a
+// cancelled context as itself rather than as a denial, for the reason stated
+// there — telling an operator their rules rejected a request that in fact never
+// finished. A caller that must record what this policy decided
+// (picatz/flowstate#1379) needs the same distinction one step further out, and a
+// bare context error cannot carry it: a context error also arrives from the
+// transport, from the dialer, and from a peer that never answered, long after
+// the policy said yes.
+//
+// It deliberately does not wrap [ErrDenied]. It is not a denial, and a caller
+// that maps denials to a permanent refusal must not map this to one.
+type UndecidedError struct {
+	// Target is the request that was being evaluated, redacted the way
+	// [DenyError.Target] is.
+	Target string
+
+	// AfterRedirect reports that an earlier request in this redirect chain
+	// reached its peer before this hop's evaluation was interrupted, which means
+	// the policy did decide — and permit — the request the caller made. Set at
+	// the transport, which is the only place that knows a hop from an origin;
+	// [RateLimitedError.AfterRedirect] carries the same fact for the same
+	// reason.
+	AfterRedirect bool
+
+	// Err is the context's own error, kept so that errors.Is(err,
+	// context.Canceled) and errors.Is(err, context.DeadlineExceeded) answer for
+	// this exactly as they answered for the bare value this replaced.
+	//
+	// For a dial that failed before the policy's hook ran it is the dialer's
+	// error instead, and Cause says which kind.
+	Err error
+
+	// Cause names the class of failure that stopped the policy short, when the
+	// dial path could tell: [UndecidedByResolver] for a name that did not
+	// resolve, [UndecidedBySocket] for an address whose socket could not be
+	// opened. Empty for an interrupted rule evaluation and for a dial failure
+	// of no recognised class, where Err says what it can.
+	//
+	// It is what lets an operator tell a broken host from a broken policy:
+	// "no socket could be opened" for an IPv6 literal on a host without IPv6
+	// is the host's problem, and the same message for every target is the
+	// worker's.
+	Cause UndecidedCause
+}
+
+// UndecidedCause is the class of failure an [UndecidedError] reports, in the
+// words its message uses.
+type UndecidedCause string
+
+const (
+	// UndecidedByResolver: the name never resolved, so the address policy was
+	// never shown an address.
+	UndecidedByResolver UndecidedCause = "the resolver failed"
+
+	// UndecidedBySocket: the address resolved, but no socket could be opened
+	// to it, so the dialer's hook — where the policy decides — never ran. On a
+	// host without IPv6 this is every IPv6 address.
+	UndecidedBySocket UndecidedCause = "no socket could be opened"
+)
+
+// Error implements the error interface.
+func (e *UndecidedError) Error() string {
+	if e.Cause != "" {
+		return fmt.Sprintf("egress policy evaluation for %s ended before it decided because %s: %v", e.Target, e.Cause, e.Err)
+	}
+
+	return fmt.Sprintf("egress policy evaluation for %s was interrupted before it decided: %v", e.Target, e.Err)
+}
+
+// Unwrap returns the context's error, and notably not [ErrDenied]: see the type's
+// own documentation.
+func (e *UndecidedError) Unwrap() error { return e.Err }

@@ -84,7 +84,7 @@ func TestRehearsedApprovalOpensAGateAndSaysItWasRehearsed(t *testing.T) {
 
 	approval := outputs.GetStepValues()["approval"]
 	require.NotNil(t, approval)
-	require.True(t, payloadField(t, approval, "approved").GetBoolValue())
+	require.True(t, conformance.PayloadField(t, approval, "approved").GetBoolValue())
 	require.NotNil(t, outputs.GetStepValues()["deploy"],
 		"the policed gate did not open for the approver its own policy names, so a rehearsal "+
 			"can still only reach the refusal")

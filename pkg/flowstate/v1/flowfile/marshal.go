@@ -3,6 +3,7 @@ package flowfile
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
 	"slices"
 	"strings"
@@ -110,6 +111,20 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 			return nil, err
 		}
 		doc = append(doc, yaml.MapItem{Key: "signals", Value: written})
+	}
+
+	// Beside it, in the position the parser reads it. Written through the same
+	// one function a signal's policy is written through, which is what keeps
+	// `flow fmt` an exact inverse for both: a second writer that learned about
+	// a key the parser reads — or forgot one — is the asymmetric marshal
+	// signals.go's package doc names as a command that silently deletes an
+	// author's policy.
+	if debug := wf.GetDebug(); debug != nil {
+		written, err := signalPolicyToYAML(debug)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "debug", Value: written})
 	}
 
 	// Written before steps, which is where an author writes it and so where a reader
@@ -1045,7 +1060,7 @@ func scalarSurvives(s string, candidate any) bool {
 		return false
 	}
 	var back yaml.MapSlice
-	if err := yaml.Unmarshal(encoded, &back); err != nil {
+	if err := strictyaml.Unmarshal(encoded, &back); err != nil {
 		return false
 	}
 	if len(back) != 1 || back[0].Value != s {
@@ -1062,7 +1077,7 @@ func scalarSurvives(s string, candidate any) bool {
 	var list struct {
 		V []string `yaml:"v"`
 	}
-	if err := yaml.Unmarshal(encoded, &list); err != nil {
+	if err := strictyaml.Unmarshal(encoded, &list); err != nil {
 		return false
 	}
 	return len(list.V) == 1 && list.V[0] == s
@@ -1444,6 +1459,23 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 		}
 
 		entry := yaml.MapSlice{{Key: "value", Value: value}}
+
+		// Only when declared, unlike an input's `type:`, which is always
+		// written because it is always required. An output that declares none
+		// must round-trip back to a block with no `type:` line — every
+		// declaration written before the field existed is one — so the absent
+		// case is silence rather than a spelling for "unspecified".
+		if declaration.GetType() != v1.InputDeclaration_TYPE_UNSPECIFIED {
+			entry = append(entry, yaml.MapItem{Key: "type", Value: v1.DeclaredTypeName(declaration.GetType())})
+		}
+		if len(declaration.GetValues()) > 0 {
+			values := make([]any, 0, len(declaration.GetValues()))
+			for _, v := range declaration.GetValues() {
+				values = append(values, textToYAML(v))
+			}
+			entry = append(entry, yaml.MapItem{Key: "values", Value: values})
+		}
+
 		if declaration.Description != nil {
 			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(declaration.GetDescription())})
 		}

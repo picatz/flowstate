@@ -33,36 +33,30 @@
 // that needs to touch several tables writes several calls, one per table,
 // each with its own literal query text.
 //
-// # Secrets: dsn is never a literal a plugin process holds long
+// # Secrets and destination authority are separate
 //
-// Both tasks declare dsn in their own SecretInputs (main.go), the #160
-// mechanism this plugin is the third consumer of, after plugins/codex's
-// api_key and vault-backed secrets generally: a Flowfile writes
+// Both tasks declare dsn in SecretInputs and RequiredSecretInputs (main.go): a
+// Flowfile writes
 // `dsn: ${secret('vault:prod/db#dsn')}`, and the host resolves that
 // reference under the caller's identity before this task's Fn ever runs -
 // this plugin process never holds a provider credential, a vault token, or
 // a reference of its own, only the one resolved value for the duration of
 // one call (dsnFromValue in secrets.go).
 //
-// A literal dsn: value is accepted rather than refused, for the same
-// reason plugins/codex's api_key is: by the time Fn runs, a resolved secret
-// and an author's own literal arrive as the identical
-// [flowstatev1.Value_Literal] shape, and this task has no way to tell them
-// apart. Writing one directly is discouraged (it puts a credential in the
-// Flowfile and in workflow history) but not mechanically prevented at this
-// layer - the mechanical prevention is `flow validate` refusing anything
-// but a secret reference for an input declared in secret_inputs, which is
-// the host's enforcement, not this plugin's.
+// RequiredSecretInputs makes validation and the host refuse a literal before a
+// compiled specification enters durable history or Execute crosses the plugin
+// socket. The resolved value has the ordinary literal wire shape only after
+// those checks. This controls credential source, not destination: PostgreSQL
+// additionally requires the operator's --egress-policy to permit every parsed
+// host, resolved address, and port on the actual socket path. A manifest claim
+// alone grants neither secret access nor network authority.
 //
 // Every DSN this plugin resolves is registered with a
 // [secrets.Scrubber] before the connection is ever opened (query.go,
 // exec.go), and every error and output this plugin returns passes through
 // it. This matters more than usual for a SQL plugin specifically: database
-// drivers echo connection strings in their own error messages routinely -
-// "dial tcp: lookup db.internal: no such host" carries no secret, but
-// "pq: SSL error: password authentication failed for user \"app\" (dsn:
-// postgres://app:hunter2@db.internal/prod)" does, and this plugin has no
-// way to know in advance which of a driver's error paths does which. See
+// drivers can echo connection strings in their own error messages, and this
+// plugin has no way to know in advance which error paths do so. See
 // scrub_test.go for the containment-shape tests CLAUDE.md requires: %v,
 // %+v, %#v, and %s, on the value, on a struct holding it, and on a slice of
 // those, proven to bite by deliberately leaking the DSN and watching the
@@ -126,25 +120,14 @@
 //     this plugin buffer an unbounded response by returning one, because the
 //     refusal happens at the socket, before pgx's own parsing ever sees the
 //     excess bytes.
-//   - Sqlite is an embedded engine with no network wire to bound at all -
-//     the driver reads from a file or from memory in-process, so there is no
-//     equivalent connection to wrap. What this plugin bounds instead is the
-//     honest analogue: decoded result size, checked in scanBoundedRows as
-//     each row is scanned, before it is ever assembled into this call's
-//     output (maxRowBytes per row, maxResultBytes across the whole result).
-//     That is real prevention (a row over budget stops the scan and refuses
-//     before more work happens), but it is a different bound catching a
-//     different thing than the postgres wire cap: a hostile *query* that
-//     computes a huge value from tiny stored data (a recursive CTE, a
-//     pathological string aggregate) is bounded either way, but nothing
-//     here bounds how much work sqlite itself does producing bytes this
-//     plugin has not read yet - the same class of gap plugins/git's own
-//     doc.go names for pack decompression ratio, reported here rather than
-//     solved.
-//   - Both engines apply the row-count refusal (max_rows) and the
-//     decoded-byte bounds (maxRowBytes, maxResultBytes) uniformly, as a
-//     backstop under the postgres wire bound and as the primary defense for
-//     sqlite.
+//   - SQLite is an embedded filesystem authority, not network egress. Released
+//     plugin binaries refuse every SQLite DSN, including memory and file URI
+//     forms, because URI modes, symlinks, ATTACH, VACUUM INTO, and extension
+//     loading make partial path validation an inadequate confinement boundary.
+//     Package tests enable it only through test-compiled code for hermetic SQL
+//     semantic fixtures; process separation is not represented as a sandbox.
+//   - PostgreSQL also applies the row-count refusal and decoded-byte bounds
+//     (maxRowBytes, maxResultBytes) as a backstop under the wire bound.
 //
 // The decoded-byte accounting above shipped counting only the bytes
 // convertColumnValue reports for a column's own value, which is exactly
@@ -233,9 +216,9 @@
 //
 // # Drivers
 //
-// sqlite (modernc.org/sqlite) and postgres (github.com/jackc/pgx/v5) are
-// both pure Go, compiled directly into this plugin - no cgo anywhere in
-// this module, and no third layer of runtime-loadable database backends:
+// postgres (github.com/jackc/pgx/v5) is the released runtime engine. SQLite
+// (modernc.org/sqlite) remains a pure-Go package-test fixture only. There is no
+// cgo in this module and no third layer of runtime-loadable database backends:
 // issue #181's own driver-vs-plugin rule settles this explicitly ("a driver
 // is a Go dependency compiled into its plugin... adding a driver is a PR to
 // the plugin - reviewed, vetted, released - not a runtime event"). Engine
@@ -245,14 +228,10 @@
 // enum field is (flowfile/schema.go's literalMismatch, which this plugin
 // gets for free from declaring Engine as an enum rather than a string).
 //
-// # Why sqlite is enumerated first
+// # Test posture
 //
-// Issue #181's own design comment orders the drivers "postgres first" for
-// production weight - postgres is the enterprise target this family exists
-// to reach. This plugin's own test suite runs against sqlite first anyway,
-// deliberately, for the reason CLAUDE.md's "run what CI runs" guidance
-// gives the same weight to: a plugin whose tests need a running server is a
-// plugin CI cannot honestly verify. Every hermetic test in this module -
+// The semantic tests use SQLite only because a plugin whose tests need an
+// external server is one CI cannot honestly verify. Every hermetic test -
 // query.go, exec.go, params.go, rows.go, scrub_test.go, errors_test.go -
 // runs against an in-process sqlite database, in-memory, with nothing to
 // stand up, nothing to tear down, and no flake from a container that was
@@ -260,9 +239,7 @@
 // exercised by unit tests that do not require a live server (DSN parsing,
 // wire-bound conn wrapping, PgError classification against constructed
 // values) - but this module has no live-postgres integration test, and
-// that gap is named here rather than left for someone to discover: nothing
-// in CI today proves sql.query and sql.exec work end to end against a real
-// postgres server, only that they are wired to try. Both engines are
-// enumerated in the manifest and both are real, shipped drivers; only one
-// of them has this plugin's own tests standing behind its wire format.
+// that gap is named here rather than left for someone to discover. The actual
+// pgx dial path is exercised against bounded local listeners, including the
+// deny-before-accept mutation oracle; no external PostgreSQL server is needed.
 package main

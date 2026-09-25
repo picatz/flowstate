@@ -24,6 +24,14 @@
 # the grounds that it could not be checked. Binding the keys *and* declaring
 # `signature:` is refused outright, because a declaration that could contradict
 # the arithmetic is one fact written down twice.
+#
+# The fourth case is what the idempotency key is for. Stripe retries an event by
+# sending the same body under a fresh signature — a new `t=`, a new MAC — so
+# testdata/stripe-charge-retry.json is the first fixture's body re-signed thirty
+# seconds later. It verifies, and it is named `evt_3PqLd2X1` exactly as the
+# first delivery was, which is what makes the served receiver join it to the run
+# that delivery started rather than capture the order twice. A key over the
+# signature header would pass the first case and fail this one.
 edition: v2026.3
 defaults:
   stubs:
@@ -46,10 +54,10 @@ tests:
         amount: 4200
 
       # The key the delivery is deduped by. Worth asserting rather than trusting:
-      # an expression reaching the wrong header is wrong in the direction nothing
+      # an expression reaching the wrong field is wrong in the direction nothing
       # else notices — every delivery gets its own key, or every delivery gets the
       # same one, and both look like working software until a retry happens.
-      idempotency_key: t=1577836800,v1=922efac97598f75c6c3e565e26a204ecd6b14d3af19d66a8c0d183aa081f1797
+      idempotency_key: evt_3PqLd2X1
 
       # The run those inputs produced, asserted like any other case's.
       ran: [record]
@@ -81,3 +89,24 @@ tests:
       payload: ./testdata/stripe-charge-forged.json
     expect:
       refused: true
+
+  - name: a retry signed afresh is named the same event, so it joins the first run
+    workflow: ./workflow.yaml
+    secrets:
+      "env:STRIPE_WEBHOOK_SECRET": whsec_example_fixture_key
+    trigger:
+      webhook: stripe
+      # The first fixture's body, byte for byte, under the signature Stripe
+      # computes when it retries: a later timestamp and a different MAC.
+      payload: ./testdata/stripe-charge-retry.json
+    expect:
+      # The same name as the first case's delivery. That equality is the whole
+      # of what dedupes a retry: the receiver derives the run's id from it.
+      idempotency_key: evt_3PqLd2X1
+      inputs:
+        order_id: ord_H1x9
+        amount: 4200
+      ran: [record]
+      outputs:
+        order: ord_H1x9
+        amount: 4200

@@ -1,18 +1,104 @@
 # Examples
 
-Each directory holds one `workflow.yaml` demonstrating a feature. Run any of them locally,
-without Temporal:
+The corpus has four jobs: teach a first workflow, isolate language and policy
+features, show production-shaped compositions, and pin regressions. Start with a
+journey below; use the complete inventory afterward when you already know which
+construct you need.
+
+## First five minutes
+
+These commands run from a clean repository checkout and do not require an
+installed `flow` binary, a server, a worker, or Temporal.
+
+<!-- first-run-smoke:start -->
 
 ```console
-$ flow run local examples/hello-world/workflow.yaml
+$ go run ./cmd/flow validate examples/hello-world/workflow.yaml
+examples/hello-world/workflow.yaml: ok
+$ go run ./cmd/flow compile examples/hello-world/workflow.yaml -o json | jq -r .name
+hello-world
+$ go run ./cmd/flow test examples/hello-world/
+PASS  examples/hello-world/workflow.test.yaml: the one step logs the literal it was given
+$ go run ./cmd/flow run local examples/hello-world/workflow.yaml
+INFO hello world
+COMPLETED workflow hello-world
 ```
 
-Check one without running it — worth preferring for the network examples, since running
-them makes real requests:
+<!-- first-run-smoke:end -->
 
-```console
-$ flow validate examples/hello-world/workflow.yaml
-```
+`validate` and `compile` execute no tasks. `test` replaces tasks and signals with
+fixtures and uses a virtual clock. `run local` executes real tasks in the current
+process; for a network example that means making a real request. Prefer
+`validate` or `test` until you have reviewed its egress and secret requirements.
+
+Local execution is an ephemeral rehearsal, not a durable-run simulation. The
+local and Temporal drivers share the compiled model and step semantics; Temporal
+adds persisted history, crash recovery, durable timers and signals, and worker
+versioning. A production claim is made only where a durable-driver test or the
+adjacent README says so. Follow the [durable quickstart](../README.md#3-run-durably)
+before using `flow run` without `local`.
+
+## Choose a journey
+
+Still deciding whether to start one? [Why Flowstate, and when
+not](../docs/COMPARISON.md) puts it beside the alternatives and names the
+workloads that are not a fit.
+
+The role labels classify the representative portfolio. Focused demonstrations
+teach one mechanism; production-shaped compositions show mechanisms interacting;
+regression fixtures exist primarily to keep an edge from returning. The complete
+inventory below remains the source of truth for every directory.
+
+| Journey | Start with | Role |
+| --- | --- | --- |
+| Hello and the authoring loop | [hello-world](hello-world), then [hello-world-multi-step](hello-world-multi-step) | first-run tutorial |
+| Typed inputs, outputs, and CEL | [parameterized-deploy](parameterized-deploy), [computed-outputs](computed-outputs), [expressions](expressions) | focused feature demonstration |
+| Refusing a value rather than carrying it | [enum-input](enum-input), [alert-title-bound](alert-title-bound), [utilization-guard](utilization-guard) | focused feature demonstration |
+| Branching and optional values | [webhook-routing](webhook-routing), [optional-dispatch](optional-dispatch) | focused feature demonstration |
+| Loops and bounded fan-out | [loop-accumulate](loop-accumulate), [fan-out-and-parallel](fan-out-and-parallel), [matrix-fan-out](matrix-fan-out) | focused feature demonstration |
+| Reusable workflow composition | [call-a-workflow](call-a-workflow), then [enterprise-customer-onboarding](enterprise-customer-onboarding) | production-shaped composition |
+| Retries, timeouts, cancellation, and undo | [conditional-and-retry](conditional-and-retry), [wait-timeout](wait-timeout), [order-fulfillment](order-fulfillment) | focused feature demonstration → production-shaped composition |
+| Signals and human decisions | [approval-gate](approval-gate), then [approval-escalation](approval-escalation) | policy/governance → production-shaped composition |
+| Long-lived entities many callers address | [entity-order](entity-order), [renewal-reminder](renewal-reminder), [signal-batch-drain](signal-batch-drain) | focused feature demonstration |
+| Schedules and trigger context | [scheduled-report](scheduled-report), [schedule-overlap-policies](schedule-overlap-policies), [webhook-trigger](webhook-trigger), [webhook-approval-bridge](webhook-approval-bridge), [trigger-context](trigger-context) | focused feature demonstration |
+| Local rehearsal and durable execution | [deployment-reconciler](deployment-reconciler), [approval-gate](approval-gate) | local-vs-Temporal parity |
+| `flow test`, directory fixtures, and `testdefaults.yaml` | [testing-defaults](testing-defaults), then any sibling `workflow.test.yaml` | testing/debugging/editor/agent journey; regression fixture |
+| CLI, MCP, and DAP debugging | [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
+| LSP and editor setup | [editor setup](../docs/EDITORS.md), [VS Code client](../editors/vscode/README.md) | testing/debugging/editor/agent journey |
+| Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [http-secret](http-secret) | policy/governance |
+| Holding a credential a step needs | [http-secret](http-secret), then [vault-secret](vault-secret), [http-federated](http-federated) | policy/governance |
+| One run at a time, and one tenant's fleet | [exclusive-cluster-drain](exclusive-cluster-drain), [operations/tenant-routing](operations/tenant-routing/) | policy/governance |
+| Observability and audit | [observability](observability), [enterprise-access-review](enterprise-access-review) | production-shaped composition |
+| Plugin discovery and one safe invocation | [plugins/greet](plugins/greet), then the read-only [Git](plugins/git) or [VCS](plugins/vcs) journey | plugin integration |
+| Agent and MCP authoring | [agentic-loop](agentic-loop); [agentic-fix](plugins/agentic-fix) only after its plugin prerequisites | testing/debugging/editor/agent journey → plugin integration |
+
+## House style
+
+- Run `go run ./cmd/flow fmt <workflow>` and accept its key ordering, quoting,
+  and blank-line rhythm. Do not align or space a file into a shape the formatter
+  immediately removes.
+- Comment *why*: a trust boundary, surprising evaluation point, retry or
+  cancellation consequence, or operational hazard. Do not narrate obvious keys.
+  If the explanation needs a section heading, commands, or more than one short
+  paragraph, put it in the directory README and link to the canonical generated
+  reference instead of copying task fields.
+- Keep commands runnable from the directory they claim. Repository documentation
+  uses repository-root commands unless it explicitly changes directories.
+- Say **local rehearsal** for `flow run local` and **durable run** for server and
+  Temporal execution. Never imply that a local assertion authenticates identity
+  or that passing locally proves crash recovery.
+- Examples carry references such as `${secret('env:NAME')}`, never secret-looking
+  literals. Network calls need explicit bounds and safe defaults; writes require
+  inputs or setup that prevent accidental invocation.
+- Each top-level example has a behavior-focused `*.test.yaml`. A README is needed
+  when setup, security posture, multiple files, or operational semantics cannot
+  fit beside the relevant key without overwhelming the Flowfile.
+
+## Complete inventory
+
+Each row links a maintained example. “Network” means a real local run performs
+external I/O; validation and tests remain offline unless that example's README
+says otherwise.
 
 | Example | Shows | Network |
 | --- | --- | --- |
@@ -23,7 +109,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
-| [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | no |
+| [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | yes |
 | [loop-accumulate](loop-accumulate) | `loop:` carrying state between iterations until a condition holds, bounded by `max_iterations:`, reporting `results` and `state` | no |
 | [loop-poll-until](loop-poll-until) | `loop:` in its stateless mode — a bounded poll that repeats a check until the body reports ready, or gives up at `max_iterations:` | yes |
 | [paged-fan-out](paged-fan-out) | The batch shape — a `loop:` walking a cursor API to exhaustion with a `for_each` inside it fanning out over each page under `max_parallel:`, and the file honest about the window draining at every page boundary | yes |
@@ -37,6 +123,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [fan-out-calls](fan-out-calls) | `call:` inside `for_each` — a worklist where each item is handled by a reusable called workflow, bounded by `max_parallel:`, each callee's outputs read back per iteration, and one item's call failing tolerated without touching the others | yes |
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
+| [testing-defaults](testing-defaults) | Two suites inheriting one directory-level `testdefaults.yaml`: workflow, safe task stub, assertion, and shared variable stated once | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
 | [optional-dispatch](optional-dispatch) | Why `.orValue(false)` on a three-way dispatch is a bug — `hasValue()` keeping "nobody answered" apart from "answered no" through a signal's payload, dispatched with `switch:` | no |
 | [string-utilities](string-utilities) | `trim()`, `startsWith()`, `substring()`, `lowerAscii()` and `split()` decomposed across named steps to strip a reply prefix and derive a routing key | no |
@@ -83,6 +170,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [schedule-overlap-policies](schedule-overlap-policies) | A decision guide for `overlap:` naming all six policies and why each is right where it is right — `cancel_other` here, and `buffer_all`/`terminate_other`/`allow_all` as three minimal sibling schedules beside it | no |
 | [exclusive-cluster-drain](exclusive-cluster-drain) | `concurrency:` — at most one run of this workflow per key, decided at submit: one drain per cluster, `on_conflict: reject` naming the run that already holds it, and why the block cannot queue and cannot sit beside a webhook or a schedule — with `join` and `terminate_other` as two minimal sibling workflows beside it | no |
 | [webhook-trigger](webhook-trigger) | `triggers:` as a list of call sites — a `webhook:` binding a delivery's payload to `inputs:` through `with:`, checked against that signature by `flow validate`, and replayed offline from a stored delivery by `flow test` (including the delivery that does not verify) | no |
+| [webhook-approval-bridge](webhook-approval-bridge) | The other half of the same block: a `webhook:` whose `signal:` *answers* a `wait_for_signal:` instead of starting a run — `correlate:` naming the run by its entity key, the `signals:` rule that has to name the trigger before the file will compile, and one click delivered twice approving exactly one stage | no |
 | [trigger-context](trigger-context) | `trigger.kind`, `trigger.name`, `trigger.principal` and `trigger.delivery_id` read in a step's `if:` so a scheduled sweep does not page anyone, `manual:` narrowing who may start a run by hand and requiring a recorded reason, and `flow test` setting the context directly so both sides of a trigger-guarded branch are exercisable with no real trigger | no |
 | [manual-denied](manual-denied) | `manual: denied` — refusing a hand start outright rather than narrowing who may make one, for a workload whose only honest caller is its own webhook | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
@@ -94,7 +182,14 @@ $ flow validate examples/hello-world/workflow.yaml
 | [plugins/github](plugins/github/) | `github.pull_request_get` (read) and `github.issue_comment` (a mutation, in a separate parameterized file so it cannot run by accident), plus a read/audit tier (`github.pull_request_list`, `github.pull_request_files`, `github.issue_get`, `github.issue_list`) in a review-triage example — needs a built plugin, a worker, and for the comment file a credential, so read its README | yes |
 | [plugins/git](plugins/git/) | `git.ls_remote` (read) and `git.commit_push` (a mutation, in a separate parameterized file so it cannot run by accident) — one activity, compare-and-swapped against `base_ref`, never forced — needs a built plugin, a worker, and for the write file a credential, so read its README | yes |
 | [plugins/sql](plugins/sql/) | `sql.query` (bounded, typed rows a later step filters with CEL, parameters bound and never spliced into query text, `max_rows:` required with no default) and `sql.exec` (a transfer's four statements as one transaction inside one activity, idempotent on retry, in a separate file) — needs a built plugin, a worker, and a real database, so read its README | yes |
+| [plugins/slack](plugins/slack/) | `slack.post` — one bounded outbound notification for practical approval flows, followed by an authenticated Flowstate signal and an outcome in the same Slack thread; production only, with whole-secret credentials and operator-owned egress policy — needs a built plugin and a worker, so read its README | yes |
 | [plugins/codex](plugins/codex/) | `codex.exec` — one bounded agentic turn over the OpenAI Codex CLI, sandboxed `SANDBOX_MODE_READ_ONLY` and written out rather than left to the default, so the file names its own sandbox — needs a built plugin, a worker, and the `codex` CLI, so read its README | yes |
+| [plugins/oci](plugins/oci/) | `oci.resolve`, `oci.referrers` and `oci.blob` — a supply-chain gate: a tag pinned to the digest a registry serves now, the attestations attached to those exact bytes, and one of them fetched and refused unless it hashes to its own address, before a human approves the digest rather than the tag — needs a built plugin and a worker, so read its README | yes |
+| [plugins/scim](plugins/scim/) | `scim.user_list`, `scim.user_get` and `scim.user_deactivate` — the quarterly access review as a durable workload: a bounded directory read, a week-long wait for a compliance reviewer, and a deactivation made conditional on the version the reviewer's evidence was read at — needs a built plugin, a worker and a SCIM directory, so read its README | yes |
+| [plugins/ssh](plugins/ssh/) | `ssh.run` — a service restarted on a host after an approval, naming an operator's host grant and command grant rather than an address and a command line; the grants file beside it is the whole of the plugin's authority — needs a built plugin, a worker and a reachable host, so read its README | yes |
+| [plugins/docker](plugins/docker/) | `docker.run` — a digest-pinned test container run as a gated step, with the image, mounts, network and resource bounds in the operator's grants file rather than in the workflow; read the plugin's trusted-computing-base note before running it — needs a built plugin, a worker and a container runtime, so read its README | yes |
+| [plugins/jose](plugins/jose/) | `jose.verify` — a token the run received turned into claims it can act on, against issuers an operator trusts, with the authorization decision left to CEL over those claims: the second case is a token that verifies and is declined anyway — needs a built plugin and a worker, so read its README | yes |
+| [plugins/oidc](plugins/oidc/) | No task at all: `${secret('oidc:billing-api')}` is an access token minted for that one call and resolved worker-side, so the credential is a reference in the file and in history — needs a built plugin, a worker and an authorization server, so read its README | yes |
 | [plugins/agentic-fix](plugins/agentic-fix/) | An agent given one bounded, durable try at a broken build and then a person: `codex.exec` produces a patch, `git.commit_push` lands it compare-and-swapped against the commit it was computed on, a `call:` verifies at that exact sha, and a tolerated `max_iterations:` exhaustion is what reaches the `wait_for_signal:` handoff. Two plugins in one file, both stubbed in its `.test.yaml`, and its README says why the budget is one rather than five | yes |
 | [agentic-loop](agentic-loop) | A bounded agentic turn, a cost ceiling read off what it spent, a human gate crossed only when the ceiling was, and the write that lands it — with a README walking the loop an agent performs over `flow mcp` (`flowstate_get_catalog` → `flowstate_validate` → `flowstate_test` → `flowstate_run_local` → `flowstate_run`/`flowstate_get`), transcripts included | yes |
 | [enterprise-fund-transfer](enterprise-fund-transfer) | A role-authorized `signals:` approval gate over a threshold, an idempotency key carried into every ledger call, and `undo:` reversing credit then debit if settlement fails after both applied | yes |
@@ -174,7 +269,37 @@ working out why the loop's last term never lands in its sum. `cmd/flow`'s own te
 it, which is what keeps it from rotting into a file describing a workflow that has moved
 on.
 
-The examples marked as needing network reach `httpbin.org`. They will fail without internet
-access, and the `http` task's egress policy denies internal addresses by default — see
-[Governed network access](../README.md#what-it-can-do) if you point one at a
-service on `localhost`.
+The examples marked as needing network are two kinds, and which kind decides whether running
+one shows you anything.
+
+- Pointed at `httpbin.org`, the only live service a `url:` names anywhere in this split.
+  These run as written, and need internet access. A `vault:`, `op:` or `command:` reference
+  reaches its own backend and no `url:` shows it, so that sits outside the split too —
+  `vault-secret`'s README names the address it contacts, and the others name the tool that
+  holds the credential.
+- Pointed at a name beneath one RFC 2606 reserves for documentation: under `example.com`,
+  `example.net` or `example.org` ([§3](https://www.rfc-editor.org/rfc/rfc2606#section-3)),
+  or under the `.example` top-level domain
+  ([§2](https://www.rfc-editor.org/rfc/rfc2606#section-2)). *Beneath* is
+  load-bearing — those three domains and their `www` are reserved and also served, and a
+  bare `example` is a single label a resolver expands against its search list — so what is
+  left is the set of spellings nobody publishes a record for. These files are written to be
+  read, validated, and exercised with `flow test`: a local run reaches the step pointed
+  there and stops with a name-resolution error rather than showing you that request. A
+  secret backend does resolve its reference before the step it feeds fails, and says so.
+
+That second kind is a convention this repository keeps, not a property of your resolver.
+Nothing here looks a name up, and a split-horizon resolver that answers for
+`api.example.com` would make a local run reach it — so `cmd/flow`'s
+`TestExamplesREADMENetworkClaims` enforces which spellings an example may name, and holds
+the Network column's `no` to the same tree. An example pointed somewhere new fails there
+rather than going stale here, and the reason each permitted spelling is permitted is written
+beside it in `documentationOnlyHost`.
+
+`plugins/` sits outside the split, because a plugin's own task decides where it goes: the Git
+and VCS examples read a public repository on `github.com`, and the rest reach whichever
+service the credential you supply belongs to. Those directories' READMEs say which.
+
+The `http` task's egress policy denies internal addresses by default — see
+[Flowstate's governance capabilities](../README.md#what-you-can-build-today) before
+pointing one at a service on `localhost`.

@@ -9,11 +9,13 @@ import (
 )
 
 func main() {
+	installEgressPolicy()
+
 	sdk.Main(sdk.Plugin{
 		Name:    "sql",
 		Version: "0.1.0",
-		Description: "Parameterized SQL against sqlite or postgres: bounded, typed reads (sql.query) and one " +
-			"transaction per activity (sql.exec) - the connectivity family's first member; see doc.go.",
+		Description: "Policy-governed PostgreSQL: bounded, typed reads (sql.query) and one " +
+			"transaction per activity (sql.exec); DSNs must be host-resolved secrets. See doc.go.",
 
 		// No Secrets field: like plugins/codex, this plugin declares dsn in
 		// each task's SecretInputs below and lets the host resolve it
@@ -28,16 +30,18 @@ func main() {
 				Output:  &sqlv1.QueryOutputs{},
 				// dsn is the only input either task accepts a host secret
 				// reference through. Nothing else here is a credential.
-				SecretInputs: []string{"dsn"},
-				Fn:           sqlQuery,
+				SecretInputs:         []string{"dsn"},
+				RequiredSecretInputs: []string{"dsn"},
+				Fn:                   sqlQuery,
 			},
 			{
-				Name:         "exec",
-				Summary:      "One or more parameterized SQL statements, run as one transaction that begins and ends inside this call.",
-				Input:        &sqlv1.ExecInputs{},
-				Output:       &sqlv1.ExecOutputs{},
-				SecretInputs: []string{"dsn"},
-				Fn:           sqlExec,
+				Name:                 "exec",
+				Summary:              "One or more parameterized SQL statements, run as one transaction that begins and ends inside this call.",
+				Input:                &sqlv1.ExecInputs{},
+				Output:               &sqlv1.ExecOutputs{},
+				SecretInputs:         []string{"dsn"},
+				RequiredSecretInputs: []string{"dsn"},
+				Fn:                   sqlExec,
 			},
 		},
 

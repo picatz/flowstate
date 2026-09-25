@@ -28,9 +28,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
+	"slices"
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -40,6 +43,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
@@ -47,7 +51,7 @@ import (
 )
 
 // ToolPrefix namespaces the tools, since a client may aggregate servers.
-const ToolPrefix = "flowstate_"
+const ToolPrefix = v1.MCPToolPrefix
 
 // WorkflowServiceName addresses the service whose prose this surface reads.
 const WorkflowServiceName protoreflect.FullName = "flowstate.v1.WorkflowService"
@@ -251,6 +255,32 @@ type Deps struct {
 	// is not. See remoteCatalogCall.
 	RemoteCatalogAddress string
 
+	// DecorateRPCError, when set, rewrites the error a dispatched RPC failed
+	// with before it becomes the tool result, given the RPC's name.
+	//
+	// It exists because only the embedding binary knows where the call was
+	// going and why: the lifecycle verbs address durable runs, which only a
+	// server has, and their promise — cmd/flow/mcp.go, "without --address
+	// they explain that rather than failing opaquely" — needs the resolved
+	// address and whether an operator actually named one, neither of which
+	// this package holds. The same division Redact draws: the mechanism here,
+	// the policy and the words in the caller.
+	//
+	// Applied to dispatched RPC errors only — argument-decode refusals answer
+	// as themselves, and the extra tools (run_local, test, debug) never dial.
+	// Nil is the identity.
+	DecorateRPCError func(rpc string, err error) error
+
+	// Audit records each registered tool's authorization decision at the last
+	// shared seam before its handler runs. Nil on stdio, whose local process
+	// makes no bearer authorization decision; flow mcp serve supplies the
+	// process recorder after bearer admission.
+	Audit *audit.Recorder
+
+	// AuditFailure receives the operator-facing detail when a required sink
+	// refuses a decision. The caller sees only a fixed public refusal.
+	AuditFailure func(error)
+
 	// WrapHandler, when set, wraps every tool handler [AddLocalCapabilities]
 	// registers — derived and caller-supplied alike — with the tool's own
 	// name in hand.
@@ -319,7 +349,7 @@ func ServeTools(
 ) error {
 	AddCapabilities(srv, local, remote, deps, extra...)
 
-	return srv.Run(ctx, &mcp.StdioTransport{})
+	return srv.Run(ctx, Stdio())
 }
 
 // AddCapabilities is the one registration, shared with the tests so what they
@@ -380,9 +410,10 @@ func AddLocalCapabilities(
 
 		name := ToolName(method.Name)
 		srv.AddTool(&mcp.Tool{
-			Name:        name,
-			Description: toolDescription(method.Name, deps.reduced),
-			InputSchema: SchemaForMessage(method.Input),
+			Name:         name,
+			Description:  toolDescription(method.Name, deps.reduced),
+			InputSchema:  SchemaForMessage(method.Input),
+			OutputSchema: SchemaForMessage(method.Output),
 			// No Meta: [ToolViews] names no local tool today, and a view
 			// declared here would point at a resource this function does not
 			// mount. If that ever changes, it changes here deliberately.
@@ -396,15 +427,18 @@ func AddLocalCapabilities(
 	addResources(srv, local, deps)
 }
 
-// wrapToolHandler applies [Deps.WrapHandler] when one was given, and is the
-// identity otherwise.
+// wrapToolHandler installs the verified principal, records the authorization
+// decision when this is the authenticated HTTP surface, and only then reaches
+// the caller's process-state guard and the tool itself.
 func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHandler {
-	handler = withMCPPrincipal(handler)
-	if deps.WrapHandler == nil {
-		return handler
+	if deps.WrapHandler != nil {
+		handler = deps.WrapHandler(name, handler)
+	}
+	if deps.Audit != nil {
+		handler = withMCPAudit(deps.Audit, deps.AuditFailure, name, handler)
 	}
 
-	return deps.WrapHandler(name, handler)
+	return withMCPPrincipal(handler)
 }
 
 // withMCPPrincipal installs the verified, token-free caller on the same
@@ -417,6 +451,44 @@ func withMCPPrincipal(next mcp.ToolHandler) mcp.ToolHandler {
 				ctx = auth.ContextWithPrincipal(ctx, principal)
 			}
 		}
+		return next(ctx, req)
+	}
+}
+
+// withMCPAudit is the authoritative MCP tool-authorization seam: the SDK has
+// resolved a registered tool and bearer admission has installed its attested,
+// token-free Principal, while neither argument parsing nor the tool's mutation
+// has happened yet. One allow is therefore complete and true even if the tool
+// later returns an error or its context is cancelled; those are execution
+// outcomes, not revisions to the authorization decision.
+func withMCPAudit(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		principal, ok := auth.PrincipalFromContext(ctx)
+		if !ok || principal.IsZero() || principal.IsAnonymous() {
+			// Unreachable on flow mcp serve: the shared admission sequence
+			// refuses all three before the SDK resolves a tool. Fail closed if
+			// wiring ever violates that invariant, and do not invent an identity
+			// for the audit record.
+			return ToolError(errors.New("MCP tool authorization reached no authenticated caller")), nil
+		}
+
+		identity := v1.ProtoWorkloadIdentity(auth.IdentityFromPrincipal(
+			principal, principal.Namespace, ""))
+		if err := recorder.Allow(ctx, audit.Subject{
+			MCPTool:    tool,
+			Identity:   identity,
+			IssuerName: principal.IssuerName,
+			Role:       principal.Role,
+		}); err != nil {
+			// Required audit failure refuses before next, preserving the same
+			// write-ahead guarantee the RPC surface has. Exporter details belong
+			// in the operator log, never in the remotely visible tool result.
+			if reportFailure != nil {
+				reportFailure(err)
+			}
+			return ToolError(errors.New("the authorization decision could not be recorded; try again")), nil
+		}
+
 		return next(ctx, req)
 	}
 }
@@ -455,9 +527,10 @@ func AddTools(
 ) {
 	for _, method := range WorkflowServiceMethods() {
 		tool := &mcp.Tool{
-			Name:        ToolName(method.Name),
-			Description: ToolDescription(method.Name),
-			InputSchema: SchemaForMessage(method.Input),
+			Name:         ToolName(method.Name),
+			Description:  ToolDescription(method.Name),
+			InputSchema:  SchemaForMessage(method.Input),
+			OutputSchema: SchemaForMessage(method.Output),
 		}
 		if view, ok := ToolViews[method.Name]; ok {
 			tool.Meta = uiToolMeta(view)
@@ -482,26 +555,15 @@ func AddTools(
 // ToolName renders an RPC name as a tool name: GetCatalog becomes
 // flowstate_get_catalog, which is the casing MCP tools conventionally use.
 func ToolName(rpc string) string {
-	var b strings.Builder
-	b.WriteString(ToolPrefix)
-	for i, r := range rpc {
-		if r >= 'A' && r <= 'Z' {
-			if i > 0 {
-				b.WriteByte('_')
-			}
-			r += 'a' - 'A'
-		}
-		b.WriteRune(r)
-	}
-
-	return b.String()
+	return v1.MCPToolNameForRPC(rpc)
 }
 
 // ServiceMethod is one RPC, as the tool derivation needs it.
 type ServiceMethod struct {
-	Name  string
-	Input protoreflect.MessageDescriptor
-	Call  func(ctx context.Context, local *server.FlowstateServer,
+	Name   string
+	Input  protoreflect.MessageDescriptor
+	Output protoreflect.MessageDescriptor
+	Call   func(ctx context.Context, local *server.FlowstateServer,
 		remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error)
 }
 
@@ -515,8 +577,9 @@ type ServiceMethod struct {
 func WorkflowServiceMethods() []ServiceMethod {
 	return []ServiceMethod{
 		{
-			Name:  "Validate",
-			Input: (&v1.ValidateRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Validate",
+			Input:  (&v1.ValidateRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ValidateResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := local.Validate(ctx, connect.NewRequest(in.(*v1.ValidateRequest)))
 				if err != nil {
@@ -527,8 +590,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Compile",
-			Input: (&v1.CompileRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Compile",
+			Input:  (&v1.CompileRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.CompileResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := local.Compile(ctx, connect.NewRequest(in.(*v1.CompileRequest)))
 				if err != nil {
@@ -539,8 +603,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "GetCatalog",
-			Input: (&v1.GetCatalogRequest{}).ProtoReflect().Descriptor(),
+			Name:   "GetCatalog",
+			Input:  (&v1.GetCatalogRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.GetCatalogResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, local *server.FlowstateServer, _ func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := local.GetCatalog(ctx, connect.NewRequest(in.(*v1.GetCatalogRequest)))
 				if err != nil {
@@ -551,8 +616,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Run",
-			Input: (&v1.RunRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Run",
+			Input:  (&v1.RunRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.RunResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Run(ctx, connect.NewRequest(in.(*v1.RunRequest)))
 				if err != nil {
@@ -563,8 +629,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Get",
-			Input: (&v1.GetRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Get",
+			Input:  (&v1.GetRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.GetResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Get(ctx, connect.NewRequest(in.(*v1.GetRequest)))
 				if err != nil {
@@ -575,8 +642,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "GetTimeline",
-			Input: (&v1.GetTimelineRequest{}).ProtoReflect().Descriptor(),
+			Name:   "GetTimeline",
+			Input:  (&v1.GetTimelineRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.GetTimelineResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().GetTimeline(ctx, connect.NewRequest(in.(*v1.GetTimelineRequest)))
 				if err != nil {
@@ -587,8 +655,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Signal",
-			Input: (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Signal",
+			Input:  (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.SignalResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Signal(ctx, connect.NewRequest(in.(*v1.SignalRequest)))
 				if err != nil {
@@ -604,8 +673,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			// an order or a subscription needs this rather than Run, because it
 			// does not know — and must not have to know — whether this is the
 			// first event for that key.
-			Name:  "SignalWithStart",
-			Input: (&v1.SignalWithStartRequest{}).ProtoReflect().Descriptor(),
+			Name:   "SignalWithStart",
+			Input:  (&v1.SignalWithStartRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.SignalWithStartResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().SignalWithStart(ctx, connect.NewRequest(in.(*v1.SignalWithStartRequest)))
 				if err != nil {
@@ -616,8 +686,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "List",
-			Input: (&v1.ListRequest{}).ProtoReflect().Descriptor(),
+			Name:   "List",
+			Input:  (&v1.ListRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ListResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().List(ctx, connect.NewRequest(in.(*v1.ListRequest)))
 				if err != nil {
@@ -628,8 +699,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Cancel",
-			Input: (&v1.CancelRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Cancel",
+			Input:  (&v1.CancelRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.CancelResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Cancel(ctx, connect.NewRequest(in.(*v1.CancelRequest)))
 				if err != nil {
@@ -640,8 +712,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "Terminate",
-			Input: (&v1.TerminateRequest{}).ProtoReflect().Descriptor(),
+			Name:   "Terminate",
+			Input:  (&v1.TerminateRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.TerminateResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().Terminate(ctx, connect.NewRequest(in.(*v1.TerminateRequest)))
 				if err != nil {
@@ -659,8 +732,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 		// that can start a workload every night should have to say so in a tool call
 		// somebody can read rather than by writing a loop that sleeps.
 		{
-			Name:  "CreateSchedule",
-			Input: (&v1.CreateScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "CreateSchedule",
+			Input:  (&v1.CreateScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.CreateScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().CreateSchedule(ctx, connect.NewRequest(in.(*v1.CreateScheduleRequest)))
 				if err != nil {
@@ -671,8 +745,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "ListSchedules",
-			Input: (&v1.ListSchedulesRequest{}).ProtoReflect().Descriptor(),
+			Name:   "ListSchedules",
+			Input:  (&v1.ListSchedulesRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ListSchedulesResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().ListSchedules(ctx, connect.NewRequest(in.(*v1.ListSchedulesRequest)))
 				if err != nil {
@@ -683,8 +758,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "DescribeSchedule",
-			Input: (&v1.DescribeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "DescribeSchedule",
+			Input:  (&v1.DescribeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DescribeScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().DescribeSchedule(ctx, connect.NewRequest(in.(*v1.DescribeScheduleRequest)))
 				if err != nil {
@@ -695,8 +771,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "DeleteSchedule",
-			Input: (&v1.DeleteScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "DeleteSchedule",
+			Input:  (&v1.DeleteScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DeleteScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().DeleteSchedule(ctx, connect.NewRequest(in.(*v1.DeleteScheduleRequest)))
 				if err != nil {
@@ -707,8 +784,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "PauseSchedule",
-			Input: (&v1.PauseScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "PauseSchedule",
+			Input:  (&v1.PauseScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.PauseScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().PauseSchedule(ctx, connect.NewRequest(in.(*v1.PauseScheduleRequest)))
 				if err != nil {
@@ -719,8 +797,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "ResumeSchedule",
-			Input: (&v1.ResumeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "ResumeSchedule",
+			Input:  (&v1.ResumeScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ResumeScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().ResumeSchedule(ctx, connect.NewRequest(in.(*v1.ResumeScheduleRequest)))
 				if err != nil {
@@ -731,8 +810,9 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
-			Name:  "TriggerSchedule",
-			Input: (&v1.TriggerScheduleRequest{}).ProtoReflect().Descriptor(),
+			Name:   "TriggerSchedule",
+			Input:  (&v1.TriggerScheduleRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.TriggerScheduleResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().TriggerSchedule(ctx, connect.NewRequest(in.(*v1.TriggerScheduleRequest)))
 				if err != nil {
@@ -774,6 +854,36 @@ func remoteCatalogCall(address string) func(
 	}
 }
 
+// answerPair is the two forms of one answer: the run document a reader of
+// `--output json` already knows, and the schema's own protojson beside it.
+//
+// See [dispatch] for why both leave the process and why the surface's bound
+// measures their concatenation rather than either one.
+type answerPair struct{ projected, raw []byte }
+
+// pairFor finds the pair behind the concatenation a ladder settled on.
+//
+// By bytes rather than by the rung's index, deliberately. The index would be
+// right only while every rung calls the encoder exactly once — which is
+// [getResponseLadder]'s contract today, and is exactly the kind of invariant a
+// rung added later breaks quietly. Getting it wrong would answer with a document
+// other than the one the bound was checked against, so it is derived from the
+// bytes the ladder returned rather than from a parallel count.
+func pairFor(pairs []answerPair, encoded []byte) (answerPair, bool) {
+	for _, pair := range pairs {
+		if len(pair.projected)+len(pair.raw) != len(encoded) {
+			continue
+		}
+
+		if bytes.Equal(pair.projected, encoded[:len(pair.projected)]) &&
+			bytes.Equal(pair.raw, encoded[len(pair.projected):]) {
+			return pair, true
+		}
+	}
+
+	return answerPair{}, false
+}
+
 // dispatch adapts one RPC into a tool handler.
 //
 // Arguments arrive as JSON and leave as protojson of the response message —
@@ -800,6 +910,10 @@ func dispatch(
 
 		out, err := method.Call(ctx, local, remote, in)
 		if err != nil {
+			if deps.DecorateRPCError != nil {
+				err = deps.DecorateRPCError(method.Name, err)
+			}
+
 			return ToolError(err), nil
 		}
 
@@ -815,8 +929,57 @@ func dispatch(
 			out = deps.Redact(response)
 		}
 
+		// An agent reads the catalog for summaries, types and constraints —
+		// not the base64 FileDescriptorSet bytes it cannot decode. Strip
+		// them at the MCP boundary the same way sensitive values are
+		// projected out above: the RPC and `flow plugins -o json` are
+		// unchanged; this is a projection for a reader.
+		if response, ok := out.(*v1.GetCatalogResponse); ok {
+			StripCatalogDescriptors(response)
+		}
+
+		// Both forms of every answer, and the bound measures the pair.
+		//
+		// The text block is the bytes `--output json` prints, which is what this
+		// surface claimed to answer with and did not. A run document leaving the
+		// CLI is *rendered* — `2` rather than `{"literal":{"int64Value":"2"}}`,
+		// `steps.<id>.<output>` rather than `stepValues.<id>.namedValues` — and
+		// this encoded the schema's own protojson instead, so one run had two
+		// answers depending on which door a reader came through. An agent's loop
+		// alternates between them, and neither a jq filter nor an example in the
+		// reference could serve both (#1553).
+		//
+		// [v1.MarshalRunDocument] is that one rendering, and it renders only what
+		// its own rules say to: a message with no run document in it — a catalog,
+		// a validation report — comes back as the same bytes protojson wrote.
+		//
+		// The schema's own bytes stay reachable in structuredContent, because a
+		// client that speaks the schema was reading the text block to get them
+		// and projecting it away would take that with it. MCP has a field for
+		// exactly this, so neither reader is served by making the other parse
+		// something it does not want.
+		//
+		// Measured together, because both leave the process. Bounding only the
+		// text would make [MaxResultBytes] stop describing what a caller
+		// receives, which is the quiet kind of bound erosion the ladder exists
+		// to prevent — so the concatenation is what the ladder reduces against,
+		// and the pair for the rung it settles on is what gets sent.
+		var pairs []answerPair
+
 		encode := func(message proto.Message) ([]byte, error) {
-			return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
+			projected, err := v1.MarshalRunDocument(message, false, false)
+			if err != nil {
+				return nil, err
+			}
+
+			raw, err := v1.MarshalSchemaJSON(message, false)
+			if err != nil {
+				return nil, err
+			}
+
+			pairs = append(pairs, answerPair{projected: projected, raw: raw})
+
+			return slices.Concat(projected, raw), nil
 		}
 
 		// The bound this surface holds every answer to — see [MaxResultBytes].
@@ -875,20 +1038,37 @@ func dispatch(
 					ToolName(method.Name), len(encoded), MaxResultBytes)), nil
 			}
 
-			content := []mcp.Content{&mcp.TextContent{Text: string(encoded)}}
+			// The pair behind the bytes the ladder settled on, not `encoded`
+			// itself, which is the concatenation the bound was measured against
+			// rather than either document.
+			answer, ok := pairFor(pairs, encoded)
+			if !ok {
+				// Unreachable: `encoded` is whatever `encode` last returned, so
+				// its pair was recorded. Refused rather than guessed at, because
+				// the alternative is answering with a document that is not the
+				// one the bound was checked against.
+				return ToolError(fmt.Errorf(
+					"%s could not render the answer it settled on", ToolName(method.Name))), nil
+			}
+
+			content := []mcp.Content{&mcp.TextContent{Text: string(answer.projected)}}
 
 			// What left, as a second content block rather than a field in the
-			// document. The first block stays exactly the protojson of a
-			// GetResponse — the same bytes `--output json` prints, which is
-			// what keeps this surface from being a second dialect — so a
-			// caller that parses the answer is never handed a shape the schema
-			// does not describe. An MCP result is a list of blocks precisely
-			// so an annotation need not be smuggled into the payload.
+			// document. The first block stays exactly what `--output json`
+			// prints for the same response — rendered where a run document is
+			// rendered there, protojson where it is protojson there — which is
+			// what keeps this surface from being a second dialect, and is now
+			// true rather than merely intended (#1553). An MCP result is a list
+			// of blocks precisely so an annotation need not be smuggled into the
+			// payload.
 			if notes[rung] != "" {
 				content = append(content, &mcp.TextContent{Text: notes[rung]})
 			}
 
-			return &mcp.CallToolResult{Content: content}, nil
+			return &mcp.CallToolResult{
+				Content:           content,
+				StructuredContent: json.RawMessage(answer.raw),
+			}, nil
 		}
 
 		encoded, err := encode(out)
@@ -904,8 +1084,17 @@ func dispatch(
 				ToolName(method.Name), len(encoded), MaxResultBytes)), nil
 		}
 
+		// The pair, not `encoded`: that is the concatenation the bound was
+		// measured against, and neither document on its own.
+		answer, ok := pairFor(pairs, encoded)
+		if !ok {
+			return ToolError(fmt.Errorf(
+				"%s could not render the answer it settled on", ToolName(method.Name))), nil
+		}
+
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+			Content:           []mcp.Content{&mcp.TextContent{Text: string(answer.projected)}},
+			StructuredContent: json.RawMessage(answer.raw),
 		}, nil
 	})
 }
@@ -916,6 +1105,29 @@ func ToolError(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+	}
+}
+
+// StripCatalogDescriptors zeros the descriptor fields on every TaskDescription
+// in a GetCatalogResponse — input_descriptor, input_message, output_descriptor,
+// output_message — so the MCP surface answers with the rendered TaskFields an
+// agent reads, not the base64 FileDescriptorSet bytes it cannot decode.
+func StripCatalogDescriptors(resp *v1.GetCatalogResponse) {
+	strip := func(tasks []*v1.TaskDescription) {
+		for _, td := range tasks {
+			td.InputDescriptor = nil
+			td.InputMessage = ""
+			td.OutputDescriptor = nil
+			td.OutputMessage = ""
+		}
+	}
+	if c := resp.GetCatalog(); c != nil {
+		strip(c.GetTasks())
+	}
+	if p := resp.GetPlugins(); p != nil {
+		for _, pd := range p.GetPlugins() {
+			strip(pd.GetTasks())
+		}
 	}
 }
 
@@ -937,8 +1149,10 @@ const RunLocalToolDescription = "Execute a Flowfile immediately, in this process
 	"the same rehearsal `flow run local` performs. Use it to verify a workflow you just authored: " +
 	"conditions, retries, timeouts, loops, waits and step outputs behave here the way they behave in " +
 	"production, and the answer is the same document flowstate_get returns for a durable run.\n\n" +
-	"Fail-closed by default: network egress from `http:` steps is denied and no secret scheme is " +
-	"registered unless the operator started this server with the flags that permit them " +
+	"Fail-closed by default: network egress is denied — from `http:` steps and from plugin tasks " +
+	"alike, since this server grants its plugins the same denying policy it enforces on itself — and " +
+	"no secret scheme is registered unless the operator started this server with the flags that " +
+	"permit them " +
 	"(--egress-policy, --secret-env, --secret-dir, --auth-policy). Nothing in this tool's arguments " +
 	"can widen that, so a denied request means the server was not configured for it, not that the " +
 	"workflow is wrong.\n\n" +

@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 
@@ -59,9 +60,38 @@ import (
 // the shape here, before execution starts, is what turns a malformed output
 // `must:` into a submission refused rather than a result discovered too late
 // to matter.
+//
+// The same argument reaches one step further, to the *value* of an output
+// that already has one: a declaration whose `value:` is a literal (or an
+// all-literal structure) contradicting its own `type:` or `values:` is wrong
+// the moment it is submitted, and nothing about running the workflow can make
+// it right. [CheckOutputValue] answers that statically and returns nil for an
+// expression, so the run-time half stays exactly where it was — a computed
+// output is still judged at completion, against the value it actually
+// produced, because that is the first moment there is one.
 func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value, error) {
+	return bindRunInputs(wf, wf.GetProfile(), submitted)
+}
+
+// bindRunInputs is BindRunInputs with the effective profile supplied by the
+// execution context. A top-level workflow records its own profile; an old
+// unprofiled callee inherits its caller's through [CalleeProfile].
+func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (map[string]*Value, error) {
+	if err := CheckDeclarationTypes(wf); err != nil {
+		return nil, err
+	}
+
 	for _, declaration := range wf.GetDeclaredOutputs() {
-		if err := CheckOutputConstraintShape(declaration); err != nil {
+		if err := CheckOutputConstraintShape(profile, declaration); err != nil {
+			return nil, err
+		}
+		// Statically knowable only: nil for an expression, so this refuses the
+		// half a caller could have been told about before anything ran and
+		// leaves the other half to [EvalRunOutputs]. Same function, so the
+		// sentence, the `sensitive:` withholding and the length bound are the
+		// ones the completion-time refusal uses rather than a second rendering
+		// that could drift from it.
+		if err := CheckOutputValue(declaration, declaration.GetValue()); err != nil {
 			return nil, err
 		}
 	}
@@ -74,6 +104,17 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 	// is what refuses it in a specification that never was a Flowfile. See
 	// [CheckVarsHoldNoSecretRef].
 	if err := CheckVarsHoldNoSecretRef(wf); err != nil {
+		return nil, err
+	}
+
+	// The depth bound on every value the specification carries, here because
+	// this is the one function every submit path calls: the server checks it
+	// once more before pinning plugins, and the local driver reaches it only
+	// here, so a hand-built specification with a `vars:` literal nested past
+	// [MaxStructureDepth] is refused by both drivers in the same words (#1765).
+	// After the declared outputs above, so an output past the bound is still
+	// refused as the output it is, naming its declaration.
+	if err := CheckStructureDepth(wf); err != nil {
 		return nil, err
 	}
 
@@ -109,6 +150,17 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		return nil, err
 	}
 
+	// And the bridge's own rules, which are the same argument one boundary
+	// further in. `signal:` is answerable from a public route by whoever holds
+	// one signing key, and the rule that keeps that from reaching an unpoliced
+	// gate — an explicit `signals:` entry that can admit the trigger — is a
+	// property of the specification, not of the file it was written in. Left to
+	// `flow validate` alone, a hand-built `RunRequest` would register a bridge
+	// the compiler refuses.
+	if err := CheckWebhookSignalBridges(wf); err != nil {
+		return nil, err
+	}
+
 	// And the fourth, for the fourth time the same reason applies. A `manual:`
 	// block that both refuses manual starts and narrows them satisfies the
 	// schema perfectly — protovalidate has nothing to say about two booleans
@@ -135,8 +187,8 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 			continue
 		}
 
-		return nil, fmt.Errorf("input %q is not declared by workflow %q%s",
-			name, wf.GetName(), declaresWhat(wf))
+		return nil, invalidInput(name, fmt.Errorf("input %q is not declared by workflow %q%s",
+			name, wf.GetName(), declaresWhat(wf)))
 	}
 
 	bound := make(map[string]*Value, len(declared))
@@ -150,7 +202,7 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// fail-closed rule is enforced for one. `flow validate` runs the
 		// identical check earlier still, against a position, for a file that
 		// went through the compiler.
-		if err := CheckInputConstraintShape(declaration); err != nil {
+		if err := CheckInputConstraintShape(profile, declaration); err != nil {
 			return nil, err
 		}
 
@@ -160,8 +212,8 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 			case declaration.GetDefault() != nil:
 				value = declaration.GetDefault()
 			case declaration.GetRequired():
-				return nil, fmt.Errorf("input %q is required and was not given%s",
-					name, describedAs(declaration))
+				return nil, invalidInput(name, fmt.Errorf("input %q is required and was not given%s",
+					name, describedAs(declaration)))
 			default:
 				continue
 			}
@@ -172,7 +224,19 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// hand: `flow validate` refuses a mistyped default in a Flowfile, and this is
 		// what refuses one in a message that never was a Flowfile.
 		if err := CheckInputValue(name, declaration, value); err != nil {
-			return nil, err
+			// The two type names, when this refusal is a type mismatch. Read off
+			// the same declaration and the same literal the refusal itself read,
+			// through the same two functions, so the fields cannot come to
+			// disagree with the sentence beside them. Left unset for every other
+			// refusal CheckInputValue makes — an expression, a secret reference,
+			// a missing value — because those compared no types.
+			got, isLiteral := inputTypeOf(value.GetLiteral())
+			if isLiteral {
+				return nil, invalidInputType(name,
+					DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got), err)
+			}
+
+			return nil, invalidInput(name, err)
 		}
 
 		// #204 found the element bound was gated on a declaration carrying
@@ -187,14 +251,108 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		// the identical function. See [checkInputListElementBound] and
 		// [maxListElements] for the resource, the reused walker, and why the
 		// limit is what it is.
-		if err := CheckInputConstraints(name, declaration, value); err != nil {
-			return nil, err
+		if err := CheckInputConstraints(profile, name, declaration, value); err != nil {
+			return nil, invalidInput(name, err)
 		}
 
 		bound[name] = value
 	}
 
 	return bound, nil
+}
+
+// CheckDeclarationTypes reports whether every declaration in a workflow and its
+// embedded callees can be enforced by this runtime.
+//
+// It is currently the runtime half of the additive structural rollout. The
+// schema requires a legacy projection while old readers can still receive a
+// specification, but hand-built local messages do not necessarily pass through
+// schema validation. Refuse one here rather than interpreting the legacy zero
+// value as unspecified and silently skipping enforcement.
+//
+// Every embedded callee is checked before the root workflow starts. Waiting to
+// bind a callee's arguments inside CallScope would let earlier parent steps make
+// requests before discovering that the callee's contract cannot be enforced.
+func CheckDeclarationTypes(wf *Workflow) error {
+	return walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+		for _, declaration := range current.GetDeclaredInputs() {
+			if vt := declaration.GetValueType(); vt != nil {
+				if err := checkTypeDepth(vt, MaxStructureDepth); err != nil {
+					return fmt.Errorf("input %q: %w", declaration.GetName(), err)
+				}
+				if err := Validate(declaration); err != nil {
+					return fmt.Errorf("input %q has an invalid type declaration: %w", declaration.GetName(), err)
+				}
+			}
+		}
+		for _, declaration := range current.GetDeclaredOutputs() {
+			if vt := declaration.GetValueType(); vt != nil {
+				if err := checkTypeDepth(vt, MaxStructureDepth); err != nil {
+					return fmt.Errorf("output %q: %w", declaration.GetName(), err)
+				}
+				if err := Validate(declaration); err != nil {
+					return fmt.Errorf("output %q has an invalid type declaration: %w", declaration.GetName(), err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// DeclaresSensitiveValues reports whether wf or any workflow embedded in it by
+// a call declares a sensitive input or output. Whole-run display decisions must
+// include callees because their steps execute under the same run and debugger.
+func DeclaresSensitiveValues(wf *Workflow) (bool, error) {
+	for current, err := range specWorkflows(wf) {
+		if err != nil {
+			return false, err
+		}
+		for _, input := range current.GetDeclaredInputs() {
+			if input.GetSensitive() {
+				return true, nil
+			}
+		}
+		for _, output := range current.GetDeclaredOutputs() {
+			if output.GetSensitive() {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// checkTypeDepth iteratively verifies that t does not nest deeper than
+// maxDepth levels through its list and map recursive arms, and that no
+// pointer cycle exists in the Go object graph.
+func checkTypeDepth(t *Type, maxDepth int) error {
+	type entry struct {
+		t     *Type
+		depth int
+	}
+	visited := make(map[*Type]bool)
+	stack := []entry{{t: t, depth: 0}}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if e.t == nil {
+			continue
+		}
+		if visited[e.t] {
+			return fmt.Errorf("type declaration contains a cycle")
+		}
+		visited[e.t] = true
+		if e.depth > maxDepth {
+			return fmt.Errorf("type declaration nests more than %d levels deep", maxDepth)
+		}
+		switch kind := e.t.GetKind().(type) {
+		case *Type_List:
+			stack = append(stack, entry{t: kind.List, depth: e.depth + 1})
+		case *Type_Map_:
+			stack = append(stack, entry{t: kind.Map.GetValue(), depth: e.depth + 1})
+		}
+	}
+	return nil
 }
 
 // CheckInputDefault reports whether a declaration's default is a value of the type
@@ -204,7 +362,7 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 // check runs again at submit through [BindRunInputs], because a specification can
 // be built by something that never was a Flowfile — an author gets the diagnostic,
 // and a caller gets the refusal.
-func CheckInputDefault(declaration *InputDeclaration) error {
+func CheckInputDefault(profile string, declaration *InputDeclaration) error {
 	if declaration.GetDefault() == nil {
 		return nil
 	}
@@ -213,7 +371,7 @@ func CheckInputDefault(declaration *InputDeclaration) error {
 		return err
 	}
 
-	return CheckInputConstraints(declaration.GetName(), declaration, declaration.GetDefault())
+	return CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetDefault())
 }
 
 // CheckInputExample reports whether a declaration's example is a literal of
@@ -225,7 +383,7 @@ func CheckInputDefault(declaration *InputDeclaration) error {
 // it — is a defect in the file rather than something a reader discovers by
 // noticing it lied. Never bound to a run: [BindRunInputs] never reads this
 // field, which is the whole difference between an example and a default.
-func CheckInputExample(declaration *InputDeclaration) error {
+func CheckInputExample(profile string, declaration *InputDeclaration) error {
 	if declaration.GetExample() == nil {
 		return nil
 	}
@@ -234,7 +392,7 @@ func CheckInputExample(declaration *InputDeclaration) error {
 		return fmt.Errorf("example: %w", err)
 	}
 
-	if err := CheckInputConstraints(declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, declaration.GetExample()); err != nil {
 		return fmt.Errorf("example: %w", err)
 	}
 
@@ -278,32 +436,80 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 		return fmt.Errorf("input %q cannot be used as a value: %v", name, kind)
 	}
 
-	got, ok := inputTypeOf(value.GetLiteral())
+	return checkDeclaredLiteralType("input", "was given", name, declaration.GetType(), value.GetLiteral())
+}
+
+// checkDeclaredLiteralType is the "does this literal have the declared type"
+// rule, over a declared type rather than over a message that holds one.
+//
+// Split out of [CheckInputValue] because an output declares the same type in
+// the same vocabulary (see [OutputDeclaration.type]) and the rule about a
+// literal is the same rule. kind is the noun ("input", "output" — both
+// vowel-initial, which is what lets one format string say "an %s") and verb is
+// how the sentence says the value arrived — a caller *gave* an input, a run
+// *computed* an output — since those are the two halves that differ and the
+// judgement is what does not.
+func checkDeclaredLiteralType(kind, verb, name string, declared InputDeclaration_Type, literal *expr.Value) error {
+	got, ok := inputTypeOf(literal)
 	if !ok {
-		return fmt.Errorf("input %q is %s, which is not a kind of value an input can hold; "+
-			"it is declared %s", name, literalKindName(value.GetLiteral()), DeclaredTypeName(declaration.GetType()))
+		return fmt.Errorf("%s %q is %s, which is not a kind of value an %s can hold; "+
+			"it is declared %s", kind, name, literalKindName(literal), kind, DeclaredTypeName(declared))
 	}
 
 	// TYPE_ENUM has no counterpart in [inputTypeOf]'s switch, deliberately:
-	// the wire shape a caller sends for an enum value is a string, the same
-	// shape TYPE_STRING sends, so the only rule this function checks is that
-	// shape. Which string is checked against the declaration's own `values:`
-	// is a set-fact about *this* declaration, and [CheckInputConstraints] is
-	// where set-facts are enforced.
-	if declaration.GetType() == InputDeclaration_TYPE_ENUM {
+	// the wire shape an enum value travels in is a string, the same shape
+	// TYPE_STRING travels in, so the only rule this function checks is that
+	// shape — which is why the two share this arm through [StringShaped]
+	// rather than TYPE_STRING falling through to the comparison below.
+	// *Which* string is checked against the declaration's own `values:` is a
+	// set-fact about that declaration, and [CheckInputConstraints] and
+	// [CheckOutputValue] are where set-facts are enforced.
+	if StringShaped(declared) {
 		if got != InputDeclaration_TYPE_STRING {
-			return fmt.Errorf("input %q is declared %s but was given %s",
-				name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))
+			return fmt.Errorf("%s %q is declared %s but %s %s",
+				kind, name, DeclaredTypeName(declared), verb, DeclaredTypeName(got))
 		}
 		return nil
 	}
 
-	if got != declaration.GetType() {
-		return fmt.Errorf("input %q is declared %s but was given %s",
-			name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))
+	if got != declared {
+		return fmt.Errorf("%s %q is declared %s but %s %s",
+			kind, name, DeclaredTypeName(declared), verb, DeclaredTypeName(got))
+	}
+
+	// A float is a finite number. NaN and the infinities are values a double
+	// can hold and JSON cannot spell, so a declared float that carried one
+	// would reach the run document — every `-o json`, `flow get` and MCP
+	// reader — as something no consumer can read back as a number, and a
+	// non-finite number in a durable record is almost always an upstream
+	// defect (a division by zero, an overflow) rather than an answer. Refused
+	// where the declaration is, on both drivers, so `--input f=NaN` and a
+	// computed `1.0 / 0.0` are told which promise they broke (#1764). An
+	// undeclared value is not refused here; the run document spells it as
+	// the string "NaN" or "Infinity" instead — see jsonRepresentable.
+	if declared == InputDeclaration_TYPE_FLOAT {
+		if spelling, nonFinite := nonFiniteSpelling(literal.GetDoubleValue()); nonFinite {
+			return fmt.Errorf("%s %q is declared float but %s %s, which is not a finite number",
+				kind, name, verb, spelling)
+		}
 	}
 
 	return nil
+}
+
+// nonFiniteSpelling reports whether f is NaN or an infinity, and how it is
+// spelled: protojson's own "NaN", "Infinity" and "-Infinity", which is the one
+// spelling every surface that meets such a value agrees on.
+func nonFiniteSpelling(f float64) (string, bool) {
+	switch {
+	case math.IsNaN(f):
+		return "NaN", true
+	case math.IsInf(f, 1):
+		return "Infinity", true
+	case math.IsInf(f, -1):
+		return "-Infinity", true
+	}
+	return "", false
 }
 
 // declaresWhat lists the inputs a workflow declares, for a caller who named one it
@@ -419,11 +625,9 @@ func DeclaredTypeNames() []string {
 
 // ParseDeclaredType reads a type as a Flowfile spells it.
 func ParseDeclaredType(name string) (InputDeclaration_Type, bool) {
-	for _, t := range DeclaredTypeNames() {
-		if t == name {
-			value, ok := InputDeclaration_Type_value["TYPE_"+strings.ToUpper(name)]
-			return InputDeclaration_Type(value), ok
-		}
+	if slices.Contains(DeclaredTypeNames(), name) {
+		value, ok := InputDeclaration_Type_value["TYPE_"+strings.ToUpper(name)]
+		return InputDeclaration_Type(value), ok
 	}
 
 	return InputDeclaration_TYPE_UNSPECIFIED, false

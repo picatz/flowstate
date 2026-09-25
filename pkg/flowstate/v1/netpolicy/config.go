@@ -3,14 +3,13 @@ package netpolicy
 import (
 	"crypto/tls"
 	"fmt"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
 	"math"
 	"net/netip"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/goccy/go-yaml"
 )
 
 // Config is the file form of a policy: what an operator writes in YAML and hands
@@ -24,6 +23,27 @@ import (
 // none of them can remove a bound: the file is the loosening surface, and a bound
 // an operator wants gone should be raised, not deleted.
 type Config struct {
+	// DeploymentDefault marks a document a worker wrote from its own built-in
+	// default rather than one an operator wrote.
+	//
+	// A worker with no --egress-policy still hands every plugin it launches a
+	// policy — the one its own built-in http task runs under — because "nobody
+	// granted anything" and "the deployment's default" are different facts, and
+	// a plugin that cannot tell them apart either refuses work every default
+	// worker has always done or treats a policy nobody wrote as one somebody
+	// did. The marker is what lets a plugin take a posture toward the default:
+	// git, vcs, github and slack accept it, while sql refuses to reach a
+	// database under it and names --egress-policy in the refusal (#1332).
+	//
+	// It rides inside the document rather than beside it so the bytes carry
+	// their own provenance — one field on plugin.Config, one environment
+	// variable, and no second value that has to agree with the first.
+	//
+	// It says nothing about what may be reached, so [Config.Options] and
+	// [Config.Policy] ignore it, and `flow` refuses an operator file that sets
+	// it: the worker is the only writer this key has.
+	DeploymentDefault bool `json:"deployment_default,omitempty" yaml:"deployment_default,omitempty"`
+
 	Egress EgressConfig `json:"egress" yaml:"egress"`
 }
 
@@ -33,9 +53,10 @@ type Config struct {
 // internal denied, bounded in every dimension. Absent fields keep the defaults
 // described on the corresponding option and constant.
 type EgressConfig struct {
-	// Schemes replaces the scheme allowlist. Only http and https can be named,
-	// and naming neither — an explicitly empty list — is an error rather than a
-	// policy that allows nothing by accident. See [WithSchemes].
+	// Schemes replaces the scheme allowlist. HTTP and HTTPS are the defaults;
+	// postgres may be named explicitly for a protocol-native database task.
+	// Naming none — an explicitly empty list — is an error rather than a policy
+	// that allows nothing by accident. See [WithSchemes].
 	Schemes []string `json:"schemes,omitempty" yaml:"schemes,omitempty"`
 
 	// AllowLoopback permits loopback addresses, which is where development
@@ -143,11 +164,46 @@ type EgressConfig struct {
 func ParseConfig(data []byte) (Config, error) {
 	var cfg Config
 
-	if err := yaml.UnmarshalWithOptions(data, &cfg, yaml.Strict()); err != nil {
+	if err := strictyaml.UnmarshalStrict(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+	}
+	if err := rejectNullAllowlists(data, cfg); err != nil {
+		return Config{}, err
 	}
 
 	return cfg, nil
+}
+
+// rejectNullAllowlists preserves the distinction the typed decode cannot:
+// goccy/go-yaml decodes both an absent list and an explicitly null list to a
+// nil slice. For allow-shaped fields that ambiguity would fail open, because a
+// nil slice means "keep the unrestricted default". Re-decoding into a map
+// retains key presence, allowing null to be refused just like an empty list.
+func rejectNullAllowlists(data []byte, cfg Config) error {
+	var raw struct {
+		Egress map[string]any `yaml:"egress" json:"egress"`
+	}
+	if err := strictyaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+	}
+
+	fields := []struct {
+		name  string
+		isNil bool
+	}{
+		{"schemes", cfg.Egress.Schemes == nil},
+		{"allow_networks", cfg.Egress.AllowNetworks == nil},
+		{"allow_ports", cfg.Egress.AllowPorts == nil},
+		{"allow", cfg.Egress.Allow == nil},
+	}
+	for _, field := range fields {
+		if _, present := raw.Egress[field.name]; present && field.isNil {
+			return fmt.Errorf("%w: %s is null; delete the key to keep the default, or provide a non-empty allowlist",
+				ErrInvalidPolicy, field.name)
+		}
+	}
+
+	return nil
 }
 
 // Policy builds the policy the file describes, by way of [Options] and [New].

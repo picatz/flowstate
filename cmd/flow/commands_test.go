@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -13,55 +12,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The README's table of commands is the page a newcomer reads to find out what this
-// tool does, and until now nothing checked it.
+// TestREADMEPointsAtTheGeneratedCLIReference keeps the concise front door connected
+// to the complete command inventory.
 //
-// It is the same defect the task table had, one surface further out: a hand-written
-// list beside a real registry drifts, and the way it drifts is silent. A command added
-// without a row is a capability nobody discovers; a row for a command that was renamed
-// is a reader typing something that does not exist and concluding the tool is broken.
-//
-// What made it uncheckable was that the CLI was built inside `main`, so nothing could
-// ask it what commands it had. `newRootCommand` exists to be asked.
-
-// commandRow matches one row of the README's command table: a backticked invocation
-// starting with `flow `, in the first cell.
-var commandRow = regexp.MustCompile(`(?m)^\|\s*` + "`" + `flow ([^` + "`" + `]+)` + "`" + `\s*\|`)
-
-// documentedCommands returns the command paths the README's table lists, as the
-// space-separated names cobra knows them by.
-//
-// The arguments are dropped — a row reads `flow get <id>` and the command is `get` —
-// because what is being compared is which commands exist, not how the README chooses
-// to illustrate them. A row's prose is for a person; its first two words are the
-// claim.
-func documentedCommands(t *testing.T) []string {
-	t.Helper()
+// The README used to carry a row for every command. That repeated the generated CLI
+// reference, which is derived from [newRootCommand] and diff-checked in CI. The root
+// page now teaches one end-to-end journey and links the complete inventory; this test
+// guards that link while the generator tests guard the inventory itself.
+func TestREADMEPointsAtTheGeneratedCLIReference(t *testing.T) {
+	t.Parallel()
 
 	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	require.NoError(t, err, "the README moved and this test did not")
 
-	rows := commandRow.FindAllStringSubmatch(string(data), -1)
-	require.NotEmpty(t, rows,
-		"no command rows found in the README; either the table moved or this pattern stopped matching it")
-
-	var documented []string
-	for _, row := range rows {
-		var words []string
-		for _, word := range strings.Fields(row[1]) {
-			// The first thing that is not a command name ends the path: `<file>`,
-			// `[flags]`, `--check`.
-			if strings.HasPrefix(word, "<") || strings.HasPrefix(word, "[") || strings.HasPrefix(word, "-") {
-				break
-			}
-			words = append(words, word)
-		}
-		if len(words) > 0 {
-			documented = append(documented, strings.Join(words, " "))
-		}
-	}
-
-	return documented
+	assert.Contains(t, string(data), "](docs/reference/cli.md)",
+		"the README no longer links the generated CLI reference")
+	assert.FileExists(t, filepath.Join("..", "..", "docs", "reference", "cli.md"))
 }
 
 // realCommands returns every command the CLI actually has, as space-separated paths.
@@ -89,37 +55,11 @@ func realCommands(root *cobra.Command) []string {
 	return out
 }
 
-// TestREADMEDocumentsEveryCommand is the direction that costs a user a capability.
-//
-// A command with no row is one nobody finds by reading. The CLI has grown by a command
-// at a time — `fix`, `lsp`, `tasks` — and each one was a separate chance to forget.
-func TestREADMEDocumentsEveryCommand(t *testing.T) {
-	documented := documentedCommands(t)
-	for _, command := range realCommands(newRootCommand()) {
-		assert.Contains(t, documented, command,
-			"`flow %s` exists and the README's command table has no row for it", command)
-	}
-}
-
-// TestTheREADMEDocumentsNoCommandThatIsGone is the other direction, and the one that
-// wastes a reader's time rather than hiding something from them.
-//
-// Somebody who types what the table says and is told there is no such command has
-// learned that the documentation cannot be trusted, which is a more expensive lesson
-// than not finding a feature.
-func TestTheREADMEDocumentsNoCommandThatIsGone(t *testing.T) {
-	real := realCommands(newRootCommand())
-	for _, command := range documentedCommands(t) {
-		assert.Contains(t, real, command,
-			"the README's command table has a row for `flow %s`, which is not a command", command)
-	}
-}
-
 // TestEveryCommandSaysWhatItIsFor keeps the help itself honest.
 //
 // A command with no `Short` is one that appears in `flow --help` as a bare word. The
-// table above can only check that a row exists; whether the tool can describe itself
-// without the README is a different question, and this is where it is asked.
+// generated reference can only project what the command says; whether the tool can
+// describe itself without that reference is a different question, asked here.
 func TestEveryCommandSaysWhatItIsFor(t *testing.T) {
 	root := newRootCommand()
 	for _, command := range realCommands(root) {

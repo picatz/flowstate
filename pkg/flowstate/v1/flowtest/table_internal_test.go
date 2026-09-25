@@ -27,6 +27,9 @@ func TestEveryExpectationFieldIsMerged(t *testing.T) {
 	// repository legislates against.
 	value := reflect.ValueOf(entry)
 	for i := range value.NumField() {
+		if value.Type().Field(i).Name == "fromEntry" {
+			continue
+		}
 		require.False(t, value.Field(i).IsZero(),
 			"the fixture leaves %s zero, so this guard would not notice it going unmerged",
 			value.Type().Field(i).Name)
@@ -37,10 +40,22 @@ func TestEveryExpectationFieldIsMerged(t *testing.T) {
 	mergedValue := reflect.ValueOf(merged)
 	for i := range mergedValue.NumField() {
 		name := mergedValue.Type().Field(i).Name
+		if name == "fromEntry" {
+			continue
+		}
 		assert.False(t, mergedValue.Field(i).IsZero(),
 			"Expectation.%s is not inherited by a row that states none; add it to mergeExpectation", name)
 	}
-	assert.Equal(t, entry, merged, "a row that states nothing inherits its entry's expectation entirely")
+	assert.Equal(t, expectationProvenance{
+		outputs: true, inputs: true, refused: true, idempotencyKey: true, failed: true,
+		errorContains: true, compensated: true, ran: true, skipped: true, others: true,
+	}, merged.fromEntry, "every inherited value field must retain the entry as its writer")
+	for i := range merged.Check {
+		assert.True(t, merged.Check[i].fromEntry, "an accumulated entry claim lost its writer")
+		merged.Check[i].fromEntry = false
+	}
+	merged.fromEntry = expectationProvenance{}
+	assert.Equal(t, entry, merged, "a row that states nothing inherits its entry's expectation values entirely")
 }
 
 // TestAStatedFieldBeatsAnInheritedOne is the other direction, over every
@@ -52,9 +67,9 @@ func TestAStatedFieldBeatsAnInheritedOne(t *testing.T) {
 	row := Expectation{
 		Outputs:        map[string]any{"row": true},
 		Inputs:         map[string]any{"row": true},
-		Refused:        ptr(false),
+		Refused:        new(false),
 		IdempotencyKey: "row",
-		Failed:         ptr(false),
+		Failed:         new(false),
 		ErrorContains:  "row",
 		Compensated:    []string{"row"},
 		Ran:            []string{"row"},
@@ -66,7 +81,9 @@ func TestAStatedFieldBeatsAnInheritedOne(t *testing.T) {
 	// Check is the deliberate exception to "inherits nothing": claims
 	// accumulate, entry's first, because every level's predicates all hold.
 	want := row
-	want.Check = append(append([]CheckClaim{}, entry.Check...), row.Check...)
+	inherited := entry.Check[0]
+	inherited.fromEntry = true
+	want.Check = append([]CheckClaim{inherited}, row.Check...)
 	assert.Equal(t, want, mergeExpectation(entry, row))
 }
 
@@ -85,13 +102,38 @@ func TestAnEmptyListIsAStatementNotAnAbsence(t *testing.T) {
 	assert.Empty(t, merged.Skipped)
 }
 
+// TestExpandingATableDoesNotNormalizeTheCallersClaims: [Run] expands a
+// Go-built File before making its own shallow copy. A tolerated fence is
+// stripped during entry validation, so that validation must own its claim
+// slice rather than mutate the caller's File — or two concurrent runs race on
+// the same CheckClaim.That.
+func TestExpandingATableDoesNotNormalizeTheCallersClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []Test{{
+		Name:   "table",
+		Expect: Expectation{Check: []CheckClaim{{That: "${true}"}}},
+		Cases:  []Test{{Name: "row"}},
+	}}
+	p := newProblems(nil)
+	expanded, _ := expandTableEntries(p, tests)
+
+	require.Nil(t, p.err())
+	require.Len(t, expanded, 1)
+	require.Len(t, expanded[0].Expect.Check, 1)
+	assert.Equal(t, "${true}", tests[0].Expect.Check[0].That,
+		"expansion normalized a claim through the caller's slice")
+	assert.Equal(t, "true", expanded[0].Expect.Check[0].That,
+		"the effective row did not retain the normalized claim")
+}
+
 func nonZeroExpectation() Expectation {
 	return Expectation{
 		Outputs:        map[string]any{"entry": true},
 		Inputs:         map[string]any{"entry": true},
-		Refused:        ptr(true),
+		Refused:        new(true),
 		IdempotencyKey: "entry",
-		Failed:         ptr(true),
+		Failed:         new(true),
 		ErrorContains:  "entry",
 		Compensated:    []string{"entry"},
 		Ran:            []string{"entry"},
@@ -100,5 +142,3 @@ func nonZeroExpectation() Expectation {
 		Check:          []CheckClaim{{That: "true"}},
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

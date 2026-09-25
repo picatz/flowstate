@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +23,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 
@@ -45,15 +49,23 @@ import (
 func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 	t.Parallel()
 
+	descriptors := serviceMethodDescriptors(t)
 	table := map[string]bool{}
 	for _, m := range flowmcp.WorkflowServiceMethods() {
 		require.False(t, table[m.Name], "the dispatch table lists %q twice", m.Name)
 		table[m.Name] = true
 
-		// The schema each tool advertises is the schema of the RPC's own request
-		// message; a row pointing at the wrong descriptor would advertise fields
-		// the handler then refuses.
+		// The schemas each tool advertises are the schemas of the RPC's own
+		// request and response messages; a row pointing at the wrong descriptor
+		// would advertise fields the handler then refuses or never returns.
 		require.NotNil(t, m.Input, "%q has no input descriptor", m.Name)
+		require.NotNil(t, m.Output, "%q has no output descriptor", m.Name)
+		method, ok := descriptors[m.Name]
+		require.True(t, ok, "the dispatch table lists %q, which the service no longer declares", m.Name)
+		assert.Equal(t, method.Input().FullName(), m.Input.FullName(),
+			"%q advertises the wrong request message", m.Name)
+		assert.Equal(t, method.Output().FullName(), m.Output.FullName(),
+			"%q advertises the wrong response message", m.Name)
 	}
 
 	names := serviceMethodNames(t)
@@ -113,20 +125,38 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 	registered := registeredToolNames(t)
 	require.NotEmpty(t, registered)
 
-	for name := range registered {
-		if documentedLocalTools[name] {
-			action, err := v1.AuthorizationActionForMCPTool(name)
-			require.NoError(t, err,
-				"%q is registered and no authorization action names it", name)
-			require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
-
-			continue
+	bound := map[string]v1.AuthorizationAction{}
+	for _, binding := range v1.AuthorizationActionBindings() {
+		tools := append([]string(nil), binding.GetMcpTools()...)
+		for _, rpc := range binding.GetRpcs() {
+			tools = append(tools, v1.MCPToolNameForRPC(rpc))
 		}
+		for _, name := range tools {
+			previous, seen := bound[name]
+			require.False(t, seen, "%q is bound to both %s and %s; an MCP tool has one action",
+				name, previous, binding.GetAction())
+			bound[name] = binding.GetAction()
+		}
+	}
 
-		action, err := v1.AuthorizationActionForRPC(rpcNameOfTool(name))
+	for name := range registered {
+		action, err := v1.AuthorizationActionForMCPTool(name)
 		require.NoError(t, err,
-			"%q projects an rpc that no authorization action names", name)
+			"%q is registered and no authorization action names it", name)
+		require.Equal(t, bound[name], action)
 		require.NotEqual(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, action)
+
+		// The audit mapping is the same lookup, exercised through the actual
+		// recorder rather than inferred from it. A registered tool whose audit
+		// subject cannot produce exactly one record fails beside registration.
+		var sink mcpAuditEmitter
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink))
+		require.NoError(t, err)
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{MCPTool: name}))
+		require.Len(t, sink.records, 1)
+		require.Equal(t, name, sink.records[0].GetMcpTool())
+		require.Empty(t, sink.records[0].GetRpc())
+		require.Equal(t, action, sink.records[0].GetAction())
 	}
 
 	for _, binding := range v1.AuthorizationActionBindings() {
@@ -139,6 +169,16 @@ func TestEveryRegisteredMCPToolHasExactlyOneAuthorizationAction(t *testing.T) {
 					"listing it here is a second spelling of flowmcp.ToolName", tool)
 		}
 	}
+}
+
+type mcpAuditEmitter struct {
+	records []*v1.AuditRecord
+}
+
+func (e *mcpAuditEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
+	e.records = append(e.records, record)
+
+	return nil
 }
 
 // documentedLocalTools names every tool on this surface that is not the
@@ -189,7 +229,7 @@ func documentedLocalToolNames() []string {
 // the method it claims to serve.
 func rpcNameOfTool(tool string) string {
 	var b strings.Builder
-	for _, word := range strings.Split(strings.TrimPrefix(tool, flowmcp.ToolPrefix), "_") {
+	for word := range strings.SplitSeq(strings.TrimPrefix(tool, flowmcp.ToolPrefix), "_") {
 		if word == "" {
 			continue
 		}
@@ -219,6 +259,94 @@ func TestEveryToolHasADescription(t *testing.T) {
 		assert.NotNil(t, tool.InputSchema,
 			"tool %s advertises no input schema", tool.Name)
 	}
+}
+
+func TestRPCToolsAdvertiseTheirResponseSchemas(t *testing.T) {
+	t.Parallel()
+
+	tools := map[string]*mcp.Tool{}
+	for _, tool := range registeredTools(t) {
+		tools[tool.Name] = tool
+	}
+
+	for _, method := range flowmcp.WorkflowServiceMethods() {
+		tool := tools[flowmcp.ToolName(method.Name)]
+		require.NotNil(t, tool, "rpc %s has no registered tool", method.Name)
+		want, err := json.Marshal(flowmcp.SchemaForMessage(method.Output))
+		require.NoError(t, err)
+		got, err := json.Marshal(tool.OutputSchema)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(want), string(got),
+			"tool %s does not advertise its RPC response schema", tool.Name)
+	}
+	for name := range documentedLocalTools {
+		tool := tools[name]
+		require.NotNil(t, tool, "documented local tool %s is not registered", name)
+		assert.Nil(t, tool.OutputSchema,
+			"local tool %s acquired a response contract without a schema-owned message", name)
+	}
+
+	compileOutput, ok := tools[flowmcp.ToolName("Compile")].OutputSchema.(map[string]any)
+	require.True(t, ok, "Compile outputSchema arrived as %T", tools[flowmcp.ToolName("Compile")].OutputSchema)
+	compileProperties, ok := compileOutput["properties"].(map[string]any)
+	require.True(t, ok, "Compile outputSchema properties arrived as %T", compileOutput["properties"])
+	runInput, ok := tools[flowmcp.ToolName("Run")].InputSchema.(map[string]any)
+	require.True(t, ok, "Run inputSchema arrived as %T", tools[flowmcp.ToolName("Run")].InputSchema)
+	runProperties, ok := runInput["properties"].(map[string]any)
+	require.True(t, ok, "Run inputSchema properties arrived as %T", runInput["properties"])
+	compileWorkflow, ok := compileProperties["workflow"].(map[string]any)
+	require.True(t, ok, "Compile workflow output arrived as %T", compileProperties["workflow"])
+	assert.ElementsMatch(t, []any{"object", "null"}, compileWorkflow["type"],
+		"Compile must represent its documented diagnostic-only response without a workflow")
+	successfulCompileWorkflow := make(map[string]any, len(compileWorkflow))
+	maps.Copy(successfulCompileWorkflow, compileWorkflow)
+	successfulCompileWorkflow["type"] = "object"
+	assert.Equal(t, successfulCompileWorkflow, runProperties["workflow"],
+		"a successful Compile workflow result is not structurally accepted by Run")
+}
+
+func TestACompiledStructuredWorkflowIsAcceptedByRun(t *testing.T) {
+	t.Parallel()
+
+	const source = `edition: v2026.3
+name: schema-chain
+steps:
+  - id: hello
+    log:
+      message: hello
+`
+
+	session := connectMCP(t, defaultLocalRunPosture())
+	listed, err := session.ListTools(t.Context(), &mcp.ListToolsParams{})
+	require.NoError(t, err)
+	tools := map[string]*mcp.Tool{}
+	for _, tool := range listed.Tools {
+		tools[tool.Name] = tool
+	}
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.ToolName("Compile"),
+		Arguments: map[string]any{"file": map[string]any{
+			"name":   "workflow.yaml",
+			"source": base64.StdEncoding.EncodeToString([]byte(source)),
+		}},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Content)
+	require.False(t, result.IsError, "Compile refused a valid Flowfile: %s",
+		result.Content[0].(*mcp.TextContent).Text)
+	structured, ok := result.StructuredContent.(map[string]any)
+	require.True(t, ok, "Compile structuredContent arrived as %T", result.StructuredContent)
+
+	compile := tools[flowmcp.ToolName("Compile")]
+	require.NotNil(t, compile)
+	requireStructuredContentMatchesSchema(t, compile.OutputSchema, structured)
+	workflow, ok := structured["workflow"].(map[string]any)
+	require.True(t, ok, "a successful Compile workflow arrived as %T", structured["workflow"])
+
+	run := tools[flowmcp.ToolName("Run")]
+	require.NotNil(t, run)
+	requireStructuredContentMatchesSchema(t, run.InputSchema, map[string]any{"workflow": workflow})
 }
 
 // TestEveryToolDescriptionComesFromTheSchema is the half of #424 that a
@@ -278,9 +406,9 @@ func TestTheRunLocalToolDescribesWhatItDoesNotProve(t *testing.T) {
 	}
 }
 
-// serviceMethodNames reads the service's methods from the compiled-in schema —
-// the same registry the tools' input schemas come from.
-func serviceMethodNames(t *testing.T) map[string]bool {
+// serviceMethodDescriptors reads the service's methods from the compiled-in
+// schema — the same registry the tools' input and output schemas come from.
+func serviceMethodDescriptors(t *testing.T) map[string]protoreflect.MethodDescriptor {
 	t.Helper()
 
 	desc, err := protoregistry.GlobalFiles.FindDescriptorByName("flowstate.v1.WorkflowService")
@@ -289,10 +417,22 @@ func serviceMethodNames(t *testing.T) map[string]bool {
 	service, ok := desc.(protoreflect.ServiceDescriptor)
 	require.True(t, ok, "flowstate.v1.WorkflowService is not a service descriptor")
 
-	names := map[string]bool{}
+	descriptors := map[string]protoreflect.MethodDescriptor{}
 	methods := service.Methods()
 	for i := 0; i < methods.Len(); i++ {
-		names[string(methods.Get(i).Name())] = true
+		method := methods.Get(i)
+		descriptors[string(method.Name())] = method
+	}
+
+	return descriptors
+}
+
+func serviceMethodNames(t *testing.T) map[string]bool {
+	t.Helper()
+
+	names := map[string]bool{}
+	for name := range serviceMethodDescriptors(t) {
+		names[name] = true
 	}
 
 	return names
@@ -335,13 +475,17 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 	}
 }
 
-// mcpExtraToolsFor builds the two tools that are not RPCs, the same pair
+// mcpExtraToolsFor builds the tools that are not RPCs, the same set
 // runMCP registers, so a test connects to the identical tool set an agent
 // does.
 func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
+	return mcpExtraToolsForWithProviders(posture, nil)
+}
+
+func mcpExtraToolsForWithProviders(posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	// The command's own list, not a copy of it: a tool registered for an agent
 	// and missing here is a tool no test ever calls.
-	return stdioExtraTools(posture)
+	return stdioExtraTools(posture, providers)
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a
@@ -351,6 +495,10 @@ func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
 // what a test is choosing when it calls this: everything else is the one
 // registration an agent connects to.
 func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
+	return connectMCPWithProviders(t, posture, nil)
+}
+
+func connectMCPWithProviders(t *testing.T, posture *cobra.Command, providers *localSecrets) *mcp.ClientSession {
 	t.Helper()
 
 	srv := flowmcp.NewServer("test")
@@ -359,7 +507,7 @@ func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
+	}, mcpDepsFor(posture), mcpExtraToolsForWithProviders(posture, providers)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
@@ -436,21 +584,18 @@ type runLocalAnswer struct {
 			Message string `json:"message"`
 			Kind    string `json:"kind"`
 		} `json:"error"`
+		// The run document's own spelling, which is the CLI's: a step's outputs
+		// under `steps.<id>`, each one the value rather than CEL's tagged
+		// encoding of it. The `stepValues.<id>.namedValues.<name>.literal` this
+		// replaced was the schema's wire shape, which no author ever sees and
+		// which made this surface a second dialect of one run (#1553).
 		Outputs struct {
-			StepValues map[string]struct {
-				NamedValues map[string]struct {
-					Literal map[string]any `json:"literal"`
-				} `json:"namedValues"`
-			} `json:"stepValues"`
+			Steps map[string]map[string]any `json:"steps"`
 		} `json:"outputs"`
 		// The run's answer, beside the transcript above, read by name for the
 		// reason the rest of this struct is: what an agent addresses is the
 		// field, not the Go type behind it.
-		RunOutputs struct {
-			Values map[string]struct {
-				Literal map[string]any `json:"literal"`
-			} `json:"values"`
-		} `json:"runOutputs"`
+		RunOutputs map[string]any `json:"runOutputs"`
 	} `json:"run"`
 	Logs []struct {
 		Level   string `json:"level"`
@@ -510,7 +655,7 @@ steps:
 
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
 
-	_, ok := answer.Run.Outputs.StepValues["greet"]
+	_, ok := answer.Run.Outputs.Steps["greet"]
 	assert.True(t, ok,
 		"the run reported nothing for the step it ran, so an agent cannot tell it ran: %+v",
 		answer.Run.Outputs)
@@ -555,11 +700,11 @@ steps:
 
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
 
-	approval, ok := answer.Run.Outputs.StepValues["approval"]
+	approval, ok := answer.Run.Outputs.Steps["approval"]
 	require.True(t, ok, "the wait reported no outputs: %+v", answer.Run.Outputs)
-	assert.Equal(t, false, approval.NamedValues["timed_out"].Literal["boolValue"],
+	assert.Equal(t, false, approval["timed_out"],
 		"a gate answered up front reported as timed out")
-	assert.NotEmpty(t, approval.NamedValues["payload"].Literal,
+	assert.NotEmpty(t, approval["payload"],
 		"the payload supplied in the tool's signals did not reach the waiting step")
 
 	require.NotEmpty(t, answer.Logs, "the step behind the gate did not run")
@@ -611,13 +756,13 @@ steps:
 
 	// The answer, in the field a durable run reports it in — which is what makes
 	// this tool's document the one flowstate_get answers with.
-	require.NotNil(t, answer.Run.RunOutputs.Values, "the run reported no declared outputs")
-	assert.Equal(t, "checkout",
-		answer.Run.RunOutputs.Values["placed"].Literal["stringValue"])
+	require.NotNil(t, answer.Run.RunOutputs, "the run reported no declared outputs")
+	assert.Equal(t, "checkout", answer.Run.RunOutputs["placed"])
 
-	// A whole number sent as JSON stays a whole number: protojson writes an int64
-	// as a string, and a float would have come back under doubleValue instead.
-	assert.Equal(t, "5", answer.Run.RunOutputs.Values["replicas"].Literal["int64Value"],
+	// A whole number sent as JSON stays a whole number, and arrives as one: the
+	// run document writes an int as an int, where the schema's protojson would
+	// have spelled it the string "5" under `literal.int64Value`.
+	assert.EqualValues(t, 5, answer.Run.RunOutputs["replicas"],
 		"an int input arrived as something other than an int")
 }
 
@@ -655,8 +800,8 @@ steps:
 	require.NotContains(t, rawText, secret,
 		"the actual secret string must be absent from the rendered bytes, not merely covered by a marker")
 
-	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
-	require.Equal(t, "us-east-1", answer.Run.RunOutputs.Values["region"].Literal["stringValue"],
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs["token"])
+	require.Equal(t, "us-east-1", answer.Run.RunOutputs["region"],
 		"a value the source did not mark sensitive must render unchanged")
 }
 
@@ -685,7 +830,7 @@ func TestTheRunLocalToolBoundsBeforeItRedacts(t *testing.T) {
 
 	require.NotContains(t, result.Content[0].(*mcp.TextContent).Text, secret,
 		"the actual secret string must be absent from the rendered bytes, not merely covered by a marker")
-	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"],
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs["token"],
 		"redaction stopped applying once the answer was big enough to bound")
 	assert.Contains(t, answer.Note, "reduced",
 		"the transcript was big enough to trigger the bound and the answer does not say so")
@@ -718,7 +863,7 @@ steps:
 `, secret),
 	})
 
-	require.Equal(t, secret, answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
+	require.Equal(t, secret, answer.Run.RunOutputs["token"])
 }
 
 // TestTheRunLocalToolRedactsAStepComputedSensitiveOutput is the Codex finding on
@@ -763,13 +908,13 @@ steps:
 		"the raw value must be absent from the whole tool result, including the step transcript — "+
 			"not only from the name it surfaced under as a declared output")
 
-	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs.Values["token"].Literal["stringValue"])
-	require.Equal(t, "us-east-1", answer.Run.RunOutputs.Values["region"].Literal["stringValue"],
+	require.Equal(t, "[redacted: token]", answer.Run.RunOutputs["token"])
+	require.Equal(t, "us-east-1", answer.Run.RunOutputs["region"],
 		"a value the source did not mark sensitive must render unchanged")
 
-	fetched, ok := answer.Run.Outputs.StepValues["fetch"]
+	fetched, ok := answer.Run.Outputs.Steps["fetch"]
 	require.True(t, ok, "the step still ran and the transcript should say so: %+v", answer.Run.Outputs)
-	require.NotEqual(t, secret, fmt.Sprintf("%v", fetched.NamedValues["payload"].Literal),
+	require.NotEqual(t, secret, fmt.Sprintf("%v", fetched["payload"]),
 		"the step's own transcript entry must not carry the raw value either")
 }
 
@@ -1009,7 +1154,7 @@ func TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs(t *testing.T) {
 	require.NoError(t, json.Unmarshal(encoded, &answer),
 		"the bounded answer is not parseable, which makes a large run indistinguishable from a broken tool")
 
-	assert.Empty(t, answer.Run.RunOutputs.Values,
+	assert.Empty(t, answer.Run.RunOutputs,
 		"the declared outputs are what carried the answer past the cap and are still in it")
 	assert.NotEmpty(t, answer.Note, "the answer was trimmed and does not say so")
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status,
@@ -1046,7 +1191,7 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
 
-	require.Contains(t, answer.Run.RunOutputs.Values, "release",
+	require.Contains(t, answer.Run.RunOutputs, "release",
 		"the transcript was what did not fit, and the run's own answer went with it")
 
 	// Reduced, not emptied. `GetResponse.kind` is a required oneof, so a
@@ -1055,9 +1200,9 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 	// allows instead of clearing the arm (#853). The ordering this test exists
 	// to pin is unchanged and asserted either way: the transcript is what gave
 	// way, and the declared outputs are what survived.
-	assert.NotEmpty(t, answer.Run.Outputs.StepValues,
+	assert.NotEmpty(t, answer.Run.Outputs.Steps,
 		"the transcript arm was emptied, which is a GetResponse the schema rejects")
-	assert.Less(t, len(answer.Run.Outputs.StepValues), 64,
+	assert.Less(t, len(answer.Run.Outputs.Steps), 64,
 		"the transcript is still whole, so nothing was actually reduced")
 }
 
@@ -1089,9 +1234,9 @@ func TestASingleOversizedStepCannotDefeatTheBound(t *testing.T) {
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
 
-	require.Contains(t, answer.Run.Outputs.StepValues, "scrape",
+	require.Contains(t, answer.Run.Outputs.Steps, "scrape",
 		"the transcript arm lost its one step, which is a GetResponse the schema rejects")
-	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+	assert.Contains(t, answer.Run.Outputs.Steps["scrape"]["body"],
 		"[omitted:", "the oversized value survived as itself rather than as a size marker")
 	assert.Contains(t, answer.Note, `step "scrape"`,
 		"the note does not name the step that carried the weight")
@@ -1126,8 +1271,8 @@ func TestAStepThatOutgrowsItsProtoSizeInJSONCannotDefeatTheBound(t *testing.T) {
 
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
-	require.Contains(t, answer.Run.Outputs.StepValues, "scrape")
-	assert.Contains(t, answer.Run.Outputs.StepValues["scrape"].NamedValues["body"].Literal["stringValue"],
+	require.Contains(t, answer.Run.Outputs.Steps, "scrape")
+	assert.Contains(t, answer.Run.Outputs.Steps["scrape"]["body"],
 		"[omitted:", "the expanding value survived as itself rather than as a size marker")
 	assert.Contains(t, answer.Note, `step "scrape"`)
 	assert.Equal(t, "STATUS_COMPLETED", answer.Run.Status)
@@ -1154,7 +1299,7 @@ func TestARunThatFitsIsNotTrimmed(t *testing.T) {
 	assert.Empty(t, answer.Note)
 	assert.Len(t, answer.Logs, 1)
 	assert.Equal(t, "hello",
-		answer.Run.Outputs.StepValues["greet"].NamedValues["body"].Literal["stringValue"])
+		answer.Run.Outputs.Steps["greet"]["body"])
 }
 
 // TestRunLocalLogsAreByteBounded covers the single-record direction of the
@@ -1441,6 +1586,106 @@ func TestTheGetCatalogToolDispatchesToAnAddressedDeployment(t *testing.T) {
 		"the deployment's catalog was configured with --address but the tool answered with "+
 			"something else, which is #439's regression: %s", text)
 	require.NotNil(t, fake.gotGetCatalog, "the addressed deployment was never asked for its catalog")
+}
+
+// TestLifecycleToolsExplainAnUnreachableDeployment holds the lifecycle verbs
+// to the promise written on this surface since the split ("without --address
+// they explain that rather than failing opaquely"): a dead deployment used to
+// answer flowstate_list with a bare `unavailable: dial tcp ...` — no mention
+// that the tool needs a server, no repair, and no way for an agent that never
+// saw this process's flags to learn which address was even tried. GetCatalog
+// already explained itself; this is the same courtesy for its siblings,
+// through [mcpRPCErrorDecorator].
+func TestLifecycleToolsExplainAnUnreachableDeployment(t *testing.T) {
+	// Stood up and immediately closed: an address nothing answers at, without
+	// depending on any particular port being free or reserved.
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	address := dead.URL
+	dead.Close()
+
+	callList := func(t *testing.T, explicit bool) string {
+		t.Helper()
+
+		flags := serverFlags{address: address}
+		session := connectMCPWithDeps(t, defaultLocalRunPosture(), func() flowstatev1connect.WorkflowServiceClient {
+			return newWorkflowServiceClient(flags)
+		}, flowmcp.Deps{
+			Redact:           func(r *v1.GetResponse) *v1.GetResponse { return r },
+			DecorateRPCError: mcpRPCErrorDecorator(flags, explicit),
+		})
+
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name:      flowmcp.ToolName("List"),
+			Arguments: map[string]any{},
+		})
+		require.NoError(t, err)
+		require.True(t, result.IsError, "a dead deployment must answer as a tool error")
+
+		return result.Content[0].(*mcp.TextContent).Text
+	}
+
+	t.Run("explicitly configured address", func(t *testing.T) {
+		text := callList(t, true)
+		assert.Contains(t, text, address,
+			"the refusal does not name which deployment was dialed: %s", text)
+		assert.Contains(t, text, "--address/FLOWSTATE_ADDRESS",
+			"the refusal does not name the repair: %s", text)
+		// "connection refused" can only come from the wrapped dial error —
+		// the decoration's own words include "unavailable", so asserting on
+		// that would pass even with the underlying error dropped.
+		assert.Contains(t, text, "connection refused",
+			"the underlying error must survive the decoration: %s", text)
+	})
+
+	t.Run("nothing configured, default address", func(t *testing.T) {
+		text := callList(t, false)
+		assert.Contains(t, text, address,
+			"the refusal does not name the default it dialed: %s", text)
+		assert.Contains(t, text, "flow server dev",
+			"with nothing configured the way out is a local stack, and the refusal should say so: %s", text)
+		assert.Contains(t, text, "only a server has",
+			"the refusal does not explain that this tool addresses durable runs: %s", text)
+	})
+
+	// A refusal that is the server's own answer about the request — here an
+	// argument-shaped one — passes through undecorated: the decoration is for
+	// the missing-server case alone, and every other error already names its
+	// subject.
+	t.Run("non-unavailable errors pass through", func(t *testing.T) {
+		decorate := mcpRPCErrorDecorator(serverFlags{address: address}, true)
+		refusal := connect.NewError(connect.CodeNotFound, fmt.Errorf("no run %q is addressable", "x"))
+		assert.Equal(t, refusal, decorate("Get", refusal))
+	})
+
+	// A refusal this process produced before any bytes reached the network —
+	// here a token file that cannot be read — rides through Connect as
+	// unavailable too, and must pass undecorated: it already names its own
+	// repair, and "fix --address, start the server" would point away from it.
+	// Through the real transport, so what is proved is that the
+	// [clientSideError] mark survives Connect's wrapping to where the
+	// decorator reads it.
+	t.Run("a client-side refusal passes through undecorated", func(t *testing.T) {
+		flags := serverFlags{address: address, tokenFile: "/nonexistent-token-file"}
+		session := connectMCPWithDeps(t, defaultLocalRunPosture(), func() flowstatev1connect.WorkflowServiceClient {
+			return newWorkflowServiceClient(flags)
+		}, flowmcp.Deps{
+			Redact:           func(r *v1.GetResponse) *v1.GetResponse { return r },
+			DecorateRPCError: mcpRPCErrorDecorator(flags, true),
+		})
+
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name:      flowmcp.ToolName("List"),
+			Arguments: map[string]any{},
+		})
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+
+		text := result.Content[0].(*mcp.TextContent).Text
+		assert.Contains(t, text, "/nonexistent-token-file",
+			"the refusal must keep naming the configuration at fault: %s", text)
+		assert.NotContains(t, text, "--address/FLOWSTATE_ADDRESS",
+			"a failure no server change can fix must not be dressed as an unreachable deployment: %s", text)
+	})
 }
 
 // TestTheGetCatalogToolRefusesAnUnreachableDeployment is the fail-closed half

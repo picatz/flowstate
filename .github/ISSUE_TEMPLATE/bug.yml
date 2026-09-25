@@ -1,0 +1,36 @@
+name: Bug
+description: Something observable is wrong. A reproducer or a measurement is the fastest path to a fix.
+labels: ["kind/bug"]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What is true now and why it matters. Name the revision (`flow version` or the commit) and the surface (CLI verb, RPC, driver, editor).
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: The reproducer (a minimal Flowfile and the exact command), the output, and where in the code the behavior comes from if you found it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: Desired outcome
+      description: The observable behavior after the fix, not an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Conditions a reviewer or a test can evaluate. One per line.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and dependencies
+      description: Related issues, invariants from AGENTS.md this touches, both-driver implications, threat boundaries.

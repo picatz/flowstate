@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"sync/atomic"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -24,6 +25,21 @@ func TestRunWorkflowTaskSpans(t *testing.T) {
 	out, err := v1.Run(t.Context(), conformance.TaskSpanWorkflow())
 
 	conformance.AssertTaskSpans(t, recorder, out, err)
+}
+
+// TestRetryingTaskSpans runs the attempt-number case through the local retry
+// loop. Its durable twin calls the same fixture and assertion in engine.
+func TestRetryingTaskSpans(t *testing.T) {
+	var attempts atomic.Int32
+	registry := v1.NewRegistry()
+	if err := registry.Register(conformance.TaskSpanRetryTaskDef(&attempts)); err != nil {
+		t.Fatalf("registering retry task: %v", err)
+	}
+	recorder := conformance.RecordSpans(t)
+
+	out, err := v1.Run(v1.NewContextWithRegistry(t.Context(), registry), conformance.TaskSpanRetryWorkflow())
+
+	conformance.AssertRetryingTaskSpans(t, recorder, out, err)
 }
 
 // TestRunWorkflowOpensNoSpansWithoutATracerProvider is the zero-config half.

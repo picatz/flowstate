@@ -35,7 +35,9 @@ func newCompileCommand() *cobra.Command {
 		Use:   "compile [workflow-file]",
 		Short: "Print the workflow specification a Flowfile compiles to",
 		Long: "Compile a Flowfile and write the resulting workflow specification to standard " +
-			"output, executing nothing and contacting no server.\n\n" +
+			"output, executing no workflow step and contacting no server. `--plugin-dir` does " +
+			"launch those plugin binaries to read their task descriptors; use `--plugin-catalog` " +
+			"to compile against the same descriptors without starting a process.\n\n" +
 			"This is the sibling of `flow validate` and the two answer different questions. " +
 			"`flow validate` answers whether a file is correct, and its answer is the list of " +
 			"problems. This answers what a correct file becomes, and its answer is the " +
@@ -77,6 +79,8 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'`,
 	// means everywhere else in this CLI: the fields are the schema's, addressable
 	// by name, with no encoder of this command's own between them and a reader.
 	addOutputFlag(cmd)
+	addPluginFlags(cmd)
+	addPluginCatalogFlag(cmd)
 
 	return cmd
 }
@@ -96,15 +100,33 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	_, closePlugins, err := startPluginsQuietly(cmd, nil)
+	if err != nil {
+		if isUsageError(err) {
+			return err
+		}
+
+		return fmt.Errorf("--plugin-dir names what this file is compiled against, and one of those plugins would not start: %w", err)
+	}
+	defer closePlugins()
+
+	if _, err := loadPluginCatalog(cmd); err != nil {
+		return fmt.Errorf("--%s names what this file is compiled against, and it could not be read: %w", pluginCatalogFlag, err)
+	}
+
 	path := args[0]
 
 	// Path-aware, so a `call:` step resolves relative to this file's own
 	// directory exactly as `flow validate` and `flow run` resolve it.
-	workflow, _, err := flowfile.ParseFile(path)
+	//
+	// Compiled and validated in one pass (#1795): the compiler accepts more than
+	// the validator does — a parse can succeed on a file validation would still
+	// object to — so the full check runs too, on the workflow already in hand
+	// rather than on the file a second time.
+	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
 	surface := newSurface(cmd)
 	if err != nil {
-		var pathErr *os.PathError
-		if errors.As(err, &pathErr) {
+		if _, ok := errors.AsType[*os.PathError](err); ok {
 			// Not a diagnostic: the path itself cannot be read, which is a fact
 			// about the invocation rather than about a workflow, and listing it
 			// beside "this step references a step that does not exist" would put
@@ -121,15 +143,9 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return errCompileRefused
 	}
 
-	// The compiler accepts more than the validator does — a parse can succeed on
-	// a file validation would still object to — so the full check runs too, and a
-	// file with diagnostics answers with them and no specification. A
+	// A file with diagnostics answers with them and no specification. A
 	// specification handed out beside a list of its problems would be an
 	// invitation to run it anyway.
-	diagnostics, err := flowfile.ValidateSourceFile(path)
-	if err != nil {
-		return fmt.Errorf("validating %s: %w", path, err)
-	}
 	if len(diagnostics) > 0 {
 		// stderr, which is the split this command turns on. `flow validate` writes
 		// diagnostics to stdout because they are its answer; here the answer is

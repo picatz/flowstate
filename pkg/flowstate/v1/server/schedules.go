@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
@@ -154,7 +156,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +239,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// the zero case, reached by a workflow that had in fact declared a
 	// policy. Sharing the one encoding function with [Run] is what makes
 	// that impossible to reintroduce by editing one path and not the other.
-	signalEntry, err := signalPolicyMemoEntry(ctx, workflow, inputs)
+	signalEntry, err := policyMemoEntries(ctx, workflow, inputs)
 	if err != nil {
 		// Symmetric with Run's own refusal: an InvalidArgument covers a
 		// caller-supplied input that a rule's subject_from cannot resolve to
@@ -262,20 +264,12 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// creates a schedule is the starter of every run it fires, frozen once
 	// here because there is no caller left at 03:00 to derive one from.
 	scheduleMemo := map[string]any{namespaceMemoKey: namespace}
-	for k, v := range starterMemoEntry(identity) {
-		scheduleMemo[k] = v
-	}
-	for k, v := range signalEntry {
-		scheduleMemo[k] = v
-	}
+	maps.Copy(scheduleMemo, starterMemoEntry(identity))
+	maps.Copy(scheduleMemo, signalEntry)
 
 	actionMemo := map[string]any{namespaceMemoKey: namespace, triggerMemoKey: v1.TriggerKindSchedule + ":" + name}
-	for k, v := range starterMemoEntry(identity) {
-		actionMemo[k] = v
-	}
-	for k, v := range signalEntry {
-		actionMemo[k] = v
-	}
+	maps.Copy(actionMemo, starterMemoEntry(identity))
+	maps.Copy(actionMemo, signalEntry)
 
 	// Unconditional, through the exact function [FlowstateServer.Run] uses —
 	// see [workflowNameMemoEntry]. Written to both memos for the reason the
@@ -303,18 +297,38 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// the reason its comment gives at length: [FlowstateServer.validateSpecification]
 	// pins the deployment's plugin selection onto this specification above, so a
 	// question asked before that would be answered about a message that had not
-	// finished being assembled. Whole-message equality, so a transformation nobody
-	// has thought of yet costs a caller the precise view rather than costing them
-	// a secret.
+	// finished being assembled. [specificationAsSubmitted] excludes only the
+	// control-plane task snapshot; any executable transformation still costs a
+	// caller the precise view rather than costing them a secret.
 	//
 	// Before the create rather than after it, because the value below is what
 	// `Args` carries into every firing and nothing between here and the response
 	// touches it — computing it after would read the same message and say so less
 	// clearly.
-	asSubmitted := proto.Equal(submitted, workflow)
+	asSubmitted := specificationAsSubmitted(submitted, workflow)
+
+	// The name, before the count. A name already taken is the cluster's own
+	// refusal below, but the count comes first and would answer a tenant at
+	// the limit re-creating an existing name with "delete one" — advice about
+	// the wrong problem. One describe by the derived id settles it, and costs
+	// a round trip where the count costs a walk. The same sentence as the
+	// create's own refusal, for the same reason it is plain: within a tenant
+	// this is the caller's own schedule.
+	id := scheduleIDFor(namespace, name)
+	if _, err := temporal.ScheduleClient().GetHandle(ctx, id).Describe(ctx); err == nil {
+		return nil, scheduleAlreadyExists(name)
+	}
+
+	// How many schedules this tenant already holds, asked last: every refusal
+	// above is about the request and costs nothing but reading it, where the
+	// count walks the tenant's Temporal namespace, and a walk spent on a request
+	// that was going to be refused anyway is work spent for no answer.
+	if err := s.checkScheduleCount(ctx, temporal, namespace); err != nil {
+		return nil, err
+	}
 
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
-		ID:               scheduleIDFor(namespace, name),
+		ID:               id,
 		Spec:             spec,
 		Overlap:          overlapOf(trigger.GetOverlap()),
 		Paused:           req.Msg.GetPaused(),
@@ -326,6 +340,21 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		// it, so [ownedBy] answers for a schedule without a second implementation
 		// of what ownership means.
 		Memo: scheduleMemo,
+
+		// The tenant again, on the schedule itself, as the attribute Temporal
+		// can filter on — so [FlowstateServer.tenantSchedules] asks for this
+		// tenant's schedules rather than walking every tenant's (#1785). The
+		// same attributes, through the same function and under the same guard,
+		// as the fired execution carries below: an unregistered attribute makes
+		// Temporal refuse the create outright, so a deployment that never
+		// confirmed registration must never attach one. A filter and never a
+		// proof — the id and the memo still decide what a tenant owns.
+		TypedSearchAttributes: func() sdk.SearchAttributes {
+			if s.searchAttributesRegistered {
+				return runSearchAttributes(namespace, workflow.GetName())
+			}
+			return sdk.SearchAttributes{}
+		}(),
 
 		Action: &client.ScheduleWorkflowAction{
 			// Use the schedule object's tenant-scoped id as the readable base for
@@ -379,10 +408,11 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			}(),
 
 			Args: []any{&v1.RunState{
-				Workflow:    workflow,
-				StepsBudget: int32(s.maxStepsPerRun),
-				Identity:    identity,
-				Inputs:      inputs,
+				Workflow:           workflow,
+				StepsBudget:        int32(s.maxStepsPerRun),
+				Identity:           identity,
+				Inputs:             inputs,
+				MetricWorkflowName: metricWorkflowName(workflow, trusted),
 
 				// How every firing of this schedule started, frozen here for the
 				// reason Identity above is frozen here: there is no caller left to
@@ -402,11 +432,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		// transport-level type never reaches here. Matching what does not arrive is
 		// how a clear refusal turns back into a 500.
 		if errors.Is(err, sdk.ErrScheduleAlreadyRunning) {
-			// Named plainly, because within a tenant this is the caller's own
-			// schedule and telling them about it is not disclosure — the id
-			// derivation is what stops the same answer describing somebody else's.
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
-				"a schedule called %q already exists; delete it, or create this one under another name with --name", name))
+			return nil, scheduleAlreadyExists(name)
 		}
 
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("creating schedule %q: %w", name, err))
@@ -466,9 +492,33 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	iterator, err := temporal.ScheduleClient().List(ctx, client.ScheduleListOptions{})
+	schedules, truncated, err := s.tenantSchedules(ctx, temporal, namespace, 0)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
+		return nil, err
+	}
+
+	return connect.NewResponse(&v1.ListSchedulesResponse{
+		Schedules: schedules,
+		Truncated: truncated,
+	}), nil
+}
+
+// tenantSchedules reads the schedules belonging to one tenant out of the
+// Temporal namespace its runs live in, bounded by [maxScheduleScan].
+//
+// The one walk [FlowstateServer.ListSchedules] answers with and
+// [FlowstateServer.CreateSchedule] counts against, so what a tenant is refused
+// for holding is exactly what `flow schedule list` shows them holding. upTo,
+// when positive, stops the walk once that many of the tenant's own schedules
+// have been seen — a count that only needs to know whether a limit is reached
+// has no reason to read past it. truncated reports the scan bound being
+// reached, which a listing presents as a partial answer.
+func (s *FlowstateServer) tenantSchedules(ctx context.Context, temporal client.Client, namespace string, upTo int) ([]*v1.ScheduleSummary, bool, error) {
+	iterator, err := temporal.ScheduleClient().List(ctx, client.ScheduleListOptions{
+		Query: s.scheduleListQuery(namespace),
+	})
+	if err != nil {
+		return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
 	}
 
 	schedules := make([]*v1.ScheduleSummary, 0, 8)
@@ -482,6 +532,9 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 	// than an assumption: an empty page with a next-page token ends the iteration
 	// here rather than continuing it.
 	for iterator.HasNext() {
+		if upTo > 0 && len(schedules) >= upTo {
+			break
+		}
 		if scanned >= maxScheduleScan {
 			truncated = true
 			break
@@ -490,7 +543,7 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 
 		entry, err := iterator.Next()
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
+			return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf("listing schedules: %w", err))
 		}
 
 		name, mine := scheduleNameFrom(entry.ID, namespace)
@@ -514,10 +567,100 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 		})
 	}
 
-	return connect.NewResponse(&v1.ListSchedulesResponse{
-		Schedules: schedules,
-		Truncated: truncated,
-	}), nil
+	return schedules, truncated, nil
+}
+
+// scheduleListQuery is the visibility query that narrows a schedule listing
+// to the entries that can be the tenant's, where the deployment has search
+// attributes registered — and the empty query otherwise, which asks Temporal
+// for every schedule in the namespace and leaves the walk to keep the
+// tenant's, exactly as it did before there was a query.
+//
+// Two halves. The tenant's own attribute finds every schedule this server
+// created since registration was confirmed. `IS NULL` finds the ones with no
+// attribute at all: schedules created before this deployment registered
+// attributes, or by a server that never did, which are still the tenant's and
+// would otherwise vanish from their listing on the upgrade that added the
+// attribute — a filter that hid a tenant's own schedules would be worse than
+// the walk it replaces. What the query leaves out is the one thing that costs
+// the walk its time: every other tenant's tagged schedules, which is what
+// makes a create by a tenant under the cap stop paying for a namespace full of
+// everyone else's (#1785).
+//
+// A filter, never a proof. Every entry the query returns still passes
+// [scheduleNameFrom] and [ownedBy], exactly as before: a search attribute is
+// visibility data anybody with cluster access can write, and the two checks
+// this file's header describes are what decide ownership.
+//
+// Empty — no narrowing, not no schedules — where registration was never
+// confirmed, which is the same in-process walk every deployment had: a query
+// naming an attribute Temporal does not know is refused, and
+// [WithSearchAttributesRegistered] documents why a server that did not confirm
+// registration must not depend on one.
+//
+// The namespace is spliced into a query literal, so it is checked against the
+// grammar [auth.ValidateNamespace] admits — lowercase letters, digits and
+// dashes, nothing a quoted literal could misread — rather than trusted to have
+// been; a namespace that fails it takes the walk.
+func (s *FlowstateServer) scheduleListQuery(namespace string) string {
+	if !s.searchAttributesRegistered || auth.ValidateNamespace(namespace) != nil {
+		return ""
+	}
+
+	key := namespaceSearchAttribute.GetName()
+
+	return fmt.Sprintf("%s = '%s' OR %s IS NULL", key, namespace, key)
+}
+
+// checkScheduleCount refuses a tenant's schedule past [v1.MaxSchedulesPerNamespace],
+// counted through the listing the tenant can read for themselves.
+//
+// ResourceExhausted rather than InvalidArgument, because nothing about the
+// request is wrong: the same request succeeds once a schedule is deleted, and
+// that is the code a client's retry logic already reads as "not now, and not
+// by rewriting the request".
+//
+// Only the tenant's own schedules count, and the walk stops at the limit. A
+// Temporal namespace is shared — other tenants, other applications — so the
+// entries walked are not the entries counted, and the scan bound can be
+// reached before this tenant's hundredth has been seen. That leaves the count
+// an undercount, which admits the schedule: the scan bound is a bound on how
+// complete a listing's answer is, never a refusal, because the tenant it would
+// refuse cannot delete the entries that consumed it.
+//
+// Counted and then created, with nothing holding the two together: two
+// creates racing at the limit can both count ninety-nine and both succeed,
+// and the listing is Temporal's visibility store, which follows a create by a
+// moment, so a burst of creates can each count the same number. That is a
+// bound one tenant can exceed by a few in a burst, not a bound anybody can
+// walk past, and a lock across a Temporal round trip to close it would
+// serialize every create in the deployment behind the slowest tenant's
+// listing.
+func (s *FlowstateServer) checkScheduleCount(ctx context.Context, temporal client.Client, namespace string) error {
+	existing, truncated, err := s.tenantSchedules(ctx, temporal, namespace, v1.MaxSchedulesPerNamespace)
+	if err != nil {
+		return err
+	}
+
+	// A walk that hit the scan bound before it found the tenant's schedules
+	// has not counted them, and a limit enforced on an unknown count is not
+	// enforced. The refusal says what actually happened — the bound is the
+	// server's, and the entries past it were most likely other tenants' or
+	// another application's in the same Temporal namespace — so a caller
+	// is not told to delete schedules that were never the problem.
+	if truncated {
+		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
+			"could not count this namespace's schedules: the Temporal namespace holds more than the %d entries "+
+				"this server will read to enforce the limit, so the limit cannot be enforced; an operator needs "+
+				"to look at what else shares that namespace", maxScheduleScan))
+	}
+	if len(existing) >= v1.MaxSchedulesPerNamespace {
+		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
+			"the namespace already holds %d schedules, the most one namespace may; delete one before creating another",
+			len(existing)))
+	}
+
+	return nil
 }
 
 // DescribeSchedule reports one schedule in full.
@@ -527,6 +670,14 @@ func (s *FlowstateServer) DescribeSchedule(ctx context.Context, req *connect.Req
 	}
 
 	name := req.Msg.GetName()
+
+	// This verb resolves the schedule itself rather than through
+	// [FlowstateServer.authorizeSchedule], so it asks for the action itself
+	// too, and in the same place: before anything is addressed. See
+	// [FlowstateServer.authorizeAction].
+	if err := s.authorizeAction(ctx, "DescribeSchedule", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
+		return nil, err
+	}
 
 	temporal, namespace, err := s.scheduleClientFor(ctx)
 	if err != nil {
@@ -654,6 +805,13 @@ func (s *FlowstateServer) scheduleClientFor(ctx context.Context) (client.Client,
 // rpc is the WorkflowService method whose decision this is; the audit record is
 // keyed to an authorization action through it — see audit.go.
 func (s *FlowstateServer) authorizeSchedule(ctx context.Context, rpc, name string) (client.ScheduleHandle, error) {
+	// Before the schedule is described, for [FlowstateServer.authorizeRun]'s
+	// reason: a name is a name the caller chose, and a caller holding none of
+	// this RPC's action must not learn which of their guesses exist.
+	if err := s.authorizeAction(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name); err != nil {
+		return nil, err
+	}
+
 	handle, code, err := s.authorizeScheduleDecision(ctx, name)
 	if err != nil {
 		return nil, s.auditDeny(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SCHEDULE, name, code, err)
@@ -692,6 +850,16 @@ func (s *FlowstateServer) authorizeScheduleDecision(ctx context.Context, name st
 	return handle, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, nil
 }
 
+// scheduleAlreadyExists is the refusal for a name already taken within the
+// caller's tenant, whether the describe before the count found it or the
+// create itself did. Named plainly, because within a tenant this is the
+// caller's own schedule and telling them about it is not disclosure — the id
+// derivation is what stops the same answer describing somebody else's.
+func scheduleAlreadyExists(name string) error {
+	return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
+		"a schedule called %q already exists; delete it, or create this one under another name with --name", name))
+}
+
 // noSuchSchedule is the one answer every absent or unauthorized schedule gets.
 func noSuchSchedule(name string) *connect.Error {
 	return connect.NewError(connect.CodeNotFound, fmt.Errorf("no such schedule %q", name))
@@ -704,8 +872,7 @@ func noSuchSchedule(name string) *connect.Error {
 // schedule gets, so a caller sees one answer for one situation rather than a 500
 // for the half of it that happened to lose a race.
 func actOnScheduleError(verb, name string, err error) error {
-	var notFound *serviceerror.NotFound
-	if errors.As(err, &notFound) {
+	if _, ok := errors.AsType[*serviceerror.NotFound](err); ok {
 		return noSuchSchedule(name)
 	}
 

@@ -23,7 +23,11 @@
 // and reference drift checks on docs/DSL.md and the registry/cobra/MCP
 // surfaces, example fix and coverage checks on examples/, and the -cpu=1
 // ordering line when the flowtest package is affected. Every leg prints one
-// line saying it ran or why it was skipped. PR CI remains the full gate;
+// line saying it ran or why it was skipped. A caller that already knows the
+// base — an agent in a sandboxed checkout with no reachable remote, where
+// deriving one is impossible and the fallback runs everything — can supply it
+// with -base or FLOWSTATE_GATE_BASE rather than have one derived (#1306); the
+// -ci lane refuses one, and baseFor says why. PR CI remains the full gate;
 // `make check` remains the full local rehearsal. See CLAUDE.md's gate
 // section.
 package main
@@ -41,50 +45,53 @@ import (
 	"strings"
 )
 
-// bufVersion pins buf to the same release the Makefile and CI run, so this
-// tier cannot pass a schema the required jobs reject.
-const bufVersion = "v1.72.0"
+// toolsModfile is the module the external tools are pinned in, as `tool`
+// directives: buf, govulncheck, staticcheck and pkgsite, each spelled once
+// there and bumped by Dependabot (#1729). The Makefile, ci.yml and this gate
+// all run them through `go tool -modfile`, so a leg here builds the exact
+// release the required job builds, and there is no second version to drift.
+const toolsModfile = "tools/external/go.mod"
 
-// staticcheckVersion and staticcheckToolchain pin the static analyser to what
-// ci.yml's required staticcheck job runs: the release its STATICCHECK_VERSION
-// names, under the GOTOOLCHAIN its run line sets.
+// staticcheckToolchain pins the GOTOOLCHAIN the analyser runs under, to what
+// ci.yml's required staticcheck job sets on its run line.
 //
-// Both are load-bearing. A different release is a different rule set, so a
-// finding here would be a finding about a tool CI is not running. And a
-// different toolchain is not a finding at all: staticcheck's own go.mod
-// selects one older than this module's, so without the pin it downgrades
-// underneath itself and then fails type-checking the standard library
-// vendored into the newer toolchain's module cache — the same failure
-// CLAUDE.md records for govulncheck, for the same reason.
+// It is load-bearing on its own: staticcheck's own go.mod selects a toolchain
+// older than this module's, so without the pin it downgrades underneath itself
+// and then fails type-checking the standard library vendored into the newer
+// toolchain's module cache — the same failure CLAUDE.md records for
+// govulncheck, for the same reason. It is also coupled to the release in
+// toolsModfile: staticcheck type-checks with its own go/types, so it can only
+// read export data at or below the format version its release understands. A
+// release older than the toolchain fails per standard-library package with
+// "export data version N is greater than maximum supported version M" rather
+// than reporting findings — so a toolchain bump moves the release with it. See
+// CLAUDE.md.
 //
-// The two are also coupled to each other, which is why they sit in one block:
-// staticcheck type-checks with its own go/types, so it can only read export
-// data at or below the format version its release understands. A release older
-// than the toolchain fails per standard-library package with "export data
-// version N is greater than maximum supported version M" rather than reporting
-// findings — so a toolchain bump moves the release with it. See CLAUDE.md.
-//
-// staticcheck_test.go reads both values back out of the workflow, so this
-// tier cannot drift into a second opinion about the tool.
-const (
-	staticcheckVersion   = "2026.2.1"
-	staticcheckToolchain = "go1.27.0"
-)
+// staticcheck_test.go reads the whole run line back out of the workflow, so
+// this tier cannot drift into a second opinion about the tool.
+const staticcheckToolchain = "go1.27.0"
 
 func main() {
-	// One flag, because there is one thing to choose: who is asking. The
-	// local tier runs the legs; CI asks only which of its jobs this diff can
-	// reach and decides the rest itself. Both answers come from the same
-	// analyse() call below, which is the point — see ci.go.
+	// The first flag is the one thing to choose: who is asking. The local
+	// tier runs the legs; CI asks only which of its jobs this diff can
+	// reach and decides the rest itself. Both answers come from analyse,
+	// with local-only test-data package seeding explained there — see ci.go.
 	ci := flag.Bool("ci", false, "print the CI job plan for this diff and write it to $GITHUB_OUTPUT, rather than running the local legs")
 	event := flag.String("event", os.Getenv("GITHUB_EVENT_NAME"), "the GitHub event name; anything other than pull_request forces every job to run")
+
+	// The second is the channel a caller who already knows its base needs.
+	// It defaults from the environment for the same reason -event does: a
+	// harness can set it once for every invocation an agent makes, without
+	// the agent having to learn a new command line. See baseFor for what it
+	// does with it, and runCI for why CI will not take one.
+	base := flag.String("base", os.Getenv("FLOWSTATE_GATE_BASE"), "the commit to measure this diff against, for a checkout that cannot reach a remote to derive one (env: FLOWSTATE_GATE_BASE); rejected under -ci, which derives its own")
 	flag.Parse()
 
 	var err error
 	if *ci {
-		err = runCI(*event)
+		err = runCI(*event, *base)
 	} else {
-		err = run()
+		err = run(*base)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gate:", err)
@@ -102,13 +109,20 @@ type analysis struct {
 	repoDataDeps    []string
 	base            string
 	baseWhy         string
+	baseSupplied    bool
 	changed         []string
 }
 
 // analyse is the one computation. The local tier turns it into legs; the CI
 // tier turns it into jobs. Nothing else in this repository is allowed a second
 // opinion about which packages a diff reaches.
-func analyse() (analysis, error) {
+//
+// seedRepoTestData is local-only. It maps data read by tests to the narrow
+// package set the local test leg should execute. CI already selects its full
+// test job from p.repoTestData; adding those readers to affected there would
+// incorrectly make a data-only diff look like a Go change and select the
+// staticcheck and vulncheck jobs too.
+func analyse(seedRepoTestData bool, suppliedBase string) (analysis, error) {
 	// Root the whole run at the repository top level so the gate behaves
 	// identically from any working directory.
 	root, err := gitOutput("rev-parse", "--show-toplevel")
@@ -119,7 +133,10 @@ func analyse() (analysis, error) {
 		return analysis{}, err
 	}
 
-	base, baseWhy := resolveBase()
+	base, baseWhy, err := baseFor(suppliedBase)
+	if err != nil {
+		return analysis{}, err
+	}
 
 	changed, err := changedFiles(base)
 	if err != nil {
@@ -174,12 +191,13 @@ func analyse() (analysis, error) {
 		// test-import expansion carries them the rest of the way.
 		//
 		// The same is true of the repository-level data p.repoTestData
-		// names — Markdown under docs/, README.md, AGENTS.md — and it
-		// bites harder there, because such a diff usually moves no .go
-		// file at all: docs/README.md alone resolves to no package, so
-		// without this seeding the local gate ran no test leg and the
-		// author heard about an incomplete index from CI instead
-		// (#708). Read the test sources at most once for both.
+		// names — Markdown under docs/, README.md, AGENTS.md and the
+		// repository-owned agent configuration — and it bites harder
+		// there, because such a diff usually moves no .go file at all:
+		// docs/README.md alone resolves to no package, so without this
+		// seeding the local gate ran no test leg and the author heard about
+		// an incomplete index from CI instead (#708). Read the test sources
+		// at most once for both.
 		var testSrc map[string][]byte
 		sources := func() map[string][]byte {
 			if testSrc == nil {
@@ -195,7 +213,7 @@ func analyse() (analysis, error) {
 			}
 		}
 
-		if p.repoTestData {
+		if seedRepoTestData && p.repoTestData {
 			repoDataDeps = repoDataDepPackages(sources(), p.repoDataRoots)
 			for _, ip := range repoDataDeps {
 				changedSet[ip] = true
@@ -212,6 +230,7 @@ func analyse() (analysis, error) {
 		repoDataDeps:    repoDataDeps,
 		base:            base,
 		baseWhy:         baseWhy,
+		baseSupplied:    suppliedBase != "",
 		changed:         changed,
 	}, nil
 }
@@ -220,8 +239,22 @@ func analyse() (analysis, error) {
 // ci.yml's jobs it can reach, and publish that. It runs no checks itself and
 // never fails on a finding — a wrong answer here is a job that did not run, and
 // the verdict job is what turns that into a red required check.
-func runCI(event string) error {
-	a, err := analyse()
+//
+// It takes suppliedBase only in order to refuse it. Here the base decides which
+// *required* jobs run, so a base the branch under review could set is a way for
+// that branch to narrow the gate judging it — #964's hole arriving through a new
+// door. It refuses loudly rather than ignoring quietly because a harness that
+// exports FLOWSTATE_GATE_BASE for its agents should learn that the plan job does
+// not take one, instead of CI quietly disagreeing with the input it was handed.
+func runCI(event, suppliedBase string) error {
+	if suppliedBase != "" {
+		return fmt.Errorf("-ci was given the base %q, and the CI lane does not take one: the base here "+
+			"decides which required jobs run, so a base the pull request could set would let it narrow "+
+			"the gate that judges it (#964). CI derives its own from a ref it controls — unset -base and "+
+			"FLOWSTATE_GATE_BASE for the plan job", suppliedBase)
+	}
+
+	a, err := analyse(false, "")
 	if err != nil {
 		return err
 	}
@@ -238,8 +271,8 @@ func runCI(event string) error {
 	return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.base, a.plan)))
 }
 
-func run() error {
-	a, err := analyse()
+func run(suppliedBase string) error {
+	a, err := analyse(true, suppliedBase)
 	if err != nil {
 		return err
 	}
@@ -251,7 +284,14 @@ func run() error {
 	if a.base == "" {
 		fmt.Printf("gate: %d tracked file(s), every leg wide\n", len(a.changed))
 	} else {
-		fmt.Printf("gate: %d changed file(s) vs merge-base %s\n", len(a.changed), a.base[:12])
+		// Named for what it is. A supplied base is whatever the caller says it
+		// is, so calling it a merge-base on the one line a reader checks the
+		// scope against would claim a derivation that did not happen.
+		noun := "merge-base"
+		if a.baseSupplied {
+			noun = "supplied base"
+		}
+		fmt.Printf("gate: %d changed file(s) vs %s %s\n", len(a.changed), noun, a.base[:12])
 	}
 
 	g := &gate{}
@@ -260,8 +300,8 @@ func run() error {
 	// miss a caller two hops away, and the build is the cheapest leg here.
 	g.leg("build", "always", command("go", "build", "./..."))
 
-	// Always: gofmt on the changed files (CI fails on any drift under ./cmd
-	// and ./pkg; the gate holds every changed file to it).
+	// Always: gofmt on the changed files (CI fails on any drift under every
+	// directory holding Go; the gate holds every changed file to it).
 	g.gofmtLeg(p.goFiles)
 
 	// Affected packages: vet and bounded -race tests. When go.mod moved,
@@ -312,12 +352,16 @@ func run() error {
 	switch {
 	case p.moduleWide:
 		g.leg("test", fmt.Sprintf("%s changed, every package is affected", p.reasons["module"]),
-			commandEnv([]string{"GOMEMLIMIT=2GiB"}, "go", "test", "-race", "-timeout", "900s", "./..."))
+			moduleWideTestCommand())
 	case len(affected) == 0:
 		g.skip("test", withTestResidual(p, "no Go packages affected by this diff"))
 	default:
+		// Keep the per-package ceiling aligned with CI. The engine's race
+		// rehearsals intentionally exercise admitted CEL bounds; serialize
+		// packages so their Temporal processes do not consume one another's
+		// wall-clock budgets while retaining within-package parallelism.
 		g.leg("test", withTestResidual(p, narrowWhy),
-			commandEnv([]string{"GOMEMLIMIT=1GiB"}, "go", append([]string{"test", "-race", "-timeout", "300s"}, affected...)...))
+			affectedTestCommand(affected))
 	}
 
 	// Affected packages: staticcheck, on the same trigger and with the same
@@ -345,7 +389,7 @@ func run() error {
 	// target list — and CI's staticcheck job then analyses ./... regardless
 	// of which Go packages the diff reached. Two shapes fall through a leg
 	// that consults only `affected`, and the first is the bad direction:
-	// a workflow-only diff (bumping STATICCHECK_VERSION, say) affects no Go
+	// a workflow-only diff (changing a job's condition, say) affects no Go
 	// package at all, so the leg would *skip* where the required job runs;
 	// and a change to this package would analyse only this package where the
 	// job analyses the module. So the leg takes ciForceReason's answer, and
@@ -370,7 +414,7 @@ func run() error {
 	// claim is an ordering claim; see CLAUDE.md on -cpu=1) is affected.
 	if needsOrdering(affected) {
 		g.leg("ordering", "flowtest package affected",
-			commandEnv([]string{"GOMEMLIMIT=1GiB"}, "go", "test", "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/"))
+			goTestSummarized([]string{"GOMEMLIMIT=1GiB"}, "-race", "-cpu=1", "-count=20", "-timeout", "300s", "./pkg/flowstate/v1/flowtest/"))
 	} else {
 		g.skip("ordering", "flowtest package not affected")
 	}
@@ -590,6 +634,52 @@ func resolveBase() (base, why string) {
 		"this run is wide and slow rather than narrow and wrong"
 }
 
+// baseFor is where [analyse] gets the commit it measures the diff against: the
+// one the caller supplied, if it supplied one, and otherwise whatever
+// [resolveBase] can derive.
+//
+// The supplied channel exists because every repair [resolveBase] knows needs
+// the network, and the environments this gate most needs to run in are the ones
+// least likely to have it. An agent working in a sandboxed checkout branched
+// from a known commit *knows* its base and, until this flag, had no way to say
+// so: the gate fell through to the whole tree, selected the full -race suite,
+// and was interrupted before it verified anything (#1306). Wide-and-slow beats
+// narrow-and-wrong only where wide finishes.
+//
+// It is a channel rather than a grant of trust. A local run is already whatever
+// the person or agent running it says it is, so there is no ancestry check here
+// and none is wanted: a base that is not HEAD's ancestor produces a diff, and
+// that diff is the caller's claim about its own scope. What the gate does owe
+// is that the claim was understood — so the supplied value is resolved to a
+// commit id, and a value naming nothing this checkout has is an error rather
+// than a fall-through to the whole-tree fallback. Falling through would
+// reproduce the exact symptom of #1306 while looking like the flag worked.
+//
+// Only the *obtaining* of the base is new. The commit it returns goes into
+// [changedFiles] and [buildPlan] exactly as a derived one does, so docs/CI.md's
+// one computation of what a diff can reach keeps having one opinion about
+// scope. See [runCI] for why CI does not accept one at all.
+func baseFor(supplied string) (base, why string, err error) {
+	if supplied == "" {
+		base, why = resolveBase()
+
+		return base, why, nil
+	}
+
+	// ^{commit} both peels a tag or branch to the commit changedFiles needs
+	// and rejects anything that does not name one; --verify --quiet turns
+	// every other failure into a non-zero exit rather than a guess.
+	out, err := gitOutput("rev-parse", "--verify", "--quiet", supplied+"^{commit}")
+	if resolved := strings.TrimSpace(out); err == nil && resolved != "" {
+		return resolved, fmt.Sprintf("measuring against the base supplied as %q (-base or "+
+			"FLOWSTATE_GATE_BASE), resolved to %s, rather than deriving one", supplied, resolved), nil
+	}
+
+	return "", "", fmt.Errorf("the supplied base %q does not name a commit in this checkout: "+
+		"supply one this checkout has, or unset -base and FLOWSTATE_GATE_BASE and let the gate "+
+		"derive its own", supplied)
+}
+
 // changedFiles is the diff against the merge-base, plus untracked files —
 // or, when no merge-base could be established, every tracked file.
 //
@@ -778,8 +868,70 @@ func commandEnv(env []string, name string, args ...string) cmdSpec {
 	return cmdSpec{argv: append([]string{name}, args...), env: env}
 }
 
+// testsumArgv is the summarizer the test legs pipe through: the same program
+// `make test` runs, so the local loop and CI print one shape (#1727).
+var testsumArgv = []string{"go", "run", "./tools/testsum"}
+
+func moduleWideTestCommand() cmdSpec {
+	return goTestSummarized([]string{"GOMEMLIMIT=2GiB"}, "-race", "-p=1", "-timeout", "900s", "./...")
+}
+
+func affectedTestCommand(packages []string) cmdSpec {
+	return goTestSummarized([]string{"GOMEMLIMIT=1GiB"},
+		append([]string{"-race", "-p=1", "-timeout", "900s"}, packages...)...)
+}
+
+// goTestSummarized is `go test -json <args> | go run ./tools/testsum` as a
+// leg step, without a shell: the two processes are started here with the
+// first's stdout as the second's stdin, and the step fails when either does —
+// pipefail, written out. A `go test` that died before printing a failure
+// would otherwise be a summary of a clean partial run.
+//
+// The label is the shell spelling, because that is what the leg prints and
+// what a reader would paste to reproduce it.
+func goTestSummarized(env []string, args ...string) cmdSpec {
+	test := append([]string{"go", "test", "-json"}, args...)
+	label := strings.Join(test, " ") + " | " + strings.Join(testsumArgv, " ")
+	if len(env) > 0 {
+		label = strings.Join(env, " ") + " " + label
+	}
+	return cmdSpec{
+		label: label,
+		verify: func() error {
+			run := exec.Command(test[0], test[1:]...)
+			run.Env = append(os.Environ(), env...)
+			run.Stderr = os.Stderr
+			stream, err := run.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			sum := exec.Command(testsumArgv[0], testsumArgv[1:]...)
+			sum.Stdin = stream
+			sum.Stdout = os.Stdout
+			sum.Stderr = os.Stderr
+			if err := run.Start(); err != nil {
+				return err
+			}
+			if err := sum.Start(); err != nil {
+				_ = run.Process.Kill()
+				_ = run.Wait()
+				return err
+			}
+			// The summarizer ends when the stream does, which is
+			// when go test exits; wait for it first so the summary
+			// is complete before the test's status is read.
+			sumErr := sum.Wait()
+			testErr := run.Wait()
+			if testErr != nil {
+				return fmt.Errorf("go test: %w", testErr)
+			}
+			return sumErr
+		},
+	}
+}
+
 func buf(args ...string) cmdSpec {
-	return command("go", append([]string{"run", "github.com/bufbuild/buf/cmd/buf@" + bufVersion}, args...)...)
+	return command("go", append([]string{"tool", "-modfile=" + toolsModfile, "buf"}, args...)...)
 }
 
 // forcedWide is why a leg whose scope follows CI's must run over the whole
@@ -851,10 +1003,10 @@ func withTestResidual(p plan, why string) string {
 }
 
 // staticcheck runs the pinned analyser over the named packages, under the
-// pinned toolchain. See staticcheckVersion for why both pins are there.
+// pinned toolchain. See staticcheckToolchain for why both pins are there.
 func staticcheck(pkgs ...string) cmdSpec {
 	return commandEnv([]string{"GOTOOLCHAIN=" + staticcheckToolchain},
-		"go", append([]string{"run", "honnef.co/go/tools/cmd/staticcheck@" + staticcheckVersion}, pkgs...)...)
+		"go", append([]string{"tool", "-modfile=" + toolsModfile, "staticcheck"}, pkgs...)...)
 }
 
 // generatedClean is the pin that follows every generate step: after

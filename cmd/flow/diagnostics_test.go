@@ -36,7 +36,7 @@ var linkablePosition = regexp.MustCompile(`^[^\s:]+:\d+(:\d+)?: `)
 func assertLinkableDiagnostics(t *testing.T, output string) {
 	t.Helper()
 
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
 		if line == "" {
 			continue
 		}
@@ -197,7 +197,7 @@ func TestFixDiagnosticsShareTheSameSpelling(t *testing.T) {
 // the summary words `validate` writes beside them.
 func diagnosticLinesOf(output string) []string {
 	var lines []string
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
 		if line == "" || strings.HasSuffix(line, ": ok") {
 			continue
 		}

@@ -290,8 +290,11 @@ func TestCodexExecResetWorkingContextFailsClosedWithoutGitConfigured(t *testing.
 
 	// Not what this test is about: a codex binary must be configured for
 	// codexExec to reach the reset logic at all, since that check runs
-	// first (see resolveCodexBinary in exec.go).
+	// first (see resolveCodexBinary in exec.go), and the reset needs a
+	// writable sandbox, which is checked before the git binary is looked for
+	// (see TestCodexExecResetWorkingContextNeedsAWritableSandbox).
 	applyFakeCodexEnv(t, buildFakeCodex(t), fakeCodexEnv{})
+	writableOperatorPolicy(t)
 
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "work"), 0o755); err != nil {
@@ -303,6 +306,7 @@ func TestCodexExecResetWorkingContextFailsClosedWithoutGitConfigured(t *testing.
 		"prompt":                "hi",
 		"working_context":       "work",
 		"reset_working_context": true,
+		"sandbox_mode":          "SANDBOX_MODE_WORKSPACE_WRITE",
 	}), nil)
 	if err == nil {
 		t.Fatal("codexExec requesting reset_working_context with no git binary configured: got no error, want one")
@@ -316,9 +320,12 @@ func TestCodexExecResetWorkingContextFailsClosedWithoutGitConfigured(t *testing.
 // version of TestResetWorkingContextDiscardsTrackedAndUntrackedChanges
 // (diff_test.go): proof that codexExec actually wires the reset in, ahead
 // of the baseline read, rather than only that the helper function works in
-// isolation. sandbox_mode is left at its READ_ONLY default deliberately -
-// reset_working_context requires only working_context, not a write grant,
-// since the reset itself is not the agent writing anything.
+// isolation.
+//
+// Under a writable sandbox, which is what the reset now needs: it deletes
+// untracked files outright, and SANDBOX_MODE_READ_ONLY is the operator's
+// ceiling and not only a statement about the agent - see codexExec's own
+// refusal, and TestCodexExecResetWorkingContextNeedsAWritableSandbox below.
 func TestCodexExecResetWorkingContextDiscardsLeftoverEdits(t *testing.T) {
 	gitBin := realGitBinary(t)
 	t.Setenv(gitBinaryEnv, gitBin)
@@ -349,10 +356,13 @@ func TestCodexExecResetWorkingContextDiscardsLeftoverEdits(t *testing.T) {
 	)
 	applyFakeCodexEnv(t, bin, fakeCodexEnv{eventsFile: events})
 
+	writableOperatorPolicy(t)
+
 	_, err := codexExec(context.Background(), inputsFor(map[string]any{
 		"prompt":                "hi",
 		"working_context":       "repo",
 		"reset_working_context": true,
+		"sandbox_mode":          "SANDBOX_MODE_WORKSPACE_WRITE",
 	}), nil)
 	if err != nil {
 		t.Fatalf("codexExec: unexpected error: %v", err)
@@ -434,5 +444,80 @@ func TestCodexExecResetWorkingContextEnablesARetriedPatch(t *testing.T) {
 	// Reset first, and the same shape of turn produces a patch again.
 	if patch := runTurn(true); !strings.Contains(patch, "+two") {
 		t.Fatalf("third turn's patch with reset_working_context = %q, want it to contain the edit again", patch)
+	}
+}
+
+// writableOperatorPolicy raises the operator's ceiling to workspace-write, so
+// a test can ask for the mode a reset needs. The ceiling is deployment
+// configuration rather than a task input, which is the distinction
+// TestCodexExecResetWorkingContextNeedsAWritableSandbox turns on.
+func writableOperatorPolicy(t *testing.T) {
+	t.Helper()
+
+	policyPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(policyPath, []byte("sandbox_mode = \"workspace-write\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv(policyEnv, policyPath)
+}
+
+// TestCodexExecResetWorkingContextNeedsAWritableSandbox is the operator ceiling
+// holding against the one task input that mutates the checkout itself (#1119).
+//
+// reset_working_context reverts tracked content to HEAD and deletes untracked
+// files and directories outright. It was accepted with sandbox_mode left at its
+// SANDBOX_MODE_READ_ONLY default, on the reasoning that the agent is not the
+// one writing — which is true, and is not the question the sandbox answers.
+// narrowSandbox exists so a Flowfile can narrow what deployment configuration
+// allows and never widen it, so a task input that destroys a worker's
+// uncommitted work beneath a ceiling reading "read only" is the Flowfile
+// widening it by another name.
+//
+// The data assertions are the point rather than the error: a refusal that still
+// reset the checkout would be the same defect wearing a message.
+func TestCodexExecResetWorkingContextNeedsAWritableSandbox(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	if err := os.Mkdir(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	initRepoWithCommit(t, gitBin, repoDir)
+	t.Setenv(workdirRootEnv, root)
+
+	if err := os.WriteFile(filepath.Join(repoDir, "a.txt"), []byte("one\ntwo\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "untracked.txt"), []byte("new\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile untracked.txt: %v", err)
+	}
+
+	applyFakeCodexEnv(t, buildFakeCodex(t), fakeCodexEnv{})
+
+	// sandbox_mode omitted, which is SANDBOX_MODE_READ_ONLY and is also the
+	// operator's ceiling with no policy configured.
+	_, err := codexExec(context.Background(), inputsFor(map[string]any{
+		"prompt":                "hi",
+		"working_context":       "repo",
+		"reset_working_context": true,
+	}), nil)
+	if err == nil {
+		t.Fatal("codexExec reset the checkout under a read-only sandbox: got no error, want one")
+	}
+	if !strings.Contains(err.Error(), "sandbox_mode") {
+		t.Errorf("error = %v, want it to name sandbox_mode so an author knows what to ask for", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(repoDir, "a.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile a.txt: %v", err)
+	}
+	if string(got) != "one\ntwo\n" {
+		t.Errorf("a.txt = %q, want the working-tree content preserved: the refusal reset it anyway", got)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "untracked.txt")); err != nil {
+		t.Errorf("untracked.txt: stat err = %v, want the file preserved: the refusal deleted it", err)
 	}
 }
