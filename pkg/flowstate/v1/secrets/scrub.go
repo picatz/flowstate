@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unsafe"
 )
 
 const maxScrubCompareBytes = 8 << 20
@@ -375,6 +376,40 @@ func shrinkToFit(s string, capacity int) string {
 	}
 
 	return strings.Clone(s)
+}
+
+// ScrubBytes replaces every registered value in text with [Redacted], the byte-slice
+// counterpart to [Scrubber.Scrub]. Prefer it at a call site whose text is already
+// []byte, such as an HTTP response body: `[]byte(s.Scrub(string(text)))` copies text
+// in and the result out unconditionally, which costs more than the scan itself once
+// the scan has nothing to redact.
+//
+// text is returned unchanged, aliasing the same array and allocating nothing, when
+// nothing matches — the common case for a reply that echoes no registered secret
+// back. When something does match, the result is a freshly allocated slice and text
+// is left as it was; the two never share storage, so mutating one afterwards cannot
+// reach the other.
+//
+// This is not a second matching implementation to keep in sync with
+// [Scrubber.ScrubWith]: text is viewed as a string without copying it — matching
+// never writes through the view, so the aliasing is sound — and handed to ScrubWith
+// itself, which is what makes the two paths produce identical results, including the
+// same withholding of the whole text once [maxScrubCompareBytes] is exhausted, by
+// construction rather than by keeping two scans in agreement.
+func (s *Scrubber) ScrubBytes(text []byte) []byte {
+	if len(text) == 0 {
+		return text
+	}
+
+	view := unsafe.String(unsafe.SliceData(text), len(text))
+	scrubbed := s.ScrubWith(view, Redacted)
+	if unsafe.StringData(scrubbed) == unsafe.SliceData(text) {
+		// ScrubWith found nothing and handed back the exact string it was
+		// given, so this is the same array text already is.
+		return text
+	}
+
+	return []byte(scrubbed)
 }
 
 // Contains reports whether text holds any registered value. Use it to assert that
