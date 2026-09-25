@@ -563,20 +563,6 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 			}
 		}
 
-		// The waiter goroutine's own call to [escalateAbandonedGroup] has
-		// not necessarily finished by the time the leader above is
-		// confirmed gone: it runs after [instance.exited] closes, in that
-		// same goroutine, and it is the *only* signal a helper ever gets
-		// on the leader's own independent exit, where the branch above
-		// never ran at all. Waiting for it here — bounded by ctx, exactly
-		// as [instance.waitExit] already is — is what keeps whoever calls
-		// stop, and through it Host.Close winding the whole host down,
-		// from returning before that goroutine's own SIGKILL actually
-		// lands (Codex, #2008 review, third round).
-		if i.proc != nil {
-			i.waitEscalated(ctx)
-		}
-
 		// Closing the read ends unblocks the pumps, which may still be waiting
 		// on output from a process whose children hold the write ends open.
 		if i.stdout != nil {
@@ -593,6 +579,37 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 			os.RemoveAll(i.socketDir)
 		}
 	})
+
+	// Deliberately outside stopOnce: the one-time cleanup above must run
+	// exactly once, but the wait below must not be — every caller's own ctx
+	// has to govern its own wait, not just whichever caller's ctx happened
+	// to be in scope when stopOnce ran the body. [Plugin.noteExit] and
+	// [Plugin.close] can both reach here for the same instance on
+	// independent exit: noteExit calls with p.procCtx, and close cancels
+	// that same procCtx before making its own call with the still-live
+	// shutdown ctx a caller of Close actually gave. If noteExit's call won
+	// stopOnce with p.procCtx already (or about to be) cancelled, a wait
+	// bound to it inside the Do would return at once regardless of whether
+	// escalation had actually finished, and stopOnce would then make
+	// close's own, later call — with a ctx that was never cancelled — a
+	// no-op that waits for nothing (Codex, #2008 review, fourth round).
+	// [instance.escalated] is safe to observe from as many goroutines as
+	// call stop, each against its own ctx: it is closed exactly once, by
+	// the waiter goroutine, regardless of who is listening.
+	//
+	// The waiter goroutine's own call to [escalateAbandonedGroup] has not
+	// necessarily finished by the time stopOnce's body above returns: it
+	// runs after [instance.exited] closes, in that same goroutine, and it
+	// is the *only* signal a helper ever gets on the leader's own
+	// independent exit, where stopOnce's own SIGTERM branch never ran at
+	// all. Waiting for it here — bounded by this call's own ctx, exactly as
+	// [instance.waitExit] already is inside the Do — is what keeps this
+	// call's own caller, and through Plugin.close and Host.Close winding
+	// the whole host down, from returning before that goroutine's own
+	// SIGKILL actually lands (Codex, #2008 review, third round).
+	if i.proc != nil {
+		i.waitEscalated(ctx)
+	}
 }
 
 // reaped reports whether the process has already been waited on, after which its

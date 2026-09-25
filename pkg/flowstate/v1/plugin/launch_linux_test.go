@@ -3,6 +3,7 @@
 package plugin
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -178,6 +179,99 @@ func TestStopWaitsForEscalationBeforeReturning(t *testing.T) {
 		t.Errorf("stop returned while helper process %d, which ignores SIGTERM, was "+
 			"still running: stop did not wait for the waiter goroutine's own "+
 			"escalation to finish before returning", pid)
+	}
+}
+
+// TestStopWaitsForEscalationEvenWhenAnEarlierCallHadACanceledContext is the
+// fourth round of the same finding: moving the escalation wait inside
+// stopOnce, as the third round's first attempt did, made the wait's own ctx
+// whichever caller happened to win that Once — not the ctx of whoever is
+// actually calling stop now. [Plugin.noteExit] and [Plugin.close] can both
+// reach the same instance on an independent exit: noteExit calls stop with
+// p.procCtx, and close cancels that same procCtx before making its own call
+// with the still-live shutdown ctx a caller of Close actually gave. If
+// noteExit's call won stopOnce first, with p.procCtx already or about to be
+// canceled, a wait bound to it inside the Do returned at once regardless of
+// whether escalation had finished, and stopOnce made close's own, later
+// call — with a ctx that was never canceled — wait for nothing (Codex,
+// #2008 review, fourth round).
+//
+// This recreates that ordering directly rather than racing two goroutines:
+// stop is called once with an already-canceled context first (so, under
+// the bug, it would both win stopOnce and return at once), then a second
+// time with a live one — the second call is what this test is actually
+// about, since stopOnce guarantees its own body never runs again regardless
+// of how the two calls are interleaved.
+func TestStopWaitsForEscalationEvenWhenAnEarlierCallHadACanceledContext(t *testing.T) {
+	requireProcOrSkip(t)
+
+	pidFile := t.TempDir() + "/child-pid"
+	dir := pluginDir(t, "with-stubborn-child")
+	cfg := testConfig(t, dir).withDefaults()
+	cfg.Env = append(cfg.Env, "FLOWSTATE_TEST_CHILD_PID_FILE="+pidFile)
+
+	inst, err := launch(t.Context(), cfg, Found{
+		Name: "with-stubborn-child",
+		Path: filepath.Join(dir, BinaryPrefix+"with-stubborn-child"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if inst == nil {
+		t.Fatal("launch returned no instance for this test to call stop on")
+	}
+
+	pid := readChildPID(t, pidFile)
+
+	if err := inst.proc.Kill(); err != nil {
+		t.Fatalf("killing the leader: %v", err)
+	}
+
+	// Waited out before the first call to stop, exactly like [Plugin.noteExit]'s
+	// own precondition: it only calls stop once the supervisor has already
+	// observed cmd.Wait return. Calling stop before the leader is reaped
+	// would instead take stop's *other* branch — terminateProcess against
+	// the still-alive leader — which SIGKILLs the whole group, including the
+	// child, the moment waitExit sees the already-canceled ctx below; that
+	// would kill the child for a reason this test is not about, and leave
+	// nothing for the second call to prove.
+	if !waitFor(t, 2*time.Second, inst.reaped) {
+		t.Fatal("the leader was not reaped in time for this test's own premise")
+	}
+
+	// The noteExit half: an already-canceled ctx, the shape p.procCtx is in
+	// by the time Plugin.close has called p.cancel(). Every ctx bound this
+	// call makes — waitEscalated, now outside stopOnce — is already done,
+	// so this returns almost at once and leaves the child still running:
+	// exactly the state a caller of Close, arriving right after, actually
+	// sees.
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	inst.stop(canceledCtx, cfg.ShutdownGrace)
+
+	if processGoneOrZombie(t, pid) {
+		t.Fatal("the helper was already gone after the first call to stop, so this test's " +
+			"second call cannot tell a real wait from one that had nothing left to wait for")
+	}
+
+	// The Plugin.close half: a live ctx, called immediately after — stopOnce
+	// guarantees its own body does not run again, so everything this call
+	// does happens outside it. If that wait is not itself outside stopOnce,
+	// this call is a no-op and returns at once no matter what ctx it holds.
+	started := time.Now()
+	inst.stop(t.Context(), cfg.ShutdownGrace)
+	elapsed := time.Since(started)
+
+	if elapsed < cfg.ShutdownGrace-500*time.Millisecond {
+		t.Fatalf("the second call to stop, with its own live ctx, returned after only %s, "+
+			"well under the %s grace period escalation must wait out for a helper that "+
+			"ignores SIGTERM — an earlier call whose ctx was already canceled must have "+
+			"skipped this wait for both calls, not only its own", elapsed, cfg.ShutdownGrace)
+	}
+
+	if !waitFor(t, 2*time.Second, func() bool { return processGoneOrZombie(t, pid) }) {
+		t.Errorf("helper process %d, which ignores SIGTERM, was still running after a "+
+			"second call to stop, with a live ctx, returned", pid)
 	}
 }
 
