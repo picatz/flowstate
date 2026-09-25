@@ -693,6 +693,64 @@ tests:
 			"repair 4 withholds")
 }
 
+// TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening drives Codex's
+// review finding on #2041: `runCase` establishes its posture from
+// [casePosture] — which includes a table row's [Test.entrySecretMaterial] —
+// before anything can fail, but then *replaces* it wholesale with a freshly
+// built `sensitive` set once the run's inputs bind, rather than extending it
+// (see run.go's own comment on that assignment). Without also adding
+// entrySecretMaterial to that rebuilt set, a row that replaced its entry's
+// `secrets:` would withhold the entry's plaintext only until bind and print
+// it in the clear in every witness after — a check's, in particular, since a
+// check is judged after the run completes.
+func TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening(t *testing.T) {
+	t.Parallel()
+
+	const entrySecret = "sk-live-entry-postbind-9931"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: forwarder
+inputs:
+  tag:
+    type: string
+steps:
+  - id: echo
+    value: ${inputs.tag}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: entry
+    workflow: ./workflow.yaml
+    secrets:
+      env:VENDOR_TOKEN: `+entrySecret+`
+    cases:
+      - name: row
+        secrets:
+          env:ROW_TOKEN: row-material-2210
+        inputs:
+          tag: `+entrySecret+`
+        expect:
+          check:
+            - that: steps.echo.value == 'nope'
+              because: false on purpose, so the post-run witness renders
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, entrySecret,
+		"the row replaced its entry's `secrets:`, but its entry's plaintext still reached a post-run witness (#2041)")
+}
+
 func TestATaintedStructuredLeafIsWithheldFromStubDiagnostics(t *testing.T) {
 	t.Parallel()
 

@@ -117,6 +117,21 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 
 			continue
 		}
+		// Bound here rather than left to the per-test check every expanded
+		// row gets below: that check reads each row's own effective
+		// Secrets, and a row that names even one secret of its own replaces
+		// the entry's map entirely (Secrets stays whole-or-nothing), so an
+		// entry over the limit whose every row overrides would never trip
+		// it there. Below this point the entry's plaintext is also about to
+		// be read into entrySecretMaterial and shared by every row for
+		// redaction, so bounding it first bounds that too (Codex).
+		if len(entry.Secrets) > MaxSecretsPerTest {
+			p.report(site{test: entry.Name, at: where.field("secrets")},
+				"test %q table entry declares %d secrets, more than the limit of %d",
+				entry.Name, len(entry.Secrets), MaxSecretsPerTest)
+
+			continue
+		}
 		// Judge the expectation fields the entry wrote once, while both its
 		// source path and its identity are still available. mergeExpectation
 		// marks the copies each row inherits, so the ordinary case pass below

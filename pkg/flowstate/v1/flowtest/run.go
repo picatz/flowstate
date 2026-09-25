@@ -871,6 +871,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// every line while protecting nothing.
 	sensitive = sensitive.WithValues(slices.Collect(maps.Values(test.Secrets))...)
 
+	// A table row's entry's secret plaintext, which [Test.entrySecretMaterial]
+	// carries past `Secrets`' own whole-or-nothing rule for redaction only
+	// (#2041). `casePosture` above already includes it; the assignment two
+	// lines down replaces that posture wholesale rather than extending it, so
+	// without this line a row that replaced its entry's `secrets:` would
+	// withhold the entry's material only until the run's own inputs bind and
+	// lose it for every exit after (Codex).
+	sensitive = sensitive.WithValues(test.entrySecretMaterial...)
+
 	// And what a computed var inherited from one (#1072, repair 4). The
 	// substring backstop above is complete only while no var can *transform*
 	// anything: `${vars.token.substring(0, 8)}` is a prefix of a secret, so it
