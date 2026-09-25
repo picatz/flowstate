@@ -721,7 +721,14 @@ func TestFixRefusesAnAliasExpansionPastTheNodeOrByteBudget(t *testing.T) {
 		// crosses is the sheer count of values a single expansion holds,
 		// which is exactly the resource the node budget and not the byte
 		// budget is the answer to.
-		const entries = 50_000
+		//
+		// 20,000 rather than a rounder, larger count: the document's own
+		// declared entries alone hold about 60,000 nodes, comfortably under
+		// maxNodes, so it is specifically the one alias use doubling that
+		// count that crosses it — not the static document by itself, which
+		// a far larger entry count would also refuse and say nothing about
+		// the expansion.
+		const entries = 20_000
 		var b strings.Builder
 		b.WriteString("edition: v2026.3\nname: t\nvars:\n  big: &big\n")
 		for i := range entries {

@@ -61,12 +61,12 @@ import (
 // nothing was: the returned result carries the original bytes and one positioned
 // refusal per construct that could not be copied.
 func inlineWholeValueAliases(data []byte, file *ast.File) (FixResult, bool) {
-	in, ok := runAliasInliner(data, file)
+	in, out, ok := runAliasInliner(data, file)
 	if !ok {
 		return FixResult{Source: data, Refusals: in.refusals}, false
 	}
 
-	return FixResult{Source: in.f.apply(), Changes: in.f.changes}, true
+	return FixResult{Source: out, Changes: in.f.changes}, true
 }
 
 // runAliasInliner does [inlineWholeValueAliases]'s actual work and hands back
@@ -75,7 +75,14 @@ func inlineWholeValueAliases(data []byte, file *ast.File) (FixResult, bool) {
 // charged against directly, which is what the accounting oracle #2045 asks
 // for needs to compare against each other. [inlineWholeValueAliases] is the
 // thin wrapper every other caller uses.
-func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, bool) {
+//
+// out is the applied bytes on success, computed once here rather than left
+// for the caller to rebuild with a second [fixer.apply] call — that
+// assembles the whole document from its lines and edits again, and this
+// function already has to pay for one copy to check it against [maxBytes].
+// nil on refusal, alongside the false every other caller already reads as
+// "the document did not change."
+func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) {
 	in := &aliasInliner{
 		f: &fixer{
 			lines:           splitLines(data),
@@ -100,7 +107,7 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, bool) {
 		in.rewrite()
 	}
 	if len(in.refusals) > 0 {
-		return in, false
+		return in, nil, false
 	}
 
 	// A backstop, not the bound: [aliasInliner.bytes] already refused before
@@ -124,10 +131,10 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, bool) {
 			"writing these aliases out would produce %d bytes, larger than the %d byte limit a Flowfile is read up to; nothing was rewritten",
 			len(out), maxBytes)
 
-		return in, false
+		return in, nil, false
 	}
 
-	return in, true
+	return in, out, true
 }
 
 // An aliasSite is one alias this rewrite may replace: an alias written as the
@@ -770,13 +777,15 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 // chain rather than one link per round. stack carries the anchors being expanded
 // on the way here, so the recursion cannot follow a cycle.
 //
-// against attributes the charge for a line this range merely copies through —
-// this range's own site is not itself a line here, and a line untouched by any
-// alias still costs a copy, which is #2045's finding 4: a line this range
-// passes through unwritten (a blank line inside a copied block, chief among
-// them) used to cost nothing no matter how many of them the block held. A
-// replacement line pays for itself inside [aliasInliner.replacement]'s own
-// splice, so only the plain-copy arm below charges here.
+// against is the alias whose expansion this range is part of, named so a
+// refusal here reads at that alias rather than nowhere: this range's own
+// site is not itself a line, so nothing else in scope can attribute the
+// charge for a line it merely copies through. A line untouched by any alias
+// still costs a copy — #2045's finding 4 was a blank line inside a copied
+// block costing nothing no matter how many of them the block held — so the
+// plain-copy arm below charges every such line explicitly. A replacement
+// line already pays for itself inside [aliasInliner.replacement]'s own
+// splice and is not charged again here.
 func (in *aliasInliner) expandRange(against *ast.AliasNode, first, last int, stack []string) ([]string, bool) {
 	var out []string
 	for n := first; n <= last; n++ {

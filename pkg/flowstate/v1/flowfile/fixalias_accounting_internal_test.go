@@ -135,7 +135,7 @@ func checkAliasInlinerAccountingOracle(t *testing.T, src string) {
 		return
 	}
 
-	in, ok := runAliasInliner(data, file)
+	in, _, ok := runAliasInliner(data, file)
 	if !ok {
 		// Refused — by either budget, or by a shape this rewrite declines for
 		// a reason unrelated to size. Nothing was built, so there is nothing
@@ -260,7 +260,7 @@ func TestFixRefusesAnAliasBombBeforeMaterializingIt(t *testing.T) {
 	runtime.ReadMemStats(&before)
 	start := time.Now()
 
-	in, ok := runAliasInliner(data, file)
+	in, _, ok := runAliasInliner(data, file)
 
 	runtime.ReadMemStats(&after)
 	elapsed := time.Since(start)
@@ -293,7 +293,7 @@ func TestEveryDepthOfTheAliasBombCostsTheSame(t *testing.T) {
 		var before, after runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&before)
-		_, ok := runAliasInliner(data, file)
+		_, _, ok := runAliasInliner(data, file)
 		runtime.ReadMemStats(&after)
 		require.False(t, ok)
 
@@ -343,22 +343,35 @@ func aliasChainBlankBomb(depth, blanks int) string {
 // name: a leaf whose only real content is two short lines, wrapped around
 // three thousand blank ones, doubled through the same chain shape.
 //
-// The ceiling is tuned against a measurement, not guessed, and the number
-// next to it is why: at this exact depth, reverting only the blank-line
-// floor in [aliasInliner.appendLine] (`if line == "" { return append(out,
-// line), true }`, skipping the charge) measures 202 MiB allocated before
-// that mutant's refusal — because nothing charged the blank lines, so
-// nothing refused until the *trailing* size check finally read the fully
-// materialized result, which is exactly "reports rather than bounds." Fixed
-// code stays flat under 52 MiB at every depth from here on (see
-// [TestEveryDepthOfTheBlankLineBombCostsTheSame]); the ceiling sits between
-// the two so a reintroduction of finding 4 fails this test rather than
-// merely costing more.
+// Depth 10, not a shallower one, because the refusal has to be deserved on
+// its own terms and not only relative to a mutant: measured with the byte
+// charge disabled entirely (so [fixer.apply] runs to completion and reports
+// what the correctly-inlined document would actually be), this chain's true
+// size is 587,042 bytes at depth 6 — under maxBytes, so a byte-perfect
+// accounting would *accept* it, and refusing it there would only be proving
+// this rewrite's own conservative over-charge (an outer chain level pricing
+// an inner level's already-priced content again, documented on
+// [aliasInliner.appendLine]) rather than a defect. The true size crosses
+// maxBytes at depth 7 and is 9,534,643 bytes — nine times over — by depth
+// 10, which is where this test measures: unambiguously a bomb, not an edge
+// case of this rewrite's own conservatism.
+//
+// The ceiling is tuned against a measurement, not guessed, and the numbers
+// next to it are why: at depth 10, reverting only the blank-line floor in
+// [aliasInliner.appendLine] (`if line == "" { return append(out, line), true
+// }`, skipping the charge) still gets caught — by the *same* charge, once
+// enough non-blank lines alone finally cross it — but only after allocating
+// 2627 MiB doing the blank-line copying that charge should have priced
+// against maxBytes far earlier. Fixed code allocates 52 MiB at this depth,
+// the same figure [TestEveryDepthOfTheBlankLineBombCostsTheSame] holds flat
+// from here on; the ceiling sits at an order of magnitude above that and two
+// orders below the mutant, so a reintroduction of finding 4 fails this test
+// on allocation rather than merely costing more.
 func TestFixRefusesABlankLineBombBeforeMaterializingIt(t *testing.T) {
 	// Not parallel: it reads process-wide allocation counters, and a sibling
 	// test allocating alongside it would be charged to this one.
 
-	const depth = 6
+	const depth = 10
 	const blanks = 3000
 	src := aliasChainBlankBomb(depth, blanks)
 	require.Less(t, len(src), 4096, "the whole point is that the input is small")
@@ -372,7 +385,7 @@ func TestFixRefusesABlankLineBombBeforeMaterializingIt(t *testing.T) {
 	runtime.ReadMemStats(&before)
 	start := time.Now()
 
-	in, ok := runAliasInliner(data, file)
+	in, _, ok := runAliasInliner(data, file)
 
 	runtime.ReadMemStats(&after)
 	elapsed := time.Since(start)
@@ -380,8 +393,11 @@ func TestFixRefusesABlankLineBombBeforeMaterializingIt(t *testing.T) {
 
 	require.False(t, ok, "a %d-level chain over a %d-blank-line leaf was accepted rather than refused", depth, blanks)
 	require.NotEmpty(t, in.refusals)
+	require.Contains(t, in.refusals[0].Message, "would copy more than",
+		"refused by the trailing size check rather than the charge itself: the charge let the expansion "+
+			"materialize before anything bounded it, which is #2045 itself")
 
-	const ceiling = 128 << 20
+	const ceiling = 512 << 20
 	require.Less(t, allocated, uint64(ceiling),
 		"refusing a %d-byte blank-line alias bomb allocated %.1f MiB in %s: a blank line is being copied "+
 			"without being charged, which is #2045's finding 4",
@@ -391,10 +407,13 @@ func TestFixRefusesABlankLineBombBeforeMaterializingIt(t *testing.T) {
 // TestEveryDepthOfTheBlankLineBombCostsTheSame is
 // [TestEveryDepthOfTheAliasBombCostsTheSame] for the blank-line bomb: a
 // refusal reached this early has to cost about the same at every depth past
-// it, or it is not actually early.
+// it, or it is not actually early. Every depth here is past the crossover
+// [TestFixRefusesABlankLineBombBeforeMaterializingIt] documents (true size
+// exceeds maxBytes from depth 7), so a flat cost across them is the claim
+// and not an artifact of depths that were all still under budget anyway.
 func TestEveryDepthOfTheBlankLineBombCostsTheSame(t *testing.T) {
 	costs := map[int]uint64{}
-	for _, depth := range []int{6, 8, 10, 12} {
+	for _, depth := range []int{10, 12, 14, 16} {
 		src := aliasChainBlankBomb(depth, 3000)
 		data := []byte(src)
 		file, err := parser.ParseBytes(data, parser.ParseComments)
@@ -403,14 +422,14 @@ func TestEveryDepthOfTheBlankLineBombCostsTheSame(t *testing.T) {
 		var before, after runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&before)
-		_, ok := runAliasInliner(data, file)
+		_, _, ok := runAliasInliner(data, file)
 		runtime.ReadMemStats(&after)
 		require.False(t, ok)
 
 		costs[depth] = after.TotalAlloc - before.TotalAlloc
 	}
 
-	require.Less(t, costs[12], costs[6]*10,
-		"refusal cost grows with the bomb's depth (%d bytes at depth 6, %d at depth 12), so the expansion "+
-			"is still being materialized before it is refused", costs[6], costs[12])
+	require.Less(t, costs[16], costs[10]*10,
+		"refusal cost grows with the bomb's depth (%d bytes at depth 10, %d at depth 16), so the expansion "+
+			"is still being materialized before it is refused", costs[10], costs[16])
 }
