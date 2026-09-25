@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	v1alpha1 "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -899,6 +900,128 @@ func TestInspectPredicateOnAQuotedSecretIsWithheld(t *testing.T) {
 		"the predicate against a withheld binding should have printed false")
 	assert.NotContains(t, printed, secret,
 		"the composed binding reached inspect's own answer with the secret still in it")
+}
+
+// TestInspectPredicateOnABytesSecretIsWithheld closes the same escaping class
+// for CEL's `bytes` type, found on this PR's own fix: a leaf already stored as
+// bytes — a value step computing `bytes(...)`, or a literal — renders through
+// json.Marshal as base64, not as plaintext, so the substring search a bare
+// []byte leaf reached never finds the raw secret in it either.
+func TestInspectPredicateOnABytesSecretIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2"
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(
+			"inspect steps.deploy.token == bytes('hunter2')\n" +
+				"continue\n",
+		),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, secret, "[redacted]")
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && text == secret {
+			return "[redacted]"
+		}
+		if data, ok := value.([]byte); ok && string(data) == secret {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	// Built directly rather than through v1.NewLiteral, which has no case
+	// for []byte: a step output already stored as CEL's `bytes` type is
+	// exactly the leaf [redactedNative] hands back as a Go []byte.
+	tokenValue := &v1.Value{Kind: &v1.Value_Literal{
+		Literal: &v1alpha1.Value{Kind: &v1alpha1.Value_BytesValue{BytesValue: []byte(secret)}},
+	}}
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"deploy": {NamedValues: map[string]*v1.Value{"token": tokenValue}},
+		},
+	})
+	require.NoError(t, session.BeforeStep(t.Context(), markStep("next"), scope))
+
+	printed := out.String()
+	assert.NotContains(t, printed, "true\n",
+		"the predicate matched the real bytes value, so a bytes leaf defeated the text backstop")
+	assert.Contains(t, printed, "false",
+		"the predicate against a withheld bytes binding should have printed false")
+	assert.NotContains(t, printed, secret,
+		"the bytes binding reached inspect's own answer with the secret still in it")
+}
+
+// TestInspectStepsSurvivesAnUnrelatedSecretRef is the correctness half of a
+// finding on this PR's own fix: converting a resolved binding eagerly, the
+// way every other name is handled, forces [v1.StepsOutputActivation]'s own
+// `steps` root through its whole-map conversion — which deliberately fails
+// the entire map the moment any one step's output cannot convert, a secret
+// reference above all. `inspect`ing a good step's output used to fail for
+// that reason alone whenever an unrelated step in the same run carried one.
+func TestInspectStepsSurvivesAnUnrelatedSecretRef(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2"
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(
+			"inspect steps.deploy.token\n" +
+				"inspect steps.deploy.token == 'hunter2'\n" +
+				"continue\n",
+		),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.SetRedactor(func(text string) string {
+		return strings.ReplaceAll(text, secret, "[redacted]")
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && text == secret {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	scope := v1.NewScope(v1.CurrentProfile, &v1.Workflow_StepOutputs{
+		StepValues: map[string]*v1.Node_Outputs{
+			"deploy": {NamedValues: map[string]*v1.Value{"token": v1.NewLiteral(secret)}},
+			// A secret reference is deliberately unresolvable outside the
+			// activity that needs it (eval.go's resolveValue), so this
+			// step's own conversion fails — the shape a value step
+			// referencing a secret leaves behind.
+			"broken": {NamedValues: map[string]*v1.Value{
+				"cred": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "env", Name: "X"}}},
+			}},
+		},
+	})
+	require.NoError(t, session.BeforeStep(t.Context(), markStep("next"), scope))
+
+	printed := out.String()
+	require.NotContains(t, printed, "flowdebug: the session is not paused",
+		"the pause never held, so nothing below is asserting anything")
+	assert.NotContains(t, printed, "cannot inspect",
+		"an unrelated step's secret reference made a good step's own output unreadable:\n"+printed)
+	assert.Contains(t, printed, "redacted",
+		"the good step's answer did not print at all:\n"+printed)
+	assert.NotContains(t, printed, "true\n",
+		"the predicate matched the real value, so redaction stopped applying once the walk changed")
+	assert.Contains(t, printed, "false",
+		"the predicate against a withheld binding should have printed false")
+	assert.NotContains(t, printed, secret,
+		"the secret reached inspect's own answer in the clear")
 }
 
 // TestScopeNamesEveryRootARunCanReach is the class rather than the instance.

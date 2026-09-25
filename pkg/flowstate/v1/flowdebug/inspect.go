@@ -8,6 +8,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/common/types/traits"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -335,6 +336,26 @@ func (a withholdingActivation) ResolveName(name string) (any, bool) {
 	}
 
 	if value, ok := value.(ref.Val); ok {
+		// A map converts one entry at a time where it can, rather than
+		// through the ordinary whole-value path: `steps` is
+		// [v1.StepsOutputActivation.stepsMap], a lazy map whose entries
+		// convert only on the read that reaches them so that one step's
+		// unconvertible output — a secret reference under it — fails only
+		// that step's own read. Converting the whole binding eagerly here,
+		// the way every other name is handled, forces exactly the
+		// all-at-once conversion that property exists to avoid: it reaches
+		// every completed step before an expression has named one, and
+		// turns one step's failure into a failure for every other step's
+		// inspection too (Codex, #2011 review, third round).
+		if mapper, ok := value.(traits.Mapper); ok {
+			if native, ok := redactedMapNative(mapper, a.redactValue); ok {
+				return types.DefaultTypeAdapter.NativeToValue(a.withText(native)), true
+			}
+			// A map this walk cannot represent — a non-string key, which
+			// `steps` and every other root here never has — falls back to
+			// the whole-value path below exactly as before.
+		}
+
 		native, converted := redactedNative(value, a.redactValue)
 		if !converted {
 			return types.String("[redacted]"), true
@@ -382,6 +403,62 @@ func (a withholdingActivation) withText(native any) any {
 	return textRedactedTree(native, a.redactText)
 }
 
+// redactedMapNative converts a CEL map to a native one entry at a time,
+// redacting each value independently, rather than through the single
+// whole-map conversion [redactedNative] otherwise performs.
+//
+// The difference matters for exactly one existing map shape today:
+// [v1.StepsOutputActivation.stepsMap]'s `steps` root converts a step's
+// outputs on the read that reaches them, and its own whole-map conversion
+// — reached by [cel.RefValueToValue], which is what [redactedNative] calls
+// — deliberately fails the *entire* map the moment any one step's output
+// cannot convert (a secret reference under it), so that a later, real
+// evaluation sees one clear error rather than a map with a silent hole in
+// it. That is the right answer for a workflow's own evaluation; for a
+// debugger inspection it means one step failing to convert makes every
+// other step unreadable too, which is not a security property, only a
+// missed one. Walking the map through its own [traits.Mapper] protocol —
+// [traits.Mapper.Iterator] to see every key, [traits.Mapper.Find] to read
+// one at a time — reaches each step's conversion independently, exactly as
+// an ordinary `steps.<id>` expression already does, so a failure there
+// stays scoped to that one key here too.
+//
+// ok is false when the map cannot be represented this way at all: a
+// non-string key, which is legal CEL and something [v1.StepsOutputActivation]
+// and every other root's own map values never produce, but a general CEL
+// map handed to `inspect` some other way could. The caller falls back to
+// the whole-value conversion in that case, exactly as it would have without
+// this function.
+func redactedMapNative(m traits.Mapper, redactValue func(any) any) (map[string]any, bool) {
+	native := make(map[string]any)
+
+	it := m.Iterator()
+	for it.HasNext() == types.True {
+		key := it.Next()
+
+		name, ok := key.(types.String)
+		if !ok {
+			return nil, false
+		}
+
+		value, found := m.Find(key)
+		if !found {
+			continue
+		}
+
+		entry, converted := redactedNative(value, redactValue)
+		if !converted {
+			native[string(name)] = "[redacted]"
+
+			continue
+		}
+
+		native[string(name)] = entry
+	}
+
+	return native, true
+}
+
 func (a withholdingActivation) Parent() cel.Activation {
 	parent := a.Activation.Parent()
 	if parent == nil {
@@ -425,6 +502,19 @@ func textRedactedTree(value any, redact func(string) string) any {
 			return redact(text)
 		}
 
+		// Bytes are the same problem in the other direction: json.Marshal
+		// base64-encodes a []byte rather than escaping it, so a secret
+		// stored as `bytes(...)` — a value step computing it, or a literal
+		// — never renders as the plaintext the redactor searches for at
+		// all, escaped or not. Redacted as text over the raw bytes, the
+		// same way a string is, and returned as bytes: CEL compares a
+		// redacted-but-still-bytes leaf against a guessed `bytes(...)`
+		// literal safely, where a leaf that silently became a string would
+		// only fail that comparison by accident of type.
+		if data, ok := value.([]byte); ok {
+			return []byte(redact(string(data)))
+		}
+
 		if rendered := nativeText(value); redact(rendered) != rendered {
 			return "[redacted]"
 		}
@@ -458,6 +548,12 @@ func withheldLeaves(redact func(string) string, native any) any {
 	switch value := native.(type) {
 	case string:
 		return redact(value)
+
+	case []byte:
+		// The same leaf, the other native shape CEL's `bytes` type takes.
+		// See [textRedactedTree]'s identical case for why this cannot be
+		// left to a generic JSON-rendered comparison.
+		return []byte(redact(string(value)))
 
 	case map[string]any:
 		withheld := make(map[string]any, len(value))
