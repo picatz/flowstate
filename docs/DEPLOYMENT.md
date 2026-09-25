@@ -76,14 +76,15 @@ guard, but memory inspection does not care which path a value arrived by
 guarantee is against a stranger that was never handed the token, not
 against the plugin itself or a same-user process that can read either
 process's memory. And group termination reaches every descendant left in
-the plugin's process group, but only when the host signals the group while
-the leader is still alive: `stop` is what sends that signal, gated on
-exactly that condition (`launch.go`'s `instance.stop`), so a plugin that
-exits or crashes on its own first — before anything calls `stop` — leaves
-its group unsignalled regardless of who stayed in it. Neither guarantee is
-containment against a plugin actively working to evade it, which the
-opening paragraph already says plainly; the second is not yet reliable
-cleanup for one that quietly does nothing evasive at all.
+the plugin's process group whether the host stops it while the leader is
+still alive (`instance.stop`) or the leader exits or crashes on its own
+first — the launch goroutine that reaps it signals the group immediately,
+then polls and escalates to SIGKILL (`launch.go`'s
+`escalateAbandonedGroup`) — but only a descendant that stayed in the
+group; one a plugin deliberately forked into a session of its own is
+unreached either way, and neither path is containment against a plugin
+actively working to evade it, which the opening paragraph already says
+plainly.
 
 ### Pinning which bytes a plugin name may run
 
