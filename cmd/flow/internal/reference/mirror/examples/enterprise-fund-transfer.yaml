@@ -72,18 +72,24 @@ inputs:
     description: how much moves, in cents
     example: 250000
     must: this >= 1
-  approval_threshold_cents:
-    type: int
-    required: true
-    description: transfers at or above this amount require a treasury-approver signal before they move; below it, they settle immediately
-    example: 1000000
-    must: this >= 0
   idempotency_key:
     type: string
     required: true
     description: unique to this transfer request, sent as the ledger's Idempotency-Key header so a retried step converges instead of moving money twice
     example: transfer-2026-08-06-0001
     min_len: 8
+  # Kept declared, accepted, and ignored rather than removed: `flow breaking`
+  # refuses to shrink a workflow's declared inputs, since a caller already
+  # passing this via `with:` would break at their next compile. Removing it
+  # was also never the fix - a caller controlling the threshold from `inputs:`
+  # is the vulnerability, and an input a caller may still pass is still an
+  # input a caller controls, whatever this workflow does with the value. The
+  # gate below reads `vars.approval_threshold_cents` and never this one.
+  approval_threshold_cents:
+    type: int
+    description: accepted for compatibility and not read; the enforced threshold is `vars.approval_threshold_cents`, which only this file's own review can change
+    example: 1000000
+    must: this >= 0
 # Who may deliver `transfer-approved` at all - a claim, not a named
 # individual, because a treasury desk is a team rather than one person. A
 # sender satisfying this claim is authorized to approve any transfer this
@@ -97,12 +103,18 @@ signals:
       - claims:
           role: treasury-approver
     distinct_from_starter: true
+# Approval policy belongs to the reviewed workflow definition, not to run
+# inputs. A caller may choose the transfer amount, but cannot raise this value
+# to make that amount appear below the approval threshold.
+vars:
+  approval_threshold_cents: 1000000
 steps:
   - id: request
     log:
       message: '${"%s requests moving %d cents from %s to %s".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.amount_cents, inputs.from_account_id, inputs.to_account_id])}'
 
-  # Does this transfer need a human at all? Pure arithmetic over two inputs,
+  # Does this transfer need a human at all? Arithmetic over the caller's own
+  # `inputs.amount_cents` and the workflow's own `vars.approval_threshold_cents`,
   # with no step in it, which is exactly why no wait's `outputs:` shaping can
   # name it and why it was written out eight times before `value:` existed -
   # four in this polarity and four as the `<` complement, each of which a
@@ -113,7 +125,7 @@ steps:
   # design, and loosening that would smuggle ordering into a block that has
   # none.
   - id: over_threshold
-    value: ${inputs.amount_cents >= inputs.approval_threshold_cents}
+    value: ${inputs.amount_cents >= vars.approval_threshold_cents}
 
   # Reached only above the threshold. `if:` on a wait is what lets a small
   # transfer skip the gate entirely rather than pay for one it does not need.

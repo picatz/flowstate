@@ -1368,6 +1368,44 @@ func TestFixStdoutWritesTheResultAndLeavesTheFile(t *testing.T) {
 	}
 }
 
+// TestFixStdoutDoesNotFilterDocumentBytes keeps the UI's colour-profile writer
+// away from the document. Escape bytes can legitimately occur in an unchanged
+// YAML comment; on a redirected file the UI writer strips them as terminal
+// styling, while --stdout promises the rewriter's byte-preserving result.
+func TestFixStdoutDoesNotFilterDocumentBytes(t *testing.T) {
+	dir := t.TempDir()
+	const escapeComment = "# literal \x1b[31m bytes\x1b[0m\n"
+	path := writeFixture(t, dir, "workflow.yaml", escapeComment+oldStyleGreeter)
+
+	out, err := os.Create(filepath.Join(dir, "fixed.yaml"))
+	if err != nil {
+		t.Fatalf("creating redirected stdout: %v", err)
+	}
+	defer out.Close()
+	errOut, err := os.Create(filepath.Join(dir, "stderr"))
+	if err != nil {
+		t.Fatalf("creating redirected stderr: %v", err)
+	}
+	defer errOut.Close()
+
+	cmd := newFixCommand()
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.SetArgs([]string{"--stdout", path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("fix --stdout: %v", err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatalf("closing redirected stdout: %v", err)
+	}
+
+	got := string(readFixture(t, out.Name()))
+	want := escapeComment + currentGreeter
+	if got != want {
+		t.Errorf("--stdout filtered document bytes:\n--- want\n%q\n--- got\n%q", want, got)
+	}
+}
+
 // TestFixStdoutKeepsReportsOffTheDocument is what makes `flow fix --stdout
 // old.yaml > new.yaml` safe on a file that is not perfectly rewritable.
 //

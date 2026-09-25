@@ -180,22 +180,42 @@ func TestNoCompiledExecutableIsTracked(t *testing.T) {
 // are properties of a *message*, which is the whole product of a failing check:
 // a command that looks right and does something else is worse than no command.
 //
-// Quoted for the *shell*, which is the part this got wrong. It quoted with
-// strconv.Quote, which writes a Go string literal: the double quotes it puts
-// around a path leave `$`, a backtick and `$(...)` live, so a tracked file
-// named `$(touch PWNED)` — a name git allows, and a name whoever proposed the
-// revision chose — was reported as
+// Quoted for the *shell*, which is the part this got wrong first. It quoted
+// with strconv.Quote, which writes a Go string literal: the double quotes it
+// puts around a path leave `$`, a backtick and `$(...)` live, so a tracked
+// file named `$(touch PWNED)` — a name git allows, and a name whoever proposed
+// the revision chose — was reported as
 //
 //	git rm --cached -- "$(touch PWNED)"
 //
-// which runs the substitution before git is handed an argument. The paths here
-// come from `git ls-files` on whatever revision is checked out, so they are
-// somebody else's text, and the whole product of this check is a command a
-// maintainer pastes into a shell (Codex).
+// which runs the substitution before git is handed an argument. shellWord
+// fixed that (#2017): every path is a single-quoted shell word, so nothing
+// after `--` is expanded by the shell.
+//
+// `--literal-pathspecs` fixes the layer under it, which shellWord cannot
+// reach: a word after `--` is still a *pathspec*, and git — not the shell —
+// reads pathspec magic inside it (gitglossary(7), "pathspec"). By default
+// that includes a leading `:(glob)`, `:(exclude)`/`:!`/`:^`, and, independent
+// of any `:(...)` prefix, `*`, `?` and `[...]` as fnmatch wildcards — so a
+// tracked file named `:(glob)**` renders as
+//
+//	git rm --cached -- ':(glob)**'
+//
+// which, once git strips the magic and glob-expands `**`, unstages every
+// tracked path rather than the one file this line names (#2020). A global
+// flag rather than a `:(literal)` prefix folded into shellWord's output: it
+// leaves the quoted path exactly what shellWord already produces — no second
+// place has to agree on how to escape a leading `:` — and, being a `git`
+// option rather than shell syntax, it forces every magic form off at once,
+// including one the schema gains after this is written. Equivalent to the
+// `GIT_LITERAL_PATHSPECS` environment variable
+// (https://git-scm.com/docs/git#Documentation/git.txt---literal-pathspecs),
+// chosen over it because it is where a reader's eye already is, on the git
+// invocation, rather than a second thing to notice before it.
 func removals(paths []string) string {
 	lines := make([]string, 0, len(paths))
 	for _, path := range paths {
-		lines = append(lines, "    git rm --cached -- "+shellWord(path))
+		lines = append(lines, "    git --literal-pathspecs rm --cached -- "+shellWord(path))
 	}
 
 	return strings.Join(lines, "\n")
@@ -230,11 +250,12 @@ func TestTheRemovalAdviceCannotRunWhatItNames(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t,
-		"    git rm --cached -- 'vacuity'\n"+
-			"    git rm --cached -- 'a path with spaces'\n"+
-			"    git rm --cached -- '$(touch PWNED)'\n"+
-			`    git rm --cached -- 'it'"'"'s'`,
-		removals([]string{"vacuity", "a path with spaces", "$(touch PWNED)", "it's"}))
+		"    git --literal-pathspecs rm --cached -- 'vacuity'\n"+
+			"    git --literal-pathspecs rm --cached -- 'a path with spaces'\n"+
+			"    git --literal-pathspecs rm --cached -- '$(touch PWNED)'\n"+
+			"    git --literal-pathspecs rm --cached -- ':(glob)**'\n"+
+			`    git --literal-pathspecs rm --cached -- 'it'"'"'s'`,
+		removals([]string{"vacuity", "a path with spaces", "$(touch PWNED)", ":(glob)**", "it's"}))
 
 	// And what a shell makes of it. The canary is named with an absolute path
 	// so that the substitution, if the quoting ever stops holding, writes
@@ -265,6 +286,103 @@ func TestTheRemovalAdviceCannotRunWhatItNames(t *testing.T) {
 
 	require.NoFileExists(t, canary,
 		"the advice ran the filename it was printing:\n%s", line)
+
+	// The shell agreeing is not git agreeing (#2020). A word after `--` is
+	// still a *pathspec*, so this half needs a real repository and a real
+	// `git rm`, run exactly as the rendered line reads, against tracked
+	// decoys a broken renderer would also remove.
+	t.Run("pathspec magic", func(t *testing.T) {
+		t.Parallel()
+
+		for _, tc := range []struct {
+			name   string   // subtest name
+			target string   // the tracked path the advice is for
+			decoys []string // other tracked paths that must survive
+		}{
+			// The issue's own headline case: `:(glob)` magic, stripped, turns
+			// the rest of the name into a glob that reaches every tracked
+			// path.
+			{name: "glob magic", target: ":(glob)**", decoys: []string{"normalfile", "other"}},
+			// Exclude magic (`:!`/`:^`) as the sole pathspec asks git to
+			// remove everything *except* nothing under `.`, which unfixed
+			// `git rm` refuses outright without `-r` — the advice for this
+			// name never worked at all until it stopped reading the name as
+			// magic, a distinct failure from over-matching but still one the
+			// acceptance criteria names ("or the check declines ... and says
+			// so": the unfixed advice does neither, it just fails).
+			{name: "exclude magic", target: ":!x", decoys: []string{"normalfile"}},
+			// A bare wildcard, no `:(...)` prefix. `git rm`'s default pathspec
+			// matching resolves an exact tracked name before it tries
+			// fnmatch, so this one was never reachable through this tool's
+			// own use (the path always exists, having come from `git
+			// ls-files`) — pinned here anyway, per the acceptance criteria's
+			// "every name git permits", so a future git or a caller with a
+			// pathspec list of its own cannot regress it unnoticed.
+			{name: "bare wildcard", target: "PWNED*", decoys: []string{"PWNEDsecret"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				dir := initPathspecRepo(t, append([]string{tc.target}, tc.decoys...))
+
+				line := strings.TrimSpace(removals([]string{tc.target}))
+				run := exec.Command("/bin/sh", "-c", line)
+				run.Dir = dir
+				output, err := run.CombinedOutput()
+
+				require.NoError(t, err, "%s", output)
+
+				after := strings.Split(strings.TrimSpace(runGitArtifacts(t, dir, "ls-files")), "\n")
+				assert.NotContains(t, after, tc.target,
+					"the advice did not remove the one path it names:\n%s", line)
+				for _, decoy := range tc.decoys {
+					assert.Contains(t, after, decoy,
+						"the advice for %q also removed %q, which it never named:\n%s", tc.target, decoy, line)
+				}
+			})
+		}
+	})
+}
+
+// initPathspecRepo builds a throwaway repository with one empty, tracked file
+// per name, added and committed through `--literal-pathspecs` — the fix this
+// test is proving — so a name shaped like pathspec magic is tracked under its
+// own literal bytes rather than under whatever git's magic parser would make
+// of it before the file is ever staged.
+func initPathspecRepo(t *testing.T, names []string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	runGitArtifacts(t, dir, "init", "-q")
+	runGitArtifacts(t, dir, "config", "user.email", "t@example.com")
+	runGitArtifacts(t, dir, "config", "user.name", "test")
+	for _, name := range names {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), nil, 0o644))
+	}
+	runGitArtifacts(t, dir, append([]string{"--literal-pathspecs", "add", "--"}, names...)...)
+	runGitArtifacts(t, dir, "commit", "-q", "-m", "initial")
+
+	return dir
+}
+
+// runGitArtifacts runs git in dir and fails the test on a nonzero exit.
+//
+// Auto-maintenance off on every invocation: `git commit` runs `git
+// maintenance run --auto`, which since git 2.43 detaches, and a maintenance
+// run still writing into `.git/objects/pack` after the test returns races
+// `t.TempDir`'s cleanup (`cmd/flow/breaking_test.go`'s `runGitTest`, verified
+// there against #1125; the same repository, the same git, the same race).
+func runGitArtifacts(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)
+
+	return string(out)
 }
 
 // TestEveryGoTargetsExecutableIsRecognised keeps the list from being the three
