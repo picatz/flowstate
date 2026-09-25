@@ -1801,8 +1801,11 @@ func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
 }
 
 // casePosture is what one case's rendered text may not carry, as much of it as
-// is knowable before the case runs: the material a `vars:` entry withholds, and
-// the case's own `secrets:` plaintext.
+// is knowable before the case runs: the material a `vars:` entry withholds,
+// the case's own `secrets:` plaintext, and — for a table row — its entry's
+// `secrets:` plaintext too, which [Test.entrySecretMaterial]'s own doc
+// explains a row's Secrets does not carry once it names one of its own
+// (#2041).
 //
 // One function because it has two callers that must not drift. [runCase]
 // establishes it before anything can fail; [File.CheckSignalNames] renders
@@ -1810,8 +1813,11 @@ func checkSignalNames(signals []SignalScript, spec *v1.Workflow) error {
 // second construction of "what this case withholds" is how one of them comes to
 // withhold less than the other.
 func casePosture(test *Test, vars fileVars) sensitiveInputs {
-	return sensitiveInputs{}.WithValues(
-		bothSpellings(append(slices.Collect(maps.Values(test.Secrets)), vars.withheld.text...))...)
+	material := slices.Collect(maps.Values(test.Secrets))
+	material = append(material, test.entrySecretMaterial...)
+	material = append(material, vars.withheld.text...)
+
+	return sensitiveInputs{}.WithValues(bothSpellings(material)...)
 }
 
 // bothSpellings is each value as written and, where they differ, as a `%q`

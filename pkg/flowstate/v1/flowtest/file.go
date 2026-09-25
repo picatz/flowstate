@@ -450,6 +450,18 @@ type Test struct {
 
 	// Expect is what the run must have done to pass.
 	Expect Expectation `yaml:"expect"`
+
+	// entrySecretMaterial is a table row's entry's `secrets:` plaintext,
+	// carried past [mergeRow]'s whole-replace rule for redaction only —
+	// [casePosture] reads it alongside Secrets. Secrets itself stays
+	// whole-or-nothing (docs/CLI.md): a row naming its own secret is
+	// deliberately choosing what the secret backend binds. What the file
+	// holds is not thereby unbound from what a row's diagnostics may print
+	// (#2041): the entry's plaintext is a fact about the file whichever row
+	// is running. Set once per entry by [expandTableEntries] and shared by
+	// every row under it, unexported so no YAML decoder or caller can write
+	// it — a table row is the only source.
+	entrySecretMaterial []string
 }
 
 // A TriggerDelivery replays one stored arrival at a declared trigger.

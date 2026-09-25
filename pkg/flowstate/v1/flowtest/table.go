@@ -15,11 +15,25 @@ import (
 // rules already written, tested and documented rather than by a second set
 // that could come to disagree with them (#416's answers, inherited verbatim
 // rather than re-decided). Only the fields `defaults:` has no opinion about
-// are merged here. Trigger, Starter and Signals take the same one direction:
-// the row's own value wins whole, and the entry's is what a row that stated
-// none inherits. Secrets merges key by key instead — see [mergeRow] — because
-// a row naming one secret of its own is not asking to drop the redaction
-// posture every other secret the entry declared depends on (#2041).
+// are merged here, and all of them take the same one direction: the row's own
+// value wins, and the entry's is what a row that stated none inherits —
+// including Secrets, which docs/CLI.md documents as inherited or replaced
+// whole exactly like Trigger, Starter and Signals: a row that names its own
+// secret is deliberately choosing not to bind the entry's, which is how a row
+// exercises the "no matching secrets entry" refusal for a secret its entry
+// declares.
+//
+// That whole-replace rule is about the *secret backend* [Test.Secrets] binds
+// — what a stubbed task's `${secret(...)}` resolves to. It says nothing about
+// what a row's rendered text may print: the entry's plaintext is a fact about
+// the file whether or not this row bound it, so [expandTableEntries] also
+// carries it into every row's `entrySecretMaterial`, a redaction-only value
+// [casePosture] reads alongside [Test.Secrets] (#2041 — a row that replaced
+// its `secrets:` used to lose the entry's material from its posture too, not
+// only from its bindings). Computed once per entry and shared by every row
+// under it rather than copied: the two concerns cost what they need to and no
+// more, an unbound map for the first and one small read-only slice for the
+// second.
 
 // expandTableEntries turns every entry that declares `cases:` into its rows,
 // leaving entries that declare none exactly as they were.
@@ -116,6 +130,16 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 		checkCheckClaims(p, entrySite.in(where.field("expect").field("check")),
 			fmt.Sprintf("test %q expect", entry.Name), entry.Expect.Check, len(entry.Expect.Check), "")
 
+		// The entry's own secret plaintext, read once regardless of how many
+		// rows it has: every row under this entry shares this same slice for
+		// redaction (see this file's own doc comment), so the cost of an
+		// entry with many secrets and many rows is paid once, not once per
+		// row.
+		var entrySecretMaterial []string
+		if len(entry.Secrets) > 0 {
+			entrySecretMaterial = slices.Collect(maps.Values(entry.Secrets))
+		}
+
 		for i, row := range entry.Cases {
 			rowWhere := where.field("cases").item(i)
 			if row.Name == "" {
@@ -144,7 +168,9 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 
 				continue
 			}
-			expanded = append(expanded, mergeRow(entry, row))
+			merged := mergeRow(entry, row)
+			merged.entrySecretMaterial = entrySecretMaterial
+			expanded = append(expanded, merged)
 			// Counted before the merge below folds the entry's stubs and
 			// claims in: what the row wrote itself is what this document can
 			// point at, and the rest belongs to the entry or to `defaults:`.
@@ -172,10 +198,10 @@ func mergeRow(entry, row Test) Test {
 		Stubs:    entry.Stubs,
 	}, row)
 
-	// Everything else, in the one direction: stated beats inherited. Trigger,
-	// Starter and Signals are inherited whole or replaced whole — a row that
-	// writes any `signals:` writes all of them — because each is a list or a
-	// record whose halves are not independently meaningful. `expect:` is one
+	// Everything else, in the one direction: stated beats inherited. These
+	// four are inherited whole or replaced whole — a row that writes any
+	// `signals:` writes all of them — because each is a list or a record
+	// whose halves are not independently meaningful. `expect:` is the
 	// exception and is merged field by field; see [mergeExpectation].
 	if merged.Trigger == nil {
 		merged.Trigger = entry.Trigger
@@ -186,21 +212,8 @@ func mergeRow(entry, row Test) Test {
 	if len(merged.Signals) == 0 {
 		merged.Signals = entry.Signals
 	}
-	// Secrets is the other exception, and deliberately not whole-or-nothing:
-	// a `secrets:` entry is what feeds a case's redaction posture as well as
-	// its stubbed secret backend (see [casePosture]), so a row naming one
-	// secret of its own must not silently drop every other secret the entry
-	// declared — that would run the row believing plaintext is bound where
-	// the entry's `secrets:` said otherwise, and a check or a scripted signal
-	// touching the entry's secret would print it in the clear (#2041). Merged
-	// key by key instead, the row's own value winning per key, the same rule
-	// [mergeDefaults] applies to `inputs:` one level up. A fresh map, so a
-	// second row merging the same entry does not alias this one's.
-	if len(entry.Secrets) > 0 {
-		secrets := make(map[string]string, len(entry.Secrets)+len(merged.Secrets))
-		maps.Copy(secrets, entry.Secrets)
-		maps.Copy(secrets, merged.Secrets)
-		merged.Secrets = secrets
+	if len(merged.Secrets) == 0 {
+		merged.Secrets = entry.Secrets
 	}
 	merged.Expect = mergeExpectation(entry.Expect, row.Expect)
 
