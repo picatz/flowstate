@@ -215,13 +215,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			return nil, err
 		}
 		doc, wasOpen := s.docs.get(params.TextDocument.URI)
-		if !s.docs.close(params.TextDocument.URI, closeTicket(ctx)) {
-			// Superseded: a same-URI didOpen or didChange was already
-			// announced after this close arrived, so that notification is
-			// current and this one must not clear its diagnostics or its
-			// test-diagnostics bookkeeping (#1986).
-			return nil, nil
-		}
+		s.docs.close(params.TextDocument.URI)
 		if wasOpen && doc.isTestDocument() {
 			promoted := s.clearTestDiagnostics(ctx, conn, params.TextDocument.URI)
 			if suite, ok := s.docs.get(promoted); ok {

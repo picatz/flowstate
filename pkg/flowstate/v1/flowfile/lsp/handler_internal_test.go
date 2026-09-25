@@ -40,7 +40,7 @@ func TestAnnounceInboundOrdersTheBuild(t *testing.T) {
 	s := &FlowfileServer{Logger: discardLogger()}
 	uri := lsp.DocumentURI("file:///ordered.yaml")
 
-	_, release := s.announceInbound(context.Background(), requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
+	_, release := s.announceInbound(requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
 		TextDocument: lsp.TextDocumentItem{URI: uri, Version: 1, Text: "edition: v2026.3\n"},
 	}))
 
@@ -87,6 +87,81 @@ func TestAnnounceInboundOrdersTheBuild(t *testing.T) {
 	}
 }
 
+// TestAnnounceInboundQueuesSameURINotificationsInAnnouncedOrder is the
+// deterministic half of the #1986 fix, in the same spirit
+// [TestAnnounceInboundOrdersTheBuild] pins for #317: it drives
+// announceInbound and the store directly, in a single goroutine, so the
+// property under test does not depend on how a scheduler happens to run
+// anything.
+//
+// It reproduces the shape an independent review of an earlier version of
+// this fix found still broken — a same-URI didClose immediately followed by
+// a didOpen reopening it at version 1, all three of this test's requests
+// announced (as [asyncHandler.Handle] announces them on the read loop) before
+// any of their handlers has run at all. That is not a reordering: it is what
+// jsonrpc2.AsyncHandler's goroutine-per-message dispatch does whenever an
+// editor sends notifications faster than they are handled, which is the
+// ordinary case for a close-then-reopen an editor issues in one breath. The
+// earlier fix compared a close's own ticket against a counter that had
+// already advanced for the reopen the instant it was announced — before the
+// close's handler had run at all — and so treated it as superseded, leaving
+// the incumbent in the store for [documentStore.open]'s own version guard to
+// read the v1 reopen as stale against. This asserts the replacement
+// mechanism's actual contract: each wait channel [documentStore.enqueue]
+// hands out closes only once its predecessor's release has run, so a
+// handler that respects it — as every real one does — cannot apply out of
+// the order its request was announced in, whatever that predecessor's
+// request was announced relative to this one's own dispatch.
+func TestAnnounceInboundQueuesSameURINotificationsInAnnouncedOrder(t *testing.T) {
+	t.Parallel()
+
+	s := &FlowfileServer{Logger: discardLogger()}
+	uri := lsp.DocumentURI("file:///queue.yaml")
+
+	openReq := requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
+		TextDocument: lsp.TextDocumentItem{URI: uri, Version: 1, Text: "name: original\n"},
+	})
+	closeReq := requestWithParams(t, "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: uri},
+	})
+	reopenReq := requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
+		TextDocument: lsp.TextDocumentItem{URI: uri, Version: 1, Text: "name: reopened\n"},
+	})
+
+	// All three announced before any handler below has run, exactly as the
+	// read loop would announce a burst the goroutines behind it have not
+	// caught up with yet.
+	openWait, openRelease := s.announceInbound(openReq)
+	closeWait, closeRelease := s.announceInbound(closeReq)
+	reopenWait, reopenRelease := s.announceInbound(reopenReq)
+
+	if openWait != nil {
+		t.Fatal("the first notification queued for a URI has nothing to wait on")
+	}
+	s.docs.open(uri, 1, "name: original\n", nil)
+	openRelease()
+
+	select {
+	case <-closeWait:
+	default:
+		t.Fatal("the close's wait channel did not close once the open ahead of it released")
+	}
+	s.docs.close(uri)
+	closeRelease()
+
+	select {
+	case <-reopenWait:
+	default:
+		t.Fatal("the reopen's wait channel did not close once the close ahead of it released")
+	}
+	got := s.docs.open(uri, 1, "name: reopened\n", nil)
+	reopenRelease()
+
+	if got.text != "name: reopened\n" {
+		t.Fatalf("an in-order close-then-reopen(v1), applied in the order enqueue serializes it, kept %q", got.text)
+	}
+}
+
 // TestAnnounceInboundIgnoresWhatBuildsNothing pins the negative space: only a
 // document notification with a usable URI registers a build, and everything
 // else must be a no-op, because a registration nothing will ever retire would
@@ -111,12 +186,19 @@ func TestAnnounceInboundIgnoresWhatBuildsNothing(t *testing.T) {
 		{"empty uri", requestWithParams(t, "textDocument/didChange", lsp.DidChangeTextDocumentParams{})},
 	}
 	for _, tc := range cases {
-		_, release := s.announceInbound(context.Background(), tc.req)
+		wait, release := s.announceInbound(tc.req)
+		if wait != nil {
+			t.Fatalf("%s: announceInbound returned a wait channel for a message that queues nothing", tc.name)
+		}
 		s.docs.mu.Lock()
 		n := len(s.docs.building)
+		q := len(s.docs.tail)
 		s.docs.mu.Unlock()
 		if n != 0 {
 			t.Fatalf("%s: announceInbound registered a build; building has %d entries, want 0", tc.name, n)
+		}
+		if q != 0 {
+			t.Fatalf("%s: announceInbound registered a queue entry; tail has %d entries, want 0", tc.name, q)
 		}
 		release()
 	}

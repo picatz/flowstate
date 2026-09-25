@@ -246,8 +246,18 @@ func (c *client) closeNoWait(uri string) {
 	}))
 }
 
-// serverDoc returns the document the server currently holds for a URI.
-func (c *client) serverDoc(uri string) (*document, bool) {
+// rawServerDoc returns the document the server currently holds for a URI,
+// without waiting for a build in flight to settle.
+//
+// Most tests want [documentStore.await] instead — the same settle signal
+// every real position request waits behind — and #1980 is the reason: an
+// unguarded read taken only because synctest.Wait() reported the bubble idle
+// is trusting that idleness implies a write landed, which is not this
+// package's guarantee to make. This is for the opposite case, a test that
+// deliberately wants the answer *before* an in-flight build settles — proving
+// a same-URI notification is still queued behind one that has not finished,
+// rather than proving what either eventually settles to.
+func (c *client) rawServerDoc(uri string) (*document, bool) {
 	return c.server.docs.get(lsp.DocumentURI(uri))
 }
 
