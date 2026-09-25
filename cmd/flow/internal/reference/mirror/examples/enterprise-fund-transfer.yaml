@@ -87,7 +87,6 @@ inputs:
   # gate below reads `vars.approval_threshold_cents` and never this one.
   approval_threshold_cents:
     type: int
-    required: true
     description: accepted for compatibility and not read; the enforced threshold is `vars.approval_threshold_cents`, which only this file's own review can change
     example: 1000000
     must: this >= 0
@@ -114,7 +113,8 @@ steps:
     log:
       message: '${"%s requests moving %d cents from %s to %s".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.amount_cents, inputs.from_account_id, inputs.to_account_id])}'
 
-  # Does this transfer need a human at all? Pure arithmetic over two inputs,
+  # Does this transfer need a human at all? Arithmetic over the caller's own
+  # `inputs.amount_cents` and the workflow's own `vars.approval_threshold_cents`,
   # with no step in it, which is exactly why no wait's `outputs:` shaping can
   # name it and why it was written out eight times before `value:` existed -
   # four in this polarity and four as the `<` complement, each of which a

@@ -166,9 +166,9 @@ func TestAuditReproducesTheManualAudit(t *testing.T) {
 		requireNoFinding(t, report, path,
 			"inputs.amount_cents < vars.approval_threshold_cents || steps.approval.outcome")
 
-		// And the bare threshold test under it, pure input arithmetic with no step
-		// in it at all, which was spelled in both polarities across four `if:`s and
-		// an `outputs:` entry.
+		// And the bare threshold test under it, arithmetic over an input and a
+		// var with no step in it at all, which was spelled in both polarities
+		// across four `if:`s and an `outputs:` entry.
 		requireNoFinding(t, report, path,
 			"inputs.amount_cents >= vars.approval_threshold_cents")
 	})
