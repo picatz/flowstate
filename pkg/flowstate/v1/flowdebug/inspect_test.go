@@ -1024,6 +1024,55 @@ func TestInspectStepsSurvivesAnUnrelatedSecretRef(t *testing.T) {
 		"the secret reached inspect's own answer in the clear")
 }
 
+// TestInspectShortSensitiveMapKeyIsWithheld closes a fourth finding on this
+// PR's own fix: [redactedMapNative] applied the structural, equality-based
+// redactor to a mapper's values but copied every key unchanged, leaving keys
+// covered only by the later text backstop. `SensitiveValues.RedactSubstrings`
+// deliberately excludes very short substrings — a bare `"7"` would otherwise
+// be stripped out of every ordinary line — so a short sensitive key survived
+// even with both production redactors installed, and `exists(k, ...)` over it
+// was a predicate oracle for the key.
+func TestInspectShortSensitiveMapKeyIsWithheld(t *testing.T) {
+	t.Parallel()
+
+	const shortSecret = "7"
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader(
+			"inspect inputs.exists(k, k == '7')\n" +
+				"continue\n",
+		),
+		Out: &out,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	// Both seams, exactly as `flow test` installs them — but the text one
+	// deliberately does nothing to a string this short, the way
+	// RedactSubstrings does, so only the structural half can catch the key.
+	session.SetRedactor(func(text string) string {
+		return text
+	})
+	session.SetValueRedactor(func(value any) any {
+		if text, ok := value.(string); ok && text == shortSecret {
+			return "[redacted]"
+		}
+
+		return value
+	})
+
+	scope := v1.NewScope(v1.CurrentProfile, nil)
+	scope.Inputs = map[string]*v1.Value{shortSecret: v1.NewLiteral("marker")}
+	require.NoError(t, session.BeforeStep(t.Context(), markStep("next"), scope))
+
+	printed := out.String()
+	assert.NotContains(t, printed, "true\n",
+		"exists() found the real short key, so the structural redactor was never applied to it")
+	assert.Contains(t, printed, "false",
+		"exists() over a redacted short key should have printed false")
+}
+
 // TestScopeNamesEveryRootARunCanReach is the class rather than the instance.
 //
 // This collector has now been short a root twice — `inputs` in one round,

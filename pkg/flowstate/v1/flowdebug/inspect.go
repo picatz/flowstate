@@ -448,15 +448,38 @@ func redactedMapNative(m traits.Mapper, redactValue func(any) any) (map[string]a
 
 		entry, converted := redactedNative(value, redactValue)
 		if !converted {
-			native[string(name)] = "[redacted]"
+			native[redactedKeyName(string(name), redactValue)] = "[redacted]"
 
 			continue
 		}
 
-		native[string(name)] = entry
+		native[redactedKeyName(string(name), redactValue)] = entry
 	}
 
 	return native, true
+}
+
+// redactedKeyName is name through the structural redactor, the same way
+// [withholdingActivation.structural] applies it to a value — a map key
+// holding sensitive material is the material just as much as a value does.
+//
+// This is the seam [textRedactedTree]'s own key handling cannot substitute
+// for: that is the *text* backstop, applied later by
+// [withholdingActivation.withText], and [SensitiveValues.RedactSubstrings]
+// deliberately excludes very short substrings to avoid corrupting ordinary
+// text — a one-rune sensitive key such as `"7"` passes through it untouched.
+// The structural, equality-based redactor has no such floor, so it is what
+// actually has to catch a short key (Codex, #2011 review, fourth round).
+func redactedKeyName(name string, redactValue func(any) any) string {
+	if redactValue == nil {
+		return name
+	}
+
+	if redacted, ok := redactValue(name).(string); ok {
+		return redacted
+	}
+
+	return name
 }
 
 func (a withholdingActivation) Parent() cel.Activation {
