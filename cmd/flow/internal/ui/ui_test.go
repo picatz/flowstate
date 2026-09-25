@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
@@ -283,6 +284,50 @@ func TestSymbolsEnvOverridesDetection(t *testing.T) {
 
 	terminal := Capabilities{TTY: true, Profile: colorprofile.TrueColor}
 	require.False(t, wantsUnicode(terminal, []string{SymbolsEnv + "=ascii"}))
+}
+
+// TestNewDetectsInputTTYIsFalseForAPipe exercises [New]'s own InputTTY wiring
+// rather than the rule that reads it.
+//
+// [plainSurface] and every `watchRun` test build a [UI] by hand and set
+// `InputTTY` directly, which proves the branch in watch.go that reads the
+// field but not the constructor line that fills it in — a regression that
+// left `InputTTY` always false, or read the wrong file's descriptor, would
+// leave every one of those tests green. This is the closest a test in this
+// repository can come to the positive path without a pty (see
+// stdiobanner_test.go's `TestStdinIsInteractiveIsFalseForAPipe`, the same
+// limit on the same call): one end of a real pipe is not a terminal, which is
+// the exact shape a real client's stdin has, so [term.IsTerminal] answers
+// false through the constructor exactly as it would for a redirected `flow
+// watch`.
+func TestNewDetectsInputTTYIsFalseForAPipe(t *testing.T) {
+	t.Parallel()
+
+	inRead, inWrite, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = inRead.Close()
+		_ = inWrite.Close()
+	})
+
+	// New also needs real *os.File values for out and errOut to detect their
+	// own capabilities from; a second pipe's write end serves both, and
+	// nothing here reads from or writes to it.
+	outRead, outWrite, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = outRead.Close()
+		_ = outWrite.Close()
+	})
+
+	surface := New(inRead, outWrite, outWrite, nil)
+	require.False(t, surface.InputTTY,
+		"one end of a pipe is not a terminal, and New wired InputTTY to something else")
+
+	// And the nil case New's own doc does not promise but its body guards:
+	// a caller with no stdin at all (`flow lsp`, served over a pipe with no
+	// separate input file) must not dereference a nil *os.File.
+	require.NotPanics(t, func() { New(nil, outWrite, outWrite, nil) })
 }
 
 func TestPlainSurfaceWritesWhatItIsGiven(t *testing.T) {
