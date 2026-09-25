@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"os"
@@ -734,43 +735,84 @@ func evictableFile(dir string) uint64 {
 }
 
 // protectedInSubtree conservatively totals configured memory.min floors below
-// dir. At most this many directory entries may be supplied by the cgroup tree;
-// reaching the bound or failing any read makes the caller count no cache as
-// evictable.
+// dir. At most this many directory entries may be observed from the cgroup
+// tree; reaching the bound or failing any read makes the caller count no
+// cache as evictable.
+//
+// This does not use [filepath.WalkDir]: it calls [os.ReadDir] per directory,
+// which reads and sorts an entire directory's entries before invoking the
+// walk callback even once — so a single delegated directory holding more
+// entries than maxEntries is fully materialized in memory before the callback
+// gets a chance to refuse it. A count enforced after the unbounded read is a
+// reporting limit, not a work limit (AGENTS.md invariant 5). Reading each
+// directory through [os.File.ReadDir] in bounded batches instead keeps the
+// work actually performed under the same bound the count reports.
 func protectedInSubtree(root string, protected, cache uint64) (uint64, bool) {
-	const maxEntries = 4096
+	const (
+		maxEntries = 4096
+		batchSize  = 256
+	)
 
 	protected = min(protected, cache)
+
 	entries := 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	dirs := []string{root}
+	for len(dirs) > 0 {
+		dir := dirs[len(dirs)-1]
+		dirs = dirs[:len(dirs)-1]
+
+		f, err := os.Open(dir)
 		if err != nil {
-			return err
-		}
-		if path == root {
-			return nil
-		}
-		entries++
-		if entries > maxEntries {
-			return fs.ErrInvalid
-		}
-		if !entry.IsDir() {
-			return nil
+			return protected, false
 		}
 
-		floor, present, established := protectionAt(path)
-		if !established {
-			return fs.ErrInvalid
-		}
-		if present {
-			protected += min(floor, cache-protected)
-		}
-		if protected == cache {
-			return fs.SkipAll
-		}
-		return nil
-	})
+		for {
+			batch, readErr := f.ReadDir(batchSize)
+			for _, entry := range batch {
+				entries++
+				if entries > maxEntries {
+					f.Close()
+					return protected, false
+				}
+				if !entry.IsDir() {
+					continue
+				}
 
-	return protected, err == nil
+				path := filepath.Join(dir, entry.Name())
+				floor, present, established := protectionAt(path)
+				if !established {
+					f.Close()
+					return protected, false
+				}
+				if present {
+					protected += min(floor, cache-protected)
+				}
+				if protected == cache {
+					// Every reachable byte of cache is already accounted for,
+					// which is the same early stop [fs.SkipAll] gave the
+					// WalkDir version: the rest of the subtree cannot change
+					// the answer, so the walk is complete rather than
+					// abandoned.
+					f.Close()
+					return protected, true
+				}
+				dirs = append(dirs, path)
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				f.Close()
+				return protected, false
+			}
+			if len(batch) == 0 {
+				break
+			}
+		}
+		f.Close()
+	}
+
+	return protected, true
 }
 
 // protectionAt is what one level declares with `memory.min`, and whether that

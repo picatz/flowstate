@@ -513,6 +513,45 @@ func TestProtectedCacheIsNotHeadroom(t *testing.T) {
 			"a probe that failed for a reason other than absence was read as 'no controller here'")
 	})
 
+	t.Run("an unreadable descendant refuses rather than counting its cache as evictable", func(t *testing.T) {
+		// protectedInSubtree's own fail-closed branch, exercised end to end:
+		// a descendant whose memory.min cannot be read must not silently
+		// contribute zero protection, the same class of fail-open #1134
+		// closed at protectionAt's front door.
+		dir := protectedLayout(t, protection{cache: 5 * gib, min: 0})
+		child := filepath.Join(dir, "child")
+		require.NoError(t, os.MkdirAll(child, 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(child, "memory.min"), 0o755))
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"a descendant whose protection could not be read was treated as unprotected, "+
+				"counting cache as headroom the walk never actually verified")
+	})
+
+	t.Run("a subtree past the entry bound refuses rather than treating the rest as unprotected", func(t *testing.T) {
+		// protectedInSubtree reads each directory through bounded File.ReadDir
+		// batches rather than filepath.WalkDir specifically so a subtree wider
+		// than its own bound cannot be fully materialized before the bound is
+		// checked; this pins that the bound still refuses once crossed; a
+		// count enforced after an already-unbounded read would be a reporting
+		// limit rather than a work limit (AGENTS.md invariant 5).
+		dir := protectedLayout(t, protection{cache: 5 * gib, min: 0})
+
+		const maxEntries = 4096
+		for i := range maxEntries + 1 {
+			require.NoError(t, os.Mkdir(filepath.Join(dir, "e"+strconv.Itoa(i)), 0o755))
+		}
+
+		free, found := tightestMemoryFree([]string{dir}, "memory.max", "memory.current")
+
+		require.True(t, found)
+		assert.Equal(t, uint64(2*gib), free,
+			"a subtree wider than the entry bound was treated as fully walked, "+
+				"counting cache as headroom the walk never verified")
+	})
 }
 
 // writesMin writes a `memory.min` holding exactly this text.
