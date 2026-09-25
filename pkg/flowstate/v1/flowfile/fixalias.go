@@ -61,6 +61,21 @@ import (
 // nothing was: the returned result carries the original bytes and one positioned
 // refusal per construct that could not be copied.
 func inlineWholeValueAliases(data []byte, file *ast.File) (FixResult, bool) {
+	in, ok := runAliasInliner(data, file)
+	if !ok {
+		return FixResult{Source: data, Refusals: in.refusals}, false
+	}
+
+	return FixResult{Source: in.f.apply(), Changes: in.f.changes}, true
+}
+
+// runAliasInliner does [inlineWholeValueAliases]'s actual work and hands back
+// the inliner itself, rather than the [FixResult] built from it — so this
+// package's own tests can read [aliasInliner.bytes] and the [fixer.edits] it
+// charged against directly, which is what the accounting oracle #2045 asks
+// for needs to compare against each other. [inlineWholeValueAliases] is the
+// thin wrapper every other caller uses.
+func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, bool) {
 	in := &aliasInliner{
 		f: &fixer{
 			lines:           splitLines(data),
@@ -69,6 +84,7 @@ func inlineWholeValueAliases(data []byte, file *ast.File) (FixResult, bool) {
 		},
 		anchors: map[string]*ast.AnchorNode{},
 		byLine:  map[int]aliasSite{},
+		bytes:   len(data),
 	}
 
 	for _, doc := range file.Docs {
@@ -84,15 +100,20 @@ func inlineWholeValueAliases(data []byte, file *ast.File) (FixResult, bool) {
 		in.rewrite()
 	}
 	if len(in.refusals) > 0 {
-		return FixResult{Source: data, Refusals: in.refusals}, false
+		return in, false
 	}
 
-	// The node budget bounds how many *values* the rewrite writes out; this bounds
-	// the bytes, which is a different resource and the one the next pass reads
-	// against. [fixOnce] refuses to read a document larger than maxBytes at all, so
-	// a rewrite that crossed it would hand the fixed-point loop a file it cannot
-	// parse — `flow fix` breaking the file it was fixing, in the one direction
-	// counting nodes cannot see (a few long scalars aliased many times).
+	// A backstop, not the bound: [aliasInliner.bytes] already refused before
+	// any expansion past [maxBytes] could be built (see
+	// [aliasInliner.appendLine]), so this measures what that accounting
+	// already guaranteed rather than discovering it here for the first time.
+	// Kept because [fixer.apply] is what actually assembles the final bytes —
+	// the trailing newline and every untouched line included, which
+	// [aliasInliner.bytes] does not itself walk — and [fixOnce] refuses to
+	// read a document larger than maxBytes at all, so a rewrite that crossed
+	// it would hand the fixed-point loop a file it cannot parse. A second,
+	// cheap check on the one value that actually matters is worth keeping
+	// even once the path to it is bounded.
 	out := in.f.apply()
 	if len(out) > maxBytes {
 		at := strictFinding{line: 1, column: 1}
@@ -103,10 +124,10 @@ func inlineWholeValueAliases(data []byte, file *ast.File) (FixResult, bool) {
 			"writing these aliases out would produce %d bytes, larger than the %d byte limit a Flowfile is read up to; nothing was rewritten",
 			len(out), maxBytes)
 
-		return FixResult{Source: data, Refusals: in.refusals}, false
+		return in, false
 	}
 
-	return FixResult{Source: out, Changes: in.f.changes}, true
+	return in, true
 }
 
 // An aliasSite is one alias this rewrite may replace: an alias written as the
@@ -151,6 +172,18 @@ type aliasInliner struct {
 	// grows by the anchored value's own size at every expansion, which is exactly
 	// how a billion-laughs document multiplies.
 	nodes int
+
+	// bytes is what the rewrite's output holds once every alias is expanded,
+	// charged against [maxBytes] — see [aliasInliner.appendLine], the one place
+	// a produced line enters any replacement this rewrite builds, for why this
+	// bounds the resource [aliasInliner.nodes] does not (#2045).
+	//
+	// It starts at the source's own length, for the same reason [aliasInliner.nodes]
+	// starts at the document's own node count: what a rewrite that touched
+	// nothing would already cost is not free, and a budget that only counted
+	// the growth would let a large file's last few bytes of headroom be spent
+	// on an expansion this rewrite never priced.
+	bytes int
 }
 
 // collectAnchors records every anchor in the document, walking with [ast.Walk] so
@@ -502,6 +535,66 @@ func (in *aliasInliner) split(site aliasSite) (prefix, suffix string, ok bool) {
 	return prefix, suffix, true
 }
 
+// charge adds n to the bytes an expansion has spent and refuses once that
+// crosses [maxBytes], exactly where [countNodes]'s own comment says a charge
+// belongs: at the point of spend, before the memory is allocated, rather than
+// after — see [aliasInliner.appendLine], the one place a produced line ever
+// pays it.
+func (in *aliasInliner) charge(alias *ast.AliasNode, n int) bool {
+	in.bytes += n
+	if in.bytes > maxBytes {
+		in.refuseAlias(alias,
+			"writing these aliases out would copy more than %d bytes, more than a Flowfile is meant to hold; nothing was rewritten",
+			maxBytes)
+
+		return false
+	}
+
+	return true
+}
+
+// appendLine is the one place a line this rewrite produces is added to a
+// replacement, and every splice and copy in this file builds its lines by
+// calling it — which is what makes a new copy site forgetting to charge
+// structurally hard rather than merely documented (#2045).
+//
+// # What #2045 found, and why this closes all of it at once
+//
+// Four rounds of independent review each found a different copy site the
+// previous attempt's per-site charges did not cover: an indentation shift in
+// [aliasInliner.spliceBlock] that grew a copied line for free, a splice that
+// charged only the aliased value and not the line it was rebuilt into, a
+// trailing-comment reconstruction nothing charged at all, and — the one a
+// five-row corpus of *shapes* still missed, because it varies bytes per line
+// and this varies lines per byte — a blank line inside a copied block, which
+// used to cost nothing no matter how many of them there were.
+//
+// Charging the finished line here, in the one function that actually grows
+// every returned slice, closes the first three by construction: whatever a
+// splice built — indent, prefix, suffix, comment — is priced as the line it
+// became rather than as whichever of its ingredients a charge remembered to
+// name. The fourth is the `+len(in.f.terminator)` floor: every line pays at
+// least its terminator, blank or not, so a thousand blank lines cost a
+// thousand terminators rather than zero.
+//
+// The line and slot overhead a Go string header and a slice element carry —
+// on the order of tens of bytes each, unpriced here — is a second resource
+// this does not meter separately. At [maxBytes]'s own ceiling and this
+// function's one-terminator floor per line, the worst case is bounded by the
+// same budget: at most maxBytes lines, tens of megabytes of header and slot
+// overhead alongside the megabyte actually charged. Accepted rather than
+// separately bounded, because a second, narrower limit on top of this one
+// would be a second mechanism for a resource this file already prices —
+// invariant 2 — for a cost an order of magnitude under what an already-bounded
+// rewrite risks elsewhere.
+func (in *aliasInliner) appendLine(alias *ast.AliasNode, out []string, line string) ([]string, bool) {
+	if !in.charge(alias, len(line)+len(in.f.terminator)) {
+		return out, false
+	}
+
+	return append(out, line), true
+}
+
 // spliceScalar replaces an alias with a value written on one line: a scalar, or a
 // mapping or sequence in flow style.
 //
@@ -540,7 +633,11 @@ func (in *aliasInliner) spliceScalar(site aliasSite, prefix, suffix string, anch
 		return nil, false
 	}
 
-	return []string{prefix + value + suffix}, true
+	// The whole rebuilt line, not just value: prefix carries this site's own
+	// indentation and key, which #2045 found could dwarf a tiny aliased value
+	// once nested deep enough — appendLine charges what this function is
+	// actually about to hand back, not one ingredient of it.
+	return in.appendLine(site.alias, nil, prefix+value+suffix)
 }
 
 // spliceBlock replaces an alias with a value written as a block: a mapping or a
@@ -577,7 +674,7 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 	}
 
 	last := in.f.blockEnd(first-1, base-1)
-	raw, ok := in.expandRange(first, last, stack)
+	raw, ok := in.expandRange(site.alias, first, last, stack)
 	if !ok {
 		return nil, false
 	}
@@ -591,7 +688,15 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 	shifted := make([]string, 0, len(raw))
 	for _, line := range raw {
 		if strings.TrimSpace(line) == "" {
-			shifted = append(shifted, "")
+			// Charged even though nothing is written: an unwritten blank line
+			// still occupies one in the copy, and this is where #2045's finding
+			// 4 lived — a blank line costing nothing no matter how many of
+			// them a copied block held. See [aliasInliner.appendLine].
+			var ok bool
+			shifted, ok = in.appendLine(site.alias, shifted, "")
+			if !ok {
+				return nil, false
+			}
 
 			continue
 		}
@@ -602,7 +707,12 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 
 			return nil, false
 		}
-		shifted = append(shifted, strings.Repeat(" ", indent)+line[base:])
+
+		var ok bool
+		shifted, ok = in.appendLine(site.alias, shifted, strings.Repeat(" ", indent)+line[base:])
+		if !ok {
+			return nil, false
+		}
 	}
 	if len(shifted) == 0 {
 		in.refuseAlias(site.alias, "the anchor `&%s` names no value, so there is nothing to write in this alias's place; write the value out by hand", name)
@@ -621,15 +731,33 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 
 		// The dash keeps its line and the block's first line sits beside it, which
 		// is where a list item's mapping is written. `indent` is the dash's prefix
-		// width by construction, so the two fit together exactly.
-		out := []string{prefix + shifted[0][indent:]}
+		// width by construction, so the two fit together exactly — checked rather
+		// than assumed: a block's first line is non-blank by construction (the
+		// blank-line arm above never produces shifted[0]) and every nested
+		// replacement's first line is non-empty, but that reasoning crosses two
+		// functions and nothing before this asserted it (found on the way, #2045).
+		if len(shifted[0]) < indent {
+			in.refuseAlias(site.alias,
+				"the value `&%s` names does not indent under this list item the way this rewrite expected; write it out by hand",
+				name)
+
+			return nil, false
+		}
+
+		out, ok := in.appendLine(site.alias, nil, prefix+shifted[0][indent:])
+		if !ok {
+			return nil, false
+		}
 
 		return append(out, shifted[1:]...), true
 	}
 
 	// The key keeps its line — with its comment, if it had one — and the block goes
 	// underneath it, which is the only place a block value can be written.
-	out := []string{strings.TrimRight(prefix, " ") + suffix}
+	out, ok := in.appendLine(site.alias, nil, strings.TrimRight(prefix, " ")+suffix)
+	if !ok {
+		return nil, false
+	}
 
 	return append(out, shifted...), true
 }
@@ -641,12 +769,24 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 // is copied with that alias already written out, so one pass settles the whole
 // chain rather than one link per round. stack carries the anchors being expanded
 // on the way here, so the recursion cannot follow a cycle.
-func (in *aliasInliner) expandRange(first, last int, stack []string) ([]string, bool) {
+//
+// against attributes the charge for a line this range merely copies through —
+// this range's own site is not itself a line here, and a line untouched by any
+// alias still costs a copy, which is #2045's finding 4: a line this range
+// passes through unwritten (a blank line inside a copied block, chief among
+// them) used to cost nothing no matter how many of them the block held. A
+// replacement line pays for itself inside [aliasInliner.replacement]'s own
+// splice, so only the plain-copy arm below charges here.
+func (in *aliasInliner) expandRange(against *ast.AliasNode, first, last int, stack []string) ([]string, bool) {
 	var out []string
 	for n := first; n <= last; n++ {
 		site, isSite := in.byLine[n]
 		if !isSite {
-			out = append(out, in.f.line(n))
+			var ok bool
+			out, ok = in.appendLine(against, out, in.f.line(n))
+			if !ok {
+				return nil, false
+			}
 
 			continue
 		}
