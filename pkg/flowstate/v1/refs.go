@@ -174,10 +174,30 @@ func CollectRefsFromExpr(e *expr.Expr, prev *Workflow_StepOutputs, refs map[stri
 		// Continue-As-New.
 		// A stored expression compiled before the root existed may use `steps` as
 		// a real step ID. Match the evaluator's compatibility precedence: that
-		// step wins over the root, so its select must continue through the legacy
-		// bare-reference path below.
+		// step wins over the root.
 		_, legacySteps := prev.GetStepValues()[StepsRoot]
-		if step, field, ok := RootedStepRef(kind.SelectExpr); ok && !legacySteps {
+		if step, field, ok := RootedStepRef(kind.SelectExpr); ok {
+			if legacySteps {
+				// RootedStepRef parsed this as if `steps` were the root and
+				// `step` were the step it names — `steps.result.nested` came
+				// back as step "result", output "nested". Under the
+				// evaluator's own precedence the literal step `steps` wins
+				// instead, so what RootedStepRef called the step name is
+				// actually that step's own first selected output, and
+				// whatever it called the output (if anything) is one level
+				// deeper still — CEL's business, per RootedStepRef's own
+				// comment, not a second output to keep.
+				if prev != nil && prev.StepValues != nil {
+					if _, known := prev.StepValues[StepsRoot]; known {
+						if step == "" {
+							MarkWholeStep(refs, StepsRoot)
+						} else {
+							MarkStepField(refs, StepsRoot, step)
+						}
+					}
+				}
+				return
+			}
 			if prev != nil && prev.StepValues != nil {
 				if _, known := prev.StepValues[step]; known {
 					if field == "" {
