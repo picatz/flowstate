@@ -935,17 +935,30 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	surface := newSurface(cmd)
 
+	// Read once, ahead of the two refusals below that may render a value: the
+	// escape hatch is one decision, not two that could answer differently for
+	// the same invocation.
+	reveal := revealSensitiveRequested(cmd)
+
 	// The arguments this run is started with, coerced against what the file declares.
 	// Checked here as well as at the server, for the message rather than for the
 	// control: a missing or mistyped argument is a fact about the command line, and
 	// reading it back as a remote invalid-argument sends an author looking at the
 	// wrong machine. The server binds them again regardless.
+	//
+	// Redacted the same way runLocalWorkflow's own pre-submit refusals are,
+	// against the set [refusedRunSensitiveValues] builds without a bind: this
+	// verb never wrote a machine-readable document for this refusal and still
+	// does not, but leaving its stderr prose unredacted was the one surface a
+	// refused sensitive argument still reached in the clear (#2044) — an
+	// asymmetry with `flow run local` that becomes a leak the moment this
+	// path grows a JSON rendering of its own.
 	inputs, err := runInputs(cmd, workflow)
 	if err != nil {
-		return err
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, nil, err, reveal))
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
-		return err
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, err, reveal))
 	}
 
 	reason, _ := cmd.Flags().GetString("reason")
@@ -1038,7 +1051,10 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// copy for it. The poller redacts precisely only against a specification the
 	// server attested is the executed one, and falls back to the fail-closed case
 	// otherwise; see [executedSpecification] and #734.
-	reveal := revealSensitiveRequested(cmd)
+	//
+	// reveal was already read above, before the pre-submit refusals — one
+	// decision for the whole invocation, not read twice for two chances to
+	// disagree.
 	executed := executedSpecification(workflow, started.Msg)
 	switch {
 	case reveal:

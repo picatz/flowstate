@@ -66,12 +66,18 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	// the same code. A schedule is a run somebody arranged in advance, so it would be
 	// strange for `--input` to mean something else here — and a second coercion path
 	// is how two surfaces of one contract start disagreeing.
+	//
+	// Redacted against the same set a refused `flow run` and `flow run local`
+	// build without a bind (#2044): this command declares no
+	// --reveal-sensitive of its own, so [revealSensitiveRequested] answers
+	// false unconditionally, which is the fail-closed default that flag's own
+	// doc comment already states for a command that never declared it.
 	inputs, err := runInputs(cmd, workflow)
 	if err != nil {
-		return err
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, nil, err, revealSensitiveRequested(cmd)))
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
-		return err
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, err, revealSensitiveRequested(cmd)))
 	}
 
 	name, _ := cmd.Flags().GetString("name")
