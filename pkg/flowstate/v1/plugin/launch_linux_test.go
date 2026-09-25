@@ -182,27 +182,81 @@ func TestStopWaitsForEscalationBeforeReturning(t *testing.T) {
 	}
 }
 
-// TestStopWaitsForEscalationEvenWhenAnEarlierCallHadACanceledContext is the
-// fourth round of the same finding: moving the escalation wait inside
-// stopOnce, as the third round's first attempt did, made the wait's own ctx
-// whichever caller happened to win that Once — not the ctx of whoever is
-// actually calling stop now. [Plugin.noteExit] and [Plugin.close] can both
-// reach the same instance on an independent exit: noteExit calls stop with
-// p.procCtx, and close cancels that same procCtx before making its own call
-// with the still-live shutdown ctx a caller of Close actually gave. If
-// noteExit's call won stopOnce first, with p.procCtx already or about to be
-// canceled, a wait bound to it inside the Do returned at once regardless of
-// whether escalation had finished, and stopOnce made close's own, later
-// call — with a ctx that was never canceled — wait for nothing (Codex,
-// #2008 review, fourth round).
+// TestStopWhoseContextEndsFirstStillKillsTheStubbornHelper covers a caller of
+// stop whose ctx ends before [escalateAbandonedGroup]'s grace does. The CLI's
+// Host.Close gives exactly two grace periods, and os/exec's own WaitDelay kill
+// can reap the leader late enough that the escalation's deadline lands after
+// that ctx. Giving up the wait there used to return with a SIGTERM-ignoring
+// helper still running and nothing left that would kill it. Now the expired
+// wait hurries the escalation to its SIGKILL, so stop returns promptly and the
+// helper is gone.
+func TestStopWhoseContextEndsFirstStillKillsTheStubbornHelper(t *testing.T) {
+	requireProcOrSkip(t)
+
+	pidFile := t.TempDir() + "/child-pid"
+	dir := pluginDir(t, "with-stubborn-child")
+	cfg := testConfig(t, dir).withDefaults()
+	cfg.Env = append(cfg.Env, "FLOWSTATE_TEST_CHILD_PID_FILE="+pidFile)
+
+	inst, err := launch(t.Context(), cfg, Found{
+		Name: "with-stubborn-child",
+		Path: filepath.Join(dir, BinaryPrefix+"with-stubborn-child"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if inst == nil {
+		t.Fatal("launch returned no instance for this test to call stop on")
+	}
+
+	pid := readChildPID(t, pidFile)
+
+	// The leader exits on its own, leaving the helper behind, exactly as in
+	// TestStopWaitsForEscalationBeforeReturning.
+	if err := inst.proc.Kill(); err != nil {
+		t.Fatalf("killing the leader: %v", err)
+	}
+
+	short := cfg.ShutdownGrace / 4
+	ctx, cancel := context.WithTimeout(t.Context(), short)
+	defer cancel()
+
+	started := time.Now()
+	inst.stop(ctx, cfg.ShutdownGrace)
+	elapsed := time.Since(started)
+
+	// stop is bounded by its own ctx plus hurryWait, not by the grace period.
+	if limit := short + hurryWait + 250*time.Millisecond; elapsed > limit {
+		t.Fatalf("stop took %s with a %s context; want at most %s", elapsed, short, limit)
+	}
+
+	// The premise: the helper ignores SIGTERM, so only the hurried SIGKILL can
+	// have ended it this early in the grace period.
+	if !waitFor(t, 2*time.Second, func() bool { return processGoneOrZombie(t, pid) }) {
+		t.Errorf("stop gave up waiting after %s and returned while helper process %d, "+
+			"which ignores SIGTERM, was still running: the expired wait did not hurry "+
+			"the escalation to its SIGKILL", elapsed, pid)
+	}
+	if time.Since(started) >= cfg.ShutdownGrace {
+		t.Errorf("the helper outlived the whole %s grace period, so this test proves "+
+			"nothing about the hurried SIGKILL", cfg.ShutdownGrace)
+	}
+}
+
+// TestStopWithAnEarlierCanceledContextStillEndsTheStubbornHelper covers the
+// ordering the fourth review round found. [Plugin.noteExit] and
+// [Plugin.close] can both reach the same instance on an independent exit.
+// noteExit calls stop with p.procCtx, and close cancels that same procCtx
+// before making its own call with the shutdown ctx a caller of Close gave.
+// If noteExit's call wins stopOnce with p.procCtx already canceled, its wait
+// ends at once. That must not leave the helper running while close's later
+// call becomes a no-op. An ended wait now hurries the escalation to its
+// SIGKILL (see [instance.hurry]), so the first call already ends the helper
+// and the second returns promptly.
 //
-// This recreates that ordering directly rather than racing two goroutines:
-// stop is called once with an already-canceled context first (so, under
-// the bug, it would both win stopOnce and return at once), then a second
-// time with a live one — the second call is what this test is actually
-// about, since stopOnce guarantees its own body never runs again regardless
-// of how the two calls are interleaved.
-func TestStopWaitsForEscalationEvenWhenAnEarlierCallHadACanceledContext(t *testing.T) {
+// The ordering is recreated directly rather than raced: stop is called once
+// with an already-canceled context, then again with a live one.
+func TestStopWithAnEarlierCanceledContextStillEndsTheStubbornHelper(t *testing.T) {
 	requireProcOrSkip(t)
 
 	pidFile := t.TempDir() + "/child-pid"
@@ -240,38 +294,37 @@ func TestStopWaitsForEscalationEvenWhenAnEarlierCallHadACanceledContext(t *testi
 	}
 
 	// The noteExit half: an already-canceled ctx, the shape p.procCtx is in
-	// by the time Plugin.close has called p.cancel(). Every ctx bound this
-	// call makes — waitEscalated, now outside stopOnce — is already done,
-	// so this returns almost at once and leaves the child still running:
-	// exactly the state a caller of Close, arriving right after, actually
-	// sees.
+	// by the time Plugin.close has called p.cancel(). Its wait ends at once,
+	// and an ended wait hurries [escalateAbandonedGroup] to its SIGKILL
+	// (see [instance.hurry]) instead of leaving the helper running with
+	// nothing left to kill it. So this returns within hurryWait, and the
+	// helper is gone well inside the grace period it would otherwise get.
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
-	inst.stop(canceledCtx, cfg.ShutdownGrace)
-
-	if processGoneOrZombie(t, pid) {
-		t.Fatal("the helper was already gone after the first call to stop, so this test's " +
-			"second call cannot tell a real wait from one that had nothing left to wait for")
-	}
-
-	// The Plugin.close half: a live ctx, called immediately after — stopOnce
-	// guarantees its own body does not run again, so everything this call
-	// does happens outside it. If that wait is not itself outside stopOnce,
-	// this call is a no-op and returns at once no matter what ctx it holds.
 	started := time.Now()
-	inst.stop(t.Context(), cfg.ShutdownGrace)
-	elapsed := time.Since(started)
-
-	if elapsed < cfg.ShutdownGrace-500*time.Millisecond {
-		t.Fatalf("the second call to stop, with its own live ctx, returned after only %s, "+
-			"well under the %s grace period escalation must wait out for a helper that "+
-			"ignores SIGTERM — an earlier call whose ctx was already canceled must have "+
-			"skipped this wait for both calls, not only its own", elapsed, cfg.ShutdownGrace)
+	inst.stop(canceledCtx, cfg.ShutdownGrace)
+	if elapsed := time.Since(started); elapsed > hurryWait+250*time.Millisecond {
+		t.Fatalf("stop with an already-canceled ctx took %s; want at most hurryWait (%s)", elapsed, hurryWait)
 	}
 
 	if !waitFor(t, 2*time.Second, func() bool { return processGoneOrZombie(t, pid) }) {
-		t.Errorf("helper process %d, which ignores SIGTERM, was still running after a "+
-			"second call to stop, with a live ctx, returned", pid)
+		t.Fatalf("helper process %d, which ignores SIGTERM, was still running after a "+
+			"call to stop whose ctx had already ended: the ended wait did not hurry the "+
+			"escalation to its SIGKILL", pid)
+	}
+	if time.Since(started) >= cfg.ShutdownGrace {
+		t.Fatalf("the helper outlived the %s grace period, so its death proves nothing "+
+			"about the hurried SIGKILL", cfg.ShutdownGrace)
+	}
+
+	// The Plugin.close half: a live ctx, called right after. stopOnce keeps
+	// its body from running again, and the wait outside it now finds the
+	// escalation already finished, so this returns promptly rather than
+	// being a no-op that returns while the helper still runs.
+	started = time.Now()
+	inst.stop(t.Context(), cfg.ShutdownGrace)
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Errorf("a second call to stop, after the escalation had finished, still took %s", elapsed)
 	}
 }
 
@@ -310,7 +363,7 @@ func TestEscalateAbandonedGroupReturnsPromptlyForACompliantHelper(t *testing.T) 
 	const grace = 5 * time.Second
 
 	started := time.Now()
-	escalateAbandonedGroup(cmd.Process, grace)
+	escalateAbandonedGroup(cmd.Process, grace, nil)
 	elapsed := time.Since(started)
 
 	if elapsed >= time.Second {

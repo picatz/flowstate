@@ -84,11 +84,13 @@ then polls and escalates to SIGKILL (`launch.go`'s
 group; one a plugin deliberately forked into a session of its own is
 unreached either way, and neither path is containment against a plugin
 actively working to evade it, which the opening paragraph already says
-plainly. `instance.stop` waits for that escalation to finish, bounded by
-its own context, before it returns — so a caller winding a plugin or the
-whole host down (`Host.Close`) does not return, and the worker process
-does not exit, while a stubborn descendant's own SIGKILL is still in
-flight.
+plainly. `instance.stop` waits for that escalation to finish before it
+returns. If the caller's context ends first, the escalation is cut short
+and sends its SIGKILL at once (bounded by a further second for it to
+land), the same rule `instance.stop` applies to a leader that outlives
+its context. So a caller winding a plugin or the whole host down
+(`Host.Close`) does not return, and the worker process does not exit,
+leaving a stubborn descendant that nothing will kill.
 
 ### Pinning which bytes a plugin name may run
 

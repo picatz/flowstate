@@ -87,6 +87,15 @@ type instance struct {
 	// (Codex, #2008 review, third round).
 	escalated chan struct{}
 
+	// hurry is closed, once, by the first caller of [instance.stop] whose
+	// own ctx ends while it is still waiting on escalated. It tells
+	// [escalateAbandonedGroup] to stop granting grace and send its SIGKILL
+	// now, so a caller that gives up waiting does not leave a SIGTERM-
+	// ignoring helper running with nothing left to kill it: the same "ctx
+	// ended, so kill" rule [instance.stop] already applies to the leader.
+	hurry     chan struct{}
+	hurryOnce sync.Once
+
 	// pumps completes when the stdout and stderr readers have finished.
 	pumps sync.WaitGroup
 
@@ -276,6 +285,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 		stderr:        stderrR,
 		exited:        make(chan struct{}),
 		escalated:     make(chan struct{}),
+		hurry:         make(chan struct{}),
 	}
 
 	log = log.With("pid", inst.pid)
@@ -322,7 +332,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 		// Closed unconditionally, including the common case where
 		// escalateAbandonedGroup returned at once, because that path needs
 		// the signal too and nothing else would ever send it.
-		escalateAbandonedGroup(inst.proc, cfg.ShutdownGrace)
+		escalateAbandonedGroup(inst.proc, cfg.ShutdownGrace, inst.hurry)
 		close(inst.escalated)
 	}()
 
@@ -647,7 +657,9 @@ func (i *instance) waitExit(ctx context.Context, grace time.Duration) bool {
 }
 
 // waitEscalated reports whether the waiter goroutine's own call to
-// [escalateAbandonedGroup] finished before ctx ended. See [instance.stop]'s
+// [escalateAbandonedGroup] finished before ctx ended. When ctx ends first it
+// hurries that escalation to its SIGKILL and waits, bounded by [hurryWait],
+// for it to land, so ending the wait never leaves a helper nothing will kill. See [instance.stop]'s
 // own call to this for why a caller of stop cannot simply not wait:
 // escalation runs after [instance.exited] already closed, in the same
 // goroutine, so nothing else ever observes when — or whether — it actually
@@ -669,9 +681,38 @@ func (i *instance) waitEscalated(ctx context.Context) bool {
 	case <-i.escalated:
 		return true
 	case <-ctx.Done():
-		return false
 	}
+
+	// This caller's ctx ended with the escalation still granting grace.
+	// Returning now would let the caller (and through it Host.Close, and
+	// the process) finish while a helper that ignores SIGTERM is still
+	// running, with nothing left that would ever kill it. So cut the grace
+	// short: hurry makes escalateAbandonedGroup check the group once more
+	// and send its SIGKILL at once. What remains is one signal-0 and one
+	// kill syscall, plus the leader's reap if it has not happened yet, so
+	// the wait for it is bounded by hurryWait rather than by ctx, which has
+	// already ended.
+	if i.hurry != nil {
+		i.hurryOnce.Do(func() { close(i.hurry) })
+	}
+
+	timer := time.NewTimer(hurryWait)
+	defer timer.Stop()
+
+	select {
+	case <-i.escalated:
+	case <-timer.C:
+	}
+	return false
 }
+
+// hurryWait bounds how long [instance.waitEscalated] waits, after its ctx
+// has already ended, for a hurried [escalateAbandonedGroup] to send its
+// SIGKILL. That is a syscall or two once the leader is reaped, and the
+// leader's reap is itself bounded by the SIGKILL [instance.stop] already
+// sent it, so this only ever pays out for a leader the kernel cannot kill
+// (a frozen cgroup, say), which it must not hang on forever.
+const hurryWait = time.Second
 
 // escalationPollInterval is how often [escalateAbandonedGroup] re-checks a
 // signalled group rather than sleeping through the whole grace period once.
@@ -705,18 +746,30 @@ const escalationPollInterval = 20 * time.Millisecond
 // [escalationPollInterval] — so a helper that behaves is only ever a few
 // polls away from this returning too, not the whole grace period; only one
 // that is still alive at the deadline pays for a SIGKILL.
-func escalateAbandonedGroup(proc *os.Process, grace time.Duration) {
+func escalateAbandonedGroup(proc *os.Process, grace time.Duration, hurry <-chan struct{}) {
 	if proc == nil || !processGroupAlive(proc.Pid) {
 		return
 	}
 
-	deadline := time.Now().Add(grace)
-	for time.Now().Before(deadline) {
-		if !processGroupAlive(proc.Pid) {
-			return
-		}
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	poll := time.NewTicker(escalationPollInterval)
+	defer poll.Stop()
 
-		time.Sleep(escalationPollInterval)
+wait:
+	for {
+		select {
+		case <-poll.C:
+			if !processGroupAlive(proc.Pid) {
+				return
+			}
+		case <-deadline.C:
+			break wait
+		case <-hurry:
+			// A caller of stop gave up waiting (its ctx ended): no more
+			// grace, send the SIGKILL now. See [instance.hurry].
+			break wait
+		}
 	}
 
 	if processGroupAlive(proc.Pid) {
