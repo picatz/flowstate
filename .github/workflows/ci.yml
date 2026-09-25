@@ -923,14 +923,20 @@ jobs:
           # What it cannot say is *why* this was cancelled: this job has no
           # way to tell a newer push's supersession (this ref's concurrency
           # group, deliberately, for a pull request — see the concurrency:
-          # block above) from a person cancelling the run by hand, or from a
-          # runner fault. It is careful to claim only the first as the common
-          # case rather than the fact, and named the other two rather than
-          # implying they cannot happen (#2030's own fix, and the review that
-          # followed it, both turned on this: an annotation asserting a
-          # specific cause it cannot verify is a second, narrower way to read
-          # a check wrong instead of a first).
-          cancelled_note="most often because a newer push superseded this run on this ref; on main or a merge group, where that is disabled, or if nothing else pushed, it was cancelled by hand or by a runner fault instead — either way this is not evidence the diff is broken; re-run it, or check the superseding push's own run if there is one"
+          # block above) from a person cancelling the run by hand, from a
+          # runner fault, or from a job hitting its own timeout-minutes —
+          # which GitHub also reports as cancelled rather than as timed_out,
+          # and which a diff can genuinely cause: appearance's own test runs
+          # up to 900s inside its 15-minute job, and plan's `go run
+          # ./tools/gate -ci` has only 5. It is careful to claim only
+          # supersession as the common case rather than the fact, name the
+          # other causes rather than imply they cannot happen, and stop short
+          # of calling a cancellation innocent — a real review (#2058, not
+          # #2030 itself) caught an earlier draft doing both: an annotation
+          # asserting a specific cause, or a specific absence of fault, that
+          # it cannot verify is a second, narrower way to read a check wrong
+          # instead of a first.
+          cancelled_note="most often because a newer push superseded this run on this ref (disabled on main and a merge group); it can also be a hand cancellation, a runner fault, or a job hitting its own timeout-minutes — a cancellation alone says nothing either way about the diff: check whether a job timed out before re-running, or look at the superseding push's own run if there is one"
 
           if [ "${PLAN_RESULT}" = "cancelled" ]; then
             echo "::error::the plan job was cancelled, not failed — ${cancelled_note}"

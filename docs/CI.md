@@ -177,13 +177,21 @@ renders them, so a reader learns that much without fetching a log.
 
 What the annotation cannot say is *why* the job was cancelled: `verdict` has
 no way to tell a newer push's supersession from a person cancelling the run
-by hand or from a runner fault, so it names supersession as the common case
-on a pull request rather than as the established fact — main and a merge
-group are excluded from `cancel-in-progress` above, so a cancellation there
-is never supersession, and the annotation says that too. An early draft of
-this fix asserted supersession outright; review on #2030 itself caught that a
-check whose whole design is "never report a pass it cannot justify" should
-not turn around and report a cause it cannot justify either.
+by hand, from a runner fault, or from a job hitting its own
+`timeout-minutes` — GitHub reports that the same way, as `cancelled` rather
+than `timed_out`, and it is a cause a diff can genuinely trigger: `appearance`
+runs a test up to 900s inside its 15-minute job, and `plan`'s `go run
+./tools/gate -ci` has to finish inside 5. So the annotation names
+supersession as the common case on a pull request rather than as the
+established fact — main and a merge group are excluded from
+`cancel-in-progress` above, so a cancellation there is never supersession —
+and it stops short of calling the cancellation innocent, since a timeout is
+exactly a cancellation that *is* evidence about the diff. An early draft of
+this fix both asserted supersession outright and called every cancellation
+harmless; review on #2058 (the pull request that carried this fix, not
+#2030 the issue) caught that a check whose whole design is "never report a
+pass it cannot justify" should not turn around and report a cause, or an
+innocence, it cannot justify either.
 
 ### The merge queue
 
