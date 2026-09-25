@@ -53,17 +53,32 @@ tenant it serves — not just the tenant whose run happened to launch it.
 
 **What the host isolates, stated plainly (#1010):** a plugin runs as the same
 user as the worker, with the worker's full filesystem, network and kernel
-reach. The host guarantees which bytes run when pinned, that the plugin
-does not directly inherit the worker's environment, cannot impersonate the
-host on its socket, and cannot outlive it. The clean launch environment is not
-a confidentiality boundary: where the OS permits same-user process inspection,
-a plugin may still read the worker's environment and memory. It does not constrain
-what the plugin does with the worker's own privileges — resource
-limits, filesystem visibility and syscall filtering are the deployment's job,
-exactly as they are for the worker itself. The host isolates **by process,
-not by privilege**, and no schema vocabulary claims otherwise; see [the
-four-tier isolation model](#the-four-tier-isolation-model) for where that
-kind of control actually lives.
+reach. The host guarantees which bytes run when pinned, and that the plugin
+does not directly inherit the worker's environment. The clean launch
+environment is not a confidentiality boundary: where the OS permits
+same-user process inspection, a plugin may still read the worker's
+environment and memory. It does not constrain what the plugin does with the
+worker's own privileges — resource limits, filesystem visibility and syscall
+filtering are the deployment's job, exactly as they are for the worker
+itself. The host isolates **by process, not by privilege**, and no schema
+vocabulary claims otherwise; see [the four-tier isolation
+model](#the-four-tier-isolation-model) for where that kind of control
+actually lives.
+
+Two more claims are true only within narrower limits than they first sound,
+for the same reason as above: same-user process inspection. A plugin's
+socket rejects a caller that never received the per-launch token, but that
+token lives in the worker's own memory and is handed to the plugin's
+environment by design (`launch.go`, `transport.go`), so the guarantee is
+against a stranger, not against the plugin itself or a same-user process
+that can read either copy. And group termination reaches every descendant
+that stays in the plugin's process group at exit, not a plugin that
+deliberately forks a child into a session of its own and lets it ignore the
+liveness pipe (`proc_unix.go` says so of itself: it reaches "everything the
+plugin started that did not deliberately leave the group"). Both are real
+boundaries against an accident or a well-behaved plugin's own children;
+neither is containment against a plugin actively working to evade it, which
+the opening paragraph already says plainly.
 
 ### Pinning which bytes a plugin name may run
 
