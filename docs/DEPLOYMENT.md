@@ -1564,6 +1564,18 @@ resolved operation decision. That is deliberate, not an oversight — see
 file comment for why a scrubber was rejected in favor of a record with nothing
 in it for a scrubber to catch.
 
+**A second decision on the same RPC.** `Run`'s and `SignalWithStart`'s
+admission ALLOW answers one question — may this caller start work in their
+own namespace — and is written before either can reach a further question the
+target workflow itself declares an opinion on: whether its `manual:` block
+permits this caller to start it at all, and, for `SignalWithStart` delivering
+to an entity that already exists, whether the entity's own `signals:` policy
+permits this sender's delivery. Each is a second, independent decision, so a
+refusal there writes a second record under the same `rpc` name and resource,
+coded `POLICY_DENIED`, rather than leaving the admission ALLOW as the only
+trace of a request that was in fact turned away (picatz/flowstate#1889; the
+delivery half is #1883).
+
 **What `flow worker` records.** The same record, in the same sinks, for the
 four decisions a worker makes about a workload already running: whether a task
 may dispatch (the deployment's `--task-policy`), whether a secret reference may
