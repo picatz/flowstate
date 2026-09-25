@@ -153,6 +153,46 @@ check gets, during which its `needs` result was `success` even when it failed an
 lapsed on 2026-08-12 and the flag came off on 2026-08-31 (#1319), so its result now
 reaches `verdict` like every other planned job's.
 
+### A cancelled run does not read as an ordinary failure
+
+`concurrency.cancel-in-progress` cancels a run when a newer push lands on the
+same ref, so only the newest push is ever tested — see the `concurrency:`
+block's own comment for why `main` and a merge group are excluded from that
+(`main`'s runs are the record of whether the commit that landed was good, and
+cancelling a merge group strands the queue rather than saving anything). A
+pull request's non-`main`, non-queue ref keeps cancelling on purpose: testing
+a push nobody can merge any more is wasted runner time, and only the newest
+push's checks decide anything.
+
+That correctness left a legibility gap (#2030): a run cancelled by
+supersession and a run that genuinely failed both showed as the same red
+`verdict`, indistinguishable without fetching the log — costly on a branch
+where several pushes land close together, since every superseded run's
+`verdict` goes red the same way a real regression would. `verdict` still
+fails either way — a cancelled `plan` or a cancelled selected job established
+nothing, so there is still nothing to justify a pass with, and that is not
+weakened — but its `::error::` annotations now say that this was a
+cancellation rather than a failure, in the same place the Checks tab already
+renders them, so a reader learns that much without fetching a log.
+
+What the annotation cannot say is *why* the job was cancelled: `verdict` has
+no way to tell a newer push's supersession from a person cancelling the run
+by hand, from a runner fault, or from a job hitting its own
+`timeout-minutes` — GitHub reports that the same way, as `cancelled` rather
+than `timed_out`, and it is a cause a diff can genuinely trigger: `appearance`
+runs a test up to 900s inside its 15-minute job, and `plan`'s `go run
+./tools/gate -ci` has to finish inside 5. So the annotation names
+supersession as the common case on a pull request rather than as the
+established fact — main and a merge group are excluded from
+`cancel-in-progress` above, so a cancellation there is never supersession —
+and it stops short of calling the cancellation innocent, since a timeout is
+exactly a cancellation that *is* evidence about the diff. An early draft of
+this fix both asserted supersession outright and called every cancellation
+harmless; review on #2058 (the pull request that carried this fix, not
+#2030 the issue) caught that a check whose whole design is "never report a
+pass it cannot justify" should not turn around and report a cause, or an
+innocence, it cannot justify either.
+
 ### The merge queue
 
 `merge_group` is the mechanism #489's lesson deserved. GitHub builds the
@@ -735,3 +775,16 @@ listed.
   package question rather than the path one, for the reason `needsDocs` gives —
   the goldens record what the `cmd/flow` *binary* prints, so its dependency
   closure is the real source set.
+- **Reporting a supersession-cancelled `verdict` as `success` or `neutral`
+  (#2030).** A native Actions job's conclusion follows its steps' exit codes;
+  there is no exit code that means "neutral," and exiting 0 would make
+  `verdict` a required check reporting a pass over a `plan` it cannot
+  vouch for — exactly the failure-open shape point 1 of "Why the conditional
+  jobs are not the required checks" exists to close, and nothing about *why*
+  a job was cancelled changes what it proved. A distinct GitHub Checks-API
+  conclusion is reachable, but only by having the job call the API on itself
+  with `checks: write` — a permission this workflow does not otherwise grant
+  any job (see the `permissions:` block's own comment) and a mechanism this
+  repository cannot exercise against a real run before merging it. What
+  shipped instead keeps the exit code — and so the required check — exactly
+  as fail-closed as before, and only changes what the annotation says.

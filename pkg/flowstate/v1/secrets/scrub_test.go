@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 )
@@ -176,6 +177,235 @@ func Test_Scrubber_ScrubFailsClosedAtComparisonBound(t *testing.T) {
 	}
 
 	require.Equal(t, Redacted, scrubber.Scrub(strings.Repeat("A", 64<<10)))
+}
+
+// Test_Scrubber_ScrubBytesAgreesWithScrub is the differential proof #2032 asks
+// for: the []byte and string entry points must not be able to drift, since a
+// divergence between them is a divergence in redaction. It reuses every shape
+// [Test_Scrubber_Scrub] exercises — literal, repeated, encoded, and the
+// nothing-to-redact and empty cases — and asserts byte-for-byte equality
+// against [Scrubber.Scrub] rather than trusting the two implementations to
+// agree by inspection.
+func Test_Scrubber_ScrubBytesAgreesWithScrub(t *testing.T) {
+	t.Parallel()
+
+	const value = "tok-live-9f8e7d6c"
+	secret := NewSecret(NewRef("env", "TOKEN"), value)
+
+	texts := []string{
+		"authorization failed for " + value,
+		value + " and " + value,
+		`Get "https://api.example.com/v1?token=` + value + `": connection refused`,
+		"query=" + url.QueryEscape(value+"/+="),
+		"payload " + base64.StdEncoding.EncodeToString([]byte(value)),
+		"segment " + base64.RawURLEncoding.EncodeToString([]byte(value)),
+		"connection refused",
+		"",
+	}
+
+	for _, text := range texts {
+		t.Run(text, func(t *testing.T) {
+			scrubber := NewScrubber(secret)
+
+			wantString := scrubber.Scrub(text)
+			gotBytes := scrubber.ScrubBytes([]byte(text))
+
+			require.Equal(t, wantString, string(gotBytes),
+				"ScrubBytes and Scrub must answer identically for %q", text)
+		})
+	}
+}
+
+// Test_Scrubber_ScrubBytesReturnsTheInputUnchangedWhenNothingMatches pins the
+// zero-allocation contract at the type level: when nothing matches, the
+// returned slice must be the exact array the caller passed in, not a copy
+// that merely has the same contents.
+func Test_Scrubber_ScrubBytesReturnsTheInputUnchangedWhenNothingMatches(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "needle-value"))
+	text := []byte("nothing here to redact")
+
+	got := scrubber.ScrubBytes(text)
+	require.Equal(t, "nothing here to redact", string(got))
+
+	// Same array, not merely equal contents: mutating the answer must mutate
+	// text, which is only true if ScrubBytes allocated nothing and handed
+	// text straight back.
+	got[0] = 'X'
+	require.Equal(t, byte('X'), text[0], "ScrubBytes copied text instead of returning it unchanged")
+}
+
+// Test_Scrubber_ScrubBytesDoesNotAliasTextWhenSomethingMatches is the other
+// direction of the aliasing contract (invariant 7): a redacted result must
+// not share storage with the input it was built from, or a caller mutating
+// one would corrupt the other.
+func Test_Scrubber_ScrubBytesDoesNotAliasTextWhenSomethingMatches(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "needle-value"))
+	text := []byte("saw needle-value here")
+	original := string(text)
+
+	got := scrubber.ScrubBytes(text)
+	require.NotEqual(t, original, string(got), "the value should have been redacted")
+
+	got[0] = 'X'
+	require.Equal(t, original, string(text), "mutating the redacted result must not reach the original text")
+}
+
+// Test_Scrubber_ScrubBytesAllocatesNothingWhenNothingMatches is #2032's
+// acceptance criterion: a body with nothing to redact — the common shape for
+// an http reply — must cost zero allocations through ScrubBytes, where the
+// old `[]byte(scrubber.Scrub(string(respBody)))` spelling cost two full
+// copies unconditionally.
+func Test_Scrubber_ScrubBytesAllocatesNothingWhenNothingMatches(t *testing.T) {
+	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "tok-live-9f8e7d6c-4b21-4e5a-9c3d-7a1f08e6b2d4"))
+	text := []byte(strings.Repeat("the upstream answered without incident. ", 1000))
+
+	var got []byte
+	allocs := testing.AllocsPerRun(100, func() {
+		got = scrubber.ScrubBytes(text)
+	})
+
+	require.Zero(t, allocs, "scrubbing a body with nothing to redact must not allocate")
+	require.Same(t, &text[0], &got[0], "the zero-alloc result must be the same array as the input")
+}
+
+// Test_Scrubber_ScrubBytesRedactionStillHappens is the other direction
+// AllocsPerRun cannot cover on its own: a body that does carry a registered
+// value must still come back redacted, allocation or not.
+func Test_Scrubber_ScrubBytesRedactionStillHappens(t *testing.T) {
+	t.Parallel()
+
+	const value = "tok-live-9f8e7d6c-4b21-4e5a-9c3d-7a1f08e6b2d4"
+	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), value))
+	text := []byte("authorization failed for " + value)
+
+	got := scrubber.ScrubBytes(text)
+	require.NotContains(t, string(got), value, "the raw value survived scrubbing")
+	require.Equal(t, "authorization failed for "+Redacted, string(got))
+}
+
+// Test_Scrubber_ScrubBytesFailsClosedAtComparisonBound mirrors
+// [Test_Scrubber_ScrubFailsClosedAtComparisonBound]: the withholding behavior
+// on an exhausted comparison budget must be the same through both entry
+// points, which it is by construction here since ScrubBytes calls ScrubWith
+// directly rather than a second scan.
+func Test_Scrubber_ScrubBytesFailsClosedAtComparisonBound(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber()
+	for i := range 16 {
+		scrubber.AddValue(strings.Repeat("A", 1023) + string(rune('a'+i)))
+	}
+
+	got := scrubber.ScrubBytes(bytes.Repeat([]byte("A"), 64<<10))
+	require.Equal(t, Redacted, string(got))
+}
+
+// Test_Scrubber_ScrubBytesEmptyText covers the boundary Scrub itself covers
+// for strings: an empty slice is handed back unchanged rather than reaching
+// the matching loop at all.
+func Test_Scrubber_ScrubBytesEmptyText(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "value"))
+	var text []byte
+
+	got := scrubber.ScrubBytes(text)
+	require.Empty(t, got)
+}
+
+// Test_Scrubber_ScrubWithNeverReturnsASubrangeOfItsInput pins the contract
+// [Scrubber.ScrubBytes] depends on to tell "nothing matched" apart from "the
+// match consumed everything" using nothing but a pointer and a length: every
+// return is either text itself — same backing array, same length — or a
+// string sharing no storage with it at all. A prefix or other subrange would
+// pass a pointer-only check while quietly answering something shorter than
+// what ScrubBytes would then hand back, which is exactly the shape #2032's
+// review asked this to guard against.
+func Test_Scrubber_ScrubWithNeverReturnsASubrangeOfItsInput(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "needle-value"))
+
+	cases := []string{
+		"nothing to redact here",
+		"saw needle-value here",
+		"needle-value needle-value",
+	}
+	for _, text := range cases {
+		t.Run(text, func(t *testing.T) {
+			got := scrubber.ScrubWith(text, Redacted)
+			assertNeverASubrange(t, text, got)
+		})
+	}
+
+	// The withholding path answers Redacted for the whole text once the
+	// comparison budget is exhausted — a different return than "unchanged",
+	// and one this contract covers too.
+	t.Run("comparison budget exhausted", func(t *testing.T) {
+		budget := NewScrubber()
+		for i := range 16 {
+			budget.AddValue(strings.Repeat("A", 1023) + string(rune('a'+i)))
+		}
+		text := strings.Repeat("A", 64<<10)
+
+		got := budget.ScrubWith(text, Redacted)
+		require.Equal(t, Redacted, got)
+		assertNeverASubrange(t, text, got)
+	})
+}
+
+// assertNeverASubrange asserts that got is either text itself — identical
+// backing array and identical length — or shares no storage with it. A
+// pointer match with a shorter length would be a subrange, the one shape the
+// contract forbids and a pointer-only check could not tell apart from
+// "unchanged".
+func assertNeverASubrange(t *testing.T, text, got string) {
+	t.Helper()
+
+	if len(text) == 0 {
+		return
+	}
+	if unsafe.StringData(got) != unsafe.StringData(text) {
+		return // a fresh allocation, sharing nothing with text
+	}
+	require.Equal(t, len(text), len(got),
+		"ScrubWith returned a pointer-identical but shorter result — a subrange of its input, which its documented contract forbids")
+}
+
+// Test_Scrubber_ScrubBytesRefusesToAliasASubrangeThatSharesTextsBackingArray
+// tests scrubbedIsTextUnchanged directly, the defense-in-depth check
+// ScrubBytes applies before it will hand a caller back its own input slice.
+// It is exercised here because ScrubWith's real implementation never
+// produces the shape this guards against (see
+// Test_Scrubber_ScrubWithNeverReturnsASubrangeOfItsInput), so the only way to
+// prove the length check itself — rather than the pointer check alone — is
+// load-bearing is to construct that shape directly and confirm it is
+// refused, then confirm the length check is what refuses it.
+func Test_Scrubber_ScrubBytesRefusesToAliasASubrangeThatSharesTextsBackingArray(t *testing.T) {
+	t.Parallel()
+
+	text := []byte("hello world")
+
+	// The real shape: ScrubWith handing back its own argument, whole.
+	whole := unsafe.String(unsafe.SliceData(text), len(text))
+	require.True(t, scrubbedIsTextUnchanged(text, whole))
+
+	// The hypothetical, dangerous shape this guard exists for: the same
+	// backing array, but fewer bytes — a subrange sharing text's storage,
+	// which a pointer-only check cannot tell apart from "unchanged" and
+	// which would make ScrubBytes return the whole, unredacted text.
+	subrange := unsafe.String(unsafe.SliceData(text), len(text)-1)
+	require.False(t, scrubbedIsTextUnchanged(text, subrange),
+		"a subrange of text must never be treated as text unchanged")
+
+	// A genuinely fresh allocation, even one with identical content, must
+	// not be mistaken for text either.
+	fresh := strings.Clone(whole)
+	require.False(t, scrubbedIsTextUnchanged(text, fresh))
 }
 
 func Test_Scrubber_Contains(t *testing.T) {
