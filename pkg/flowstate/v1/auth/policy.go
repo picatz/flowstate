@@ -159,6 +159,40 @@ func (m *NamespaceMap) UnmarshalYAML(data []byte) error {
 	if decoded == nil {
 		decoded = map[string]string{}
 	}
+
+	// goccy/go-yaml treats a plain (unquoted) mapping key ending in `<<` as
+	// YAML's merge-key indicator, not just a key that is exactly `<<`:
+	// `0<<:`, `x<<<<:` and `<<:` itself all trip it, while `<<0` and `a<<b`
+	// — `<<` anywhere else in the key — do not (#1949, FuzzNamespaceMap).
+	// A namespace_map can end up with one anyway: `namespace_map:\n  0<<:` —
+	// no trailing newline — decodes here to map[string]string{"0<<": ""}
+	// rather than refusing, because the decoder's merge-key handling only
+	// rejects a non-mapping value once one is actually present, and at end
+	// of input there is none to examine yet. [NamespaceMap.MarshalYAML] then
+	// writes that back out as the ordinary two-line document `0<<: ""`,
+	// which decoding this same way refuses ("string was used where mapping
+	// is expected") — a document [FuzzNamespaceMap] can never accept twice
+	// for the same reason it can never marshal the map it just built, so it
+	// fatals rather than resolving one way or the other. There is also no
+	// quoting this type can marshal its way out of: every path back through
+	// this decoder reads an unquoted key ending in `<<` as the merge
+	// indicator regardless of how the source document spelled it, so a
+	// namespace ending that way cannot be represented, only mistaken for
+	// something it is not.
+	//
+	// Refusing it here, rather than leaving the ambiguity for whatever reads
+	// the map later, is the fail-closed answer AGENTS.md invariant 6 asks
+	// for at a boundary that decodes an operator's trust policy: a
+	// namespace_map entry this package cannot tell apart from YAML's own
+	// syntax is refused at load, the same way [rejectNullNamespaceMap] a few
+	// lines below refuses a different value this same key's ambiguity can
+	// produce.
+	for key := range decoded {
+		if strings.HasSuffix(key, "<<") {
+			return fmt.Errorf("namespace_map: %q ends with YAML's merge-key indicator (\"<<\") and cannot be used as a namespace_map key", key)
+		}
+	}
+
 	*m = decoded
 	return nil
 }

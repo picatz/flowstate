@@ -372,6 +372,98 @@ issuers:
 	}
 }
 
+// TestNamespaceMapRefusesAMergeKeyShapedKey is #1949: the weekly deep fuzz
+// tier's FuzzNamespaceMap found that a namespace_map key ending in YAML's
+// merge-key indicator (`<<`) decodes once but cannot be marshaled back out
+// and decoded again, because goccy/go-yaml treats an unquoted key ending in
+// `<<` as the merge directive on the way back in regardless of how the
+// source document spelled it. `namespace_map:\n  0<<:`, with no trailing
+// newline, is the shape the fuzzer minimized to: the decoder's merge-key
+// type check only runs once it has a value to examine, and at end of input
+// there is none yet, so the key slips through as a literal `"0<<"` — a state
+// [NamespaceMap.MarshalYAML] then cannot reproduce.
+func TestNamespaceMapRefusesAMergeKeyShapedKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		doc     string
+		wantErr string // "" means accepted
+	}{
+		{
+			name:    "the exact fuzz-found input: no trailing newline",
+			doc:     "0<<:",
+			wantErr: `"0<<" ends with YAML's merge-key indicator`,
+		},
+		{
+			name:    "the literal merge-key indicator itself, no trailing newline",
+			doc:     "<<:",
+			wantErr: `"<<" ends with YAML's merge-key indicator`,
+		},
+		{
+			name:    "the same key, quoted and with an ordinary value",
+			doc:     "\"<<\": ok\n",
+			wantErr: `"<<" ends with YAML's merge-key indicator`,
+		},
+		{
+			// Quoted, so this reaches auth.NamespaceMap.UnmarshalYAML's own
+			// suffix check rather than goccy/go-yaml's native merge-key
+			// refusal — the same way the quoted case above does — and proves
+			// the check is not narrowed to exactly two trailing characters.
+			name:    "several trailing angle brackets, quoted",
+			doc:     "\"prod<<<<\": ok\n",
+			wantErr: `"prod<<<<" ends with YAML's merge-key indicator`,
+		},
+		{
+			// Unquoted and with an ordinary value, so this is refused before
+			// reaching auth.NamespaceMap.UnmarshalYAML's own check at all —
+			// goccy/go-yaml's native merge-key handling gets there first,
+			// once a value is actually present to fail its own type check
+			// against. Asserted so that path is a decision on the record
+			// too: this package's own refusal is not the only thing standing
+			// between an operator and this shape, only the one that also
+			// covers the quirk where no value is present yet.
+			name:    "several trailing angle brackets, unquoted, refused natively",
+			doc:     "prod<<<<: ok\n",
+			wantErr: "string was used where mapping is expected",
+		},
+		{
+			// The negative direction: `<<` earlier in the key, not as its
+			// suffix, is what goccy/go-yaml does not special-case (confirmed
+			// against the decoder directly; see the comment on
+			// [NamespaceMap.UnmarshalYAML]), and MarshalYAML reproduces it
+			// unquoted without incident, so there is no round-trip hazard to
+			// refuse it for.
+			name: "a leading, non-suffix angle-bracket pair is not the indicator",
+			doc:  "<<prod: ok\n",
+		},
+		{
+			name: "an ordinary key round-trips",
+			doc:  "prod: ok\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m auth.NamespaceMap
+			err := m.UnmarshalYAML([]byte(tt.doc))
+
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+
+				// The property FuzzNamespaceMap checks: what decodes must
+				// encode, and decode again to the same map.
+				encoded, err := m.MarshalYAML()
+				require.NoError(t, err)
+				var again auth.NamespaceMap
+				require.NoError(t, again.UnmarshalYAML(encoded), "the YAML %q encoded to did not decode", encoded)
+				require.Equal(t, m, again)
+				return
+			}
+
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
 // TestDefaultAlgorithms checks that the default allowlist cannot be talked into
 // accepting an unsigned or symmetric token, and that a caller cannot change it
 // for everyone else.
