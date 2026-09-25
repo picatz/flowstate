@@ -890,7 +890,8 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 // call: (whose declared outputs live in another file this model does not
 // hold, a separate piece of work from #322's first slice).
 //
-// A wait's three spellings — `sleep:`, `wait_until:`, `wait_for_signal:` —
+// A wait's spellings — `sleep:`, `wait_until:`, `wait_for_signal:`, and
+// `wait_for_signals:` —
 // only sometimes populate a dedicated *entry field: the fenced/expression form
 // does, the literal and scalar forms do not (see sleepEntry's doc), so
 // [parsedStep.hasKey] is what catches every spelling alike. What
@@ -937,6 +938,16 @@ func constructOutputNode(target *parsedStep) *v1.Node {
 			}
 		}
 		return &v1.Node{Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Signal{Signal: signal}}}}
+
+	case target.waitForSignalsEntry != nil || target.hasKey("wait_for_signals"):
+		batch := &v1.SignalBatch{}
+		if len(target.waitShapingEntries) > 0 {
+			batch.Outputs = make(map[string]*v1.Value, len(target.waitShapingEntries))
+			for _, e := range target.waitShapingEntries {
+				batch.Outputs[e.key] = v1.NewLiteral(true)
+			}
+		}
+		return &v1.Node{Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_SignalBatch{SignalBatch: batch}}}}
 
 	default:
 		return nil

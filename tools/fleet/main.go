@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"os"
@@ -702,41 +703,116 @@ func tightestMemoryFree(dirs []string, maxFile, currentFile string) (uint64, boo
 // counting it as headroom is how this tool would dispatch a lane into an OOM
 // kill (Codex, #1134).
 //
-// # Why this level's own floor is the whole answer
-//
-// It reads `memory.min` here and nowhere else, and that is a correctness
-// argument rather than a shortcut. In cgroup v2 a descendant's *effective* min
-// is capped by its ancestors': protection is handed down, so a child under a
-// parent declaring zero has no hard protection however large its own number is,
-// and the sum of every descendant's effective min cannot exceed this level's.
-// So this level's configured floor is already an upper bound on everything
-// protected in its subtree, and an upper bound is exactly what is wanted —
-// overstating the protection understates the headroom, which is the direction a
-// dispatch budget should be wrong in.
-//
-// This replaced a bounded walk over every descendant, which summed *configured*
-// floors and therefore counted protection the kernel would not honour: under a
-// zero-min ancestor it turned 7 GiB of headroom into 3 and could restore the
-// zero-lane reading this whole change exists to remove (Codex, #1134). The walk
-// drew four separate findings — a v1 host it defeated, a bound on directory
-// reads rather than directory entries, a budget reset per ancestor, and a probe
-// that could not tell absence from an I/O error — and every one of them was a
-// property of machinery that did not need to exist.
+// For a cgroup's own memory.max, children are protected from reclaim caused by
+// allocations in their siblings even when this level's memory.min is zero.
+// The inactive-file figure is hierarchical, so its matching protection must be
+// hierarchical too. Summing configured descendant floors can overstate the
+// effective protection, but that only understates headroom — the safe direction
+// for a dispatch budget. The walk is bounded and every incomplete reading fails
+// closed rather than authorizing a lane against memory that may be protected.
 func evictableFile(dir string) uint64 {
 	cache := reclaimableFile(dir)
 	if cache == 0 {
 		return 0
 	}
 
-	protected, _, established := protectionAt(dir)
+	protected, present, established := protectionAt(dir)
 	if !established {
 		// Fail closed. The old, conservative reading — every byte of usage
 		// counted as held — is exactly what a level whose protection could not
 		// be read deserves.
 		return 0
 	}
+	if present {
+		var complete bool
+		protected, complete = protectedInSubtree(dir, protected, cache)
+		if !complete {
+			return 0
+		}
+	}
 
 	return cache - min(cache, protected)
+}
+
+// protectedInSubtree conservatively totals configured memory.min floors below
+// dir. At most this many directory entries may be observed from the cgroup
+// tree; reaching the bound or failing any read makes the caller count no
+// cache as evictable.
+//
+// This does not use [filepath.WalkDir]: it calls [os.ReadDir] per directory,
+// which reads and sorts an entire directory's entries before invoking the
+// walk callback even once — so a single delegated directory holding more
+// entries than maxEntries is fully materialized in memory before the callback
+// gets a chance to refuse it. A count enforced after the unbounded read is a
+// reporting limit, not a work limit (AGENTS.md invariant 5). Reading each
+// directory through [os.File.ReadDir] in bounded batches instead keeps the
+// work actually performed under the same bound the count reports.
+func protectedInSubtree(root string, protected, cache uint64) (uint64, bool) {
+	const (
+		maxEntries = 4096
+		batchSize  = 256
+	)
+
+	protected = min(protected, cache)
+
+	entries := 0
+	dirs := []string{root}
+	for len(dirs) > 0 {
+		dir := dirs[len(dirs)-1]
+		dirs = dirs[:len(dirs)-1]
+
+		f, err := os.Open(dir)
+		if err != nil {
+			return protected, false
+		}
+
+		for {
+			batch, readErr := f.ReadDir(batchSize)
+			for _, entry := range batch {
+				entries++
+				if entries > maxEntries {
+					f.Close()
+					return protected, false
+				}
+				if !entry.IsDir() {
+					continue
+				}
+
+				path := filepath.Join(dir, entry.Name())
+				floor, present, established := protectionAt(path)
+				if !established {
+					f.Close()
+					return protected, false
+				}
+				if present {
+					protected += min(floor, cache-protected)
+				}
+				if protected == cache {
+					// Every reachable byte of cache is already accounted for,
+					// which is the same early stop [fs.SkipAll] gave the
+					// WalkDir version: the rest of the subtree cannot change
+					// the answer, so the walk is complete rather than
+					// abandoned.
+					f.Close()
+					return protected, true
+				}
+				dirs = append(dirs, path)
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				f.Close()
+				return protected, false
+			}
+			if len(batch) == 0 {
+				break
+			}
+		}
+		f.Close()
+	}
+
+	return protected, true
 }
 
 // protectionAt is what one level declares with `memory.min`, and whether that
