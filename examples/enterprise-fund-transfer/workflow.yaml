@@ -78,6 +78,19 @@ inputs:
     description: unique to this transfer request, sent as the ledger's Idempotency-Key header so a retried step converges instead of moving money twice
     example: transfer-2026-08-06-0001
     min_len: 8
+  # Kept declared, accepted, and ignored rather than removed: `flow breaking`
+  # refuses to shrink a workflow's declared inputs, since a caller already
+  # passing this via `with:` would break at their next compile. Removing it
+  # was also never the fix - a caller controlling the threshold from `inputs:`
+  # is the vulnerability, and an input a caller may still pass is still an
+  # input a caller controls, whatever this workflow does with the value. The
+  # gate below reads `vars.approval_threshold_cents` and never this one.
+  approval_threshold_cents:
+    type: int
+    required: true
+    description: accepted for compatibility and not read; the enforced threshold is `vars.approval_threshold_cents`, which only this file's own review can change
+    example: 1000000
+    must: this >= 0
 # Who may deliver `transfer-approved` at all - a claim, not a named
 # individual, because a treasury desk is a team rather than one person. A
 # sender satisfying this claim is authorized to approve any transfer this

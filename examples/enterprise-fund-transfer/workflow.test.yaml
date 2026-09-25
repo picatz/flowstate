@@ -1,12 +1,14 @@
-# Seven cases. The first three are the shape money actually has to get
+# Nine cases. The first three are the shape money actually has to get
 # right — a small transfer clearing on its own, a large one clearing once a
 # genuinely qualifying `sender:` approves it (#207 slice 2: `flow test`
 # checks a scripted `sender:` against `signals:` through the same
 # `v1.SignalPolicyCheck` the server calls, so this reaches `debit` for real
 # now, not merely "the shape that does not depend on a real sender"), and a
-# settlement failure taking back what already moved. The rest are refusal
-# paths: rejected, expired, an unattested/wrong-claim sender refused before
-# the signal is ever delivered (so the gate simply times out, same as
+# settlement failure taking back what already moved. A fourth proves the
+# input this file's own `approval_threshold_cents` keeps declared, accepted,
+# and ignored (see workflow.yaml) cannot itself raise the gate. The rest are
+# refusal paths: rejected, expired, an unattested/wrong-claim sender refused
+# before the signal is ever delivered (so the gate simply times out, same as
 # nobody answering), and a malformed payload. The starter's own self-approval
 # being refused is exercised durably (engine/examples_durable_test.go,
 # engine/run_identity_test.go) — `flow test` has no concept of "who ran this
@@ -15,9 +17,11 @@
 # that.
 edition: v2026.3
 
-# Stated once for every case (issue #416). Both accounts are the same transfer
-# throughout; only the amount and the idempotency key change, so each case sets
-# just those two. The treasury-approver `sender:` is the
+# Stated once for every case (issue #416). Both accounts and the declared,
+# ignored `approval_threshold_cents` input (see workflow.yaml: the enforced
+# threshold is `vars.approval_threshold_cents` now, not this) are the same
+# transfer throughout; only the amount and the idempotency key change, so each
+# case sets just those two. The treasury-approver `sender:` is the
 # desk that approves above the threshold, inherited by every signal that does
 # not name its own (the wrong-claim case below names its own and keeps it). The
 # `log` stub answers `request`'s log line, which carries no assertion.
@@ -25,6 +29,7 @@ defaults:
   inputs:
     from_account_id: acct-treasury-001
     to_account_id: acct-supplier-042
+    approval_threshold_cents: 1000000
   sender:
     subject: treasury-lead@example.com
     issuer: https://issuer.example.com
@@ -57,6 +62,38 @@ tests:
       outputs:
         decision: transferred
         debit_reference: dbt-1
+
+  - name: a caller-supplied approval_threshold_cents cannot raise the real gate
+    workflow: ./workflow.yaml
+    inputs:
+      amount_cents: 5000000
+      approval_threshold_cents: 9000000
+      idempotency_key: transfer-2026-08-06-0009
+    signals:
+      - name: transfer-approved
+        payload:
+          approved: true
+    stubs:
+      - step: debit
+        returns:
+          reference: dbt-9
+      - step: credit
+        returns:
+          reference: crd-9
+      - step: notify_settlement
+        returns: {}
+    expect:
+      # The proof this case exists for: an amount above the real, workflow-owned
+      # threshold still reaches `approval` even though the caller's own
+      # `approval_threshold_cents` (9,000,000) is well above `amount_cents`. If
+      # `over_threshold` ever read the input again instead of `vars:`, this run
+      # would take the ungated shape the first case above does instead —
+      # `ran` would drop `approval`, `approval_outcome`, and `refusal` entirely.
+      ran: [request, over_threshold, approval, approval_outcome, cleared_to_move, refusal, debit, credit, notify_settlement]
+      others: skipped
+      outputs:
+        decision: transferred
+        debit_reference: dbt-9
 
   - name: a settlement failure after both legs cleared undoes credit then debit
     workflow: ./workflow.yaml
