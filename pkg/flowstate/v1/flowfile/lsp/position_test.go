@@ -327,6 +327,30 @@ func TestStoreRejectsStaleEdits(t *testing.T) {
 	assert.Equal(t, "name: reopened\n", reopened.text)
 }
 
+// TestStoreCloseWakesWaiters covers the acceptance criterion closest to a
+// regression a reviewer would miss: close is the one mutation that can take a
+// document away, so [documentStore.await] must never be left blocked on a
+// channel close stopped closing.
+func TestStoreCloseWakesWaiters(t *testing.T) {
+	t.Parallel()
+
+	var store documentStore
+	uri := lsp.DocumentURI("file:///wake.yaml")
+	store.open(uri, 1, "name: one\n", nil)
+
+	store.mu.Lock()
+	settled := store.settledLocked()
+	store.mu.Unlock()
+
+	store.close(uri)
+
+	select {
+	case <-settled:
+	default:
+		t.Fatal("close returned without waking a waiter blocked on the store's settled channel")
+	}
+}
+
 // TestStoreIgnoresARangeEditWithNothingToSpliceInto covers the case that makes
 // ordering an open against the stored version safe for an incremental client.
 //
