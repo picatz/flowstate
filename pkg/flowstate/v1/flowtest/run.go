@@ -892,7 +892,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// in a witness in the clear. The taint is decided at load, by reference
 	// rather than by inspecting a value ([withheldFrom]), and this is where it
 	// becomes the one redaction set every surface of this case already shares.
-	sensitive = sensitive.WithValues(vars.withheld.text...)
+	//
+	// Both spellings for the same reason as entrySecretMaterial two lines up
+	// (Codex): `casePosture` already carries `vars.withheld.text` through
+	// `bothSpellings`, and #2041 widened that text to include a literal
+	// secret-seeded var, not only a computed one, so a literal seed holding a
+	// tab, a newline, a quote or a backslash needs the identical treatment
+	// once this rebuild replaces the posture that already had it.
+	sensitive = sensitive.WithValues(bothSpellings(vars.withheld.text)...)
 
 	// The posture widens to the case's own set here, which is a superset of what
 	// it was: `sensitive` now carries the file's withheld material as well as the

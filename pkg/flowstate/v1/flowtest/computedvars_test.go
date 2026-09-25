@@ -819,6 +819,66 @@ outputs: {}
 	assert.Contains(t, rendered, `prefix-[redacted]`)
 }
 
+// TestACrossCaseLiteralSeedSurvivesEscapedAfterInputBinding is the escaping
+// half of #2041's cross-case fix, on the same gap as the two tests above:
+// `vars.withheld.text` (which now includes a literal secret-seeded var, not
+// only a computed one) is added to the run's own posture without
+// [bothSpellings], so a check witness rendering it with Go's `%q` disclosed
+// the escaped spelling for a case that never named the secret itself.
+func TestACrossCaseLiteralSeedSurvivesEscapedAfterInputBinding(t *testing.T) {
+	t.Parallel()
+
+	// A tab, for the same reason the entry-secret tests above use one: %q
+	// rewrites it to a different byte sequence than the raw material.
+	const token = "sk-live\tcrosscase-6602"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: forwarder
+inputs:
+  tag:
+    type: string
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.tag}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "vars:\n"+
+		"  token: \"sk-live\\tcrosscase-6602\"\n"+
+		"tests:\n"+
+		"  - name: the case that holds the secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:VENDOR_TOKEN: ${vars.token}\n"+
+		"    expect:\n"+
+		"      outputs: {}\n"+
+		"  - name: the case that never named the secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    inputs:\n"+
+		"      tag: ${vars.token}\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.echo.value == 'nope'\n"+
+		"          because: false on purpose, so the post-run witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+	c := report.GetCases()[1]
+	require.Equal(t, "the case that never named the secret", c.GetName())
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, token, "the raw plaintext reached a post-run witness")
+	assert.NotContains(t, rendered, `sk-live\tcrosscase-6602`,
+		"a var seeded from another case's `secrets:` printed its %q-escaped spelling in the clear (#2041)")
+	assert.Contains(t, rendered, `prefix-[redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
 func TestATaintedStructuredLeafIsWithheldFromStubDiagnostics(t *testing.T) {
 	t.Parallel()
 
