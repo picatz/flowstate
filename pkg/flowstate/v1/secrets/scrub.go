@@ -283,6 +283,13 @@ func (s *Scrubber) Scrub(text string) string {
 // matching would exceed its comparison budget, it returns [Redacted] for the
 // whole text rather than risk spending unbounded work on attacker-controlled
 // common prefixes.
+//
+// text is never retained: every return is either text itself, unmodified and
+// exactly as long — never a prefix or other subrange sharing its storage —
+// or a freshly built string that shares no storage with text at all.
+// [Scrubber.ScrubBytes] depends on that exact contract to know, from a
+// pointer comparison alone, whether it may hand a caller its own input slice
+// back; see TestScrubWithNeverReturnsASubrangeOfItsInput.
 func (s *Scrubber) ScrubWith(text, replacement string) string {
 	if text == "" {
 		return text
@@ -403,13 +410,30 @@ func (s *Scrubber) ScrubBytes(text []byte) []byte {
 
 	view := unsafe.String(unsafe.SliceData(text), len(text))
 	scrubbed := s.ScrubWith(view, Redacted)
-	if unsafe.StringData(scrubbed) == unsafe.SliceData(text) {
+	if scrubbedIsTextUnchanged(text, scrubbed) {
 		// ScrubWith found nothing and handed back the exact string it was
 		// given, so this is the same array text already is.
 		return text
 	}
 
 	return []byte(scrubbed)
+}
+
+// scrubbedIsTextUnchanged reports whether scrubbed is text's own content,
+// verbatim: the same backing array *and* the same length. Both must hold
+// before [Scrubber.ScrubBytes] may hand text itself back instead of copying.
+//
+// The pointer alone identifies the same backing array, but not how much of
+// it scrubbed claims as its answer. [Scrubber.ScrubWith]'s documented
+// contract is that it never returns a subrange sharing text's storage — only
+// the whole of it or a fresh allocation — so the length should always agree
+// once the pointer does. It is checked anyway, on the redaction path,
+// because a future ScrubWith that ever did return such a subrange would
+// otherwise make ScrubBytes hand back the *whole*, unredacted text on the
+// strength of a pointer match alone. See
+// TestScrubBytesRefusesToAliasASubrangeThatSharesTextsBackingArray.
+func scrubbedIsTextUnchanged(text []byte, scrubbed string) bool {
+	return unsafe.StringData(scrubbed) == unsafe.SliceData(text) && len(scrubbed) == len(text)
 }
 
 // Contains reports whether text holds any registered value. Use it to assert that

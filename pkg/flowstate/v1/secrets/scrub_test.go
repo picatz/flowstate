@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/stretchr/testify/require"
 )
@@ -314,6 +315,97 @@ func Test_Scrubber_ScrubBytesEmptyText(t *testing.T) {
 
 	got := scrubber.ScrubBytes(text)
 	require.Empty(t, got)
+}
+
+// Test_Scrubber_ScrubWithNeverReturnsASubrangeOfItsInput pins the contract
+// [Scrubber.ScrubBytes] depends on to tell "nothing matched" apart from "the
+// match consumed everything" using nothing but a pointer and a length: every
+// return is either text itself — same backing array, same length — or a
+// string sharing no storage with it at all. A prefix or other subrange would
+// pass a pointer-only check while quietly answering something shorter than
+// what ScrubBytes would then hand back, which is exactly the shape #2032's
+// review asked this to guard against.
+func Test_Scrubber_ScrubWithNeverReturnsASubrangeOfItsInput(t *testing.T) {
+	t.Parallel()
+
+	scrubber := NewScrubber(NewSecret(NewRef("env", "T"), "needle-value"))
+
+	cases := []string{
+		"nothing to redact here",
+		"saw needle-value here",
+		"needle-value needle-value",
+	}
+	for _, text := range cases {
+		t.Run(text, func(t *testing.T) {
+			got := scrubber.ScrubWith(text, Redacted)
+			assertNeverASubrange(t, text, got)
+		})
+	}
+
+	// The withholding path answers Redacted for the whole text once the
+	// comparison budget is exhausted — a different return than "unchanged",
+	// and one this contract covers too.
+	t.Run("comparison budget exhausted", func(t *testing.T) {
+		budget := NewScrubber()
+		for i := range 16 {
+			budget.AddValue(strings.Repeat("A", 1023) + string(rune('a'+i)))
+		}
+		text := strings.Repeat("A", 64<<10)
+
+		got := budget.ScrubWith(text, Redacted)
+		require.Equal(t, Redacted, got)
+		assertNeverASubrange(t, text, got)
+	})
+}
+
+// assertNeverASubrange asserts that got is either text itself — identical
+// backing array and identical length — or shares no storage with it. A
+// pointer match with a shorter length would be a subrange, the one shape the
+// contract forbids and a pointer-only check could not tell apart from
+// "unchanged".
+func assertNeverASubrange(t *testing.T, text, got string) {
+	t.Helper()
+
+	if len(text) == 0 {
+		return
+	}
+	if unsafe.StringData(got) != unsafe.StringData(text) {
+		return // a fresh allocation, sharing nothing with text
+	}
+	require.Equal(t, len(text), len(got),
+		"ScrubWith returned a pointer-identical but shorter result — a subrange of its input, which its documented contract forbids")
+}
+
+// Test_Scrubber_ScrubBytesRefusesToAliasASubrangeThatSharesTextsBackingArray
+// tests scrubbedIsTextUnchanged directly, the defense-in-depth check
+// ScrubBytes applies before it will hand a caller back its own input slice.
+// It is exercised here because ScrubWith's real implementation never
+// produces the shape this guards against (see
+// Test_Scrubber_ScrubWithNeverReturnsASubrangeOfItsInput), so the only way to
+// prove the length check itself — rather than the pointer check alone — is
+// load-bearing is to construct that shape directly and confirm it is
+// refused, then confirm the length check is what refuses it.
+func Test_Scrubber_ScrubBytesRefusesToAliasASubrangeThatSharesTextsBackingArray(t *testing.T) {
+	t.Parallel()
+
+	text := []byte("hello world")
+
+	// The real shape: ScrubWith handing back its own argument, whole.
+	whole := unsafe.String(unsafe.SliceData(text), len(text))
+	require.True(t, scrubbedIsTextUnchanged(text, whole))
+
+	// The hypothetical, dangerous shape this guard exists for: the same
+	// backing array, but fewer bytes — a subrange sharing text's storage,
+	// which a pointer-only check cannot tell apart from "unchanged" and
+	// which would make ScrubBytes return the whole, unredacted text.
+	subrange := unsafe.String(unsafe.SliceData(text), len(text)-1)
+	require.False(t, scrubbedIsTextUnchanged(text, subrange),
+		"a subrange of text must never be treated as text unchanged")
+
+	// A genuinely fresh allocation, even one with identical content, must
+	// not be mistaken for text either.
+	fresh := strings.Clone(whole)
+	require.False(t, scrubbedIsTextUnchanged(text, fresh))
 }
 
 func Test_Scrubber_Contains(t *testing.T) {
