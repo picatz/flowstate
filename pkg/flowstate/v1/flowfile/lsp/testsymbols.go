@@ -116,8 +116,8 @@ func (p *keyPathTracker) advance(line string) []trackedKey {
 		*p = (*p)[:len(*p)-1]
 	}
 	enclosing := *p
-	if match := keyLine.FindStringSubmatch(line); match != nil {
-		*p = append(*p, trackedKey{indent: indent, key: match[3]})
+	if m, ok := scanKeyLine(line); ok {
+		*p = append(*p, trackedKey{indent: indent, key: m.key})
 	}
 	return enclosing
 }
