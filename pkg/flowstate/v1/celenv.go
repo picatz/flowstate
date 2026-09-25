@@ -131,6 +131,12 @@ type Evaluator struct {
 	// so a loop body's `if:` is compiled once rather than once per iteration.
 	// See [Evaluator.EvalParsed] for what is cached and why only that path.
 	programs programCache
+
+	// extendedEnvs caches environments already extended with the ordered-map
+	// function bound to e.limits.Cost, so [Evaluator.Eval] and
+	// [Evaluator.EvalParsedWithCost] pay for that extension once per base
+	// environment rather than on every call. See [Evaluator.extendedEnvFor].
+	extendedEnvs extendedEnvCache
 }
 
 // envResult is a memoized environment construction, successful or not. Failures
@@ -139,6 +145,127 @@ type Evaluator struct {
 type envResult struct {
 	env *cel.Env
 	err error
+}
+
+// extendedEnvKey identifies an environment already extended with the
+// ordered-map function bound to one cost limit.
+//
+// Both halves matter. The environment, because Extend rebinds every function
+// it carries into a fresh dispatcher behind a fresh sync.Once (cel-go's own
+// comment on [cel.Env]'s sharedDispatcher field says as much: it is "built
+// once and reused across every Program() constructed from this env" — the
+// memoization Eval throws away every call by re-Extending, which is what
+// this cache restores). The cost limit, because [orderedMapEnvOption] closes
+// over it to install the cost estimator: a key without it would let two
+// evaluations under different [Limits.Cost] share one environment and
+// evaluate under whichever limit built it first — see
+// TestEvalDistinctCostLimitsDoNotShareAnExtendedEnv.
+type extendedEnvKey struct {
+	env  *cel.Env
+	cost uint64
+}
+
+// extendedEnvResult is a memoized env.Extend call, successful or not —
+// mirrors [envResult] so a caller that repeatedly hits a broken extension
+// does not repeatedly pay for the failure either.
+type extendedEnvResult struct {
+	env *cel.Env
+	err error
+}
+
+// maxExtendedEnvs bounds how many extended environments an [Evaluator]
+// retains.
+//
+// [Evaluator.Eval] and [Evaluator.EvalParsedWithCost] are exported: an
+// embedder can call either with any *cel.Env, so unlike e.envs — whose key
+// space checkLibraries bounds to 2^11 library subsets before a key can even
+// be formed — this cache's key space is caller-controlled and needs its own
+// cap (invariant 5). Past the cap nothing is stored and the call pays the
+// uncached env.Extend cost, the same way envCache in flowfile/celcheck.go
+// already fails when it is full.
+//
+// Measured, not guessed: runtime.MemStats around 2,000 extensions of one
+// base environment showed ~10.4 KiB of heap retained and ~91 allocations
+// paid per extension. 256 entries bounds this cache at roughly 2.7 MiB worst
+// case — generous
+// slack over what the tree itself ever produces (a handful of profile and
+// library-set environments, times the one cost limit each [Evaluator] is
+// constructed with), sized for the exported surface rather than the in-tree
+// call sites, which never approach it.
+const maxExtendedEnvs = 256
+
+// extendedEnvCache is a mutex-guarded, capacity-bounded map of extended
+// environments. The zero value is ready to use, matching [programCache]'s own
+// idiom.
+//
+// No eviction: past the cap a miss simply is not stored, so every hit this
+// cache ever returns was stored once and never displaced. Invariant 4 needs
+// exactly that — a memo an evaluated workflow expression depends on must not
+// change answers depending on insertion order or timing, and an LRU would
+// make "is this cached" a function of recent traffic.
+type extendedEnvCache struct {
+	mu    sync.Mutex
+	byKey map[extendedEnvKey]*extendedEnvResult
+}
+
+// get returns the cached extension for key, if any.
+func (c *extendedEnvCache) get(key extendedEnvKey) (*extendedEnvResult, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	res, ok := c.byKey[key]
+	return res, ok
+}
+
+// put stores res for key while there is room, and reports the result the
+// caller should use — the one already stored under key when another
+// goroutine won the race to store first, res unchanged otherwise (stored or,
+// past the cap, not). Storing over an existing key never happens: get is
+// always checked first, and every caller that misses builds independently,
+// so at most the loser's env.Extend is wasted — the same trade programKey's
+// own doc accepts for a racing program compile.
+func (c *extendedEnvCache) put(key extendedEnvKey, res *extendedEnvResult) *extendedEnvResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if existing, ok := c.byKey[key]; ok {
+		return existing
+	}
+	if len(c.byKey) >= maxExtendedEnvs {
+		return res
+	}
+	if c.byKey == nil {
+		c.byKey = make(map[extendedEnvKey]*extendedEnvResult)
+	}
+	c.byKey[key] = res
+	return res
+}
+
+// len reports how many extensions the cache holds, for tests that assert the
+// bound.
+func (c *extendedEnvCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.byKey)
+}
+
+// extendedEnvFor returns env extended with the ordered-map function bound to
+// e.limits.Cost, building and memoizing the extension at most once per (env,
+// cost) pair — see [extendedEnvKey]. Every caller of env.Extend in this file
+// goes through here; extending it ad hoc anywhere else would reintroduce the
+// per-call rebinding this cache exists to remove (invariant 2).
+func (e *Evaluator) extendedEnvFor(env *cel.Env) (*cel.Env, error) {
+	key := extendedEnvKey{env: env, cost: e.limits.Cost}
+	if res, ok := e.extendedEnvs.get(key); ok {
+		return res.env, res.err
+	}
+
+	ext, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
+	res := &extendedEnvResult{env: ext}
+	if err != nil {
+		res = &extendedEnvResult{err: &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}}
+	}
+	stored := e.extendedEnvs.put(key, res)
+	return stored.env, stored.err
 }
 
 // EvaluatorOption configures an [Evaluator].
@@ -245,9 +372,9 @@ func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activa
 	if err != nil {
 		return nil, &ExpressionError{Err: fmt.Errorf("prepare expression: %w", err)}
 	}
-	programEnv, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
+	programEnv, err := e.extendedEnvFor(env)
 	if err != nil {
-		return nil, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
+		return nil, err
 	}
 	prg, err := programEnv.Program(ordered, e.limits.programOptions()...)
 	if err != nil {
@@ -357,9 +484,9 @@ func (e *Evaluator) EvalParsedWithCost(ctx context.Context, env *cel.Env, parsed
 	key := programKey{env: env, parsed: parsed}
 	prg, ok := e.programs.get(key)
 	if !ok {
-		programEnv, err := env.Extend(orderedMapEnvOption(e.limits.Cost))
+		programEnv, err := e.extendedEnvFor(env)
 		if err != nil {
-			return nil, 0, &ExpressionError{Err: fmt.Errorf("prepare environment: %w", err)}
+			return nil, 0, err
 		}
 		prg, err = programEnv.Program(cel.ParsedExprToAst(orderMapComprehensions(parsed)), e.limits.programOptions()...)
 		if err != nil {
