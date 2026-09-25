@@ -32,13 +32,14 @@ type NamedOutput struct {
 
 	// Source is the [Value] that computes this output, when the node holds it
 	// directly as a written expression — a `value:` step's whole expression, or
-	// one entry of a `wait_for_signal:`'s `outputs:` shaping. nil for every other
-	// output: a task's declared fields are typed by a descriptor rather than an
-	// expression, and `results`, `state`, `timed_out`, `payload`, and `sender`
-	// are the engine's own record of what happened, not a value written in the
-	// file. A domain-inference reader — walking a shaping expression's literal
-	// leaves to bound a `switch:`'s discriminant — is the one consumer this
-	// field exists for; everything else can ignore it.
+	// one entry of a `wait_for_signal:`'s or `wait_for_signals:`'s `outputs:`
+	// shaping. nil for every other output: a task's declared fields are typed
+	// by a descriptor rather than an expression, and `results`, `state`,
+	// `timed_out`, `payload`, `sender`, `deliveries`, and `count` are the
+	// engine's own record of what happened, not a value written in the file. A
+	// domain-inference reader — walking a shaping expression's literal leaves
+	// to bound a `switch:`'s discriminant — is the one consumer this field
+	// exists for; everything else can ignore it.
 	Source *Value
 }
 
