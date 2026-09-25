@@ -285,8 +285,11 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 		// signal, exactly the gap this closes. Signalling immediately after
 		// Wait returns, before anything else runs in this goroutine, keeps
 		// the pid-reuse window [terminateProcess] already documents as
-		// small — no syscall or blocking call intervenes — rather than the
-		// arbitrary delay a caller of stop may otherwise introduce.
+		// narrow rather than the arbitrary delay a caller of stop may
+		// otherwise introduce: nothing here calls into the kernel or blocks
+		// between the two lines, so the only thing that can still widen it
+		// is the Go scheduler choosing this moment to preempt the goroutine
+		// — a possibility this narrows, not one it rules out.
 		terminateProcess(inst.proc, false)
 		close(inst.exited)
 
