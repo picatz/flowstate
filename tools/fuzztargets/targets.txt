@@ -59,6 +59,11 @@ FuzzSignalDeliveryDecode     pkg/flowstate/v1/engine        deep
 FuzzScanAgreesWithSplitFence pkg/flowstate/v1/flowfile      deep
 FuzzEscapeFencesRoundTrips   pkg/flowstate/v1/flowfile      deep
 
+# The alias inliner's byte-charge oracle (#2045): the charge must dominate
+# every byte the inliner builds. Deep only, for the budget reason the header
+# gives; the allocation-ceiling bomb tests are what the PR lane relies on.
+FuzzAliasInlinerChargeDominatesWhatItBuilds pkg/flowstate/v1/flowfile deep
+
 # The boundary parsers (#1721): what an operator, an identity provider, a
 # plugin process or a submitter feeds, where a panic is a denial of service
 # against a shared server. tools/fuzztargets/boundaries.txt names the parser
