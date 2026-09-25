@@ -245,6 +245,14 @@ var lspFuzzSeeds = []lspFuzzSeed{
 	// bindings live — the four names CLAUDE.md records the grammar binding
 	// bare, which completion and hover both have to resolve.
 	{"edition: v2026.3\nname: c\nsteps:\n- id: loop\n  for_each:\n    items: [1, 2]\n    as: n\n    steps:\n    - id: body\n      log:\n        message: ${n}\n", "n", 10, 20, 10, 21},
+	// A byte that is not UTF-8 ahead of a fence, on the line the fence is on.
+	// The parser replaces it with U+FFFD, three bytes for one, so the decoded
+	// text is longer than the source it came from and every position mapped
+	// through it by addition lands late — inside the emoji here, which is
+	// where the backwards range this target found in CI came from. Left in the
+	// corpus as well as written out as a test in parse_test.go, so the fuzzer
+	// keeps starting from the shape and not only from the one instance.
+	{"edition: v2026.3\nname: r\nsteps:\n- id: a\n  log:\n    message: \\Lé\xff${😀}\\n \n", "", 0, 0, 0, 0},
 	// A `call:` step, which is the one shape whose resolution wants a path this
 	// document does not have — so what it exercises is the refusal, on purpose.
 	{"edition: v2026.3\nname: k\nsteps:\n- id: a\n  call: ./other.yaml\n  with:\n    x: 1\n", "y", 6, 7, 6, 8},

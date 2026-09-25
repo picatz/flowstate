@@ -137,6 +137,82 @@ socket) or reach it some other way. Know this before either over-trusting a
 plugin ("it's sandboxed, right?") or over-building a containment layer that
 duplicates a property the worker already has.
 
+### SQL plugin deployment and migration
+
+`sql.query` and `sql.exec` now require the entire `dsn` input to be a host
+secret reference. Literal DSNs are rejected during validation and again before
+plugin dispatch. Move each existing DSN into the deployment's configured secret
+backend and write `${secret('provider:name')}` in the Flowfile; `flow fix` cannot
+do this safely because creating or authorizing deployment secret state is not a
+source rewrite.
+
+Upgrade the worker and `flowstate-plugin-sql` together. The host refuses an SQL
+manifest that does not assert the required-secret contract for both tasks, so a
+pre-policy SQL binary cannot continue under a newer worker even though other
+protocol-v3 plugins remain compatible.
+
+Credential source is not destination authorization. A worker loading the SQL
+plugin must also receive `--egress-policy` with `postgres` in `egress.schemes`
+and exact allow rules/networks/ports for the database. The host forwards that
+same operator-owned policy snapshot to the first-party SQL plugin, so a file
+replacement during startup cannot make HTTP and SQL enforce different bytes. A
+worker started without `--egress-policy` grants the default policy its own
+built-in HTTP task runs under, and the SQL plugin refuses to connect under it
+with a message naming the flag: a database destination is not something a
+deployment authorizes by not writing a file. That refusal does not stop the
+plugin from serving discovery and validation, so `flow plugins` and `flow tasks`
+still describe it. A malformed policy never reaches the plugin at all: `flow`
+refuses the file when it reads it, and the plugin host refuses the grant before
+it launches anything. The SQL plugin checks
+host and port rules before DNS, resolves
+and authorizes every address for every DSN host, pins that set, rechecks the
+actual TCP target immediately before each connection, requires verified TLS,
+and rejects Unix sockets and filesystem-reading connection options.
+Egress policy files are limited to 64 KiB. Besides bounding configuration work,
+this leaves room for the immutable base64 snapshot below Linux's per-string
+environment limit when the worker launches the plugin.
+
+Released SQL plugins no longer execute SQLite DSNs. Embedded SQLite grants the
+plugin worker-filesystem authority (including URI modes, symlinks, `ATTACH`, and
+`VACUUM INTO`) that a network egress policy cannot bound. Migrate those workflows
+to PostgreSQL rather than treating the plugin process as filesystem confinement.
+Finally, allow `sql.query` and `sql.exec` separately in task policy: read access
+does not imply the write capability.
+
+### Slack outbound plugin
+
+`slack.post` is the notification half of approval and human-in-the-loop flows.
+It posts bounded accessible text and optionally keeps an outcome in the request
+message's thread; it does not receive Slack interactions or authorize an
+approval. Verified inbound events bridging into Flowstate signals remain a
+separate control-plane concern.
+
+The entire `token` input must be a host-resolved secret reference such as
+`${secret('env:SLACK_BOT_TOKEN')}`. Destination authority comes from the worker's
+egress grant, and the actual HTTP client enforces DNS, address, port, redirect,
+TLS, credential/identity-aware CEL rules, and response bounds on it. A worker
+with no `--egress-policy` grants the default policy built-in HTTP runs under,
+which permits public HTTPS and therefore `slack.com:443`; a deployment that wants
+this plugin narrowed to that one destination — or stopped entirely — writes the
+policy, and `examples/plugins/slack/egress-policy.yaml` is that shape. A grant
+that cannot be read at all (no worker launched the process) still fails closed.
+Neither the Flowfile nor the plugin manifest grants that destination authority,
+and running the plugin as another process does not confine its ambient network
+or filesystem access.
+
+Every post also requires the host-attested production mode. Local rehearsal and
+unknown modes are refused before network access, because a preview that sends a
+real notification is not a safe rehearsal. Operators must allow `slack.post` in
+task policy independently from permitting the plugin binary to launch.
+
+Calls carry a workflow-supplied UUID as Slack's `client_msg_id`, but Slack does
+not document a complete deduplication guarantee. The plugin retries nothing
+internally: a definite 429 or initial-hop operator rate-limit refusal carries a
+bounded delay into the workflow retry mechanism, while connection loss,
+timeout, malformed acknowledgement, a rate limit after a redirect, and
+ambiguous server errors return non-retryable unknown outcomes. Inspect Slack
+before manually retrying one of those outcomes.
+
 ## The four-tier isolation model
 
 Each tier is a set of claims a security reviewer can check independently.
@@ -230,8 +306,39 @@ for it in as many words — admits everyone anonymously into one empty namespace
 which is Tier 0's model reachable over a socket rather than a weaker Tier 1a.
 Read the ticks below as claims about a server started with a policy.
 
-- ✅ The Flowstate API refuses every cross-tenant verb: one `ownedBy` check
-  covering `Get`/`List`/`Cancel`/`Terminate`/`Signal`/`Describe`, reported as
+An issuer entry may additionally restrict which control-plane actions its caller
+may perform. Actions use the schema-owned OAuth scope spellings advertised by the
+protected-resource metadata; `role` remains a descriptive audit label and grants
+nothing by itself:
+
+```yaml
+issuers:
+  - name: dashboard
+    issuer: https://idp.example.com
+    audiences: [https://flowstate.example.com/rpc]
+    role: reader
+    actions: [workload.read]
+    require:
+      - claim: client_id
+        any_of: [dashboard]
+  - name: ci
+    issuer: https://idp.example.com
+    audiences: [https://flowstate.example.com/rpc]
+    role: submitter
+    actions: [workload.run]
+    require:
+      - claim: client_id
+        any_of: [ci]
+```
+
+These disjoint entries let the dashboard inspect and CI submit while neither may
+terminate. `actions` omitted preserves the pre-action-policy behavior and adds no
+restriction; `actions: []` grants no control-plane action. Grants match exactly:
+`workload.run` does not imply cancel or terminate, and token `scope`/`scp` claims
+do not grant authority in this slice.
+
+- ✅ The Flowstate API refuses every cross-tenant verb: one shared addressing
+  gate checks Flowstate execution membership and then `ownedBy`, reported as
   `NotFound` — see [above](#read-this-before-you-share-a-temporal-namespace).
 - ✅ No schema field lets a caller name a namespace, a fairness weight, or a
   sender — a run's tenancy comes only from the authenticated caller, never
@@ -420,6 +527,70 @@ $ flow worker --tenant= --task-queue-prefix flowstate-run ...
 convenient way to keep them equal — a worker that spelled it differently would
 poll a queue nothing submits to, do nothing forever, and report nothing.
 
+### Identity egress: where the trust policy may fetch keys from
+
+Every OIDC discovery document and key set the trust policy names is fetched
+through an egress policy of its own, `auth.DefaultEgressPolicy`: https only,
+to public addresses only, because an issuer URL is operator-supplied and a
+discovery document's `jwks_uri` is *issuer*-supplied, so both are addresses an
+outside party gets a say in. A self-hosted identity provider is usually not a
+public address, and the refusal says which option admits it:
+
+```console
+$ flow auth check --auth-policy trust.yaml --token-file alice.jwt
+ERROR
+auth: issuer metadata or keys are unavailable: issuer "https://idp.local" fetch of
+http://127.0.0.1:8555/jwks.json blocked by identity egress policy: denied by
+egress policy: http://127.0.0.1:8555/jwks.json (scheme: "http" is not one of
+https); configure the trust policy's egress: section to allow this fetch: add
+`schemes: [http, https]` to admit a plain-http fetch (what a loopback rehearsal
+needs; a loopback address also needs `allow_loopback: true`)
+```
+
+The section is the trust policy's own `egress:` block, and its fields are the
+ones the worker's `--egress-policy` file takes:
+
+```yaml
+# An in-cluster identity provider (Keycloak, Dex, the Kubernetes API server):
+# private addresses admitted, https kept.
+egress:
+  allow_private_networks: true
+
+# A loopback rehearsal on a laptop: plain http on this machine only.
+egress:
+  schemes: [http, https]
+  allow_loopback: true
+```
+
+`allow_networks:` names one CIDR rather than a whole class, which is the
+narrower form for production. Link-local and cloud metadata addresses have no
+option, on purpose. The boundary stays default-deny; what the section changes
+is what this deployment's own identity provider is allowed to be.
+
+For local rehearsal or an air-gapped deployment, the policy can load a bounded
+JSON Web Key Set from disk instead. This performs no identity HTTP request and
+therefore needs no `egress:` exception:
+
+```console
+$ flow keys public --in ./issuer.pem --jwks > ./issuer.jwks
+```
+
+```yaml
+issuers:
+  - name: local-issuer
+    issuer: https://issuer.example.invalid
+    audiences: [http://127.0.0.1:9233]
+    namespace_claim: namespace
+    jwks_file: /absolute/path/to/issuer.jwks
+```
+
+`jwks_file` and `jwks_url` are mutually exclusive. The path must resolve to a
+regular file. Its contents are capped at 1 MiB, parsed at server startup, and
+never reread while that process is running. Replace it and restart the server to
+rotate keys; retain old public keys in the set for the overlap during which
+already-minted tokens remain valid. A relative path is resolved from the server
+process's working directory, so deployment units should prefer an absolute path.
+
 ### Bearer-token audiences are per surface
 
 A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical
@@ -486,14 +657,45 @@ your first deploy rather than while reading this document.
 ### Local development
 
 ```console
-$ temporal server start-dev
-$ flow worker --allow-unversioned-interpreter
-$ flow server --insecure-no-auth
+$ flow server dev
 ```
 
-Tier 0/1a boundary: this is the shared-server shape, but `--insecure-no-auth`
-means there is no tenancy to speak of — everyone is anonymous. Fine for a
-laptop; never a service that anyone but you can reach.
+That one command starts Temporal, the server, and a worker on loopback. By
+default it takes the same anonymous posture as `flow server
+--insecure-no-auth`, so there is no tenancy to speak of — everyone is anonymous.
+Fine for a laptop; never a service that anyone but you can reach.
+
+To rehearse the real bearer-token middleware, endpoint-bound audience, named
+principal, and namespace mapping without building a local identity server:
+
+```console
+$ flow server dev --auth
+```
+
+The startup banner prints a copyable `flow jwt sign` command and matching `flow
+run` and `flow list` commands carrying the resolved server address. The stack
+generates an ES256 private key in a mode-0700 temporary directory, writes a
+`jwks_file` trust policy beside it, and directs the bearer token there too so a
+normal shell umask cannot expose it through a shared working directory. It
+removes the directory at shutdown. With `--db ./flowstate.db`, it instead reuses
+the mode-0600 key and token location in `./flowstate.db.flowstate-auth/` so
+restarting the durable dev stack does not silently invalidate its credentials.
+The audience and printed client address follow the loopback endpoint the server
+actually bound, including an automatically selected port.
+
+This is authentication rehearsal, not an OAuth service or production issuer:
+there is no login, refresh, revocation, or automatic rotation. The generated
+token says it represents local subject `developer` in namespace `default`; the
+command is visible so you can change those claims deliberately. Move to `flow
+server --auth-policy ... --rpc-resource ...` and a discoverable organizational
+issuer for a shared deployment.
+
+Claims beyond subject, issuer, and namespace are not copied into durable run or
+signal-sender identity unless the server names them. Add repeatable
+`--identity-claim <name>` flags when a local `signals:` or `workload.claims[...]`
+rule needs to inspect a verified claim, just as on `flow server`; for example,
+the [authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
+uses `--identity-claim team`.
 
 ### Docker Compose
 
@@ -680,14 +882,14 @@ substitute boundary the way a container's published-port binding is.
 `flow server` answers `GET`/`HEAD /healthz` with `200` and an empty body —
 nothing else, deliberately: an unauthenticated endpoint that describes the
 deployment (version, config, dependency state) is reconnaissance served on
-request (`healthzHandler`, `cmd/flow/routing.go:118-126`). It is mounted in
+request (`healthzHandler`, `cmd/flow/routing.go:148-156`). It is mounted in
 two places:
 
 - On the **public** listener, unauthenticated, always — `serverHandler`,
   `cmd/flow/routing.go:94`.
 - On the **internal** listener, if `--internal-listen`
   (`FLOWSTATE_INTERNAL_ADDRESS`) names a loopback address — `internalHandler`,
-  `cmd/flow/routing.go:160`. The internal listener also carries `/debug/pprof/*`
+  `cmd/flow/routing.go:187`. The internal listener also carries `/debug/pprof/*`
   (`cmd/flow/routing.go:167-171`), which is why it has no default and is
   refused off loopback (`checkInternalListenAddress`,
   `cmd/flow/internallistener.go:79-90`): pprof can read this process's memory
@@ -697,8 +899,8 @@ two places:
 There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
-the SDK's eager `client.DialContext` (`cmd/flow/main.go:809`, wired through
-`temporalclient.Dial`, `pkg/flowstate/v1/temporalclient/temporalclient.go:175-187`)
+the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:240`,
+reached from `cmd/flow/main.go:254` through `temporalclient.Dial`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies
@@ -845,7 +1047,7 @@ are equally plaintext `httpGet` checks against the TLS-terminated port and
 fail the same way if left as they are. `exec` runs the command inside the
 container's own network namespace, which loopback is reachable from, and the
 internal listener never carries TLS or client-cert requirements of its own
-(`internalHandler`, `cmd/flow/routing.go:160`) regardless of what the public
+(`internalHandler`, `cmd/flow/routing.go:187`) regardless of what the public
 listener demands:
 
 ```yaml
@@ -1039,14 +1241,21 @@ tenant's namespace (`FlowstateServer`'s `Priority{FairnessKey: namespace}` —
 so it covers every task a run goes on to schedule and survives
 Continue-As-New. That part is verified and correctly wired.
 
-What it is **not** is a verified enforcement guarantee. Temporal marks
-`Priority`/fairness as an experimental SDK feature, and whether the key
-actually changes scheduling order — versus being carried and ignored — is a
-property of your Temporal server version and configuration, not of anything
-Flowstate controls. The honest claim is: **the key is set correctly; whether
-it is enforced is a property of your Temporal deployment.** Don't take "we set
-a fairness key" as "one tenant cannot crowd out another" without checking
-your Temporal version's fairness support.
+Temporal made Task Queue Priority and Fairness GA in Server 1.31+. Priority is
+enabled by default there; Fairness is not. A self-hosted deployment enables it
+with `matching.enableFairness: true` at Task Queue, Namespace, or cluster scope.
+Temporal Cloud enables it per Namespace, where it is a paid feature. Flowstate
+does not change either setting.
+
+This is still **not** an isolation guarantee. Fairness is weighted and
+approximate within each Task Queue partition, does not account for tasks already
+dispatched to workers, and is not guaranteed across Worker Deployment versions.
+Flowstate supplies the authenticated tenant as the key and leaves its weight at
+Temporal's default; deployment-side weight overrides and per-key rate limits
+remain operator controls. The honest claim is: **the key is set correctly;
+whether and how it is enforced is a property of your Temporal deployment.**
+Don't take "we set a fairness key" as "one tenant cannot crowd out another"
+without Server 1.31+ and Fairness enabled.
 
 For the volume dimension — one tenant submitting so many runs that Temporal
 itself falls over, as opposed to one tenant's runs sitting ahead of another's
@@ -1058,12 +1267,72 @@ correctly under load; this repo's own design bias (`CLAUDE.md`, "proto-first",
 "leaning into Temporal") is to surface what Temporal does rather than
 reimplement it, and this is exactly that call.
 
+Schedules are the one exception, because they are the one shape where Flowstate
+itself chooses the volume: a tenant writes a cadence once, and every firing after
+that starts a run under their fairness key with nobody present and no request for
+a rate limit to see. Two bounds close that, both constants in the root package
+beside the other bounds (`pkg/flowstate/v1/size.go`). `MinScheduleInterval` (one
+minute) is the fastest cadence a schedule may declare, refused by `flow validate`,
+by `flow schedule create` and by `CreateSchedule` with one sentence naming the
+value written and the floor; the check reads a cadence's seconds — `every:`, a
+seven-field expression's first field, `@every`, a calendar's `second:` — and,
+because a block's cadences are unioned, refuses two cadences on different
+seconds of the minute together, since it cannot evaluate whether they ever share
+one. `MaxSchedulesPerNamespace` (100) is how many schedules one tenant may hold,
+counted at `CreateSchedule` through the same listing `flow schedule list` reads
+and refused past it with `ResourceExhausted` naming the count. Neither is a
+flag: a deployment that needs a faster cadence for one workload should say so in
+an issue with the workload, since the floor exists precisely for the cadence
+nobody reviews. The count is read from Temporal's visibility store, which
+follows a create by a moment, so a burst of creates racing at the limit can
+each pass it; that is a few schedules over in a burst, not a way around the
+bound.
+
 That refusal is about *inbound* admission — runs arriving at `flow server` —
 and is unchanged. It is not in tension with the outbound bound described under
 [Per-host egress rate limits](#per-host-egress-rate-limits) below: no substrate
 control knows that some third-party API publishes a limit, so there is nothing
 there to surface rather than reimplement, and the bound that does exist for it
 is the API's own 429.
+
+## Telemetry resource identity
+
+Every exported span, metric, and log identifies the emitting binary with
+`service.name`, `service.version`, and a random `service.instance.id`. The
+instance ID is created once per process: all signal providers in one process
+share it, and a restart gets a new one. It is deliberately not derived from a
+hostname or PID, both of which can be shared or reused, and it is a version 4
+UUID — 122 bits of randomness and nothing else, rather than a version 7 whose
+leading bits would carry the process start time.
+
+The attribute is always set. Flowstate reads randomness through `crypto/rand`,
+which is documented never to return an error: if its source fails it crashes the
+program irrecoverably, and on Linux a source not yet seeded at early boot blocks
+in `getrandom(2)` instead. Either way Flowstate is never handed a failure it
+could degrade on, so there is no mode in which the attribute is omitted and a
+warning is logged.
+
+Flowstate also uses the OTel SDK's built-in detectors for `host.name`,
+`container.id` (when the platform exposes a supported cgroup container ID),
+`process.pid`, `process.executable.name`, `process.runtime.name`, and
+`process.runtime.version`. Missing host or container data is simply omitted.
+There is no Kubernetes API or downward-API detector here, so Flowstate does not
+claim `k8s.pod.*`, `k8s.deployment.*`, or other Kubernetes topology attributes.
+Set those explicitly in the deployment when they are useful and authoritative.
+
+`OTEL_RESOURCE_ATTRIBUTES` is merged last and therefore overrides both fixed
+defaults and detected string values, including `service.instance.id` and
+`host.name`; `OTEL_SERVICE_NAME` likewise overrides the built-in service name.
+This is the supported way for a deployment to provide more authoritative
+identity or topology. OTel parses resource attributes supplied through the
+environment as strings, so do not use it to replace typed attributes such as the
+integer-valued `process.pid`.
+
+The broad `resource.WithProcess` detector is intentionally not used. It exports
+the argument vector, which can contain values such as `--input token=...`, on
+every telemetry signal. Flowstate also omits the executable path, process owner,
+runtime description, and durable host ID: those values add private or
+unnecessarily long-lived identity without helping distinguish a running copy.
 
 ## Metrics
 
@@ -1096,7 +1365,7 @@ that speaks Connect RPC — `flow server` (`cmd/flow/main.go:923`), `flow server
 dev` (`cmd/flow/serverdev.go:724`), and every CLI/MCP client call
 (`cmd/flow/client.go:270`). `otelconnect.NewInterceptor()` is called with no
 options, so both its default instruments are active
-(`instruments.go:44-49`, `connectrpc.com/otelconnect@v0.9.0`):
+(`connectrpc.com/otelconnect/instruments.go:44-49`, `connectrpc.com/otelconnect@v0.9.0`):
 
 | Metric | Type | Unit | Labels | Meaning |
 | --- | --- | --- | --- | --- |
@@ -1107,7 +1376,7 @@ options, so both its default instruments are active
 | `rpc.server.responses_per_rpc` / `rpc.client.responses_per_rpc` | histogram | 1 | same as above | Messages sent per RPC |
 
 (`rpc.service`/`rpc.method` come from the Connect procedure path;
-`net.peer.*` from the connection's remote address — `attributes.go:48-83`,
+`net.peer.*` from the connection's remote address — `connectrpc.com/otelconnect/attributes.go:48-83`,
 same module.)
 
 **Plugin metrics**, from every plugin process a worker launches
@@ -1117,22 +1386,48 @@ same module.)
 | --- | --- | --- | --- | --- |
 | `flowstate.plugin.operation.duration` | histogram | s | `flowstate.plugin.name`, `flowstate.plugin.operation`, `flowstate.task.name` (when the operation is task-scoped), `flowstate.plugin.outcome` | Duration of one host-to-plugin operation (`launch`, `start`, `health`, `execute`) |
 | `flowstate.plugin.calls` | counter | — | same as above | One increment per operation, same attribute set as the duration it accompanies |
-| `flowstate.plugin.health.checks` | counter | — | `flowstate.plugin.name`, `flowstate.plugin.health.status` (`serving`, `not serving`, or `unreachable` — `plugin.go:87-99`; `unknown` is the pre-poll default and is never recorded, since an unspecified poll response is mapped to `not serving` before the metric is written) | One increment per health poll result (`plugin.go:353`, `plugin.go:385`) |
-| `flowstate.plugin.restarts` | counter | — | none | One increment per relaunch actually attempted, after the restart budget and backoff both let it through (`plugin.go:732`) |
-| `flowstate.plugin.launch.failures` | counter | — | none | One increment per failed plugin launch (`launch.go:93`) |
-| `flowstate.plugin.protocol.errors` | counter | — | none | One increment when a launch fails specifically on handshake — `ErrHandshake` or `ErrHandshakeTimeout` (`launch.go:96`) |
+| `flowstate.plugin.health.checks` | counter | — | `flowstate.plugin.name`, `flowstate.plugin.health.status` (`serving`, `not serving`, or `unreachable` — `HealthStatus.String`; `unknown` is the pre-poll default and is never recorded, since an unspecified poll response is mapped to `not serving` before the metric is written) | One increment per health poll result (`Plugin.CheckHealth`) |
+| `flowstate.plugin.restarts` | counter | — | `flowstate.plugin.name` | One increment per relaunch actually attempted, after the restart budget and backoff both let it through (`Plugin.restart`) |
+| `flowstate.plugin.launch.failures` | counter | — | `flowstate.plugin.name` | One increment per failed plugin launch (`launch`) |
+| `flowstate.plugin.protocol.errors` | counter | — | `flowstate.plugin.name` | One increment when a launch fails specifically on handshake — `ErrHandshake` or `ErrHandshakeTimeout` (`launch`) |
 
-The last three carry no labels at the call site — a launch failure or a
-protocol error happens before a plugin identity is necessarily known, and
-`restarts` is recorded without one either, so none of the three can be
-filtered by plugin name today; only the span each operation opens carries
-`flowstate.plugin.name` regardless of outcome. `flowstate.plugin.name` and
+All three carry `flowstate.plugin.name` at the call site — each records the
+plugin's installed name so an operator can tell which one is restarting or
+failing to launch. `flowstate.plugin.name` and
 `flowstate.task.name` are `ClassConfiguration` labels (bounded by which
 plugins/tasks a deployment installs, not by a caller) and every label passes
 through `pkg/flowstate/v1/metricschema` before reaching an instrument, which
 drops an unrecognized key and caps a runaway value's cardinality behind an
 `OverflowValue` sentinel rather than losing the measurement — see that
 package's doc comment for the full policy.
+
+**Task-execution metrics**, recorded by the shared task observation both the
+local and durable drivers call (`pkg/flowstate/v1/taskmetrics.go`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.task.duration` | histogram | s | `flowstate.task.name`, `flowstate.task.outcome`, `flowstate.driver`, `error.type` (on failure) | Duration of one task attempt, including a first attempt or retry |
+| `flowstate.task.executions` | counter | — | same as `flowstate.task.duration` | One increment per task attempt, with its terminal outcome |
+| `flowstate.task.retries` | counter | — | `flowstate.task.name`, `flowstate.driver` | One increment when an attempt after the first starts |
+
+`flowstate.task.retries` counts retries, not all attempts: a first attempt adds
+to executions and duration but not retries. A retry increments when its work
+starts, so cancellation during backoff adds nothing, while a started retry is
+counted whether it later succeeds, fails, or panics. Its terminal outcome is
+already represented by `flowstate.task.executions` and
+`flowstate.task.duration`; it does not add another retry series. Divide retries
+by executions for the fraction of task work spent retrying. The attempt number
+itself remains on task spans only — making it a metric label would create one
+series per configured attempt value. Task names pass through the shared
+cardinality limiter; attempt numbers, run/execution/delivery IDs, inputs, error
+messages, and secret values never become labels.
+
+**Server metrics**, recorded by the control plane's own interceptor chain
+(`pkg/flowstate/v1/server/recover.go`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.server.panics` | counter | — | `rpc.method` (the WorkflowService method name, e.g. `Get`) | One increment per RPC handler panic the server recovered; each also produces an `ERROR` log line and an `AUDIT_DECISION_INTERNAL_ERROR` audit record — see [Audit trail](#audit-trail) |
 
 **Temporal SDK metrics** are also live once telemetry is on: `initTelemetry`
 wires a `client.MetricsHandler` (`opentelemetry.NewMetricsHandler`, meter name
@@ -1153,28 +1448,33 @@ way the Temporal SDK handler is: inside `initTelemetry`, gated on
 not on tracing or logging alone — via
 `go.opentelemetry.io/contrib/instrumentation/runtime`
 (`cmd/flow/telemetry.go`, beside where the meter provider is built). That
-package's v0.61.0 still defaults `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS` to
-`true`, so what actually reaches a collector today is the
-`process.runtime.go.*` set rather than the newer `go.memory.*` convention;
-either name is what an operator should dashboard for the CPU/memory guidance
-below:
+package's v0.70.0 flipped `OTEL_GO_X_DEPRECATED_RUNTIME_METRICS`'s default
+from `true` to `false`, so what actually reaches a collector today is the
+`go.memory.*`/`go.goroutine.count` convention below, not the older
+`process.runtime.go.*` set — which the package still emits under that exact
+name for an operator who opts back in, but Flowstate does not, so this
+document tracks what ships by default:
 
 | Metric | Type | Unit | Meaning |
 | --- | --- | --- | --- |
-| `process.runtime.go.mem.heap_alloc` | up-down counter | bytes | Heap bytes currently allocated |
-| `process.runtime.go.mem.heap_idle` | up-down counter | bytes | Heap bytes idle (unused, uncommitted) |
-| `process.runtime.go.mem.heap_inuse` | up-down counter | bytes | Heap bytes in in-use spans |
-| `process.runtime.go.mem.heap_objects` | up-down counter | — | Number of allocated heap objects |
-| `process.runtime.go.mem.heap_released` | up-down counter | bytes | Heap bytes released to the OS |
-| `process.runtime.go.mem.heap_sys` | up-down counter | bytes | Heap bytes obtained from the OS |
-| `process.runtime.go.mem.live_objects` | up-down counter | — | Number of live objects |
-| `process.runtime.go.mem.lookups` | counter | — | Pointer lookups performed by the runtime |
-| `process.runtime.go.gc.count` | counter | — | Completed GC cycles |
-| `process.runtime.go.gc.pause_ns` | histogram | ns | Per-pause GC stop-the-world duration |
-| `process.runtime.go.gc.pause_total_ns` | counter | ns | Cumulative GC stop-the-world duration |
-| `process.runtime.go.goroutines` | up-down counter | — | Live goroutine count |
-| `process.runtime.go.cgo.calls` | counter | — | Cumulative cgo calls made |
+| `go.memory.used` | up-down counter | bytes | Runtime memory in use, split by the `go.memory.type` attribute (`stack`, `other`) |
+| `go.memory.limit` | up-down counter | bytes | Configured Go memory limit (`GOMEMLIMIT`), if one is set |
+| `go.memory.allocated` | counter | bytes | Cumulative heap bytes allocated by the application |
+| `go.memory.allocations` | counter | allocations | Cumulative heap allocation count |
+| `go.memory.gc.goal` | up-down counter | bytes | Heap size target for the end of the next GC cycle |
+| `go.goroutine.count` | up-down counter | goroutines | Live goroutine count |
+| `go.processor.limit` | up-down counter | threads | `GOMAXPROCS`: OS threads that can run user Go code at once |
+| `go.config.gogc` | up-down counter | percent | Configured `GOGC` heap-growth target (100 by default) |
 | `runtime.uptime` | counter | ms | Time since the process started reporting |
+
+The per-region heap breakdown (`heap_idle`/`heap_inuse`/`heap_sys`/
+`heap_released`, object and pointer-lookup counts) and the GC-pause histogram
+the deprecated set used to carry have no successor in this table: the new
+convention reports memory as the two-way `go.memory.used` split above and
+does not wire a GC-pause instrument by default (the package's separate
+`NewProducer`, which would add `go.schedule.duration`, is not registered
+here). That detail now lives only behind `--internal-listen` and pprof, same
+as before for anything a gauge never covered.
 
 Registered whenever metrics are enabled — including a short client command
 like `flow get`, not only `flow server`/`flow worker` — but that costs a
@@ -1183,10 +1483,9 @@ exporter or a second goroutine; see the doc comment beside
 `otelruntime.Start` in `cmd/flow/telemetry.go` for why splitting this by verb
 was rejected. On the two long-running processes it is the answer to the "How
 to read this process's own CPU/memory" guidance below without reaching for
-pprof: `process.runtime.go.mem.heap_alloc` and `process.runtime.go.goroutines`
-climbing together tracks the same "is this worker's own memory the
-constraint" question a heap profile answers, over OTLP instead of a loopback
-`kubectl exec`.
+pprof: `go.memory.used` and `go.goroutine.count` climbing together tracks the
+same "is this worker's own memory the constraint" question a heap profile
+answers, over OTLP instead of a loopback `kubectl exec`.
 
 **Run-lifecycle metrics** (#917), the gap the paragraph above used to record
 rather than fill: a run's own started/completed/failed and its duration,
@@ -1205,6 +1504,12 @@ these instruments through genuinely different code).
 | `flowstate.run.duration` | histogram | s | `flowstate.workflow.name`, `flowstate.driver`, `flowstate.run.outcome`, `error.type` (on failure) | Duration from start to terminal outcome. Durably this is the segment that ends the run, not the sum of every Continue-As-New segment a long workload took — see `metricschema.InstrumentRunDuration`'s doc for why |
 | `flowstate.run.executions` | counter | — | same as `flowstate.run.duration` | Run completions, by outcome — the "step failure rate" and "runs per workflow" answer this table previously said did not exist |
 
+The `flowstate.workflow.name` attribute is present only when the admitting
+boundary selected a deployment-owned trusted workflow (including registered
+webhooks). Open, ad-hoc submissions still contribute to the run totals and
+outcomes, but omit the name: a request-controlled name must not consume the
+process-wide workflow-name cardinality budget shared by other tenants.
+
 A Continue-As-New segment boundary records neither instrument: it is a
 handover to the next segment, not a completion, and counting it as one would
 make one submission look like several runs. `flowstate.workflow.name` and
@@ -1214,10 +1519,8 @@ split every other `flowstate.*` label in this document follows; see
 `pkg/flowstate/v1/metricschema` for the allowlist and why a run id can never
 reach an instrument.
 
-What is still not here: a step's own retry count as a run-level rollup (the
-task-level duration/executions pair above already carries one measurement per
-attempt) and any label scoped to a tenant rather than a workflow — this
-system has no `ClassConfiguration`-bounded tenant label declared yet, so
+What is still not here: any label scoped to a tenant rather than a workflow —
+this system has no `ClassConfiguration`-bounded tenant label declared yet, so
 "runs per tenant per hour" still means filtering `flow list` or a trace by
 namespace rather than reading one off this table.
 
@@ -1230,28 +1533,124 @@ previously undashboarded, which left the slot-exhaustion runbook below's
 
 ## Audit trail
 
-`flow server` and `flow server dev` write down every authorization decision —
-allow and deny alike — before the mutation the decision permits. This is not
-telemetry: it is unconditional, it is not sampled, and it does not depend on
-`OTEL_*` being configured at all. picatz/flowstate#1018 is the design; this is
-the part of it an operator turns a knob on.
+`flow server`, `flow server dev`, and authenticated `flow mcp serve` write down
+every authorization decision — allow and deny alike — before the mutation the
+decision permits. `flow worker` writes down every *enforcement* decision it
+makes about a workload it is running. This is not telemetry: it is
+unconditional, it is not sampled, and it does not depend on `OTEL_*` being
+configured at all. picatz/flowstate#1018 is the design and #1379 is the
+worker's half; this is the part of it an operator turns a knob on. Local `flow
+mcp` over stdio makes no bearer authorization decision and therefore emits no
+MCP authorization record.
 
 **What is recorded.** One record per decision, keyed by the closed
 `AuthorizationAction` vocabulary (`proto/flowstate/v1/authorization.proto`)
 rather than a second list of verbs — the audited surface is every action a
-WorkflowService RPC actually reaches, derived from the same bindings
-`TestEveryRPCHasExactlyOneAuthorizationAction` already checks, so a new RPC
-cannot arrive unaudited without that test failing first. Each record carries
-the action, the allow/deny decision, the RPC name, the caller's attested
-`WorkloadIdentity` (absent when the deployment runs `--insecure-no-auth`), the
-kind and id of the resource addressed (a workflow id, a schedule name, or a
-namespace), the server's own clock, and — on a denial — a code from a small
-closed set (`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`).
-There is no free-text field: no error message, no request payload, no
-specification. That is deliberate, not an oversight — see
+WorkflowService RPC or registered MCP tool actually reaches, derived from the
+same bindings the RPC and MCP conformance tests check, so a new operation
+cannot arrive unaudited without a test failing first. Each record carries the
+action, the allow/deny decision, exactly one operation name (`rpc` or
+`mcp_tool`), the caller's attested `WorkloadIdentity` (absent when a Connect
+deployment runs `--insecure-no-auth`), the bounded operator-chosen trusted
+issuer name and role that admitted the caller, the kind and id of the resource
+addressed (a workflow id, a schedule name, or a namespace), the server's own
+clock, and — on a denial — a code from a small closed set
+(`NAMESPACE_UNROUTABLE`, `RESOURCE_NOT_FOUND`, `TENANT_MISMATCH`,
+`POLICY_DENIED`; the worker's and the webhook receiver's codes are below). There is no free-text field: no error message, request
+payload, specification, token, claims, MCP arguments or results, prompt,
+session id, or JSON-RPC request id. One record is the correlation unit for one
+resolved operation decision. That is deliberate, not an oversight — see
 `pkg/flowstate/v1/audit`'s package doc and `proto/flowstate/v1/audit.proto`'s
 file comment for why a scrubber was rejected in favor of a record with nothing
 in it for a scrubber to catch.
+
+**What `flow worker` records.** The same record, in the same sinks, for the
+four decisions a worker makes about a workload already running: whether a task
+may dispatch (the deployment's `--task-policy`), whether a secret reference may
+be read (the `secrets:` rules of `--auth-policy`), whether a request may leave
+(`--egress-policy`), and whether a credential target may be assumed (the
+assumption rules). Allow and deny alike. Instead of `action` and `rpc`, such a
+record carries `enforcement_point` — `TASK_DISPATCH`, `SECRET_ACCESS`,
+`EGRESS`, `CREDENTIAL_ASSUMPTION` — because the `AuthorizationAction`
+vocabulary is the OAuth scope list a *caller* can be granted, and none of these
+is a scope anyone holds. It names what was addressed the same way the control
+plane does (`resource_kind` gains `TASK`, `SECRET`, `ENDPOINT`,
+`CREDENTIAL_TARGET`), carries the run's attested identity, and adds `rule`: the
+operator's own CEL rule that decided, verbatim, when a single rule did. Denials
+use four further codes — `DENY_RULE`, `NO_ALLOW_RULE`, `RULE_ERROR`,
+`NOT_CONFIGURED` — plus `DESTINATION_NOT_PERMITTED` for a destination the
+egress policy refuses on its scheme, port, resolved address, redirect, or
+because it addressed the control plane. `RULE_ERROR` is the one to alert on: it
+means a rule could not be evaluated and the policy is failing closed on work it
+never decided about.
+
+Task policy remains fresh across retries: local and Temporal workers evaluate
+it before every execution attempt. Those records are grouped by `dispatch_id`,
+which is stable for the logical step dispatch, and each carries the substrate's
+1-based `attempt`. Two allow records with one `dispatch_id` therefore mean one
+logical dispatch was permitted on two execution attempts, not that two
+independent dispatches were authorized. Count logical dispatches by non-empty
+`dispatch_id`; inspect attempts when asking whether a policy change took effect
+between retries. Older records can have an empty `dispatch_id` and cannot be
+grouped into logical dispatches after the fact. Report those records separately
+as ungrouped execution-attempt decisions rather than collapsing the empty
+values into one dispatch or presenting each as a known logical dispatch.
+
+One narrowing on `EGRESS`: those records are the built-in `http` task's
+decisions. A first-party plugin — `slack`, `sql` — enforces the same
+`--egress-policy` in its own process, and nothing running there can reach this
+worker's recorder, so its allows and denials are not recorded and
+`--audit-required` does not gate them. The traffic is still governed; only the
+record is missing. Tracked as
+[#1399](https://github.com/picatz/flowstate/issues/1399).
+
+**What the webhook receiver records.** A deployment started with `--webhook`
+serves the one entry path that is unauthenticated by design — a sender proves
+itself with a signature — and every decision the receiver makes about a
+delivery is written to the same trail, as an enforcement record with
+`enforcement_point` `WEBHOOK_DELIVERY` (picatz/flowstate#1774; the bridge to a
+parked gate used to write under an RPC verb no action binds, which a
+deployment with a recorder could not record, picatz/flowstate#1797). An
+accepted delivery is one allow record naming the run it started or answered
+(`resource_kind` `RUN`), the trigger as its principal
+(`flowstate://webhook#<workflow>/<trigger>`), the `delivery_id` the run's own
+trigger context carries, and `joined` when the run already existed; it is
+written before the start or the signal it permits, and a redelivery adds a
+second record with `joined` true beside its admission. A refused delivery is
+one deny record against the route it addressed (`resource_kind`
+`WEBHOOK_ROUTE`, key `<workflow>/<trigger>`, empty for a route this receiver
+does not serve — never the path the sender wrote), coded by class:
+`SIGNATURE_INVALID`, `SIGNATURE_MISSING`, `REPLAY_WINDOW`,
+`TOO_MANY_SIGNATURES`, `PAYLOAD_TOO_LARGE`, `BINDING_FAILED` (verified, and the
+payload did not map — the one refusal recorded under the trigger's identity,
+because the sender proved the key), `RESOURCE_NOT_FOUND` for an unknown route
+or a bridged delivery naming no run, `NOT_CONFIGURED` for a declared scheme
+with no resolved key, and `POLICY_DENIED` for a gate whose `signals:` refuse
+the trigger. Refusals are bounded: one record per class per route per minute,
+carrying `count` — how many refusals it stands for, this one and every one the
+previous minute swallowed — so a signature-guessing flood cannot use the audit
+sink as its amplifier and "refusals per route per hour" is still a sum over
+the trail. No record carries the body, a header, the signature, the
+idempotency key or the request path; `pkg/flowstate/v1/server/webhookaudit.go`
+is the seam and `TestARefusedDeliveryIsRecordedByClass` is the proof.
+
+Still no free text. A rule that *matched* is configuration and is recorded; a
+rule that failed to evaluate is recorded by its code alone, because its detail
+quotes the evaluation error and an evaluation error can quote the data the rule
+was reading. An egress record names `scheme://host:port` and no other part of
+the URL — a webhook URL keeps its credential in the path. A secret record names
+the `scheme:name` reference and never a resolved value; there is no field one
+could occupy.
+
+Two costs, stated. An egress *allow* is written when the policy's transport
+answers, which is after the request left: the verdict is reached inside the
+transport, and evaluating the policy a second time to move the record earlier
+would be a second evaluator for one concept. The deny direction is unaffected —
+a denied request never left. And `flow run local`, `flow test` and `flow task
+run` install no recorder at all: a rehearsal has no deployment to audit, its
+refusals are already reported in full to the person running it, and the
+exemption is argued in `pkg/flowstate/v1/audit`'s package doc rather than
+inherited by accident.
 
 **Where it goes.** Every deployment gets stderr, unconditionally, one JSON
 object per line — the floor that survives an operator who configured no
@@ -1279,7 +1678,13 @@ traded for a complete trail, and it is why the OTel sink switches from an
 ordinary batch processor to a synchronous one under `--audit-required` — a
 batch processor's export happens after the request has already been answered,
 so a "required" sink backed by one would prove nothing at the decision point.
-Stderr needs no such switch; every write to it is already synchronous.
+Stderr follows the same trade: in the default mode records enter a bounded
+background queue, and a full queue drops a record rather than blocking the RPC
+on a stalled logging consumer. Dropped records are counted and reported to the
+same stderr stream as one summary line naming the count, so the loss is
+visible to whoever reads the trail rather than silent. Under
+`--audit-required`, stderr writes are synchronous so returning success proves
+that the record was written.
 
 The default is auditing **on**, best-effort — every deployment gets a stderr
 trail from the moment it starts serving, and nothing has to be configured to
@@ -1294,9 +1699,19 @@ default here is a line of JSON on stderr per decision.
 mutation it authorizes, because the record's subject is the decision, not what
 happened afterward: "this caller was authorized for `workload.signal` on run X
 at server time T" is true the instant the check returns, whether or not
-Temporal goes on to deliver the signal. This trail therefore cannot answer
-"did the signal actually reach the run" — the run's own timeline and Temporal's
-event history are the artifacts for that question, not this one.
+Temporal goes on to deliver the signal. The same is true when an allowed MCP
+tool later returns an execution error or its context is cancelled: the one
+allow record remains truthful and no second outcome record is emitted. This
+trail therefore cannot answer "did the signal actually reach the run" or "did
+the tool finish" — the run's own timeline, Temporal's event history, and
+ordinary execution diagnostics are the artifacts for those questions, not
+this one. The one second record is a handler panic: the server's recover
+interceptor writes a record with decision `AUDIT_DECISION_INTERNAL_ERROR`
+for the same `rpc` and identity, sharing the server-minted `correlation_id`
+the request's allow record carries and that the caller is told in its
+`CodeInternal` error, while the panic value and stack go to the process log
+at `ERROR` and `flowstate.server.panics` increments — so the trail never
+says a request was permitted and nothing else when nobody answered it.
 
 ## Worker capacity
 
@@ -1371,11 +1786,12 @@ room.
 registered on both binaries once metrics are enabled (`OTEL_METRICS_EXPORTER`
 or an OTLP metrics endpoint — see [Go runtime metrics](#metrics) above for the
 full table), so an operator who already points `OTEL_EXPORTER_OTLP_ENDPOINT`
-somewhere gets `process.runtime.go.mem.heap_alloc`,
-`process.runtime.go.gc.pause_ns` and `process.runtime.go.goroutines` on a
-dashboard for free — no flag, no pprof session, no shell into the pod. What
-the worker *also* has, for the deeper "which allocation" or "which stack"
-question a gauge cannot answer, is `--internal-listen`
+somewhere gets `go.memory.used` and `go.goroutine.count` on a dashboard for
+free — no flag, no pprof session, no shell into the pod. GC-pause detail is
+no longer part of that free set (see the note under [Go runtime
+metrics](#metrics)); it joins "which allocation" and "which stack" as a
+question a gauge cannot answer. What the worker *also* has, for exactly that
+class of question, is `--internal-listen`
 (`FLOWSTATE_INTERNAL_ADDRESS`), off by default, loopback or refused, described
 under [Health checks and probes](#health-checks-and-probes) above along with
 what turning it on exposes. Start the worker with it, then, from inside that
@@ -1415,11 +1831,12 @@ Read both signals before changing it, in either direction:
   `temporal_sticky_cache_hit`/`_miss` beside it for the hit-rate half of the
   same picture). A forced eviction is a replay an operator is paying for that
   more cache would have avoided.
-- **Lower** when `process.runtime.go.mem.heap_alloc` (see "How to read this
-  process's own CPU/memory" above) climbs with cache size, and a heap profile
-  taken through `--internal-listen` shows the sticky cache rather than
-  activity execution as the growth. A larger cache is memory traded for fewer
-  replays; on a memory-constrained worker that trade can go the other way.
+- **Lower** when `go.memory.used` (`go.memory.type=other`; see "How to read
+  this process's own CPU/memory" above) climbs with cache size, and a heap
+  profile taken through `--internal-listen` shows the sticky cache rather
+  than activity execution as the growth. A larger cache is memory traded for
+  fewer replays; on a memory-constrained worker that trade can go the other
+  way.
 
 **The zero sentinel means something different here than on the other four
 flags — do not assume it generalizes.** `worker.SetStickyWorkflowCacheSize`

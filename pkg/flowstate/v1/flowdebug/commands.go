@@ -2,17 +2,18 @@ package flowdebug
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // A command is one verb the session understands.
@@ -66,8 +67,8 @@ var commands = []command{
 		help: "run this step and stop at the next (also: an empty line)"},
 	{verb: "continue", aliases: []string{"c"}, completes: completesNothing,
 		help: "run until the next breakpoint, or to the end"},
-	{verb: "until", aliases: []string{"u"}, argument: "<step-id>", completes: completesStep,
-		help: "run until the step with that id"},
+	{verb: "until", aliases: []string{"u"}, argument: "<step-id> [if <expr>]", completes: completesStep,
+		help: "run until the step with that id, optionally only where the condition holds"},
 	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [if <expr>]", completes: completesStep,
 		help: "stop at that step, always or when the expression holds"},
 	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint,
@@ -82,6 +83,8 @@ var commands = []command{
 		help: "list what could be written at the end of that text"},
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing,
 		help: "describe the step the run is stopped at"},
+	{verb: "backtrace", aliases: []string{"bt"}, completes: completesNothing,
+		help: "list this step and the call chain that reached it"},
 	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
 		help: "end the run here"},
 	{verb: "help", aliases: []string{"h", "?"}, completes: completesNothing,
@@ -96,10 +99,14 @@ var commands = []command{
 // meaning, one place. See CLAUDE.md on a value with one meaning written down
 // twice.
 const (
-	usageUntil     = "until needs a step id: until <step-id>"
-	usageBreak     = "break needs a step id: break <step-id> [if <expr>]"
-	usageInspect   = "inspect needs an expression: inspect steps.build.artifact"
-	usageCondition = "`if` needs an expression: break <step-id> if <expr>"
+	usageUntil   = "until needs a step id: until <step-id> [if <expr>]"
+	usageBreak   = "break needs a step id: break <step-id> [if <expr>]"
+	grammarBreak = "break <step-id> [if <expr>]"
+	grammarUntil = "until <step-id> [if <expr>]"
+	usageInspect = "inspect needs an expression: inspect steps.build.artifact"
+	// usageCondition is completed by the asking verb's grammar, so `break
+	// body if ` and `until body if ` are each corrected in their own words.
+	usageCondition = "`if` needs an expression: %s"
 )
 
 // IsComment reports whether a line is a comment rather than a command.
@@ -180,14 +187,49 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		return true, nil
 
 	case "until":
-		target := strings.TrimSpace(rest)
-		if target == "" {
+		// The same grammar, compiler and refusals as `break`, sharing its
+		// helpers so the two condition-gated verbs cannot drift: an accepted
+		// condition is compiled now, a malformed tail is a refusal rather
+		// than a silent unconditional stop, and the evaluation at arrival is
+		// [Session.conditionHolds] either way.
+		id, condition, conditional, err := splitCondition(rest, grammarUntil)
+		if err != nil {
+			s.printfTone(ToneWarning, "until: %v\n", err)
+
+			return false, nil
+		}
+		if id == "" {
 			s.printfTone(ToneWarning, "%s\n", usageUntil)
 
 			return false, nil
 		}
-		s.record("until " + target)
-		s.resume(modeUntil, target)
+		// Checked before the condition is compiled, where `break` checks it
+		// too: an id the workflow does not declare is refused whether or not
+		// a condition follows it, and refusing first spends nothing on
+		// compiling a question about a step that will never be reached.
+		if notice, unknown := s.unknownStepNotice(id); unknown {
+			s.printfTone(ToneWarning, "until: %s\n", notice)
+
+			return false, nil
+		}
+
+		var compiled *v1.Value
+		if conditional {
+			compiled, err = compileCondition(condition, scope, grammarUntil)
+			if err != nil {
+				s.printfTone(ToneWarning, "until %s: %v\n", id, err)
+
+				return false, nil
+			}
+		}
+		// A newly accepted `until` is a new question, so it gets its own
+		// chance to say it could not be asked — the same rule holdBreakpoint
+		// applies when a breakpoint is replaced. Without this, a second
+		// `until body if <broken>` after a declined first one is skipped in
+		// silence, behind a prompt that said it was set (Copilot, #1274).
+		s.clearDeclined(declinedUntil, id)
+		s.record("until " + strings.TrimSpace(rest))
+		s.resumeUntil(modeUntil, id, compiled)
 
 		return true, nil
 
@@ -242,6 +284,12 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 		return false, nil
 
+	case "backtrace":
+		s.record("backtrace")
+		s.showBacktrace()
+
+		return false, nil
+
 	case "quit":
 		s.record("quit")
 		// Remembered, so the autopsy stays shut: quit is the one command
@@ -265,6 +313,21 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		s.printfTone(ToneWarning, "unknown command %q — try `help`\n", verb)
 
 		return false, nil
+	}
+}
+
+func (s *Session) showBacktrace() {
+	trace, err := s.Backtrace()
+	if err != nil {
+		s.printfTone(ToneWarning, "%s\n", err)
+		return
+	}
+	for i, frame := range trace.GetFrames() {
+		name := frame.GetStepId()
+		if frame.GetWorkflow() != "" {
+			name = frame.GetWorkflow() + "." + name
+		}
+		s.printf("#%d %s (%s)\n", i, name, frame.GetKind())
 	}
 }
 
@@ -558,7 +621,7 @@ func namesLine(names []string, listing string) string {
 
 // showStep prints what the run is stopped at.
 func (s *Session) showStep(node *v1.Node) {
-	s.printf("%s (%s)\n", node.GetId(), NodeKind(node))
+	s.printf("%s (%s)\n", node.GetId(), v1.NodeKind(node))
 	if description := node.GetDescription(); description != "" {
 		s.printf("  %s\n", description)
 	}
@@ -589,7 +652,7 @@ func (s *Session) showStep(node *v1.Node) {
 // condition gating whether something happens, and the parse is positional — a
 // step legally named `if` is still the id, since the first word always is.
 func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scope) {
-	id, condition, conditional, err := splitCondition(rest)
+	id, condition, conditional, err := splitCondition(rest, grammarBreak)
 	if err != nil {
 		s.printfTone(ToneWarning, "break: %v\n", err)
 
@@ -601,9 +664,15 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 
+	if notice, unknown := s.unknownStepNotice(id); unknown {
+		s.printfTone(ToneWarning, "break: %s\n", notice)
+
+		return
+	}
+
 	at := breakpoint{source: rest}
 	if conditional {
-		compiled, err := compileCondition(condition, scope)
+		compiled, err := compileCondition(condition, scope, grammarBreak)
 		if err != nil {
 			s.printfTone(ToneWarning, "break %s: %v\n", id, err)
 
@@ -628,6 +697,148 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
 }
 
+// maxStepSuggestionInput bounds the typed id a did-you-mean is computed for:
+// the longest id the schema permits, plus the most edits [nearest] will call a
+// near miss.
+//
+// The rule is cmd/flow's maxSuggestionInput (#428) — bound the typed side
+// before scanning — but the *number* has to come from what a real step id can
+// be, not from that constant, which sizes this CLI's own short command names.
+// `Node.id` is `max_len: 128` in proto/flowstate/v1/workflow.proto, so a
+// declared id of 128 characters mistyped once is 129 and is genuinely worth a
+// suggestion; a threshold of 64 borrowed from the command surface would have
+// skipped it at the prompt while `flow debug replay` still offered it, which
+// is the prompt-versus-replay divergence this whole change exists to close
+// (Codex, #1347).
+//
+// Derived rather than written down as 130: the two facts it is made of live
+// where they are enforced, and a schema that widens the id should widen this
+// with it.
+const maxStepSuggestionInput = maxStepIDLength + nearest.MaxDistance
+
+// maxStepIDLength is `Node.id`'s own `max_len` in
+// proto/flowstate/v1/workflow.proto. Asserted against the descriptor by
+// TestMaxStepIDLengthMatchesTheSchema, so it cannot drift from the constraint
+// that decides what a step may actually be called.
+const maxStepIDLength = 128
+
+// UnknownStep reports whether a step id names nothing this session can reach,
+// with the notice explaining it.
+//
+// It is [Session.unknownStepNotice] for callers outside this package, so that a
+// front end which must answer per breakpoint — a DAP adapter, whose client sets
+// them one edit at a time and expects a verdict for each — can ask before it
+// sends, rather than losing a whole set to one typo. Programmatic callers that
+// have nothing to answer per id need not call it: [New] and
+// [Session.SetBreakpoints] apply the same check themselves.
+//
+// An empty inventory reports nothing unknown; see [Session.unknownStepNotice].
+func (s *Session) UnknownStep(id string) (string, bool) {
+	return s.unknownStep(strings.TrimSpace(id), s.snapshotTextRedactor())
+}
+
+// StepNotice is one front end's answer about whether a requested step exists.
+type StepNotice struct {
+	Message string
+	Unknown bool
+}
+
+// SetBreakpointsWithNotices validates a front end's whole requested set under
+// one redaction snapshot, omitting unknown and empty ids from the installed set
+// while returning one notice slot per request.
+func (s *Session) SetBreakpointsWithNotices(ids []string) ([]StepNotice, error) {
+	redact := s.snapshotTextRedactor()
+	notices := make([]StepNotice, 0, len(ids))
+	known := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			notices = append(notices, StepNotice{})
+			continue
+		}
+		message, unknown := s.unknownStep(id, redact)
+		notices = append(notices, StepNotice{Message: message, Unknown: unknown})
+		if !unknown {
+			known = append(known, id)
+		}
+	}
+
+	return notices, s.setBreakpoints(known, redact, false)
+}
+
+func (s *Session) unknownStep(id string, redact func(string) string) (string, bool) {
+	notice, unknown := s.unknownStepNotice(id)
+
+	return applyText(redact, notice), unknown
+}
+
+// unknownStepNotice reports that a step id names nothing this run can reach,
+// in the words `flow debug replay` already refuses the same line with.
+//
+// The prompt used to arm anything: `break nosuchstep` answered "breakpoint at
+// nosuchstep", listed it, and never fired, while `until nosuchstep` printed
+// nothing at all and ran the workflow to its end — one mistyped character
+// forfeiting the session, with every queued command after it unanswered. The
+// check that catches it already existed one door over, in [checkScript], over
+// the same inventory; this is that check where a person types rather than
+// where a script is read, so the two fronts stop disagreeing about the same
+// word.
+//
+// The inventory is [Options.Steps] and the ids this session has watched go
+// past, which is exactly what completion offers ([Session.reachableSteps]) —
+// so a name the prompt would complete is a name it accepts. Ids are bare and
+// not qualified by workflow, deliberately: a `call:`'s callee declares its own
+// steps and a breakpoint on one is a breakpoint the run genuinely stops at,
+// which is why the inventory holds them too.
+//
+// An empty inventory refuses nothing. A caller that supplied no steps has said
+// nothing about what exists, and [checkStepArgument] takes that same silence
+// the same way: absence of evidence is not evidence a step is missing.
+func (s *Session) unknownStepNotice(id string) (string, bool) {
+	// Built once at construction ([declaredStepIDs]); this is a lookup rather
+	// than a walk, because a refused command is not recorded and so may be
+	// repeated without bound.
+	_, known := s.declaredIDs[id]
+
+	s.mu.Lock()
+	// An id this session has watched go past is reachable whatever the
+	// inventory said, so it is admitted — but it never *makes* an inventory:
+	// what has run so far is not what the workflow declares, and reading it
+	// that way would refuse every step the run has not reached yet, which on
+	// an empty inventory is all of them.
+	if !known {
+		_, known = s.seen[id]
+	}
+	s.mu.Unlock()
+
+	names := s.declared
+	if known || len(names) == 0 {
+		return "", false
+	}
+
+	// The suggestion is skipped for input too long to have been a typo of
+	// anything declared, which is the bound [nearest]'s own doc puts on every
+	// caller and cmd/flow's argv suggestions already keep (maxSuggestionInput,
+	// #428). A refused command is not recorded, so it can be repeated without
+	// reaching [MaxScriptCommands], and each scan is one [nearest.Distance]
+	// per declared id over a word this session will read up to
+	// [MaxCommandBytes] of — work a redirected stdin would otherwise size
+	// (Codex, #1347). Nothing within [nearest.MaxDistance] edits of a real id
+	// can be longer than the longest declared one plus that many, so the
+	// refusal below loses no suggestion anybody could have earned.
+	if utf8.RuneCountInString(id) <= maxStepSuggestionInput {
+		if suggestion, found := nearest.Name(id, names); found {
+			return fmt.Sprintf("no step named %q: did you mean %q?", id, suggestion), true
+		}
+	}
+
+	// names is [Session.declared], sorted once at construction, so the
+	// rendering below takes it as it is: re-sorting an already-sorted
+	// inventory on every refusal is work a redirected stdin chooses the
+	// amount of, and refused commands are not recorded (Codex, #1347).
+	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
+}
+
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was
 // room.
 //
@@ -650,7 +861,7 @@ func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
 	// it could not be asked. Carrying the old notice over would leave a second
 	// unbound condition skipped in silence, after the prompt said it was set
 	// (Codex, #1116).
-	delete(s.notedUnbound, id)
+	delete(s.notedUnbound, declinedBreakpoint+" "+id)
 
 	return true
 }
@@ -676,7 +887,7 @@ func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
 // So the rule is that a tail is either nothing or a condition. Anything else
 // is a typo, and a typo whose punishment is "your breakpoint means something
 // else now" is one this prompt should not administer quietly.
-func splitCondition(rest string) (id, condition string, conditional bool, err error) {
+func splitCondition(rest, grammar string) (id, condition string, conditional bool, err error) {
 	id, tail := cutWord(strings.TrimLeft(rest, " \t"))
 	tail = strings.TrimLeft(tail, " \t")
 	if tail == "" {
@@ -686,7 +897,7 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 	keyword, expression := cutWord(tail)
 	expression = strings.TrimLeft(expression, " \t")
 	if keyword != "if" {
-		return "", "", false, fmt.Errorf("expected `if` after the step id, got %q: break <step-id> [if <expr>]", keyword)
+		return "", "", false, fmt.Errorf("expected `if` after the step id, got %q: %s", keyword, grammar)
 	}
 
 	// Returned exactly as typed, trailing space included. The completer reads
@@ -701,15 +912,16 @@ func splitCondition(rest string) (id, condition string, conditional bool, err er
 	return id, expression, true, nil
 }
 
-// compileCondition parses a breakpoint's condition against the run's own
-// profile, returning it in the shape a step's `if:` travels in.
+// compileCondition parses a condition-gated verb's condition against the run's
+// own profile, returning it in the shape a step's `if:` travels in. `grammar`
+// is the asking verb's own spelling, for the empty-condition refusal.
 //
 // A [v1.Value] holding a parsed expression, so that evaluating it is literally
 // [v1.EvalConditionInScope] — the engine's own function — rather than a second
 // implementation that could disagree with it.
-func compileCondition(expression string, scope *v1.Scope) (*v1.Value, error) {
+func compileCondition(expression string, scope *v1.Scope, grammar string) (*v1.Value, error) {
 	if strings.TrimSpace(expression) == "" {
-		return nil, errors.New(usageCondition)
+		return nil, fmt.Errorf(usageCondition, grammar)
 	}
 
 	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())
@@ -853,7 +1065,7 @@ func (s *Session) deleteBreakpoint(id string) {
 	s.mu.Lock()
 	_, existed := s.breakpoints[id]
 	delete(s.breakpoints, id)
-	delete(s.notedUnbound, id)
+	delete(s.notedUnbound, declinedBreakpoint+" "+id)
 	s.mu.Unlock()
 
 	s.record("delete " + id)
@@ -926,41 +1138,4 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(keys)
 
 	return keys
-}
-
-// NodeKind names a step's kind for a person reading a prompt: the word the
-// file spells, plus the one detail that identifies which one it is.
-//
-// A new spelling rather than a shared one, deliberately and narrowly: nothing
-// exported names a node's kind for a reader today (flowfile's describeNode
-// names YAML AST nodes, a different thing), and the engine's own switches over
-// [v1.Node] kinds exist to *run* them. If a second reader-facing namer ever
-// appears, these two should become one — that is the rule, and this is the
-// first of them rather than the second.
-func NodeKind(node *v1.Node) string {
-	switch kind := node.GetKind().(type) {
-	case *v1.Node_Task:
-		return fmt.Sprintf("task %q", kind.Task.GetName())
-	case *v1.Node_Value:
-		return "value"
-	case *v1.Node_Wait:
-		if signal := kind.Wait.GetSignal(); signal != nil {
-			return fmt.Sprintf("wait_for_signal %q", signal.GetName())
-		}
-		if batch := kind.Wait.GetSignalBatch(); batch != nil {
-			return fmt.Sprintf("wait_for_signals %q", batch.GetName())
-		}
-
-		return "wait"
-	case *v1.Node_ForEach:
-		return "for_each"
-	case *v1.Node_Parallel:
-		return "parallel"
-	case *v1.Node_Switch:
-		return "switch"
-	case *v1.Node_Call:
-		return fmt.Sprintf("call %q", kind.Call.GetWorkflow())
-	default:
-		return "step"
-	}
 }

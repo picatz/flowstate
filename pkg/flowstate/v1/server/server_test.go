@@ -238,6 +238,8 @@ func TestFlowstateServer(t *testing.T) {
 		WorkflowId: runResp.Msg.GetWorkflowId(),
 		RunId:      runResp.Msg.GetRunId(),
 		Status:     v1.RunResponse_STATUS_COMPLETED,
+		// One segment, so the run that began the workload is the run itself.
+		FirstRunId: runResp.Msg.GetRunId(),
 		Kind: &v1.GetResponse_Outputs{
 			Outputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{

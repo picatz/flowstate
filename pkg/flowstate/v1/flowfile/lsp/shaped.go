@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"slices"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -45,7 +47,7 @@ func (s *parsedStep) shapingEntry(tasks *v1.Registry) *entry {
 // cannot ask [shapedOutputNames] anything: what it needs is only whether the
 // declared names still describe the step.
 func (s *outlineStep) shapes(tasks *v1.Registry) bool {
-	return registryShapesOutputs(tasks, s.taskName) && containsKey(s.inputKeys, taskShapingKey)
+	return registryShapesOutputs(tasks, s.taskName) && slices.Contains(s.inputKeys, taskShapingKey)
 }
 
 // registryShapesOutputs asks *this server's* registry whether a task shapes.
@@ -106,14 +108,4 @@ func shapedOutputNames(e *entry) ([]string, bool) {
 	}
 
 	return v1.ShapedNamesInSource(e.value.expr)
-}
-
-// containsKey reports whether a list of keys holds one.
-func containsKey(keys []string, want string) bool {
-	for _, key := range keys {
-		if key == want {
-			return true
-		}
-	}
-	return false
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -222,4 +223,76 @@ func TestTheSecretIsInTheScopeThisIsCompletingOver(t *testing.T) {
 	require.NotContains(t, withheld, theSecret,
 		"and the redactor installed for the negative tests is a live seam, not a no-op")
 	require.Contains(t, withheld, "[redacted]")
+}
+
+func TestBacktraceLabelsKeepThePauseRedactorWhileRendering(t *testing.T) {
+	const (
+		firstFrame = `inner.leaf (value)`
+		sensitive  = `outer.nested (call "inner")`
+	)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled:  true,
+		Breakpoints: []string{"leaf"},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	session.SetRedactor(func(text string) string {
+		if text == firstFrame {
+			close(entered)
+			<-release
+		}
+		return strings.ReplaceAll(text, sensitive, "[redacted]")
+	})
+
+	ctx := v1.NewContextWithDebugger(t.Context(), session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+	callee := &v1.Workflow{Name: "inner", Steps: []*v1.Node{{
+		Id:   "leaf",
+		Kind: &v1.Node_Value{Value: v1.NewLiteral("done")},
+	}}}
+	workflow := &v1.Workflow{Name: "outer", Steps: []*v1.Node{{
+		Id:   "nested",
+		Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}},
+	}}}
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := v1.Run(ctx, workflow)
+		runDone <- runErr
+	}()
+	at, err := session.WaitForPause(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "leaf", at.Step, "the run did not stop inside the callee, so there are not two frames to test")
+
+	type result struct {
+		labels []string
+		err    error
+	}
+	answer := make(chan result, 1)
+	go func() {
+		labels, labelErr := session.BacktraceLabels()
+		answer <- result{labels: labels, err: labelErr}
+	}()
+	<-entered
+	moveDone := make(chan error, 1)
+	go func() {
+		_, moveErr := session.Continue(t.Context())
+		moveDone <- moveErr
+	}()
+	require.Eventually(t, func() bool {
+		_, paused := session.Paused()
+		return !paused
+	}, 2*time.Second, time.Millisecond, "the originating pause never ended")
+	session.SetRedactor(nil)
+	close(release)
+
+	got := <-answer
+	require.NoError(t, got.err)
+	require.Equal(t, []string{firstFrame, "[redacted]"}, got.labels,
+		"rendering switched to the live redactor after capturing the pause")
+	require.NoError(t, <-runDone)
+	require.NoError(t, session.Close())
+	require.ErrorIs(t, <-moveDone, flowdebug.ErrRunOver)
 }

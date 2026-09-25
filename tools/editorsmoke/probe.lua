@@ -215,6 +215,32 @@ end
 -- 6. textDocument/completion inside an expression.
 section('textDocument/completion')
 do
+  -- At the document root, completion must carry the whole compiler vocabulary.
+  -- This is the editor-level regression for #1315: the protocol tests caught
+  -- the same position, and this call proves Neovim receives the answer intact.
+  local root_result, root_err = request('textDocument/completion', {
+    textDocument = vim.lsp.util.make_text_document_params(goodbuf),
+    position = { line = 0, character = 0 },
+    context = { triggerKind = 1 },
+  })
+  local root_items = root_result and (root_result.items or root_result) or nil
+  if check('the server answered completion at the document root', root_items ~= nil and #root_items > 0, root_err) then
+    local root_labels = {}
+    for _, item in ipairs(root_items) do
+      root_labels[item.label] = true
+    end
+    local missing = {}
+    for _, name in ipairs({
+      'edition', 'name', 'labels', 'description', 'inputs', 'outputs', 'vars',
+      'steps', 'triggers', 'signals', 'debug', 'concurrency', 'plugins',
+    }) do
+      if not root_labels[name] then
+        table.insert(missing, name)
+      end
+    end
+    check('offers every legal root key', #missing == 0, table.concat(missing, ', '))
+  end
+
   -- Immediately after the `${` of `message: ${vars.greeting}` — a bare position,
   -- where EDITORS.md says the bindings, `steps` and `vars` are offered.
   local lnum, col = locate(goodbuf, '${', 2)
@@ -260,7 +286,10 @@ do
       end, items2), 1, 8), ', ')
     ))
     check('offers the tasks the registry knows', labels['log'] == true and labels['http'] == true)
-    check('offers the keys the grammar knows', labels['id'] == true and labels['if'] == true)
+    check(
+      'offers only the grammar properties legal on this task step',
+      labels['id'] == true and labels['if'] == true and labels['async'] == true and labels['digest'] ~= true
+    )
   end
 end
 

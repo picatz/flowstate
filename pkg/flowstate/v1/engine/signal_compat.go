@@ -83,7 +83,7 @@ type signalDeliveryCompatConverter struct {
 // Relying on embedding alone would silently skip the fallback on every signal,
 // the actual call path (see decodeArg in the SDK's internal/encode_args.go),
 // while firing correctly for a direct FromPayload call nothing here ever makes.
-func (c *signalDeliveryCompatConverter) FromPayloads(payloads *commonpb.Payloads, valuePtrs ...interface{}) error {
+func (c *signalDeliveryCompatConverter) FromPayloads(payloads *commonpb.Payloads, valuePtrs ...any) error {
 	if payloads == nil {
 		return nil
 	}
@@ -100,7 +100,7 @@ func (c *signalDeliveryCompatConverter) FromPayloads(payloads *commonpb.Payloads
 }
 
 // FromPayload is where the fallback lives.
-func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, valuePtr interface{}) error {
+func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, valuePtr any) error {
 	delivery, ok := valuePtr.(*v1.SignalDelivery)
 	if !ok {
 		return c.DataConverter.FromPayload(payload, valuePtr)

@@ -25,6 +25,39 @@ func takesABlob() *v1.Workflow {
 	}
 }
 
+func TestDeclaresSensitiveValuesIncludesEmbeddedCallees(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{
+		Name:           "callee",
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "token"}},
+	}
+	caller := &v1.Workflow{Steps: []*v1.Node{{
+		Id: "called",
+		Kind: &v1.Node_Call{Call: &v1.Call{
+			Workflow: callee,
+		}},
+	}}}
+
+	declared, err := v1.DeclaresSensitiveValues(caller)
+	require.NoError(t, err)
+	require.False(t, declared, "a non-sensitive call tree was refused")
+
+	callee.DeclaredInputs[0].Sensitive = true
+	declared, err = v1.DeclaresSensitiveValues(caller)
+	require.NoError(t, err)
+	require.True(t, declared, "the callee's sensitive declaration was ignored")
+
+	caller.Steps = append(caller.Steps, &v1.Node{
+		Id:   "recursive",
+		Kind: &v1.Node_Call{Call: &v1.Call{Workflow: caller}},
+	})
+	declared, err = v1.DeclaresSensitiveValues(caller)
+	require.NoError(t, err)
+	require.True(t, declared,
+		"a known sensitive declaration was downgraded to unverified by unreachable malformed work")
+}
+
 // TestArgumentsAloneCannotPushARunPastWhatItCanCarry is the size half of the submit
 // check, in the direction the specification's own check cannot see.
 //
@@ -124,7 +157,7 @@ func TestBindRunInputsRefusesAWorkflowWithAMalformedOutputMust(t *testing.T) {
 			Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}},
 		}},
 		DeclaredOutputs: []*v1.OutputDeclaration{
-			{Name: "answer", Value: v1.NewLiteral("ok"), Must: strPtr(`this.matches(`)},
+			{Name: "answer", Value: v1.NewLiteral("ok"), Must: new(`this.matches(`)},
 		},
 	}
 
@@ -165,7 +198,7 @@ func TestASideEffectDoesNotOccurWhenOutputMustCannotCompile(t *testing.T) {
 			// Malformed the same way the shape-check test above is: a `must:`
 			// that does not compile. Before the fix, this was only discovered
 			// in EvalRunOutputs, after the "charge" step above had already run.
-			{Name: "answer", Value: v1.NewLiteral("ok"), Must: strPtr(`this.matches(`)},
+			{Name: "answer", Value: v1.NewLiteral("ok"), Must: new(`this.matches(`)},
 		},
 	}
 
@@ -226,4 +259,84 @@ func TestStringShapedCoversEveryDeclaredType(t *testing.T) {
 		require.True(t, seen[typ],
 			"this test's `want` table names %s, which the schema descriptor no longer declares", typ)
 	}
+}
+
+// TestCheckDeclarationTypesRefusesDeeplyNestedTypes pins the depth bound on
+// the recursive Type message. A programmatically built workflow can set
+// value_type to an arbitrarily deep list/map chain without passing through
+// schema validation; CheckDeclarationTypes must refuse it before protovalidate
+// recurses into it.
+func TestCheckDeclarationTypesRefusesDeeplyNestedTypes(t *testing.T) {
+	t.Parallel()
+
+	deepList := func(depth int) *v1.Type {
+		ty := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+		for range depth {
+			ty = &v1.Type{Kind: &v1.Type_List{List: ty}}
+		}
+		return ty
+	}
+
+	deepMap := func(depth int) *v1.Type {
+		ty := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+		for range depth {
+			ty = &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: ty}}}
+		}
+		return ty
+	}
+
+	step := &v1.Node{
+		Id:   "a",
+		Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hello")}}},
+	}
+
+	for _, test := range []struct {
+		name string
+		vt   *v1.Type
+	}{
+		{"list past the bound", deepList(v1.MaxStructureDepth + 1)},
+		{"map past the bound", deepMap(v1.MaxStructureDepth + 1)},
+		{"mixed list-map past the bound", func() *v1.Type {
+			ty := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+			for i := range v1.MaxStructureDepth + 1 {
+				if i%2 == 0 {
+					ty = &v1.Type{Kind: &v1.Type_List{List: ty}}
+				} else {
+					ty = &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: ty}}}
+				}
+			}
+			return ty
+		}()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wf := &v1.Workflow{
+				Name:    "type-depth",
+				Profile: v1.CurrentProfile,
+				DeclaredInputs: []*v1.InputDeclaration{{
+					Name:      "deep",
+					ValueType: test.vt,
+				}},
+				Steps: []*v1.Node{step},
+			}
+			err := v1.CheckDeclarationTypes(wf)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "nests more than")
+		})
+	}
+
+	// Cycle detection: a hand-built Go object graph with a pointer cycle.
+	cyclic := &v1.Type{}
+	cyclic.Kind = &v1.Type_List{List: cyclic}
+	wf := &v1.Workflow{
+		Name:    "type-depth-cycle",
+		Profile: v1.CurrentProfile,
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name:      "loop",
+			ValueType: cyclic,
+		}},
+		Steps: []*v1.Node{step},
+	}
+	err := v1.CheckDeclarationTypes(wf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cycle")
 }

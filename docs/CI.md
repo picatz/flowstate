@@ -83,6 +83,28 @@ breaks when an example changes. `tools/gate/ci_test.go` pins the workflow's job
 list, each job's `if:` expression, and the `verdict` job's `needs:` against the
 plan, so the two halves cannot drift apart without a test failing.
 
+#### Telling the gate its base
+
+Every repair above needs the network, so a sandboxed checkout with no reachable
+remote reaches the fallback and runs wide — which, for a caller with a bounded
+budget, is not slow but interrupted, and an interrupted gate verifies nothing.
+Nine pull requests in one wave reported exactly that (#1306).
+
+A caller that already knows its base can say so, with `-base` or the
+`FLOWSTATE_GATE_BASE` environment variable it defaults from — the same
+flag-defaulting-to-env spelling `-event` uses, so a harness can set it once for
+every invocation its agents make. `baseFor` resolves the value to a commit and
+hands it to `changedFiles` exactly as a derived one, so scope keeps one
+computation and one opinion. A value this checkout cannot resolve is an error
+naming it, never a fall-through to the whole-tree fallback: falling through
+would reproduce the symptom while looking like the flag worked.
+
+It is a local-tier input, and the CI tier rejects one rather than ignoring one.
+There the base decides which *required* jobs run, so a base a pull request could
+set would let it narrow the gate that judges it — #964's hole arriving through a
+new door. `go run ./tools/gate -ci` therefore exits non-zero naming the base it
+was handed, and keeps deriving its own from a ref it controls.
+
 ### Why the conditional jobs are not the required checks
 
 GitHub's semantics for a conditional required check fail in *both* directions,
@@ -125,11 +147,11 @@ to `ci.yml` and to neither the plan nor `verdict`'s `needs:` is invisible to it.
 copied — and executes it against each of those shapes, so "a skipped required
 check cannot fail open" is a claim with a test behind it rather than a paragraph.
 
-One honest limitation: `appearance` still carries `continue-on-error: true`, so
-its `needs` result is `success` even when it fails and `verdict` cannot
-distinguish those. That is what advisory means. Its 48-hour window lapsed on
-2026-08-12 and dropping the flag is a separate, one-line change that should be
-made by someone who can watch the first red run.
+`appearance` carried `continue-on-error: true` for the 48-hour window every new
+check gets, during which its `needs` result was `success` even when it failed and
+`verdict` could not distinguish those — that is what advisory means. The window
+lapsed on 2026-08-12 and the flag came off on 2026-08-31 (#1319), so its result now
+reaches `verdict` like every other planned job's.
 
 ### The merge queue
 
@@ -153,13 +175,20 @@ on an answer that is never coming.
 
 ### `govulncheck` stays legible
 
-`vulncheck` skips when no Go package is affected, and that is safe only because
-of where it still runs: **every** push to `main`, **every** merge group, and the
-weekly `deep.yml` schedule, each fetching the advisory database at run time. A
-new advisory therefore still arrives on a calendar rather than waiting for
-somebody to touch a `.go` file. What the skip removes is `govulncheck` being
-reported against the pull request that renamed a heading — which is the shape
-that made GO-2026-6061 look like an unrelated author's problem.
+`vulncheck` skips when no Go package is affected and no plugin module changed,
+and that is safe only because of where it still runs: **every** push to `main`,
+**every** merge group, and the weekly `deep.yml` schedule, each fetching the
+advisory database at run time. A new advisory therefore still arrives on a
+calendar rather than waiting for somebody to touch a `.go` file. What the skip
+removes is `govulncheck` being reported against the pull request that renamed a
+heading — which is the shape that made GO-2026-6061 look like an unrelated
+author's problem.
+
+Both `vulncheck` and `staticcheck` scan the root module **and** each of the six
+plugin modules under `plugins/*/`. The plugin modules carry the dependencies
+with the largest attack surface in the tree (go-git, pgx, modernc.org/sqlite,
+go-github, the OpenAI client), and each has its own `go.mod` outside the root
+module graph — so `./...` from the root never reaches them.
 
 Nothing caches the advisory database, and nothing should.
 
@@ -180,6 +209,197 @@ longer one of the plan's outputs or one of `verdict`'s `needs:` — a workflow
 with no `pull_request` trigger never produces a check run for this repository's
 required-status-checks list to see, so it participates in neither.
 
+### Two more workflows outside the plan
+
+`editors.yml` (**Editors**) runs on pushes to `main` and on pull requests, in two
+jobs: *Neovim LSP smoke* drives a real, pinned Neovim through
+`tools/editorsmoke/probe.lua` against `flow lsp` and asserts the fenced
+configuration in `docs/EDITORS.md` is byte-identical to the file it loads; *VS
+Code extension* builds and tests the extension. Neither is one of the plan's
+outputs, because what they verify is an editor, not a Go package the plan can
+reach from the import graph, and neither is a required check.
+
+`release.yml` (**Distribution rehearsal**) is `workflow_dispatch` only. It
+builds archives, SBOMs and checksums through `tools/release` and uploads them as
+a same-run payload; its publication job is interlocked off (`if: false && …`,
+with a sibling job that explains the interlock) until releases are switched on
+deliberately — #1216 carries that decision. It produces no check run for a pull
+request and is not in `verdict`'s `needs:`.
+
+### Parallel test lanes, and a fuzz job that runs what the diff reaches
+
+The docs-only path above was measured and fixed; the code path was not. On two
+`main` runs in September (`33894879891` and `33872952044`) the `test` job took
+11m29s and 11m46s, and inside it three steps that do not depend on one another
+ran back to back: `make test` (5m22s), the plugin modules (2m08s) and the
+ordering rehearsal (2m33s). `fuzz-smoke` ran thirteen targets for 30s each
+through one `go test -fuzz` per target, 9m28s, on every diff that reached any
+package holding a target — a flowfile change fuzzed `FuzzWebhookEventBinding`,
+which it cannot move (#1726).
+
+Since #1726:
+
+- `test` is three jobs: `test` (build, vet, gofmt, `make test`, and the
+  docs, examples, breaking and compose checks that need the root build),
+  `test-plugins` (`make test-plugins` and `make plugin-examples`) and
+  `test-ordering` (`make test-ordering`). Each is `needs: plan` and nothing
+  else, so the critical path is `plan` plus the root suite. `ciDecisions`
+  selects them separately — a plugin-only diff runs `test-plugins` and not
+  the root suite; a root Go change runs both, because every plugin module
+  replaces `github.com/picatz/flowstate` with `../..`; `test-ordering` follows
+  the local tier's ordering trigger plus `examples/`, which the flowtest fuzz
+  seeds read off disk. This is a split of independent Make targets, not a shard
+  of `make test`, so the objection under "Considered and excluded" still holds:
+  the command a contributor runs is the command CI runs.
+- After #1922 made root-package processes serial for deadline isolation, the
+  same root suite grew from about five minutes to 24–25 minutes. The Actions
+  artifacts from runs `34403410255` and `34400366207` show three independent
+  packages accounting for 16m40s–17m47s of package execution: engine
+  7m39s–7m59s, the root v1 package 5m53s–5m59s, and cmd/flow 3m08s–3m49s.
+  `test` is therefore one four-lane matrix: those three packages each own a
+  runner and `rest` receives the exact `go list ./...` complement. Every lane
+  still calls the one `make test` recipe with its package set, retains `-race
+  -p=1`, and reports through `tools/testsum`; build, vet, formatting, generated
+  docs, examples, breaking, and compose checks run once in `rest`. `fail-fast:
+  false` preserves every lane's diagnostics, and `verdict` sees the aggregate
+  matrix result, so a missing or failed lane remains red. Four cache-scope
+  files prevent the lanes racing to save one incomplete build cache.
+- `plan` publishes `fuzz_targets` beside the job booleans: the smoke-tier
+  targets whose package the diff reaches, in `targets.txt` order, and every
+  smoke target on a forced run. `fuzz-smoke` hands it to `make fuzz-smoke` as
+  `FUZZ_SMOKE_TARGETS`, and `tools/fuzztargets/list.sh` narrows to those names
+  — refusing a name the tier does not hold rather than fuzzing what is left.
+  Unset, the Makefile target runs the whole tier, which is what `make check`
+  wants. The job's own decision follows the list: it runs when there is at
+  least one target, so a diff reaching only a package with a deep-only target
+  (the engine) no longer runs a smoke job with nothing in it. Promoting a
+  target to smoke is an edit to `targets.txt`, which forces the full set.
+
+`tools/gate/ci_test.go` pins the new decisions, the exact target list a
+flowfile and an lsp change produce, that the `plan` job's `outputs:` block
+forwards every output the plan publishes, and that the `fuzz-smoke` step reads
+`fuzz_targets` — because the Makefile's default is the whole tier, and a step
+that dropped the variable would stay green at the old cost.
+
+### The fuzz tier was slower than the fuzzing it did
+
+Narrowing the tier to what a diff reaches left the other half of `fuzz-smoke`
+untouched: on a forced run it still spent 9m13s of a ten-minute budget, and
+almost none of it on the machine. A tier gives each target `-parallel 1` — one
+fuzzing worker, which is what keeps a crash and the memory behind it
+attributable to a single input — and one worker is about one core. The targets
+then ran one after another, so on a four-core runner three cores idled for
+every target's whole thirty-second budget and thirteen targets cost thirteen
+consecutive budgets.
+
+Those are two different bounds and the loop conflated them. Spending the idle
+cores on *other* targets leaves the per-target bound exactly where it was, but
+it is not obviously free: `-fuzztime` bounds wall clock rather than executions,
+so a target sharing a machine could simply explore less in its thirty seconds
+and the tier would get weaker while looking faster.
+
+`tools/fuzzrun` is the loop now — it reads `list.sh`'s output, so selection is
+still the one reader's job — and it runs **half the CPUs' worth of targets at
+once, not one per CPU**. That halving is the measured part.
+
+The first version of this section claimed one worker per CPU cost nothing,
+on totals that went 456,000 to 467,519 executions and read as flat. They were
+not. One target contributed +107,183 of that, so the other twelve netted
+−95,664, or −21% — a single outlier hiding exactly the decline the design has
+to rule out.
+
+The reason is that a fuzzing target is *two* processes: `go test -fuzz` runs a
+coordinator that mutates and dispatches inputs and a worker that executes them,
+and `-parallel 1` bounds the workers. N targets at once is 2N processes, so
+four targets on a four-core runner is eight, and the cores do not absorb it.
+
+Execution counts are a poor instrument here and this measurement was misled by
+them twice, in opposite directions. They depend on the corpus a run happened to
+grow, so they move by large factors between runs of one configuration, and
+summing them does not fix it because the sum inherits whichever target swung
+hardest. An early A/B compared them per target across warm-corpus runs and
+reported a 57% loss that was not there; its replacement summed them and
+reported no loss at all.
+
+What a target is owed under concurrency is its share of the machine, and CPU
+seconds per target measures that without asking what its corpus found. Measured
+over the smoke tier with the corpus cleared before each arm and the test
+binaries compiled first, so build contention was not counted as fuzzing:
+
+| workers | wall | per-target CPU, median (range) |
+|---|---|---|
+| 1 | 423s | 1.00 |
+| `NumCPU/2` | 224s | 0.92 (0.88–0.95) |
+| `NumCPU` | 151s | 0.66 (0.49–0.89) |
+
+At one worker per CPU a target keeps about two thirds of the CPU it would have
+had alone and the worst keeps half — a third of the tier's fuzzing traded for
+the last 73 seconds, which is not a trade a smoke tier should make silently.
+Half the CPUs costs a median 8% and a worst 12%. That shortfall is systematic
+rather than noise: every one of the thirteen targets lost some, and no arm was
+repeated, so there is no measured noise floor to call it small against. It buys
+nearly half the wall clock, and that is the trade the default makes.
+`FUZZ_SMOKE_JOBS` overrides it either way.
+
+The count is `GOMAXPROCS`, not `NumCPU`, for the reason `tools/fleet` already
+gives: an affinity mask is not a quota, so a lane given two cores' worth of CPU
+on a large host reads `NumCPU` as the host's and would dispatch targets by the
+dozen — each of which would still "complete" its thirty seconds having fuzzed
+almost nothing. On a runner the two agree at 4.
+
+On the runner the same thirteen targets went from 9m13s to 5m48s (`main` run
+`34726074939` against pull request run `34735407267`, both forced-wide, both
+reporting every target passed) — that measurement predates the halving above,
+so the shipped default will land between it and the 9m13s baseline. The
+difference from the local ratio is not the fuzzing: thirteen targets at 30s across four workers is a
+two-minute floor, so about 228s of that step is building test binaries — more
+than the ~163s the serial job spent building. The likely cause is that
+concurrent `go test` invocations each drive their own build over overlapping
+dependency graphs and contend on one build cache, but that diagnosis is
+inferred rather than measured. Compiling the binaries once before the fuzzing
+starts should recover most of it and has not been measured either.
+
+At the shipped default the step took 6m15s on run `34762432757`, between the
+5m48s and the 9m13s this section brackets, whose job ran 6m35s, about 3m25s inside
+the `timeout-minutes: 10` that bounds it.
+
+### A failing test is an annotation, not a line in a log
+
+Until #1727, `ci.yml` emitted `::error` annotations for gofmt drift, generated
+docs, generated code and plan disagreements, and none for a failing Go test:
+the `Test` step was `make test` as plain text, five to six minutes of it, and
+a reviewer read the log for `--- FAIL`. Now `make test`, `make test-ordering`
+and `make test-plugins` run `go test -json` through `tools/testsum`, and the
+local gate's test legs do the same, so the local loop and CI print one shape:
+a count of what passed, then one block per failing test — package, test, the
+assertion lines with their `dir/file.go:NN`, and the shuffle seed to rerun
+that order. Under Actions it also writes one `::error file=…,line=…` per
+failing test, which the Files tab renders inline, and a table to the job
+summary. A panic is attributed to its test with the frame inside it; a timeout,
+which the stream never attributes, is inferred as the test that was started and
+never finished when its package failed, with the goroutine that was blocked in
+it. The raw stream is uploaded as an artifact from the `test` job so the full
+record is there when the summary is not enough.
+
+The recipes are pipelines, so those three targets select `bash` with
+`pipefail` for their shells: `/bin/sh` is `dash` 0.5.12 on Ubuntu 24.04, here
+and on the runners, and it rejects `set -o pipefail`; a `go test` that died
+before printing a failure must still be red.
+
+`make test` passes `TEST_SHUFFLE` to `go test -shuffle`, `on` by default, and
+the seed each package prints is what testsum's rerun lines carry. Turning it
+on first found the thing it exists to find: three `cmd/flow` tests
+(`TestGeneratedDocsAreCommitted`, `TestPluginDirWiresPluginTasksIntoTheMCPSurface`,
+`TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy`) read the
+process-wide `DefaultRegistry` as this build shipped it and failed under seed
+`1788698486191639409` whenever a plugin or egress-policy test ran first,
+because registering into that registry has no undo of its own. The tests that
+launch a plugin now take its tasks back out when they end
+(`cmd/flow/registryrestore_test.go`), and the one whose claim is about the
+default policy installs it rather than assuming it, which is what made the
+default safe. To pin an order, `make test TEST_SHUFFLE=off`; to reproduce a
+reported seed, `go test -shuffle=<seed> ./cmd/flow`.
+
 ### Caching
 
 `actions/setup-go` derives its cache key from a hash of `cache-dependency-path`,
@@ -191,9 +411,12 @@ measured effect on run 31909221065: `vulncheck` scanned in **5s** against a warm
 from source and `proto` spent **52s** rebuilding `buf`, with nothing in the file
 explaining the difference.
 
-`proto` and `staticcheck` now name a file under `.github/cache-scope/` alongside
-`go.sum`, which gives each a key of its own. The files' contents are arbitrary
-and are deliberately *not* version pins: the tool versions live once, in
+`proto`, `staticcheck`, and since #1726 the three test jobs, each name a file
+under `.github/cache-scope/` alongside `go.sum`, which gives each a key of its
+own; `test-plugins` also keys on `plugins/*/go.sum`, so the plugin modules keep
+the warm cache they had when they shared the `test` job. The files' contents
+are arbitrary and are deliberately *not* version pins: the tool versions live
+once, in
 `ci.yml`'s `env:` block, and Go's build and module caches are content-addressed,
 so a key that fails to change after a version bump costs one cold build and a
 key that changes needlessly costs one cold build. Neither can produce a wrong
@@ -253,6 +476,52 @@ durations above:
 
 A 21% cut in compute and, on a fifth of pull requests, an answer in under a
 minute instead of six.
+
+### A code pull request, before
+
+Two `main` runs from 2026-09, per-job and per-step durations from the Actions
+API (#1726). Both are `main` pushes, so the full set; a code pull request
+reaching `pkg/flowstate/v1/flowfile` ran the same jobs bar `proto`, and so paid
+the same `test` and `fuzz-smoke`.
+
+| job | run `33894879891` (`eb8172f`) | run `33872952044` (`577c6bb`) |
+|---|---|---|
+| `plan` | 23s | 20s |
+| `test` | **11m29s** | **11m46s** |
+| `fuzz-smoke` | **9m28s** | **9m21s** |
+| `appearance` | 2m51s | 2m59s |
+| `staticcheck` | 2m06s | 2m34s |
+| `vulncheck` | 1m03s | 59s |
+| `proto` | 24s | 30s |
+| `verdict` | 3s | 4s |
+| **wall clock, push to verdict** | **12m04s** | 12m18s (plus 5m15s queued before `plan`) |
+
+Inside `test`, the three long steps did not depend on one another:
+
+| step | run 1 | run 2 |
+|---|---|---|
+| setup-go (cache restore) | 25s | 26s |
+| Build + Vet | 30s | 31s |
+| **Test** (`make test`) | **5m22s** | **5m29s** |
+| **Test plugin modules** | **2m08s** | **2m10s** |
+| Validate plugin examples | 17s | 18s |
+| **Ordering claims hold under a different schedule** | **2m33s** | **2m38s** |
+| docs / examples / breaking / compose checks | 6s | 7s |
+
+### The same, after
+
+**Not measured.** The split and the per-target fuzz selection were authored
+without access to the Actions API, so there is no "after" column here yet. What
+the design predicts, from the numbers above: the critical path becomes `plan`
+plus the root `test` job, about 6 minutes against 12; `test-plugins` and
+`test-ordering` run beside it at about 2m30s and 3m; and `fuzz-smoke` on a
+flowfile diff runs seven targets rather than thirteen, which on the linear
+estimate the job's own comment uses is about 4 minutes rather than 9. Billed
+job-minutes should move by the setup overhead of two more jobs — a checkout, a
+`setup-go` restore and a toolchain report each, about a minute together —
+minus whatever the fuzz selection saves. The first two runs on `main` after
+the change are where those numbers come from, and this section should be
+filled in from them rather than from this paragraph.
 
 ### What the queue is worth
 
@@ -324,7 +593,7 @@ gh api -X POST repos/picatz/flowstate/rulesets --input - <<'JSON'
         "max_entries_to_merge": 5,
         "min_entries_to_merge": 1,
         "min_entries_to_merge_wait_minutes": 1,
-        "check_response_timeout_minutes": 20
+        "check_response_timeout_minutes": 45
       }
     }
   ]
@@ -350,8 +619,9 @@ Five parameters there are load-bearing and easy to get wrong:
   a lone pull request sit idle waiting for company. Batching still emerges
   naturally, because entries arriving while a group is building join the next
   one, and `max_entries_to_build: 5` is what caps the group.
-- **`check_response_timeout_minutes: 20`** must exceed the slowest job. `test`
-  budgets 15 minutes and `appearance` 15; 20 leaves room without letting a
+- **`check_response_timeout_minutes: 45`** must exceed the slowest job. `test`
+  now has a 20-minute outer bound per matrix lane; 45 also accommodates the
+  remaining unsharded jobs and leaves final-check headroom without letting a
   wedged group hold the queue indefinitely.
 
 Optionally pin the check provider by adding `"integration_id": <GitHub Actions'
@@ -410,15 +680,40 @@ the same category of mistake as a gate that passes without looking.
   `merge_group` ref, and that batching follows `max_entries_to_build`, should be
   confirmed on the first busy evening.
 
+## The analysis workflows beside CI
+
+Three workflows run beside `ci.yml` and decide nothing about merging a pull
+request's code; they report on the tree's security posture (#1750), and
+`SECURITY.md`'s "What runs" section is the one place the whole program is
+listed.
+
+- `codeql.yml` analyses Go with the security-extended queries on every pull
+  request, on `main` and weekly. It crosses the plugin module boundary through
+  a `go.work` generated for the job by the Makefile's `.coverage/go.work`
+  recipe and copied to the root of the checkout. Its manual traced build
+  enumerates every module in that workspace: a plain `go build ./...` does not
+  cross nested module boundaries, so each is built with `GOWORK=off`, while
+  CodeQL's autobuilder would run this repository's default `make` target
+  (`gate`) and duplicate tests unrelated to static analysis. The workspace is
+  never committed, for the reason that recipe gives.
+- `scorecard.yml` runs the OpenSSF Scorecard on `main` and weekly and
+  publishes the result, which is what the README badge reads.
+- `dependency-review.yml` diffs a pull request's dependency graph against its
+  base and fails on a high-severity advisory or a licence outside the
+  permissive family the MIT `LICENSE` composes with. It needs the repository's
+  dependency graph, which GitHub enables for a public repository by default;
+  the owner's-settings section above is where that would be switched on
+  otherwise.
+
 ## Considered and excluded
 
-- **Test sharding, and `-count` tuning.** `test` is the long pole at 6m13s.
-  Sharding would cut wall clock and *increase* job-minutes, and every shard is
-  another name someone will be tempted to add to the required list. The
-  affected-set skip already removes the whole job on the diffs that cannot
-  reach it, which is the larger win, and `make test` staying one command is
-  what keeps CI and the local rehearsal from disagreeing about what "the tests"
-  means.
+- **Test-count tuning.** Reducing counts or race coverage would buy time by
+  weakening semantics and remains excluded. Package-level parallel lanes were
+  excluded while `test` was 6m13s; #1922 changed that premise to a measured
+  24–25 minutes. The current matrix keeps one logical `test` job and one Make
+  recipe, partitions packages exhaustively, and spends roughly three extra
+  checkout/setup minutes to remove about sixteen minutes from the critical
+  path. A finer shard is still excluded until timings justify its maintenance.
 - **Diff-scoping the `test` job's own package list.** The same objection, one
   level worse: `make test` is what the Makefile, `make check` and CI all run,
   and splitting it would put the "one value written down twice" defect inside

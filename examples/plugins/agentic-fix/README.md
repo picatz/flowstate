@@ -32,17 +32,18 @@ hides. That would end the run FAILED with nobody asked, so the loop step carries
 `continue_on_error:`, which turns exhaustion into the path where `handoff`
 happens. The human is a step, not a bolt-on.
 
-**The budget is one, and that is the tooling's limit rather than a taste.** A
-second attempt cannot work today: `codex.exec` computes its `patch` by diffing
-`working_context` against the state it observed before the turn, and it fails
-closed when that workspace starts dirty. Attempt one's edits are still sitting in
-the workspace — nothing reverts them, and `git.commit_push` operates on its own
-in-memory clone rather than on that directory — so attempt two would receive an
-empty patch and be refused for having nothing to commit. There is no input that
-resets a working context, so the loop is kept (it is the shape that generalizes,
-and with a budget of one it is still what turns "did not fix it" into a handoff)
-and the number is the one thing that changes when that gap closes. See *What is
-still missing*.
+**The budget is one, and that is the tooling's limit rather than a taste.**
+`codex.exec` computes its `patch` by diffing `working_context` against the state
+it observed before the turn, and it fails closed when that workspace starts
+dirty. #967 added `reset_working_context`, which discards a previous turn's own
+edits before the next turn's baseline is read — so a second attempt can start
+from a clean tree. What it cannot do is check the tree out at a *different*
+commit: this loop's `base` advances to each successful push's sha, and nothing
+here brings `working_context` forward to match, so a second attempt would compute
+its patch against the wrong tree. The loop is kept (it is the shape that
+generalizes, and with a budget of one it is still what turns "did not fix it"
+into a handoff) and the number is the one thing that changes when that gap
+closes. See *What is still missing*.
 
 **The patch is a value.** `codex.exec` edits a workspace and emits a `patch` — a
 unified diff of what it changed; `git.commit_push` applies that `patch`. Neither
@@ -68,7 +69,7 @@ attempt is compare-and-swapped against the commit it was computed on, so a
 second writer to the same branch is refused rather than silently forced.
 
 **The credential is never in the agent's context.** `${secret('env:OPENAI_API_KEY')}`
-and `${secret('git:token')}` are references resolved inside the task that needs
+and `${secret('git:token')}` are references resolved by the host for the task that needs
 the value. The prompt this file builds carries a test log and nothing else, and
 nothing about either key reaches workflow history.
 
@@ -97,9 +98,10 @@ own report. Everything except the four effects runs for real — the loop, the
 carried state, the budget, the `if:`, the gate and its 24-hour deadline, which
 passes in microseconds on the virtual clock.
 
-No case scripts a second attempt, deliberately: the installed plugin could not
-produce one, and a stub that pretended otherwise would be asserting behavior the
-real task cannot deliver.
+No case scripts a second attempt, deliberately: the workspace-at-a-commit gap
+means a second attempt would compute its patch against the wrong tree, and a
+stub that pretended otherwise would be asserting behavior the real task cannot
+deliver.
 
 For real, this file needs both plugins built and a worker told where they are,
 the two secrets, a CI endpoint that answers `passed`, and two pieces of setup the
@@ -118,9 +120,12 @@ workflow itself cannot do:
   the operator's `FLOWSTATE_CODEX_WORKDIR_ROOT`, since that is where the agent
   edits and from which its `patch` is diffed.
 
-Two of the worker's environment variables are not optional here, and leaving
-either unset makes the turn fail rather than degrade — both are operator
-decisions the workflow cannot make for itself:
+Two of the codex plugin's environment variables are not optional here, and
+leaving either unset makes the turn fail rather than degrade — both are operator
+decisions the workflow cannot make for itself. A plugin inherits nothing of the
+worker's environment, so each is named to the worker with `--plugin-env
+codex=KEY=VALUE` (or the `--plugin-env-file` form), never exported into the
+shell that starts it:
 
 - **`FLOWSTATE_CODEX_BASE_CONFIG`** must name a codex config that permits
   workspace writes. The plugin's ceiling is fail-closed: with this unset the
@@ -143,13 +148,13 @@ decisions the workflow cannot make for itself:
 $ mkdir -p ./plugins
 $ go -C plugins/codex build -o ../../plugins/flowstate-plugin-codex .
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
-$ export FLOWSTATE_CODEX_BIN=/path/to/codex
-$ export FLOWSTATE_CODEX_GIT_BIN=/usr/bin/git          # no $PATH fallback; without it, no patch
-$ export FLOWSTATE_CODEX_BASE_CONFIG=/path/to/codex-base.toml  # else the ceiling stays read-only
-$ export FLOWSTATE_CODEX_WORKDIR_ROOT=/path/to/checkouts
-$ export FLOWSTATE_SECRET_OPENAI_API_KEY=sk-...
-$ export GIT_SECRET_0__TOKEN=...
-$ flow worker --plugin-dir ./plugins
+$ export FLOWSTATE_SECRET_OPENAI_API_KEY=sk-...        # the worker's own env: provider
+$ flow worker --plugin-dir ./plugins \
+    --plugin-env codex=FLOWSTATE_CODEX_BIN=/path/to/codex \
+    --plugin-env codex=FLOWSTATE_CODEX_GIT_BIN=/usr/bin/git \
+    --plugin-env codex=FLOWSTATE_CODEX_BASE_CONFIG=/path/to/codex-base.toml \
+    --plugin-env codex=FLOWSTATE_CODEX_WORKDIR_ROOT=/path/to/checkouts \
+    --plugin-env git=GIT_SECRET_0__TOKEN=...
 $ flow run examples/plugins/agentic-fix/workflow.yaml \
     --input repo=https://github.com/your-org/your-repo.git \
     --input branch=agent/fix \

@@ -179,7 +179,71 @@ type RunRequest struct {
 	//
 	// Free text, because the question it answers is one a person asks another
 	// person. Bounded like everything else a caller chooses the size of.
-	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	// RequestId makes this submission idempotent: two Run calls carrying the same
+	// value in the same namespace produce one run, and the second is answered
+	// with the run the first started, [RunResponse.reused] set.
+	//
+	// # What it is for
+	//
+	// A caller whose request times out after the server has already started the
+	// run — a client deadline, a load balancer reset, a laptop lid — has no way to
+	// tell "never started" from "started and the answer was lost", and a retry
+	// without this field starts the workload a second time. For the workloads
+	// this engine exists for, the second run is the incident. `flow run` sends a
+	// fresh value on every invocation and reuses it across its own retries, and
+	// `--request-id` lets a CI job supply its own, typically the job's run id, so
+	// a re-run of the job converges on the run the first attempt started.
+	//
+	// # What it addresses
+	//
+	// Unset is byte-identical to today: a `flowstate-workflow-<uuid>` id, minted
+	// per request. Set, the run's workflow id is derived from the authenticated
+	// namespace and this value by digest — `flowstate-request-<hex>`, a prefix of
+	// its own so a request can never address, join or block a run created by an
+	// entity key, a `concurrency:` block or a webhook delivery — and Temporal's
+	// own uniqueness on that id is the dedupe: two retries arriving
+	// simultaneously both reach the cluster, one is admitted and the other is
+	// answered with the run it started. There is no window, no local table and
+	// nothing to expire. A retry that arrives after the run *finished* is answered
+	// with the finished run too: a request id names one submission forever, which
+	// is what makes it a key rather than a lock.
+	//
+	// The namespace half comes only from the authenticated caller, exactly as
+	// [RunRequest.entity_key]'s does and for the identical reason: two tenants
+	// choosing the same value are two submissions, and a request cannot name the
+	// tenant it is deduplicated under.
+	//
+	// # Composition with the other addressing schemes
+	//
+	// When the request also names an entity key, or the workflow declares a
+	// `concurrency:` block, that address decides the run's id and which run is
+	// live; this field then decides only whether a submission colliding with a
+	// live run is a *retry* of the submission that started it — answered with the
+	// run, reused — or a second submission, which the address's own rule then
+	// handles (an entity refuses it; `on_conflict:` decides for a permit).
+	//
+	// # A reused key with a different submission is refused
+	//
+	// The run records a digest of the submission it was started with — the
+	// specification as sent and the inputs as bound. A later request under the
+	// same key whose digest differs is refused with `AlreadyExists`, naming the
+	// run, rather than silently attached to a run that will do something other
+	// than what this request asked: an idempotency key that answered a different
+	// payload with "done" would be worse than no key at all. Choose a new value
+	// for a new submission.
+	//
+	// # Grammar
+	//
+	// A UUID or a caller-chosen string of 1 to 128 ASCII letters, digits and
+	// `.`, `_`, `:`, `/` or `-`, the first a letter or digit: the alphabet a
+	// UUID, a CI job's run id, a ULID or a `<system>:<id>` key is already written
+	// in, and nothing wider, so a value copied from a log line or a URL reads as
+	// itself. It is digested, never interpolated, so nothing about its content
+	// can reach a workflow id — the same discipline `webhookWorkflowID` applies
+	// to an idempotency key — and it is recorded on the run only as that digest,
+	// never as the value itself.
+	RequestId     *string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3,oneof" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -242,10 +306,18 @@ func (x *RunRequest) GetReason() string {
 	return ""
 }
 
+func (x *RunRequest) GetRequestId() string {
+	if x != nil && x.RequestId != nil {
+		return *x.RequestId
+	}
+	return ""
+}
+
 // RunResponse is the response message for a workflow run.
 type RunResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run and
+	// WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run,
+	// `flowstate-request-<hex>` for one started with [RunRequest.request_id] and
 	// `flowstate-entity-<namespace>_<entity_key>` for one started with
 	// [RunRequest.entity_key], no longer a bare UUID, so the format constraint
 	// is a length bound rather than [buf.validate.field.string.uuid], which the
@@ -275,12 +347,15 @@ type RunResponse struct {
 	// Substitution is the loudest way the two can differ and not the only one. A
 	// server also *transforms* what it runs: it writes its own selection of plugin
 	// versions onto the specification before the engine sees it, and may normalize
-	// or expand more of it later. So this is whole-message equality between the
-	// request as it arrived and the specification handed to the engine, answered
-	// after every one of those steps rather than at the substitution alone. Reading
-	// it as "the parts a client's redaction happens to consult" would be a list
-	// somebody has to extend for every transformation added afterwards, and it
-	// would answer true the first time nobody did.
+	// or expand more of it later. So this compares the request as it arrived with
+	// the specification handed to the engine, answered after every one of those
+	// steps rather than at the substitution alone. The one excluded field is
+	// Workflow.resolved_task_capabilities when the caller omitted it: that is the
+	// control plane's attestation about an otherwise unchanged program, not an
+	// executable transformation or a declaration a client redacts against. A
+	// caller-supplied value in that field is still a difference when the server
+	// overwrites it. Any future exclusion requires the same explicit semantic
+	// decision here; this is not a field list derived from today's client.
 	//
 	// Three answers, not two, which is why this is `optional`. True means the
 	// executed specification is the submitted one, so a client may trust its own
@@ -325,7 +400,29 @@ type RunResponse struct {
 	// one: a server too old to have this field cannot have honoured a
 	// `concurrency:` block either, so it never joined anything, and "unset" and
 	// "did not join" are the same fact rather than two.
-	Joined        bool `protobuf:"varint,7,opt,name=joined,proto3" json:"joined,omitempty"`
+	Joined bool `protobuf:"varint,7,opt,name=joined,proto3" json:"joined,omitempty"`
+	// Reused is true when this response describes the run an earlier request
+	// carrying the same [RunRequest.request_id] already started, rather than one
+	// this request started.
+	//
+	// Output only, and the server's statement rather than a caller's inference:
+	// a retry that gets back a run id cannot tell "mine, started now" from "mine,
+	// started by the attempt whose answer I lost" by looking, and the two differ
+	// in what the caller may conclude — [RunResponse.status] on a reused run is
+	// the run's *current* status, which may already be terminal, and
+	// [RunResponse.specification_as_submitted] is answered false because the
+	// specification that ran is the one the earlier attempt sent, not
+	// necessarily this one's. Established the way [RunResponse.joined] is: from
+	// the cluster's own already-started answer, never from a run id the server
+	// happens not to recognize.
+	//
+	// Distinct from `joined`, which names a run *somebody else* holds under a
+	// `concurrency:` key. A reused run is this caller's own submission, checked
+	// to be the same one by digest; a joined run may have been started by anyone
+	// in the tenant with any inputs. A plain `bool` for `joined`'s reason: a
+	// server too old to have this field never deduplicated anything, so "unset"
+	// and "did not reuse" are one fact.
+	Reused        bool `protobuf:"varint,8,opt,name=reused,proto3" json:"reused,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -416,6 +513,13 @@ func (x *RunResponse) GetSpecificationAsSubmitted() bool {
 func (x *RunResponse) GetJoined() bool {
 	if x != nil {
 		return x.Joined
+	}
+	return false
+}
+
+func (x *RunResponse) GetReused() bool {
+	if x != nil {
+		return x.Reused
 	}
 	return false
 }
@@ -620,7 +724,21 @@ type GetResponse struct {
 	// this field - it reads the same memo itself, and denies rather than proceeds
 	// when the answer is missing (see the server's authorizeSignal) - so an empty
 	// value here weakens nothing.
-	Starter       string `protobuf:"bytes,12,opt,name=starter,proto3" json:"starter,omitempty"`
+	Starter string `protobuf:"bytes,12,opt,name=starter,proto3" json:"starter,omitempty"`
+	// FirstRunId is the segment the workload began at, read off the same
+	// Describe response everything else here comes from. Equal to run_id for a
+	// run that never continued as new; where it differs, run_id names the
+	// segment this response reports and first_run_id is where `flow timeline`
+	// walks the whole chain from (picatz/flowstate#1690).
+	FirstRunId string `protobuf:"bytes,14,opt,name=first_run_id,json=firstRunId,proto3" json:"first_run_id,omitempty"`
+	// Segments is how many Continue-As-New segments the workload has run as,
+	// this one included, with RunSummary.segments' meaning: two or more when
+	// the interpreter recorded the chain, and zero when it recorded none —
+	// which is every run that never continued as new, since a first segment
+	// writes no count, as well as a chain whose first segment predates the
+	// count. A client must not assume it is at least one; first_run_id against
+	// run_id says whether a run with no count continued at all.
+	Segments      uint32 `protobuf:"varint,15,opt,name=segments,proto3" json:"segments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -755,6 +873,20 @@ func (x *GetResponse) GetStarter() string {
 		return x.Starter
 	}
 	return ""
+}
+
+func (x *GetResponse) GetFirstRunId() string {
+	if x != nil {
+		return x.FirstRunId
+	}
+	return ""
+}
+
+func (x *GetResponse) GetSegments() uint32 {
+	if x != nil {
+		return x.Segments
+	}
+	return 0
 }
 
 type isGetResponse_Kind interface {
@@ -1355,8 +1487,12 @@ type ListRequest struct {
 	// (see ListResponse.next_page_token), so a small page is not a promise of a
 	// small scan.
 	PageSize int32 `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
-	// PageToken continues a previous List. Opaque: it encodes where the scan
-	// stopped, and nothing else should be read from or written into it.
+	// PageToken continues a previous List. Opaque: it is a token the server
+	// issued and authenticated, and nothing should be read from or written into
+	// it. A token is accepted only by the server process that issued it, only
+	// from the tenant it was issued to, only with the same filter and page size
+	// it was issued for, and only for a day — each refusal says which. See
+	// ListCursor for what one carries.
 	PageToken string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	// Filter keeps only the runs a CEL expression answers yes about.
 	//
@@ -1470,6 +1606,8 @@ type RunSummary struct {
 	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	Status     RunResponse_Status     `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
 	// StartTime is when the workload began.
+	// For a workload that continued as new, the workload's start rather than the
+	// listed segment's — see segment_start_time.
 	StartTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
 	// CloseTime is when it finished, unset while it is still running.
 	CloseTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
@@ -1531,6 +1669,23 @@ type RunSummary struct {
 	// "recorded twice, drifting" this schema keeps out. It costs nothing extra:
 	// the listing response already carries it.
 	WorkerVersion string `protobuf:"bytes,9,opt,name=worker_version,json=workerVersion,proto3" json:"worker_version,omitempty"`
+	// SegmentStartTime is when the listed segment itself started, which for a
+	// workload that continued as new is later than start_time: start_time is
+	// the workload's start, read off the memo the interpreter writes at every
+	// continued segment (picatz/flowstate#1690), and this is the segment's own.
+	// Equal to start_time wherever no chain was recorded — a run that never
+	// continued, whose one segment is the workload, and a chain whose first
+	// segment predates the memo, which then reports the segment's start as
+	// both. segments is zero in both of those cases.
+	SegmentStartTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=segment_start_time,json=segmentStartTime,proto3" json:"segment_start_time,omitempty"`
+	// Segments is how many Continue-As-New segments the workload has run as,
+	// this one included: two or more when the interpreter recorded the chain,
+	// and zero when it recorded none. A first segment writes no count, so a run
+	// that never continued as new reports zero, not one; so does a chain whose
+	// first segment predates the count, whose start_time is then the listed
+	// segment's rather than the workload's. A listing cannot tell those two
+	// apart; a Get can, by first_run_id.
+	Segments      uint32 `protobuf:"varint,11,opt,name=segments,proto3" json:"segments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1628,6 +1783,20 @@ func (x *RunSummary) GetWorkerVersion() string {
 	return ""
 }
 
+func (x *RunSummary) GetSegmentStartTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.SegmentStartTime
+	}
+	return nil
+}
+
+func (x *RunSummary) GetSegments() uint32 {
+	if x != nil {
+		return x.Segments
+	}
+	return 0
+}
+
 // ListResponse returns a page of the caller's runs.
 type ListResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1641,9 +1810,29 @@ type ListResponse struct {
 	// namespace shared by several tenants a scan can therefore end having found
 	// few matches, or none, while plenty remain. An empty page with a token set
 	// means "keep asking", and only an empty token means the listing is done.
+	//
+	// Opaque, and constructed by nobody but the server: see ListRequest.page_token
+	// for what is checked when it comes back, and ListCursor for its contents.
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// How many of the caller's runs this page's scan reached and left out because
+	// the filter could not be evaluated over them — an index into a label the run
+	// does not carry, a comparison against a close time the run does not have yet.
+	//
+	// A run the filter cannot answer for is a run it did not say yes about, which
+	// is the fail-closed reading and the one `labels["team"] == "x"` means when
+	// most runs carry no `team` at all (picatz/flowstate#1689). The count is here
+	// so that a caller can tell "nothing matched" from "nothing could be asked",
+	// and so that `flow list -o json` can carry it without a sentence. Zero when
+	// no filter was given.
+	ExcludedByError uint32 `protobuf:"varint,3,opt,name=excluded_by_error,json=excludedByError,proto3" json:"excluded_by_error,omitempty"`
+	// Why the filter could not be evaluated, set only when it could not be
+	// evaluated over any of the runs this page reached — the shape a typo takes,
+	// as opposed to a filter that is right about the runs it is right about. The
+	// first error the scan met, with the spelling that would have avoided it when
+	// there is one. Empty otherwise.
+	FilterDiagnostic string `protobuf:"bytes,4,opt,name=filter_diagnostic,json=filterDiagnostic,proto3" json:"filter_diagnostic,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ListResponse) Reset() {
@@ -1690,6 +1879,114 @@ func (x *ListResponse) GetNextPageToken() string {
 	return ""
 }
 
+func (x *ListResponse) GetExcludedByError() uint32 {
+	if x != nil {
+		return x.ExcludedByError
+	}
+	return 0
+}
+
+func (x *ListResponse) GetFilterDiagnostic() string {
+	if x != nil {
+		return x.FilterDiagnostic
+	}
+	return ""
+}
+
+// ListCursor is what a page token carries, and is never sent as-is.
+//
+// A token is this message serialized, followed by an HMAC-SHA256 over those
+// bytes under a key the server process derived at startup, base64url-encoded.
+// The server refuses a token whose authentication code it did not produce, so
+// a caller cannot construct one and nothing about its layout is a contract: the
+// message is defined in the schema so the server has one wire-stable shape to
+// sign rather than a hand-written struct, not so that a client may read it.
+//
+// The key is per process. Two replicas do not share one yet, so a token issued
+// by one is refused by the other as not a token it issued; the key-sharing
+// question is the same one multi-replica MCP sessions raise (#1654) and is
+// answered there rather than twice.
+type ListCursor struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Position is where the scan stopped, in the visibility store's own words:
+	// the page token Temporal handed back, carried intact and never inspected.
+	Position []byte `protobuf:"bytes,1,opt,name=position,proto3" json:"position,omitempty"`
+	// Namespace is the tenant the token was issued to. A token presented by a
+	// caller in another namespace is refused, whatever its position: a cursor
+	// is a place in one tenant's listing and means nothing in another's.
+	Namespace string `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// QueryDigest is a SHA-256 over the filter and the effective page size the
+	// token was issued for. The same cursor under a different filter names a
+	// page that need not exist, which would come back as a silently empty page
+	// rather than an error, so a token whose digest differs from the request's
+	// is refused instead.
+	QueryDigest []byte `protobuf:"bytes,3,opt,name=query_digest,json=queryDigest,proto3" json:"query_digest,omitempty"`
+	// IssuedAt is when the server issued the token. A token older than a day is
+	// refused, so a stored cursor cannot resume a listing whose visibility has
+	// since changed.
+	IssuedAt      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=issued_at,json=issuedAt,proto3" json:"issued_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListCursor) Reset() {
+	*x = ListCursor{}
+	mi := &file_flowstate_v1_service_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListCursor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListCursor) ProtoMessage() {}
+
+func (x *ListCursor) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_service_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListCursor.ProtoReflect.Descriptor instead.
+func (*ListCursor) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ListCursor) GetPosition() []byte {
+	if x != nil {
+		return x.Position
+	}
+	return nil
+}
+
+func (x *ListCursor) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *ListCursor) GetQueryDigest() []byte {
+	if x != nil {
+		return x.QueryDigest
+	}
+	return nil
+}
+
+func (x *ListCursor) GetIssuedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.IssuedAt
+	}
+	return nil
+}
+
 // ValidateRequest is one or more files to check.
 type ValidateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1705,7 +2002,7 @@ type ValidateRequest struct {
 
 func (x *ValidateRequest) Reset() {
 	*x = ValidateRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[15]
+	mi := &file_flowstate_v1_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1717,7 +2014,7 @@ func (x *ValidateRequest) String() string {
 func (*ValidateRequest) ProtoMessage() {}
 
 func (x *ValidateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[15]
+	mi := &file_flowstate_v1_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1730,7 +2027,7 @@ func (x *ValidateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateRequest.ProtoReflect.Descriptor instead.
 func (*ValidateRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{15}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ValidateRequest) GetFiles() []*SourceFile {
@@ -1755,7 +2052,7 @@ type ValidateResponse struct {
 
 func (x *ValidateResponse) Reset() {
 	*x = ValidateResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[16]
+	mi := &file_flowstate_v1_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1767,7 +2064,7 @@ func (x *ValidateResponse) String() string {
 func (*ValidateResponse) ProtoMessage() {}
 
 func (x *ValidateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[16]
+	mi := &file_flowstate_v1_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1780,7 +2077,7 @@ func (x *ValidateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateResponse.ProtoReflect.Descriptor instead.
 func (*ValidateResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{16}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ValidateResponse) GetReport() *ValidationReport {
@@ -1856,7 +2153,7 @@ type GetTimelineRequest struct {
 
 func (x *GetTimelineRequest) Reset() {
 	*x = GetTimelineRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[17]
+	mi := &file_flowstate_v1_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1868,7 +2165,7 @@ func (x *GetTimelineRequest) String() string {
 func (*GetTimelineRequest) ProtoMessage() {}
 
 func (x *GetTimelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[17]
+	mi := &file_flowstate_v1_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1881,7 +2178,7 @@ func (x *GetTimelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTimelineRequest.ProtoReflect.Descriptor instead.
 func (*GetTimelineRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{17}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GetTimelineRequest) GetWorkflowId() string {
@@ -1983,7 +2280,7 @@ type GetTimelineResponse struct {
 
 func (x *GetTimelineResponse) Reset() {
 	*x = GetTimelineResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[18]
+	mi := &file_flowstate_v1_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1995,7 +2292,7 @@ func (x *GetTimelineResponse) String() string {
 func (*GetTimelineResponse) ProtoMessage() {}
 
 func (x *GetTimelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[18]
+	mi := &file_flowstate_v1_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2008,7 +2305,7 @@ func (x *GetTimelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTimelineResponse.ProtoReflect.Descriptor instead.
 func (*GetTimelineResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{18}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetTimelineResponse) GetEntries() []*TimelineEntry {
@@ -2068,7 +2365,7 @@ type CompileRequest struct {
 
 func (x *CompileRequest) Reset() {
 	*x = CompileRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[19]
+	mi := &file_flowstate_v1_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2080,7 +2377,7 @@ func (x *CompileRequest) String() string {
 func (*CompileRequest) ProtoMessage() {}
 
 func (x *CompileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[19]
+	mi := &file_flowstate_v1_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2093,7 +2390,7 @@ func (x *CompileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileRequest.ProtoReflect.Descriptor instead.
 func (*CompileRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{19}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CompileRequest) GetFile() *SourceFile {
@@ -2118,7 +2415,7 @@ type CompileResponse struct {
 
 func (x *CompileResponse) Reset() {
 	*x = CompileResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[20]
+	mi := &file_flowstate_v1_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2130,7 +2427,7 @@ func (x *CompileResponse) String() string {
 func (*CompileResponse) ProtoMessage() {}
 
 func (x *CompileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[20]
+	mi := &file_flowstate_v1_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2143,7 +2440,7 @@ func (x *CompileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompileResponse.ProtoReflect.Descriptor instead.
 func (*CompileResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{20}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CompileResponse) GetWorkflow() *Workflow {
@@ -2170,7 +2467,7 @@ type GetCatalogRequest struct {
 
 func (x *GetCatalogRequest) Reset() {
 	*x = GetCatalogRequest{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[21]
+	mi := &file_flowstate_v1_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2182,7 +2479,7 @@ func (x *GetCatalogRequest) String() string {
 func (*GetCatalogRequest) ProtoMessage() {}
 
 func (x *GetCatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[21]
+	mi := &file_flowstate_v1_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2195,7 +2492,7 @@ func (x *GetCatalogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogRequest.ProtoReflect.Descriptor instead.
 func (*GetCatalogRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{21}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{22}
 }
 
 // GetCatalogResponse is the deployment's capability.
@@ -2209,7 +2506,7 @@ type GetCatalogResponse struct {
 
 func (x *GetCatalogResponse) Reset() {
 	*x = GetCatalogResponse{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[22]
+	mi := &file_flowstate_v1_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2221,7 +2518,7 @@ func (x *GetCatalogResponse) String() string {
 func (*GetCatalogResponse) ProtoMessage() {}
 
 func (x *GetCatalogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[22]
+	mi := &file_flowstate_v1_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2234,7 +2531,7 @@ func (x *GetCatalogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogResponse.ProtoReflect.Descriptor instead.
 func (*GetCatalogResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{22}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetCatalogResponse) GetCatalog() *TaskCatalog {
@@ -2345,7 +2642,7 @@ type MutationResult struct {
 
 func (x *MutationResult) Reset() {
 	*x = MutationResult{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[23]
+	mi := &file_flowstate_v1_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2357,7 +2654,7 @@ func (x *MutationResult) String() string {
 func (*MutationResult) ProtoMessage() {}
 
 func (x *MutationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[23]
+	mi := &file_flowstate_v1_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2370,7 +2667,7 @@ func (x *MutationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MutationResult.ProtoReflect.Descriptor instead.
 func (*MutationResult) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{23}
+	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *MutationResult) GetVerb() string {
@@ -2443,7 +2740,7 @@ type RunResponse_Error struct {
 
 func (x *RunResponse_Error) Reset() {
 	*x = RunResponse_Error{}
-	mi := &file_flowstate_v1_service_proto_msgTypes[25]
+	mi := &file_flowstate_v1_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2455,7 +2752,7 @@ func (x *RunResponse_Error) String() string {
 func (*RunResponse_Error) ProtoMessage() {}
 
 func (x *RunResponse_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_service_proto_msgTypes[25]
+	mi := &file_flowstate_v1_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2489,7 +2786,7 @@ var File_flowstate_v1_service_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe9\x02\n" +
+	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
 	"\n" +
 	"RunRequest\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
@@ -2497,11 +2794,14 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x06inputs\x18\x02 \x03(\v2$.flowstate.v1.RunRequest.InputsEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x06inputs\x12D\n" +
 	"\n" +
 	"entity_key\x18\x03 \x01(\tB \xbaH\x1dr\x1b\x10\x01\x18\x80\x012\x14^[a-z0-9][a-z0-9-]*$H\x00R\tentityKey\x88\x01\x01\x12$\n" +
-	"\x06reason\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x04R\x06reason\x1aN\n" +
+	"\x06reason\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x04R\x06reason\x12R\n" +
+	"\n" +
+	"request_id\x18\x05 \x01(\tB.\xe2A\x01\x01\xbaH'r%\x10\x01\x18\x80\x012\x1e^[A-Za-z0-9][A-Za-z0-9._:/-]*$H\x01R\trequestId\x88\x01\x01\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\r\n" +
-	"\v_entity_key\"\x8d\x05\n" +
+	"\v_entity_keyB\r\n" +
+	"\v_request_id\"\xab\x05\n" +
 	"\vRunResponse\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\n" +
@@ -2512,7 +2812,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x05error\x18\x04 \x01(\v2\x1f.flowstate.v1.RunResponse.ErrorH\x00R\x05error\x12>\n" +
 	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x12A\n" +
 	"\x1aspecification_as_submitted\x18\x06 \x01(\bH\x01R\x18specificationAsSubmitted\x88\x01\x01\x12\x16\n" +
-	"\x06joined\x18\a \x01(\bR\x06joined\x1a=\n" +
+	"\x06joined\x18\a \x01(\bR\x06joined\x12\x1c\n" +
+	"\x06reused\x18\b \x01(\bB\x04\xe2A\x01\x03R\x06reused\x1a=\n" +
 	"\x05Error\x12 \n" +
 	"\amessage\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x9f\x01\n" +
@@ -2532,7 +2833,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\n" +
 	"workflowId\x12$\n" +
 	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\x05runId\x88\x01\x01B\t\n" +
-	"\a_run_id\"\xe6\x05\n" +
+	"\a_run_id\"\xa4\x06\n" +
 	"\vGetResponse\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
@@ -2552,7 +2853,10 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	" \x01(\v2\x18.flowstate.v1.RunOutputsR\n" +
 	"runOutputs\x12<\n" +
 	"\fentity_state\x18\v \x01(\v2\x19.flowstate.v1.EntityStateR\ventityState\x12\x18\n" +
-	"\astarter\x18\f \x01(\tR\astarterB\r\n" +
+	"\astarter\x18\f \x01(\tR\astarter\x12 \n" +
+	"\ffirst_run_id\x18\x0e \x01(\tR\n" +
+	"firstRunId\x12\x1a\n" +
+	"\bsegments\x18\x0f \x01(\rR\bsegmentsB\r\n" +
 	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xde\x01\n" +
 	"\rSignalRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
@@ -2598,7 +2902,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\xbaH\a\x1a\x05\x18\xe8\a(\x00R\bpageSize\x12'\n" +
 	"\n" +
 	"page_token\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tpageToken\x12 \n" +
-	"\x06filter\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x06filter\"\xc2\x03\n" +
+	"\x06filter\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x06filter\"\xa8\x04\n" +
 	"\n" +
 	"RunSummary\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
@@ -2612,13 +2916,24 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x04name\x18\x06 \x01(\tR\x04name\x12<\n" +
 	"\x06labels\x18\a \x03(\v2$.flowstate.v1.RunSummary.LabelsEntryR\x06labels\x12\x18\n" +
 	"\astarter\x18\b \x01(\tR\astarter\x12%\n" +
-	"\x0eworker_version\x18\t \x01(\tR\rworkerVersion\x1a9\n" +
+	"\x0eworker_version\x18\t \x01(\tR\rworkerVersion\x12H\n" +
+	"\x12segment_start_time\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\x10segmentStartTime\x12\x1a\n" +
+	"\bsegments\x18\v \x01(\rR\bsegments\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"d\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbd\x01\n" +
 	"\fListResponse\x12,\n" +
 	"\x04runs\x18\x01 \x03(\v2\x18.flowstate.v1.RunSummaryR\x04runs\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"M\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12*\n" +
+	"\x11excluded_by_error\x18\x03 \x01(\rR\x0fexcludedByError\x12+\n" +
+	"\x11filter_diagnostic\x18\x04 \x01(\tR\x10filterDiagnostic\"\xa2\x01\n" +
+	"\n" +
+	"ListCursor\x12\x1a\n" +
+	"\bposition\x18\x01 \x01(\fR\bposition\x12\x1c\n" +
+	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12!\n" +
+	"\fquery_digest\x18\x03 \x01(\fR\vqueryDigest\x127\n" +
+	"\tissued_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bissuedAt\"M\n" +
 	"\x0fValidateRequest\x12:\n" +
 	"\x05files\x18\x01 \x03(\v2\x18.flowstate.v1.SourceFileB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10@R\x05files\"J\n" +
@@ -2695,7 +3010,7 @@ func file_flowstate_v1_service_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_flowstate_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_flowstate_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_flowstate_v1_service_proto_goTypes = []any{
 	(RunResponse_Status)(0),          // 0: flowstate.v1.RunResponse.Status
 	(*RunRequest)(nil),               // 1: flowstate.v1.RunRequest
@@ -2713,124 +3028,127 @@ var file_flowstate_v1_service_proto_goTypes = []any{
 	(*ListRequest)(nil),              // 13: flowstate.v1.ListRequest
 	(*RunSummary)(nil),               // 14: flowstate.v1.RunSummary
 	(*ListResponse)(nil),             // 15: flowstate.v1.ListResponse
-	(*ValidateRequest)(nil),          // 16: flowstate.v1.ValidateRequest
-	(*ValidateResponse)(nil),         // 17: flowstate.v1.ValidateResponse
-	(*GetTimelineRequest)(nil),       // 18: flowstate.v1.GetTimelineRequest
-	(*GetTimelineResponse)(nil),      // 19: flowstate.v1.GetTimelineResponse
-	(*CompileRequest)(nil),           // 20: flowstate.v1.CompileRequest
-	(*CompileResponse)(nil),          // 21: flowstate.v1.CompileResponse
-	(*GetCatalogRequest)(nil),        // 22: flowstate.v1.GetCatalogRequest
-	(*GetCatalogResponse)(nil),       // 23: flowstate.v1.GetCatalogResponse
-	(*MutationResult)(nil),           // 24: flowstate.v1.MutationResult
-	nil,                              // 25: flowstate.v1.RunRequest.InputsEntry
-	(*RunResponse_Error)(nil),        // 26: flowstate.v1.RunResponse.Error
-	nil,                              // 27: flowstate.v1.SignalWithStartRequest.InputsEntry
-	nil,                              // 28: flowstate.v1.RunSummary.LabelsEntry
-	(*Workflow)(nil),                 // 29: flowstate.v1.Workflow
-	(*Workflow_StepOutputs)(nil),     // 30: flowstate.v1.Workflow.StepOutputs
-	(*timestamppb.Timestamp)(nil),    // 31: google.protobuf.Timestamp
-	(*RunProgress)(nil),              // 32: flowstate.v1.RunProgress
-	(*PendingActivity)(nil),          // 33: flowstate.v1.PendingActivity
-	(*RunOutputs)(nil),               // 34: flowstate.v1.RunOutputs
-	(*EntityState)(nil),              // 35: flowstate.v1.EntityState
-	(*Node_Outputs)(nil),             // 36: flowstate.v1.Node.Outputs
-	(*SourceFile)(nil),               // 37: flowstate.v1.SourceFile
-	(*ValidationReport)(nil),         // 38: flowstate.v1.ValidationReport
-	(*TimelineEntry)(nil),            // 39: flowstate.v1.TimelineEntry
-	(*DiagnosticReport)(nil),         // 40: flowstate.v1.DiagnosticReport
-	(*TaskCatalog)(nil),              // 41: flowstate.v1.TaskCatalog
-	(*PluginCatalog)(nil),            // 42: flowstate.v1.PluginCatalog
-	(*Value)(nil),                    // 43: flowstate.v1.Value
-	(*CreateScheduleRequest)(nil),    // 44: flowstate.v1.CreateScheduleRequest
-	(*ListSchedulesRequest)(nil),     // 45: flowstate.v1.ListSchedulesRequest
-	(*DescribeScheduleRequest)(nil),  // 46: flowstate.v1.DescribeScheduleRequest
-	(*DeleteScheduleRequest)(nil),    // 47: flowstate.v1.DeleteScheduleRequest
-	(*PauseScheduleRequest)(nil),     // 48: flowstate.v1.PauseScheduleRequest
-	(*ResumeScheduleRequest)(nil),    // 49: flowstate.v1.ResumeScheduleRequest
-	(*TriggerScheduleRequest)(nil),   // 50: flowstate.v1.TriggerScheduleRequest
-	(*CreateScheduleResponse)(nil),   // 51: flowstate.v1.CreateScheduleResponse
-	(*ListSchedulesResponse)(nil),    // 52: flowstate.v1.ListSchedulesResponse
-	(*DescribeScheduleResponse)(nil), // 53: flowstate.v1.DescribeScheduleResponse
-	(*DeleteScheduleResponse)(nil),   // 54: flowstate.v1.DeleteScheduleResponse
-	(*PauseScheduleResponse)(nil),    // 55: flowstate.v1.PauseScheduleResponse
-	(*ResumeScheduleResponse)(nil),   // 56: flowstate.v1.ResumeScheduleResponse
-	(*TriggerScheduleResponse)(nil),  // 57: flowstate.v1.TriggerScheduleResponse
+	(*ListCursor)(nil),               // 16: flowstate.v1.ListCursor
+	(*ValidateRequest)(nil),          // 17: flowstate.v1.ValidateRequest
+	(*ValidateResponse)(nil),         // 18: flowstate.v1.ValidateResponse
+	(*GetTimelineRequest)(nil),       // 19: flowstate.v1.GetTimelineRequest
+	(*GetTimelineResponse)(nil),      // 20: flowstate.v1.GetTimelineResponse
+	(*CompileRequest)(nil),           // 21: flowstate.v1.CompileRequest
+	(*CompileResponse)(nil),          // 22: flowstate.v1.CompileResponse
+	(*GetCatalogRequest)(nil),        // 23: flowstate.v1.GetCatalogRequest
+	(*GetCatalogResponse)(nil),       // 24: flowstate.v1.GetCatalogResponse
+	(*MutationResult)(nil),           // 25: flowstate.v1.MutationResult
+	nil,                              // 26: flowstate.v1.RunRequest.InputsEntry
+	(*RunResponse_Error)(nil),        // 27: flowstate.v1.RunResponse.Error
+	nil,                              // 28: flowstate.v1.SignalWithStartRequest.InputsEntry
+	nil,                              // 29: flowstate.v1.RunSummary.LabelsEntry
+	(*Workflow)(nil),                 // 30: flowstate.v1.Workflow
+	(*Workflow_StepOutputs)(nil),     // 31: flowstate.v1.Workflow.StepOutputs
+	(*timestamppb.Timestamp)(nil),    // 32: google.protobuf.Timestamp
+	(*RunProgress)(nil),              // 33: flowstate.v1.RunProgress
+	(*PendingActivity)(nil),          // 34: flowstate.v1.PendingActivity
+	(*RunOutputs)(nil),               // 35: flowstate.v1.RunOutputs
+	(*EntityState)(nil),              // 36: flowstate.v1.EntityState
+	(*Node_Outputs)(nil),             // 37: flowstate.v1.Node.Outputs
+	(*SourceFile)(nil),               // 38: flowstate.v1.SourceFile
+	(*ValidationReport)(nil),         // 39: flowstate.v1.ValidationReport
+	(*TimelineEntry)(nil),            // 40: flowstate.v1.TimelineEntry
+	(*DiagnosticReport)(nil),         // 41: flowstate.v1.DiagnosticReport
+	(*TaskCatalog)(nil),              // 42: flowstate.v1.TaskCatalog
+	(*PluginCatalog)(nil),            // 43: flowstate.v1.PluginCatalog
+	(*Value)(nil),                    // 44: flowstate.v1.Value
+	(*CreateScheduleRequest)(nil),    // 45: flowstate.v1.CreateScheduleRequest
+	(*ListSchedulesRequest)(nil),     // 46: flowstate.v1.ListSchedulesRequest
+	(*DescribeScheduleRequest)(nil),  // 47: flowstate.v1.DescribeScheduleRequest
+	(*DeleteScheduleRequest)(nil),    // 48: flowstate.v1.DeleteScheduleRequest
+	(*PauseScheduleRequest)(nil),     // 49: flowstate.v1.PauseScheduleRequest
+	(*ResumeScheduleRequest)(nil),    // 50: flowstate.v1.ResumeScheduleRequest
+	(*TriggerScheduleRequest)(nil),   // 51: flowstate.v1.TriggerScheduleRequest
+	(*CreateScheduleResponse)(nil),   // 52: flowstate.v1.CreateScheduleResponse
+	(*ListSchedulesResponse)(nil),    // 53: flowstate.v1.ListSchedulesResponse
+	(*DescribeScheduleResponse)(nil), // 54: flowstate.v1.DescribeScheduleResponse
+	(*DeleteScheduleResponse)(nil),   // 55: flowstate.v1.DeleteScheduleResponse
+	(*PauseScheduleResponse)(nil),    // 56: flowstate.v1.PauseScheduleResponse
+	(*ResumeScheduleResponse)(nil),   // 57: flowstate.v1.ResumeScheduleResponse
+	(*TriggerScheduleResponse)(nil),  // 58: flowstate.v1.TriggerScheduleResponse
 }
 var file_flowstate_v1_service_proto_depIdxs = []int32{
-	29, // 0: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
-	25, // 1: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
+	30, // 0: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
+	26, // 1: flowstate.v1.RunRequest.inputs:type_name -> flowstate.v1.RunRequest.InputsEntry
 	0,  // 2: flowstate.v1.RunResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	26, // 3: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	30, // 4: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	27, // 3: flowstate.v1.RunResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	31, // 4: flowstate.v1.RunResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
 	0,  // 5: flowstate.v1.GetResponse.status:type_name -> flowstate.v1.RunResponse.Status
-	26, // 6: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
-	30, // 7: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	31, // 8: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
-	31, // 9: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
-	32, // 10: flowstate.v1.GetResponse.progress:type_name -> flowstate.v1.RunProgress
-	33, // 11: flowstate.v1.GetResponse.pending_activities:type_name -> flowstate.v1.PendingActivity
-	34, // 12: flowstate.v1.GetResponse.run_outputs:type_name -> flowstate.v1.RunOutputs
-	35, // 13: flowstate.v1.GetResponse.entity_state:type_name -> flowstate.v1.EntityState
-	36, // 14: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
-	29, // 15: flowstate.v1.SignalWithStartRequest.workflow:type_name -> flowstate.v1.Workflow
-	27, // 16: flowstate.v1.SignalWithStartRequest.inputs:type_name -> flowstate.v1.SignalWithStartRequest.InputsEntry
-	36, // 17: flowstate.v1.SignalWithStartRequest.payload:type_name -> flowstate.v1.Node.Outputs
+	27, // 6: flowstate.v1.GetResponse.error:type_name -> flowstate.v1.RunResponse.Error
+	31, // 7: flowstate.v1.GetResponse.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	32, // 8: flowstate.v1.GetResponse.start_time:type_name -> google.protobuf.Timestamp
+	32, // 9: flowstate.v1.GetResponse.close_time:type_name -> google.protobuf.Timestamp
+	33, // 10: flowstate.v1.GetResponse.progress:type_name -> flowstate.v1.RunProgress
+	34, // 11: flowstate.v1.GetResponse.pending_activities:type_name -> flowstate.v1.PendingActivity
+	35, // 12: flowstate.v1.GetResponse.run_outputs:type_name -> flowstate.v1.RunOutputs
+	36, // 13: flowstate.v1.GetResponse.entity_state:type_name -> flowstate.v1.EntityState
+	37, // 14: flowstate.v1.SignalRequest.payload:type_name -> flowstate.v1.Node.Outputs
+	30, // 15: flowstate.v1.SignalWithStartRequest.workflow:type_name -> flowstate.v1.Workflow
+	28, // 16: flowstate.v1.SignalWithStartRequest.inputs:type_name -> flowstate.v1.SignalWithStartRequest.InputsEntry
+	37, // 17: flowstate.v1.SignalWithStartRequest.payload:type_name -> flowstate.v1.Node.Outputs
 	0,  // 18: flowstate.v1.RunSummary.status:type_name -> flowstate.v1.RunResponse.Status
-	31, // 19: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
-	31, // 20: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
-	28, // 21: flowstate.v1.RunSummary.labels:type_name -> flowstate.v1.RunSummary.LabelsEntry
-	14, // 22: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
-	37, // 23: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
-	38, // 24: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
-	39, // 25: flowstate.v1.GetTimelineResponse.entries:type_name -> flowstate.v1.TimelineEntry
-	37, // 26: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
-	29, // 27: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
-	40, // 28: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
-	41, // 29: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
-	42, // 30: flowstate.v1.GetCatalogResponse.plugins:type_name -> flowstate.v1.PluginCatalog
-	43, // 31: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	43, // 32: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
-	1,  // 33: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
-	3,  // 34: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
-	5,  // 35: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
-	7,  // 36: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
-	13, // 37: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
-	18, // 38: flowstate.v1.WorkflowService.GetTimeline:input_type -> flowstate.v1.GetTimelineRequest
-	9,  // 39: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
-	11, // 40: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
-	16, // 41: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
-	20, // 42: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
-	22, // 43: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
-	44, // 44: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
-	45, // 45: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
-	46, // 46: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
-	47, // 47: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
-	48, // 48: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
-	49, // 49: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
-	50, // 50: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
-	2,  // 51: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	4,  // 52: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	6,  // 53: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
-	8,  // 54: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
-	15, // 55: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
-	19, // 56: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
-	10, // 57: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
-	12, // 58: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
-	17, // 59: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
-	21, // 60: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
-	23, // 61: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
-	51, // 62: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
-	52, // 63: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
-	53, // 64: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
-	54, // 65: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
-	55, // 66: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
-	56, // 67: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
-	57, // 68: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
-	51, // [51:69] is the sub-list for method output_type
-	33, // [33:51] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	32, // 19: flowstate.v1.RunSummary.start_time:type_name -> google.protobuf.Timestamp
+	32, // 20: flowstate.v1.RunSummary.close_time:type_name -> google.protobuf.Timestamp
+	29, // 21: flowstate.v1.RunSummary.labels:type_name -> flowstate.v1.RunSummary.LabelsEntry
+	32, // 22: flowstate.v1.RunSummary.segment_start_time:type_name -> google.protobuf.Timestamp
+	14, // 23: flowstate.v1.ListResponse.runs:type_name -> flowstate.v1.RunSummary
+	32, // 24: flowstate.v1.ListCursor.issued_at:type_name -> google.protobuf.Timestamp
+	38, // 25: flowstate.v1.ValidateRequest.files:type_name -> flowstate.v1.SourceFile
+	39, // 26: flowstate.v1.ValidateResponse.report:type_name -> flowstate.v1.ValidationReport
+	40, // 27: flowstate.v1.GetTimelineResponse.entries:type_name -> flowstate.v1.TimelineEntry
+	38, // 28: flowstate.v1.CompileRequest.file:type_name -> flowstate.v1.SourceFile
+	30, // 29: flowstate.v1.CompileResponse.workflow:type_name -> flowstate.v1.Workflow
+	41, // 30: flowstate.v1.CompileResponse.report:type_name -> flowstate.v1.DiagnosticReport
+	42, // 31: flowstate.v1.GetCatalogResponse.catalog:type_name -> flowstate.v1.TaskCatalog
+	43, // 32: flowstate.v1.GetCatalogResponse.plugins:type_name -> flowstate.v1.PluginCatalog
+	44, // 33: flowstate.v1.RunRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	44, // 34: flowstate.v1.SignalWithStartRequest.InputsEntry.value:type_name -> flowstate.v1.Value
+	1,  // 35: flowstate.v1.WorkflowService.Run:input_type -> flowstate.v1.RunRequest
+	3,  // 36: flowstate.v1.WorkflowService.Get:input_type -> flowstate.v1.GetRequest
+	5,  // 37: flowstate.v1.WorkflowService.Signal:input_type -> flowstate.v1.SignalRequest
+	7,  // 38: flowstate.v1.WorkflowService.SignalWithStart:input_type -> flowstate.v1.SignalWithStartRequest
+	13, // 39: flowstate.v1.WorkflowService.List:input_type -> flowstate.v1.ListRequest
+	19, // 40: flowstate.v1.WorkflowService.GetTimeline:input_type -> flowstate.v1.GetTimelineRequest
+	9,  // 41: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
+	11, // 42: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
+	17, // 43: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
+	21, // 44: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
+	23, // 45: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
+	45, // 46: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
+	46, // 47: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
+	47, // 48: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
+	48, // 49: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
+	49, // 50: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
+	50, // 51: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
+	51, // 52: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
+	2,  // 53: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	4,  // 54: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	6,  // 55: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
+	8,  // 56: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
+	15, // 57: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
+	20, // 58: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
+	10, // 59: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
+	12, // 60: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
+	18, // 61: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
+	22, // 62: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
+	24, // 63: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
+	52, // 64: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
+	53, // 65: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
+	54, // 66: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
+	55, // 67: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
+	56, // 68: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
+	57, // 69: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
+	58, // 70: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
+	53, // [53:71] is the sub-list for method output_type
+	35, // [35:53] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_service_proto_init() }
@@ -2861,7 +3179,7 @@ func file_flowstate_v1_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_service_proto_rawDesc), len(file_flowstate_v1_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   28,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

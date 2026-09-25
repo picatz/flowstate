@@ -131,6 +131,17 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// webhook-approval-bridge's gate is answered by a webhook delivery in
+	// production, and by this payload here — the same shape the trigger's
+	// `signal.with:` maps a click to. The example's loop then asks again and
+	// nobody answers the second turn, which is what its own `until:` stops on,
+	// so one entry exercises both the answered and the lapsed halves.
+	"webhook-approval-bridge": {
+		"stage-approved": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
 	// callback-address's gate is the one the run itself registered an address
 	// for, so answering it is the whole shape rather than an option: a review
 	// that lapses exercises the timeout and not the callback. The payload is the

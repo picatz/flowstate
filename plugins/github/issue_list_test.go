@@ -19,22 +19,20 @@ import (
 // workflow asks for direction: asc, and that promise is only real if the
 // value this task validates is the value GitHub actually receives.
 //
-// A plain *github.Client pointed at this local server, not newClient's
+// A plain *github.Client pointed at this in-memory server, not newClient's
 // egress-governed one, since this test is only about the query string
 // doIssueList builds - not about egress policy, which by default denies
-// loopback and would refuse this local server for a reason unrelated to
-// what this test checks.
+// loopback for a reason unrelated to what this test checks.
 func TestDoIssueListMapsSortAndDirectionToTheRightQueryParameters(t *testing.T) {
 	gotQuery := make(chan string, 1)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery <- r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte("[]"))
 	}))
-	defer server.Close()
 
-	client := github.NewClient(http.DefaultClient)
+	client := github.NewClient(server.Client())
 	baseURL := strings.TrimSuffix(server.URL, "/") + "/"
 	client, err := client.WithEnterpriseURLs(baseURL, baseURL)
 	if err != nil {

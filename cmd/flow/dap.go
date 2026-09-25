@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdap"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 )
 
@@ -29,7 +31,7 @@ const dapBanner = "flow dap speaks the Debug Adapter Protocol over stdio and is 
 
 // newDAPCommand builds `flow dap`.
 func newDAPCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "dap",
 		Short: "Debug a workflow from an editor, over the Debug Adapter Protocol",
 		Long: "Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and " +
@@ -48,10 +50,55 @@ flow dap
 # The terminal debugger, for a person:
 flow run local --debug examples/hello-world/workflow.yaml`,
 	}
+
+	addEditorPluginFlags(cmd)
+
+	// The same two the worker and `flow run local` take. This adapter runs the
+	// workflow its client points it at, with this operator's secret providers
+	// and plugins behind it, so it is a real local execution surface and not a
+	// reader — a rehearsal under a different egress or task-shape policy
+	// rehearses a different production, and an operator who set those for the
+	// worker had no way to set them here (#1119).
+	addEgressPolicyFlag(cmd)
+	addTaskPolicyFlag(cmd)
+
+	addSecretFlags(cmd)
+	addLocalRehearsalFlags(cmd)
+	addRevealSensitiveFlag(cmd)
+
+	return cmd
 }
 
 // runDAP serves one debug session.
 func runDAP(cmd *cobra.Command, _ []string) error {
+	// Before the plugins launch and before a client can name a workflow, for
+	// the reason `flow run local` applies them in that order: these read files
+	// this process was pointed at, and a policy that cannot load must refuse
+	// the command rather than start somebody else's programs and then run under
+	// the permissive defaults.
+	if err := applyEgressPolicy(cmd); err != nil {
+		return err
+	}
+	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+
+	// Build the provider registry before the plugin host, as the worker and
+	// `flow run local` do. A plugin can contribute both a task and a secrets
+	// backend, and the runtime below must resolve through the registry that host
+	// registered into rather than a second, empty one.
+	providers, err := localSecretProviders(cmd)
+	if err != nil {
+		return fmt.Errorf("configuring secrets for the debug adapter: %w", err)
+	}
+	defer providers.close()
+
+	catalog, closePlugins, err := startPlugins(cmd, providers.registry)
+	if err != nil {
+		return fmt.Errorf("starting plugins for the debug adapter: %w", err)
+	}
+	defer closePlugins()
+
 	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), dapBanner)
 
 	// Where the session's prose goes once there is a client to send it to.
@@ -120,6 +167,7 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		}()
 
 		program := server.Program()
+		reveal := revealSensitiveRequested(cmd) || server.RevealSensitive()
 		if program == "" {
 			exit = 1
 			server.Output("flowdap: the launch configuration named no `program`, so there is " +
@@ -137,16 +185,54 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		// exactly this reason, and this one reached past it (Codex, #1124).
 		workflow, err := loadWorkflow(program)
 		if err != nil {
-			// The client's console is the only place a person will look, and
-			// the diagnostics are the whole answer to why nothing ran.
+			// Source diagnostics can quote the invalid document. Without a valid
+			// specification there is no declaration posture to redact them
+			// against, so the shared decision fails closed. Invocation and I/O
+			// errors do not carry source diagnostics and remain useful as-is.
 			exit = 1
-			server.Output(fmt.Sprintf("flowdap: %v\n", err))
+			var diagnostics flowfile.Diagnostics
+			if !errors.As(err, &diagnostics) || decideCarriedValues(nil, reveal) == carriedValuesShown {
+				server.Output(fmt.Sprintf("flowdap: %v\n", err))
+			} else {
+				server.Output("flowdap: workflow diagnostics withheld because the invalid file has no " +
+					"trusted sensitive-value declarations; run `flow validate` outside the adapter, or " +
+					"explicitly authorize disclosure with --reveal-sensitive or \"revealSensitive\": true\n")
+			}
+
+			return
+		}
+		disclosure := decideCarriedValues(workflow, reveal)
+		if disclosure != carriedValuesShown {
+			exit = 1
+			if disclosure == carriedValuesDeclared {
+				server.Output("flowdap: the workflow declares sensitive inputs or outputs whose " +
+					"values the debugger would expose; add --reveal-sensitive to the adapter command " +
+					"or \"revealSensitive\": true to the launch configuration to debug it with values shown\n")
+			} else {
+				server.Output("flowdap: the workflow's sensitive-value declarations could not be fully " +
+					"inspected, so the debugger will not start without explicit disclosure authorization; " +
+					"add --reveal-sensitive to the adapter command or \"revealSensitive\": true to the " +
+					"launch configuration\n")
+			}
+
+			return
+		}
+		if err := v1.ResolvePlugins(workflow, catalog); err != nil {
+			exit = 1
+			server.Output(fmt.Sprintf("flowdap: resolving plugins before this run: %v\n", err))
 
 			return
 		}
 
 		ctx := v1.NewContextWithDebugger(cmd.Context(), session)
 		ctx = v1.NewContextWithRunObserver(ctx, session)
+		ctx, err = withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
+		if err != nil {
+			exit = 1
+			server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
+
+			return
+		}
 
 		if _, err := v1.RunWithInputs(ctx, workflow, nil); err != nil {
 			exit = 1

@@ -29,9 +29,13 @@ version. This is a deliberate scope decision, not an oversight - see
 
 ## Authentication
 
-Both tasks accept a `token` input, always as a secret reference -
-`${secret('vcs:some-name')}` - never a literal. Unset means an
-unauthenticated request, which works for any public repository.
+Both tasks accept a `token` input, always as a whole secret reference - for
+example `${secret('env:GITHUB_TOKEN')}` or the compatibility provider
+`${secret('vcs:some-name')}` - never a literal. Both declare `token` in
+`secret_inputs` and `required_secret_inputs`, so the host resolves it under the
+caller's namespace and scrubs the value from errors and outputs before the
+plugin runs. Unset means an unauthenticated request, which works for any public
+repository.
 
 A credential is selected by two things, and only one of them is written in
 the Flowfile. The *name* is what a reference carries: `${secret('vcs:token')}`
@@ -54,14 +58,11 @@ VCS_SECRET_0__ACME_ORG=<https-password>
 VCS_SECRET_6_TEAM_A_ACME_ORG=<https-password>
 ```
 
-The value is used as the password half of HTTP Basic auth against the
+The compatibility provider's value is used as the password half of HTTP Basic auth against the
 repository's remote - the same shape GitHub, GitLab, and Gitea all accept for
-a token over HTTPS, which is why this plugin's scheme is not named after any
-one forge. (See "A plugin task has no access to the caller's namespace or
-identity" below: `vcs.log` and `vcs.diff` resolve through `tokenFromValue`,
-which always looks up the default namespace today, so the namespaced form
-above applies once that gap closes rather than to either task as currently
-wired.)
+a token over HTTPS. The task may equivalently receive a token from any other
+host-configured secret provider; provider choice does not change transport
+behavior.
 
 ## Design decisions and the arguments for them
 
@@ -128,42 +129,14 @@ a revision outside the depth this task fetched are all classified as
 permanent, and only a transport-level failure (DNS, connection refused, a
 context deadline) is retried.
 
-## SDK gaps found while building this
+## SDK boundary learned while building this
 
-**A plugin task cannot use a secret from anywhere but its own plugin's
-scheme.** The engine resolves a step's ordinary inputs before scheduling it,
-but a [`flowstatev1.Value_SecretRef`] is deliberately left unresolved all the
-way to the activity that needs it (invariant 7) - and for a plugin task,
-that activity is generated code in `pkg/flowstate/v1/plugin/task.go` that
-forwards inputs to the plugin process over RPC exactly as given, never
-calling `ResolveSecret`. There is no RPC a plugin can call to ask the host
-to resolve an arbitrary reference on its own behalf -
-`pluginv1.SecretService` runs the other direction, letting the host ask a
-plugin to resolve schemes *that plugin* advertises. So the only reference a
-plugin task can act on is one whose scheme the same plugin binary resolves,
-because then "ask the host" and "call the function answering
-CAPABILITY_SECRETS requests" are the same code, called directly. This is why
-`vcs`'s `token` input can only take a `vcs:` reference, never
-`${secret('env:SOME_TOKEN')}` or a reference belonging to a different
-plugin, even though nothing about the Flowfile grammar suggests that
-restriction exists. See `secrets.go` for the full argument at the point it
-matters.
-
-**A plugin task has no access to the caller's namespace or identity.**
-`sdk.Task.Fn`'s signature - `(ctx, inputs, scope)` - carries neither, even
-though `pluginv1.ExecuteRequest` (the wire message the host actually sends)
-has both. `SecretRequest.Namespace` exists precisely so a multi-tenant
-secret backend can scope a lookup to the calling workload's tenant, and it
-is available when the *host* calls a plugin's `SecretService.Resolve` - but
-not when a task resolves its own scheme in-process, which is the only path
-available per the gap above. The practical consequence: this plugin's
-in-process resolution always uses the default (empty) namespace, which is
-correct on a single-tenant deployment (this repository's own invariant 8,
-"self-hosted first," treats that as the ordinary case) and silently wrong
-on one serving several tenants from one worker pool - every tenant's
-`${secret('vcs:...')}` would resolve the same variable. Fixing this needs
-`sdk.TaskFunc`'s signature to carry the caller's namespace and identity,
-which is a change to `pkg/flowstate/v1/plugin`, not to this plugin.
+The original implementation resolved `vcs:` references inside each task,
+which meant every call implicitly used the default namespace and bypassed the
+host's scrubber. Tasks now declare `token` through `secret_inputs`; the host
+resolves any configured provider under the established namespace and sends
+only the value. The `vcs:` SecretService remains solely as a
+migration-compatible provider behind that same host path.
 
 **Regenerating this plugin's own `.proto` needs the repository root's
 workspace, temporarily.** `buf` refuses a workspace directory that reaches

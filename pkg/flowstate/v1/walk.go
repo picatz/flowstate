@@ -101,6 +101,12 @@ const (
 	SlotWebhookArgument
 	// SlotWebhookVerify is one entry of a webhook trigger's `verify:`.
 	SlotWebhookVerify
+	// SlotWebhookSignalCorrelate is a webhook trigger's `signal.correlate:` —
+	// the expression naming the run a delivery answers.
+	SlotWebhookSignalCorrelate
+	// SlotWebhookSignalArgument is one entry of a webhook trigger's
+	// `signal.with:`, the payload a delivery carries to the gate.
+	SlotWebhookSignalArgument
 
 	// SlotCondition is a step's `if:`.
 	SlotCondition
@@ -151,6 +157,15 @@ const (
 	// at most one run of this workflow may hold at a time. Evaluated at submit
 	// against the run's bound inputs and nothing else; see [Concurrency.key].
 	SlotConcurrencyKey
+
+	// SlotDebugSubject is a `debug:` policy rule's computed `subject:`.
+	//
+	// Its own slot rather than sharing [SlotSignalSubject], for the reason
+	// [SlotWaitBatchPrompt] states next door: one schema position is one slot,
+	// and a slot covering two would let a third land on an already-claimed name
+	// — exactly the blindness `TestEveryValuePositionInTheSchemaIsWalked`
+	// exists to prevent. The two stanzas share a *message*, not a position.
+	SlotDebugSubject
 )
 
 // ValueSlotSchemaPath maps each slot to the schema field it names.
@@ -169,6 +184,9 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotWebhookIdempotencyKey: "Workflow.triggers.webhooks[].idempotency_key",
 		SlotWebhookArgument:       "Workflow.triggers.webhooks[].arguments{}",
 		SlotWebhookVerify:         "Workflow.triggers.webhooks[].verify{}",
+
+		SlotWebhookSignalCorrelate: "Workflow.triggers.webhooks[].signal.correlate",
+		SlotWebhookSignalArgument:  "Workflow.triggers.webhooks[].signal.arguments{}",
 
 		SlotCondition:        "Workflow.steps[].condition",
 		SlotStepVar:          "Workflow.steps[].vars{}",
@@ -191,6 +209,7 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotCallArgument:     "Workflow.steps[].call.arguments{}",
 
 		SlotConcurrencyKey: "Workflow.concurrency.key",
+		SlotDebugSubject:   "Workflow.debug.allow[].subject_from",
 	}
 }
 
@@ -281,12 +300,21 @@ func (s ValueSite) Field() string {
 		return "outputs." + s.Name
 	case SlotSignalSubject:
 		return "signals." + s.Owner + ".allow[" + strconv.Itoa(s.Index) + "].subject"
+	case SlotDebugSubject:
+		// No owner, because there is one thing to debug — this run — where a
+		// signal policy is per name. The path is the one the author wrote, and
+		// the one flowfile's own diagnostics use.
+		return "debug.allow[" + strconv.Itoa(s.Index) + "].subject"
 	case SlotWebhookIdempotencyKey:
 		return s.triggerPath() + ".idempotency_key"
 	case SlotWebhookArgument:
 		return s.triggerPath() + ".with." + s.Name
 	case SlotWebhookVerify:
 		return s.triggerPath() + ".verify." + s.Name
+	case SlotWebhookSignalCorrelate:
+		return s.triggerPath() + ".signal.correlate"
+	case SlotWebhookSignalArgument:
+		return s.triggerPath() + ".signal.with." + s.Name
 	case SlotCondition:
 		return "if"
 	case SlotTaskInput:
@@ -382,7 +410,12 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 	if wf == nil {
 		return
 	}
+	walkWorkflowValuesBeforeSteps(wf, w)
+	WalkNodes(wf.GetSteps(), w)
+	walkWorkflowValuesAfterSteps(wf, w)
+}
 
+func walkWorkflowValuesBeforeSteps(wf *Workflow, w Walk) {
 	for _, declaration := range wf.GetDeclaredInputs() {
 		name := declaration.GetName()
 		w.value(ValueSite{Slot: SlotInputDefault, Name: name, Value: declaration.GetDefault()})
@@ -392,9 +425,9 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
 		w.value(ValueSite{Slot: SlotWorkflowVar, Name: name, Value: wf.GetVars()[name]})
 	}
+}
 
-	WalkNodes(wf.GetSteps(), w)
-
+func walkWorkflowValuesAfterSteps(wf *Workflow, w Walk) {
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		name := declaration.GetName()
 		w.value(ValueSite{Slot: SlotDeclaredOutput, Name: name, Value: declaration.GetValue()})
@@ -420,6 +453,20 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 				Value: rule.GetSubjectFrom(),
 			})
 		}
+	}
+
+	// The `debug:` stanza's own rules, walked beside `signals:` because they
+	// are the same message in the same class of position — a fact about who
+	// outside the run may act on it, resolved once at submit. Visited even
+	// though only one caller has an opinion about it: a walk that skipped a
+	// position because today's callers do not read it is the blindness this
+	// file exists to prevent.
+	for i, rule := range wf.GetDebug().GetAllow() {
+		w.value(ValueSite{
+			Slot:  SlotDebugSubject,
+			Index: i,
+			Value: rule.GetSubjectFrom(),
+		})
 	}
 
 	for i, webhook := range wf.GetTriggers().GetWebhooks() {
@@ -451,18 +498,31 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 				Value: webhook.GetVerify()[key],
 			})
 		}
+
+		if signal := webhook.GetSignal(); signal != nil {
+			w.value(ValueSite{
+				Slot:  SlotWebhookSignalCorrelate,
+				Owner: name,
+				Index: i,
+				Value: signal.GetCorrelate(),
+			})
+
+			for _, argument := range slices.Sorted(maps.Keys(signal.GetArguments())) {
+				w.value(ValueSite{
+					Slot:  SlotWebhookSignalArgument,
+					Name:  argument,
+					Owner: name,
+					Index: i,
+					Value: signal.GetArguments()[argument],
+				})
+			}
+		}
 	}
 }
 
 // WalkNodes visits a list of sibling steps and everything under them.
 func WalkNodes(nodes []*Node, w Walk) {
-	if w.Steps != nil {
-		w.Steps(nodes)
-	}
-
-	for _, node := range nodes {
-		WalkNode(node, w)
-	}
+	walkNodeFrames([]nodeWalkFrame{{group: nodes}}, w)
 }
 
 // WalkNode visits one step: the step itself, every value position it holds, and
@@ -474,10 +534,92 @@ func WalkNode(node *Node, w Walk) {
 	if node == nil {
 		return
 	}
+	walkNodeFrames([]nodeWalkFrame{{node: node}}, w)
+}
 
-	if w.Node != nil {
-		w.Node(node)
+// A nodeWalkFrame is one unit of traversal work still owed by [walkNodeFrames]:
+// a single node not yet visited when node is set, otherwise a sibling group
+// whose [Walk.Steps] callback has not fired. A nil node inside a group is
+// dropped when the group's frame is expanded — the same silent no-op
+// [WalkNode] has always been for a nil node — so a group frame and a nil-node
+// frame can never be confused.
+type nodeWalkFrame struct {
+	group []*Node
+	node  *Node
+}
+
+// walkNodeFrames drains a work stack of frames in document order: a group
+// delivers its [Walk.Steps] callback and then its nodes in order, and a node
+// delivers [Walk.Node] and its value positions before anything nested under
+// it, exactly as the recursive spelling of this traversal did.
+//
+// An explicit stack rather than Go recursion, for the reason
+// [CheckStructureDepth] holds one: how deeply a document nests steps is chosen
+// by whoever built the specification, the compiler's own nesting bound says
+// nothing about a message submitted over the RPC path, and this traversal runs
+// during admission — [specNodes]'s callee walk hands every workflow it visits
+// to [WalkWorkflow] *before* that walk's depth guard has seen the workflow's
+// own steps. Recursing here turned wire-chosen control-flow depth into Go
+// recursion depth: measured at 32 MiB of goroutine stack for a
+// 99,000-level `for_each` chain that fits under [MaxSpecBytes] (#1284), spent
+// per in-flight admission and only then refused by the guard. The work stack
+// puts that cost on the heap, where it is bounded by the size of the
+// specification the caller already checked, instead of on a stack the runtime
+// grows by doubling and does not promptly return.
+func walkNodeFrames(stack []nodeWalkFrame, w Walk) {
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		f := stack[last]
+		stack = stack[:last]
+
+		if f.node == nil {
+			if w.Steps != nil {
+				w.Steps(f.group)
+			}
+			// Reversed, so the group's first node is popped — and therefore
+			// visited — first, preserving document order.
+			for i := len(f.group) - 1; i >= 0; i-- {
+				if f.group[i] == nil {
+					continue
+				}
+				stack = append(stack, nodeWalkFrame{node: f.group[i]})
+			}
+			continue
+		}
+
+		node := f.node
+		if w.Node != nil {
+			w.Node(node)
+		}
+		walkNodeValues(node, w)
+
+		switch kind := node.GetKind().(type) {
+		case *Node_ForEach:
+			stack = append(stack, nodeWalkFrame{group: kind.ForEach.GetBody()})
+
+		case *Node_Loop:
+			stack = append(stack, nodeWalkFrame{group: kind.Loop.GetBody()})
+
+		case *Node_Parallel:
+			branches := kind.Parallel.GetBranches()
+			for i := len(branches) - 1; i >= 0; i-- {
+				stack = append(stack, nodeWalkFrame{group: branches[i].GetSteps()})
+			}
+
+		case *Node_Switch:
+			bodies := SwitchBodies(kind.Switch)
+			for i := len(bodies) - 1; i >= 0; i-- {
+				stack = append(stack, nodeWalkFrame{group: bodies[i]})
+			}
+		}
 	}
+}
+
+// walkNodeValues visits every value held directly by node without descending
+// into nested steps. Keeping this as the value-position authority lets bounded
+// iterative validators inspect adversarial control-flow depth without creating
+// a second enumeration of the schema's value positions.
+func walkNodeValues(node *Node, w Walk) {
 
 	id := node.GetId()
 
@@ -506,18 +648,11 @@ func WalkNode(node *Node, w Walk) {
 	switch kind := node.GetKind().(type) {
 	case *Node_ForEach:
 		w.value(ValueSite{Slot: SlotForEachItems, Step: id, Value: kind.ForEach.GetItems()})
-		WalkNodes(kind.ForEach.GetBody(), w)
 
 	case *Node_Loop:
 		w.value(ValueSite{Slot: SlotLoopUntil, Step: id, Value: kind.Loop.GetUntil()})
 		w.value(ValueSite{Slot: SlotLoopInitial, Step: id, Value: kind.Loop.GetInitial()})
 		w.value(ValueSite{Slot: SlotLoopUpdate, Step: id, Value: kind.Loop.GetUpdate()})
-		WalkNodes(kind.Loop.GetBody(), w)
-
-	case *Node_Parallel:
-		for _, branch := range kind.Parallel.GetBranches() {
-			WalkNodes(branch.GetSteps(), w)
-		}
 
 	case *Node_Switch:
 		w.value(ValueSite{Slot: SlotSwitchValue, Step: id, Value: kind.Switch.GetValue()})
@@ -532,10 +667,6 @@ func WalkNode(node *Node, w Walk) {
 				})
 			}
 		}
-		for _, body := range SwitchBodies(kind.Switch) {
-			WalkNodes(body, w)
-		}
-
 	case *Node_Wait:
 		w.value(ValueSite{Slot: SlotWaitUntil, Step: id, Value: kind.Wait.GetUntil()})
 		w.value(ValueSite{Slot: SlotWaitSleep, Step: id, Value: kind.Wait.GetDurationExpr()})

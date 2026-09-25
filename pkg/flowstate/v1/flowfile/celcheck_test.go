@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -126,6 +127,25 @@ func TestAnExpressionThatCannotEvaluateIsReported(t *testing.T) {
 			expr: `string(size(1))`,
 			says: "no matching overload for 'size'",
 		},
+		{
+			// #1759: the function whose unqualified name the author typed is
+			// named, rather than a list of a hundred to search.
+			name: "a namespaced function called by its last segment",
+			expr: `range(3)`,
+			says: `no function called "range"; did you mean lists.range?`,
+		},
+		{
+			// cel-go reports `lists.rnge` as `rnge`, so the near miss is
+			// found among last segments and named in full.
+			name: "a namespaced function misspelled",
+			expr: `lists.rnge(3)`,
+			says: `no function called "rnge"; did you mean lists.range?`,
+		},
+		{
+			name: "the referral names the listing that prints functions",
+			expr: `nosuchfunc(1)`,
+			says: "listed by `flow tasks --expressions`",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -135,6 +155,73 @@ func TestAnExpressionThatCannotEvaluateIsReported(t *testing.T) {
 			assert.Contains(t, strings.Join(reported, "\n"), test.says)
 		})
 	}
+}
+
+func TestInvalidCELLiteralsAreReported(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		expr string
+		says string
+	}{
+		{name: "regex", expr: `'abc'.matches('[')`, says: "invalid matches argument"},
+		{name: "duration", expr: `duration('3 days')`, says: "invalid duration"},
+		{name: "timestamp", expr: `timestamp('yesterday')`, says: "invalid timestamp"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reported := diagnosticsFor(t, sayingInStep(test.expr))
+			require.NotEmpty(t, reported)
+			assert.Contains(t, strings.Join(reported, "\n"), test.says)
+		})
+	}
+}
+
+func TestInvalidCELLiteralsHavePositionedTypeDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.3
+name: invalid-literals
+steps:
+  - id: bad_regex
+    value: ${'abc'.matches('[')}
+  - id: bad_duration
+    value: ${duration('3 days')}
+  - id: bad_timestamp
+    value: ${timestamp('yesterday')}
+`))
+	require.NoError(t, err)
+	require.Len(t, diagnostics, 3)
+	for _, diagnostic := range diagnostics {
+		assert.Positive(t, diagnostic.Line)
+		assert.Positive(t, diagnostic.Column)
+		assert.Equal(t, v1.DiagnosticCodeTypeMismatch, diagnostic.Code)
+	}
+}
+
+func TestInvalidRegexMustIsReportedWithoutAValue(t *testing.T) {
+	t.Parallel()
+
+	reported := diagnosticsFor(t, `edition: v2026.3
+name: invalid-must
+inputs:
+  subject:
+    type: string
+    must: this.matches('[')
+steps:
+  - id: done
+    value: ok
+`)
+	require.NotEmpty(t, reported)
+	assert.Contains(t, strings.Join(reported, "\n"), "invalid matches argument")
+}
+
+func TestMixedAggregateLiteralsRemainValid(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, diagnosticsFor(t, sayingInStep(`string([1, 'a'].size())`)))
 }
 
 // TestNothingIsReportedAboutAnExpressionThatIsFine is the direction that decides
@@ -177,6 +264,24 @@ func TestNothingIsReportedAboutAnExpressionThatIsFine(t *testing.T) {
 		{
 			name: "a macro whose qualifier is a namespace",
 			src:  sayingInStep(`string(math.greatest(1, 2))`),
+		},
+		{
+			// A fold over a *typed* literal, which is the corner sum's expansion
+			// wraps in dyn() for: the empty-list branch is int 0, and without the
+			// wrapper the checker would refuse a working double sum for mixing
+			// int and double across `?:`.
+			name: "a sum over doubles",
+			src:  sayingInStep(`string([1.5, 2.5].sum())`),
+		},
+		{
+			name: "a sum chained after map",
+			src:  afterAFetch(`string(steps.web.json.items.map(o, o.amount).sum())`),
+		},
+		{
+			// The general fold binds two author-named variables, and neither
+			// may read as a reference to a step nobody declared.
+			name: "a reduce with its own accumulator and element",
+			src:  sayingInStep(`string([2, 3, 4].reduce(p, v, 1, p * v))`),
 		},
 		{
 			// The case that caught an earlier version of this check. `json` is a
@@ -316,12 +421,58 @@ func TestEveryExpressionPositionIsChecked(t *testing.T) {
 			src: "edition: v2026.3\nname: check\nsteps:\n  - id: pause\n" +
 				"    wait_until: ${" + broken + "}\n",
 		},
+		{
+			name: "a signal rule's computed subject",
+			src: "edition: v2026.3\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
+				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
+				"signals:\n  go:\n    allow:\n      - subject: \"${" + broken + "}\"\n        namespace: ns\n",
+		},
+		{
+			name: "a debug rule's computed subject",
+			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
+				"debug:\n  allow:\n    - subject: \"${" + broken + "}\"\n      namespace: ns\n",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
 			assert.Contains(t, strings.Join(diagnosticsFor(t, test.src), "\n"), "nosuchfunc",
 				"an expression in this position is never type-checked")
+		})
+	}
+}
+
+// TestInvalidFormatLiteralInSignalSubjectIsReported is the regression for the
+// P2 finding: a computed signal or debug subject containing an invalid format
+// literal — such as matches('[') — was silently accepted because
+// checkExpressionTypes skipped both slots.
+func TestInvalidFormatLiteralInSignalSubjectIsReported(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "signal subject with invalid regex",
+			src: "edition: v2026.3\nname: check\ninputs:\n  approver:\n    type: string\nsteps:\n" +
+				"  - id: gate\n    wait_for_signal:\n      name: go\n      timeout: 1h\n" +
+				"signals:\n  go:\n    allow:\n      - subject: \"${inputs.approver.matches('[')}\"\n        namespace: ns\n",
+		},
+		{
+			name: "debug subject with invalid regex",
+			src: "edition: v2026.3\nname: check\nsteps:\n  - id: say\n    log:\n      message: hi\n" +
+				"debug:\n  allow:\n    - subject: \"${inputs.approver.matches('[')}\"\n      namespace: ns\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			reported := diagnosticsFor(t, test.src)
+			require.NotEmpty(t, reported,
+				"an invalid format literal in a computed subject was accepted")
+			assert.Contains(t, strings.Join(reported, "\n"), "invalid matches",
+				"the diagnostic did not name the invalid regex")
 		})
 	}
 }
@@ -405,4 +556,15 @@ func TestTheDiagnosticIsWrittenForAnAuthor(t *testing.T) {
 		assert.NotContains(t, reported, "json.encode",
 			"advice for one case was offered for another, which is how advice stops being read")
 	})
+}
+
+// TestAnUnknownFunctionWithNoNearMissGetsNoSuggestion is the negative
+// direction of #1759's suggestion: a name nothing in the profile resembles
+// gets the listing referral and no invented "did you mean".
+func TestAnUnknownFunctionWithNoNearMissGetsNoSuggestion(t *testing.T) {
+	t.Parallel()
+
+	reported := strings.Join(diagnosticsFor(t, sayingInStep(`nosuchfunc(1)`)), "\n")
+	assert.Contains(t, reported, `no function called "nosuchfunc"`)
+	assert.NotContains(t, reported, "did you mean")
 }

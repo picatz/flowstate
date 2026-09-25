@@ -14,7 +14,7 @@
 #     write-permitting `sandbox_mode`; a read-only turn has nothing to diff. See
 #     `propose` below, and the README on the workspace an operator must provide.)
 #   * the credential is never in the agent's context. `${secret('env:OPENAI_API_KEY')}`
-#     and `${secret('git:token')}` are references resolved inside the task that
+#     and `${secret('git:token')}` are references resolved by the host for the task that
 #     needs them; the prompt this file builds carries a test log and nothing else;
 #   * verification binds to content. `verify` is called with the sha the push
 #     produced, never with a branch name, so what was tested is what was written;
@@ -231,7 +231,7 @@ steps:
             # of at least 1, not because there is a second attempt to space out.
             backoff: 1.0
           codex.exec:
-            # A reference, resolved inside the task. The prompt above is built
+            # A reference, resolved by the host before the task. The prompt above is built
             # from a test log; no credential is ever in the agent's context, and
             # nothing about this key reaches workflow history.
             api_key: ${secret('env:OPENAI_API_KEY')}

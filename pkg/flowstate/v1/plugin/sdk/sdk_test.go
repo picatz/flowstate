@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -307,23 +308,18 @@ func TestStructuredOutputsRoundTrip(t *testing.T) {
 	require.True(t, entries[0].GetValue().GetBoolValue())
 }
 
-// TestUnsupportedMessageOutputSaysWhatToDo checks the refusal, which is the part
-// an author actually meets.
+// TestWellKnownMessageOutputSaysWhatToDo checks the refusal that remains, which
+// is the part an author actually meets.
 //
-// Converting an arbitrary message would mean inventing a mapping from its fields
-// onto a CEL value — this package's invention rather than the schema's, whose
-// field names would come out however JSON naming mangles them and would not match
-// the descriptor the engine validates the task against. So it refuses, and the
-// error has to be worth receiving.
-func TestUnsupportedMessageOutputSaysWhatToDo(t *testing.T) {
+// A well-known type has a meaning outside its fields — a duration is a length of
+// time, not a {seconds, nanos} pair — so converting one field by field would
+// answer #1436 here rather than in the schema. It is refused, and the error has
+// to be worth receiving.
+func TestWellKnownMessageOutputSaysWhatToDo(t *testing.T) {
 	t.Parallel()
 
-	// A message-typed output that is neither spelling of "any shape".
-	_, err := EncodeOutputs(&flowstatev1.Node{
-		Id:   "x",
-		Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{Name: "echo"}},
-	})
-	require.Error(t, err, "an arbitrary message was converted rather than refused")
+	_, err := EncodeOutputs(&flowstatev1.Wait{Timeout: durationpb.New(time.Second)})
+	require.Error(t, err, "a well-known type was converted rather than refused")
 
 	for _, want := range []string{
 		"google.api.expr.v1alpha1.Value", // what to declare instead
@@ -332,6 +328,120 @@ func TestUnsupportedMessageOutputSaysWhatToDo(t *testing.T) {
 		require.Contains(t, err.Error(), want,
 			"the refusal does not tell the author what to do instead")
 	}
+}
+
+// TestNestedMessageOutputsBecomeMaps is the contract #1456 asks for: a task that
+// declares a typed nested message returns data a workflow can read, rather than
+// working on the empty case and failing on the first real one.
+//
+// A message becomes a map keyed by its own field names — the same shape the
+// engine's built-in bridge already produces — so `${steps.log.commits[0].name}`
+// means one thing whether the task is built in or shipped by a plugin. Not one
+// case here depends on a list being empty, which is the shape every test before
+// this one reached.
+func TestNestedMessageOutputsBecomeMaps(t *testing.T) {
+	t.Parallel()
+
+	// entriesOf reads a CEL map into a plain Go map, so a case can address one
+	// key without walking the entry list itself.
+	entriesOf := func(t *testing.T, v *expr.Value) map[string]*expr.Value {
+		t.Helper()
+		out := map[string]*expr.Value{}
+		for _, entry := range v.GetMapValue().GetEntries() {
+			out[entry.GetKey().GetStringValue()] = entry.GetValue()
+		}
+		return out
+	}
+
+	t.Run("a repeated message is a list of maps", func(t *testing.T) {
+		t.Parallel()
+
+		outputs, err := EncodeOutputs(&flowstatev1.Workflow{
+			DeclaredInputs: []*flowstatev1.InputDeclaration{
+				{Name: "shards", Required: true},
+				{Name: "dry_run"},
+			},
+		})
+		require.NoError(t, err)
+
+		list := outputs.GetNamedValues()["declared_inputs"].GetLiteral().GetListValue().GetValues()
+		require.Len(t, list, 2, "both elements must survive the conversion")
+
+		first := entriesOf(t, list[0])
+		require.Equal(t, "shards", first["name"].GetStringValue())
+		require.True(t, first["required"].GetBoolValue())
+
+		// Every field is present whether or not it was set, so a workflow reading
+		// the second element's `required` gets false rather than "no such key".
+		second := entriesOf(t, list[1])
+		require.Equal(t, "dry_run", second["name"].GetStringValue())
+		require.False(t, second["required"].GetBoolValue())
+	})
+
+	t.Run("a singular message nested in a message is a map", func(t *testing.T) {
+		t.Parallel()
+
+		outputs, err := EncodeOutputs(&flowstatev1.Node{
+			Id:   "fetch",
+			Kind: &flowstatev1.Node_Task{Task: &flowstatev1.Task{Name: "echo"}},
+		})
+		require.NoError(t, err)
+
+		task := entriesOf(t, outputs.GetNamedValues()["task"].GetLiteral())
+		require.Equal(t, "echo", task["name"].GetStringValue())
+	})
+
+	t.Run("an unset singular message is null", func(t *testing.T) {
+		t.Parallel()
+
+		// This is also what makes a self-referential message type terminate:
+		// descending into an unset field would otherwise never bottom out.
+		outputs, err := EncodeOutputs(&flowstatev1.Node{Id: "fetch"})
+		require.NoError(t, err)
+
+		// The kind itself, not a GetNullValue accessor: a method value is non-nil
+		// whatever the encoding, so asserting on one proves nothing (Copilot, #1626).
+		require.IsType(t, &expr.Value_NullValue{},
+			outputs.GetNamedValues()["task"].GetLiteral().GetKind(),
+			"an unset message must be null rather than a map of zero fields")
+	})
+
+	t.Run("an alternative of a oneof nobody chose is null", func(t *testing.T) {
+		t.Parallel()
+
+		// DebugBinding's `answer` is a real oneof of two strings. Encoding the arm
+		// that was not taken as "" would leave a workflow unable to tell "no
+		// error" from "an empty error", and would describe the message as holding
+		// both alternatives at once.
+		outputs, err := EncodeOutputs(&flowstatev1.DebugBinding{
+			Answer: &flowstatev1.DebugBinding_Rendered{Rendered: "42"},
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, "42", outputs.GetNamedValues()["rendered"].GetLiteral().GetStringValue())
+		require.IsType(t, &expr.Value_NullValue{},
+			outputs.GetNamedValues()["error"].GetLiteral().GetKind(),
+			"the arm nobody took must be null rather than an empty string")
+	})
+
+	t.Run("a message inside a map value is a map", func(t *testing.T) {
+		t.Parallel()
+
+		outputs, err := EncodeOutputs(&flowstatev1.Workflow_StepOutputs{
+			StepValues: map[string]*flowstatev1.Node_Outputs{
+				"fetch": {NamedValues: map[string]*flowstatev1.Value{
+					"code": flowstatev1.NewLiteral(200),
+				}},
+			},
+		})
+		require.NoError(t, err)
+
+		steps := entriesOf(t, outputs.GetNamedValues()["step_values"].GetLiteral())
+		require.Contains(t, steps, "fetch")
+
+		named := entriesOf(t, entriesOf(t, steps["fetch"])["named_values"])
+		require.Equal(t, int64(200), named["code"].GetInt64Value())
+	})
 }
 
 // TestLiteral checks the helper on its own, including the shapes a plugin author
@@ -452,6 +562,96 @@ func TestDecodeInputsRefusals(t *testing.T) {
 	}
 }
 
+// decodeRefusal is the error DecodeInputs returns for a value that does not fit
+// its field: a number where the task wants a string.
+func decodeRefusal(t *testing.T) error {
+	t.Helper()
+
+	var decoded flowstatev1.Task_HTTP_Inputs
+	err := DecodeInputs(map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral(42)}, &decoded)
+	require.Error(t, err, "DecodeInputs accepted a number for a string field")
+	return err
+}
+
+// TestDecodeInputsRefusalIsClassified pins the shape of what DecodeInputs
+// returns for a value that does not fit: already an [InvalidInput], naming the
+// input, with the cause reachable through the classification rather than
+// flattened into its text (#1675).
+func TestDecodeInputsRefusalIsClassified(t *testing.T) {
+	t.Parallel()
+
+	err := decodeRefusal(t)
+
+	var c *classified
+	require.True(t, errors.As(err, &c), "DecodeInputs returned %T, want an error classified as invalid input", err)
+	require.Equal(t, connect.CodeInvalidArgument, c.code)
+	require.False(t, c.retryable, "a malformed input is permanent; retrying re-sends the same one")
+	require.Contains(t, err.Error(), `input "url"`, "the refusal names the input")
+	require.NotNil(t, errors.Unwrap(errors.Unwrap(err)),
+		"the cause is wrapped with %%w, so errors.Is and errors.As reach it through the classification")
+}
+
+// TestDecodeInputsDeclarationRefusalsStayUnclassified pins the other class: a
+// refusal about what the task declared rather than what the workflow sent is
+// the plugin's own bug, and blaming the input would send a workflow's error
+// dispatch down the wrong branch. Each stays unclassified, which the host
+// records as a task failure, and each still names the input.
+func TestDecodeInputsDeclarationRefusalsStayUnclassified(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		inputs map[string]*flowstatev1.Value
+		msg    proto.Message
+	}{
+		{
+			// The task declared the input deferred, so the engine forwarded the
+			// expression, and then asked to decode it into a string.
+			name:   "an unresolved expression in a typed field",
+			inputs: map[string]*flowstatev1.Value{"url": flowstatev1.NewExpr("1 + 1")},
+			msg:    &flowstatev1.Task_HTTP_Inputs{},
+		},
+		{
+			name: "a secret reference in a typed field",
+			inputs: map[string]*flowstatev1.Value{
+				"url": {Kind: &flowstatev1.Value_SecretRef{
+					SecretRef: &flowstatev1.SecretRef{Scheme: "env", Name: "URL"},
+				}},
+			},
+			msg: &flowstatev1.Task_HTTP_Inputs{},
+		},
+		{
+			// A field of a kind DecodeInputs does not convert; the value is
+			// irrelevant, since no value could fill it.
+			name:   "a field kind DecodeInputs does not convert",
+			inputs: map[string]*flowstatev1.Value{"retry_after": flowstatev1.NewLiteral("1s")},
+			msg:    &pluginv1.ExecuteResponse{},
+		},
+		{
+			name:   "a nil message",
+			inputs: map[string]*flowstatev1.Value{"url": flowstatev1.NewLiteral("x")},
+			msg:    nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := DecodeInputs(test.inputs, test.msg)
+			require.Error(t, err)
+
+			var c *classified
+			require.False(t, errors.As(err, &c),
+				"%v is the task's declaration disagreeing with itself, not an invalid input", err)
+
+			var connectErr *connect.Error
+			require.True(t, errors.As(asConnectError(err), &connectErr))
+			require.Equal(t, connect.CodeUnknown, connectErr.Code(), "the host records a task failure")
+		})
+	}
+}
+
 // TestDecodeIntegerPrecision checks that a fractional number is refused rather
 // than truncated, since truncating would turn an author's mistake into a
 // plausible result.
@@ -526,6 +726,14 @@ func TestErrorClassification(t *testing.T) {
 			name:     "an error the author did not classify",
 			err:      errors.New("something went wrong"),
 			wantCode: connect.CodeUnknown,
+		},
+		{
+			// A task that returns what DecodeInputs gave it, with no wrap of its
+			// own, must reach the host as invalid input and not as the
+			// unclassified failure a bare error becomes (#1675).
+			name:     "a DecodeInputs refusal returned bare",
+			err:      decodeRefusal(t),
+			wantCode: connect.CodeInvalidArgument,
 		},
 	}
 
@@ -673,15 +881,16 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	t.Parallel()
 
 	task := Task{
-		Name:             "x_do",
-		Summary:          "does x",
-		Input:            &flowstatev1.Task_Log_Inputs{},
-		Output:           &flowstatev1.Task_Log_Outputs{},
-		DeferredInputs:   []string{"expr"},
-		ExpressionInputs: []string{"expr"},
-		SecretInputs:     []string{"token"},
-		NeedsScope:       true,
-		ShapesOutputs:    true,
+		Name:                 "x_do",
+		Summary:              "does x",
+		Input:                &flowstatev1.Task_Log_Inputs{},
+		Output:               &flowstatev1.Task_Log_Outputs{},
+		DeferredInputs:       []string{"message"},
+		ExpressionInputs:     []string{"message"},
+		SecretInputs:         []string{"message"},
+		RequiredSecretInputs: []string{"message"},
+		NeedsScope:           true,
+		ShapesOutputs:        true,
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 			return nil, nil
 		},
@@ -698,19 +907,22 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	if !manifest.GetNeedsScope() {
 		t.Error("needs_scope was not carried, so the task would not receive its scope")
 	}
-	if got := manifest.GetDeferredInputs(); len(got) != 1 || got[0] != "expr" {
-		t.Errorf("deferred_inputs = %v, want [expr]", got)
+	if got := manifest.GetDeferredInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("deferred_inputs = %v, want [message]", got)
 	}
 
 	// The two travel together here and are different claims: one says the plugin
 	// evaluates this input, the other says an author has to write it as `${...}`.
 	// A task can want either without the other, so carrying one and dropping the
 	// other would be invisible until a workload failed.
-	if got := manifest.GetExpressionInputs(); len(got) != 1 || got[0] != "expr" {
-		t.Errorf("expression_inputs = %v, want [expr]", got)
+	if got := manifest.GetExpressionInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("expression_inputs = %v, want [message]", got)
 	}
-	if got := manifest.GetSecretInputs(); len(got) != 1 || got[0] != "token" {
-		t.Errorf("secret_inputs = %v, want [token]", got)
+	if got := manifest.GetSecretInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("secret_inputs = %v, want [message]", got)
+	}
+	if got := manifest.GetRequiredSecretInputs(); len(got) != 1 || got[0] != "message" {
+		t.Errorf("required_secret_inputs = %v, want [message]", got)
 	}
 
 	// The declaration three host surfaces read: the compiler keeps a shaping
@@ -728,15 +940,64 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 
 	// Mutating the task's slice afterwards must not change the manifest.
 	task.DeferredInputs[0] = "changed"
-	if manifest.GetDeferredInputs()[0] != "expr" {
+	if manifest.GetDeferredInputs()[0] != "message" {
 		t.Error("the manifest aliases the task's slice")
 	}
 	task.ExpressionInputs[0] = "changed"
-	if manifest.GetExpressionInputs()[0] != "expr" {
+	if manifest.GetExpressionInputs()[0] != "message" {
 		t.Error("the manifest aliases the task's expression-inputs slice")
 	}
 
 	if !proto.Equal(manifest, manifest) {
 		t.Error("the manifest is not a well-formed message")
+	}
+}
+
+// TestManifestRefusesTypoInInputNameList checks the fix for #1477: every
+// input-claim list is cross-checked against the input descriptor's fields,
+// so a typo in (e.g.) required_secret_inputs fails closed at build time
+// instead of silently letting a literal credential into durable history.
+func TestManifestRefusesTypoInInputNameList(t *testing.T) {
+	t.Parallel()
+
+	base := func() Task {
+		return Task{
+			Name:    "check",
+			Summary: "tests name validation",
+			Input:   &flowstatev1.Task_Log_Inputs{},
+			Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+				return nil, nil
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		setup func(*Task)
+	}{
+		{"deferred_inputs", func(t *Task) { t.DeferredInputs = []string{"tokn"} }},
+		{"expression_inputs", func(t *Task) { t.ExpressionInputs = []string{"tokn"} }},
+		{"secret_inputs", func(t *Task) { t.SecretInputs = []string{"tokn"} }},
+		{"required_secret_inputs", func(t *Task) {
+			t.SecretInputs = []string{"message"}
+			t.RequiredSecretInputs = []string{"tokn"}
+		}},
+		{"no input message", func(t *Task) {
+			t.Input = nil
+			t.SecretInputs = []string{"token"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			task := base()
+			tc.setup(&task)
+			_, err := task.manifest(nil)
+			if err == nil {
+				t.Fatal("manifest() succeeded with a typo in an input-name list; want an error")
+			}
+			if !strings.Contains(err.Error(), "tokn") && !strings.Contains(err.Error(), "token") {
+				t.Errorf("error does not name the bad input: %v", err)
+			}
+		})
 	}
 }

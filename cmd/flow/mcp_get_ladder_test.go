@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -47,7 +52,7 @@ func manyStepTranscript() *v1.Workflow_StepOutputs {
 
 // getToolBlocks calls flowstate_get against a stand-in deployment and returns
 // the answer's content blocks: the document, then any notes after it.
-func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, notes []string, result *mcp.CallToolResult) {
+func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, notes []string, result *mcp.CallToolResult, outputSchema any) {
 	t.Helper()
 
 	posture := defaultLocalRunPosture()
@@ -59,8 +64,17 @@ func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, not
 	require.NoError(t, posture.Flags().Set(revealSensitiveFlagName, "true"))
 
 	session := connectRemoteMCP(t, posture, &fakeWorkflowService{getResponse: response})
+	tools, err := session.ListTools(t.Context(), &mcp.ListToolsParams{})
+	require.NoError(t, err)
+	for _, tool := range tools.Tools {
+		if tool.Name == flowmcp.ToolName("Get") {
+			outputSchema = tool.OutputSchema
+			break
+		}
+	}
+	require.NotNil(t, outputSchema, "flowstate_get did not advertise its response schema")
 
-	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+	result, err = session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      flowmcp.ToolName("Get"),
 		Arguments: map[string]any{"workflowId": "flowstate-workflow-3f7c"},
 	})
@@ -74,7 +88,39 @@ func getToolBlocks(t *testing.T, response *v1.GetResponse) (document string, not
 		blocks = append(blocks, text.Text)
 	}
 
-	return blocks[0], blocks[1:], result
+	return blocks[0], blocks[1:], result, outputSchema
+}
+
+func requireStructuredContentMatchesSchema(t *testing.T, schema, content any) {
+	t.Helper()
+
+	structured, ok := content.(map[string]any)
+	require.True(t, ok, "structuredContent arrived as %T, want an object", content)
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "output-schema-validator", Version: "test"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:         "validate_output",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: schema,
+	}, func(_ context.Context, _ *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, map[string]any, error) {
+		return nil, structured, nil
+	})
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	go func() { _ = srv.Run(t.Context(), serverTransport) }()
+	client := mcp.NewClient(&mcp.Implementation{Name: "output-schema-validator", Version: "test"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "validate_output",
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err,
+		"structuredContent does not match the tool's advertised outputSchema")
+	require.False(t, result.IsError,
+		"structuredContent does not match the tool's advertised outputSchema: %v", result.Content)
 }
 
 // TestTheGetToolLadderOverTheWire drives both directions through a real MCP
@@ -91,6 +137,8 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 	// that also fired on answers that fit would quietly strip every run's
 	// transcript.
 	t.Run("an answer under the ceiling is untouched", func(t *testing.T) {
+		packed, err := anypb.New(wrapperspb.String("opaque"))
+		require.NoError(t, err)
 		response := &v1.GetResponse{
 			WorkflowId: "flowstate-workflow-3f7c",
 			RunId:      "6b1f",
@@ -100,19 +148,46 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 					"greet": {NamedValues: map[string]*v1.Value{"message": v1.NewValue("hello")}},
 				},
 			}},
-			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{"answer": v1.NewValue("42")}},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"answer":       v1.NewValue("42"),
+				"not-a-number": v1.NewValue(math.NaN()),
+				"null":         v1.NewValue(nil),
+				"object": {
+					Kind: &v1.Value_Literal{Literal: &expr.Value{
+						Kind: &expr.Value_ObjectValue{ObjectValue: packed},
+					}},
+				},
+			}},
 		}
 
-		document, notes, result := getToolBlocks(t, response)
+		document, notes, result, outputSchema := getToolBlocks(t, response)
 
 		require.False(t, result.IsError, "a small answer must not be refused: %v", result.Content)
 		assert.Empty(t, notes,
 			"an answer that dropped nothing must not claim it dropped something")
 
-		expected, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response)
+		// The rendering `--output json` prints, not the schema's own protojson:
+		// this surface answers with one dialect of a run, and it is the one a
+		// reader of the CLI already knows (#1553).
+		expected, err := v1.MarshalRunDocument(response, false, false)
 		require.NoError(t, err)
 		assert.JSONEq(t, string(expected), document,
-			"an answer under the ceiling stopped being the protojson of its response message")
+			"an answer under the ceiling stopped being the document `--output json` prints")
+
+		// And the schema's own bytes are still reachable, beside it rather than
+		// instead of it, for a client that speaks the schema.
+		raw, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response)
+		require.NoError(t, err)
+		require.NotNil(t, result.StructuredContent,
+			"the schema's own form is gone, so a client that parses GetResponse has nothing to read")
+		requireStructuredContentMatchesSchema(t, outputSchema, result.StructuredContent)
+		// Re-marshalled rather than type-asserted: structuredContent crosses the
+		// protocol as JSON and arrives decoded, so what is compared is the
+		// document rather than the Go value that carried it.
+		structured, err := json.Marshal(result.StructuredContent)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(raw), string(structured),
+			"structuredContent stopped being the protojson of the response message")
 	})
 
 	// The bound is asserted *reached*, not merely unexceeded: the untouched
@@ -133,7 +208,7 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		require.Greater(t, len(untouched), flowmcp.MaxResultBytes,
 			"the fixture fits, so this test would pass without the ladder ever running")
 
-		document, notes, result := getToolBlocks(t, response)
+		document, notes, result, outputSchema := getToolBlocks(t, response)
 
 		// Not an error: a reduced answer is an answer. An error result is what
 		// the refusal this replaced meant, and a model reading IsError as "ask
@@ -146,8 +221,21 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		// Parses, and parses as the message the schema says this tool answers
 		// with — not merely as some JSON object. Half a document would satisfy
 		// the length assertion above and nothing else.
+		// Read from structuredContent, which is where the schema's own form
+		// lives now: the text block is the rendered document, which protojson
+		// cannot parse back and was never meant to.
+		require.NotNil(t, result.StructuredContent,
+			"a reduced answer must still carry the schema's form for a client that parses it")
+		requireStructuredContentMatchesSchema(t, outputSchema, result.StructuredContent)
+
+		structured, err := json.Marshal(result.StructuredContent)
+		require.NoError(t, err)
+
+		// Strict by default: protojson.Unmarshal rejects a field the schema does
+		// not describe, so this is also where a note smuggled in beside the
+		// response's own fields would fail.
 		var got v1.GetResponse
-		require.NoError(t, protojson.Unmarshal([]byte(document), &got),
+		require.NoError(t, protojson.Unmarshal(structured, &got),
 			"the reduced answer stopped being a parseable GetResponse")
 
 		// Reduced, not cleared: `GetResponse.kind` is a required oneof, so an
@@ -176,12 +264,13 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		assert.Contains(t, notes[0], "flow get", "the note should say how to read what left")
 
 		// And the note stays *out* of the document. The first block is exactly
-		// the protojson of a GetResponse — the same bytes `--output json` prints
-		// — so a caller that unmarshals strictly is not broken on the day a run
-		// gets large. A note added as a field beside the response's own would
-		// fail here.
-		require.NoError(t, protojson.UnmarshalOptions{DiscardUnknown: false}.Unmarshal([]byte(document), &got),
-			"the answer carries a field the schema does not describe")
+		// the document `--output json` prints for the answer structuredContent
+		// carries, so a reader gets one run in one dialect on the day it gets
+		// large as well as on the day it fits.
+		expected, err := v1.MarshalRunDocument(&got, false, false)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(expected), document,
+			"the reduced document stopped being the rendering of the reduced answer beside it")
 
 		var fields map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal([]byte(document), &fields))
@@ -224,11 +313,14 @@ func TestAFailedRunWithAnOversizedReasonIsStillAnswered(t *testing.T) {
 	require.Greater(t, len(untouched), flowmcp.MaxResultBytes,
 		"the fixture fits, so this test would pass without the cap ever running")
 
-	document, notes, result := getToolBlocks(t, response)
+	document, notes, result, outputSchema := getToolBlocks(t, response)
 
 	assert.False(t, result.IsError, "a run whose reason had to be shortened is still an answer")
 	require.LessOrEqual(t, len(document), flowmcp.MaxResultBytes,
 		"a failure-only answer escaped the surface's ceiling")
+	require.NotNil(t, result.StructuredContent,
+		"the bounded failure must still carry a schema-readable answer")
+	requireStructuredContentMatchesSchema(t, outputSchema, result.StructuredContent)
 
 	var got v1.GetResponse
 	require.NoError(t, protojson.Unmarshal([]byte(document), &got))

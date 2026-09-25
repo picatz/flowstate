@@ -82,3 +82,31 @@ research itself.
 Fixes land on `main`. Until versioned releases carry their own support
 statement, `main` is the supported version and advisories will say which
 commits are affected.
+
+## What runs
+
+The analysis and supply-chain program, in one place, so a reviewer does not
+have to reconstruct it from the workflow files:
+
+- **CodeQL** (`.github/workflows/codeql.yml`): Go, with the security-extended
+  queries, on every pull request, on `main` and weekly; the plugin modules are
+  analysed through a workspace generated for the job. Findings appear under
+  code scanning alerts and are triaged into issues labelled `security`.
+- **OpenSSF Scorecard** (`.github/workflows/scorecard.yml`): on `main` and
+  weekly, published to the public dashboard the README badge reads.
+- **Dependency review** (`.github/workflows/dependency-review.yml`): every
+  pull request's dependency changes are diffed against the base and refused
+  on a known advisory of high severity or a licence outside the permissive
+  family the MIT `LICENSE` composes with.
+- **govulncheck** and **staticcheck** on the root and every plugin module on
+  every pull request (`.github/workflows/ci.yml`), with the advisory database
+  fetched at run time so a pinned analyser still reports a new disclosure.
+- **Fuzzing**: a smoke pass on the targets a pull request reaches, and the
+  deep tier's longer runs weekly (`.github/workflows/deep.yml`), which file a
+  crasher as an issue with its artifact.
+- **Dependabot** (`.github/dependabot.yml`): grouped weekly bumps for Go,
+  Actions and npm with cooldowns, and security alerts opened the moment an
+  advisory is published.
+- **Releases**: SBOMs and build attestations for every archive
+  (`.github/workflows/release.yml`).
+

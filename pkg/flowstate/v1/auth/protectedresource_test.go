@@ -273,10 +273,10 @@ func TestProtectedResourceEscapedPathIsActuallyReachable(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.Handle(pr.Path(), pr.Handler())
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
+	server := httptest.NewTestServer(t, mux)
+	client := server.Client()
 
-	resp, err := http.Get(server.URL + pr.Path())
+	resp, err := client.Get(server.URL + pr.Path())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -409,10 +409,10 @@ func TestProtectedResourceRefusesUnspellableScopes(t *testing.T) {
 func protectedResourceDocument(t *testing.T, pr *auth.ProtectedResource) map[string]any {
 	t.Helper()
 
-	server := httptest.NewServer(pr.Handler())
-	t.Cleanup(server.Close)
+	server := httptest.NewTestServer(t, pr.Handler())
+	client := server.Client()
 
-	resp, err := http.Get(server.URL)
+	resp, err := client.Get(server.URL)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -437,10 +437,16 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 	}, trustingPolicy("https://trusted.example.com"))
 	require.NoError(t, err)
 
-	server := httptest.NewServer(pr.Handler())
-	t.Cleanup(server.Close)
+	server := httptest.NewTestServer(t, pr.Handler())
+	client := server.Client()
+	// This parallel test's probes use the transport owned by this server rather
+	// than the shared global transport.
+	require.NotNil(t, client.Transport,
+		"a nil client transport would fall back to the shared http.DefaultTransport")
+	require.NotSame(t, http.DefaultTransport, client.Transport,
+		"parallel test-server cleanup must not close the transport carrying these probes")
 
-	get, err := http.Get(server.URL)
+	get, err := client.Get(server.URL)
 	require.NoError(t, err)
 	defer get.Body.Close()
 	require.Equal(t, http.StatusOK, get.StatusCode)
@@ -448,7 +454,7 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, getBody)
 
-	head, err := http.Head(server.URL)
+	head, err := client.Head(server.URL)
 	require.NoError(t, err)
 	defer head.Body.Close()
 	require.Equal(t, http.StatusOK, head.StatusCode)
@@ -458,14 +464,14 @@ func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
 	require.Equal(t, get.Header.Get("Content-Type"), head.Header.Get("Content-Type"),
 		"HEAD should answer with the same headers GET would")
 
-	post, err := http.Post(server.URL, "application/json", nil)
+	post, err := client.Post(server.URL, "application/json", nil)
 	require.NoError(t, err)
 	defer post.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, post.StatusCode)
 
 	req, err := http.NewRequest(http.MethodOptions, server.URL, nil)
 	require.NoError(t, err)
-	options, err := http.DefaultClient.Do(req)
+	options, err := client.Do(req)
 	require.NoError(t, err)
 	defer options.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, options.StatusCode,
@@ -486,7 +492,7 @@ func TestWithProtectedResourceUnconfiguredChallengeIsUnchanged(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run", nil)
 	require.NoError(t, err)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -513,7 +519,7 @@ func TestWithProtectedResourceChallengeNamesTheMetadataURL(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run", nil)
 	require.NoError(t, err)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -522,7 +528,7 @@ func TestWithProtectedResourceChallengeNamesTheMetadataURL(t *testing.T) {
 	require.Contains(t, challenge, `error="invalid_token"`)
 	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`)
 	require.NotContains(t, challenge, "scope=",
-		"D1 is deferred: this slice defines no scope vocabulary to challenge with")
+		"no per-action enforcement point can truthfully name a required scope")
 }
 
 // TestWithProtectedResourceChallengeIgnoresForgedHost is the #1 named risk in
@@ -547,7 +553,7 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 	req.Header.Set("Host", "attacker.example.com")
 	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := server.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -555,6 +561,49 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`,
 		"a forged Host header changed the advertised metadata URL")
 	require.NotContains(t, challenge, "attacker.example.com")
+}
+
+// TestProtectedResourceChallengeMetadataURLBindsTheDocumentToTheSurface is
+// the shared safety rule used by both Connect and MCP challenge wiring. The
+// negative case is load-bearing: returning MetadataURL unconditionally would
+// pass both positive cases while directing a mismatched surface's client to
+// mint an audience that surface refuses.
+func TestProtectedResourceChallengeMetadataURLBindsTheDocumentToTheSurface(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	for _, test := range []struct {
+		name     string
+		resource string
+		want     string
+	}{
+		{
+			name:     "matching surface resource",
+			resource: pr.Resource(),
+			want:     pr.MetadataURL(),
+		},
+		{
+			name: "unnarrowed surface",
+			want: pr.MetadataURL(),
+		},
+		{
+			name:     "mismatched surface resource",
+			resource: "https://flowstate.example.com/rpc",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.want, pr.ChallengeMetadataURL(test.resource))
+		})
+	}
+
+	require.Empty(t, (*auth.ProtectedResource)(nil).ChallengeMetadataURL(pr.Resource()),
+		"an unconfigured surface must not advertise a metadata document")
 }
 
 // fetchMetadata serves one GET through the protected-resource handler and

@@ -1,0 +1,100 @@
+edition: v2026.3
+tests:
+  - name: an attested image is approved by digest, not by tag
+    workflow: ./workflow.yaml
+    inputs:
+      image: ghcr.io/acme/api:1.4.2
+      platform: linux/amd64
+      expected_approver: release-manager@example.com
+    starter:
+      subject: release-requester@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: digest-approved
+        payload:
+          approved: true
+        sender:
+          subject: release-manager@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - step: pin
+        returns:
+          reference: ghcr.io/acme/api@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+          digest: sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+          media_type: application/vnd.oci.image.manifest.v1+json
+          size: 1284
+          registry: ghcr.io
+          repository: acme/api
+          platform: linux/amd64
+          platform_matched: true
+      - step: attached
+        returns:
+          referrers:
+            - digest: sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
+              media_type: application/vnd.oci.image.manifest.v1+json
+              artifact_type: application/vnd.in-toto+json
+              size: 842
+              annotations: {}
+          count: 1
+          truncated: false
+      - step: attestation
+        returns:
+          digest: sha256:1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
+          size: 842
+          content: '{"_type":"https://in-toto.io/Statement/v1","predicateType":"https://slsa.dev/provenance/v1"}'
+          media_type: application/vnd.in-toto+json
+          json:
+            _type: https://in-toto.io/Statement/v1
+            predicateType: https://slsa.dev/provenance/v1
+    expect:
+      ran: [pin, attached, attestation_present, attestation, predicate_type, approval]
+      outputs:
+        reference: ghcr.io/acme/api@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+        digest: sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+        attested: true
+        approved: true
+
+  - name: an image with nothing attached still reaches the human, and says so
+    workflow: ./workflow.yaml
+    inputs:
+      image: ghcr.io/acme/api:1.4.2
+      expected_approver: release-manager@example.com
+    starter:
+      subject: release-requester@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: digest-approved
+        payload:
+          approved: false
+        sender:
+          subject: release-manager@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - step: pin
+        returns:
+          reference: ghcr.io/acme/api@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+          digest: sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+          media_type: application/vnd.oci.image.manifest.v1+json
+          size: 1284
+          registry: ghcr.io
+          repository: acme/api
+          platform: ""
+          platform_matched: false
+      - step: attached
+        returns:
+          referrers: []
+          count: 0
+          truncated: false
+    expect:
+      # The attestation steps do not run, and the gate still does: an
+      # unattested image is a decision for a person, not a silent pass.
+      ran: [pin, attached, attestation_present, approval]
+      outputs:
+        reference: ghcr.io/acme/api@sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+        digest: sha256:9f6d0e6a3a2c1b5e4d8f7a0c9b2e1d4a7c6f5b8e3d2a1c0b9f8e7d6c5b4a3f21
+        attested: false
+        approved: false

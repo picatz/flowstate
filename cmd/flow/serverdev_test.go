@@ -465,7 +465,9 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 		"the run a person just started has to be named by the name they gave it")
 	assert.Contains(t, report, "COMPLETED workflow "+name,
 		"the two drivers have to describe a finished run the same way")
-	assert.Equal(t, 1, strings.Count(report, "flowstate-workflow-"),
+	// `flow run` sends a request id on every invocation, so the id it is
+	// handed back is request-addressed ([v1.RunRequest.request_id]).
+	assert.Equal(t, 1, strings.Count(report, "flowstate-request-"),
 		"the workflow id belongs in the `flow watch` hint and nowhere else in the prose:\n%s", report)
 
 	// And the run id is said once — not zero times. `flow get --run-id` and
@@ -488,6 +490,189 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 
 	assertNothingAnswersAt(t, stack.TemporalAddress)
 	assertNothingAnswersAt(t, stack.FlowstateAddress)
+}
+
+// TestServerDevAuthCompletesAnAuthenticatedApprovalJourney is the authenticated
+// leg of the first-day journey: one process owns Temporal, server, worker and a
+// local issuer posture, while separate requester and approver clients cross the
+// production bearer-token middleware, endpoint-bound audience check and signal
+// policy. The commands mirror examples/approval-gate/README.md; this is the
+// executable check that keeps that worked journey connected to the binary.
+func TestServerDevAuthCompletesAnAuthenticatedApprovalJourney(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: needs a Temporal dev server; CI runs the full suite")
+	}
+
+	for _, name := range []string{
+		"FLOWSTATE_ADDRESS", "FLOWSTATE_AUTH_POLICY", "TEMPORAL_ADDRESS", "TEMPORAL_PROFILE",
+		"TEMPORAL_CONFIG_FILE",
+	} {
+		t.Setenv(name, "")
+	}
+
+	dir := t.TempDir()
+	out, errOut := &syncWriter{}, &syncWriter{}
+	root := newRootCommand()
+	root.SetOut(out)
+	root.SetErr(errOut)
+	root.SetArgs([]string{
+		"server", "dev", "--auth", "--identity-claim", "team",
+		"--listen", "localhost:0", "--ui-port", "0", "-o", "json",
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	stopped := make(chan error, 1)
+	go func() { stopped <- root.ExecuteContext(ctx) }()
+
+	stack, err := awaitDevStack(t, out, stopped)
+	if err != nil {
+		if !devServerUnavailable(err) {
+			t.Fatalf("authenticated `flow server dev` failed to start: %v", err)
+		}
+		t.Skipf("SKIPPING the authenticated dev gate: this environment cannot start a Temporal dev server (%v)", err)
+	}
+
+	// The gate's `signals:` rule names its issuer rather than taking one as an
+	// input, because a subject is only unique within the issuer that attested
+	// it. This stack mints its own issuer, so the test does what a deployment
+	// does, and what README.md's walkthrough does: substitutes it into a copy.
+	inputs := filepath.Join("..", "..", "examples", "approval-gate", "inputs.json")
+	source, err := os.ReadFile(filepath.Join("..", "..", "examples", "approval-gate", "workflow.yaml"))
+	require.NoError(t, err)
+
+	workflow := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow,
+		[]byte(strings.ReplaceAll(string(source), "https://issuer.example.com", stack.AuthIssuer)), 0o600))
+
+	require.False(t, stack.AnonymousAuth)
+	require.Equal(t, "http://"+stack.FlowstateAddress, stack.AuthResource)
+	require.Equal(t, devAuthIssuer, stack.AuthIssuer)
+	require.Equal(t, devAuthSubject, stack.AuthSubject)
+	require.Equal(t, devAuthNamespace, stack.AuthNamespace)
+	require.FileExists(t, stack.AuthKeyFile)
+	require.FileExists(t, stack.AuthPolicyFile)
+	require.Contains(t, stack.TokenCommand, "flow jwt sign")
+	require.Contains(t, errOut.String(), stack.TokenCommand,
+		"the command machine output advertises must be the one the human banner prints")
+	tokenPath := filepath.Join(filepath.Dir(stack.AuthKeyFile), "token.jwt")
+	require.Contains(t, errOut.String(),
+		"flow run <file> --address "+shellArg(stack.FlowstateAddress)+" --token-file "+shellArg(tokenPath))
+	require.Contains(t, errOut.String(),
+		"flow list --address "+shellArg(stack.FlowstateAddress)+" --token-file "+shellArg(tokenPath))
+
+	anonymous := runFlow(t,
+		"run", workflow,
+		"--input-file", inputs,
+		"--address", stack.FlowstateAddress,
+	)
+	require.Error(t, anonymous.Err)
+	require.Contains(t, anonymous.Output(), "unauthenticated")
+
+	writeToken := func(name, subject string, claims ...string) string {
+		t.Helper()
+		args := []string{
+			"key", stack.AuthKeyFile,
+			"id", devAuthKeyID,
+			"issuer", stack.AuthIssuer,
+			"subject", subject,
+			"audience", stack.AuthResource,
+			"claim", "namespace=" + stack.AuthNamespace,
+		}
+		for _, claim := range claims {
+			args = append(args, "claim", claim)
+		}
+		token, _, err := runJWTSignInto(t, args...)
+		require.NoError(t, err)
+		path := filepath.Join(filepath.Dir(stack.AuthKeyFile), name+".jwt")
+		require.NoError(t, os.WriteFile(path, []byte(strings.TrimSpace(token)), 0o600))
+		return path
+	}
+
+	requesterToken := writeToken("requester", "release-requester@example.com")
+	approverToken := writeToken("approver", "sre-lead@example.com", "team=release-managers")
+
+	started := runFlow(t,
+		"run", "--detach", workflow,
+		"--input-file", inputs,
+		"--address", stack.FlowstateAddress,
+		"--token-file", requesterToken,
+		"-o", "json",
+	)
+	require.NoError(t, started.Err, "authenticated durable start: %s", started.Output())
+	var run struct {
+		WorkflowID string `json:"workflowId"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(started.Stdout), &run))
+	require.NotEmpty(t, run.WorkflowID)
+
+	pending := runFlow(t, "get", run.WorkflowID,
+		"--address", stack.FlowstateAddress, "--token-file", requesterToken, "-o", "json")
+	require.NoError(t, pending.Err, "reading the parked run: %s", pending.Output())
+	require.Contains(t, pending.Stdout, `"status": "STATUS_RUNNING"`)
+
+	selfApproval := runFlow(t, "signal", run.WorkflowID, "deploy-approved",
+		"--data", `{"approved":true}`,
+		"--address", stack.FlowstateAddress, "--token-file", requesterToken)
+	require.Error(t, selfApproval.Err, "the requester approved a gate reserved for the named release manager")
+	require.Contains(t, strings.ToLower(selfApproval.Output()), "permission_denied")
+
+	stillPending := runFlow(t, "get", run.WorkflowID,
+		"--address", stack.FlowstateAddress, "--token-file", requesterToken, "-o", "json")
+	require.NoError(t, stillPending.Err)
+	require.Contains(t, stillPending.Stdout, `"status": "STATUS_RUNNING"`,
+		"a refused signal must not reach the waiting workflow")
+
+	approved := runFlow(t, "signal", run.WorkflowID, "deploy-approved",
+		"--data", `{"approved":true}`,
+		"--address", stack.FlowstateAddress, "--token-file", approverToken, "-o", "json")
+	require.NoError(t, approved.Err, "authorized approval: %s", approved.Output())
+	var delivery mutationDocument
+	require.NoError(t, json.Unmarshal([]byte(approved.Stdout), &delivery))
+	require.Equal(t, "delivered", delivery.Result)
+	require.Equal(t, "deploy-approved", delivery.SignalName)
+
+	finished := runFlow(t, "watch", run.WorkflowID,
+		"--address", stack.FlowstateAddress, "--token-file", requesterToken,
+		"--interval", "250ms", "--reveal-sensitive", "-o", "json")
+	require.NoError(t, finished.Err, "following the approved run: %s", finished.Output())
+	var result struct {
+		Status  string `json:"status"`
+		Outputs struct {
+			RunOutputs map[string]any `json:"runOutputs"`
+		} `json:"outputs"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(finished.Stdout), &result))
+	require.Equal(t, "STATUS_COMPLETED", result.Status)
+	require.Equal(t, "deployed", result.Outputs.RunOutputs["decision"])
+	require.Equal(t, "sre-lead@example.com", result.Outputs.RunOutputs["approver_subject"],
+		"the output must come from the server-attested signal sender")
+
+	wrongToken, _, err := runJWTSignInto(t,
+		"key", stack.AuthKeyFile,
+		"id", devAuthKeyID,
+		"issuer", stack.AuthIssuer,
+		"subject", stack.AuthSubject,
+		"audience", "http://127.0.0.1:1",
+		"claim", "namespace="+stack.AuthNamespace,
+	)
+	require.NoError(t, err)
+	wrongTokenFile := filepath.Join(dir, "wrong-token.jwt")
+	require.NoError(t, os.WriteFile(wrongTokenFile, []byte(strings.TrimSpace(wrongToken)), 0o600))
+	wrong := runFlow(t, "list", "--address", stack.FlowstateAddress, "--token-file", wrongTokenFile)
+	require.Error(t, wrong.Err)
+	require.Contains(t, wrong.Output(), "unauthenticated")
+
+	cancel()
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-time.After(devShutdownTimeout + 30*time.Second):
+		t.Fatal("authenticated `flow server dev` did not return after cancellation")
+	}
+	assertNothingAnswersAt(t, stack.TemporalAddress)
+	assertNothingAnswersAt(t, stack.FlowstateAddress)
+	require.NoFileExists(t, stack.AuthKeyFile, "ephemeral authentication material must leave with the stack")
 }
 
 // runIDInProse matches the clause a narrated line carries a run id in.

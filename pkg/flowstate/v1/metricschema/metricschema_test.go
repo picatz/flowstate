@@ -14,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // What this file is for.
@@ -390,7 +392,7 @@ func TestTheSchemaClassifiesEveryKeyItPermits(t *testing.T) {
 func TestEveryMetricRecordingSiteGoesThroughTheSchema(t *testing.T) {
 	t.Parallel()
 
-	root := repoRoot(t)
+	root := testkit.RepoRoot(t)
 
 	bypasses := []string{"metric.WithAttributes(", "metric.WithAttributeSet("}
 
@@ -456,25 +458,4 @@ func TestEveryMetricRecordingSiteGoesThroughTheSchema(t *testing.T) {
 	require.Empty(t, offenders,
 		"these record metric attributes without passing the schema; use metricschema.WithAttributes so the "+
 			"allowlist and the cardinality bound apply")
-}
-
-// repoRoot walks up from the test's directory to the go.mod root.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-
-	dir, err := os.Getwd()
-	require.NoError(t, err)
-
-	for range 10 {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		require.NotEqual(t, parent, dir, "walked to the filesystem root without finding go.mod")
-		dir = parent
-	}
-
-	t.Fatal("go.mod not found within ten directories of the test")
-
-	return ""
 }

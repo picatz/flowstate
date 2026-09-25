@@ -99,6 +99,15 @@ func TestASignalThatTimedOutStillHasAPayloadToLookIn(t *testing.T) {
 	require.Empty(t, entries(t, outputs))
 }
 
+func TestAnOldAbsentSignalPayloadReadsAsAnAnsweredEmptyMap(t *testing.T) {
+	t.Parallel()
+
+	outputs := v1.SignalOutputs(nil, nil, false)
+
+	require.False(t, outputs.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
+	require.Empty(t, entries(t, outputs))
+}
+
 // TestASenderCannotClaimAnIdentity is [TestASenderCannotNameAnythingOutsideItsPayload]
 // for the field the boundary doctrine (#185) exists to protect: a sender may put
 // whatever it likes inside its own payload, including a key spelled exactly
