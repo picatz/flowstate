@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -336,24 +337,27 @@ func (a withholdingActivation) ResolveName(name string) (any, bool) {
 	}
 
 	if value, ok := value.(ref.Val); ok {
-		// A map converts one entry at a time where it can, rather than
-		// through the ordinary whole-value path: `steps` is
+		// A map is wrapped rather than converted, so redaction happens on
+		// the read that reaches an entry: `steps` is
 		// [v1.StepsOutputActivation.stepsMap], a lazy map whose entries
-		// convert only on the read that reaches them so that one step's
-		// unconvertible output — a secret reference under it — fails only
-		// that step's own read. Converting the whole binding eagerly here,
-		// the way every other name is handled, forces exactly the
-		// all-at-once conversion that property exists to avoid: it reaches
-		// every completed step before an expression has named one, and
-		// turns one step's failure into a failure for every other step's
-		// inspection too (Codex, #2011 review, third round).
+		// convert only on the read that reaches them, specifically so that
+		// one step's unconvertible output — a secret reference under it —
+		// fails only that step's own read and costs nothing against CEL's
+		// cost accounting until an expression names it. Converting the
+		// whole binding eagerly here, the way every other name is handled,
+		// forces exactly the all-at-once conversion that property exists
+		// to avoid — and converting it *entry by entry but still up
+		// front*, an earlier version of this fix, still walked and
+		// converted every completed step before CEL had asked for one; it
+		// fixed one failure mode and left the other (Codex, #2011 review,
+		// third and fifth rounds). [redactingMapper] is the fix that stays
+		// lazy: `Find` and `Iterator`, which is what an ordinary
+		// `steps.<id>` expression and `exists`/`has` actually call,
+		// convert and redact one entry at a time on demand; only the
+		// whole-map operations (`Equal`, a literal conversion) pay for the
+		// whole walk, because there is no lazy way to answer those.
 		if mapper, ok := value.(traits.Mapper); ok {
-			if native, ok := redactedMapNative(mapper, a.redactValue); ok {
-				return types.DefaultTypeAdapter.NativeToValue(a.withText(native)), true
-			}
-			// A map this walk cannot represent — a non-string key, which
-			// `steps` and every other root here never has — falls back to
-			// the whole-value path below exactly as before.
+			return redactingMapper{Mapper: mapper, redactValue: a.redactValue, redactText: a.redactText}, true
 		}
 
 		native, converted := redactedNative(value, a.redactValue)
@@ -403,36 +407,149 @@ func (a withholdingActivation) withText(native any) any {
 	return textRedactedTree(native, a.redactText)
 }
 
-// redactedMapNative converts a CEL map to a native one entry at a time,
-// redacting each value independently, rather than through the single
-// whole-map conversion [redactedNative] otherwise performs.
+// redactingMapper wraps a CEL map so that redaction happens on the read
+// that reaches an entry, not by converting the whole map when a binding is
+// first resolved.
 //
-// The difference matters for exactly one existing map shape today:
-// [v1.StepsOutputActivation.stepsMap]'s `steps` root converts a step's
-// outputs on the read that reaches them, and its own whole-map conversion
-// — reached by [cel.RefValueToValue], which is what [redactedNative] calls
-// — deliberately fails the *entire* map the moment any one step's output
-// cannot convert (a secret reference under it), so that a later, real
-// evaluation sees one clear error rather than a map with a silent hole in
-// it. That is the right answer for a workflow's own evaluation; for a
-// debugger inspection it means one step failing to convert makes every
-// other step unreadable too, which is not a security property, only a
-// missed one. Walking the map through its own [traits.Mapper] protocol —
-// [traits.Mapper.Iterator] to see every key, [traits.Mapper.Find] to read
-// one at a time — reaches each step's conversion independently, exactly as
-// an ordinary `steps.<id>` expression already does, so a failure there
-// stays scoped to that one key here too.
-//
-// ok is false when the map cannot be represented this way at all: a
-// non-string key, which is legal CEL and something [v1.StepsOutputActivation]
-// and every other root's own map values never produce, but a general CEL
-// map handed to `inspect` some other way could. The caller falls back to
-// the whole-value conversion in that case, exactly as it would have without
-// this function.
-func redactedMapNative(m traits.Mapper, redactValue func(any) any) (map[string]any, bool) {
-	native := make(map[string]any)
+// [v1.StepsOutputActivation.stepsMap]'s `steps` root is the map shape that
+// makes the difference load-bearing: it converts a step's outputs only on
+// the read that reaches them, specifically so that one step's
+// unconvertible output — a secret reference under it — fails only that
+// step's own read, and so that naming one step does not pay to convert
+// every other completed one. [redactedNative] converting the whole binding
+// eagerly, the way every other resolved name is handled, forces exactly
+// the all-at-once conversion that property exists to avoid; converting it
+// entry by entry but still up front — this type's own first draft — kept
+// the eager walk and only traded which failure mode it had (Codex, #2011
+// review, third and fifth rounds). Only `Find` and `Iterator`, what an
+// ordinary `steps.<id>` expression and `exists`/`has` actually call, are
+// overridden to redact lazily; every other [traits.Mapper] method — Size,
+// Contains, IsZeroValue, Type — is inherited unchanged through the
+// embedded value because none of them can hand back a value or a key.
+type redactingMapper struct {
+	traits.Mapper
+	redactValue func(any) any
+	redactText  func(string) string
+}
 
-	it := m.Iterator()
+// Find looks the key up in the wrapped map and redacts the one entry that
+// answers it — the value only; key redaction is [redactingMapper.Iterator]'s
+// job, because Find's key is one the caller already typed, not one being
+// disclosed to them.
+func (m redactingMapper) Find(key ref.Val) (ref.Val, bool) {
+	value, found := m.Mapper.Find(key)
+	if !found {
+		return value, false
+	}
+
+	return types.DefaultTypeAdapter.NativeToValue(m.redactedValue(value)), true
+}
+
+// Get is Find with the "no such key" error CEL expects when the underlying
+// map disagrees about whether it has an entry — the same construction
+// [lazyStepsMap.Get] uses.
+func (m redactingMapper) Get(key ref.Val) ref.Val {
+	value, found := m.Find(key)
+	if !found {
+		return types.ValOrErr(key, "no such key: %v", key)
+	}
+
+	return value
+}
+
+// Iterator lists the wrapped map's keys with each one redacted, so that
+// `exists(k, ...)`, a `for`, or a literal conversion sees the same
+// withheld names the read of any one value already would, rather than the
+// raw keys an author never typed.
+func (m redactingMapper) Iterator() traits.Iterator {
+	inner := m.Mapper.Iterator()
+
+	keys := make([]string, 0)
+	for inner.HasNext() == types.True {
+		key := inner.Next()
+
+		name, ok := key.(types.String)
+		if !ok {
+			// A non-string key is legal CEL and something none of this
+			// package's own roots ever produce; nothing here knows how to
+			// redact one, so it passes through — the key itself carries
+			// no name to withhold the way a string key does.
+			keys = append(keys, fmt.Sprint(key.Value()))
+
+			continue
+		}
+
+		keys = append(keys, redactedKeyName(string(name), m.redactValue))
+	}
+
+	return types.NewStringList(types.DefaultTypeAdapter, keys).Iterator()
+}
+
+// Equal, Value and ConvertToNative are the operations that need the whole
+// map at once and have no lazy answer to give — comparing it, or handing
+// it to a native Go value. Walking it eagerly here, on the read that
+// actually asks for the whole thing, is the same eager conversion the type
+// exists to avoid for the common `steps.<id>` case, paid only where there
+// is no cheaper way to answer.
+func (m redactingMapper) Equal(other ref.Val) ref.Val {
+	whole, ok := m.redactedWhole()
+	if !ok {
+		return types.NewErr("redacted map: a key could not be represented")
+	}
+
+	return whole.Equal(other)
+}
+
+func (m redactingMapper) Value() any {
+	whole, ok := m.redactedWhole()
+	if !ok {
+		return "[redacted]"
+	}
+
+	return whole.Value()
+}
+
+func (m redactingMapper) ConvertToNative(typeDesc reflect.Type) (any, error) {
+	whole, ok := m.redactedWhole()
+	if !ok {
+		return nil, errors.New("redacted map: a key could not be represented")
+	}
+
+	return whole.ConvertToNative(typeDesc)
+}
+
+func (m redactingMapper) ConvertToType(typeVal ref.Type) ref.Val {
+	if typeVal == types.MapType {
+		return m
+	}
+
+	return m.Mapper.ConvertToType(typeVal)
+}
+
+// redactedValue is v redacted the same way every other resolved binding is
+// — structural, then text — folded into one step for [redactingMapper.Find]
+// and [redactingMapper.redactedWhole] to share.
+func (m redactingMapper) redactedValue(v ref.Val) any {
+	native, converted := redactedNative(v, m.redactValue)
+	if !converted {
+		native = "[redacted]"
+	}
+
+	if m.redactText != nil {
+		native = textRedactedTree(native, m.redactText)
+	}
+
+	return native
+}
+
+// redactedWhole is the wrapped map converted and redacted in full, for the
+// operations that have no lazy answer. ok is false only for a non-string
+// key, which [redactingMapper.Iterator] already documents as unreachable
+// through this package's own roots.
+func (m redactingMapper) redactedWhole() (traits.Mapper, bool) {
+	entries := make(map[ref.Val]ref.Val)
+
+	it := m.Mapper.Iterator()
 	for it.HasNext() == types.True {
 		key := it.Next()
 
@@ -441,22 +558,16 @@ func redactedMapNative(m traits.Mapper, redactValue func(any) any) (map[string]a
 			return nil, false
 		}
 
-		value, found := m.Find(key)
+		value, found := m.Mapper.Find(key)
 		if !found {
 			continue
 		}
 
-		entry, converted := redactedNative(value, redactValue)
-		if !converted {
-			native[redactedKeyName(string(name), redactValue)] = "[redacted]"
-
-			continue
-		}
-
-		native[redactedKeyName(string(name), redactValue)] = entry
+		redactedKey := types.String(redactedKeyName(string(name), m.redactValue))
+		entries[redactedKey] = types.DefaultTypeAdapter.NativeToValue(m.redactedValue(value))
 	}
 
-	return native, true
+	return types.NewRefValMap(types.DefaultTypeAdapter, entries), true
 }
 
 // redactedKeyName is name through the structural redactor, the same way
@@ -470,16 +581,35 @@ func redactedMapNative(m traits.Mapper, redactValue func(any) any) (map[string]a
 // text — a one-rune sensitive key such as `"7"` passes through it untouched.
 // The structural, equality-based redactor has no such floor, so it is what
 // actually has to catch a short key (Codex, #2011 review, fourth round).
+//
+// Fails closed on the shape a caller's own redactor is free to choose and
+// this package cannot predict: [Session.SetValueRedactor]'s contract is
+// `func(any) any`, so nothing requires a redacted key to still be a string
+// — an embedder recognizing a sensitive key could hand back nil, or a
+// sentinel type of its own, rather than this package's own "[redacted]"
+// marker. Earlier this fell back to the *original* name whenever the
+// result was not a string, which redacted a key exactly when the caller's
+// own redactor happened to answer in the one shape this function expected
+// and otherwise handed the secret straight through — fail-open dressed as
+// a type check (Codex, #2011 review, fifth round). Identity — the result
+// equals name — is the one case this reads as "not sensitive"; anything
+// else that is not a string still means "withhold this," so it gets the
+// fixed marker rather than the name it could not carry.
 func redactedKeyName(name string, redactValue func(any) any) string {
 	if redactValue == nil {
 		return name
 	}
 
-	if redacted, ok := redactValue(name).(string); ok {
-		return redacted
+	redacted := redactValue(any(name))
+	if redacted == any(name) {
+		return name
 	}
 
-	return name
+	if text, ok := redacted.(string); ok {
+		return text
+	}
+
+	return "[redacted]"
 }
 
 func (a withholdingActivation) Parent() cel.Activation {
