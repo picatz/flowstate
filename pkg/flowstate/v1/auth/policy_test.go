@@ -389,12 +389,14 @@ issuers:
 // run against the decoder found it incomplete: a trailing tab, or a leading
 // `? ` (YAML's own explicit-key indicator), silently changes a key across
 // this same unquoted round trip with no error to catch it either — nine
-// distinct breaks in three million random keys, none of them a `<<` suffix
-// (flowstate-reviewer). [NamespaceMap.MarshalYAML] now writes every key as a
-// quoted JSON string instead, which the same run found zero breaks for, so
-// this test asserts the round trip directly rather than refusing the one
-// shape found first — see the comment on [NamespaceMap.MarshalYAML] for why
-// quoting is the fix and refusing is not.
+// distinct breaks in three million random keys drawn from YAML's own
+// punctuation, none of them a `<<` suffix (flowstate-reviewer).
+// [NamespaceMap.MarshalYAML] now writes every key as a quoted JSON string
+// instead, which the same run found zero breaks for, so this test asserts
+// the round trip directly rather than refusing the one shape found first —
+// see the comment on [NamespaceMap.MarshalYAML] for why quoting is the fix
+// and refusing is not, and for the separate, already-tracked class (#2077)
+// that run's alphabet did not reach and this test does not claim to cover.
 func TestNamespaceMapYAMLRoundTrips(t *testing.T) {
 	tests := []struct {
 		name string

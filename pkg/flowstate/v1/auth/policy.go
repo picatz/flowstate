@@ -195,10 +195,22 @@ func (m *NamespaceMap) UnmarshalJSON(data []byte) error {
 // silently, with no decode error to catch it (flowstate-reviewer, a
 // 3,000,000-input differential run over every unquoted encoding this
 // package tried found nine distinct ways a key changed and zero that merely
-// refused). Quoting every key, which is what a JSON object is, closes the
-// class rather than the one shape found first: [encoding/json.Marshal]
-// never omits a key's quotes, so there is no key this format leaves for the
-// decoder to read back as something else.
+// refused). Quoting every key, which is what a JSON object is, closes that
+// class: [encoding/json.Marshal] never omits a key's quotes, so none of
+// those nine shapes, or the merge-key shape #1949 found, changes identity
+// through this type's own Marshal/Unmarshal pair, in either format, isolated
+// or embedded in a whole [Policy] — see [TestNamespaceMapYAMLRoundTrips],
+// [TestNamespaceMapJSONRoundTrips] and
+// [TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey].
+//
+// It does not close every way a key can change identity through this
+// package. A key holding a control character, a byte order mark, or a
+// zero-width or line-separator code point can still come back different
+// once goccy re-renders this type's own quoted-JSON bytes as one field of a
+// larger document it is decoding — a decoder defect one layer below this
+// type's own quoting, tracked separately as #2077, and out of scope here:
+// this fix closes the class #1949 reported and the wider one review found
+// beside it, not every way this decoder can mis-render escaped text.
 //
 // [encoding/json.Marshal]'s own default HTML-safe escaping is turned off:
 // it would otherwise render "<<" as six characters — a backslash, "u", and
