@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/term"
 	"github.com/stretchr/testify/require"
 )
 
@@ -328,6 +329,75 @@ func TestNewDetectsInputTTYIsFalseForAPipe(t *testing.T) {
 	// a caller with no stdin at all (`flow lsp`, served over a pipe with no
 	// separate input file) must not dereference a nil *os.File.
 	require.NotPanics(t, func() { New(nil, outWrite, outWrite, nil) })
+}
+
+// aTerminal opens a pseudo-terminal master, which term.IsTerminal answers
+// true for. Skips rather than fails where none is available, the same way
+// its original does.
+//
+// Duplicated minimally from cmd/flow/debugconsole_test.go's helper of the
+// same name and purpose: a _test.go file's helpers belong to one package,
+// and this one is small enough that sharing it through a new importable
+// package would cost more than the few lines it saves.
+func aTerminal(t *testing.T) *os.File {
+	t.Helper()
+
+	pty, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no pseudo-terminal available on this machine: %v", err)
+	}
+	t.Cleanup(func() { _ = pty.Close() })
+
+	require.True(t, term.IsTerminal(pty.Fd()),
+		"the fixture has to really be a terminal or it proves the opposite of what it claims")
+
+	return pty
+}
+
+// TestNewDetectsInputTTYIsTrueForATerminal is the positive direction
+// [TestNewDetectsInputTTYIsFalseForAPipe] cannot reach without a pty: a
+// hard-coded `false`, or a wiring bug that reads the wrong file's
+// descriptor, passes every pipe-only test just as well as the correct
+// answer does, because both produce false either way (Copilot, #2009
+// review). A pseudo-terminal master is a real terminal `term.IsTerminal`
+// answers true for, so this is the one case that can tell them apart.
+//
+// Both streams' roles are exercised independently: stdin a terminal with
+// stdout/stderr pipes proves InputTTY does not simply mirror Caps.TTY, and
+// the reverse — stdin a pipe with stdout/stderr a terminal — proves the
+// opposite confusion is not present either.
+func TestNewDetectsInputTTYIsTrueForATerminal(t *testing.T) {
+	pty := aTerminal(t)
+
+	outRead, outWrite, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = outRead.Close()
+		_ = outWrite.Close()
+	})
+
+	surface := New(pty, outWrite, outWrite, nil)
+	require.True(t, surface.InputTTY,
+		"a pseudo-terminal master is a real terminal, and New wired InputTTY to something else")
+}
+
+// TestNewDetectsInputTTYIsFalseWhenOnlyOutputIsATerminal is
+// [TestNewDetectsInputTTYIsTrueForATerminal]'s mirror: a terminal on
+// stdout/stderr must not make InputTTY true by way of reading the wrong
+// descriptor.
+func TestNewDetectsInputTTYIsFalseWhenOnlyOutputIsATerminal(t *testing.T) {
+	pty := aTerminal(t)
+
+	inRead, inWrite, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = inRead.Close()
+		_ = inWrite.Close()
+	})
+
+	surface := New(inRead, pty, pty, nil)
+	require.False(t, surface.InputTTY,
+		"stdin is a pipe here; a terminal on stdout/stderr wired InputTTY to the wrong descriptor")
 }
 
 func TestPlainSurfaceWritesWhatItIsGiven(t *testing.T) {

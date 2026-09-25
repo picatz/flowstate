@@ -964,6 +964,12 @@ func TestWatchDrawsNoViewWhenAFormatWasAskedFor(t *testing.T) {
 			poller := &scriptedPoller{answers: []pollAnswer{finishedPoll("greet")}}
 			surface, out, _ := plainSurface()
 			surface.ErrCaps.TTY = true
+			// Both TTY gates claim a terminal, so this test can only be
+			// about the format flag: with InputTTY left false, watchRun's
+			// `|| !surface.InputTTY` clause would send every case to the
+			// plain path on its own, and a broken format check would go
+			// unnoticed.
+			surface.InputTTY = true
 
 			require.NoError(t, watchRun(t.Context(), surface, renderingOf(format), poller, time.Millisecond, false,
 				"flowstate-workflow-3f7c", nil))
@@ -999,6 +1005,11 @@ func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
 	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
 	surface, out, errOut := plainSurface()
 	surface.ErrCaps.TTY = true
+	// Both TTY gates claim a terminal, so this test can only be about
+	// --plain: with InputTTY left false, watchRun's `|| !surface.InputTTY`
+	// clause would choose the plain path on its own, and a broken --plain
+	// check would go unnoticed.
+	surface.InputTTY = true
 
 	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, true,
 		"flowstate-workflow-3f7c", nil))
