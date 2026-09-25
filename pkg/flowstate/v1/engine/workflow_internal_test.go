@@ -185,6 +185,66 @@ func TestCompactPrevOutputsForTask_MissingRefs(t *testing.T) {
 	require.Empty(t, trimmed.StepValues)
 }
 
+func TestCompactionPreservesLegacyStepNamedSteps(t *testing.T) {
+	prev := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"steps":  {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("legacy")}},
+		"result": {NamedValues: map[string]*v1.Value{"other": v1.NewLiteral("wrong")}},
+	}}
+	task := &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+		"message": v1.NewExpr("steps.result"),
+	}}
+
+	t.Run("activity scope", func(t *testing.T) {
+		trimmed := compactPrevOutputsForTask(task, prev)
+		require.Equal(t, map[string]*v1.Node_Outputs{
+			"steps": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("legacy")}},
+		}, trimmed.GetStepValues())
+	})
+
+	t.Run("continue as new", func(t *testing.T) {
+		remaining := []*v1.Node{{Id: "reader", Kind: &v1.Node_Task{Task: task}}}
+		trimmed := compactOutputsForRemainingSteps(remaining, 0, prev, nil)
+		require.Equal(t, map[string]*v1.Node_Outputs{
+			"steps": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("legacy")}},
+		}, trimmed.GetStepValues())
+	})
+
+	// A nested select over the shadowed root: `steps.result.nested` means
+	// "step `steps`, output `result`" — the evaluator resolves `steps.result`
+	// first and applies `.nested` to that value, which is CEL's business, not
+	// a second output of step `steps`. The legacy step's own outputs here
+	// deliberately include a field also named `nested`, so a walker that
+	// mistakes the outer select's own field for a second output would keep it
+	// too, even though nothing in the expression asks for it — the same
+	// mistake would make [v1.LoopResultsReferenced] treat a legacy entity
+	// loop's `results` as live from a reference that never actually named it.
+	nested := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"steps": {NamedValues: map[string]*v1.Value{
+			"result": v1.NewLiteral("legacy"),
+			"nested": v1.NewLiteral("unrelated"),
+		}},
+		"result": {NamedValues: map[string]*v1.Value{"other": v1.NewLiteral("wrong")}},
+	}}
+	nestedTask := &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+		"message": v1.NewExpr("steps.result.nested"),
+	}}
+
+	t.Run("nested select, activity scope", func(t *testing.T) {
+		trimmed := compactPrevOutputsForTask(nestedTask, nested)
+		require.Equal(t, map[string]*v1.Node_Outputs{
+			"steps": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("legacy")}},
+		}, trimmed.GetStepValues())
+	})
+
+	t.Run("nested select, continue as new", func(t *testing.T) {
+		remaining := []*v1.Node{{Id: "reader", Kind: &v1.Node_Task{Task: nestedTask}}}
+		trimmed := compactOutputsForRemainingSteps(remaining, 0, nested, nil)
+		require.Equal(t, map[string]*v1.Node_Outputs{
+			"steps": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("legacy")}},
+		}, trimmed.GetStepValues())
+	})
+}
+
 func TestCompactOutputsForRemainingSteps_Table(t *testing.T) {
 	prev := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 		"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("a")}},
