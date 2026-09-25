@@ -356,17 +356,25 @@ func aliasChainBlankBomb(depth, blanks int) string {
 // 10, which is where this test measures: unambiguously a bomb, not an edge
 // case of this rewrite's own conservatism.
 //
-// The ceiling is tuned against a measurement, not guessed, and the numbers
-// next to it are why: at depth 10, reverting only the blank-line floor in
-// [aliasInliner.appendLine] (`if line == "" { return append(out, line), true
-// }`, skipping the charge) still gets caught — by the *same* charge, once
-// enough non-blank lines alone finally cross it — but only after allocating
-// 2627 MiB doing the blank-line copying that charge should have priced
-// against maxBytes far earlier. Fixed code allocates 52 MiB at this depth,
-// the same figure [TestEveryDepthOfTheBlankLineBombCostsTheSame] holds flat
-// from here on; the ceiling sits at an order of magnitude above that and two
-// orders below the mutant, so a reintroduction of finding 4 fails this test
-// on allocation rather than merely costing more.
+// The ceiling is tuned against a measurement, not guessed, and against both
+// shapes finding 4 could be reintroduced in — not only the one this
+// rewrite's own history happened to take. Fixed code allocates a stable
+// 51.85 MiB at this depth (-count=5, with and without -race; the flowfile
+// package's tests run under -race in CI's "rest" lane, ci.yml). Reverting
+// only the blank-line floor inside [aliasInliner.appendLine] itself (`if
+// line == "" { return append(out, line), true }`, skipping the charge for
+// every caller at once) allocates a stable 2627 MiB before the *same*
+// charge finally catches it once enough non-blank lines alone cross
+// maxBytes. A narrower reintroduction at the one call site that used to
+// lack this charge — [aliasInliner.expandRange]'s blank-line arm appending
+// directly instead of going through appendLine — allocates less, since it
+// only un-charges that one path rather than every blank line this rewrite
+// ever appends, but still a stable 337 MiB, caught the same way. The
+// ceiling sits at roughly 3x the fixed figure — close enough to leave
+// little room for a next narrower variant to slip under it, comfortably
+// below the smaller of the two measured mutants — so a reintroduction of
+// finding 4, in either shape measured here, fails this test on allocation
+// rather than merely costing more.
 func TestFixRefusesABlankLineBombBeforeMaterializingIt(t *testing.T) {
 	// Not parallel: it reads process-wide allocation counters, and a sibling
 	// test allocating alongside it would be charged to this one.
@@ -397,7 +405,7 @@ func TestFixRefusesABlankLineBombBeforeMaterializingIt(t *testing.T) {
 		"refused by the trailing size check rather than the charge itself: the charge let the expansion "+
 			"materialize before anything bounded it, which is #2045 itself")
 
-	const ceiling = 512 << 20
+	const ceiling = 160 << 20
 	require.Less(t, allocated, uint64(ceiling),
 		"refusing a %d-byte blank-line alias bomb allocated %.1f MiB in %s: a blank line is being copied "+
 			"without being charged, which is #2045's finding 4",
