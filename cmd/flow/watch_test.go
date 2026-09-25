@@ -1040,6 +1040,27 @@ func TestWatchUsesLinesWhenOnlyOutputIsATerminal(t *testing.T) {
 	require.Contains(t, out.String(), `"steps"`)
 }
 
+// TestWatchUsesLinesWhenOnlyInputIsATerminal is the mirror of the test above:
+// an interactive shell whose stderr is redirected (`flow watch 2>log`) must not
+// draw the live view into the file. Every other surface a test builds leaves
+// InputTTY false too, so without this case the stderr half of the gate would be
+// covered by nothing once the stdin half was added beside it.
+func TestWatchUsesLinesWhenOnlyInputIsATerminal(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
+	surface, out, errOut := plainSurface()
+	surface.ErrCaps.TTY = false
+	surface.InputTTY = true
+
+	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, false,
+		"flowstate-workflow-3f7c", nil))
+
+	require.Len(t, reportedLines(errOut.String()), 2,
+		"a redirected stderr got a live view instead of lines:\n%s", errOut.String())
+	require.NotContains(t, errOut.String(), "q stops watching",
+		"a live view was drawn into a redirected stderr")
+	require.Contains(t, out.String(), `"steps"`)
+}
+
 // TestRunFollowsToAnyTerminalStatus is a regression test for a loop that could not
 // end.
 //
