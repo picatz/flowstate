@@ -1571,10 +1571,13 @@ target workflow itself declares an opinion on: whether its `manual:` block
 permits this caller to start it at all, and, for `SignalWithStart` delivering
 to an entity that already exists, whether the entity's own `signals:` policy
 permits this sender's delivery. Each is a second, independent decision, so a
-refusal there writes a second record under the same `rpc` name and resource,
-coded `POLICY_DENIED`, rather than leaving the admission ALLOW as the only
-trace of a request that was in fact turned away (picatz/flowstate#1889; the
-delivery half is #1883).
+refusal there writes a second record under the same `rpc` name, coded
+`POLICY_DENIED` and scoped to the run (`RUN`, keyed by the workflow id), rather
+than leaving the admission ALLOW as the only trace of a request that was in
+fact turned away (picatz/flowstate#1889; the delivery half is #1883). The two
+records do not always name the same resource: `SignalWithStart`'s admission
+ALLOW is already scoped to that run, while `Run`'s is scoped to the caller's
+`NAMESPACE`, so correlate a refused `Run` by request rather than by resource.
 
 **What `flow worker` records.** The same record, in the same sinks, for the
 four decisions a worker makes about a workload already running: whether a task
