@@ -75,6 +75,18 @@ type instance struct {
 	exited  chan struct{}
 	waitErr error
 
+	// escalated is closed once the waiter goroutine's own call to
+	// [escalateAbandonedGroup] has returned, whether it found nothing to
+	// signal, signalled and waited out a compliant helper, or escalated to
+	// SIGKILL. [instance.stop] waits for it — bounded by its own ctx,
+	// exactly as it already bounds [instance.waitExit] — because escalation
+	// runs in the same goroutine but after [instance.exited] closes, and
+	// without this, whatever calls stop to wind an instance down (and,
+	// through it, Host.Close to wind the whole host down) could return, and
+	// the process could exit, before that goroutine ever reaches its SIGKILL
+	// (Codex, #2008 review, third round).
+	escalated chan struct{}
+
 	// pumps completes when the stdout and stderr readers have finished.
 	pumps sync.WaitGroup
 
@@ -263,6 +275,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 		stdout:        stdoutR,
 		stderr:        stderrR,
 		exited:        make(chan struct{}),
+		escalated:     make(chan struct{}),
 	}
 
 	log = log.With("pid", inst.pid)
@@ -301,7 +314,16 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 		// given it — polled, not slept through in one piece, so a helper
 		// that behaves is not what pays for the wait; see
 		// [escalateAbandonedGroup].
+		//
+		// escalated closes after, not before: stop waits on it so that
+		// whatever called stop — and, through it, Host.Close winding the
+		// whole host down — does not return, and the process does not
+		// exit, before this goroutine has actually reached its SIGKILL.
+		// Closed unconditionally, including the common case where
+		// escalateAbandonedGroup returned at once, because that path needs
+		// the signal too and nothing else would ever send it.
 		escalateAbandonedGroup(inst.proc, cfg.ShutdownGrace)
+		close(inst.escalated)
 	}()
 
 	// stderr is a plugin's only diagnostic channel, so it is captured from
@@ -541,6 +563,20 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 			}
 		}
 
+		// The waiter goroutine's own call to [escalateAbandonedGroup] has
+		// not necessarily finished by the time the leader above is
+		// confirmed gone: it runs after [instance.exited] closes, in that
+		// same goroutine, and it is the *only* signal a helper ever gets
+		// on the leader's own independent exit, where the branch above
+		// never ran at all. Waiting for it here — bounded by ctx, exactly
+		// as [instance.waitExit] already is — is what keeps whoever calls
+		// stop, and through it Host.Close winding the whole host down,
+		// from returning before that goroutine's own SIGKILL actually
+		// lands (Codex, #2008 review, third round).
+		if i.proc != nil {
+			i.waitEscalated(ctx)
+		}
+
 		// Closing the read ends unblocks the pumps, which may still be waiting
 		// on output from a process whose children hold the write ends open.
 		if i.stdout != nil {
@@ -588,6 +624,33 @@ func (i *instance) waitExit(ctx context.Context, grace time.Duration) bool {
 		return true
 	case <-timer.C:
 		return false
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// waitEscalated reports whether the waiter goroutine's own call to
+// [escalateAbandonedGroup] finished before ctx ended. See [instance.stop]'s
+// own call to this for why a caller of stop cannot simply not wait:
+// escalation runs after [instance.exited] already closed, in the same
+// goroutine, so nothing else ever observes when — or whether — it actually
+// finishes.
+func (i *instance) waitEscalated(ctx context.Context) bool {
+	if i.escalated == nil {
+		return true
+	}
+
+	// No independent grace-bounded timer here: escalateAbandonedGroup already
+	// owns a grace period of its own, started at a different moment. A second,
+	// separately-started timer for the same nominal duration races it and can
+	// fire microseconds before the real escalation finishes, which is exactly
+	// what let a stubborn helper outlive stop's wait for it. ctx is the only
+	// bound this wait needs — once SIGKILL is sent the escalation goroutine's
+	// own close(i.escalated) is bounded by the kernel, not by the plugin, so
+	// there is nothing left to time out against short of ctx itself.
+	select {
+	case <-i.escalated:
+		return true
 	case <-ctx.Done():
 		return false
 	}

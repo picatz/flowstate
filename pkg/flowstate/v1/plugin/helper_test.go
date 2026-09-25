@@ -223,6 +223,34 @@ func runFakePlugin() int {
 		fakeAnnounce()
 		return 0
 
+	case "with-stubborn-child":
+		// Spawns the same SIGTERM-ignoring straggler as
+		// "exit-with-stubborn-child", but unlike that mode, does not return
+		// here — it falls through to handshake and serve normally, so
+		// launch actually succeeds. That matters because the other mode's
+		// leader never gets past its own handshake, so launch's own
+		// error-handling defer always calls [instance.stop] itself,
+		// synchronously, before a test can ever call it — leaving no
+		// separate, later call for a test to catch racing the waiter
+		// goroutine's own escalation. Here the leader only leaves this
+		// process once a test acts on it directly (killing the leader pid,
+		// not the plugin exiting on its own initiative), which is what
+		// lets a test recreate [instance.stop]'s third-round finding: the
+		// leader already gone by the time anything calls stop, so stop's
+		// own SIGTERM branch has nothing to do, and only the waiter
+		// goroutine's [escalateAbandonedGroup] call ever signals the
+		// straggler.
+		ignoreSIGTERM()
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := os.WriteFile(os.Getenv("FLOWSTATE_TEST_CHILD_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+
 	case "record-run":
 		// Touches the file its env names the instant it runs, then exits
 		// without handshaking. It is the ELF — and so, on Linux, the
