@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
@@ -556,6 +557,21 @@ func keyPath(ix *lineIndex, line0 int) []string {
 	return path
 }
 
+// indentOfCalls counts calls to indentOf, test-only instrumentation for the
+// linear-scan claim keyPathTracker.advance exists to keep
+// (testsymbols_test.go's TestTestDocumentSymbolsScansEachLineOnce).
+//
+// indentOf is where the two paths this repository has for finding a line's
+// enclosing keys diverge in cost: keyPath's backward walk calls it once per
+// line it steps back over on every one of a document's name lines, an
+// unconditional call inside the loop body before the shallower-indent check
+// that decides whether to do anything else — O(document) work per call,
+// summed over every name line, is the O(document²) #2006 fixed. advance calls
+// it once per line, total, across the whole scan. Always incremented; the
+// cost is one atomic add on a function that is otherwise a handful of byte
+// comparisons, and nothing outside a test reads it.
+var indentOfCalls atomic.Uint64
+
 // indentOf returns the column where a line's content begins.
 //
 // A leading sequence dash counts as indentation, so that a step's `- id:` and the
@@ -563,6 +579,8 @@ func keyPath(ix *lineIndex, line0 int) []string {
 // backwards walk in keyPath skip the dash line instead of treating `id` as a
 // parent key.
 func indentOf(line string) int {
+	indentOfCalls.Add(1)
+
 	i := 0
 	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
 		i++
