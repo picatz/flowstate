@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // "What names does `steps.<id>.` expose?" used to be answered independently in
@@ -31,13 +32,14 @@ type NamedOutput struct {
 
 	// Source is the [Value] that computes this output, when the node holds it
 	// directly as a written expression — a `value:` step's whole expression, or
-	// one entry of a `wait_for_signal:`'s `outputs:` shaping. nil for every other
-	// output: a task's declared fields are typed by a descriptor rather than an
-	// expression, and `results`, `state`, `timed_out`, `payload`, and `sender`
-	// are the engine's own record of what happened, not a value written in the
-	// file. A domain-inference reader — walking a shaping expression's literal
-	// leaves to bound a `switch:`'s discriminant — is the one consumer this
-	// field exists for; everything else can ignore it.
+	// one entry of a `wait_for_signal:`'s or `wait_for_signals:`'s `outputs:`
+	// shaping. nil for every other output: a task's declared fields are typed
+	// by a descriptor rather than an expression, and `results`, `state`,
+	// `timed_out`, `payload`, `sender`, `deliveries`, and `count` are the
+	// engine's own record of what happened, not a value written in the file. A
+	// domain-inference reader — walking a shaping expression's literal leaves
+	// to bound a `switch:`'s discriminant — is the one consumer this field
+	// exists for; everything else can ignore it.
 	Source *Value
 }
 
@@ -133,9 +135,24 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 }
 
 // waitOutputNames answers [OutputNames] for a wait, whose shape depends on
-// which of the three kinds it is and, for a signal, on whether it shapes its
-// own result.
+// which kind it is and, for a signal, on whether it shapes its own result.
 func waitOutputNames(wait *Wait) []NamedOutput {
+	if batch := wait.GetSignalBatch(); batch != nil {
+		if shaped := batch.GetOutputs(); len(shaped) > 0 {
+			return shapedWaitOutputNames(shaped, DeliveriesOutput, CountOutput, TimedOutOutput)
+		}
+		return []NamedOutput{{
+			Name:        TimedOutOutput,
+			Description: "Whether the wait ended before the first delivery arrived. A lapsed gate is an ordinary outcome, not a failure.",
+		}, {
+			Name:        DeliveriesOutput,
+			Description: "The buffered signal deliveries in arrival order, each containing its payload and server-attested sender. Empty on a gate that timed out.",
+		}, {
+			Name:        CountOutput,
+			Description: "How many buffered signal deliveries the batch contains. Zero on a gate that timed out.",
+		}}
+	}
+
 	signal := wait.GetSignal()
 	if signal == nil {
 		// sleep, wait_until: a timer with no sender, so only timed_out — see
@@ -150,15 +167,7 @@ func waitOutputNames(wait *Wait) []NamedOutput {
 		// `outputs:` replaces the wait's own outputs entirely (see
 		// [ShapeSignalOutputs]): the shaped names are the whole answer, not an
 		// addition to timed_out/payload/sender.
-		names := make([]NamedOutput, 0, len(shaped))
-		for _, name := range slices.Sorted(maps.Keys(shaped)) {
-			names = append(names, NamedOutput{
-				Name:        name,
-				Description: fmt.Sprintf("Shaped output of the wait's `outputs:`, replacing what it would otherwise produce (%s, %s, %s).", TimedOutOutput, PayloadOutput, SenderOutput),
-				Source:      shaped[name],
-			})
-		}
-		return names
+		return shapedWaitOutputNames(shaped, TimedOutOutput, PayloadOutput, SenderOutput)
 	}
 
 	// An unshaped `wait_for_signal:` — see [SignalOutputs].
@@ -172,6 +181,18 @@ func waitOutputNames(wait *Wait) []NamedOutput {
 		Name:        SenderOutput,
 		Description: "The server-attested sender: `identity.subject`, `identity.issuer`, `accepted_at`, `local`. Never anything the payload claims.",
 	}}
+}
+
+func shapedWaitOutputNames(shaped map[string]*Value, defaults ...string) []NamedOutput {
+	names := make([]NamedOutput, 0, len(shaped))
+	for _, name := range slices.Sorted(maps.Keys(shaped)) {
+		names = append(names, NamedOutput{
+			Name:        name,
+			Description: fmt.Sprintf("Shaped output of the wait's `outputs:`, replacing what it would otherwise produce (%s).", strings.Join(defaults, ", ")),
+			Source:      shaped[name],
+		})
+	}
+	return names
 }
 
 // taskOutputNames answers [OutputNames] for a task step: its declared outputs,

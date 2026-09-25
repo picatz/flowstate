@@ -210,9 +210,20 @@ func testHoverThroughAChangeStorm(t *testing.T) {
 	assert.Truef(t, named, "hover described a version the client never sent: %q", text)
 
 	// The burst coalesces onto the last change rather than onto whichever
-	// goroutine happened to finish last.
+	// goroutine happened to finish last. Asked through the store's own
+	// settle signal, [documentStore.await] — the same one every position
+	// request already waits behind — rather than synctest.Wait() plus an
+	// unguarded [documentStore.get] read: that pair is supposed to be
+	// equivalent once the bubble is idle, but #1980 saw the read come back
+	// with the document's pre-burst text once under full-tree load, and
+	// nothing traced from the connection's read loop down to
+	// [documentStore.change] found a goroutine or a real blocking call
+	// synctest would not have tracked. synctest.Wait() stays, so every
+	// goroutine the burst started — not just this URI's build count — is
+	// idle before the bubble ends; the settle-signal read is the assertion
+	// that no longer trusts idleness alone to mean "landed."
 	synctest.Wait()
-	doc, ok := c.serverDoc(uri)
+	doc, ok := c.server.docs.await(c.t.Context(), make(chan struct{}), lsp.DocumentURI(uri))
 	require.True(t, ok, "the document is gone")
 	require.Equal(t, latest, doc.text, "the document did not settle on the newest text")
 
