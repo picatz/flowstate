@@ -206,6 +206,7 @@ func TestMTLSVerifierVerifyPeerAccepts(t *testing.T) {
 		},
 		Namespace: "ci",
 		Role:      "runner",
+		Actions:   auth.ActionScopes{"workload.run"},
 	})
 
 	leaf := ca.issueLeaf(t, withURISAN("spiffe://example.org/ns/ci/sa/runner"))
@@ -217,6 +218,7 @@ func TestMTLSVerifierVerifyPeerAccepts(t *testing.T) {
 	require.Equal(t, "spiffe://example.org/ns/ci/sa/runner", principal.Subject)
 	require.Equal(t, "ci", principal.Namespace)
 	require.Equal(t, "runner", principal.Role)
+	require.Equal(t, auth.ActionScopes{"workload.run"}, principal.Actions)
 	require.NotEmpty(t, principal.CertificateThumbprint)
 }
 

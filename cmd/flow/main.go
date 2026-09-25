@@ -33,10 +33,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect"
-	"connectrpc.com/otelconnect"
-	"connectrpc.com/validate"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -701,6 +700,29 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer c.Close()
 
+	// picatz/flowstate#1379: the worker's own policy decisions get written down
+	// too, by the same recorder `flow server` builds and under the same
+	// --audit-required posture — task dispatch, secret access, egress and
+	// credential assumption, which are the decisions that actually govern a
+	// workload once it is running. Built here for the reason runServer builds
+	// it where it does: [initTemporalClient] has already resolved this
+	// process's OTEL_* environment through [startTelemetry], and started rather
+	// than initialized so a second call could never orphan the first
+	// recorder's OTel LoggerProvider.
+	//
+	// Installed process-wide rather than threaded through the runtime, because
+	// the seams that record are reached from activities the Temporal SDK
+	// invokes with a context of its own making — the same reason the
+	// task-shape policy above is a process-wide default. Installed before the
+	// worker polls, so there is no window in which a dispatch is decided and
+	// not recorded.
+	auditRequired, _ := cmd.Flags().GetBool(auditRequiredFlag)
+	recorder, err := startAudit(cmd.Context(), auditRequired)
+	if err != nil {
+		return fmt.Errorf("configuring the audit trail: %w", err)
+	}
+	v1.SetDefaultEnforcementAuditor(recorder)
+
 	// The interpreter's own copy of the converter this client was built with.
 	// Workflow-side code replaces the context's converter to decode a signal in
 	// either wire shape, and the SDK offers no way to read the one it is
@@ -774,6 +796,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		DeploymentOptions:                      deployment,
 		Interceptors:                           interceptors,
 		DeadlockDetectionTimeout:               v1.WorkerDeadlockDetectionTimeout,
+		WorkflowPanicPolicy:                    engine.WorkerWorkflowPanicPolicy,
 		Identity:                               identity,
 		WorkerStopTimeout:                      stopTimeout,
 		MaxConcurrentActivityExecutionSize:     capacity.maxConcurrentActivities,
@@ -864,6 +887,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// when it went away. Bounded and best-effort; see flushTelemetry.
 	flushTelemetry()
 
+	// The same argument for the audit trail's own sinks, and a stronger one:
+	// the decisions a draining worker made in its last seconds are exactly the
+	// ones an operator asks about afterwards. Required sinks have already
+	// written synchronously at each decision; this drains the best-effort
+	// queue and closes the OTel connection. main() flushes again on every exit
+	// path, including the ones that leave before here.
+	flushAudit()
+
 	infraLogger().Info("worker stopped")
 
 	return nil
@@ -919,6 +950,16 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	reason, _ := cmd.Flags().GetString("reason")
 
+	// What makes this submission idempotent: minted once per invocation, before
+	// the request is built, so that any retry this process makes carries the
+	// same key and converges on the one run rather than starting a second. The
+	// caller's own value when they gave one — a CI job's run id, typically — so
+	// a re-run of the job converges too. See [v1.RunRequest.request_id].
+	requestID, _ := cmd.Flags().GetString("request-id")
+	if requestID == "" {
+		requestID = uuid.New().String()
+	}
+
 	server := serverFlagsOf(cmd)
 
 	// Built once and used for both the request that starts the run and every
@@ -933,7 +974,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	}
 
 	started, err := client.Run(cmd.Context(),
-		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason}))
+		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason, RequestId: &requestID}))
 	if err != nil {
 		arguments, redacted := runArgumentFlags(cmd, workflow)
 		return refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
@@ -960,8 +1001,24 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// was identifier. Once, in the `flow watch` hint, is where it earns its width —
 	// that is the one place a reader does something with it rather than reads it.
 	if format == FormatText {
-		fmt.Fprintf(surface.Err, "started workflow %s; come back to it with `flow watch %s`\n",
-			subject, workflowID)
+		// A reuse says so: the run being followed is the one an earlier attempt
+		// under this request id started, not one this invocation began, which
+		// is the fact a person retrying after a timeout came back to learn.
+		verb := "started"
+		if started.Msg.GetReused() {
+			verb = "already started"
+		}
+		fmt.Fprintf(surface.Err, "%s workflow %s; come back to it with `flow watch %s`\n",
+			verb, subject, workflowID)
+	}
+
+	// A caller that asked not to follow is done once the run has started: the
+	// text shape has said the id and the way back above, and the document
+	// shapes are owed the run as it was started — the same first document a
+	// follow interrupted before its first poll writes — so that a program
+	// detaching in `-o json` holds a machine-readable name for the run.
+	if detach, _ := cmd.Flags().GetBool("detach"); detach {
+		return detachedStart(surface, rendering, started.Msg)
 	}
 
 	// Deliberately not pinned to the run just started. A workload that continues as
@@ -1366,16 +1423,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// asking for it as "not installed".
 	serverOpts = append(serverOpts, server.WithPluginCatalog(pluginCatalog))
 
-	// No error to handle since connectrpc.com/validate v0.6.0: the interceptor
-	// builds its validator lazily on first use, so construction cannot fail.
-	interceptor := validate.NewInterceptor()
-
-	otelInterceptor, err := otelconnect.NewInterceptor()
+	flowServer, err := server.New(c, serverOpts...)
 	if err != nil {
-		return fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
+		return err
 	}
 
-	flowServer, err := server.New(c, serverOpts...)
+	// The interceptor chain and the read bound, shared with `flow server dev`;
+	// see [rpcHandlerOptions] for the order and why it is built here, after
+	// telemetry started.
+	rpcOpts, err := rpcHandlerOptions(flowServer, logger)
 	if err != nil {
 		return err
 	}
@@ -1393,20 +1449,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	rpcMux := http.NewServeMux()
-	rpcMux.Handle(
-		flowstatev1connect.NewWorkflowServiceHandler(
-			flowServer,
-			connect.WithInterceptors(
-				interceptor,
-				otelInterceptor,
-			),
-			// Bound how much an unauthenticated caller can make the server
-			// allocate. connect-go defaults to unlimited, so without this a
-			// single request — or a compressed one that inflates enormously —
-			// can exhaust memory.
-			connect.WithReadMaxBytes(maxRequestBytes),
-		),
-	)
+	rpcMux.Handle(flowstatev1connect.NewWorkflowServiceHandler(flowServer, rpcOpts...))
 
 	httpServer := &http.Server{
 		// Where this server *listens* (--listen / $FLOWSTATE_ADDRESS), which used
@@ -1690,12 +1733,15 @@ func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
 			"or --insecure-no-auth to allow anonymous access for local development")
 	}
 
-	data, err := os.ReadFile(flags.policyPath)
+	data, err := readBoundedFile(flags.policyPath, "a trust policy", maxPolicyFileBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading auth policy: %w", err)
 	}
 	policy, err := auth.ParsePolicy(data)
 	if err != nil {
+		return nil, nil, fmt.Errorf("parsing auth policy %s: %w", flags.policyPath, err)
+	}
+	if err := server.ValidateAuthorizationPolicy(&policy); err != nil {
 		return nil, nil, fmt.Errorf("parsing auth policy %s: %w", flags.policyPath, err)
 	}
 	verifier, err := auth.NewOIDCVerifier(policy)
@@ -1795,7 +1841,7 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 
 	signingPath, verifyOnlyPaths := flags.identityKeyPaths[0], flags.identityKeyPaths[1:]
 
-	pem, err := os.ReadFile(signingPath)
+	pem, err := readBoundedFile(signingPath, "a PEM private key", maxPEMFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading identity key: %w", err)
 	}
@@ -1806,7 +1852,7 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 
 	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
 	for _, path := range verifyOnlyPaths {
-		data, err := os.ReadFile(path)
+		data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
 		if err != nil {
 			return nil, fmt.Errorf("reading verify-only identity key: %w", err)
 		}
@@ -2065,7 +2111,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// agree with the two drivers rather than pass a file both of them refuse —
 	// see [validatePluginRequirements] (#835 review). It is nil when nothing was
 	// launched, which is the same fact said the other way.
-	catalog, closePlugins, err := startPlugins(cmd, nil)
+	catalog, closePlugins, err := startPluginsQuietly(cmd, nil)
 	if err != nil {
 		// A wrong command line is passed through as it is. The sentence below
 		// says a plugin would not start, and for a refusal made before anything
@@ -2286,22 +2332,20 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	// File-aware rather than reading the bytes and calling [flowfile.Unmarshal]:
 	// a `call:` step is resolved relative to this file's own directory, and only
 	// the path-aware entry points know it.
-	workflow, _, err := flowfile.ParseFile(path)
+	//
+	// One pass, not [flowfile.ParseFile] followed by [flowfile.ValidateSourceFile]:
+	// the second compiled the file again from its bytes, every expression parsed
+	// twice before a step ran (#1795).
+	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
 	if err != nil {
 		// Positioned diagnostics get a line each naming this file, like every
 		// other diagnostic surface. Wrapping the error instead put the filename on
 		// a line of its own and left every position after the first unattributed
 		// (#384). A failure that is not diagnostics is about the invocation rather
 		// than the file, and keeps its own wrapping.
-		var parsed flowfile.Diagnostics
-		if errors.As(err, &parsed) {
+		if parsed, ok := errors.AsType[flowfile.Diagnostics](err); ok {
 			return nil, diagnosticsError(path, parsed)
 		}
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-
-	diagnostics, err := flowfile.ValidateSourceFile(path)
-	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(diagnostics) > 0 {
@@ -2392,7 +2436,11 @@ flow lsp`,
 			"Following works exactly as `flow watch` does, because it is the same code: a " +
 			"live view where there is a terminal, one line per change where there is not, " +
 			"and the outputs on stdout when the run produced them. The exit code is the " +
-			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.\n\n" +
+			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects. " +
+			"With --detach the command returns as soon as the run has started, and the exit " +
+			"code is the start's: `flow run --detach x && flow watch <id>` is the two-step " +
+			"form of the default, for a CI job, a cron entry, or a script that must not hold " +
+			"a process open while a run waits hours on an approval.\n\n" +
 			"Stopping watching does not stop the run. The workflow id is printed as soon as " +
 			"the run starts, so `flow watch` can pick it up again afterwards.\n\n" +
 			"A workflow that declares `inputs:` is given them with --input name=value or " +
@@ -2416,6 +2464,9 @@ flow run examples/hello-world/workflow.yaml | jq .steps
 # In CI: one line per change, exit code reports the outcome.
 flow run examples/hello-world/workflow.yaml >/dev/null
 
+# Start a run and come back to it later, from a job that cannot wait:
+flow run --detach examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json -o json
+
 # Check a workflow without running it:
 flow validate examples/hello-world/workflow.yaml`,
 	}
@@ -2437,6 +2488,29 @@ flow validate examples/hello-world/workflow.yaml`,
 	runCmd.Flags().String("reason", "",
 		"why this run is being started, recorded on it; required by a workflow whose "+
 			"`manual:` block asks for one")
+
+	// The idempotency key. Generated when absent, so every `flow run` is
+	// already safe to retry; offered as a flag so a CI job can hand over its
+	// own run id and a re-run of the job finds the run the first attempt
+	// started instead of starting another. Not offered on `flow run local`: a
+	// rehearsal has no server to be retried against.
+	runCmd.Flags().String("request-id", "",
+		"idempotency key for this submission, a UUID or a caller-chosen string; a second "+
+			"`flow run` carrying the same value is answered with the run the first started "+
+			"rather than starting another. Generated per invocation when unset")
+
+	// Submit and exit. Following is the right default for a person at a
+	// terminal and the wrong shape for every caller that is not one: a CI job
+	// starting a deploy gated on an approval, a cron entry, a webhook handler
+	// answering 202, an agent starting many runs (#1771). What such a caller
+	// needs is already printed before the follow begins — the start line with
+	// the `flow watch` hint, or the first document with the ids — so the flag
+	// changes only the exit. It composes with --request-id the way the MCP
+	// `flowstate_run` tool, which has always returned at start, already does.
+	runCmd.Flags().Bool("detach", false,
+		"start the run and return once it has started, without following it; the exit "+
+			"code is then the start's rather than the run's, the ids are printed as they "+
+			"are when following, and `flow watch <id>` is the way back to the run")
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{
@@ -2479,7 +2553,11 @@ flow validate examples/hello-world/workflow.yaml`,
 			"who is this run's own starter is refused by `distinct_from_starter:` on both. It " +
 			"remains a rehearsal, and says so: nothing attested it, and the gate's own " +
 			"`sender.local` output reads true." + runDocumentHelp,
-		Args: cobra.MinimumNArgs(1),
+		// Exactly one, as `flow run` and `flow compile` already hold: MinimumNArgs
+		// ran the first file and silently dropped the rest, so a habit carried
+		// over from the variadic `flow validate` — `flow run local examples/*/workflow.yaml`
+		// — rehearsed one workflow and reported success for the lot.
+		Args: cobra.ExactArgs(1),
 		RunE: runLocalWorkflow,
 		Example: `# Run a workflow locally:
 flow run local examples/hello-world/workflow.yaml
@@ -2699,7 +2777,7 @@ flow server --verbose`,
 	// see workerCapacityOptions and runWorker. Raise this when
 	// temporal_sticky_cache_total_forced_eviction is nonzero and rising while
 	// temporal_sticky_cache_size sits at the configured limit; lower it when
-	// process.runtime.go.mem.heap_alloc climbs with cache size. See
+	// go.memory.used climbs with cache size. See
 	// docs/DEPLOYMENT.md's capacity section.
 	workerCmd.Flags().String("sticky-cache-size",
 		cmp.Or(os.Getenv("FLOWSTATE_WORKER_STICKY_CACHE_SIZE"), "0"),
@@ -2761,10 +2839,7 @@ flow server --verbose`,
 	serverCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"name of this Flowstate deployment, recorded in each run's workload identity "+
 			"and in every assertion subject it mints")
-	serverCmd.Flags().StringArray("identity-claim", nil,
-		"caller token claim to carry into each run's workload identity (repeatable), "+
-			"such as repository or email; only named claims are carried, and they are "+
-			"what workload.claims[...] policy rules read")
+	serverCmd.Flags().StringArray("identity-claim", nil, identityClaimUsage)
 
 	// The public listener's own address. Until now this was the one setting in
 	// the tree configured by environment variable with no flag beside it:
@@ -2784,7 +2859,15 @@ flow server --verbose`,
 	// picatz/flowstate#1018: whether an audit sink's own failure fails the
 	// request. Auditing itself has no flag — every deployment gets it, stderr at
 	// minimum — see [addAuditRequiredFlag]'s help.
+	//
+	// On the worker for the same reason and with the same meaning
+	// (picatz/flowstate#1379): its policy decisions reach the same trail, so
+	// the posture about a sink's failure has to be one an operator can state
+	// for the whole deployment rather than for half of it. Deliberately not on
+	// `flow run local`, which installs no recorder at all — a rehearsal has no
+	// deployment to audit, argued in the audit package's doc.
 	addAuditRequiredFlag(serverCmd)
+	addAuditRequiredFlag(workerCmd)
 
 	// The public listener's TLS configuration and its ACME
 	// automatic-certificate alternative — see cmd/flow/tls.go and
@@ -2819,7 +2902,13 @@ flow server --verbose`,
 		Short: "Check workflows for problems without running them",
 		Long: "Check one or more Flowfiles for problems without executing them. " +
 			"Reports unknown tasks, duplicate or unusable step ids, and references to " +
-			"steps that do not exist or have not run yet, with the line each problem is on.\n\n" +
+			"steps that do not exist or have not run yet, with the line each problem is on. " +
+			"It also applies every rule the specification's schema declares — a step list " +
+			"over its bound, an id over its length — in the words the server refuses a " +
+			"submission with, so a rule the schema would refuse at submit is refused here " +
+			"first. What a deployment decides for itself at submit — the plugins it has " +
+			"pinned, the tasks it can run, its credential and signal policies — is still " +
+			"the server's answer.\n\n" +
 			"A file naming a plugin's task is checked against that plugin given " +
 			"--plugin-dir: the plugins there are launched here, through the same " +
 			"discovery, handshake and catalog a worker uses, and their tasks and input " +
@@ -3110,6 +3199,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	// against, without needing a throwaway Go program to find out.
 	keysCmd := newKeysCommand()
 	jwtCmd := newJWTCommand()
+	authCmd := newAuthCommand()
 
 	// Version command, answering "which build" the way a bug report or an
 	// agent transcript needs to: see version.go for why this is a verb rather
@@ -3204,15 +3294,18 @@ flow mcp --plugin-dir ./plugins`,
 			"because they would spend this process's own credential on a caller's behalf. What is " +
 			"served is what answers in this process and reaches nothing — flowstate_validate, " +
 			"flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs " +
-			"replace every task implementation before a step executes.\n\n" +
+			"replace every task implementation before a step executes. Sessions and their limits " +
+			"live only in this process: run one replica, and expect a restart to invalidate active " +
+			"sessions. A load-balanced fleet is not a supported horizontally scalable deployment.\n\n" +
 			"Flowstate is not an authorization server: it issues no tokens, runs no authorization " +
 			"or token endpoint, and verifies nothing it did not receive from the identity provider " +
-			"an operator configured. No scope vocabulary is advertised or challenged for yet, and a " +
+			"an operator configured. The protected-resource document advertises the schema-owned " +
+			"scope vocabulary, but no request enforces or challenges for a scope yet, and a " +
 			"token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than " +
 			"read as its bare subject. See docs/MCP_AUTHORIZATION.md.",
 		Args: cobra.NoArgs,
 		RunE: runMCPServe,
-		Example: `# Behind a TLS-terminating proxy, advertising one identity provider:
+		Example: `# One replica behind a TLS-terminating proxy, advertising one identity provider:
 flow mcp serve --listen 127.0.0.1:8617 \
   --auth-policy /etc/flowstate/policy.yaml \
   --protected-resource https://flowstate.example.com/mcp \
@@ -3302,6 +3395,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
+	authCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	jwtCmd.GroupID = "development"
@@ -3400,6 +3494,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
+	rootCmd.AddCommand(authCmd)
 
 	// The whole stack in one command, under `server` because that is where
 	// somebody looking for a server looks. Everything it is lives in
@@ -3426,6 +3521,15 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 }
 
 func main() {
+	// Resolved before anything reads it, so every surface that repeats the
+	// version — cobra's own `--version`, telemetry's service.version, the MCP
+	// server's identity, a plugin's host version — answers with what
+	// [resolveVersionInfo] resolves rather than the unstamped "dev" default.
+	// This build path stamps nothing into the ldflags variable, so without
+	// this line `flow --version` said "dev" while `flow version` read the
+	// real build out of debug.ReadBuildInfo: the same fact, two answers.
+	version = resolveVersionInfo().Version
+
 	rootCmd := newRootCommand()
 
 	// We can use a context to handle OS signals like Ctrl+C gracefully, and —

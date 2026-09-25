@@ -187,11 +187,19 @@ const (
 	// Declared here rather than only beside the span that writes it, because
 	// this table is the one place a telemetry attribute key is declared and a
 	// key that lives in two places is a key that eventually disagrees with
-	// itself. Nothing records it on an instrument today — the run-level span
-	// (`v1.SpanAttributeWorkflowName`) is its only writer — and the
-	// classification says what would happen if something did: bounded by the
-	// deployment's own set of workflows, so it is a label a metric *may*
-	// carry, unlike the per-execution identifiers below.
+	// itself. The run-level span (`v1.SpanAttributeWorkflowName`) writes it,
+	// and so do the run-lifecycle instruments below.
+	//
+	// [ClassConfiguration] is the classification of a name the *deployment*
+	// chose, which is not every name a run can execute: a server that
+	// registered no trusted specification under a submitted name runs the
+	// caller's copy, and the caller chose that name. So the run-lifecycle
+	// recording sites pass a name only for a submission the admitting boundary
+	// resolved to a deployment-owned workflow (`RunState.metric_workflow_name`,
+	// carried across Continue-As-New), and pass the empty string otherwise,
+	// which [Limiter.Attributes] drops. An open submission must not be able to
+	// spend this key's process-wide [MaxValuesPerKey] budget, which every
+	// tenant on the worker shares.
 	WorkflowName = "flowstate.workflow.name"
 
 	// TriggerName is the name of the trigger that started a run, where one
@@ -254,6 +262,15 @@ const (
 	// repository's error classification (`v1.ErrorKind`) plus
 	// [ErrorTypePanic]; never an error *message*, which quotes its input.
 	ErrorType = string(semconv.ErrorTypeKey)
+
+	// RPCMethod is OpenTelemetry's own `rpc.method`, semconv v1.41.0, chosen
+	// over a `flowstate.` spelling for the reason [ErrorType] was: otelconnect
+	// already labels this server's RPC metrics with it, so a dashboard that
+	// joins a panic count to a request rate joins on one key. Its values are
+	// the flowstate.v1.WorkflowService method names — "Get", "Run", "Signal"
+	// — which the schema fixes; connect routes only a registered procedure to
+	// a handler, so a caller cannot mint one.
+	RPCMethod = string(semconv.RPCMethodKey)
 )
 
 // The fixed enumerations behind the [ClassConstruction] keys above, so that a
@@ -341,6 +358,7 @@ var Table = []Attribute{
 	{Key: Driver, Class: ClassConstruction, Chooser: "this repository: local, durable"},
 	{Key: PolicySurface, Class: ClassConstruction, Chooser: "this repository's deny-by-default surfaces"},
 	{Key: ErrorType, Class: ClassConstruction, Chooser: "this repository's error classification (v1.ErrorKind)", Convention: "OpenTelemetry semconv v1.41.0"},
+	{Key: RPCMethod, Class: ClassConstruction, Chooser: "this repository's schema, by the WorkflowService methods it declares", Convention: "OpenTelemetry semconv v1.41.0"},
 
 	{Key: DeliveryID, Class: ClassPeerControlled, Chooser: "the external sender, one per webhook delivery"},
 	{Key: "flowstate.run.id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
@@ -403,6 +421,18 @@ const (
 	// save cardinality would take the error rate with it.
 	InstrumentTaskExecutions = "flowstate.task.executions"
 
+	// InstrumentTaskRetries counts started task executions after the first
+	// attempt at a step. It does not count first attempts: those are already
+	// represented by [InstrumentTaskExecutions] and [InstrumentTaskDuration].
+	// A retry is counted when it starts, regardless of whether that execution
+	// succeeds, fails, or panics; terminal outcomes remain on the execution
+	// instruments rather than splitting this bounded series.
+	//
+	// The attempt number is never a label. Its configured range need not be
+	// small, while this counter needs only the bounded task and driver labels
+	// to answer whether retries are climbing.
+	InstrumentTaskRetries = "flowstate.task.retries"
+
 	// InstrumentPolicyDenials counts refusals by a deny-by-default surface.
 	// A rate here is the difference between "traffic stopped" and "we are
 	// refusing all of it", which is a question an operator asks at 3am and
@@ -446,6 +476,14 @@ const (
 	// would make one submission look like several runs.
 	InstrumentRunExecutions = "flowstate.run.executions"
 
+	// InstrumentServerPanics counts RPC handler panics the server's recover
+	// interceptor caught, by method (picatz/flowstate#1761). Before it, a
+	// handler panic was a reset connection and a stdlib log line, and the
+	// only way to learn a deployment was crashing on one verb was to read
+	// stderr. Recorded in server/recover.go, beside the log line and the
+	// audit record the same recovery writes.
+	InstrumentServerPanics = "flowstate.server.panics"
+
 	// The plugin surface, which predates this table and now reads its names
 	// from it. Recorded in plugin/telemetry.go.
 	InstrumentPluginOperationDuration = "flowstate.plugin.operation.duration"
@@ -454,6 +492,7 @@ const (
 	InstrumentPluginRestarts          = "flowstate.plugin.restarts"
 	InstrumentPluginLaunchFailures    = "flowstate.plugin.launch.failures"
 	InstrumentPluginProtocolErrors    = "flowstate.plugin.protocol.errors"
+	InstrumentPluginTaskPanics        = "flowstate.plugin.task.panics"
 )
 
 // Instrument is one instrument's declaration: what it is called, what its
@@ -498,6 +537,11 @@ var Instruments = []Instrument{
 		Keys:        []string{TaskName, TaskOutcome, Driver, ErrorType},
 	},
 	{
+		Name:        InstrumentTaskRetries,
+		Description: "task executions that are retries of their step",
+		Keys:        []string{TaskName, Driver},
+	},
+	{
 		Name:        InstrumentPolicyDenials,
 		Description: "dispatches refused by a deny-by-default policy surface",
 		Keys:        []string{PolicySurface, TaskName, Driver},
@@ -517,6 +561,11 @@ var Instruments = []Instrument{
 		Name:        InstrumentRunExecutions,
 		Description: "run completions, by outcome",
 		Keys:        []string{WorkflowName, Driver, RunOutcome, ErrorType},
+	},
+	{
+		Name:        InstrumentServerPanics,
+		Description: "RPC handler panics recovered by the server, by method",
+		Keys:        []string{RPCMethod},
 	},
 	{
 		Name:        InstrumentPluginOperationDuration,
@@ -548,6 +597,11 @@ var Instruments = []Instrument{
 		Name:        InstrumentPluginProtocolErrors,
 		Description: "plugin protocol errors",
 		Keys:        []string{PluginName},
+	},
+	{
+		Name:        InstrumentPluginTaskPanics,
+		Description: "plugin SDK task panics recovered before the transport boundary",
+		Keys:        []string{PluginName, TaskName},
 	},
 }
 

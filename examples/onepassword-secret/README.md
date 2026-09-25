@@ -24,7 +24,10 @@ op:github#token    reads the "token" field of that item
 
 Authentication is the CLI's own business — `op` must already be signed in, through
 the desktop app's integration, a service account token, or `op signin` — before this
-runs:
+runs. Like its `env:`, `vault:`, `keychain:` and `command:` siblings, the file points
+`url:` at `api.example.com`, which resolves nowhere: the run reaches the half the
+example is about — the worker shelling out to `op` inside the activity that needs
+the value — and then stops at the request itself.
 
 ```console
 $ flow run local examples/onepassword-secret/workflow.yaml \

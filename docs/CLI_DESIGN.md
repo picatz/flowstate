@@ -431,16 +431,23 @@ covered in section 3's first view and slice 9 of the gap inventory.
 ### List/table view (`flow list`)
 
 ```
-WORKFLOW_ID                            STATUS       STARTED               FINISHED
-deploy-frontend-a3f9c21e-...           COMPLETED    2026-08-03T14:02:11Z  2026-08-03T14:04:25Z
-deploy-frontend-b71ac0a2-...           RUNNING      2026-08-03T14:05:00Z
-deploy-frontend-c02fe991-...           FAILED       2026-08-03T13:58:02Z  2026-08-03T13:58:44Z
+NAME             STATUS     STARTED               FINISHED              WORKFLOW_ID
+deploy-frontend  COMPLETED  2026-08-03T14:02:11Z  2026-08-03T14:04:25Z  flowstate-workflow-a3f9c21e-...
+deploy-frontend  RUNNING    2026-08-03T14:05:00Z  -                     flowstate-workflow-b71ac0a2-...
+approval-gate    FAILED     2026-08-03T13:58:02Z  2026-08-03T13:58:44Z  flowstate-workflow-c02fe991-...
 ```
 
-Header row in `Header` (muted, bold); each `STATUS` cell in its tone (`Theme.Tone`
-via `statusTone`) — coloured text, not a pill, because this is the list the
-pill/glyph rule calls out by name: many rows, compared against each other, so
-nothing here should be a block the eye is meant to land on once. Columns are
+`NAME` leads and `WORKFLOW_ID` trails: every run is the one interpreter workflow,
+so every id has the same shape and the declared name is what a person scans for,
+while the id is the longest and least readable column. A run recorded before the
+name reached the memo has an empty `NAME` cell, not a placeholder that could pass
+for a name. Header row in `Header` (muted, bold); each `STATUS` cell in its tone
+(`Theme.Tone` via `statusTone`) — coloured text, not a pill, because this is the
+list the pill/glyph rule calls out by name: many rows, compared against each
+other, so nothing here should be a block the eye is meant to land on once. Where
+the stream carries no colour the outcome mark joins the word in the same cell
+(`+ COMPLETED`, `> RUNNING`), so the outcome stays scannable under section 2's
+rule without a column of its own. Columns are
 tabwriter-aligned and the header is withheld until the first row is known to
 exist, so a listing that fails before returning anything prints no header at all
 — an empty stdout, not a header over nothing, per `docs/CLI.md`'s rule that a
@@ -1017,9 +1024,10 @@ line. What is not: everything below.
    2's colour-is-never-alone rule, `STATUS` in the table today is `Theme.Tone`
    applied to the bare word (`lifecycle.go`'s `listRendering.add`) with no
    `symbols.Mark` beside it — every *other* status-bearing surface (`get`,
-   `watch`) pairs a mark with the word. File: `cmd/flow/lifecycle.go`. Add a
-   `SYM` or leading-glyph column ahead of `STATUS`; update the golden tests in
-   `runlocal_output_test.go`'s siblings that pin this table's shape.
+   `watch`) pairs a mark with the word. File: `cmd/flow/lifecycle.go`. **Done**:
+   the mark joins the word in the `STATUS` cell on a stream without colour, and
+   the tone carries it where there is (#1660); `lifecycle_test.go` pins the
+   table's shape.
 
 9. **Build the step/timeline tree renderer.** Blocked on slice 2 (nesting —
    reuse the same spec-to-tree join `NewGraph` already performs rather than a

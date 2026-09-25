@@ -84,7 +84,7 @@ func readOnlyRows(ctx context.Context, db *sql.DB, engine sqlv1.Engine, query st
 
 	default:
 		return nil, nil, sdk.InvalidInput(
-			"engine %q is not one this build supports; this build was compiled with: sqlite, postgres",
-			engine.String())
+			"engine %q is not one this build supports; this build was compiled with: %s",
+			engine.String(), supportedEngines())
 	}
 }

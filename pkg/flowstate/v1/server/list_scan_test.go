@@ -48,6 +48,32 @@ func otherTenantsRun(t *testing.T, id string) *workflow.WorkflowExecutionInfo {
 	}
 }
 
+// mineExecution is an execution positively recorded as the default tenant's
+// own — #1896's "require positive provenance" made this necessary even for
+// the empty tenant: a memo with no namespace entry at all is now refused
+// outright rather than resolved into whichever caller happens to have no
+// namespace. See [runOwnedByWithName]'s doc for the same distinction.
+func mineExecution(t *testing.T, id string) *workflow.WorkflowExecutionInfo {
+	t.Helper()
+
+	return &workflow.WorkflowExecutionInfo{
+		Execution: &common.WorkflowExecution{WorkflowId: id},
+		Memo:      mineMemo(t),
+	}
+}
+
+// mineMemo is [mineExecution]'s memo alone, for a literal that needs to set
+// other fields ([workflow.WorkflowExecutionInfo.Status], a run id) a
+// constructor taking only an id cannot.
+func mineMemo(t *testing.T) *common.Memo {
+	t.Helper()
+
+	payload, err := converter.GetDefaultDataConverter().ToPayload("")
+	require.NoError(t, err)
+
+	return &common.Memo{Fields: map[string]*common.Payload{namespaceMemoKey: payload}}
+}
+
 // runOwnedByWithName is an execution belonging to owner (empty means the
 // caller's own default tenant, matching how the rest of this file builds
 // "mine"), carrying its workflow's declared name in the memo exactly as
@@ -63,6 +89,15 @@ func otherTenantsRun(t *testing.T, id string) *workflow.WorkflowExecutionInfo {
 //
 // name == "" leaves the memo without a name entry at all, which is a
 // separate, real case: a run started before this memo key existed.
+//
+// owner is always recorded, even as the empty string: #1896 made an empty
+// tenant memo and no tenant memo at all two different, non-interchangeable
+// things — the former is the default tenant's own run, positively
+// recorded, and the latter is refused outright. A test that needs a
+// genuinely memo-less execution (no tenant recorded at all, the shape
+// #1896 refuses) builds one directly rather than asking this helper for
+// one, since that is no longer "a run owned by an unnamed tenant" but a
+// different case with a different, refused, outcome.
 func runOwnedByWithName(t *testing.T, id, owner, name string) *workflow.WorkflowExecutionInfo {
 	t.Helper()
 
@@ -72,11 +107,9 @@ func runOwnedByWithName(t *testing.T, id, owner, name string) *workflow.Workflow
 
 	fields := map[string]*common.Payload{}
 
-	if owner != "" {
-		payload, err := converter.GetDefaultDataConverter().ToPayload(owner)
-		require.NoError(t, err)
-		fields[namespaceMemoKey] = payload
-	}
+	ownerPayload, err := converter.GetDefaultDataConverter().ToPayload(owner)
+	require.NoError(t, err)
+	fields[namespaceMemoKey] = ownerPayload
 
 	if name != "" {
 		payload, err := converter.GetDefaultDataConverter().ToPayload(name)
@@ -84,9 +117,7 @@ func runOwnedByWithName(t *testing.T, id, owner, name string) *workflow.Workflow
 		fields[workflowNameMemoKey] = payload
 	}
 
-	if len(fields) > 0 {
-		execution.Memo = &common.Memo{Fields: fields}
-	}
+	execution.Memo = &common.Memo{Fields: fields}
 
 	return execution
 }
@@ -155,10 +186,8 @@ func TestListStopsOnceThePageIsFull(t *testing.T) {
 			executions := make([]*workflow.WorkflowExecutionInfo, 0, request.GetPageSize())
 			for range int(request.GetPageSize()) {
 				// Owned by the caller: New with no namespace option resolves the
-				// empty tenant, which a run with no recorded tenant belongs to.
-				executions = append(executions, &workflow.WorkflowExecutionInfo{
-					Execution: &common.WorkflowExecution{WorkflowId: "mine"},
-				})
+				// empty tenant, and mineExecution positively records it.
+				executions = append(executions, mineExecution(t, "mine"))
 			}
 			scanned += len(executions)
 
@@ -205,9 +234,7 @@ func TestListPagingReachesEveryRun(t *testing.T) {
 
 	all := make([]*workflow.WorkflowExecutionInfo, 0, total)
 	for i := range total {
-		all = append(all, &workflow.WorkflowExecutionInfo{
-			Execution: &common.WorkflowExecution{WorkflowId: fmt.Sprintf("run-%02d", i)},
-		})
+		all = append(all, mineExecution(t, fmt.Sprintf("run-%02d", i)))
 	}
 
 	// A namespace that pages the way Temporal does: the token is an opaque
@@ -329,9 +356,7 @@ func TestListPagingReachesEveryRunAmongOtherTenants(t *testing.T) {
 	for i := range total {
 		id := fmt.Sprintf("run-%02d", i)
 		if i%3 == 0 {
-			all = append(all, &workflow.WorkflowExecutionInfo{
-				Execution: &common.WorkflowExecution{WorkflowId: id},
-			})
+			all = append(all, mineExecution(t, id))
 			mine[id] = true
 			continue
 		}
@@ -432,9 +457,7 @@ func TestListPageSizeIsDefaultedAndBounded(t *testing.T) {
 			func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
 				executions := make([]*workflow.WorkflowExecutionInfo, 0, request.GetPageSize())
 				for range int(request.GetPageSize()) {
-					executions = append(executions, &workflow.WorkflowExecutionInfo{
-						Execution: &common.WorkflowExecution{WorkflowId: "mine"},
-					})
+					executions = append(executions, mineExecution(t, "mine"))
 				}
 				return &workflowservice.ListWorkflowExecutionsResponse{
 					Executions:    executions,
@@ -518,18 +541,22 @@ func TestListShowsAContinuedWorkloadOnce(t *testing.T) {
 	t.Parallel()
 
 	// One workload: two segments it has already left, and the one it is in.
+	memo := mineMemo(t)
 	segments := []*workflow.WorkflowExecutionInfo{
 		{
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW,
+			Memo:      memo,
 		},
 		{
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW,
+			Memo:      memo,
 		},
 		{
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-3"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			Memo:      memo,
 		},
 	}
 
@@ -601,9 +628,7 @@ func TestListPagingSurvivesANamespaceThatGrowsUnderIt(t *testing.T) {
 	// a newly started run gets a key above every existing one and lands at the front.
 	ordered := make([]*workflow.WorkflowExecutionInfo, 0, existing)
 	for i := existing - 1; i >= 0; i-- {
-		ordered = append(ordered, &workflow.WorkflowExecutionInfo{
-			Execution: &common.WorkflowExecution{WorkflowId: fmt.Sprintf("run-%02d", i)},
-		})
+		ordered = append(ordered, mineExecution(t, fmt.Sprintf("run-%02d", i)))
 	}
 
 	// The cursor is the id to resume *after*, which is what makes it a key rather than
@@ -713,10 +738,9 @@ func TestListPagingReachesEveryMatchingRun(t *testing.T) {
 			wanted[id] = true
 		}
 
-		all = append(all, &workflow.WorkflowExecutionInfo{
-			Execution: &common.WorkflowExecution{WorkflowId: id},
-			Status:    status,
-		})
+		execution := mineExecution(t, id)
+		execution.Status = status
+		all = append(all, execution)
 	}
 
 	require.NotEmpty(t, wanted)

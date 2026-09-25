@@ -44,7 +44,7 @@ func TestCloneOptionsNeverPrintsItsToken(t *testing.T) {
 		fmt.Sprintf("%v", opts),
 		fmt.Sprintf("%+v", opts),
 		fmt.Sprintf("%#v", opts),
-		fmt.Sprintf("%s", containedStringer{opts}),
+		containedStringer{opts}.String(),
 		fmt.Sprintf("%v", wrapped),
 		fmt.Sprintf("%+v", wrapped),
 		fmt.Sprintf("%#v", wrapped),

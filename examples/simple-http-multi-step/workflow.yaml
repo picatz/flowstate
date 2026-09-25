@@ -1,10 +1,13 @@
 edition: v2026.3
 name: simple-http-multi-step
 steps:
+  # `httpbin.org/status/<code>` answers with that status and an empty body, which
+  # is what makes it the endpoint for a file about a status code: the response has
+  # nothing else in it to read, so the value the next step uses is unambiguous.
   - id: web
     http:
       method: GET
-      url: https://microsoft.com
+      url: https://httpbin.org/status/200
   - id: output
     log:
       # `message` is a string, and `status_code` is an int, so it is converted here

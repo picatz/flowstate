@@ -120,7 +120,7 @@ func TestACalleeReportsItsOwnWorkflowWithNoRuntimeAtAll(t *testing.T) {
 
 	var console strings.Builder
 	session, err := flowdebug.New(flowdebug.Options{
-		In:  strings.NewReader("step\nstep\nstep\ncontinue\n"),
+		In:  strings.NewReader("step\nstep\nbacktrace\ncontinue\n"),
 		Out: &console,
 		Steps: []flowdebug.Step{
 			{Workflow: "outer", ID: "build"},
@@ -150,6 +150,10 @@ func TestACalleeReportsItsOwnWorkflowWithNoRuntimeAtAll(t *testing.T) {
 	assert.Equal(t, []string{"outer", "outer", "inner"}, seen,
 		"the callee's steps did not report the callee, so a caller's `build` and a "+
 			"callee's are one name to everything downstream")
+	assert.Contains(t, console.String(), "#0 inner.build (task",
+		"the current frame did not name the callee's step")
+	assert.Contains(t, console.String(), "#1 outer.nested (call",
+		"the caller frame was reconstructed from something other than the engine's call chain")
 }
 
 // positionTrail is [positionProbe] recording every boundary rather than the

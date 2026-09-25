@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // Defaults for providers that read a secret from a command's output.
@@ -111,8 +113,7 @@ func (r execRunner) run(ctx context.Context, name string, args ...string) ([]byt
 	}
 
 	if runErr != nil {
-		var exit *exec.ExitError
-		if errors.As(runErr, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			if r.redactStderr {
 				return nil, fmt.Errorf("%w: %s exited %d (stderr redacted)",
 					ErrNotFound, name, exit.ExitCode())
@@ -181,11 +182,7 @@ func summarize(s string) string {
 		return r
 	}, s)
 
-	if len(s) > 200 {
-		s = s[:200] + "…"
-	}
-
-	return s
+	return textbound.Truncate(s, 200)
 }
 
 // hasCommand reports whether an executable is available, for a constructor that

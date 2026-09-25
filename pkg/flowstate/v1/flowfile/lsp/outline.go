@@ -11,21 +11,185 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// Completion cannot use the YAML parser. A document being typed is usually not
-// valid YAML — a task's key followed by a half-written input is a syntax error —
-// and that is exactly the moment the author wants a suggestion. So this file
-// reads the document by line, which degrades instead of failing.
+// Completion cannot parse the document as YAML. A document being typed is usually
+// not valid YAML — a task's key followed by a half-written input is a syntax error
+// — and that is exactly the moment the author wants a suggestion. So this file
+// reads the document by line, which degrades instead of failing. A complete quoted
+// key captured from one line can still use YAML's scalar decoder without making
+// the rest of the document a prerequisite.
 //
 // That trade is right for completion and wrong for diagnostics: a line scan can
 // misjudge an unusual document, and a wrong diagnostic is worse than none.
 // Diagnostics therefore use the parsed model in parse.go, and the two never share
 // a code path.
 
-// keyLine matches a `key: rest` line, allowing a leading sequence dash.
+// scannedKeyLine is the one line-scan representation of a `key: rest` entry.
+// key is the semantic name the YAML decoder sees; keyStart, keyEnd, and colon
+// remain byte offsets in the source spelling so positions do not shrink when an
+// escape does (`"st\u0065ps"` is eleven source bytes but the key is "steps").
+type scannedKeyLine struct {
+	keyStart int
+	keyEnd   int
+	colon    int
+	key      string
+	rest     string
+}
+
+// scanKeyLine recognizes the deliberately small YAML mapping-key grammar the
+// tolerant line-scan features understand: the existing identifier-shaped bare
+// keys, and complete single- or double-quoted scalar keys on one physical line.
+// Quoted keys are located with a small scanner instead of a regex so doubled
+// single quotes, double-quote backslash escapes, `:` and `#` inside quotes, and
+// comments after the value cannot move the key's closing boundary. The captured
+// scalar is then decoded through goccy's YAML AST, the same parser and
+// *ast.StringNode.Value that the Flowfile loader uses in keyNameOf; invalid YAML
+// escapes therefore fail closed rather than becoming almost-the-loader strings.
 //
-// The key must look like an identifier so that a wrapped value containing a colon
-// — a URL, say — is not mistaken for a new key.
-var keyLine = regexp.MustCompile(`^(\s*)(-\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*:(.*)$`)
+// Explicit (`? key`), tagged, anchored, aliased, multiline, and flow-mapping keys
+// remain unsupported here. They were outside the bare-key scanner too, and need
+// a real document parse rather than another tolerant guess. Diagnostics and the
+// parsed workflow outline continue to use that real parse.
+func scanKeyLine(line string) (scannedKeyLine, bool) {
+	var out scannedKeyLine
+	i := 0
+	for i < len(line) && keySpace(line[i]) {
+		i++
+	}
+
+	if i < len(line) && line[i] == '-' {
+		i++
+		spaceStart := i
+		for i < len(line) && keySpace(line[i]) {
+			i++
+		}
+		if i == spaceStart {
+			return scannedKeyLine{}, false
+		}
+	}
+
+	out.keyStart = i
+	if i >= len(line) {
+		return scannedKeyLine{}, false
+	}
+
+	switch line[i] {
+	case '\'', '"':
+		quote := line[i]
+		i++
+		closed := false
+		for i < len(line) {
+			switch {
+			case quote == '\'' && line[i] == '\'' && i+1 < len(line) && line[i+1] == '\'':
+				i += 2
+			case quote == '"' && line[i] == '\\':
+				// Whether the escaped byte is legal YAML is the decoder's
+				// decision below; this step only prevents an escaped quote from
+				// being mistaken for the closing quote.
+				if i+1 >= len(line) {
+					return scannedKeyLine{}, false
+				}
+				i += 2
+			case line[i] == quote:
+				i++
+				closed = true
+			default:
+				i++
+			}
+			if closed {
+				break
+			}
+		}
+		if !closed {
+			return scannedKeyLine{}, false
+		}
+		out.keyEnd = i
+		key, ok := yamlStringScalar(line[out.keyStart:out.keyEnd])
+		if !ok {
+			return scannedKeyLine{}, false
+		}
+		out.key = key
+	default:
+		if !bareKeyStart(line[i]) {
+			return scannedKeyLine{}, false
+		}
+		i++
+		for i < len(line) && bareKeyContinue(line[i]) {
+			i++
+		}
+		out.keyEnd = i
+		out.key = line[out.keyStart:out.keyEnd]
+	}
+
+	for i < len(line) && keySpace(line[i]) {
+		i++
+	}
+	if i >= len(line) || line[i] != ':' {
+		return scannedKeyLine{}, false
+	}
+	out.colon = i
+	out.rest = line[i+1:]
+	return out, true
+}
+
+func keySpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\f'
+}
+
+func bareKeyStart(b byte) bool {
+	return b == '_' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+func bareKeyContinue(b byte) bool {
+	return bareKeyStart(b) || b >= '0' && b <= '9' || b == '.' || b == '-'
+}
+
+// yamlStringScalar decodes one complete scalar through the same AST value the
+// Flowfile loader reads for mapping keys. The bool distinguishes legal `""`
+// from a parse failure.
+//
+// A quoted scalar with nothing in it to decode is answered without starting a
+// parser. Both quoting styles have exactly one escape — `\` inside double
+// quotes, a doubled quote inside single ones — so a key containing neither is
+// its own contents, and that is the answer the parser would return after
+// building a document, a body node and a token stream to reach it.
+//
+// The equivalence holds *given a properly closed scalar*, which is what the
+// scanners feeding this deliver: they take the span between a quote and its
+// match. Handed something else the fast path is more permissive than the
+// parser — `"a"b"` is returned as `a"b, true` where the parser refuses — so a
+// second caller has to supply that guarantee or call the decoder directly.
+//
+// The fast path is here rather than in the caller because the equivalence is a
+// fact about YAML's quoting rather than about outlines, and because the cost is
+// paid per *key*: the whole-document scans this feeds call it once per line, so
+// a file of short quoted keys — which a megabyte holds a couple of hundred
+// thousand of — started that many parsers for one completion or one document
+// symbol request (#1119). Anything with an escape in it still goes to the
+// decoder, so the semantics are the decoder's either way.
+func yamlStringScalar(src string) (string, bool) {
+	if len(src) >= 2 {
+		switch src[0] {
+		case '"':
+			if src[len(src)-1] == '"' && !strings.Contains(src, `\`) {
+				return src[1 : len(src)-1], true
+			}
+		case '\'':
+			if src[len(src)-1] == '\'' && !strings.Contains(src[1:len(src)-1], `''`) {
+				return src[1 : len(src)-1], true
+			}
+		}
+	}
+
+	f, err := parser.ParseBytes([]byte(src), 0)
+	if err != nil || len(f.Docs) != 1 || f.Docs[0].Body == nil {
+		return "", false
+	}
+	scalar, ok := f.Docs[0].Body.(*ast.StringNode)
+	if !ok {
+		return "", false
+	}
+	return scalar.Value, true
+}
 
 // dashLine matches a block sequence entry.
 var dashLine = regexp.MustCompile(`^(\s*)-(\s|$)`)
@@ -95,6 +259,11 @@ type outlineStep struct {
 	// indent is the column of the dash that opens the step, which is deeper for a
 	// step inside a for_each body or a parallel branch.
 	indent int
+
+	// concurrent is true when the step is inside a for_each body or parallel
+	// branch. Those are the two placements that already multiply work and where
+	// the shared execution model therefore refuses async task steps.
+	concurrent bool
 }
 
 // contains reports whether a line belongs to the step.
@@ -113,11 +282,11 @@ func scanOutline(ix *lineIndex, tasks *v1.Registry) []*outlineStep {
 	// dash belongs to some other list nested under an input.
 	entryIndents := map[int]bool{}
 	for l := range ix.lineCount() {
-		m := keyLine.FindStringSubmatch(ix.line(l))
-		if m == nil || m[3] != "steps" {
+		m, ok := scanKeyLine(ix.line(l))
+		if !ok || m.key != "steps" {
 			continue
 		}
-		stepsIndent := len(m[1]) + len(m[2])
+		stepsIndent := m.keyStart
 		// The first dash deeper than the key sets the indentation for that block.
 		for next := l + 1; next < ix.lineCount(); next++ {
 			line := ix.line(next)
@@ -136,15 +305,15 @@ func scanOutline(ix *lineIndex, tasks *v1.Registry) []*outlineStep {
 
 	var steps []*outlineStep
 	for l := range ix.lineCount() {
-		m := dashLine.FindStringSubmatch(ix.line(l))
-		if m == nil || !entryIndents[len(m[1])] {
+		dash := dashLine.FindStringSubmatch(ix.line(l))
+		if dash == nil || !entryIndents[len(dash[1])] {
 			continue
 		}
 		steps = append(steps, &outlineStep{
 			index:     len(steps),
 			startLine: l,
 			idLine:    -1,
-			indent:    len(m[1]),
+			indent:    len(dash[1]),
 		})
 	}
 
@@ -157,6 +326,23 @@ func scanOutline(ix *lineIndex, tasks *v1.Registry) []*outlineStep {
 			s.endLine = steps[i+1].startLine - 1
 		}
 		fillStep(ix, s, s.indent, tasks)
+	}
+
+	// Reconstruct the step ancestry from the entry indentation after fillStep has
+	// identified each ancestor's actual kind. This avoids mistaking an ordinary
+	// nested mapping key named `parallel` for the parallel step kind.
+	var ancestors []*outlineStep
+	for _, s := range steps {
+		for len(ancestors) > 0 && ancestors[len(ancestors)-1].indent >= s.indent {
+			ancestors = ancestors[:len(ancestors)-1]
+		}
+		for _, ancestor := range ancestors {
+			if ancestor.kindKey == "for_each" || ancestor.kindKey == "parallel" {
+				s.concurrent = true
+				break
+			}
+		}
+		ancestors = append(ancestors, s)
 	}
 	return steps
 }
@@ -189,16 +375,12 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry
 			continue
 		}
 
-		m := keyLine.FindStringSubmatch(line)
-		if m == nil {
+		m, ok := scanKeyLine(line)
+		if !ok {
 			continue
 		}
-		indent := len(m[1])
-		if m[2] != "" {
-			// `- id: a`: the key's own column is past the dash.
-			indent += len(m[2])
-		}
-		key, rest := m[3], strings.TrimSpace(m[4])
+		indent := m.keyStart
+		key, rest := m.key, strings.TrimSpace(m.rest)
 
 		if contentIndent < 0 {
 			contentIndent = indent
@@ -359,8 +541,8 @@ func keyPath(ix *lineIndex, line0 int) []string {
 		if indent >= depth {
 			continue
 		}
-		if m := keyLine.FindStringSubmatch(line); m != nil {
-			reversed = append(reversed, m[3])
+		if m, ok := scanKeyLine(line); ok {
+			reversed = append(reversed, m.key)
 		}
 		depth = indent
 		if depth == 0 {
@@ -368,8 +550,8 @@ func keyPath(ix *lineIndex, line0 int) []string {
 		}
 	}
 	path := make([]string, 0, len(reversed))
-	for i := len(reversed) - 1; i >= 0; i-- {
-		path = append(path, reversed[i])
+	for _, r := range slices.Backward(reversed) {
+		path = append(path, r)
 	}
 	return path
 }

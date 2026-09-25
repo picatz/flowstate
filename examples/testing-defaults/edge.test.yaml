@@ -1,0 +1,9 @@
+edition: v2026.3
+tests:
+  - name: a sibling suite inherits the same directory fixture
+    inputs:
+      audience: on-call
+    expect:
+      outputs:
+        greeting: hello, on-call
+      ran: [greet]

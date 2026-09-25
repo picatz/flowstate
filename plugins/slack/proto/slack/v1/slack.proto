@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package slack.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/slack/gen/slack/v1;slackv1";
+
+import "flowstate/v1/value.proto";
+
+// PostInputs describes the deliberately small outbound Slack surface. It sends
+// accessible text through chat.postMessage; Block Kit, attachments, lookup,
+// reactions, updates, and inbound interaction handling are outside this plugin.
+message PostInputs {
+  // Token is a Slack bot or user token carrying chat:write. The task requires
+  // this entire input to be a secret reference, which the host resolves before
+  // execution. A literal token is refused before it can enter durable history;
+  // the resolved credential is capped at 4 KiB before becoming an HTTP header.
+  flowstate.v1.Value token = 1;
+
+  // Channel is a Slack conversation ID. Names are deliberately refused: IDs do
+  // not change when a channel is renamed and make the destination unambiguous.
+  string channel = 2;
+
+  // Text is the complete accessible message and is limited to 4,000 Unicode
+  // characters, Slack's documented recommendation before truncation begins.
+  string text = 3;
+
+  // MessageKey is a UUID chosen once for this logical notification and reused
+  // unchanged if an operator deliberately retries it. It is sent as Slack's
+  // client_msg_id. Slack documents duplicate-related errors for that field but
+  // does not promise a complete deduplication contract, so an ambiguous write
+  // still returns OutcomeUnknown rather than being retried automatically.
+  string message_key = 4;
+
+  // ThreadTs optionally posts beneath an existing parent message. It is the
+  // only composition feature included: approval requests and their outcome can
+  // remain together without exposing Slack's broader message API.
+  string thread_ts = 5;
+}
+
+// PostOutputs identifies the message Slack acknowledged.
+message PostOutputs {
+  string channel = 1;
+  string ts = 2;
+}

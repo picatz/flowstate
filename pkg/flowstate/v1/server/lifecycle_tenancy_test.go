@@ -4,11 +4,16 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // Stopping and listing are the same authorization question Get and Signal ask, so
@@ -20,6 +25,115 @@ import (
 // run at all, so nothing about the request itself reveals a mistake. A List that
 // forgot to filter would look completely healthy to every test that only checked
 // that a tenant can see its own runs.
+
+// TestDirectAddressingRejectsExecutionsListWouldHide exercises the shared
+// Temporal-namespace boundary against a real execution. An execution from
+// another application has the same no-memo shape as a legacy Flowstate run, so
+// checking only tenant ownership would make it reachable from the default
+// tenant even though List deliberately excludes it by workflow type.
+func TestDirectAddressingRejectsExecutionsListWouldHide(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	foreignID := "foreign-" + uuid.New().String()
+	_, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
+		ID:        foreignID,
+		TaskQueue: "another-application",
+	}, "AnotherApplication")
+	require.NoError(t, err)
+
+	callers := []struct {
+		name string
+		api  *server.FlowstateServer
+	}{
+		{name: "default tenant", api: mustNew(t, temporal)},
+		{name: "named tenant", api: mustNew(t, temporal, server.WithNamespace("acme"))},
+	}
+	for _, caller := range callers {
+		t.Run(caller.name, func(t *testing.T) {
+			calls := map[string]func() error{
+				"Get": func() error {
+					_, err := caller.api.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: foreignID}))
+					return err
+				},
+				"GetTimeline": func() error {
+					_, err := caller.api.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{WorkflowId: foreignID}))
+					return err
+				},
+				"Signal": func() error {
+					_, err := caller.api.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
+						WorkflowId: foreignID,
+						Name:       "wake",
+					}))
+					return err
+				},
+				"Cancel": func() error {
+					_, err := caller.api.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: foreignID}))
+					return err
+				},
+				"Terminate": func() error {
+					_, err := caller.api.Terminate(t.Context(), connect.NewRequest(&v1.TerminateRequest{
+						WorkflowId: foreignID,
+						Reason:     "must not reach Temporal",
+					}))
+					return err
+				},
+			}
+			for name, call := range calls {
+				t.Run(name, func(t *testing.T) {
+					err := call()
+					require.Error(t, err, "direct addressing accepted another application's execution")
+					require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+				})
+			}
+		})
+	}
+
+	described, err := temporal.DescribeWorkflowExecution(t.Context(), foreignID, "")
+	require.NoError(t, err)
+	require.Equal(t, enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		described.GetWorkflowExecutionInfo().GetStatus(),
+		"a refused direct-address operation still stopped the foreign execution")
+}
+
+// TestAMemoLessExecutionOfTheEnginesOwnWorkflowTypeIsRefused is #1896's
+// reopening scenario, reproduced directly: an execution of
+// [flowstateRunWorkflowType] ("Run") with no tenant memo — indistinguishable,
+// on the data Temporal records, from a pre-tenancy Flowstate run and from
+// another application in the same namespace that happens to register the
+// identical type name. [FlowstateServer.ownedBy]'s doc explains why this
+// deployment's answer is to require positive provenance rather than resolve
+// the ambiguity into the default tenant: neither the default tenant nor a
+// named one may reach it, and it is not just hidden but genuinely
+// unterminable through this server — the caller who could stop it, had it
+// been treated as theirs, no longer can either. That is the accepted cost:
+// nothing has ever been released, so this build wrote a tenant onto every
+// run it could ever have reason to reach.
+func TestAMemoLessExecutionOfTheEnginesOwnWorkflowTypeIsRefused(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	ambiguousID := "ambiguous-" + uuid.New().String()
+	_, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
+		ID:        ambiguousID,
+		TaskQueue: "no-worker-reads-this-queue",
+	}, "Run")
+	require.NoError(t, err)
+
+	defaultTenant := mustNew(t, temporal)
+	_, err = defaultTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: ambiguousID}))
+	require.Error(t, err, "the default tenant reached an execution with no recorded tenant")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	namedTenant := mustNew(t, temporal, server.WithNamespace("acme"))
+	_, err = namedTenant.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: ambiguousID}))
+	require.Error(t, err, "a named tenant claimed an execution with no recorded tenant")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	_, err = defaultTenant.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: ambiguousID}))
+	require.Error(t, err, "the default tenant cancelled an execution with no recorded tenant")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
 
 // TestAnotherTenantCannotStopARun checks that a run cannot be stopped by someone
 // who cannot see it.
@@ -242,6 +356,7 @@ func TestListRefusesAPageTokenItDidNotIssue(t *testing.T) {
 	}))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	require.ErrorContains(t, err, "page token is not a token this server issued")
 }
 
 // listRunIDs collects the workflow ids from one page of a listing, reporting an
@@ -350,4 +465,35 @@ func TestACancelledRunReportsWhatItTookBack(t *testing.T) {
 	require.Contains(t, final.GetError().GetMessage(), `undid "provision"`,
 		"a cancelled run that took a step back does not say so, so `flow get` answers "+
 			"the question with the question")
+}
+
+// TestCancelOnAFinishedRunRefusesLikeTerminate is #1299 at the door a script
+// uses: `flow cancel <id>` with no run id, on a workload that finished. Temporal
+// accepts the cancel request for a closed execution, so before this the server
+// answered success and `flow cancel && wait-for-canceled` waited forever; the
+// answer now comes from the run's state, in terminate's words.
+func TestCancelOnAFinishedRunRefusesLikeTerminate(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: &v1.Workflow{
+			Name:  "finishes",
+			Steps: []*v1.Node{bulky("only", 8)},
+		},
+	}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+
+	require.Eventually(t, func() bool {
+		resp, gerr := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+		return gerr == nil && resp.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
+	}, 60*time.Second, 200*time.Millisecond, "the run never finished")
+
+	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{WorkflowId: workflowID}))
+	require.Error(t, err, "cancel on a finished run reported success")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), `cancelling run "`+workflowID+`": that workload has already finished`,
+		"the refusal is not the one terminate gives for the same run")
 }

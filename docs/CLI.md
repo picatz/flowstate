@@ -281,6 +281,19 @@ Two habits follow for anything else that reaches this shape:
   intended is almost always obvious there and almost never obvious in the expression
   that produced it. `--paused` exists so that answer arrives before anything fires.
 
+A scheduled Flowfile that names plugin tasks is checked against a saved catalog:
+
+```console
+$ flow schedule create workflow.yaml --plugin-catalog plugins.lock.json
+```
+
+Scheduling executes no plugin in the CLI process, so it does not take
+`--plugin-dir`; the catalog is the reviewable descriptor source, while the server
+and workers remain responsible for resolving and executing the deployment's
+plugins. Offline compilation accepts either posture: `flow compile --plugin-dir`
+for a developer with the binaries, or `flow compile --plugin-catalog` for CI and
+review without executing plugin code.
+
 ## Interactive surfaces are optional, never required
 
 Anything the CLI can do interactively it can also do non-interactively, because the
@@ -376,6 +389,14 @@ An agent is the second machine audience, and it needs the same thing a pipe does
 read before it writes. `flow mcp` serves both over stdin and stdout as a Model
 Context Protocol server, which an MCP client launches as a subprocess rather than
 something you run yourself.
+
+One line the host gets wrong fails that line and not the session. A line that
+is not JSON is answered with the JSON-RPC parse error (`-32700`), a JSON-RPC
+batch on a protocol version that forbids one, or an object that is not a
+JSON-RPC message, with an invalid request (`-32600`) naming the request id when
+there is one, and the next line is read as if nothing had happened. A host
+serialization slip therefore costs one message, not every tool call in flight.
+The session ends when stdin does.
 
 Nothing here is a second product. The tools are the Connect services projected,
 with input schemas derived from the same protobuf messages the API speaks, so a
@@ -672,6 +693,21 @@ because their halves are not independently meaningful. A row's stub replaces an
 inherited one for the same target rather than joining it, which is #416's
 identity rule unchanged.
 
+Two consequences of that identity rule are said out loud (#1668). Two stubs in
+one list that select the same call the same way — the same target and the same
+`where:`, byte for byte, behind a stub with no `times:` — are refused when the
+file loads, at both positions, since the second can never be reached; a stub
+with `times:` ahead of its twin is the drain shape and is not. And a case stub
+whose `where:` differs from a *filtered* default's for the same target does not
+replace it — both stay live, the case's tried first — so the case is warned,
+and told to write the default's `where:` byte for byte or delete the stub. The
+warning states that the two clauses differ rather than quoting either: a
+`where:` may fill most of a test file, and reproducing one per case is how a
+bounded document becomes an unbounded report. An unfiltered default is the
+fallthrough the rule promises and draws no warning. A failing case's transcript
+names which stub answered each invocation, marking an inherited one
+`from defaults`.
+
 The cost of merging `expect:` field by field, stated plainly: a row cannot
 assert *less* than its entry. An entry that pins `outputs:` pins it for every
 row that does not overwrite it, so an entry should hold only what is true of
@@ -683,6 +719,24 @@ is an entry whose `cases:` is empty: a file that quietly ran zero cases where
 one was expected is the "green by not running" failure this repository
 legislates against everywhere else. `examples/parameterized-deploy` is the
 worked example, and it runs in CI like the rest.
+
+### A case claims something, or says that finishing is the claim
+
+An `expect:` with no field in it is refused when the file loads (#1669). A
+case that asserts nothing is green whatever the run produced beyond finishing,
+and nothing downstream notices: `--fail-on-warning` has no warning to promote,
+and the closed claim that `others: skipped` makes over `ran:` does not reach a
+case that names no step at all. A case that means only "the run completes"
+says so with
+`failed: false`, which is the claim the refusal names; `outputs: {}` and
+`ran: []` are claims too — no outputs, nothing ran — and are not refused.
+
+Two smaller courtesies of the same loader: a key it does not know is answered
+with the nearest one legal where it was written (`unknown field "expct"; did
+you mean "expect"?`), or with that list when nothing is near; and a mismatch
+prints each side's type in the spelling a Flowfile declares one with, so
+`expected string "1", got int 1` reads as the type mismatch it is rather than
+as a quoting difference.
 
 ### What a directory shares: `testdefaults.yaml`
 
@@ -728,39 +782,55 @@ vars:
   endpoint: "${'https://api.' + vars.region + '.example.com/v1'}"
 ```
 
+A fence may also occupy a scalar leaf of a map or list written in YAML. YAML owns the keys, lengths, and nesting; each fence computes only its leaf, in the same dependency order and under the same cost and taint rules as a top-level computed var:
+
+```yaml
+vars:
+  token: test-token
+  request:
+    headers:
+      Authorization: "${'Bearer ' + vars.token}"
+      Accept: application/json
+    regions:
+      - eu-west-1
+      - "${vars.request.headers.Accept == 'application/json' ? 'us-east-1' : 'eu-central-1'}"
+```
+
+A nested fence may not return a map or list: that would let CEL replace a YAML leaf with dynamic shape. Put fences at the scalar leaves instead. A top-level CEL-built container keeps its existing rules, including refusal when tainted; `${vars.token == 'guess' ? {} : {'x': 'y'}}` cannot evade the shape protection by moving under a YAML key.
+
 The rules, each with the reason it exists:
 
 - **A computed var reads its sibling vars and nothing else.** No `steps` (the block is evaluated before any case runs, so nothing has produced anything), no `inputs` (a file's vars are shared by every case and a case's `inputs:` are its own), no `run` or `trigger`. Each is refused in its own words.
 - **Evaluation is in dependency order, once per var.** A cycle is refused at load, naming the path: `vars.a → vars.b → vars.a`. Where a directory's `testdefaults.yaml` is in play the diagnostic names the file each hop was written in, because a cycle can exist in neither document on its own.
 - **The environment is library-less and deterministic.** A file's vars are not bound to a workflow — `defaults.workflow` and a case's own `workflow:` may name different files in one suite — so a var that compiled under one case's profile and failed under another's would make load-time evaluation depend on which case you looked at. A call needing a profile library (`json_parse`, `split`, `base64.encode`) is therefore a load-time refusal naming the function; write it in `expect.check:`, which compiles under the case's own profile.
-- **Bounded by cost, per expression and across the file.** Each var's expression spends at most `MaxVarsPerFile`-th of the budget one ordinary expression gets, so a file declaring the maximum 200 vars spends, in total, what a single expression elsewhere in the system may.
+- **Bounded by cost, per expression and across the file.** A file may hold at most 200 computed values, counting fenced leaves as well as top-level fences. Each spends at most one two-hundredth of the budget one ordinary expression gets, so the whole block spends, in total, what a single expression elsewhere in the system may.
 - **A var on any path to a secret is withheld, and one redaction cannot withhold is refused.** If a var's value stands in for a secret — it is referenced from a case's `secrets:` — the taint spreads through the dependency graph in *both* directions, to a fixed point: every var computed from it, and every var it was computed *from*. The source material of a secret is secret, so `derived: "${'Bearer ' + vars.token}"` named from `secrets:` withholds `vars.token` as well as `vars.derived`. The taint follows references rather than values, which is what makes it answerable when the file loads.
 
   The contract in one sentence: **a value derived from secret material is withheld where it is a non-empty string, and refused into existence where it is anything else** — because anything else can carry the secret in a form redaction cannot reach: its digits, its truth, its shape, its very emptiness.
 
-  A tainted **non-empty string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else — including a check's own evaluator error, which carries its operands. Everything else is a load-time refusal naming the chain that taints it. A **number or boolean** — `${size(vars.token)}` — has nothing in it to match once a fixture has carried it into a run, and a length is a fact about a secret in its own right. A **container** leaks by shape, which survives leaf redaction completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality oracle whose answer is whether the map is empty, and clearing every string inside it changes nothing about that — so a tainted container is refused whatever its leaves are. The **empty string** is the same oracle without the container: the redaction set cannot hold `""`, since it occurs at every position of every string, so `${vars.token == 'guess' ? '' : 'x'}` renders `""` beside a `[redacted]` sibling.
+  A tainted **non-empty string** is withheld wherever it prints: whole in a check's witness and a debugger's autopsy, and cleared out of any line that embeds it, in the transcript and everywhere else — including a check's own evaluator error, which carries its operands. Everything else is a load-time refusal naming the chain that taints it. A **number or boolean** — `${size(vars.token)}` — has nothing in it to match once a fixture has carried it into a run, and a length is a fact about a secret in its own right. A **CEL-built container** leaks by shape, which survives leaf redaction completely: `${vars.token == 'guess' ? {} : {'x': 'y'}}` is an equality oracle whose answer is whether the map is empty, and clearing every string inside it changes nothing about that — so a tainted CEL-built container is refused whatever its leaves are. A YAML-authored container is different: its shape is literal, and each computed leaf is withheld or refused according to its own value while clean sibling leaves remain visible. The **empty string** is the same oracle without the container: the redaction set cannot hold `""`, since it occurs at every position of every string, so `${vars.token == 'guess' ? '' : 'x'}` renders `""` beside a `[redacted]` sibling.
 
   Each var is judged the moment it evaluates, before any var that reads it — so a value redaction cannot withhold never enters the block at all, and no later expression's error can quote it. A refused var's dependents do not evaluate and add no diagnostics of their own; the root refusal stands for the chain, while an unrelated problem elsewhere in the file is still reported.
 
-  The refusal costs one respelling, and says so: keep the derived value a string and express the structure at the position that *uses* it, where a `${vars.x}` leaf resolves at any depth, inside lists, and through `defaults.inputs:`.
+  The refusal costs one respelling, and says so: keep the shape in YAML and compute only scalar leaves. The YAML may live in the var itself, or at the position that uses it, where a `${vars.x}` reference resolves at any depth, inside lists, and through `defaults.inputs:`.
 
   ```yaml
   vars:
     token: s3cr3t
-    header: "${'Bearer ' + vars.token}"     # a string: withheld wherever it prints
+    headers:
+      Authorization: "${'Bearer ' + vars.token}" # this leaf is withheld
+      Accept: application/json                   # this leaf remains visible
   tests:
     - name: the structure lives where it is used
       inputs:
-        headers:
-          Authorization: "${vars.header}"
-          Accept: application/json          # untainted, and still shown
+        headers: "${vars.headers}"
   ```
 
   A var on no path to any secret is untouched, so `${size(vars.hostlist)}` and a map of hostnames stay ordinary fixtures.
 
   The cost, stated: a benign var that merely contributed to a secret is withheld too — a `"Bearer"` prefix, a port — and refused if it is not a string. Fail closed is the posture; a token minus its prefix is still a token.
 
-A fence *inside* a structure is still refused, and so is a mixed string (`"https://${vars.host}/v1"`): a partial substitution would be a template language this file deliberately is not. Build the combined text in a var — `"${'https://' + vars.host + '/v1'}"` — and reference that.
+A mixed string (`"https://${vars.host}/v1"`) is still refused: a partial substitution would be a template language this file deliberately is not. A fence at a scalar leaf must occupy that whole leaf. Build the combined text in the expression — `"${'https://' + vars.host + '/v1'}"`.
 
 **One asymmetry, stated because it is load-bearing**: inside a stub's `where:` and `returns:`, `vars.` keeps meaning the *workflow's* own `vars:` block — those expressions evaluate against the run's scope, and a load-time substitution there would silently hijack that meaning. A stub speaks the run's language; everywhere else in the test file, `vars.` is the file's.
 
@@ -831,10 +901,18 @@ carried into the run as text. `inputs` is bound over the run's own
 named the task's inputs since stubs existed, and that meaning is kept.
 
 `where:` cannot reach what a stub replaces. The task's own evaluation of
-`expect:` or `outputs:` does not run when the task is stubbed — the stub *is*
-the step's answer — which is why `examples/http-expect` and
+`expect:` or `outputs:` does not run when the task is stubbed with `returns:` —
+the stub *is* the step's answer — which is why `examples/http-expect` and
 `examples/http-output-shaping` assert the steps around those expressions rather
-than the expressions themselves.
+than the expressions themselves. So `returns:` on a step that shapes its
+outputs supplies the *shaped* names (`title`, `status` — what later steps
+read), never the raw `status_code`, `headers`, `body` and `json` the shaping
+would have read; a `returns:` that carries those raw fields and none of the
+shaped names is refused at the stub rather than left to fail wherever the first
+reader is. To exercise the shaping itself, write `response:` with the raw
+response — `status_code`, `headers` and `body` only; `parse_json:` derives
+`response.json` from the body — and the step's own `outputs:` and `expect:` run
+over it.
 
 ### What a case's identity is checked against
 

@@ -22,6 +22,8 @@ import (
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwk"
 	"github.com/picatz/jose/pkg/jwt"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // Defaults applied by [NewIssuer] when the corresponding option is not given.
@@ -175,7 +177,7 @@ func NewSigningKey(id string, private crypto.PrivateKey) (SigningKey, error) {
 		return SigningKey{}, fmt.Errorf("%w: signing key needs an id", ErrInvalidPolicy)
 	}
 	if strings.ContainsAny(id, " \t\n\r") {
-		return SigningKey{}, fmt.Errorf("%w: signing key id %q must not contain whitespace", ErrInvalidPolicy, truncate(id, 64))
+		return SigningKey{}, fmt.Errorf("%w: signing key id %q must not contain whitespace", ErrInvalidPolicy, textbound.Truncate(id, 64))
 	}
 
 	var (
@@ -700,15 +702,15 @@ func (i *Issuer) installVerifyOnlyKeys() error {
 			return fmt.Errorf("%w: a verify-only key needs the id it was published under", ErrInvalidPolicy)
 		case strings.ContainsAny(key.id, " \t\n\r"):
 			return fmt.Errorf("%w: verify-only key id %q must not contain whitespace",
-				ErrInvalidPolicy, truncate(key.id, 64))
+				ErrInvalidPolicy, textbound.Truncate(key.id, 64))
 		case key.id == i.active.id:
 			return fmt.Errorf("%w: verify-only key id %q is the active signing key's id; a key needs its own id, or verifiers cannot tell them apart",
-				ErrInvalidPolicy, truncate(key.id, 64))
+				ErrInvalidPolicy, textbound.Truncate(key.id, 64))
 		}
 
 		if slices.ContainsFunc(i.retired, func(other retiredKey) bool { return other.id == key.id }) {
 			return fmt.Errorf("%w: verify-only key id %q was given twice; a key needs its own id, or verifiers cannot tell them apart",
-				ErrInvalidPolicy, truncate(key.id, 64))
+				ErrInvalidPolicy, textbound.Truncate(key.id, 64))
 		}
 
 		algorithm, published, err := publishValue(key.id, key.public)
@@ -748,13 +750,13 @@ func publishValue(id string, public crypto.PublicKey) (jwa.Algorithm, jwk.Value,
 	case *rsa.PublicKey:
 		if typed.N.BitLen() < minRSAKeyBits {
 			return "", nil, fmt.Errorf("%w: RSA key %q is %d bits, want at least %d",
-				ErrInvalidPolicy, truncate(id, 64), typed.N.BitLen(), minRSAKeyBits)
+				ErrInvalidPolicy, textbound.Truncate(id, 64), typed.N.BitLen(), minRSAKeyBits)
 		}
 		algorithm = jwa.RS256
 	case *ecdsa.PublicKey:
 		if typed.Curve != elliptic.P256() {
 			return "", nil, fmt.Errorf("%w: ECDSA key %q must use P-256, got %s",
-				ErrInvalidPolicy, truncate(id, 64), typed.Curve.Params().Name)
+				ErrInvalidPolicy, textbound.Truncate(id, 64), typed.Curve.Params().Name)
 		}
 		algorithm = jwa.ES256
 	case ed25519.PublicKey:
@@ -766,7 +768,7 @@ func publishValue(id string, public crypto.PublicKey) (jwa.Algorithm, jwk.Value,
 
 	published, err := jwk.ValueFromPublicKey(public)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, truncate(id, 64), err)
+		return "", nil, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, textbound.Truncate(id, 64), err)
 	}
 	published[jwk.KeyID] = id
 	published[jwk.Algorithm] = algorithm
@@ -795,7 +797,7 @@ func validateDeclaredClaims(names []string) ([]string, error) {
 			return nil, fmt.Errorf("%w: a declared claim needs a name", ErrInvalidPolicy)
 		case len(name) > MaxCarriedClaimNameBytes:
 			return nil, fmt.Errorf("%w: declared claim name %q is %d bytes, and at most %d are allowed",
-				ErrInvalidPolicy, truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
+				ErrInvalidPolicy, textbound.Truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
 		case slices.Contains(builtInClaimNames, name):
 			// Refused rather than ignored: a carried claim of this name can
 			// never be minted, whatever the declaration says, and a
@@ -921,7 +923,7 @@ func (i *Issuer) RevokeKey(keyID string) error {
 
 	if keyID == i.active.id {
 		return fmt.Errorf("%w: key %q is the active signing key; rotate to a new key first, then revoke this one",
-			ErrInvalidPolicy, truncate(keyID, 64))
+			ErrInvalidPolicy, textbound.Truncate(keyID, 64))
 	}
 
 	before := len(i.retired)
@@ -931,7 +933,7 @@ func (i *Issuer) RevokeKey(keyID string) error {
 
 	if len(i.retired) == before {
 		return fmt.Errorf("%w: no retired key with id %q is published by this issuer",
-			ErrUnknownKey, truncate(keyID, 64))
+			ErrUnknownKey, textbound.Truncate(keyID, 64))
 	}
 
 	return nil
@@ -1089,7 +1091,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 			// The name, never the value: this error travels wherever the
 			// refusal does. See [validateCarriedClaims].
 			return Assertion{}, fmt.Errorf("%w: %q; declare it in the issuer's federation.declared_claims to carry it",
-				ErrUndeclaredClaim, truncate(name, 64))
+				ErrUndeclaredClaim, textbound.Truncate(name, 64))
 		}
 		claims[name] = identity.Claims[name]
 	}
@@ -1153,7 +1155,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		// honours its context usually says something more specific.
 		if ctx.Err() == nil && signCtx.Err() != nil {
 			return Assertion{}, fmt.Errorf("%w: signing with key %q did not finish within %s: %w",
-				context.DeadlineExceeded, truncate(keyID, 64), i.signingTimeout, err)
+				context.DeadlineExceeded, textbound.Truncate(keyID, 64), i.signingTimeout, err)
 		}
 		return Assertion{}, err
 	}
@@ -1168,7 +1170,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		// RevokeKey exists to prevent — a relying party with a cached key set
 		// would accept it.
 		return Assertion{}, fmt.Errorf("%w: key %q was withdrawn from this issuer's published key set while the assertion was being signed",
-			ErrUnknownKey, truncate(keyID, 64))
+			ErrUnknownKey, textbound.Truncate(keyID, 64))
 	}
 
 	return Assertion{

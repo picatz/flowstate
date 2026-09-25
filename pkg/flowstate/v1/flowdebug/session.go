@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
-	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
@@ -384,14 +384,20 @@ type Session struct {
 	promptMu sync.Mutex
 	outMu    sync.Mutex
 
-	mu          sync.Mutex
-	mode        mode
-	until       string
-	breakpoints map[string]breakpoint
+	mu    sync.Mutex
+	mode  mode
+	until string
+	// untilCondition optionally gates the stop `until` names, exactly as a
+	// breakpoint's condition gates its arrival: same compiler, same evaluator,
+	// same declined-arrival notice. One-shot with the mode that carries it —
+	// every resume clears both.
+	untilCondition *v1.Value
+	breakpoints    map[string]breakpoint
 
-	// notedUnbound remembers which breakpoints have already reported a
-	// condition they could not evaluate, so the notice is one line rather than
-	// one per iteration. See [Session.noteDeclined].
+	// notedUnbound remembers which condition-gated stops — breakpoints and
+	// `until` — have already reported a condition they could not evaluate, so
+	// the notice is one line rather than one per iteration. See
+	// [Session.noteDeclined].
 	notedUnbound map[string]struct{}
 	// script records accepted commands, in order, for replay, and scriptBytes
 	// is what they weigh — see [MaxScriptBytes], which the count bound beside
@@ -437,6 +443,14 @@ type Session struct {
 	// [Session.Complete] — called from the console's own goroutine while a
 	// boundary is parked — can answer against the scope the prompt is for.
 	at promptSubject
+
+	// declared is [Options.Steps]'s ids, sorted and deduplicated, and
+	// declaredIDs is the same set as a membership test. Both are built once at
+	// construction and never written again — steps is not mutated after New —
+	// so [Session.unknownStepNotice] costs a lookup rather than a rebuild per
+	// refused command. See [declaredStepIDs] for the ordering it also fixes.
+	declared    []string
+	declaredIDs map[string]struct{}
 
 	// steps are the ids a caller said this run may reach ([Options.Steps]),
 	// and seen are the ids this session has watched go past, each against what
@@ -544,6 +558,11 @@ type promptSubject struct {
 	// Empty at an autopsy, and empty on a run carrying no runtime position.
 	workflow string
 
+	// backtrace is the current step followed by the call sites that reached
+	// it, from the engine's execution context. It is captured with the scope so
+	// every front reads the same stop even if the run resumes concurrently.
+	backtrace *v1.DebugBacktrace
+
 	// redactText and redactValue are the withholding that was in force when
 	// this pause began, captured with the scope rather than read when an
 	// answer is returned.
@@ -591,6 +610,8 @@ func New(opts Options) (*Session, error) {
 		steps:       slices.Clone(opts.Steps),
 		seen:        map[string]StepState{},
 		sharedIDs:   sharedStepIDs(opts.Steps),
+		declared:    declaredStepIDs(opts.Steps),
+		declaredIDs: declaredStepIDSet(opts.Steps),
 
 		controlled:   opts.Controlled,
 		control:      make(chan controlRequest),
@@ -610,10 +631,23 @@ func New(opts Options) (*Session, error) {
 		// this surface accepts, refused by the reader (Codex, #1109).
 		s.in.Buffer(make([]byte, 0, 4096), MaxCommandBytes+len("\n"))
 	}
+	// Checked against the inventory before any of them is armed, so a misspelled
+	// id is never reported as armed. A caller that supplied [Options.Steps] and a
+	// name none of them has gets the refusal the prompt gives, rather than a
+	// session that starts in modeRun and runs the workflow to its end without
+	// ever stopping — the same silence `break nosuchstep` used to have (#1367).
+	//
+	// An empty inventory refuses nothing, exactly as [Session.unknownStepNotice]
+	// documents: a caller that named no steps has said nothing about what exists.
 	for _, id := range opts.Breakpoints {
-		if id = strings.TrimSpace(id); id != "" {
-			s.breakpoints[id] = breakpoint{}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
 		}
+		if notice, unknown := s.unknownStepNotice(id); unknown {
+			return nil, fmt.Errorf("flowdebug: breakpoint: %s", notice)
+		}
+		s.breakpoints[id] = breakpoint{}
 	}
 
 	// Where the first stop lands, and why it depends on nothing else: an
@@ -630,6 +664,40 @@ func New(opts Options) (*Session, error) {
 	}
 
 	return s, nil
+}
+
+// declaredStepIDs is the sorted, deduplicated ids [Options.Steps] names, built
+// once at construction because [Session.unknownStepNotice] answers over it on
+// every refused `break` or `until` — and a refused command is not recorded, so
+// redirected input can repeat one without ever reaching [MaxScriptCommands].
+// Rebuilding and re-sorting the whole inventory per rejected line is work an
+// input controls the amount of, which is the bound CLAUDE.md asks for spent
+// where it is spent (Codex, #1347).
+//
+// Sorted here rather than at the call site so the prompt and `flow debug
+// replay` feed [nearest.Name] the same order: it keeps the first candidate at
+// the best distance, so an unsorted list makes the suggestion depend on map
+// iteration order — different between the two fronts, and different between
+// two runs of the same one.
+func declaredStepIDs(steps []Step) []string {
+	ids := make([]string, 0, len(steps))
+	for _, step := range steps {
+		ids = append(ids, step.ID)
+	}
+	slices.Sort(ids)
+
+	return slices.Compact(ids)
+}
+
+// declaredStepIDSet is [declaredStepIDs] as a membership test, so the common
+// answer — the id is declared, arm it — costs one lookup.
+func declaredStepIDSet(steps []Step) map[string]struct{} {
+	ids := make(map[string]struct{}, len(steps))
+	for _, step := range steps {
+		ids[step.ID] = struct{}{}
+	}
+
+	return ids
 }
 
 // sharedStepIDs are the ids more than one *workflow* in an inventory declares.
@@ -760,8 +828,10 @@ func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope
 	// rather than as a name. See [Position.Workflow].
 	workflow, _ := v1.ExecutingWorkflowFromContext(ctx)
 
+	kind := v1.NodeKind(node)
 	s.prompting(promptSubject{
-		scope: scope, step: node.GetId(), kind: NodeKind(node), workflow: workflow,
+		scope: scope, step: node.GetId(), kind: kind, workflow: workflow,
+		backtrace: v1.ExecutingBacktraceFromContext(ctx, node.GetId(), kind),
 	})
 	defer s.prompting(promptSubject{})
 
@@ -887,11 +957,11 @@ func (s *Session) WaitStarted(id, signal string, timeout time.Duration, bounded 
 func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) (bool, error) {
 	s.mu.Lock()
 	at, isBreakpoint := s.breakpoints[id]
-	mode, until := s.mode, s.until
+	mode, until, untilCondition := s.mode, s.until, s.untilCondition
 	s.mu.Unlock()
 
 	if isBreakpoint {
-		holds, err := s.breakpointHolds(ctx, id, at, scope)
+		holds, err := s.conditionHolds(ctx, declinedBreakpoint, id, at.condition, scope)
 		if err != nil {
 			return false, err
 		}
@@ -904,11 +974,26 @@ func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) (b
 	case modeStop:
 		return true, nil
 	case modeUntil:
-		return until == id, nil
+		if until != id {
+			return false, nil
+		}
+		// The same gate a breakpoint's condition is, through the same
+		// function — `until x if e` and `break x if e` + `continue` cannot
+		// disagree about when a run is held.
+		return s.conditionHolds(ctx, declinedUntil, id, untilCondition, scope)
 	default:
 		return false, nil
 	}
 }
+
+// The names the two condition-gated verbs go by in the declined-arrival
+// notice, and the keys [Session.noteDeclined] files its once-only memory
+// under — one per verb and id, because a breakpoint at `body` and an
+// `until body if ...` are different questions.
+const (
+	declinedBreakpoint = "breakpoint at"
+	declinedUntil      = "until"
+)
 
 // A breakpoint is a step id and, optionally, the condition that decides
 // whether reaching it stops the run.
@@ -923,7 +1008,11 @@ type breakpoint struct {
 	condition *v1.Value
 }
 
-// breakpointHolds answers whether an arrival at a breakpoint should stop.
+// conditionHolds answers whether an arrival gated by a condition should stop —
+// a breakpoint's arrival, or the one stop `until` names. One function for both
+// verbs, because two evaluations of "does this condition hold here" would be
+// two answers to one question. `what` is the verb's own name for itself in the
+// declined-arrival notice.
 //
 // Evaluated outside s.mu — the condition is the author's own CEL and calling
 // into the evaluator under the session lock would hold it for the length of an
@@ -942,8 +1031,8 @@ type breakpoint struct {
 // a breakpoint that looks set and silently never fires is the outcome with no
 // symptom. Stopping also makes the reporting free — the session is parked, so
 // the reason prints once rather than once per arrival.
-func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint, scope *v1.Scope) (bool, error) {
-	if at.condition == nil {
+func (s *Session) conditionHolds(ctx context.Context, what, id string, condition *v1.Value, scope *v1.Scope) (bool, error) {
+	if condition == nil {
 		return true, nil
 	}
 
@@ -978,7 +1067,7 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 	// domain reports and fires where it belongs. Stopping bought nothing the
 	// notice does not, and cost a hold in the wrong loop on every legal
 	// workflow that reuses an id.
-	holds, err := v1.EvalConditionInScope(ctx, at.condition, scope)
+	holds, err := v1.EvalConditionInScope(ctx, condition, scope)
 	switch {
 	case ctx.Err() != nil:
 		// Not an unanswerable condition: the operator interrupted the run
@@ -990,7 +1079,7 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 		return false, ctx.Err()
 
 	case err != nil:
-		s.noteDeclined(id, err)
+		s.noteDeclined(what, id, err)
 
 		return false, nil
 	}
@@ -1000,11 +1089,20 @@ func (s *Session) breakpointHolds(ctx context.Context, id string, at breakpoint,
 
 // resume sets what happens at the next boundary.
 func (s *Session) resume(m mode, until string) {
+	s.resumeUntil(m, until, nil)
+}
+
+// resumeUntil is resume carrying `until`'s optional condition. Every resume
+// writes the condition — nil from every other verb — because `until` is
+// one-shot: a condition that outlived its resume would turn some later
+// `continue` into a conditional stop nobody asked for.
+func (s *Session) resumeUntil(m mode, until string, condition *v1.Value) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.mode = m
 	s.until = until
+	s.untilCondition = condition
 }
 
 // announce prints where the run has stopped.
@@ -1023,7 +1121,7 @@ func (s *Session) announce(node *v1.Node) {
 		at = fmt.Sprintf("   t=%s", elapsed)
 	}
 
-	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), NodeKind(node), at)
+	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), v1.NodeKind(node), at)
 }
 
 // Close releases the session's reader.
@@ -1430,26 +1528,38 @@ func (s *Session) prompting(at promptSubject) {
 // above make it true of the withholding: one idea, applied to everything the
 // pause hands out.
 //
-// The cost, stated rather than glossed: one deep copy per pause. It is paid
-// only where the run actually stops — [Session.prompting] is reached from
-// [Session.BeforeStep] only once `shouldStop` says so — and it copies state the
-// run is already holding in memory, so it briefly doubles a bounded thing
-// rather than introducing growth of its own. A stop is the slowest moment this
-// system has; a copy is not what makes it slow.
+// Only the step-output map is copied. The values already recorded in it and the
+// other scope fields are immutable; every scope helper uses copy-on-write for
+// its local maps. Deep-copying those payloads at every pause would make a run
+// with cumulative large outputs pay for all prior bytes once per stop.
 //
 // [promptSubject.extra] is deliberately not copied. It holds the autopsy's bare
 // bindings and nothing at a breakpoint, and an autopsy runs after the engine has
 // finished with the run — so there is no writer to be separated from.
 func frozen(scope *v1.Scope) *v1.Scope {
-	clone, ok := proto.Clone(scope).(*v1.Scope)
-	if !ok {
-		// Unreachable for a generated type, and the answer if it ever were
-		// reached is the pause with nothing to hand out rather than a live map
-		// handed to another goroutine.
+	if scope == nil {
 		return nil
 	}
 
-	return clone
+	var outputs *v1.Workflow_StepOutputs
+	if scope.GetOutputs() != nil {
+		outputs = &v1.Workflow_StepOutputs{
+			StepValues: make(map[string]*v1.Node_Outputs, len(scope.GetOutputs().GetStepValues())),
+		}
+		maps.Copy(outputs.StepValues, scope.GetOutputs().GetStepValues())
+	}
+
+	return &v1.Scope{
+		Outputs:     outputs,
+		Profile:     scope.GetProfile(),
+		Vars:        scope.GetVars(),
+		AmbientVars: scope.GetAmbientVars(),
+		Inputs:      scope.GetInputs(),
+		Identity:    scope.GetIdentity(),
+		Local:       scope.GetLocal(),
+		Address:     scope.GetAddress(),
+		Trigger:     scope.GetTrigger(),
+	}
 }
 
 // sawStep remembers a step id this session has watched go past, so that
@@ -1536,22 +1646,36 @@ func (s *Session) noteStep(id string, state StepState) {
 // never fires anywhere and says so, the second fires where it belongs.
 //
 // This notice is what makes not-stopping safe rather than silent — see
-// [Session.breakpointHolds], which reversed a fail-closed rule on the strength
+// [Session.conditionHolds], which reversed a fail-closed rule on the strength
 // of it.
-func (s *Session) noteDeclined(id string, err error) {
+// clearDeclined forgets a verb's declined-condition notice for id, so a newly
+// accepted command carrying a fresh condition gets its own one notice.
+func (s *Session) clearDeclined(what, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.notedUnbound, what+" "+id)
+}
+
+func (s *Session) noteDeclined(what, id string, err error) {
+	// Keyed by verb and id together: a breakpoint at `body` and an
+	// `until body if ...` are different questions, and one saying it could
+	// not be asked must not spend the other's one notice.
+	key := what + " " + id
+
 	s.mu.Lock()
 	if s.notedUnbound == nil {
 		s.notedUnbound = map[string]struct{}{}
 	}
-	_, already := s.notedUnbound[id]
-	s.notedUnbound[id] = struct{}{}
+	_, already := s.notedUnbound[key]
+	s.notedUnbound[key] = struct{}{}
 	s.mu.Unlock()
 
 	if already {
 		return
 	}
 
-	s.printfTone(ToneWarning, "breakpoint at %s: the condition could not be evaluated here, so the run was not held: %v\n", id, err)
+	s.printfTone(ToneWarning, "%s %s: the condition could not be evaluated here, so the run was not held: %v\n", what, id, err)
 }
 
 // consoleEnded says why the command stream stopped, in words an author can
@@ -1642,6 +1766,26 @@ func (s *Session) SetRedactor(redact func(string) string) {
 	defer s.mu.Unlock()
 
 	s.redact = redact
+}
+
+// RedactText applies the text redactor snapshotted by the current pause, or the
+// session's current redactor while it is not paused. Fronts use it for display
+// text they derive from session identities rather than from [Session.Evaluate].
+func (s *Session) RedactText(text string) string {
+	return applyText(s.snapshotTextRedactor(), text)
+}
+
+// snapshotTextRedactor returns the current pause's text posture as one stable
+// function for a multi-stage diagnostic, or the session posture between pauses.
+func (s *Session) snapshotTextRedactor() func(string) string {
+	s.mu.Lock()
+	redact := s.redact
+	if s.at.scope != nil {
+		redact = s.at.redactText
+	}
+	s.mu.Unlock()
+
+	return redact
 }
 
 // redactText applies the installed redactor, if any.

@@ -73,9 +73,10 @@ func PolicyCases() []Case {
 			ExpectedOutputs: held("always"),
 		},
 		{
-			// An unknown task is a permanent failure, so this also pins that
-			// continue_on_error tolerates a failure without retrying something
-			// that cannot succeed.
+			// A known task with invalid inputs is a permanent failure, so this also
+			// pins that continue_on_error tolerates a failure without retrying
+			// something that cannot succeed. It cannot use an unknown task: task
+			// capability admission now refuses those before any step runs.
 			Name: "continue_on_error records the failure and proceeds",
 			Workflow: &v1.Workflow{
 				Name: "continue-on-error",
@@ -84,7 +85,7 @@ func PolicyCases() []Case {
 						Id:     "flaky",
 						Policy: &v1.StepPolicy{ContinueOnError: true},
 						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name:   "nosuchtask",
+							Name:   "log",
 							Inputs: map[string]*v1.Value{},
 						}},
 					},

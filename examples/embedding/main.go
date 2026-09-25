@@ -169,6 +169,13 @@ func runDurable(workflow *embed.Workflow, tasks *embed.Tasks) error {
 	}, engine.Run, &v1.RunState{
 		Workflow: workflow,
 		Inputs:   v1.NewNamedValues(map[string]any{"name": "embedder"}),
+
+		// The name run-lifecycle metrics may export. Set here because this
+		// program *is* the deployment — the specification came from a file it
+		// chose, not from a request — which is the same test the server applies
+		// before it fills this field in. Left empty, the run still counts; it
+		// just carries no `flowstate.workflow.name`.
+		MetricWorkflowName: workflow.GetName(),
 	})
 	if err != nil {
 		return fmt.Errorf("starting the durable run: %w", err)

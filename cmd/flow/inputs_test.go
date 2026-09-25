@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +298,50 @@ func TestAMissingInputFileNamesTheFlag(t *testing.T) {
 	assert.Contains(t, err.Error()+stderr, "--input-file")
 }
 
+// TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsParsed: the read stops at
+// the bound and the refusal comes before the parse and the Value conversion are
+// built for a document the submission check would only refuse later.
+func TestAnInputFileOverTheSubmissionBoundIsRefusedBeforeItIsParsed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inputs.json")
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte(" "), maxInputFileBytes+1), 0o600))
+
+	_, err := inputsFromFile(path, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--input-file")
+	assert.Contains(t, err.Error(), "nothing past the limit was read",
+		"the refusal has to be the size check's, not the parser's opinion of a megabyte of spaces")
+
+	// The same document, one byte shorter, reaches the parser: it is the parser
+	// that refuses blank text, so the bound is the boundary and not one byte less.
+	require.NoError(t, os.WriteFile(path, bytes.Repeat([]byte(" "), maxInputFileBytes), 0o600))
+	_, err = inputsFromFile(path, nil)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "nothing past the limit was read")
+}
+
+// TestAnInputFileReadStopsAtTheBound asserts the reader is what stops, so a file
+// of any size costs the bound plus one byte and no more.
+func TestAnInputFileReadStopsAtTheBound(t *testing.T) {
+	counter := &countingReader{Reader: bytes.NewReader(bytes.Repeat([]byte("{"), 4*maxInputFileBytes))}
+
+	_, err := readInputsFile("inputs.json", counter)
+	require.Error(t, err)
+	assert.Equal(t, maxInputFileBytes+1, counter.n,
+		"the read went past the bound before refusing, which is the cost the bound exists to cap")
+}
+
+// countingReader counts what was actually read from it.
+type countingReader struct {
+	io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	c.n += n
+	return n, err
+}
+
 // TestDeclaredOutputsAreReportedToAPerson is the other end of the contract. The
 // values are in the document on stdout either way; what this asserts is that
 // somebody at a terminal is told what the run answered without having to read JSON.
@@ -391,7 +437,7 @@ func TestCoercionReadsTheDeclarationRatherThanTheCharacters(t *testing.T) {
 			value, err := coerceInput("x", test.raw, declaration)
 			require.NoError(t, err)
 
-			encoded, err := marshalJSON(value.GetLiteral(), false)
+			encoded, err := v1.MarshalSchemaJSON(value.GetLiteral(), false)
 			require.NoError(t, err)
 			assert.Contains(t, string(encoded), test.want,
 				"%q under a %s declaration became %s", test.raw,
@@ -410,7 +456,7 @@ func TestANestedNumberIsReadAsWritten(t *testing.T) {
 		&v1.InputDeclaration{Name: "x", Type: v1.InputDeclaration_TYPE_STRUCT})
 	require.NoError(t, err)
 
-	encoded, err := marshalJSON(value.GetLiteral(), false)
+	encoded, err := v1.MarshalSchemaJSON(value.GetLiteral(), false)
 	require.NoError(t, err)
 
 	assert.Contains(t, string(encoded), `"int64Value":"2"`, "a whole field became something else")
@@ -425,7 +471,7 @@ func TestANestedNumberIsReadAsWritten(t *testing.T) {
 //
 // Plain JSON rather than a decoded [v1.GetResponse], which is what this used to do,
 // because plain JSON is what the document now carries: `.runOutputs.replicas` is
-// `3`, not `{"literal":{"int64Value":"3"}}`. See rundoc.go. That makes this helper
+// `3`, not `{"literal":{"int64Value":"3"}}`. See pkg/flowstate/v1/rundoc.go. That makes this helper
 // the same thing a `jq` expression is, which is the point of the tests below — an
 // int input that arrived as a string still fails here, and now fails on the
 // difference between `3` and `"3"` rather than on which arm of a union it carried.

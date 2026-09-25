@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package docker.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/docker/gen/docker/v1;dockerv1";
+
+// One task, docker.run, and its surface is a grant name and some parameters.
+//
+// A Flowfile cannot name an image, a mount, a network, a user, a capability or
+// a resource limit. Those are the operator's, written in a grants file the
+// worker hands this plugin; a workflow chooses which of the operator's runs to
+// spend and fills the placeholders that run declares.
+//
+// This is the same shape plugins/ssh takes, and the contract issue #1348 asks
+// of a container task: digest-pinned image identity, explicit argv and
+// environment assembled from nothing, read-only root filesystem and a non-root
+// user by default, mounts resolved from operator grant identifiers rather than
+// from workflow input, network none unless the operator granted wider, every
+// resource bound required and subject to an operator ceiling, and cancellation
+// that stops and removes the container before returning.
+message RunInputs {
+  // Run is the name of a run grant in the operator's grants file. Not an image:
+  // an image in a Flowfile is a Flowfile choosing what code executes.
+  string run = 1;
+
+  // Parameters fill the placeholders the run grant declares. Each value is
+  // checked against that parameter's own pattern before it is used, and each
+  // becomes exactly one element of argv - there is no shell inside the
+  // container, so a value can never become a second command.
+  map<string, string> parameters = 2;
+}
+
+// RunOutputs is what the container did.
+message RunOutputs {
+  // ExitCode is the container's exit status. A status the grant does not count
+  // as successful fails the step, so this is the record of what happened rather
+  // than a value a workflow has to remember to check.
+  int32 exit_code = 1;
+
+  // Stdout and Stderr are the streams, demultiplexed from the daemon's own
+  // framing, each bounded by the grant and each valid UTF-8 or empty.
+  string stdout = 2;
+  string stderr = 3;
+
+  // Truncated reports that the container wrote more than the grant's limit, so
+  // a cut-off stream is never readable as a complete one.
+  bool truncated = 4;
+
+  // Image is the digest-pinned reference that actually ran, echoed so a run's
+  // history records the bytes rather than a name that can move.
+  string image = 5;
+
+  // Run echoes the grant that was spent.
+  string run = 6;
+}

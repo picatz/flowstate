@@ -126,8 +126,15 @@ func decodeHTTPStubResponse(response map[string]*Value) (statusCode int, header 
 		default:
 			known := []string{"body", "headers", "status_code"}
 			sort.Strings(known)
+			// The body is the body however it was meant to be read: a JSON
+			// document is written under body:, as text or as a mapping the
+			// harness encodes, and the step's own parse_json: reads it — the
+			// refusal says so, because `json:` is the key an author reaches
+			// for after a parsed step (#1687).
 			return 0, nil, nil, fmt.Errorf(
-				"the http task's response: takes %s; %q is not one of them",
+				"the http task's response: takes %s; %q is not one of them — a parsed body is "+
+					"still written under body: (as its JSON text, or as a mapping this harness "+
+					"encodes), and the step's own parse_json: reads it",
 				strings.Join(known, ", "), name)
 		}
 	}

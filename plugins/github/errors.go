@@ -35,13 +35,9 @@ func classifyReadError(err error) error {
 // was lost to a network failure may have taken effect on GitHub's side even
 // though this process never saw a response, and retrying blind turns "the
 // comment may or may not exist" into "the comment now exists twice." The sdk
-// available to a plugin has no equivalent of ErrorKindUpstreamUnknown - see
-// this plugin's README, "SDK gaps," which reports that specifically - so
-// this function's job is to make the best available choice, sdk.Failed
-// (permanent, not retried), whenever the failure occurred at a point where
-// GitHub might already have received the request, and to say so plainly in
-// the message an operator will read rather than leaving them to guess from
-// a generic "Failed."
+// exposes that distinction as [sdk.OutcomeUnknown], so this function returns
+// it whenever the failure occurred at a point where GitHub might already have
+// received the request.
 //
 // A failure this function can prove happened *before* anything was sent -
 // this plugin's own input validation, or the egress policy refusing the
@@ -61,7 +57,7 @@ func classifyGitHubError(err error, mutation bool) error {
 
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		if mutation {
-			return sdk.Failed(
+			return sdk.OutcomeUnknown(
 				"the request to GitHub did not finish before the step's deadline; GitHub may or may not " +
 					"have already applied it, so this is not retried automatically - check GitHub before " +
 					"running this step again")
@@ -79,7 +75,7 @@ func classifyGitHubError(err error, mutation bool) error {
 		if wait < 0 {
 			wait = 0
 		}
-		return sdk.Unavailable("GitHub rate limit exceeded; resets in %s", wait)
+		return sdk.UnavailableAfter(wait, "GitHub rate limit exceeded; resets in %s", wait)
 	}
 
 	var abuseErr *github.AbuseRateLimitError
@@ -88,7 +84,7 @@ func classifyGitHubError(err error, mutation bool) error {
 		if abuseErr.RetryAfter != nil {
 			wait = *abuseErr.RetryAfter
 		}
-		return sdk.Unavailable("GitHub's secondary rate limit was hit; retry after %s", wait)
+		return sdk.UnavailableAfter(wait, "GitHub's secondary rate limit was hit; retry after %s", wait)
 	}
 
 	var errResp *github.ErrorResponse
@@ -118,7 +114,7 @@ func classifyGitHubError(err error, mutation bool) error {
 
 		case status >= 500:
 			if mutation {
-				return sdk.Failed(
+				return sdk.OutcomeUnknown(
 					"GitHub returned %d after receiving the request; it may or may not have been "+
 						"applied, so this is not retried automatically: %s", status, msg)
 			}
@@ -126,7 +122,7 @@ func classifyGitHubError(err error, mutation bool) error {
 
 		default:
 			if mutation {
-				return sdk.Failed("GitHub returned %d; outcome unknown, not retried automatically: %s", status, msg)
+				return sdk.OutcomeUnknown("GitHub returned %d; outcome unknown, not retried automatically: %s", status, msg)
 			}
 			return sdk.Failed("GitHub returned %d: %s", status, msg)
 		}
@@ -142,7 +138,7 @@ func classifyGitHubError(err error, mutation bool) error {
 
 	if isNetworkUnavailable(err) {
 		if mutation {
-			return sdk.Failed(
+			return sdk.OutcomeUnknown(
 				"could not reach GitHub; whether the request arrived before the connection failed "+
 					"cannot be determined here, so this is not retried automatically: %v", err)
 		}
@@ -150,7 +146,7 @@ func classifyGitHubError(err error, mutation bool) error {
 	}
 
 	if mutation {
-		return sdk.Failed("GitHub request failed in a way this plugin does not recognize; not retried automatically: %v", err)
+		return sdk.OutcomeUnknown("GitHub request failed in a way this plugin does not recognize; not retried automatically: %v", err)
 	}
 	return sdk.Failed("%v", err)
 }

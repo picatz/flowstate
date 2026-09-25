@@ -105,7 +105,7 @@ func TestIdentityIsTheCallerAndWorkloadIsTheAssertion(t *testing.T) {
 
 			vars := assumeVars("aws-prod", minted, "https://as.example.com", identity, ref)
 
-			matched, err := rules.allow[0].eval(t.Context(), vars)
+			matched, err := rules.Allow[0].Match(t.Context(), vars)
 			if err != nil {
 				t.Fatalf("evaluating %q: %v", test.rule, err)
 			}

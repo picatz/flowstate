@@ -25,6 +25,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -916,4 +917,19 @@ func TestTheRunGoroutinePublishesHoweverItEnds(t *testing.T) {
 				"the run ended by %s and the case did not say so", testCase.name)
 		})
 	}
+}
+
+// TestTheEndOfARunIsRecognisedByIdentityNotByText is #1671's negative case: a
+// failure that happens to quote the sentinel's sentence is a failure, and a
+// wrapped sentinel is still the end of the run. Before the change the first
+// ended the walk as a success.
+func TestTheEndOfARunIsRecognisedByIdentityNotByText(t *testing.T) {
+	t.Parallel()
+
+	quoting := fmt.Errorf("the driver panicked while reporting %q", flowdebug.ErrRunOver.Error())
+	assert.False(t, isRunOver(quoting), "an unrelated error that quotes the sentinel was read as the end of the run")
+
+	assert.True(t, isRunOver(fmt.Errorf("moving: %w", flowdebug.ErrRunOver)), "a wrapped sentinel was not recognised")
+	assert.True(t, isRunOver(flowdebug.ErrRunOver))
+	assert.False(t, isRunOver(nil))
 }

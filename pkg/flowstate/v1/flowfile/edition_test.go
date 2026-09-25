@@ -81,6 +81,11 @@ func TestEditionFailsClosed(t *testing.T) {
 			says: `"2026.10"`,
 		},
 		{
+			name: "a v-prefix typo on the first edition suggests the correction",
+			line: `edition: "v2026.1"`,
+			says: `did you mean "2026.1"`,
+		},
+		{
 			name: "a value that is not an edition at all",
 			line: "edition: true",
 			says: "must be written as",

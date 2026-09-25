@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -181,6 +183,48 @@ func TestTheWorkerTakesThePluginFlags(t *testing.T) {
 				"`flow %s` does not take --%s, so a deployment cannot configure it", command, name)
 		}
 	}
+}
+
+func TestOldSQLPluginManifestIsRefusedBeforeTaskRegistration(t *testing.T) {
+	old := &pluginv1.PluginManifest{
+		Name: "sql",
+		Tasks: []*pluginv1.TaskManifest{
+			{Name: "query", SecretInputs: []string{"dsn"}},
+			{Name: "exec", SecretInputs: []string{"dsn"}},
+		},
+	}
+
+	err := checkSQLManifestSecurityContract(old)
+	require.ErrorContains(t, err, "upgrade flowstate-plugin-sql together with the host")
+
+	current := &pluginv1.PluginManifest{
+		Name: "sql",
+		Tasks: []*pluginv1.TaskManifest{
+			{Name: "query", SecretInputs: []string{"dsn"}, RequiredSecretInputs: []string{"dsn"}},
+			{Name: "exec", SecretInputs: []string{"dsn"}, RequiredSecretInputs: []string{"dsn"}},
+		},
+	}
+	require.NoError(t, checkSQLManifestSecurityContract(current))
+
+	// Other protocol-v3 plugins remain compatible; this coordinated-upgrade
+	// requirement belongs only to SQL's newly privileged destination path.
+	require.NoError(t, checkSQLManifestSecurityContract(&pluginv1.PluginManifest{Name: "git"}))
+}
+
+func TestLegacyPluginSecretContractsRequireHostResolution(t *testing.T) {
+	for _, name := range []string{"git", "vcs", "github"} {
+		t.Run(name, func(t *testing.T) {
+			old := &pluginv1.PluginManifest{Name: name, Tasks: []*pluginv1.TaskManifest{{Name: "task"}}}
+			require.ErrorContains(t, checkLegacyPluginSecretManifest(old), "upgrade flowstate-plugin-"+name)
+
+			current := &pluginv1.PluginManifest{Name: name, Tasks: []*pluginv1.TaskManifest{{
+				Name: "task", SecretInputs: []string{"token"}, RequiredSecretInputs: []string{"token"},
+			}}}
+			require.NoError(t, checkLegacyPluginSecretManifest(current))
+		})
+	}
+
+	require.NoError(t, checkLegacyPluginSecretManifest(&pluginv1.PluginManifest{Name: "third-party"}))
 }
 
 // TestTheLanguageServerTakesThePluginFlags is the same wiring check for the
@@ -410,4 +454,43 @@ func TestPluginCatalogRendersTheClaimsWithSecurityWeight(t *testing.T) {
 	quietSection := rendered[strings.Index(rendered, "quiet_task"):]
 	assert.NotContains(t, quietSection, "accepts a secret in:",
 		"quiet_task declares no secret_inputs and the rendering invented one")
+}
+
+// TestPluginMaxCallTimeoutIsReachableFromAShippedBinary is the claim
+// [plugin.Config.MaxCallTimeout] makes, held to: the ceiling is one this
+// deployment imposes on work an author asked for, and its documentation says an
+// operator may raise it. Read nowhere by the shipped host, that sentence would
+// be false and an operator whose plugin legitimately runs longer than the
+// default would have nothing to do about it.
+//
+// The refusals are the other half. An operator who wrote this meant to change
+// the ceiling, so a value that cannot mean one is refused rather than ignored:
+// silently keeping the default would leave them believing a longer call is
+// allowed when it is not.
+func TestPluginMaxCallTimeoutIsReachableFromAShippedBinary(t *testing.T) {
+	dir := t.TempDir()
+
+	for name, raw := range map[string]string{
+		"not a duration": "soon",
+		"zero":           "0s",
+		"negative":       "-1m",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(pluginMaxCallTimeoutEnv, raw)
+
+			_, err := pluginFlags{dirs: []string{dir}}.host(slog.New(slog.DiscardHandler))
+			require.Error(t, err, "a value that cannot mean a ceiling was accepted")
+			require.Contains(t, err.Error(), pluginMaxCallTimeoutEnv,
+				"the refusal must name the variable an operator has to fix")
+		})
+	}
+
+	// And a value that does mean one is taken, rather than refused or ignored.
+	t.Run("a raised ceiling", func(t *testing.T) {
+		t.Setenv(pluginMaxCallTimeoutEnv, "4h")
+
+		host, err := pluginFlags{dirs: []string{dir}}.host(slog.New(slog.DiscardHandler))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = host.Close(t.Context()) })
+	})
 }
