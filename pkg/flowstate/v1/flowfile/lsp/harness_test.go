@@ -224,11 +224,6 @@ func (c *client) changeNoWait(uri, text string, version int) {
 	}))
 }
 
-// serverDoc returns the document the server currently holds for a URI.
-func (c *client) serverDoc(uri string) (*document, bool) {
-	return c.server.docs.get(lsp.DocumentURI(uri))
-}
-
 // change sends a full-text didChange and waits for the diagnostics it triggers.
 func (c *client) change(uri, text string, version int) lsp.PublishDiagnosticsParams {
 	c.t.Helper()
