@@ -1651,7 +1651,19 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 					// A second record for a second decision, for the same
 					// reason the retry arm above records one: this response
 					// names a run this call did not itself start.
-					if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+					//
+					// Written under a context of its own — the caller's
+					// values, none of their cancellation, bounded by
+					// [reusedRunAuditTimeout] — for [recordContext]'s reason
+					// (webhook.go): the decision it describes already
+					// happened by the time this runs, and a caller who left
+					// during the commitment [claimAfterTerminatingOther] just
+					// made must not be why a required record is never
+					// written.
+					auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reusedRunAuditTimeout)
+					err := s.auditAllow(auditCtx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID)
+					cancel()
+					if err != nil {
 						return nil, err
 					}
 				}

@@ -233,6 +233,17 @@ const claimAfterTerminatingOtherTimeout = 30 * time.Second
 // still fit inside [claimAfterTerminatingOtherTimeout].
 const claimStartRetryDelay = 200 * time.Millisecond
 
+// reusedRunAuditTimeout bounds the second audit record
+// [FlowstateServer.Run] writes when [FlowstateServer.claimAfterTerminatingOther]
+// answers with a discovered run rather than one this call started — the
+// same after-the-fact commitment [recordContext] (webhook.go) makes for a
+// post-answer record, and for the identical reason: the decision it
+// describes already happened, so a caller who left in the meantime must not
+// be the reason a required record is never written. Short, because writing
+// one record is not the terminate-and-claim commitment above and does not
+// need its bound.
+const reusedRunAuditTimeout = 5 * time.Second
+
 // claimAfterTerminatingOther is `on_conflict: terminate_other`'s reissue for
 // a request-addressed submission whose probe found an incumbent that is not
 // its own retry — #1966.
@@ -279,30 +290,38 @@ const claimStartRetryDelay = 200 * time.Millisecond
 //
 // # Once committed, this does not give up because the caller did
 //
-// The old, single-call TERMINATE_EXISTING reissue was atomic: Temporal itself
-// guaranteed the id was never left holding nothing. Terminating a specific
-// run and then claiming the id separately gives that up unless something
-// here puts it back — a caller context cancelled between the two (a load
-// balancer resetting the connection, an operator's Ctrl-C, a client-side
-// deadline) must not leave the id terminated with nothing to replace it,
-// which would be a strictly worse outcome than the race this function
-// exists to close. So every terminate-and-claim round after the first line
-// of this function runs under a context of this call's own — the caller's
-// values, none of their cancellation, bounded by
-// [claimAfterTerminatingOtherTimeout] so an unreachable cluster still gives
-// up rather than pinning the goroutine forever — and [claimStart] retries a
-// transient failure to claim within that bound rather than surfacing the
-// first one. See #2061's review.
+// The old, single-call TERMINATE_EXISTING reissue was very likely atomic
+// server-side: one Temporal API call, so nothing this server did could
+// observe it half-applied. Terminating a specific run and then claiming the
+// id as two separate round trips gives that up unless something here puts it
+// back — a caller context cancelled between the two (a load balancer
+// resetting the connection, an operator's Ctrl-C, a client-side deadline)
+// must not leave the id terminated with nothing to replace it, which would
+// be a strictly worse outcome than the race this function exists to close.
+// So every terminate-and-claim round after the first line of this function
+// runs under a context of this call's own — the caller's values, none of
+// their cancellation, bounded by [claimAfterTerminatingOtherTimeout] so an
+// unreachable cluster still gives up rather than pinning the goroutine
+// forever — and [claimStart] retries a transient failure to claim within
+// that bound rather than surfacing the first one. See #2061's review.
 //
-// What that does not cover: this server's own process ending between the
-// terminate below and the claim it commits to. No context, caller-scoped or
-// not, survives that — it is the one window nothing server-side can close,
-// the same residual risk `on_conflict: terminate_other`'s old single-call
-// form already carried between *its* two effects (the terminate and the
-// start Temporal performs atomically, but which a crash mid-flight on
-// Temporal's own side could still separate). It is bounded to one RPC's
-// duration rather than left open-ended, and `flow list` finds the id simply
-// empty rather than corrupted if it is ever hit.
+// # A window this split genuinely opened, not one it inherited
+//
+// Splitting one atomic call into two opens a real window in which the id
+// this call vacated can sit empty rather than holding a replacement — say so
+// plainly, rather than describing it as a cost the old form already carried,
+// which it very likely did not. It has three triggers, all bounded to at
+// most [claimAfterTerminatingOtherTimeout]: this server's own process ending
+// between the terminate below and the claim it commits to (no context,
+// caller-scoped or not, survives that); the commit deadline itself elapsing
+// before a claim succeeds against a cluster that stays unreachable or
+// overloaded the whole time; and an ambiguous terminate outcome (below)
+// followed by a claim that fails for a reason retrying cannot fix. `flow
+// list` finds the id simply empty in every case, never corrupted — and the
+// recovery is the same one `request_id` already promises: retry the request
+// with the same id. A retry that lands after the window closed either finds
+// the id still empty and claims it fresh, or finds whichever run last
+// claimed it and is told so — never a run it did not ask for.
 //
 // submission must not be nil: this is reachable only from the request-id arm
 // of [FlowstateServer.Run], which is the one case that can produce the
@@ -326,6 +345,14 @@ func (s *FlowstateServer) claimAfterTerminatingOther(
 			"claimAfterTerminatingOther: called with no submission recorded, which should be unreachable under on_conflict: terminate_other"))
 	}
 
+	// Checked against the caller's own context, before anything below stops
+	// listening to it: nothing has been terminated yet, so a caller already
+	// gone is refused the ordinary way rather than paying for a bounded
+	// commitment nobody is waiting to hear the answer to.
+	if err := ctx.Err(); err != nil {
+		return nil, connect.NewError(contextCode(err), err)
+	}
+
 	commit, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimAfterTerminatingOtherTimeout)
 	defer cancel()
 
@@ -335,10 +362,22 @@ func (s *FlowstateServer) claimAfterTerminatingOther(
 			// Already gone — terminated by a racing sibling's own round, or
 			// finished on its own between the probe and here — is success
 			// for this call's purpose: the id must not still be held by the
-			// run it observed, and it is not. Anything else is this
-			// server's own failure to report as one.
+			// run it observed, and it is not.
+			//
+			// Anything else this call cannot tell apart from "Temporal
+			// applied it and the answer never arrived" — a deadline the
+			// per-call timeout hit well inside this function's own bound, a
+			// dropped response — is not treated as failure either: the
+			// claim below is safe to attempt regardless, because FAIL can
+			// only discover what still holds the id, never destroy it, so a
+			// terminate that actually landed is confirmed by that claim
+			// succeeding and one that did not is confirmed by the loop
+			// finding the same incumbent again. Only a terminatePermanentlyFailed
+			// error — one the terminate call itself refused, proving it
+			// never reached Temporal at all — is worth reporting as this
+			// server's own failure rather than attempting the claim anyway.
 			var notFound *serviceerror.NotFound
-			if !errors.As(err, &notFound) {
+			if !errors.As(err, &notFound) && terminatePermanentlyFailed(err) {
 				return nil, connect.NewError(connect.CodeInternal,
 					fmt.Errorf("terminating the run this submission replaces: %w", err))
 			}
@@ -392,6 +431,13 @@ func (s *FlowstateServer) claimAfterTerminatingOther(
 // answers [serviceerror.WorkflowExecutionAlreadyStarted] is returned
 // immediately without retrying — it is the expected outcome when a sibling
 // claimed the id first, not a failure to recover from.
+//
+// Only [claimStartTransient] is retried. Everything else — a permission
+// denied, an invalid argument, a namespace this deployment no longer routes,
+// a specification Temporal's own codec rejects — is a permanent property of
+// this request, not of the moment it was asked in, and retrying it for the
+// better part of [claimAfterTerminatingOtherTimeout] would only make a
+// request that was always going to fail take thirty seconds longer to.
 func claimStart(ctx context.Context, temporal client.Client, options client.StartWorkflowOptions, state *v1.RunState) (client.WorkflowRun, error) {
 	for {
 		run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
@@ -404,12 +450,47 @@ func claimStart(ctx context.Context, temporal client.Client, options client.Star
 			return nil, err
 		}
 
+		if !claimStartTransient(err) {
+			return nil, err
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, err
 		case <-time.After(claimStartRetryDelay):
 		}
 	}
+}
+
+// terminatePermanentlyFailed reports whether err proves a [client.Client.TerminateWorkflow]
+// call was refused before Temporal ever acted on it — a permission this
+// server does not hold, or an argument the call itself was malformed enough
+// to reject — as opposed to an ambiguous outcome (the per-call deadline
+// elapsing, a dropped response) where Temporal may have applied the
+// terminate anyway. Only a permanent failure is worth reporting as this
+// server's own error; an ambiguous one is resolved by attempting the claim
+// that follows, which is safe either way. See
+// [FlowstateServer.claimAfterTerminatingOther]'s own doc for why.
+func terminatePermanentlyFailed(err error) bool {
+	var permissionDenied *serviceerror.PermissionDenied
+	var invalidArgument *serviceerror.InvalidArgument
+	var namespaceNotFound *serviceerror.NamespaceNotFound
+
+	return errors.As(err, &permissionDenied) ||
+		errors.As(err, &invalidArgument) ||
+		errors.As(err, &namespaceNotFound)
+}
+
+// claimStartTransient reports whether err is worth [claimStart] retrying: a
+// deadline that elapsed on one attempt, or the cluster briefly unavailable —
+// the two outcomes the SDK's own transport-level retry does not already
+// absorb for a unary call, and the ones a moment later commonly resolves.
+func claimStartTransient(err error) bool {
+	var deadlineExceeded *serviceerror.DeadlineExceeded
+	var unavailable *serviceerror.Unavailable
+
+	return errors.As(err, &deadlineExceeded) || errors.As(err, &unavailable) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // memoString reads one string-valued memo field the way [memoStarter] reads

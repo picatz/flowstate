@@ -184,14 +184,17 @@ message RunRequest {
   // # Concurrent submissions under `terminate_other`
   //
   // Two submissions racing this field under a `concurrency:` block whose
-  // `on_conflict:` is `terminate_other` still answer with one run between
-  // them — identical submissions converge on whichever wins the race, and a
-  // genuinely different one still replaces what it found, exactly as a
-  // sequential retry would. Resolving that without Temporal's own
-  // compare-and-terminate primitive costs a small, bounded number of extra
-  // rounds when the collision is real; a submission still displacing another
-  // after that bound is refused `Aborted` rather than left retrying forever,
-  // which a caller sees as a request to try again rather than as an
+  // `on_conflict:` is `terminate_other` still leave exactly one live run at
+  // the id, whatever order their reissues interleave in — identical
+  // submissions converge on whichever wins the race and are told so
+  // (`reused`), and a genuinely different one still replaces what it found,
+  // exactly as a sequential retry would; two different submissions are never
+  // joined onto one run between them, only ever left racing to be the one
+  // that survives. Resolving that without Temporal's own compare-and-terminate
+  // primitive costs a small, bounded number of extra rounds when the
+  // collision is real; a submission still displacing another after that
+  // bound is refused `Aborted` rather than left retrying forever, which a
+  // caller sees as a request to try again rather than as an
   // idempotency-key failure.
   //
   // # Grammar

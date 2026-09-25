@@ -5601,12 +5601,14 @@ started the run it is reporting. Every fact this server states is one it establi
 `terminate_other` is the one arm two concurrent submissions carrying a
 `request_id` can race, since replacing what is there is the one thing this
 key does that is not simply "answer from what is already there." The server
-still answers both callers with one run — an identical submission converges
-on whichever wins the race rather than each destroying the other's start,
-and a genuinely different one still replaces the incumbent as if it had
-arrived second. A submission that keeps losing a live race past a small,
-bounded number of rounds is refused `Aborted` rather than retried forever;
-retrying the request answers it (#1966).
+still leaves exactly one live run at the id — an identical submission
+converges on whichever wins the race rather than each destroying the
+other's start, and a genuinely different one still replaces the incumbent as
+if it had arrived second; two different submissions are never joined onto
+one run between them, only ever left racing to be the one that survives. A
+submission that keeps losing a live race past a small, bounded number of
+rounds is refused `Aborted` rather than retried forever; retrying the
+request answers it (#1966).
 
 ### Submit-time, which is why both drivers agree
 
