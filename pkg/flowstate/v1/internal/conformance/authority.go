@@ -308,67 +308,59 @@ func AuthorityDenialCases() []AuthorityCase {
 
 	return []AuthorityCase{
 		{
-			Case: Case{
-				Name: "a bearer reference fails closed with no runtime configured",
-				Workflow: &v1.Workflow{
-					Name:  "authority-fail-closed-bearer",
-					Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
-						`resolving bearer reference fixture-secret:API_TOKEN: ` +
-						`secret access is not configured on this worker`),
-				}},
+			Name: "a bearer reference fails closed with no runtime configured",
+			Workflow: &v1.Workflow{
+				Name:  "authority-fail-closed-bearer",
+				Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+					`resolving bearer reference fixture-secret:API_TOKEN: ` +
+					`secret access is not configured on this worker`),
+			}},
 			Authority: Authority{NoRuntime: true},
 		},
 		{
-			Case: Case{
-				Name: "a credential target fails closed with no runtime configured",
-				Workflow: &v1.Workflow{
-					Name:  "authority-fail-closed-credential",
-					Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
-						`authorizing federation target "partner-api": ` +
-						`workload identity federation is not configured on this worker`),
-				}},
+			Name: "a credential target fails closed with no runtime configured",
+			Workflow: &v1.Workflow{
+				Name:  "authority-fail-closed-credential",
+				Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+					`authorizing federation target "partner-api": ` +
+					`workload identity federation is not configured on this worker`),
+			}},
 			Authority: Authority{NoRuntime: true},
 		},
 		{
-			Case: Case{
-				Name: "a credential target fails closed when secrets are configured but federation is not",
-				Workflow: &v1.Workflow{
-					Name:  "authority-fail-closed-broker",
-					Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
-						`authorizing federation target "partner-api": ` +
-						`workload identity federation is not configured on this worker`),
-				}},
+			Name: "a credential target fails closed when secrets are configured but federation is not",
+			Workflow: &v1.Workflow{
+				Name:  "authority-fail-closed-broker",
+				Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+					`authorizing federation target "partner-api": ` +
+					`workload identity federation is not configured on this worker`),
+			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "unused", Allow: []string{"true"}, Identity: identity,
 			},
 		},
 		{
-			Case: Case{
-				Name: "a deny rule refuses a bearer reference",
-				Workflow: &v1.Workflow{
-					Name:  "authority-denied-bearer",
-					Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
-						`resolving bearer reference fixture-secret:API_TOKEN: ` +
-						`auth: denied by secret access policy: no rule permits workload ` +
-						`"flowstate:acme-tenant/_default/authority-denied-bearer/read" ` +
-						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
-				}},
+			Name: "a deny rule refuses a bearer reference",
+			Workflow: &v1.Workflow{
+				Name:  "authority-denied-bearer",
+				Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+					`resolving bearer reference fixture-secret:API_TOKEN: ` +
+					`auth: denied by secret access policy: no rule permits workload ` +
+					`"flowstate:acme-tenant/_default/authority-denied-bearer/read" ` +
+					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
+			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",
 				Allow: []string{"true"}, Deny: []string{"true"}, Identity: identity,
@@ -380,35 +372,31 @@ func AuthorityDenialCases() []AuthorityCase {
 			// activity through the same authority, so a worker with none refuses
 			// it in the same words — with the header named, because a mapping can
 			// hold several and an author needs to know which.
-			Case: Case{
-				Name: "a header reference fails closed with no runtime configured",
-				Workflow: &v1.Workflow{
-					Name:  "authority-fail-closed-header",
-					Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
-						`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
-						`secret access is not configured on this worker`),
-				}},
+			Name: "a header reference fails closed with no runtime configured",
+			Workflow: &v1.Workflow{
+				Name:  "authority-fail-closed-header",
+				Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+					`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
+					`secret access is not configured on this worker`),
+			}},
 			Authority: Authority{NoRuntime: true},
 		},
 		{
-			Case: Case{
-				Name: "a deny rule refuses a header reference",
-				Workflow: &v1.Workflow{
-					Name:  "authority-denied-header",
-					Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
-						`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
-						`auth: denied by secret access policy: no rule permits workload ` +
-						`"flowstate:acme-tenant/_default/authority-denied-header/read" ` +
-						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
-				}},
+			Name: "a deny rule refuses a header reference",
+			Workflow: &v1.Workflow{
+				Name:  "authority-denied-header",
+				Steps: []*v1.Node{headerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+					`header "Authorization": resolving reference fixture-secret:API_TOKEN: ` +
+					`auth: denied by secret access policy: no rule permits workload ` +
+					`"flowstate:acme-tenant/_default/authority-denied-header/read" ` +
+					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
+			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",
 				Allow: []string{"true"}, Deny: []string{"true"}, Identity: identity,
@@ -420,20 +408,18 @@ func AuthorityDenialCases() []AuthorityCase {
 			// Authority.ProviderCalls never advanced past zero — proof the
 			// provider was never consulted, not merely that the eventual
 			// error text reads as if it wasn't.
-			Case: Case{
-				Name: "policy runs before the provider is ever consulted",
-				Workflow: &v1.Workflow{
-					Name:  "authority-denied-ordering",
-					Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
-				},
-				ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
-					"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
-						`resolving bearer reference fixture-secret:API_TOKEN: ` +
-						`auth: denied by secret access policy: no rule permits workload ` +
-						`"flowstate:acme-tenant/_default/authority-denied-ordering/read" ` +
-						`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
-				}},
+			Name: "policy runs before the provider is ever consulted",
+			Workflow: &v1.Workflow{
+				Name:  "authority-denied-ordering",
+				Steps: []*v1.Node{bearerSecretStep("read", unreachable, "fixture-secret", "API_TOKEN")},
 			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(`task "http" failed (PolicyDenied): ` +
+					`resolving bearer reference fixture-secret:API_TOKEN: ` +
+					`auth: denied by secret access policy: no rule permits workload ` +
+					`"flowstate:acme-tenant/_default/authority-denied-ordering/read" ` +
+					`in namespace "acme-tenant" to read fixture-secret:API_TOKEN (deny rule: true)`),
+			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "must-not-resolve",
 				Allow: []string{"true"}, Deny: []string{"true"}, Identity: identity,
@@ -498,24 +484,22 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 
 	return []AuthorityCase{
 		{
-			Case: Case{
-				Name: "a resolved bearer secret is contained end to end",
-				Workflow: &v1.Workflow{
-					Name: "authority-contained-bearer",
-					Steps: []*v1.Node{{
-						Id: "call",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "http",
-							Inputs: map[string]*v1.Value{
-								"url":     v1.NewLiteral(baseURL + "/reflect-authorization"),
-								"bearer":  {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "fixture-secret", Name: "API_TOKEN"}}},
-								"outputs": reflectOutputs,
-							},
-						}},
+			Name: "a resolved bearer secret is contained end to end",
+			Workflow: &v1.Workflow{
+				Name: "authority-contained-bearer",
+				Steps: []*v1.Node{{
+					Id: "call",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url":     v1.NewLiteral(baseURL + "/reflect-authorization"),
+							"bearer":  {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "fixture-secret", Name: "API_TOKEN"}}},
+							"outputs": reflectOutputs,
+						},
 					}},
-				},
-				ExpectedOutputs: bearerRedacted,
+				}},
 			},
+			ExpectedOutputs: bearerRedacted,
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: bearerMaterial,
 				Allow: []string{"true"}, Identity: identity,
@@ -531,27 +515,25 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 			// outlives it. What comes back is the material the peer reflected,
 			// redacted — and with no "Bearer " prefix, because this header carries
 			// the credential exactly as the author wrote it.
-			Case: Case{
-				Name: "a secret nested in a header is contained end to end",
-				Workflow: &v1.Workflow{
-					Name: "authority-contained-header",
-					Steps: []*v1.Node{{
-						Id: "call",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "http",
-							Inputs: map[string]*v1.Value{
-								"url": v1.NewLiteral(baseURL + "/reflect-authorization"),
-								"headers": v1.NewStructureMap(map[string]*v1.Value{
-									"Accept":        v1.NewLiteral("application/json"),
-									"Authorization": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "fixture-secret", Name: "API_TOKEN"}}},
-								}),
-								"outputs": reflectOutputs,
-							},
-						}},
+			Name: "a secret nested in a header is contained end to end",
+			Workflow: &v1.Workflow{
+				Name: "authority-contained-header",
+				Steps: []*v1.Node{{
+					Id: "call",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url": v1.NewLiteral(baseURL + "/reflect-authorization"),
+							"headers": v1.NewStructureMap(map[string]*v1.Value{
+								"Accept":        v1.NewLiteral("application/json"),
+								"Authorization": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "fixture-secret", Name: "API_TOKEN"}}},
+							}),
+							"outputs": reflectOutputs,
+						},
 					}},
-				},
-				ExpectedOutputs: headerRedacted,
+				}},
 			},
+			ExpectedOutputs: headerRedacted,
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: headerMaterial,
 				Allow: []string{"true"}, Identity: identity,
@@ -559,24 +541,22 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 			ContainmentValue: headerMaterial,
 		},
 		{
-			Case: Case{
-				Name: "a minted JIT credential is contained end to end",
-				Workflow: &v1.Workflow{
-					Name: "authority-contained-jit",
-					Steps: []*v1.Node{{
-						Id: "call",
-						Kind: &v1.Node_Task{Task: &v1.Task{
-							Name: "http",
-							Inputs: map[string]*v1.Value{
-								"url":        v1.NewLiteral(baseURL + "/reflect-authorization"),
-								"credential": v1.NewLiteral("partner-api"),
-								"outputs":    reflectOutputs,
-							},
-						}},
+			Name: "a minted JIT credential is contained end to end",
+			Workflow: &v1.Workflow{
+				Name: "authority-contained-jit",
+				Steps: []*v1.Node{{
+					Id: "call",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url":        v1.NewLiteral(baseURL + "/reflect-authorization"),
+							"credential": v1.NewLiteral("partner-api"),
+							"outputs":    reflectOutputs,
+						},
 					}},
-				},
-				ExpectedOutputs: jitRedacted,
+				}},
 			},
+			ExpectedOutputs: jitRedacted,
 			Authority: Authority{
 				Identity:   identity,
 				Federation: &Federation{Target: "partner-api", Token: jitMaterial},

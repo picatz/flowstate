@@ -32,7 +32,7 @@ import (
 // default registry and says in its own doc that anything else "holds tasks
 // nothing will ever look up".
 func TestPluginTaskInputsLocal(t *testing.T) {
-	require.NoError(t, v1.DefaultRegistry().Register(conformance.PluginTaskInputsTaskDef()))
+	require.NoError(t, v1.DefaultRegistry().Replace(conformance.PluginTaskInputsTaskDef()))
 
 	for _, test := range conformance.PluginTaskInputCases() {
 		t.Run(test.Name, func(t *testing.T) {

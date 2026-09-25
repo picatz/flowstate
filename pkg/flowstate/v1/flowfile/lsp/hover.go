@@ -690,9 +690,9 @@ func loopStateDoc(name string, loop *parsedStep) string {
 // blocksAround returns the blocks enclosing a step, nearest first.
 func blocksAround(from *parsedStep) []*parsedStep {
 	var out []*parsedStep
-	for i := len(from.scope) - 1; i >= 0; i-- {
-		if from.scope[i].block != nil {
-			out = append(out, from.scope[i].block)
+	for _, v := range slices.Backward(from.scope) {
+		if v.block != nil {
+			out = append(out, v.block)
 		}
 	}
 

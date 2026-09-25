@@ -92,6 +92,7 @@ updates:
       - /plugins/git
       - /plugins/github
       - /plugins/sql
+      - /plugins/slack
       - /plugins/vcs
     schedule:
       interval: weekly
@@ -106,6 +107,25 @@ updates:
       semver-patch-days: 3
     groups:
       plugin-modules:
+        patterns:
+          - "*"
+
+  # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite
+  # — pinned as `tool` directives in their own module so their graphs stay out
+  # of the root's (#1729). Before this each was a `go run` of a spelled-out version in eleven
+  # places, which Dependabot could not see and go.sum did not record; now a
+  # bump is a one-line go.mod change proposed here, with the same cooldowns.
+  - package-ecosystem: gomod
+    directory: /tools/external
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      external-tools:
         patterns:
           - "*"
 

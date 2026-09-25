@@ -1,0 +1,38 @@
+edition: v2026.3
+tests:
+  - name: an authorized approver is recorded in the notification thread
+    workflow: ./approval.yaml
+    inputs:
+      channel: C123APPROVAL
+      request_message_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+      outcome_message_key: 018f0e6c-80aa-7550-972a-7bc69716cc3b
+      change: deploy api v1.4.2 to production
+      expected_approver: sre-lead@example.com
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    starter:
+      subject: release-requester@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: change-approved
+        payload:
+          approved: true
+        sender:
+          subject: sre-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    stubs:
+      - step: notify
+        returns:
+          channel: C123APPROVAL
+          ts: "1503435956.000247"
+      - step: report
+        returns:
+          channel: C123APPROVAL
+          ts: "1503435957.000248"
+    expect:
+      ran: [notify, approval, approval_decision, outcome, outcome_text, report]
+      outputs:
+        approved: true
+        request_message_ts: "1503435956.000247"

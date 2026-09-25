@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -437,9 +438,7 @@ func UndoRegistrationFor(ctx context.Context, node *Node, scope *Scope, outputs 
 // output into the run for a step whose failure is still being decided.
 func withSelfOutputs(scope *Scope, id string, outputs *Node_Outputs) *Workflow_StepOutputs {
 	merged := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-	for k, v := range scope.GetOutputs().GetStepValues() {
-		merged.StepValues[k] = v
-	}
+	maps.Copy(merged.StepValues, scope.GetOutputs().GetStepValues())
 	if outputs != nil {
 		merged.StepValues[id] = outputs
 	}

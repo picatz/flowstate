@@ -1,18 +1,20 @@
 package plugin
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"maps"
 	"path/filepath"
 	"slices"
 	"time"
-	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -36,6 +38,22 @@ const (
 	// the older "shorter of the two wins" rule was wrong in the direction a
 	// step's `timeout:` takes.
 	DefaultCallTimeout = 30 * time.Second
+
+	// DefaultMaxCallTimeout is the ceiling a caller's own deadline is held
+	// beneath, for a call that brought one.
+	//
+	// [DefaultCallTimeout] cannot serve as that ceiling: a step's `timeout:`
+	// legitimately exceeds it — a codex turn takes minutes — which is why
+	// #1130 stopped stacking it beneath the caller's deadline. But a deadline
+	// that is *only* the caller's is a host resource bound the workflow author
+	// sets, and `StepPolicy.timeout` is constrained to be positive and nothing
+	// else, so a submitted workflow could hold a plugin call and the activity
+	// slot under it open for as long as it liked (#1119).
+	//
+	// So the ceiling is its own number, far above any real step and far below
+	// forever. An operator whose plugin legitimately runs longer raises
+	// [Config.MaxCallTimeout]; nobody submitting a workflow can.
+	DefaultMaxCallTimeout = time.Hour
 
 	// DefaultHealthTimeout bounds one health poll. It is short because a health
 	// check that needs a long time to answer has already answered.
@@ -187,6 +205,36 @@ const (
 	stderrRateWindow = time.Minute
 )
 
+// MaxEgressPolicyBytes bounds [Config.EgressPolicy]: 64 KiB of raw policy,
+// before the base64 encoding that puts it in the launch environment.
+//
+// Exported for the same reason the Default constants above are, and for one
+// more: the CLI reading an operator's --egress-policy file bounds it with this
+// (cmd/flow/egress.go), so a file that would fail here is refused where the
+// operator can see which file it was, and the two cannot come to mean two
+// different sizes. The reasoning behind the number — MAX_ARG_STRLEN, and why a
+// policy is configuration rather than a data transport — is on
+// protocol.MaxEgressPolicyBytes, which is where the launch environment's own
+// bounds live.
+const MaxEgressPolicyBytes = protocol.MaxEgressPolicyBytes
+
+// MaxPluginEnvBytes bounds what one plugin's [Config.EnvByPlugin] entry may
+// carry into that plugin's launch environment, counted the way the kernel
+// counts it: every entry's bytes plus the NUL that terminates each one.
+//
+// 64 KiB is generous for what belongs in a plugin's environment — an endpoint,
+// a region, a path to a file the operator wrote — and deliberately too small
+// for what does not. Configuration that outgrows it is a document, and a
+// document belongs in a file whose *path* is the variable; that indirection is
+// also what keeps the value out of /proc/<pid>/environ, where anything running
+// as this user can read it.
+//
+// Refused at host construction rather than discovered at exec(2), for the
+// reason [MaxEgressPolicyBytes] is: past the operating system's own limit the
+// launch fails with an errno that names neither the variable nor the operator
+// who set it.
+const MaxPluginEnvBytes = 64 << 10
+
 // Config describes which plugins a deployment will run and how far it will let
 // them go.
 //
@@ -286,6 +334,83 @@ type Config struct {
 	// credential file — belongs here, named by the operator.
 	Env []string
 
+	// EnvByPlugin is extra environment for the processes of one named plugin,
+	// as "KEY=VALUE" entries keyed by the name discovery gives that plugin.
+	//
+	// [Env] reaches every plugin this host launches, which is the right shape
+	// for a fact about the deployment and the wrong one for a plugin's own
+	// configuration: a registry credential path meant for `oci`, a base config
+	// meant for `codex`, a host-grant file meant for `ssh`. A process's
+	// environment is readable to anything running as the same user — the reason
+	// the handshake token travels on a descriptor instead, documented where it
+	// is minted — so an operator configuring one plugin should not thereby
+	// configure the others, nor hand them what they were configured with.
+	// Entries here reach the named plugin alone.
+	//
+	// Keys are plugin names spelled the way [Discover] spells them. A key no
+	// plugin could ever answer to is configuration that silently reaches
+	// nothing, which leaves the plugin its operator meant to configure running
+	// without it — the same fail-open typo [Config.PinnedDigests] refuses — so
+	// [NewHost] refuses it at startup instead.
+	//
+	// Applied after [Env], so a variable named in both takes the per-plugin
+	// value for that plugin: the narrower statement is the more deliberate one.
+	// Neither may redefine a protocol variable; the handshake is not
+	// configuration.
+	//
+	// At most [MaxPluginEnvBytes] per plugin.
+	EnvByPlugin map[string][]string
+
+	// EgressPolicy is the deployment's egress policy, as the operator wrote it
+	// and the worker already parsed it for the built-in http task — or, when the
+	// deployment configured none, that deployment's default written down
+	// ([github.com/picatz/flowstate/pkg/flowstate/v1.DefaultEgressPolicyDocument]).
+	//
+	// `flow` always sets it, so nil here means an embedding program granted
+	// nothing rather than a deployment having no policy: the two used to be the
+	// same value, which made every plugin on a default worker refuse the work
+	// that worker's own http task was doing under its default policy. A host
+	// embedded in another program that has an egress posture of its own should
+	// forward it here for the same reason a worker does (#1332).
+	//
+	// Nil is no grant; non-nil is a grant, including an empty one. That
+	// distinction is the whole of it, and length is not: an operator who points
+	// --egress-policy at an empty document has configured a policy — the one an
+	// empty document builds, which is exactly what the built-in http task then
+	// runs under — and a plugin denying where the built-in task allows is the
+	// same deployment answering one question two ways. So a configured policy is
+	// forwarded whether or not it has bytes in it, and only an unset field means
+	// nothing was granted.
+	//
+	// Every launched plugin receives it, base64-encoded, under
+	// $FLOWSTATE_EGRESS_POLICY_B64 — not by name, and not as an entry an operator
+	// composes in Env, which would make the grant a per-deployment decision
+	// repeated per plugin. It is a field rather than a convention so that a host
+	// embedded in someone else's program has to pass the deployment's policy
+	// deliberately, and so that the one place it is encoded is here.
+	//
+	// It is a snapshot taken at launch, not a subscription: a plugin holds the
+	// bytes its own launch carried, so a policy file edited afterwards governs
+	// the plugins the worker starts next, not the ones already running.
+	//
+	// At most [MaxEgressPolicyBytes]; a larger one is refused by [NewHost] with
+	// a message naming the bound, because past it the failure is exec(2)
+	// refusing the whole launch with an errno that names nothing.
+	//
+	// It must also build. [NewHost] parses it and compiles its rules, and
+	// refuses a grant that does not, because launching under a policy that
+	// cannot govern anything would still forward what the policy asks for —
+	// under `proxy_from_environment`, the worker's proxy URL and whatever
+	// userinfo it carries.
+	//
+	// A plugin reaches it through
+	// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicy],
+	// which fails closed when it is absent. Handing it over is not confinement —
+	// nothing stops a process from opening its own socket — it is what makes the
+	// governed path the one a plugin has no reason to leave. Confining a plugin
+	// that wants out is the deployment's job (see THREAT_MODEL.md).
+	EgressPolicy []byte
+
 	// Logger receives host events and plugin stderr. Nil discards them, which
 	// silences the one diagnostic channel a plugin has; prefer passing one.
 	Logger *slog.Logger
@@ -305,7 +430,7 @@ type Config struct {
 	//     per attempt, the durable driver as the activity's StartToClose), and
 	//     a step that declares none still gets
 	//     [flowstatev1.DefaultStartToCloseTimeout]. That deadline is the
-	//     author's answer and is passed through untouched.
+	//     author's answer, and it is honored up to [Config.MaxCallTimeout].
 	//   - This bounds a call that arrived with no deadline at all — a direct
 	//     [Plugin.TaskService] or [Plugin.SecretService] caller using
 	//     context.Background(), where nothing else would ever end the call.
@@ -315,6 +440,19 @@ type Config struct {
 	// It was applied on top of the caller's deadline until #1130, which capped
 	// every plugin task at thirty seconds however long the step allowed.
 	CallTimeout time.Duration
+
+	// MaxCallTimeout is the ceiling a caller's own deadline is held beneath.
+	// Zero selects [DefaultMaxCallTimeout].
+	//
+	// The layering above gives the author's `timeout:` the say over how long
+	// one attempt runs, which is right — and would be the *whole* answer if
+	// the author were the operator. They are not: a workflow arrives from
+	// outside, `StepPolicy.timeout` is checked only for being positive, and the
+	// call it becomes holds a plugin RPC and the activity slot beneath it for
+	// as long as it names. This is the number that is the host's regardless, so
+	// that the step decides within the deployment's bound rather than instead
+	// of it (#1119).
+	MaxCallTimeout time.Duration
 
 	HealthTimeout  time.Duration
 	HealthInterval time.Duration
@@ -413,6 +551,7 @@ func (c Config) withDefaults() Config {
 	setDuration(&c.HandshakeTimeout, DefaultHandshakeTimeout)
 	setDuration(&c.DescribeTimeout, DefaultDescribeTimeout)
 	setDuration(&c.CallTimeout, DefaultCallTimeout)
+	setDuration(&c.MaxCallTimeout, DefaultMaxCallTimeout)
 	setDuration(&c.HealthTimeout, DefaultHealthTimeout)
 	setDuration(&c.HealthInterval, DefaultHealthInterval)
 	setDuration(&c.ShutdownGrace, DefaultShutdownGrace)
@@ -440,8 +579,23 @@ func (c Config) withDefaults() Config {
 	c.PinnedDigests = maps.Clone(c.PinnedDigests)
 	c.PermittedSchemes = slices.Clone(c.PermittedSchemes)
 	c.Env = slices.Clone(c.Env)
+	c.EnvByPlugin = cloneEnvByPlugin(c.EnvByPlugin)
+	c.EgressPolicy = slices.Clone(c.EgressPolicy)
 
 	return c
+}
+
+// maxCallTimeout is [Config.MaxCallTimeout] with zero read as
+// [DefaultMaxCallTimeout], the same rule [setDuration] applies when a Config is
+// normalized.
+//
+// Normalization already fills the field in for every Config this package
+// builds, and this is read at the point of use anyway: the ceiling is the one
+// bound a caller's own deadline cannot raise, so a Config assembled by hand —
+// a test's, an embedder's — must not be the way to remove it. Zero means the
+// default here exactly as the field's own documentation says it does.
+func (c Config) maxCallTimeout() time.Duration {
+	return cmp.Or(c.MaxCallTimeout, DefaultMaxCallTimeout)
 }
 
 // setDuration replaces a zero duration with a default. A negative value is left
@@ -476,10 +630,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: socket directory %q is relative", ErrSearchPath, c.SocketDir)
 	}
 
-	for _, scheme := range c.PermittedSchemes {
-		if scheme == "" {
-			return fmt.Errorf("plugin: PermittedSchemes contains an empty scheme")
-		}
+	if slices.Contains(c.PermittedSchemes, "") {
+		return fmt.Errorf("plugin: PermittedSchemes contains an empty scheme")
 	}
 
 	// Sorted, so that a configuration with several bad pins reports the same one
@@ -493,7 +645,89 @@ func (c Config) validate() error {
 
 	for _, entry := range c.Env {
 		if !isEnvEntry(entry) {
-			return fmt.Errorf("plugin: Env entry %q is not of the form KEY=VALUE", truncate(entry, 64))
+			return fmt.Errorf("plugin: Env entry %q is not of the form KEY=VALUE", textbound.Truncate(entry, 64))
+		}
+	}
+
+	// Sorted for the reason the pins loop above is sorted: an operator whose
+	// file has two bad entries should be told about the same one on every run.
+	for _, name := range slices.Sorted(maps.Keys(c.EnvByPlugin)) {
+		if !validPluginName(name) {
+			return fmt.Errorf(
+				"%w: EnvByPlugin has an entry under %q, which is not a valid plugin name; "+
+					"a plugin name is lower-case letters, digits and interior hyphens, at most %d characters, "+
+					"so no discovered plugin could ever be launched with it",
+				ErrPluginEnv, textbound.Truncate(name, MaxNameLen+16), MaxNameLen,
+			)
+		}
+
+		// The kernel's accounting, not the slice's: each entry's bytes plus the
+		// NUL terminating it.
+		total := 0
+		for _, entry := range c.EnvByPlugin[name] {
+			if !isEnvEntry(entry) {
+				return fmt.Errorf(
+					"%w: EnvByPlugin[%q] entry %q is not of the form KEY=VALUE",
+					ErrPluginEnv, name, textbound.Truncate(entry, 64),
+				)
+			}
+			total += len(entry) + 1
+		}
+		if total > MaxPluginEnvBytes {
+			return fmt.Errorf(
+				"%w: EnvByPlugin[%q] is %d bytes, over the %d-byte limit; it becomes that plugin's "+
+					"launch environment, and a longer one fails exec with an error naming nothing. "+
+					"Configuration this large belongs in a file whose path is the variable",
+				ErrPluginEnv, name, total, MaxPluginEnvBytes,
+			)
+		}
+	}
+
+	// Refused here rather than discovered at exec. The grant becomes one
+	// environment string, and an over-long environment string is not a policy
+	// problem the operating system can describe: exec fails for every plugin at
+	// once, with an errno that names neither the variable nor the file it came
+	// from. Naming the bound and the size makes it a configuration error.
+	if len(c.EgressPolicy) > MaxEgressPolicyBytes {
+		return fmt.Errorf(
+			"plugin: EgressPolicy is %d bytes, over the %d-byte limit; it is passed to every plugin as one environment string, and a longer one fails exec with an error naming nothing",
+			len(c.EgressPolicy), MaxEgressPolicyBytes,
+		)
+	}
+
+	// And it has to build, not merely parse. The two are different questions: a
+	// document with a well-formed `deny:` list whose CEL does not compile parses
+	// fine and produces no policy at all.
+	//
+	// Refusing here is what makes the launch fail closed. Parsing alone is
+	// enough to read `proxy_from_environment` out of a grant, so a policy that
+	// parsed and could not build would still have sent the worker's proxy
+	// variables — the operator's own proxy URL, userinfo included — into every
+	// plugin launched under it. The plugin refuses the same bytes when it builds
+	// them, but by then the credential has already crossed. A grant that cannot
+	// govern anything must not be a grant that hands anything over (AGENTS.md's
+	// sixth invariant).
+	//
+	// The same two calls the SDK makes and applyEgressPolicy makes, so all three
+	// accept exactly the same set of policies. An empty document builds to the
+	// default posture and is accepted, which is what keeps presence rather than
+	// length the rule.
+	//
+	// Nil is skipped rather than built. netpolicy.ParseConfig(nil) succeeds and
+	// yields that same default posture, so building unconditionally would turn
+	// "nothing was configured" into "a policy" — the one distinction the whole
+	// grant rests on.
+	//
+	// Building here costs no I/O: config-to-policy compiles CEL and clones a
+	// transport, and touches nothing outside the process. Doing it in a
+	// constructor is CPU an operator pays once at startup.
+	if c.EgressPolicy != nil {
+		parsed, err := netpolicy.ParseConfig(c.EgressPolicy)
+		if err != nil {
+			return fmt.Errorf("plugin: parsing EgressPolicy: %w", err)
+		}
+		if _, err := parsed.Policy(); err != nil {
+			return fmt.Errorf("plugin: building EgressPolicy: %w", err)
 		}
 	}
 
@@ -529,6 +763,21 @@ func (c Config) protocolVersions() []int {
 	return protocol.HostVersions()
 }
 
+// cloneEnvByPlugin deep-copies [Config.EnvByPlugin], so that a caller who keeps
+// and mutates the map or one of its slices after handing it over cannot change
+// what a plugin is launched with after this Config was validated.
+func cloneEnvByPlugin(byPlugin map[string][]string) map[string][]string {
+	if byPlugin == nil {
+		return nil
+	}
+
+	cloned := make(map[string][]string, len(byPlugin))
+	for name, entries := range byPlugin {
+		cloned[name] = slices.Clone(entries)
+	}
+	return cloned
+}
+
 // isEnvEntry reports whether s is a KEY=VALUE entry with a non-empty key.
 func isEnvEntry(s string) bool {
 	for i := range len(s) {
@@ -537,19 +786,4 @@ func isEnvEntry(s string) bool {
 		}
 	}
 	return false
-}
-
-// truncate bounds text bound for an error message or a log line.
-//
-// It cuts on a rune boundary. Everything this bounds was chosen by another
-// process, so cutting mid-rune is not hypothetical, and a broken rune in a log
-// line is a log line some consumer will refuse to parse.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "..."
 }

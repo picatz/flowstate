@@ -1,6 +1,9 @@
 package flowstatev1
 
-import "fmt"
+import (
+	"fmt"
+	"maps"
+)
 
 // Structured concurrency, in the half both drivers must agree about.
 //
@@ -163,9 +166,7 @@ func AsyncJoinTargets(node *Node, inFlight []string, visible *Workflow_StepOutpu
 	}
 
 	known := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-	for id, outputs := range visible.GetStepValues() {
-		known.StepValues[id] = outputs
-	}
+	maps.Copy(known.StepValues, visible.GetStepValues())
 	for _, id := range inFlight {
 		if _, seen := known.StepValues[id]; !seen {
 			known.StepValues[id] = &Node_Outputs{}

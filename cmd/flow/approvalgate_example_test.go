@@ -78,7 +78,7 @@ func TestApprovalGateHelpExamplesActuallyRun(t *testing.T) {
 func approvalGateExampleLine(t *testing.T, example string) string {
 	t.Helper()
 
-	for _, line := range strings.Split(example, "\n") {
+	for line := range strings.SplitSeq(example, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.Contains(trimmed, "examples/expense-approval/workflow.yaml") {
 			return trimmed
@@ -142,7 +142,7 @@ func TestPolicedGateExampleRehearsesLocally(t *testing.T) {
 	cmd := findCommand(t, "run local")
 
 	var line string
-	for _, candidate := range strings.Split(cmd.Example, "\n") {
+	for candidate := range strings.SplitSeq(cmd.Example, "\n") {
 		trimmed := strings.TrimSpace(candidate)
 		if strings.Contains(trimmed, "examples/approval-gate/workflow.yaml") {
 			line = trimmed

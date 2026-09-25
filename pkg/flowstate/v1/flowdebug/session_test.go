@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/cel-go/common/types/ref"
@@ -298,8 +298,12 @@ func TestAReplayedScriptReproducesTheSession(t *testing.T) {
 // [v1.Value_SecretRef] outright — resolving one "would produce a value in
 // workflow code, and anything a workflow computes can end up in history"
 // (eval.go, StepsOutputActivation.resolveValue) — so an inspection that names
-// the reference does not get a refusal message from the debugger, it gets an
-// attribute that does not resolve at all. There is nothing there to read.
+// the reference does not get a refusal from the debugger, it gets the
+// activation's own: the read fails, naming the step and saying why, and there
+// is nothing there to read. It used to fail as an attribute that did not
+// resolve at all, because the whole `steps` root was converted up front and
+// one unreadable output made all of it unresolvable (#1758); the root is lazy
+// now, so the refusal is the one read's and says what it refused.
 //
 // The value is really in the environment where the env provider would find
 // it, so the negative assertion has something it could catch.
@@ -332,8 +336,8 @@ func TestASecretReferenceIsNotResolvedByAnInspection(t *testing.T) {
 
 	out := console.String()
 	assert.NotContains(t, out, "super-secret-value", "no surface of a debug session may print a resolved secret")
-	assert.Contains(t, out, "steps.held.token",
-		"the inspection is answered by the attribute not resolving, which names it")
+	assert.Contains(t, out, `step "held": a secret reference cannot be read in an expression`,
+		"the inspection is answered by the read refusing, naming the step and the reason")
 	assert.Contains(t, out, "secret(env://API_KEY)",
 		"and the account renders the reference as the reference it is")
 }
@@ -603,39 +607,54 @@ func TestACancelledContextUnblocksThePrompt(t *testing.T) {
 // process about to exit that is free; in a server answering debug calls it is
 // a goroutine, a scanner and a script retained per call, without bound.
 //
-// Counted rather than asserted about in prose, because "does not leak" is
-// exactly the claim a test can make vacuously.
+// The claim is made by the bubble rather than by counting, because "does not
+// leak" is exactly the claim a test can make vacuously. [synctest.Test] waits
+// for every goroutine started inside it to exit, and a bubble whose root has
+// returned with goroutines still durably blocked is a deadlock the runtime
+// reports — naming, in the dump, the parked send each retained reader is
+// sitting on. So a leaked reader fails this test by construction, and there is
+// nothing left for it to assert afterwards.
+//
+// That is a stronger claim than the goroutine census this replaces, which read
+// runtime.NumGoroutine before and after and allowed `before+2` slack. Being
+// process-global, that census could only ever be approximate: it had to
+// tolerate unrelated goroutines, it could not run in parallel with any sibling
+// that started one, and it polled for five seconds because the readers exit
+// asynchronously. A bubble is scoped to the goroutines this test started, so
+// it needs no slack, no poll and no serialization — one leaked reader is a
+// failure, twenty is a failure, and the answer arrives in fake time.
 func TestCloseReleasesTheReaderGoroutine(t *testing.T) {
-	// Not parallel: it counts goroutines, and a sibling test starting one
-	// concurrently would be indistinguishable from a leak.
-	before := runtime.NumGoroutine()
+	// Parallel again: the census this used to take was process-global, so a
+	// sibling starting a goroutine was indistinguishable from a leak. A bubble
+	// sees only its own.
+	t.Parallel()
 
-	for range 20 {
-		// `step` resumes the run, so BeforeStep returns with the reader
-		// holding the *next* line and no receiver left for it — which is the
-		// shape that parks. A script of non-resuming commands would drain to
-		// EOF and exit on its own, proving nothing; that is how this test was
-		// vacuous when first written.
-		session, err := flowdebug.New(flowdebug.Options{
-			In:  strings.NewReader("step\n" + strings.Repeat("scope\n", 50)),
-			Out: io.Discard,
-		})
-		require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		for range 20 {
+			// `step` resumes the run, so BeforeStep returns with the reader
+			// holding the *next* line and no receiver left for it — which is the
+			// shape that parks. A script of non-resuming commands would drain to
+			// EOF and exit on its own, proving nothing; that is how this test was
+			// vacuous when first written.
+			session, err := flowdebug.New(flowdebug.Options{
+				In:  strings.NewReader("step\n" + strings.Repeat("scope\n", 50)),
+				Out: io.Discard,
+			})
+			require.NoError(t, err)
 
-		// One read, then abandon it exactly as a finished call does.
-		require.NoError(t, session.BeforeStep(t.Context(), markStep("only"), &v1.Scope{}))
-		require.NoError(t, session.Close())
-	}
+			// A BeforeStep that fails exits this goroutine before the Close
+			// below, leaving a reader parked and turning the assertion that
+			// actually failed into a deadlock panic. Close is idempotent, so
+			// registering it here costs the success path nothing and does not
+			// blunt the leak claim: a Close that stops releasing the reader
+			// still leaves it parked, whichever call makes it.
+			t.Cleanup(func() { _ = session.Close() })
 
-	// The readers exit asynchronously; give them a moment rather than racing.
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	assert.LessOrEqual(t, runtime.NumGoroutine(), before+2,
-		"twenty closed sessions left readers parked: each holds its scanner and script "+
-			"for the life of the process")
+			// One read, then abandon it exactly as a finished call does.
+			require.NoError(t, session.BeforeStep(t.Context(), markStep("only"), &v1.Scope{}))
+			require.NoError(t, session.Close())
+		}
+	})
 }
 
 // TestCloseIsIdempotentAndSafeWithoutAReader: a caller closing twice, or
@@ -696,15 +715,11 @@ func TestConcurrentCallbacksAreSerialized(t *testing.T) {
 	var wg sync.WaitGroup
 
 	for writer := range writers {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			for i := range each {
 				session.StepFinished(fmt.Sprintf("step-%d-%d", writer, i), nil, nil, false)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -1583,7 +1598,7 @@ func TestCompleteIsDiscoverable(t *testing.T) {
 // completionLines are the offered names on the lines carrying detail, joined.
 func completionLines(out, detail string) string {
 	var names []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if !strings.Contains(line, detail) {
 			continue
 		}

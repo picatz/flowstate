@@ -93,7 +93,7 @@ func FuzzLSPFrames(f *testing.F) {
 
 		server := &FlowfileServer{Logger: discardLogger()}
 
-		for frames := 0; frames < maxFuzzFrames; frames++ {
+		for range maxFuzzFrames {
 			before := counted.n
 
 			var req jsonrpc2.Request

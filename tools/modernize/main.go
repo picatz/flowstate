@@ -37,9 +37,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -107,8 +109,7 @@ func runGoFix(patterns []string) (string, error) {
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	out, err := cmd.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "", incompleteAnalysisError(exit.ExitCode(), stderr.String(), len(out))
 		}
 		return "", fmt.Errorf("running `go %s`: %w", strings.Join(args, " "), err)
@@ -291,12 +292,7 @@ func isGenerated(file string) bool {
 }
 
 func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // writeReport renders the report as Markdown: the weekly job files it into

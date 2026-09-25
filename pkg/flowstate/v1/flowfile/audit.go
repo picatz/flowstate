@@ -272,7 +272,8 @@ func exprSites(wf *v1.Workflow, pos *Positions, visit func(writtenExpr)) {
 					Value: site.Value,
 				})
 
-			case v1.SlotWebhookIdempotencyKey, v1.SlotWebhookArgument, v1.SlotWebhookVerify:
+			case v1.SlotWebhookIdempotencyKey, v1.SlotWebhookArgument, v1.SlotWebhookVerify,
+				v1.SlotWebhookSignalCorrelate, v1.SlotWebhookSignalArgument:
 				triggerSite(pos, site, visit)
 
 			case v1.SlotInputDefault, v1.SlotInputExample, v1.SlotSwitchCaseValue:
@@ -345,6 +346,20 @@ func triggerSite(pos *Positions, site v1.ValueSite, visit func(writtenExpr)) {
 		visit(writtenExpr{
 			Field: field + ".with." + site.Name,
 			Path:  fieldPath(fieldPath(at, "with"), site.Name),
+			Slot:  site.Slot,
+			Value: site.Value,
+		})
+	case v1.SlotWebhookSignalCorrelate:
+		visit(writtenExpr{
+			Field: field + ".signal.correlate",
+			Path:  fieldPath(fieldPath(at, "signal"), "correlate"),
+			Slot:  site.Slot,
+			Value: site.Value,
+		})
+	case v1.SlotWebhookSignalArgument:
+		visit(writtenExpr{
+			Field: field + ".signal.with." + site.Name,
+			Path:  fieldPath(fieldPath(fieldPath(at, "signal"), "with"), site.Name),
 			Slot:  site.Slot,
 			Value: site.Value,
 		})

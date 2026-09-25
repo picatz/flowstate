@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
@@ -93,7 +94,7 @@ func TestMCPTokenVerifierAdmitsAToken(t *testing.T) {
 	require.False(t, info.Expiration.IsZero(),
 		"the middleware refuses a TokenInfo with no expiration unless AllowMissingExpiration is set")
 	require.Empty(t, info.Scopes,
-		"#567's D1 is deferred by omission: this surface names no scope anywhere")
+		"no per-action enforcement point can truthfully name a required scope")
 	require.Equal(t, "agent", principal.Subject)
 	require.Equal(t, mcpResource, principal.Audience[0])
 }
@@ -250,6 +251,44 @@ func TestMCPTokenVerifierRefusesWhenUnconfigured(t *testing.T) {
 		info, err := auth.MCPTokenVerifier(verifier, "")(t.Context(), token, nil)
 		requireRefused(t, info, err)
 	})
+}
+
+// TestMCPTokenVerifierClassifiesMissingSessionClaims proves that a token which
+// reached session binding is not reported as absent or expired when a custom
+// verifier omitted a field MCP requires. The fixed classification is all the
+// client and failure observer receive.
+func TestMCPTokenVerifierClassifiesMissingSessionClaims(t *testing.T) {
+	t.Parallel()
+
+	valid := auth.Principal{
+		Issuer:    "https://idp.example.com",
+		Subject:   "agent",
+		Audience:  []string{mcpResource},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	for name, mutate := range map[string]func(*auth.Principal){
+		"issuer":  func(p *auth.Principal) { p.Issuer = "" },
+		"subject": func(p *auth.Principal) { p.Subject = "" },
+		"expiry":  func(p *auth.Principal) { p.ExpiresAt = time.Time{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			principal := valid
+			mutate(&principal)
+
+			var observed error
+			info, err := auth.MCPTokenVerifier(stubVerifier{principal: principal}, mcpResource,
+				auth.WithMCPFailureObserver(func(_ context.Context, _ *http.Request, err error) {
+					observed = err
+				}))(t.Context(), "token", nil)
+
+			requireRefused(t, info, err)
+			require.ErrorIs(t, observed, auth.ErrMissingClaim)
+			require.Contains(t, err.Error(), "token is missing a required claim")
+			require.NotContains(t, err.Error(), "missing bearer token")
+			require.NotContains(t, err.Error(), "token is expired")
+		})
+	}
 }
 
 // TestMCPTokenVerifierRefusalsNameNoTokenMaterial is invariant 7's containment
@@ -591,6 +630,8 @@ func changedPrincipalField(t *testing.T, base auth.Principal, i int) auth.Princi
 		field.SetString(value + "-changed")
 	case []string:
 		field.Set(reflect.ValueOf([]string{"https://changed.example.com"}))
+	case auth.ActionScopes:
+		field.Set(reflect.ValueOf(auth.ActionScopes{"workload.read"}))
 	case time.Time:
 		field.Set(reflect.ValueOf(value.Add(time.Hour)))
 	case map[string]any:
@@ -633,6 +674,27 @@ func TestMCPSessionUserIDIgnoresAudienceOrder(t *testing.T) {
 	}
 	require.NotEqual(t, mcpSessionUserID(t, one), mcpSessionUserID(t, fewer),
 		"a token addressed to one audience shares a session key with one addressed to two")
+}
+
+func TestMCPSessionUserIDTreatsActionsAsASetAndPreservesDenyAll(t *testing.T) {
+	t.Parallel()
+
+	one := auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice",
+		Actions: auth.ActionScopes{"workload.read", "workload.list"},
+	}
+	other := auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice",
+		Actions: auth.ActionScopes{"workload.list", "workload.read"},
+	}
+	require.Equal(t, mcpSessionUserID(t, one), mcpSessionUserID(t, other),
+		"the same action grants in another order produced a different session key")
+
+	unrestricted := auth.Principal{Issuer: "https://idp.example.com", Subject: "alice"}
+	denyAll := unrestricted
+	denyAll.Actions = auth.ActionScopes{}
+	require.NotEqual(t, mcpSessionUserID(t, unrestricted), mcpSessionUserID(t, denyAll),
+		"an unrestricted principal shares a session key with an explicit deny-all principal")
 }
 
 // TestMCPSessionUserIDIsUnambiguousAcrossTheFieldsItNowBinds extends

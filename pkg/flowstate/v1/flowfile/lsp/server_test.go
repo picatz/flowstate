@@ -307,9 +307,7 @@ edition: v2026.3
 
 	var wg sync.WaitGroup
 	for i := range 40 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			switch i % 5 {
 			case 0:
 				// Edits race against the reads below, which is the point.
@@ -329,7 +327,7 @@ edition: v2026.3
 			case 4:
 				c.symbols(uri)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

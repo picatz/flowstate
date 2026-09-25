@@ -68,7 +68,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "concurrency", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -78,7 +78,13 @@ var (
 		"type", "values", "required", "default", "description", "example", "sensitive",
 		"min_len", "max_len", "min_items", "max_items", "must",
 	}
-	outputKeys = []string{"value", "description", "must", "sensitive"}
+	// `type` and `values` are the input vocabulary reaching the other half of
+	// the signature, and they sit after `value:` rather than before it because
+	// `value:` is what an output *is*: the expression is required, the type is
+	// the promise made about it, and the order the marshaller writes them in
+	// follows this list so a file `flow fix` rewrote reads the way one somebody
+	// typed does.
+	outputKeys = []string{"value", "type", "values", "description", "must", "sensitive"}
 
 	// stepPropertyKeys say which step this is, how it runs, and what it is for —
 	// everything except what work it does.
@@ -118,6 +124,26 @@ var (
 	switchCaseKeys    = []string{"case", "steps"}
 	switchDefaultKeys = []string{"steps"}
 )
+
+// DocumentKeys returns the keys accepted at the root of a Flowfile, in the
+// order diagnostics and canonical completion present them.
+//
+// This is the parser's vocabulary rather than a second editor-side list: adding
+// a root key here changes what the compiler accepts and what every completion
+// client offers together. The returned slice is a copy and may be modified by
+// the caller.
+func DocumentKeys() []string { return slices.Clone(workflowKeys) }
+
+// StepGrammarKeys returns the non-task keys accepted on a step, in the order
+// diagnostics and canonical completion present them.
+//
+// Task names are deliberately absent. They come from the registry selected by
+// the caller, while these properties and built-in node kinds are grammar owned
+// by this package. The returned slice is a copy and may be modified by the
+// caller.
+func StepGrammarKeys() []string {
+	return slices.Concat(slices.Clone(stepPropertyKeys), slices.Clone(nodeKindKeys))
+}
 
 // A step names the work it does directly — `http:` with the request under it —
 // so the keys a step accepts are not a constant. They are the properties, plus
@@ -435,7 +461,11 @@ func StepTaskKeys(keys []string) []string {
 // refused with a diagnostic saying so. Use [ParseFile] to compile a file that
 // may contain one.
 func Parse(data []byte) (*v1.Workflow, *Positions, error) {
-	return parse(data, "", nil, new(int))
+	wf, pos, err := parse(data, "", nil, new(int))
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, pos, nil
 }
 
 // ParseFile compiles a Flowfile read from disk, exactly as [Parse] does, but
@@ -450,7 +480,11 @@ func ParseFile(path string) (*v1.Workflow, *Positions, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return parse(data, path, nil, new(int))
+	wf, pos, err := parse(data, path, nil, new(int))
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, pos, nil
 }
 
 // ParseAt is [Parse] for bytes that did not come from path but should be
@@ -462,7 +496,11 @@ func ParseFile(path string) (*v1.Workflow, *Positions, error) {
 // from disk, because a callee is a *different* file's content and this
 // function has no in-memory version of it to prefer.
 func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
-	return parse(data, path, nil, new(int))
+	wf, pos, err := parse(data, path, nil, new(int))
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, pos, nil
 }
 
 // parse is the whole of what both [Parse] and [ParseFile] do, plus what a
@@ -483,7 +521,7 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 
 	file, err := parser.ParseBytes(data, 0)
 	if err != nil {
-		return nil, nil, yamlSyntaxDiagnostics(err)
+		return nil, nil, YAMLSyntaxDiagnostics(data, err)
 	}
 
 	c := &compiler{
@@ -495,7 +533,15 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 	}
 	workflow := c.compile(file)
 	if len(c.diags) > 0 {
-		return nil, nil, c.sorted()
+		// The partial workflow and positions are returned alongside the
+		// diagnostics so that [validateParsed] can run the step-id checks
+		// that explain why an expression failed to parse — a step called
+		// `in` causes every reference to it to be a syntax error, and
+		// without this the id diagnostic is masked by the expression one.
+		//
+		// The public [Parse], [ParseFile] and [ParseAt] discard both on
+		// error, preserving their contract.
+		return workflow, c.pos, c.sorted()
 	}
 	return workflow, c.pos, nil
 }
@@ -519,8 +565,14 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 // is the parser's own position rather than the author's text.
 var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
 
-// yamlSyntaxDiagnostics translates a failure from the YAML parser into the
+// YAMLSyntaxDiagnostics translates a failure from the YAML parser into the
 // [Diagnostic] grammar every other failure in this package speaks (#654).
+//
+// Exported for the language server, which parses a buffer itself to keep the
+// document tree and must give the same sentence — and the same suggested
+// edit, see [offerQuotedFence] — that `flow validate` gives for the same
+// bytes. data is the document the parser failed on; the one diagnostic
+// returned is positioned at the token it stopped on.
 //
 // Before this, a YAML-level failure — a duplicate key, a tab used for
 // indentation, an unterminated quote — bypassed the grammar entirely and
@@ -539,11 +591,10 @@ var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
 // version of goccy — still gets the standard shape, with the position left
 // unset the way [Diagnostic] already reports "a problem with the document as a
 // whole" everywhere else in this package.
-func yamlSyntaxDiagnostics(err error) Diagnostics {
+func YAMLSyntaxDiagnostics(data []byte, err error) Diagnostics {
 	d := Diagnostic{Message: err.Error()}
 
-	var yamlErr yaml.Error
-	if errors.As(err, &yamlErr) {
+	if yamlErr, ok := errors.AsType[yaml.Error](err); ok {
 		if msg := yamlErr.GetMessage(); msg != "" {
 			d.Message = msg
 		}
@@ -554,6 +605,7 @@ func yamlSyntaxDiagnostics(err error) Diagnostics {
 	}
 
 	d.Message = yamlCoordinate.ReplaceAllString(d.Message, " at line $1, column $2")
+	offerQuotedFence(data, &d)
 
 	return Diagnostics{d}
 }
@@ -603,7 +655,7 @@ func (c *compiler) enter(n ast.Node, r ref) bool {
 		c.overflowed = true
 		if c.depth >= maxDepth {
 			c.report(spanOfToken(nodeToken(n)), r,
-				"nests more than %d levels deep, which is deeper than a Flowfile is meant to go", maxDepth)
+				"nests more than %d levels of YAML deep, which is more than this parser reads", maxDepth)
 		} else {
 			c.report(spanOfToken(nodeToken(n)), r,
 				"holds more than %d values once aliases are expanded, which is more than a Flowfile is meant to hold", maxNodes)
@@ -839,6 +891,17 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		workflow.Signals = c.signals(f.value, "signals", ref{path: "signals", label: "signals"})
 	}
 
+	// And who may pause a durable run of it under a debug lease, read here
+	// beside `signals:` because that is where the owner's decision put it and
+	// because it answers the same shape of question about the same outside
+	// world. One policy rather than a map: a signal policy is per name and
+	// there is exactly one thing to debug — this run. See flowfile/signals.go,
+	// whose grammar this shares entirely, and [v1.Workflow.Debug] for why the
+	// zero case here denies where `signals:`'s allows.
+	if f, found := fields.get("debug"); found {
+		workflow.Debug = c.signalPolicy(f.value, "debug", ref{path: "debug", label: "debug"})
+	}
+
 	// Read before steps, because every step's expressions may reference these and a
 	// reader follows the file in the order it is written.
 	if f, found := fields.get("vars"); found {
@@ -994,7 +1057,7 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 	if f, found := fields.get("values"); found {
 		valuesPath := fieldPath(path, "values")
 		declaration.Values = c.enumValues(f.value, valuesPath,
-			ref{path: valuesPath, label: "input " + e.name + " values"})
+			ref{path: valuesPath, label: "input " + e.name + " values"}, "input may hold")
 	}
 
 	if f, found := fields.get("required"); found {
@@ -1075,8 +1138,15 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 	return declaration
 }
 
-// enumValues compiles an input declaration's `values:` list — the closed set a
-// `type: enum` input may hold.
+// enumValues compiles a declaration's `values:` list — the closed set a
+// `type: enum` input may hold, or that a `type: enum` output may report. One
+// function for both, because the list is one list: an output declares its
+// choices in the same words, under the same bound, as an input does.
+//
+// holds names what the set is *of*, completing "the values this ..." in the
+// diagnostic below — an input holds one of them, an output reports one — since
+// that clause is the only part of this function's judgement that differs
+// between the two.
 //
 // This is the shape half only: whether `values:` belongs here at all (it does
 // not, beside anything but `type: enum`) and whether an enum declares at
@@ -1087,7 +1157,7 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 // decides for a specification that never was a Flowfile. What belongs here is
 // only what this one key's own value can be wrong about: a scalar or a
 // mapping written where a list belongs.
-func (c *compiler) enumValues(n ast.Node, path string, r ref) []string {
+func (c *compiler) enumValues(n ast.Node, path string, r ref, holds string) []string {
 	n = c.resolve(n, path, r)
 	if n == nil {
 		return nil
@@ -1097,8 +1167,8 @@ func (c *compiler) enumValues(n ast.Node, path string, r ref) []string {
 	sequence, ok := n.(*ast.SequenceNode)
 	if !ok {
 		c.report(spanOfNode(n), r,
-			"must be a list of the values this input may hold, like [staging, production], but %s was written here",
-			describeNode(n))
+			"must be a list of the values this %s, like [staging, production], but %s was written here",
+			holds, describeNode(n))
 		return nil
 	}
 
@@ -1164,7 +1234,8 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 	if !ok {
 		c.report(spanOfNode(e.value), r,
 			"is declared as a mapping with `value:`, the expression that produces it, "+
-				"and optionally `description:`")
+				"and optionally `type:` (one of %s), `description:`, `must:` and `sensitive:`",
+			strings.Join(v1.DeclaredTypeNames(), ", "))
 
 		return nil
 	}
@@ -1181,6 +1252,30 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 	} else {
 		c.report(spanOfNode(e.value), r,
 			"has no `value:`; an output is the expression that produces it, evaluated once the steps have finished")
+	}
+
+	// Optional here where it is required on an input, which is the one place
+	// the two declarations deliberately differ: an output with no `type:` is a
+	// workflow that has not said what it answers with, not a value arriving
+	// unchecked from a caller. See [v1.OutputDeclaration.type].
+	if f, found := fields.get("type"); found {
+		typePath := fieldPath(path, "type")
+		typeRef := ref{path: typePath, label: "output " + e.name + " type"}
+		if text, ok := c.text(f.value, typePath, typeRef); ok {
+			declared, known := v1.ParseDeclaredType(text)
+			if !known {
+				c.report(spanOfNode(f.value), typeRef,
+					"is %q, which is not a type an output can have; the types are %s",
+					text, strings.Join(v1.DeclaredTypeNames(), ", "))
+			}
+			declaration.Type = declared
+		}
+	}
+
+	if f, found := fields.get("values"); found {
+		valuesPath := fieldPath(path, "values")
+		declaration.Values = c.enumValues(f.value, valuesPath,
+			ref{path: valuesPath, label: "output " + e.name + " values"}, "output may report")
 	}
 
 	if f, found := fields.get("description"); found {
@@ -1337,10 +1432,8 @@ func (c *compiler) checkAnchorCycles() bool {
 			return false
 		}
 		state[name] = 1
-		for _, next := range edges[name] {
-			if cyclic(next) {
-				return true
-			}
+		if slices.ContainsFunc(edges[name], cyclic) {
+			return true
 		}
 		state[name] = 2
 		return false

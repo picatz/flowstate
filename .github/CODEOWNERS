@@ -1,0 +1,9 @@
+# Review requests for the trust-boundary directories THREAT_MODEL.md lists,
+# so a change to a boundary reaches its owner without anyone remembering to
+# ask (#1728). Everything else is reviewed by whoever picks it up.
+/proto/                         @picatz
+/pkg/flowstate/v1/auth/         @picatz
+/pkg/flowstate/v1/netpolicy/    @picatz
+/pkg/flowstate/v1/server/       @picatz
+/pkg/flowstate/v1/plugin/       @picatz
+/.github/                       @picatz

@@ -3,8 +3,8 @@ package flowstatev1_test
 import (
 	"context"
 	"errors"
-	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -86,7 +86,7 @@ func TestLocalSignalReleasesAGate(t *testing.T) {
 
 		approval := got.outputs.GetStepValues()["approval"]
 		require.NotNil(t, approval)
-		require.True(t, payloadField(t, approval, "approved").GetBoolValue())
+		require.True(t, conformance.PayloadField(t, approval, "approved").GetBoolValue())
 		require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
 
 		// The shared half of the #194 fix: a local delivery must report itself
@@ -121,7 +121,7 @@ func TestLocalSignalArrivingEarly(t *testing.T) {
 	require.NoError(t, err)
 
 	require.True(t,
-		payloadField(t, outputs.GetStepValues()["approval"], "approved").GetBoolValue())
+		conformance.PayloadField(t, outputs.GetStepValues()["approval"], "approved").GetBoolValue())
 	require.NotNil(t, outputs.GetStepValues()["deploy"])
 }
 
@@ -199,44 +199,47 @@ func TestLocalSignalWithNoWaiterIsAnError(t *testing.T) {
 func TestLocalSignalCancellationIsNotATimeout(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(v1.NewContextWithSignalWaiter(t.Context(), v1.NewLocalSignals()))
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := v1.Run(ctx, gatedLocalWorkflow(time.Hour))
-		done <- err
-	}()
+		// Ordinary WithCancel hygiene, and nothing more: every path that
+		// reaches the select below has already called cancel explicitly, so
+		// this is a no-op on all of them. It is here so that a future edit
+		// returning early still releases the context.
+		defer cancel()
 
-	time.Sleep(100 * time.Millisecond)
-	cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := v1.Run(ctx, gatedLocalWorkflow(time.Hour))
+			done <- err
+		}()
 
-	select {
-	case err := <-done:
-		require.Error(t, err, "a cancelled run reported success")
-		require.True(t, errors.Is(err, context.Canceled),
-			"a cancelled run was not reported as cancelled: %v", err)
-	case <-time.After(15 * time.Second):
-		t.Fatal("a cancelled run did not stop")
-	}
-}
+		// Wait returns once the run is durably blocked, which for this
+		// workflow is the gate: the state a cancellation has to be told
+		// apart from a lapsed timeout. The 100ms sleep this replaces was a
+		// guess at how long reaching the gate takes, so it was both slower
+		// than the test needed and wrong on a runner slower than the guess.
+		synctest.Wait()
+		cancel()
 
-// payloadField reads one entry out of a wait's `payload` mapping.
-//
-// A signal sender's data is rooted under one key rather than spread across the
-// step's outputs, so reading it is a lookup inside a map rather than a lookup in
-// the outputs — see [v1.PayloadOutput] for why.
-func payloadField(t *testing.T, outputs *v1.Node_Outputs, name string) *expr.Value {
-	t.Helper()
-
-	payload := outputs.GetNamedValues()[v1.PayloadOutput].GetLiteral().GetMapValue()
-	require.NotNil(t, payload, "the wait produced no payload mapping")
-
-	for _, entry := range payload.GetEntries() {
-		if entry.GetKey().GetStringValue() == name {
-			return entry.GetValue()
+		select {
+		case err := <-done:
+			require.Error(t, err, "a cancelled run reported success")
+			require.True(t, errors.Is(err, context.Canceled),
+				"a cancelled run was not reported as cancelled: %v", err)
+		case <-time.After(15 * time.Second):
+			// Bubble time, so the wait itself costs nothing, and it is reached
+			// well before the hour the gate would otherwise sit for.
+			//
+			// It does not rescue the bubble, and it would be wrong to say so:
+			// getting here means the run ignored the cancel above and is still
+			// parked, and a bubble's clock stops once its root goroutine exits,
+			// so the runtime reports a deadlock on the way out regardless.
+			// Breaking the ctx.Done arm of waitForSignalLocally produces both,
+			// in this order. What this branch buys is that the *diagnosis* is
+			// printed first: "blocked goroutines remain" says some goroutine is
+			// stuck, where this says which claim of the test went unmet.
+			t.Fatal("a cancelled run did not stop")
 		}
-	}
-
-	t.Fatalf("the payload has no %q; it holds %d entries", name, len(payload.GetEntries()))
-	return nil
+	})
 }

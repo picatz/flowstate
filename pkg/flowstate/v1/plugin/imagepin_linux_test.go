@@ -3,10 +3,13 @@
 package plugin
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -24,6 +27,91 @@ import (
 // instead of on an unlucky one. A sleep-based version would prove nothing on a
 // loaded machine, and worse, would pass on a fast one whether or not the defect
 // was fixed.
+
+// TestPinnedImageSurvivesExecDescriptorShuffle reproduces the descriptor
+// collision behind #1230 without depending on process-wide launch timing.
+//
+// os/exec starts its child-side scratch descriptors one above the largest file
+// it must inherit. Put that source at N-1 and the executable at N: before the
+// fix, os/exec moves its low exec-error pipe onto N and execve finds a pipe at
+// /proc/self/fd/N, returning EACCES. prepareForExec must move the same open file
+// description above the complete shuffle range, after which the launch works.
+// The setup runs in a subprocess because assigning exact descriptor numbers is
+// deliberately process-global.
+func TestPinnedImageSurvivesExecDescriptorShuffle(t *testing.T) {
+	const helperEnv = "FLOWSTATE_TEST_EXEC_SHUFFLE"
+	if os.Getenv(helperEnv) != "" {
+		runExecShuffleHelper(t)
+		return
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("finding the test binary: %v", err)
+	}
+	cmd := exec.Command(self, "-test.run=^TestPinnedImageSurvivesExecDescriptorShuffle$")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("descriptor-shuffle helper: %v\n%s", err, output)
+	}
+}
+
+func runExecShuffleHelper(t *testing.T) {
+	t.Helper()
+
+	image, err := openExecImage("/bin/true", testLogger(t))
+	if err != nil {
+		t.Fatalf("opening executable image: %v", err)
+	}
+	defer image.close()
+	if !image.pinned {
+		t.Skip("/bin/true is not descriptor-pinnable on this host")
+	}
+
+	const imageFD = 1000
+	if err := syscall.Dup3(int(image.file.Fd()), imageFD, syscall.O_CLOEXEC); err != nil {
+		t.Fatalf("placing the image on descriptor %d: %v", imageFD, err)
+	}
+	name := image.file.Name()
+	image.file.Close()
+	image.file = os.NewFile(imageFD, name)
+	image.execPath = "/proc/self/fd/1000"
+
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("opening %s: %v", os.DevNull, err)
+	}
+	defer null.Close()
+	const childFileFD = imageFD - 1
+	if err := syscall.Dup3(int(null.Fd()), childFileFD, syscall.O_CLOEXEC); err != nil {
+		t.Fatalf("placing the child file on descriptor %d: %v", childFileFD, err)
+	}
+	childFile := os.NewFile(childFileFD, os.DevNull)
+	defer childFile.Close()
+	files := []*os.File{childFile, childFile, childFile, childFile}
+
+	run := func() error {
+		cmd := exec.Command(image.execPath)
+		cmd.Stdin = childFile
+		cmd.Stdout = childFile
+		cmd.Stderr = childFile
+		cmd.ExtraFiles = []*os.File{childFile}
+		return cmd.Run()
+	}
+
+	if err := run(); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("unprepared launch error = %v, want EACCES proving descriptor %d was overwritten", err, imageFD)
+	}
+	if err := image.prepareForExec(files); err != nil {
+		t.Fatalf("preparing image: %v", err)
+	}
+	if image.file.Fd() <= imageFD {
+		t.Fatalf("prepared image descriptor = %d, want it above the shuffle rooted at %d", image.file.Fd(), imageFD)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("prepared launch: %v", err)
+	}
+}
 
 // TestTheDigestIsOfTheImageThatRanWhenTheBinaryIsSwappedAtExec is the race
 // itself.

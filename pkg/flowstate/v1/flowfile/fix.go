@@ -1022,9 +1022,16 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 	// future is a file a newer `flow` wrote, and rewriting it to an older edition
 	// would be this build claiming to understand a grammar it does not have.
 	if !slices.Contains(knownEditions, declared) {
-		f.refuse(entry.Value,
-			"edition %q is not one this build knows, so there is nothing to rewrite it to; a newer flow wrote this file",
-			declared)
+		if near := nearestEdition(declared); near != "" {
+			f.refuse(entry.Value,
+				"edition %q is not one this build knows; did you mean %s?",
+				declared, editionName(near))
+		} else {
+			f.refuse(entry.Value,
+				"edition %q is not one this build knows (%s), so there is nothing to rewrite it to; "+
+					"a newer flow may have written this file",
+				declared, editionList(knownEditions))
+		}
 		return
 	}
 

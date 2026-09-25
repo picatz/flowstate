@@ -5,20 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -50,7 +57,9 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 				protocol.VersionsEnv:    "99",
 			},
 			wantErr: ErrProtocolVersion,
-			wantMsg: fmt.Sprintf("this plugin speaks %d", protocol.Version3),
+			// Both halves: a refusal that names only this side leaves the
+			// operator to work out which of the two builds is the old one.
+			wantMsg: fmt.Sprintf("the host offered 99 and this plugin speaks %d", protocol.Version7),
 		},
 		{
 			name: "no socket to serve on",
@@ -61,13 +70,38 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 			wantMsg: protocol.SocketEnv + " is not set",
 		},
 		{
-			name: "no token to authenticate the host by",
+			name: "no descriptor to read the token from",
 			env: map[string]string{
 				protocol.MagicCookieEnv: protocol.MagicCookieValue,
 				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
 				protocol.SocketEnv:      "/tmp/s",
 			},
-			wantMsg: protocol.TokenEnv + " is not set",
+			wantMsg: protocol.TokenFDEnv + " is not set",
+		},
+		{
+			// The descriptor number is input from outside this process, so a
+			// value that is not one is refused rather than parsed generously.
+			name: "a token descriptor that is not a number",
+			env: map[string]string{
+				protocol.MagicCookieEnv: protocol.MagicCookieValue,
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
+				protocol.SocketEnv:      "/tmp/s",
+				protocol.TokenFDEnv:     "the-token-itself",
+			},
+			wantMsg: protocol.TokenFDEnv + " does not name an inherited descriptor",
+		},
+		{
+			// stdin, stdout and stderr are not inherited extra descriptors, and
+			// reading a secret from whatever they happen to be is worse than
+			// refusing: on stdout it would also consume the handshake channel.
+			name: "a token descriptor naming stdout",
+			env: map[string]string{
+				protocol.MagicCookieEnv: protocol.MagicCookieValue,
+				protocol.VersionsEnv:    protocol.FormatVersions(protocol.HostVersions()),
+				protocol.SocketEnv:      "/tmp/s",
+				protocol.TokenFDEnv:     "1",
+			},
+			wantMsg: protocol.TokenFDEnv + " does not name an inherited descriptor",
 		},
 	}
 
@@ -75,7 +109,8 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			for _, name := range []string{
 				protocol.MagicCookieEnv, protocol.VersionsEnv,
-				protocol.SocketEnv, protocol.TokenEnv, protocol.HostFDEnv,
+				protocol.SocketEnv, protocol.TokenEnv, protocol.TokenFDEnv,
+				protocol.HostFDEnv,
 			} {
 				t.Setenv(name, "")
 				os.Unsetenv(name)
@@ -98,25 +133,81 @@ func TestReadEnvironmentRefusals(t *testing.T) {
 	}
 }
 
-// TestReadEnvironmentClearsTheToken checks that the token does not stay in the
-// environment, where anything that can read this process can read it.
-func TestReadEnvironmentClearsTheToken(t *testing.T) {
+// TestReadEnvironmentReadsTheTokenOffADescriptor checks the delivery that
+// replaced an environment variable, and that nothing puts the value back.
+//
+// Unsetting a variable was never enough on Linux: /proc/<pid>/environ shows the
+// block the kernel copied at execve(2), so a token delivered there is readable
+// for the process's whole life. The plugin-side half of the fix is that this SDK
+// reads the secret off a descriptor and never writes it into its own
+// environment, which is what the second half of this test pins.
+func TestReadEnvironmentReadsTheTokenOffADescriptor(t *testing.T) {
+	const token = "THE-PER-LAUNCH-TOKEN"
+
 	t.Setenv(protocol.MagicCookieEnv, protocol.MagicCookieValue)
 	t.Setenv(protocol.VersionsEnv, protocol.FormatVersions(protocol.HostVersions()))
 	t.Setenv(protocol.SocketEnv, "/tmp/s")
-	t.Setenv(protocol.TokenEnv, "the-token")
+	t.Setenv(protocol.TokenFDEnv, strconv.Itoa(tokenDescriptor(t, token)))
 
 	env, err := readEnvironment()
 	if err != nil {
 		t.Fatalf("readEnvironment: %v", err)
 	}
 
-	if got := env.token(); got != "the-token" {
-		t.Errorf("the token was not read")
+	if got := env.token(); got != token {
+		t.Errorf("token = %q, want %q", got, token)
 	}
-	if _, still := os.LookupEnv(protocol.TokenEnv); still {
-		t.Error("the token is still in the environment")
+
+	if _, set := os.LookupEnv(protocol.TokenEnv); set {
+		t.Errorf("%s is set; the retired variable must stay empty", protocol.TokenEnv)
 	}
+	for _, entry := range os.Environ() {
+		if strings.Contains(entry, token) {
+			t.Errorf("the token reached this process's environment as %q", entry)
+		}
+	}
+}
+
+// tokenDescriptor returns the number of a descriptor already holding one token
+// line, the way the host hands one to a plugin.
+//
+// The pipe's *os.File is kept alive for the life of this test binary on purpose.
+// readToken closes the descriptor it is given, and a collected *os.File would
+// close that number a second time — by then possibly belonging to something else
+// here. Nothing in this binary needs the wrapper again, so holding it is cheaper
+// than the alternative.
+func tokenDescriptor(t *testing.T, token string) int {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	if err := protocol.WriteToken(writer, token); err != nil {
+		t.Fatalf("writing the token: %v", err)
+	}
+
+	// Closed before the reader ever looks: the token is far smaller than a
+	// pipe's buffer, so the read finds one line and then EOF with nothing to
+	// wait for — which is exactly what the host arranges before a plugin starts.
+	if err := writer.Close(); err != nil {
+		t.Fatalf("closing the token pipe: %v", err)
+	}
+
+	fd := int(reader.Fd())
+
+	keptOpen.Lock()
+	keptOpen.files = append(keptOpen.files, reader)
+	keptOpen.Unlock()
+
+	return fd
+}
+
+// keptOpen holds every pipe end handed to readToken. See [tokenDescriptor].
+var keptOpen struct {
+	sync.Mutex
+	files []*os.File
 }
 
 // TestServeAuthenticatesTheHost checks that a plugin serves only the worker that
@@ -270,6 +361,110 @@ func TestServeAuthenticatesTheHostOnExecuteStream(t *testing.T) {
 	}
 }
 
+// TestServeRecoversTaskPanicsPerCall covers both RPC shapes at the SDK's real
+// HTTP boundary. Each panic is an explicit unknown outcome rather than a lost
+// connection, the same process serves the next call, and diagnostics stay in
+// the logger and meter rather than crossing in the error response.
+func TestServeRecoversTaskPanicsPerCall(t *testing.T) {
+	const (
+		token       = "the-per-launch-token"
+		panicSecret = "panic-value-only-for-the-plugin-log"
+	)
+
+	var calls atomic.Int32
+	var logs syncBuffer
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(t.Context()) })
+
+	socket := startTestPluginRunning(t, token, &syncBuffer{},
+		func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			if calls.Add(1)%2 == 1 {
+				panic(panicSecret)
+			}
+			return &flowstatev1.Node_Outputs{}, nil
+		},
+		WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
+		WithMeterProvider(provider),
+	)
+
+	client := pluginv1connect.NewTaskServiceClient(unixClient(socket), "http://plugin.invalid")
+	newUnaryRequest := func() *connect.Request[pluginv1.ExecuteRequest] {
+		req := connect.NewRequest(&pluginv1.ExecuteRequest{Task: &flowstatev1.Task{Name: "testplug_noop"}})
+		req.Header().Set(protocol.TokenHeader, token)
+		return req
+	}
+	newStreamRequest := func() *connect.Request[pluginv1.ExecuteStreamRequest] {
+		req := connect.NewRequest(&pluginv1.ExecuteStreamRequest{Task: &flowstatev1.Task{Name: "testplug_noop"}})
+		req.Header().Set(protocol.TokenHeader, token)
+		return req
+	}
+
+	_, unaryErr := client.Execute(t.Context(), newUnaryRequest())
+	requireUnknownOutcomeWithoutPanicValue(t, unaryErr, panicSecret)
+	_, err := client.Execute(t.Context(), newUnaryRequest())
+	require.NoError(t, err, "the unary call after the panic did not reach the same serving process")
+
+	stream, err := client.ExecuteStream(t.Context(), newStreamRequest())
+	require.NoError(t, err)
+	require.False(t, stream.Receive(), "a panicking stream sent a terminal response")
+	requireUnknownOutcomeWithoutPanicValue(t, stream.Err(), panicSecret)
+	require.NoError(t, stream.Close())
+
+	stream, err = client.ExecuteStream(t.Context(), newStreamRequest())
+	require.NoError(t, err)
+	require.True(t, stream.Receive(), "the streaming call after the panic did not receive a response")
+	require.NotNil(t, stream.Msg().GetResponse())
+	require.False(t, stream.Receive())
+	require.NoError(t, stream.Err())
+	require.NoError(t, stream.Close())
+
+	require.Eventually(t, func() bool {
+		return strings.Count(logs.String(), "plugin task panicked; outcome unknown") == 2
+	}, time.Second, time.Millisecond, "the asynchronous panic reports did not reach the SDK logger")
+	logText := logs.String()
+	require.Equal(t, 2, strings.Count(logText, "plugin task panicked; outcome unknown"))
+	require.Equal(t, 2, strings.Count(logText, "panic="+panicSecret))
+	require.Contains(t, logText, metricschema.PluginName+"=testplug")
+	require.Contains(t, logText, metricschema.TaskName+"=testplug_noop")
+	require.NotContains(t, logText, "http: panic serving")
+
+	var collected metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &collected))
+	for _, scope := range collected.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			if metric.Name != metricschema.InstrumentPluginTaskPanics {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+			require.Len(t, sum.DataPoints, 1)
+			require.Equal(t, int64(2), sum.DataPoints[0].Value)
+			attrs := sum.DataPoints[0].Attributes
+			pluginName, ok := attrs.Value(metricschema.PluginName)
+			require.True(t, ok)
+			require.Equal(t, "testplug", pluginName.AsString())
+			taskName, ok := attrs.Value(metricschema.TaskName)
+			require.True(t, ok)
+			require.Equal(t, "testplug_noop", taskName.AsString())
+			return
+		}
+	}
+	t.Fatal("the SDK did not record the recovered task panics")
+}
+
+func requireUnknownOutcomeWithoutPanicValue(t *testing.T, err error, panicValue string) {
+	t.Helper()
+
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	response := responseDetail(t, connectErr)
+	require.True(t, response.GetUnknownOutcome())
+	require.False(t, response.GetRetryable())
+	require.NotContains(t, connectErr.Error(), panicValue)
+}
+
 // TestServeAnnouncesOnceThenLeavesStdoutAlone checks the promise that makes the
 // handshake reliable: one line on stdout, and nothing after it.
 func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
@@ -307,8 +502,8 @@ func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
 	if handshake.Address != socket {
 		t.Errorf("announced address = %q, want %q", handshake.Address, socket)
 	}
-	if handshake.ProtocolVersion != protocol.Version3 {
-		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version3)
+	if handshake.ProtocolVersion != protocol.Version7 {
+		t.Errorf("announced protocol version = %d, want %d", handshake.ProtocolVersion, protocol.Version7)
 	}
 }
 
@@ -359,6 +554,17 @@ func startTestPlugin(t *testing.T, token string) string {
 func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) string {
 	t.Helper()
 
+	return startTestPluginRunning(t, token, stdout,
+		func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+			return &flowstatev1.Node_Outputs{}, nil
+		})
+}
+
+// startTestPluginRunning is the same harness with the task's body supplied, for
+// a test whose claim is about what the SDK did before that body could run.
+func startTestPluginRunning(t *testing.T, token string, stdout *syncBuffer, fn TaskFunc, opts ...Option) string {
+	t.Helper()
+
 	// A short directory: a Unix socket address holds about a hundred bytes, and
 	// the temporary directory is most of that on macOS.
 	dir, err := os.MkdirTemp("", "sdkt")
@@ -372,7 +578,7 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 	t.Setenv(protocol.MagicCookieEnv, protocol.MagicCookieValue)
 	t.Setenv(protocol.VersionsEnv, protocol.FormatVersions(protocol.HostVersions()))
 	t.Setenv(protocol.SocketEnv, socket)
-	t.Setenv(protocol.TokenEnv, token)
+	t.Setenv(protocol.TokenFDEnv, strconv.Itoa(tokenDescriptor(t, token)))
 
 	// Run writes the handshake to os.Stdout and then points os.Stdout at stderr,
 	// so both are swapped for the duration and put back afterwards.
@@ -400,11 +606,9 @@ func startTestPluginCapturing(t *testing.T, token string, stdout *syncBuffer) st
 				Name:   "testplug_noop",
 				Input:  &flowstatev1.Task_Log_Inputs{},
 				Output: &flowstatev1.Task_Log_Outputs{},
-				Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
-					return &flowstatev1.Node_Outputs{}, nil
-				},
+				Fn:     fn,
 			}},
-		})
+		}, opts...)
 	}()
 
 	t.Cleanup(func() {

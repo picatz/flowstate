@@ -2,7 +2,9 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
 	"net/netip"
 	"net/url"
@@ -13,14 +15,15 @@ import (
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
 )
 
-// Policy is the set of issuers Flowstate trusts to authenticate callers, and
-// the rules a token from each must satisfy. It is the whole of Flowstate's
-// authentication configuration: an issuer that is not named here cannot
-// authenticate anyone, so the empty Policy trusts nobody.
+// Policy is the set of issuers Flowstate trusts to authenticate callers, the
+// rules a credential from each must satisfy, and any actions that entry grants.
+// An issuer that is not named here cannot authenticate anyone, so the empty
+// Policy trusts nobody.
 //
 // A Policy is data rather than code so that trusting a new platform is a
 // configuration change an operator can review, rather than a change to a
@@ -97,6 +100,22 @@ type Policy struct {
 	Tenancy *Tenancy `json:"tenancy,omitempty" yaml:"tenancy,omitempty"`
 }
 
+// ActionScopes is an optional allowlist of Flowstate authorization actions,
+// written using the canonical OAuth scope spellings published by the protected
+// resource (for example, "workload.read"). Nil means the policy entry does not
+// restrict actions; a present empty list grants none.
+//
+// The auth package preserves and bounds these strings but does not own their
+// vocabulary. The parent flowstate.v1 package validates them against
+// AuthorizationActionScopes at the point the complete server is assembled,
+// avoiding a second action table or an import cycle.
+type ActionScopes []string
+
+// IsZero distinguishes an omitted allowlist from an explicitly empty one when
+// policy files are serialized: only omission preserves legacy unrestricted
+// behavior.
+func (s ActionScopes) IsZero() bool { return s == nil }
+
 // NamespaceMap is the wire type of [TrustedIssuer.NamespaceMap]: an exact
 // claim-value-to-namespace table, decoded from either YAML or JSON.
 //
@@ -134,7 +153,7 @@ type NamespaceMap map[string]string
 // matters here.
 func (m *NamespaceMap) UnmarshalYAML(data []byte) error {
 	var decoded map[string]string
-	if err := yaml.Unmarshal(data, &decoded); err != nil {
+	if err := strictyaml.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	if decoded == nil {
@@ -227,7 +246,7 @@ type TrustedIssuer struct {
 
 	// Issuer is, for kind: oidc, the exact value a token's "iss" claim must
 	// have, and the base URL used for OpenID Connect discovery unless JWKSURL
-	// is set. It must be an absolute https URL, for example
+	// or JWKSFile is set. It must be an absolute https URL, for example
 	// "https://token.actions.githubusercontent.com". Required.
 	//
 	// The match is exact: no normalization, no trailing-slash tolerance, no
@@ -304,6 +323,12 @@ type TrustedIssuer struct {
 	// recorded as [Principal.Role]. It comes from the policy and never from the
 	// token, so a caller cannot choose its own role.
 	Role string `json:"role,omitempty" yaml:"role,omitempty"`
+
+	// Actions optionally restricts callers admitted by this entry to exact
+	// actions from Flowstate's canonical scope vocabulary. Omitted preserves the
+	// pre-authorization behavior (all actions); [] grants none. Role remains an
+	// audit label and does not grant authority by itself.
+	Actions ActionScopes `json:"actions,omitzero" yaml:"actions,omitempty"`
 
 	// Namespace assigns every caller this entry admits to one tenant.
 	//
@@ -385,12 +410,30 @@ type TrustedIssuer struct {
 	// Entries that share an Issuer must agree on this value.
 	JWKSURL string `json:"jwks_url,omitempty" yaml:"jwks_url,omitempty"`
 
+	// JWKSFile is a local JSON Web Key Set read once when the verifier is
+	// constructed. It supports air-gapped deployments and local rehearsal
+	// without weakening identity egress policy or standing up an HTTP server.
+	// Relative paths are resolved from the server process's working directory.
+	//
+	// Mutually exclusive with JWKSURL. Leave both empty for ordinary OpenID
+	// Connect discovery. Rotation is a file replacement followed by a server
+	// restart; a running verifier never rereads this file.
+	//
+	// Entries that share an Issuer must agree on this value.
+	JWKSFile string `json:"jwks_file,omitempty" yaml:"jwks_file,omitempty"`
+
 	// MaxTokenAge, when positive, rejects tokens whose "iat" claim is older
 	// than this, regardless of the lifetime the issuer chose. Workload tokens
 	// are short-lived by design, so an operator can insist on that: a captured
 	// token stays useful for minutes rather than hours.
 	MaxTokenAge time.Duration `json:"max_token_age,omitempty" yaml:"max_token_age,omitempty"`
 }
+
+// MaxPolicyProvenanceBytes is the largest trusted-issuer name or role that can
+// be preserved exactly in an authorization audit record. Policy validation
+// refuses larger labels rather than letting the audit seam truncate two
+// distinct policy rows or roles to the same provenance.
+const MaxPolicyProvenanceBytes = 128
 
 // ClaimRule requires that a claim in a verified token equals one of a set of
 // values.
@@ -523,11 +566,17 @@ func isNone(alg jwa.Algorithm) bool {
 func ParsePolicy(data []byte) (Policy, error) {
 	var policy Policy
 
-	if err := yaml.UnmarshalWithOptions(data, &policy, yaml.Strict()); err != nil {
-		return Policy{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
+	if err := strictyaml.UnmarshalStrict(data, &policy); err != nil {
+		// Both sentinels: every caller that asked "is the policy usable" keeps
+		// its answer, and the one that must not echo the decoder can tell this
+		// failure from a validation one — see [ErrPolicySyntax].
+		return Policy{}, fmt.Errorf("%w: %w: %w", ErrInvalidPolicy, ErrPolicySyntax, err)
 	}
 
 	if err := rejectNullNamespaceMap(data, policy); err != nil {
+		return Policy{}, err
+	}
+	if err := rejectNullActions(data, policy); err != nil {
 		return Policy{}, err
 	}
 
@@ -536,6 +585,32 @@ func ParsePolicy(data []byte) (Policy, error) {
 	}
 
 	return policy, nil
+}
+
+// rejectNullActions preserves the security-significant distinction between an
+// omitted action restriction and a present empty one. goccy/go-yaml decodes an
+// explicit null directly to nil without invoking a field unmarshaler, so inspect
+// the already-valid raw document exactly as rejectNullNamespaceMap does.
+func rejectNullActions(data []byte, policy Policy) error {
+	var raw struct {
+		Issuers []map[string]any `yaml:"issuers" json:"issuers"`
+	}
+	if err := strictyaml.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+
+	for i, issuer := range raw.Issuers {
+		if i >= len(policy.Issuers) {
+			break
+		}
+		if _, present := issuer["actions"]; !present || policy.Issuers[i].Actions != nil {
+			continue
+		}
+		return fmt.Errorf("%w: issuers[%d] (%q): actions is present but null; remove it to preserve unrestricted legacy behavior, or use [] to grant no actions",
+			ErrInvalidPolicy, i, policy.Issuers[i].Name)
+	}
+
+	return nil
 }
 
 // rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the
@@ -558,7 +633,7 @@ func rejectNullNamespaceMap(data []byte, policy Policy) error {
 	// failure here would mean this loose, non-strict decode disagrees with it
 	// in some way that does not bear on namespace_map presence. Nothing to
 	// enforce without a raw document to compare against.
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	if err := strictyaml.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
 
@@ -592,7 +667,11 @@ func (p Policy) Validate() error {
 	}
 
 	names := make(map[string]struct{}, len(p.Issuers))
-	jwksURLs := make(map[string]string, len(p.Issuers))
+	type keySource struct {
+		url  string
+		file string
+	}
+	keySources := make(map[string]keySource, len(p.Issuers))
 
 	for i, issuer := range p.Issuers {
 		if err := issuer.validate(); err != nil {
@@ -604,13 +683,16 @@ func (p Policy) Validate() error {
 		}
 		names[issuer.Name] = struct{}{}
 
-		// Entries that share an issuer share its key set, so they cannot
-		// disagree about where those keys come from.
-		if previous, seen := jwksURLs[issuer.Issuer]; seen && previous != issuer.JWKSURL {
-			return fmt.Errorf("%w: issuers[%d]: entries for issuer %q disagree on jwks_url (%q and %q)",
-				ErrInvalidPolicy, i, issuer.Issuer, previous, issuer.JWKSURL)
+		// OIDC entries that share an issuer share its key set, so they cannot
+		// disagree about where those keys come from. An mTLS entry may use the
+		// same operator-chosen issuer label, but has no signing-key source.
+		if issuer.kind() == IssuerKindOIDC {
+			source := keySource{url: issuer.JWKSURL, file: issuer.JWKSFile}
+			if previous, seen := keySources[issuer.Issuer]; seen && previous != source {
+				return fmt.Errorf("%w: issuers[%d]: entries for issuer %q disagree on signing-key source", ErrInvalidPolicy, i, issuer.Issuer)
+			}
+			keySources[issuer.Issuer] = source
 		}
-		jwksURLs[issuer.Issuer] = issuer.JWKSURL
 	}
 
 	// A policy is either tenant-aware or it is not. If any entry determines a
@@ -713,7 +795,7 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 		mapped, ok := t.NamespaceMap[namespace]
 		if !ok {
 			return "", fmt.Errorf("%w: the %q claim of a token from %q is %q, which has no entry in namespace_map",
-				ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64))
+				ErrNoNamespace, t.NamespaceClaim, t.Name, textbound.Truncate(namespace, 64))
 		}
 		return mapped, nil
 	}
@@ -726,7 +808,7 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 	// reference is built from it.
 	if err := ValidateNamespace(namespace); err != nil {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is %q: %w",
-			ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64), err)
+			ErrNoNamespace, t.NamespaceClaim, t.Name, textbound.Truncate(namespace, 64), err)
 	}
 
 	return namespace, nil
@@ -795,6 +877,27 @@ func (t TrustedIssuer) validate() error {
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
 	}
+	if len(t.Name) > MaxPolicyProvenanceBytes {
+		return fmt.Errorf("name is %d bytes, over the %d byte audit provenance limit",
+			len(t.Name), MaxPolicyProvenanceBytes)
+	}
+	if len(t.Role) > MaxPolicyProvenanceBytes {
+		return fmt.Errorf("role is %d bytes, over the %d byte audit provenance limit",
+			len(t.Role), MaxPolicyProvenanceBytes)
+	}
+	if len(t.Actions) > 64 {
+		return fmt.Errorf("actions has %d entries, over the 64 entry limit", len(t.Actions))
+	}
+	seenActions := make(map[string]struct{}, len(t.Actions))
+	for i, action := range t.Actions {
+		if action == "" || len(action) > 64 || strings.ContainsAny(action, " \t\r\n") {
+			return fmt.Errorf("actions[%d] must be a non-empty canonical scope of at most 64 bytes with no whitespace", i)
+		}
+		if _, duplicate := seenActions[action]; duplicate {
+			return fmt.Errorf("actions[%d]: duplicate action %q", i, action)
+		}
+		seenActions[action] = struct{}{}
+	}
 
 	switch t.kind() {
 	case IssuerKindMTLS:
@@ -862,6 +965,9 @@ func (t TrustedIssuer) validateOIDC() error {
 			return err
 		}
 	}
+	if t.JWKSURL != "" && t.JWKSFile != "" {
+		return fmt.Errorf("jwks_url and jwks_file are mutually exclusive: configure one signing-key source")
+	}
 
 	return nil
 }
@@ -898,6 +1004,9 @@ func (t TrustedIssuer) validateMTLS() error {
 	}
 	if t.JWKSURL != "" {
 		return fmt.Errorf("jwks_url is not meaningful for kind: %s entries: there is no key set to discover", IssuerKindMTLS)
+	}
+	if t.JWKSFile != "" {
+		return fmt.Errorf("jwks_file is not meaningful for kind: %s entries: there is no key set to load", IssuerKindMTLS)
 	}
 	if t.MaxTokenAge != 0 {
 		return fmt.Errorf("max_token_age is not meaningful for kind: %s entries: a client certificate carries no issued-at claim to age", IssuerKindMTLS)
@@ -1245,7 +1354,23 @@ func validateIssuerURL(issuer string) error {
 	}
 
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("issuer %q must not include a query string or fragment", issuer)
+		// Redacted like every refusal in [ValidateHTTPSURL], and for a sharper
+		// reason: this is the refusal a credential misread as `host:port`
+		// actually reaches. `https://acct9:2024?s3cr3t@host` passes every
+		// check above — url.Parse calls 2024 a port and finds no userinfo —
+		// and is refused here, for the query the rest of the credential
+		// became.
+		//
+		// Read as malformed, which is the one place that is true of a URL
+		// url.Parse accepted. An issuer *is* its identifier: one carrying a
+		// query or a fragment is not a usable issuer whatever else is right
+		// about it, so there is no well-formed reading of this string left to
+		// protect, and the wider search costs nothing here. It buys the shape
+		// that mixes the delimiters — `https://acct9:2024/s3c?r3t@host`, where
+		// the slash keeps the URL parseable and puts the rest of the
+		// credential past where a before-first-slash read stops (Codex).
+		return fmt.Errorf("issuer %q must not include a query string or fragment",
+			urlWithoutCredentials(issuer, true))
 	}
 
 	return nil
@@ -1263,21 +1388,58 @@ func validateIssuerURL(issuer string) error {
 func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, rawURL, err)
+		// What every refusal here quotes, rather than rawURL itself. One of
+		// them exists because a URL can carry a credential, and it quoted the
+		// URL — so `flow auth check`, whose whole job is to read a policy back
+		// to the operator before the server refuses it, printed
+		// `issuer "https://user:password@example.com" must not include
+		// credentials` to a stderr that CI and support transcripts keep
+		// (Codex). An ordinary URL is quoted exactly as before.
+		//
+		// Read as malformed, because url.Parse just said so: the redaction
+		// cannot trust a delimiter in a string whose structure was rejected.
+		// See urlWithoutCredentials.
+		shown := urlWithoutCredentials(rawURL, true)
+
+		// Not the [url.Error] around the reason: that error renders as
+		// `parse "https://user:password@host": ...`, a second copy of the
+		// text the line above just cleaned. Unwrapping is safe because
+		// nothing matches on this chain — the reason is prose either way —
+		// and a malformed URL is a shape credentials reach: `invalid
+		// userinfo` is itself one of the ways url.Parse refuses.
+		//
+		// And not the reason either, once something was redacted. url.Parse's
+		// reasons can quote a piece of what they refused: a password holding
+		// a bad percent escape makes a [url.EscapeError], which renders as
+		// `invalid URL escape "%zz"` — three characters of that password,
+		// after the URL around them was cleaned (Codex, Copilot). There is no
+		// enumeration of the reasons net/url may return now or add later, so
+		// the fail-closed answer is to keep the reason exactly when there was
+		// no credential for it to be a fragment of.
+		if shown != rawURL {
+			return nil, fmt.Errorf("%s %q is not a valid URL", field, shown)
+		}
+
+		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, shown, urlParseReason(err))
 	}
+
+	// A URL that parsed but names no host is malformed too, in the one way
+	// that matters here: there is no authority for a narrower reading to
+	// delimit, so the greedy one applies to it as well.
+	shown := urlWithoutCredentials(rawURL, parsed.Hostname() == "")
 
 	// Hostname, not Host: Host keeps a bare port (url.Parse("https://:443/x")
 	// yields Host == ":443", Hostname() == ""), so testing Host here would
 	// accept a URL that names no host and disagree with the isLoopbackHost
 	// check below, which already uses Hostname().
 	if parsed.Hostname() == "" {
-		return nil, fmt.Errorf("%s %q must name a host, such as %q", field, rawURL, "https://example.com")
+		return nil, fmt.Errorf("%s %q must name a host, such as %q", field, shown, "https://example.com")
 	}
 
 	// Credentials in an issuer or key set URL would be sent on every fetch and
 	// have to be compared as part of the issuer claim.
 	if parsed.User != nil {
-		return nil, fmt.Errorf("%s %q must not include credentials", field, rawURL)
+		return nil, fmt.Errorf("%s %q must not include credentials", field, shown)
 	}
 
 	switch parsed.Scheme {
@@ -1287,10 +1449,225 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 		if isLoopbackHost(parsed.Hostname()) {
 			return parsed, nil
 		}
-		return nil, fmt.Errorf("%s %q must use https: plain http is only allowed for loopback addresses", field, rawURL)
+		return nil, fmt.Errorf("%s %q must use https: plain http is only allowed for loopback addresses", field, shown)
 	default:
-		return nil, fmt.Errorf("%s %q must use https", field, rawURL)
+		return nil, fmt.Errorf("%s %q must use https", field, shown)
 	}
+}
+
+// urlCredentialsMarker stands in a diagnostic for the userinfo a configured
+// URL carried. It says the same thing pkg/flowstate/v1's SensitiveMarker says,
+// spelled here rather than taken from there because that package imports this
+// one.
+const urlCredentialsMarker = "[redacted]"
+
+// urlWithoutCredentials is rawURL with any userinfo replaced by
+// [urlCredentialsMarker], and rawURL unchanged when there is none.
+//
+// malformed says the caller has decided there is no well-formed reading of
+// this string left to protect — url.Parse refused it, or it names no host, or
+// the caller is refusing it for something that makes it unusable whatever else
+// is right about it — and it widens the search from the region before the
+// first slash to the whole remainder. It has to. A password holding an
+// unescaped `/`, `?` or `#` puts a delimiter where an authority-shaped read
+// stops,
+// so `https://acct9:s3c/r3t@host` has an "authority" of `acct9:s3c`, no `@` in
+// it, and the credential survives into the refusal (Codex). Nothing legitimate
+// is lost by the wider search there, because it runs only on strings that are
+// being rejected anyway: what it can cost is a host, on a malformed URL whose
+// *path* holds an `@`, which is a worse diagnostic and not a disclosure.
+//
+// A well-formed URL keeps the before-first-slash reading, so `https://host/a@b`
+// — where the `@` is in the path and the host is the thing an operator needs
+// to read — is quoted whole. Unless its caller passed malformed anyway: see
+// [validateIssuerURL], which does for an issuer carrying a query or a
+// fragment.
+//
+// "Any userinfo" is found textually: past the scheme, past the slashes that
+// open a hierarchical URL, up to the first `/`, cut at the last `@`.
+//
+// Up to the first `/`, and not the first of `/`, `?` or `#` where url.Parse
+// ends the authority — so this region is deliberately the wider of the two,
+// and on some well-formed URLs it cuts somewhere url.Parse would not. The body
+// says why: url.Parse's reading of where the userinfo ends can be wrong in the
+// author's terms, and a search shaped like the authority inherits the
+// mistake.
+//
+// Past *the slashes*, however many there are, rather than past a literal `//`.
+// An operator who mistypes the delimiter writes `https:/acct9:s3cr3t@host` or
+// `https:///acct9:s3cr3t@host`, and url.Parse reads both as a URL with no host
+// at all — so they are refused by the branch above the credentials check, and
+// a search for `//` finds no authority in the first and an empty one in the
+// second, leaving the credential in the sentence (Codex, Copilot).
+//
+// An *opaque* URL — a scheme with no slash after it, `mailto:a@b` — is left
+// alone, because there its `@` belongs to the path and url.Parse agrees there
+// is no userinfo.
+//
+// That exemption is a class rather than a single shape: anything with no slash
+// after the scheme is returned whole, so a leading space, a backslash
+// delimiter, a percent-encoded one (`https:%2f%2f…`) and a scheme-less
+// `acct9:s3cr3t@host` all keep whatever they hold. Not "anything url.Parse
+// reads as having no authority", which is a wider set and would contradict the
+// paragraph above: `https:/…` and `https:///…` have no authority by that test
+// either, and they are redacted. None of them breaks the rule
+// above — url.Parse finds no userinfo in any of them either, so this and it
+// still agree — but a person reading a refusal about one does see the text they
+// typed. Widening the rule to cover them means guessing which `@` is a
+// credential and which is a mail address, which is the judgement
+// picatz/flowstate#2028 holds rather than one to make here
+// (flowstate-reviewer).
+//
+// Textual, and not [url.URL.Redacted], for two reasons. Redacted hides the
+// password and keeps the username, which is the right trade where the repo
+// already uses it — netpolicy and the http task log the URL a request was
+// actually sent to, and an operator reading that log needs to recognise it —
+// and the wrong one here, where the refusal is "this must not include
+// credentials" and the username is the other half of the credential. And it
+// needs a [url.URL], which the branch above it does not have: url.Parse
+// refuses `https://user:pa ss@host` outright, so the shape most likely to
+// hold a mistyped password is exactly the one with nothing to call Redacted
+// on.
+//
+// The host, port and path survive wherever no delimiter precedes them in that
+// region, because those are what tell an operator which entry of their policy
+// the refusal is about.
+//
+// They do not survive an `@` written later in the same region, and that is the
+// accepted cost of reading past the authority. A URL with no path slash whose
+// query or fragment holds one — `http://issuer.example.com?tenant=a@b`, or the
+// same with `%40`, or `https://acct9:s3cr3t@host?cb=a@b`, which has a real
+// credential *and* a later `@` — is redacted from the start of the region to
+// that last one, so a host can be lost where no credential was.
+//
+// Nothing distinguishes those from the misreads above
+// without deciding which `@` a person meant, so this errs to the side that
+// cannot disclose, and the refusal is still addressed by the `issuers[N]:`
+// frame the loader wraps it in.
+//
+// The same trade is made the other way once a slash is involved, and that one
+// does leave a credential in the sentence.
+// `http://acct9:2024/s3cr3t@host` is the port misread with the rest of the
+// credential in what url.Parse calls the path, and it is textually identical
+// to `http://host:8443/path@thing`, which is an ordinary URL whose host a
+// refusal must keep. Redacting after a slash would erase the host from every
+// one of those, so this stops at the first slash and the credential survives
+// into the scheme refusal that URL earns from [ValidateHTTPSURL]. The same
+// shape reaching [validateIssuerURL] instead — with a query or a fragment on
+// it — is redacted, because that caller passes malformed. It is the
+// disclosure half of
+// picatz/flowstate#2038, whose repair is not to redact harder here but to
+// stop reading a credential as `host:port` and a path in the first place.
+func urlWithoutCredentials(rawURL string, malformed bool) string {
+	rest := rawURL
+	prefix := ""
+	if colon := strings.Index(rest, ":"); colon >= 0 && isURLScheme(rest[:colon]) {
+		prefix, rest = rest[:colon+1], rest[colon+1:]
+	} else if strings.HasPrefix(rest, ":") {
+		// `://acct9:s3cr3t@host`, which is what an unexpanded `${SCHEME}` or a
+		// deleted scheme leaves behind. There is no scheme for the branch
+		// above to take, and the colon would otherwise stop the slash count
+		// before it began. Unlike `mailto:`, this shape
+		// has no meaning to preserve.
+		prefix, rest = ":", rest[1:]
+	}
+
+	// The slashes that make this hierarchical. None of them means an opaque
+	// URL, which has no authority to hold userinfo.
+	slashes := 0
+	for slashes < len(rest) && rest[slashes] == '/' {
+		slashes++
+	}
+	if slashes == 0 {
+		return rawURL
+	}
+	prefix, rest = prefix+rest[:slashes], rest[slashes:]
+
+	// Where a delimiter may appear: everything before the first `/`, or the
+	// whole remainder when the string is malformed and there is no structure
+	// left to trust.
+	//
+	// Not url.Parse's authority, which stops at the first `/`, `?` *or* `#`.
+	// url.Parse's reading of where the userinfo ends can be wrong in the
+	// author's terms, and in two ways that compound. A password whose leading
+	// run is all digits parses as a *port*, so `https://acct9:2024?s3cr3t@host`
+	// is host `acct9`, port 2024 and a query, with no userinfo at all — the
+	// credential sits past the `?` where an authority-shaped search stops. And
+	// a username carrying an unescaped `@` moves the split: `https://ac@t9:2024?s3cr3t@host`
+	// parses as userinfo `ac`, host `t9`, so a search that stopped at the
+	// authority found *a* delimiter, was satisfied, and left the rest of the
+	// credential in the sentence (flowstate-reviewer, twice).
+	//
+	// One region and one search closes both, because this region is always a
+	// superset of the authority: whatever url.Parse concluded, an `@` before
+	// the first slash is in the position userinfo is written in.
+	//
+	// The first slash is where it stops, and that is what keeps a path out of
+	// it: `http://host/a@b` must keep its host. See the residuals below for
+	// what that concedes.
+	region := rest
+	if !malformed {
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			region = rest[:slash]
+		}
+	}
+
+	// The *last* delimiter, which is where url.Parse splits too: a region
+	// holding more than one is host after the last and userinfo before it, so
+	// cutting at the first would leave half the credential in place.
+	at := lastUserinfoDelimiter(region)
+	if at < 0 {
+		return rawURL
+	}
+
+	return prefix + urlCredentialsMarker + rest[at:]
+}
+
+// isURLScheme reports whether s is shaped like a URL scheme, so that the colon
+// after it is the scheme's rather than a port's or a password's. RFC 3986: a
+// letter, then letters, digits, `+`, `-` and `.`.
+func isURLScheme(s string) bool {
+	if s == "" || !isASCIILetter(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if isASCIILetter(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.' {
+			continue
+		}
+
+		return false
+	}
+
+	return true
+}
+
+func isASCIILetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+// lastUserinfoDelimiter is the last `@` in s, in either spelling it arrives
+// in: written, or percent-encoded as `%40` by templating that escaped it.
+//
+// Both spellings in one function, and every search for the delimiter goes
+// through it, because the two were once looked for in different places — the
+// encoded one only where url.Parse had already refused the string — and the
+// shape that is *both* at once slipped between them: `%40` in a password whose
+// leading run is digits is a URL url.Parse reads as host, port and query, so
+// it is well formed, and neither search was looking (flowstate-reviewer).
+//
+// Compared exactly. A percent escape's hex digits may be written in either
+// case, but `40` has no letter in it, so there is one spelling to look for.
+func lastUserinfoDelimiter(s string) int {
+	return max(strings.LastIndex(s, "@"), strings.LastIndex(s, "%40"))
+}
+
+// urlParseReason is why [url.Parse] refused, without the copy of the URL that
+// [url.Error] renders in front of it.
+func urlParseReason(err error) error {
+	if parseErr, ok := errors.AsType[*url.Error](err); ok {
+		return parseErr.Err
+	}
+
+	return err
 }
 
 // isLoopbackHost reports whether a URL host names the local machine.
@@ -1312,6 +1689,7 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 
 	clone.Audiences = slices.Clone(t.Audiences)
 	clone.Algorithms = slices.Clone(t.Algorithms)
+	clone.Actions = slices.Clone(t.Actions)
 	clone.Require = slices.Clone(t.Require)
 	for i, rule := range clone.Require {
 		// Every slice inside a rule, not only the accepting one. A NoneOf left
@@ -1348,14 +1726,14 @@ func (t TrustedIssuer) algorithms() []jwa.Algorithm {
 // age it tolerates, and its claim rules.
 func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window lifetime, claims map[string]any, skew time.Duration) error {
 	if !slices.Contains(t.algorithms(), alg) {
-		return fmt.Errorf("%w: %q", ErrDisallowedAlgorithm, truncate(alg, 32))
+		return fmt.Errorf("%w: %q", ErrDisallowedAlgorithm, textbound.Truncate(alg, 32))
 	}
 
 	if !slices.ContainsFunc(audiences, func(audience string) bool {
 		return slices.Contains(t.Audiences, audience)
 	}) {
 		return fmt.Errorf("%w: token is addressed to %q, want one of %v",
-			ErrInvalidAudience, truncate(strings.Join(audiences, ", "), maxClaimValueLength), t.Audiences)
+			ErrInvalidAudience, textbound.Truncate(strings.Join(audiences, ", "), maxClaimValueLength), t.Audiences)
 	}
 
 	if t.MaxTokenAge > 0 {
@@ -1405,12 +1783,12 @@ func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window life
 func (r ClaimRule) check(claims map[string]any) error {
 	value, ok := claims[r.Claim]
 	if !ok {
-		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf}
+		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf)}
 	}
 
 	found := claimStrings(value)
 	if len(found) == 0 {
-		return &ClaimMismatchError{Claim: r.Claim, Want: r.AnyOf, Got: truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
+		return &ClaimMismatchError{Claim: r.Claim, Want: slices.Clone(r.AnyOf), Got: textbound.Truncate(fmt.Sprintf("%v", value), maxClaimValueLength)}
 	}
 
 	// Exclusion is checked before acceptance so that a rule carrying both
@@ -1421,9 +1799,9 @@ func (r ClaimRule) check(claims map[string]any) error {
 		if slices.Contains(r.NoneOf, candidate) {
 			return &ClaimMismatchError{
 				Claim:        r.Claim,
-				Want:         r.AnyOf,
-				Got:          truncate(strings.Join(found, ", "), maxClaimValueLength),
-				RefusedValue: truncate(candidate, maxClaimValueLength),
+				Want:         slices.Clone(r.AnyOf),
+				Got:          textbound.Truncate(strings.Join(found, ", "), maxClaimValueLength),
+				RefusedValue: textbound.Truncate(candidate, maxClaimValueLength),
 			}
 		}
 	}
@@ -1442,8 +1820,8 @@ func (r ClaimRule) check(claims map[string]any) error {
 
 	return &ClaimMismatchError{
 		Claim: r.Claim,
-		Want:  r.AnyOf,
-		Got:   truncate(strings.Join(found, ", "), maxClaimValueLength),
+		Want:  slices.Clone(r.AnyOf),
+		Got:   textbound.Truncate(strings.Join(found, ", "), maxClaimValueLength),
 	}
 }
 
