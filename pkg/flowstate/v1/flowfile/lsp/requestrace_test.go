@@ -245,13 +245,12 @@ func testHoverThroughAChangeStorm(t *testing.T) {
 // [documentStore.closeGate] rather than raced: the close's handler is held
 // open, mid-dispatch, well past the point a scheduler would ordinarily have
 // let it finish, and the reopen is sent and given every chance to run ahead
-// of it. What this asserts is not merely the *end* state — a version that
-// only checked the final text could pass by having the queue silently not
-// exist, if [documentStore.open]'s own reopen-detection happened to save it a
-// different way — but the state *while the close is still gated*: the store
-// must show no change at all, because the reopen's own handler must not even
-// have started touching it yet. Only once that is shown does releasing the
-// gate and checking the final text mean anything.
+// of it. The final assertion is the one that catches the regression: without
+// the queue, the late close deletes the document the reopen established, so
+// nothing survives. The check made while the close is still gated shows the
+// reopen has not run ahead of it; on its own it cannot tell a queue from
+// [documentStore.open]'s version guard, which also keeps the incumbent for a
+// reopen at version 1, so it describes the queued state rather than proving it.
 func TestDidOpenWaitsForAnInFlightDidCloseOnTheSameURI(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := &FlowfileServer{Logger: discardLogger()}
