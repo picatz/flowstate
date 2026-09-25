@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/goccy/go-yaml"
 
 	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
@@ -145,7 +144,7 @@ func (s ActionScopes) IsZero() bool { return s == nil }
 // — applies to it.
 type NamespaceMap map[string]string
 
-// UnmarshalYAML implements [yaml.BytesUnmarshaler]. It is invoked only when
+// UnmarshalYAML implements goccy/go-yaml's BytesUnmarshaler. It is invoked only when
 // the namespace_map key is present in the document, which is what lets a
 // present-but-null or present-but-empty value decode to a non-nil (possibly
 // zero-length) map rather than to the nil value a key that was never written
@@ -159,40 +158,6 @@ func (m *NamespaceMap) UnmarshalYAML(data []byte) error {
 	if decoded == nil {
 		decoded = map[string]string{}
 	}
-
-	// goccy/go-yaml treats a plain (unquoted) mapping key ending in `<<` as
-	// YAML's merge-key indicator, not just a key that is exactly `<<`:
-	// `0<<:`, `x<<<<:` and `<<:` itself all trip it, while `<<0` and `a<<b`
-	// — `<<` anywhere else in the key — do not (#1949, FuzzNamespaceMap).
-	// A namespace_map can end up with one anyway: `namespace_map:\n  0<<:` —
-	// no trailing newline — decodes here to map[string]string{"0<<": ""}
-	// rather than refusing, because the decoder's merge-key handling only
-	// rejects a non-mapping value once one is actually present, and at end
-	// of input there is none to examine yet. [NamespaceMap.MarshalYAML] then
-	// writes that back out as the ordinary two-line document `0<<: ""`,
-	// which decoding this same way refuses ("string was used where mapping
-	// is expected") — a document [FuzzNamespaceMap] can never accept twice
-	// for the same reason it can never marshal the map it just built, so it
-	// fatals rather than resolving one way or the other. There is also no
-	// quoting this type can marshal its way out of: every path back through
-	// this decoder reads an unquoted key ending in `<<` as the merge
-	// indicator regardless of how the source document spelled it, so a
-	// namespace ending that way cannot be represented, only mistaken for
-	// something it is not.
-	//
-	// Refusing it here, rather than leaving the ambiguity for whatever reads
-	// the map later, is the fail-closed answer AGENTS.md invariant 6 asks
-	// for at a boundary that decodes an operator's trust policy: a
-	// namespace_map entry this package cannot tell apart from YAML's own
-	// syntax is refused at load, the same way [rejectNullNamespaceMap] a few
-	// lines below refuses a different value this same key's ambiguity can
-	// produce.
-	for key := range decoded {
-		if strings.HasSuffix(key, "<<") {
-			return fmt.Errorf("namespace_map: %q ends with YAML's merge-key indicator (\"<<\") and cannot be used as a namespace_map key", key)
-		}
-	}
-
 	*m = decoded
 	return nil
 }
@@ -213,16 +178,55 @@ func (m *NamespaceMap) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalYAML implements [yaml.BytesMarshaler] so a NamespaceMap round-trips
-// as a plain mapping rather than through this type's own fields.
+// MarshalYAML implements goccy/go-yaml's BytesMarshaler so a NamespaceMap
+// round-trips as a plain mapping rather than through this type's own fields.
+//
+// As a JSON object, not through goccy/go-yaml's own Marshal: JSON is valid
+// YAML flow syntax, and [encoding/json.Marshal] always quotes a key, where
+// goccy's Marshal quotes one only when it judges quoting necessary — and its
+// judgement disagrees with what the decoder on the other end of the round
+// trip needs. A key ending in the two characters "<<" is the shape #1949
+// found (goccy/go-yaml reads an unquoted key ending in "<<" as its merge-key
+// indicator once a document has a value to check that indicator against, so
+// the plain mapping goccy's Marshal writes for {"0<<": ""} — `0<<: ""` —
+// refuses to decode), but it is one member of a wider class: a key holding a
+// literal tab, or one that starts with "? " (YAML's explicit-key indicator),
+// comes back a *different* key after this same unquoted round trip,
+// silently, with no decode error to catch it (flowstate-reviewer, a
+// 3,000,000-input differential run over every unquoted encoding this
+// package tried found nine distinct ways a key changed and zero that merely
+// refused). Quoting every key, which is what a JSON object is, closes the
+// class rather than the one shape found first: [encoding/json.Marshal]
+// never omits a key's quotes, so there is no key this format leaves for the
+// decoder to read back as something else.
+//
+// [encoding/json.Marshal]'s own default HTML-safe escaping is turned off:
+// it would otherwise render "<<" as six characters — a backslash, "u", and
+// four hex digits — in what an operator reads as their own policy file, and
+// nothing here is ever interpolated into HTML, so there is no reason to pay
+// for the escaping in readability.
 func (m NamespaceMap) MarshalYAML() ([]byte, error) {
-	return yaml.Marshal(map[string]string(m))
+	return marshalCompactJSON(map[string]string(m))
 }
 
-// MarshalJSON implements [encoding/json.Marshaler], for the same reason as
-// [NamespaceMap.MarshalYAML].
+// MarshalJSON implements [encoding/json.Marshaler], for the same reason and
+// with the same HTML-safe escaping turned off as [NamespaceMap.MarshalYAML].
 func (m NamespaceMap) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]string(m))
+	return marshalCompactJSON(map[string]string(m))
+}
+
+// marshalCompactJSON is v encoded as JSON with HTML-safe escaping off and the
+// trailing newline [json.Encoder.Encode] appends trimmed, so the result is
+// exactly what [encoding/json.Marshal] would produce if it let a caller
+// choose the escaping.
+func marshalCompactJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 // IsZero reports whether m is nil — never whether it is empty. Both

@@ -3,6 +3,7 @@ package auth_test
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -372,96 +373,174 @@ issuers:
 	}
 }
 
-// TestNamespaceMapRefusesAMergeKeyShapedKey is #1949: the weekly deep fuzz
-// tier's FuzzNamespaceMap found that a namespace_map key ending in YAML's
-// merge-key indicator (`<<`) decodes once but cannot be marshaled back out
-// and decoded again, because goccy/go-yaml treats an unquoted key ending in
-// `<<` as the merge directive on the way back in regardless of how the
-// source document spelled it. `namespace_map:\n  0<<:`, with no trailing
-// newline, is the shape the fuzzer minimized to: the decoder's merge-key
-// type check only runs once it has a value to examine, and at end of input
-// there is none yet, so the key slips through as a literal `"0<<"` — a state
-// [NamespaceMap.MarshalYAML] then cannot reproduce.
-func TestNamespaceMapRefusesAMergeKeyShapedKey(t *testing.T) {
+// TestNamespaceMapYAMLRoundTrips is #1949: the weekly deep fuzz tier's
+// FuzzNamespaceMap found that a namespace_map key ending in YAML's merge-key
+// indicator (`<<`) decodes once but cannot be marshaled back out and decoded
+// again, because goccy/go-yaml treats an unquoted key ending in `<<` as the
+// merge directive on the way back in regardless of how the source document
+// spelled it. `namespace_map:\n  0<<:`, with no trailing newline, is the
+// shape the fuzzer minimized to: the decoder's merge-key type check only
+// runs once it has a value to examine, and at end of input there is none
+// yet, so the key slips through as a literal `"0<<"` — a state the plain
+// YAML mapping [NamespaceMap.MarshalYAML] used to write then could not
+// reproduce.
+//
+// A refusal on that one suffix shape was the first fix, and a differential
+// run against the decoder found it incomplete: a trailing tab, or a leading
+// `? ` (YAML's own explicit-key indicator), silently changes a key across
+// this same unquoted round trip with no error to catch it either — nine
+// distinct breaks in three million random keys, none of them a `<<` suffix
+// (flowstate-reviewer). [NamespaceMap.MarshalYAML] now writes every key as a
+// quoted JSON string instead, which the same run found zero breaks for, so
+// this test asserts the round trip directly rather than refusing the one
+// shape found first — see the comment on [NamespaceMap.MarshalYAML] for why
+// quoting is the fix and refusing is not.
+func TestNamespaceMapYAMLRoundTrips(t *testing.T) {
 	tests := []struct {
-		name    string
-		doc     string
-		wantErr string // "" means accepted
+		name string
+		doc  string
 	}{
 		{
-			name:    "the exact fuzz-found input: no trailing newline",
-			doc:     "0<<:",
-			wantErr: `"0<<" ends with YAML's merge-key indicator`,
+			name: "the exact fuzz-found input: no trailing newline",
+			doc:  "0<<:",
 		},
 		{
-			name:    "the literal merge-key indicator itself, no trailing newline",
-			doc:     "<<:",
-			wantErr: `"<<" ends with YAML's merge-key indicator`,
+			name: "the literal merge-key indicator itself, no trailing newline",
+			doc:  "<<:",
 		},
 		{
-			name:    "the same key, quoted and with an ordinary value",
-			doc:     "\"<<\": ok\n",
-			wantErr: `"<<" ends with YAML's merge-key indicator`,
+			name: "the same key, quoted and with an ordinary value",
+			doc:  "\"<<\": ok\n",
 		},
 		{
-			// Quoted, so this reaches auth.NamespaceMap.UnmarshalYAML's own
-			// suffix check rather than goccy/go-yaml's native merge-key
-			// refusal — the same way the quoted case above does — and proves
-			// the check is not narrowed to exactly two trailing characters.
-			name:    "several trailing angle brackets, quoted",
-			doc:     "\"prod<<<<\": ok\n",
-			wantErr: `"prod<<<<" ends with YAML's merge-key indicator`,
+			name: "several trailing angle brackets",
+			doc:  "prod<<<<:",
 		},
 		{
-			// Unquoted and with an ordinary value, so this is refused before
-			// reaching auth.NamespaceMap.UnmarshalYAML's own check at all —
-			// goccy/go-yaml's native merge-key handling gets there first,
-			// once a value is actually present to fail its own type check
-			// against. Asserted so that path is a decision on the record
-			// too: this package's own refusal is not the only thing standing
-			// between an operator and this shape, only the one that also
-			// covers the quirk where no value is present yet.
-			name:    "several trailing angle brackets, unquoted, refused natively",
-			doc:     "prod<<<<: ok\n",
-			wantErr: "string was used where mapping is expected",
-		},
-		{
-			// The negative direction: `<<` earlier in the key, not as its
-			// suffix, is what goccy/go-yaml does not special-case (confirmed
-			// against the decoder directly; see the comment on
-			// [NamespaceMap.UnmarshalYAML]), and MarshalYAML reproduces it
-			// unquoted without incident, so there is no round-trip hazard to
-			// refuse it for.
-			name: "a leading, non-suffix angle-bracket pair is not the indicator",
+			name: "a leading, non-suffix angle-bracket pair",
 			doc:  "<<prod: ok\n",
 		},
 		{
-			name: "an ordinary key round-trips",
+			name: "an ordinary key",
 			doc:  "prod: ok\n",
+		},
+		{
+			// The second, wider class the suffix refusal never covered: a
+			// trailing tab silently became a truncated key on the old
+			// unquoted round trip (flowstate-reviewer).
+			name: "a key holding a trailing tab",
+			doc:  "\"prod\t\": ok\n",
+		},
+		{
+			// And the other member of that class: YAML's explicit-key
+			// indicator, `? `, silently vanished from the front of a key on
+			// the old unquoted round trip.
+			name: "a key starting with YAML's explicit-key indicator",
+			doc:  "\"? prod\": ok\n",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var m auth.NamespaceMap
-			err := m.UnmarshalYAML([]byte(tt.doc))
+			require.NoError(t, m.UnmarshalYAML([]byte(tt.doc)))
 
-			if tt.wantErr == "" {
-				require.NoError(t, err)
-
-				// The property FuzzNamespaceMap checks: what decodes must
-				// encode, and decode again to the same map.
-				encoded, err := m.MarshalYAML()
-				require.NoError(t, err)
-				var again auth.NamespaceMap
-				require.NoError(t, again.UnmarshalYAML(encoded), "the YAML %q encoded to did not decode", encoded)
-				require.Equal(t, m, again)
-				return
-			}
-
-			require.ErrorContains(t, err, tt.wantErr)
+			// The property FuzzNamespaceMap checks: what decodes must
+			// encode, and decode again to the same map.
+			encoded, err := m.MarshalYAML()
+			require.NoError(t, err)
+			var again auth.NamespaceMap
+			require.NoError(t, again.UnmarshalYAML(encoded), "the YAML %q encoded to did not decode", encoded)
+			require.Equal(t, m, again)
 		})
 	}
+}
+
+// TestNamespaceMapJSONRoundTrips is the JSON half of
+// TestNamespaceMapYAMLRoundTrips: [NamespaceMap.MarshalJSON] writes the same
+// HTML-unescaped compact JSON [NamespaceMap.MarshalYAML] does, so the same
+// keys round-trip through [encoding/json] too.
+func TestNamespaceMapJSONRoundTrips(t *testing.T) {
+	for _, key := range []string{"0<<", "<<", "prod<<<<", "<<prod", "prod", "prod\t", "? prod"} {
+		t.Run(key, func(t *testing.T) {
+			m := auth.NamespaceMap{key: "ns"}
+
+			encoded, err := m.MarshalJSON()
+			require.NoError(t, err)
+			if strings.Contains(key, "<") {
+				require.Contains(t, string(encoded), "<",
+					"HTML-safe escaping should be off, so a literal angle bracket should survive: %s", encoded)
+			}
+			require.NotContains(t, string(encoded), `\u00`,
+				"HTML-safe escaping should be off: %s", encoded)
+
+			var again auth.NamespaceMap
+			require.NoError(t, again.UnmarshalJSON(encoded))
+			require.Equal(t, m, again)
+		})
+	}
+}
+
+// TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey is the whole-Policy
+// version of TestNamespaceMapYAMLRoundTrips and TestNamespaceMapJSONRoundTrips:
+// a namespace_map field does not decode in isolation in production, it decodes
+// as one field of a [Policy] [ParsePolicy] loads, so the round trip that
+// matters is marshaling a whole policy and loading it back, not marshaling the
+// map alone.
+func TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey(t *testing.T) {
+	policy := auth.Policy{
+		Issuers: []auth.TrustedIssuer{
+			{
+				Name:           "idp",
+				Issuer:         "https://issuer.example.com",
+				Audiences:      []string{"flowstate"},
+				NamespaceClaim: "repository",
+				NamespaceMap: auth.NamespaceMap{
+					"0<<":        "team-a",
+					"<<":         "team-b",
+					"prod<<<<":   "team-c",
+					"has\ttab":   "team-d",
+					"? explicit": "team-e",
+				},
+			},
+		},
+	}
+
+	t.Run("YAML", func(t *testing.T) {
+		encoded, err := yaml.Marshal(policy)
+		require.NoError(t, err)
+
+		decoded, err := auth.ParsePolicy(encoded)
+		require.NoError(t, err, "the YAML this policy marshaled to did not parse: %s", encoded)
+		require.Equal(t, policy.Issuers[0].NamespaceMap, decoded.Issuers[0].NamespaceMap)
+	})
+
+	t.Run("JSON", func(t *testing.T) {
+		// [NamespaceMap.MarshalJSON]'s own bytes embedded directly in a hand
+		// -assembled document, the way an operator's or a tool's JSON policy
+		// actually carries one — not [encoding/json.Marshal] on the whole
+		// [auth.Policy], which HTML-escapes a nested [json.Marshaler]'s
+		// bytes regardless of that Marshaler's own escaping choice (a stdlib
+		// property, not a policy loading one: [encoding/json.Marshal]
+		// recompacts and re-escapes every nested Marshaler's raw output
+		// through its own default-on HTML escaping, which is exactly what
+		// [NamespaceMap.MarshalJSON] turns off for itself and cannot turn
+		// off for a caller that wraps it this way). No code in this
+		// repository marshals a whole Policy back out, so that stdlib
+		// interaction is not this test's concern; what a real JSON policy
+		// document carries is [NamespaceMap.MarshalJSON]'s own bytes,
+		// spliced in as any JSON producer would.
+		mapJSON, err := policy.Issuers[0].NamespaceMap.MarshalJSON()
+		require.NoError(t, err)
+
+		doc := `{"issuers":[{"name":"idp","issuer":"https://issuer.example.com",` +
+			`"audiences":["flowstate"],"namespace_claim":"repository","namespace_map":` +
+			string(mapJSON) + `}]}`
+
+		decoded, err := auth.ParsePolicy([]byte(doc))
+		require.NoError(t, err, "the JSON namespace_map marshaled to did not parse inside a policy: %s", doc)
+		require.Equal(t, policy.Issuers[0].NamespaceMap, decoded.Issuers[0].NamespaceMap)
+	})
 }
 
 // TestDefaultAlgorithms checks that the default allowlist cannot be talked into
