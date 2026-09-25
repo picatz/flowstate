@@ -63,6 +63,12 @@ type CheckClaim struct {
 	// second fold skips a list that already carries a marked claim rather
 	// than doubling the file's claims.
 	fromDefaults bool
+
+	// fromEntry marks a claim [mergeExpectation] copied from a table entry.
+	// The entry is checked once before expansion, where its key and identity
+	// are known; expanded rows skip only that copy while still checking every
+	// claim the row appended itself.
+	fromEntry bool
 }
 
 // UnmarshalYAML accepts both spellings. Key checking is done by hand rather
@@ -125,7 +131,7 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 		return
 	}
 
-	env, err := v1.DefaultEvaluator().Env()
+	env, err := loadClaimEnv(v1.DefaultEvaluator())
 	if err != nil {
 		// Nothing can be parsed without an environment, so this is the whole
 		// report for this list rather than one entry's worth of it.
@@ -141,10 +147,10 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 		// it is known. Judging the copy again would report one mistake once per
 		// case — five hundred diagnostics for one line, spending a bound meant
 		// for five hundred *different* mistakes — while saying less about it.
-		// Only the copies are marked, so nothing goes unjudged: the block's own
-		// pass sees the originals, and a claim inherited from a table entry
-		// carries no mark and is judged here.
-		if claims[i].fromDefaults {
+		// Only the copies are marked, so nothing goes unjudged: each block or
+		// table entry pass sees the originals, while an effective case skips
+		// what an earlier pass already judged.
+		if claims[i].fromDefaults || claims[i].fromEntry {
 			continue
 		}
 		// Nothing rather than the list's own node for an inherited claim a
@@ -157,7 +163,10 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 			// has once the inherited ones ahead of it are subtracted.
 			spot = r.in(r.at.item(i - inherited))
 		case inheritedFrom != "":
-			spot = r.writtenIn(inheritedFrom)
+			// Directory claims are prepended without filtering, so i is also
+			// the index in the sibling's own list. Keep that source address
+			// beside the owning file; the loader retains both document trees.
+			spot = r.in(r.at.item(i)).writtenIn(inheritedFrom)
 		}
 		if inner, fenced := flowfile.SplitFence(claims[i].That); fenced {
 			claims[i].That = inner
@@ -180,8 +189,20 @@ func checkCheckClaims(p *problems, r site, where string, claims []CheckClaim, ow
 // two surfaces cannot answer the same question against two different
 // scopes; it is the site the #737 guard blesses (see
 // engine/scope_guard_test.go), and it is never an activity argument.
-func postRunScope(spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs) *v1.Scope {
-	return &v1.Scope{Profile: spec.GetProfile(), Outputs: outputs, Inputs: bound, Local: true}
+//
+// Trigger and Address cross for the same reason they cross in [v1.CallScope]:
+// they are facts about the run, not values the caller's scope resolved, and
+// a check asserting on `trigger.kind` or `run.*` must see the same values
+// the run's own expressions did. (#1444)
+func postRunScope(ctx context.Context, spec *v1.Workflow, bound map[string]*v1.Value, outputs *v1.Workflow_StepOutputs) *v1.Scope {
+	return &v1.Scope{
+		Profile: spec.GetProfile(),
+		Outputs: outputs,
+		Inputs:  bound,
+		Local:   true,
+		Trigger: v1.TriggerFromContext(ctx),
+		Address: v1.NewLocalRunAddress(),
+	}
 }
 
 // postRunExtras is the other half of [postRunScope]: the bare bindings a
@@ -280,14 +301,36 @@ func redactedVars(vars fileVars, sensitive sensitiveInputs) map[string]any {
 			out[name] = "[withheld]"
 			continue
 		}
-		if vars.withheld.holds(name) {
-			out[name] = sensitiveMarker
-			continue
-		}
-		out[name] = redactSubstringsTree(sensitive.RedactTree(value), sensitive)
+		out[name] = redactVarTree(varPath{{key: name}}, value, vars.withheld, sensitive)
 	}
 
 	return out
+}
+
+func redactVarTree(path varPath, value any, withheld withheldVars, sensitive sensitiveInputs) any {
+	if withheld.holds(path.String()) {
+		return sensitiveMarker
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, entry := range v {
+			redactedKey, _ := sensitive.RedactTree(key).(string)
+			out[sensitive.RedactSubstrings(redactedKey)] = redactVarTree(
+				append(slices.Clone(path), varPathPart{key: key}), entry, withheld, sensitive)
+		}
+
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, entry := range v {
+			out[i] = redactVarTree(append(slices.Clone(path), varPathPart{index: i, list: true}), entry, withheld, sensitive)
+		}
+
+		return out
+	default:
+		return redactSubstringsTree(sensitive.RedactTree(value), sensitive)
+	}
 }
 
 // redactSubstringsTree applies [v1.SensitiveValues.RedactSubstrings] to every string a
@@ -332,7 +375,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		return nil
 	}
 
-	scope := postRunScope(spec, bound, outputs)
+	scope := postRunScope(ctx, spec, bound, outputs)
 
 	// The `run` root, bound as a bare local. [v1.Scope.ActivationWith]'s
 	// extras shadow the activation's own rooted namespaces, so this map
@@ -356,7 +399,7 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 		if err != nil {
 			failures = append(failures, &v1.Diagnostic{Field: field,
 				Message: fmt.Sprintf("check errored: %s\n           %s", claim.That,
-					checkErrorText(ev, err, claim.That, vars.withheld, sensitive))})
+					checkErrorText(ev, libs, err, claim.That, vars.withheld, sensitive))})
 			continue
 		}
 		held, ok := out.Value().(bool)
@@ -408,11 +451,11 @@ func assertChecks(ctx context.Context, claims []CheckClaim, spec *v1.Workflow, b
 //
 // Naming the var rather than withholding silently is the useful half: an author
 // reading it knows which claim to rewrite, and a name is not a value.
-func checkErrorText(ev *v1.Evaluator, err error, claim string, withheld withheldVars, sensitive sensitiveInputs) string {
+func checkErrorText(ev *v1.Evaluator, libs []string, err error, claim string, withheld withheldVars, sensitive sensitiveInputs) string {
 	if sensitive.WithholdAll() {
 		return "[withheld]"
 	}
-	if name, reads := claimReadsWithheld(ev, claim, withheld); reads {
+	if name, reads := claimReadsWithheld(ev, libs, claim, withheld); reads {
 		if name == "" {
 			return "[withheld: this claim indexes `vars` with an expression, so which var it " +
 				"reads is not known until it runs, and this file withholds at least one]"
@@ -431,11 +474,11 @@ func checkErrorText(ev *v1.Evaluator, err error, claim string, withheld withheld
 // come to disagree about what "reads a withheld var" means. A claim this
 // package cannot parse reads nothing: it never evaluated either, so its error
 // is about syntax rather than about a value.
-func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (string, bool) {
+func claimReadsWithheld(ev *v1.Evaluator, libs []string, claim string, withheld withheldVars) (string, bool) {
 	if len(withheld.names) == 0 {
 		return "", false
 	}
-	env, err := ev.Env()
+	env, err := claimEnv(ev, libs)
 	if err != nil {
 		return "", false
 	}
@@ -449,8 +492,10 @@ func claimReadsWithheld(ev *v1.Evaluator, claim string, withheld withheldVars) (
 		switch {
 		case read.dynamic:
 			dynamic = true
-		case found == "" && slices.Contains(withheld.names, read.name):
-			found = read.name
+		case found == "":
+			if name, covered := withheld.coveredRead(read.path, true); covered {
+				found = name
+			}
 		}
 	})
 	if found != "" {
@@ -492,7 +537,7 @@ func checkWitnesses(ctx context.Context, ev *v1.Evaluator, libs []string, activa
 		return []string{"(values withheld: the redaction set could not be built)"}
 	}
 
-	env, err := ev.Env()
+	env, err := claimEnv(ev, libs)
 	if err != nil {
 		return nil
 	}

@@ -45,6 +45,23 @@ func stallsPastTheDefaultBudget(workflow.Context) error {
 func TestABoundaryEnvironmentRaisesTheDeadlockBudget(t *testing.T) {
 	require.Greater(t, conformance.BoundaryDeadlockDetectionTimeout, sdkDefaultDeadlockBudget,
 		"the boundary budget has to be above the default it exists to raise")
+	require.Greater(t, conformance.BoundaryWorkflowTaskTimeout,
+		conformance.BoundaryDeadlockDetectionTimeout,
+		"the server deadline must leave the live worker's deadlock detector first say")
+	require.Equal(t, 2*conformance.BoundaryDeadlockDetectionTimeout,
+		conformance.BoundaryWorkflowTaskTimeout,
+		"the server deadline must scale once with the worker's race allowance")
+	require.Equal(t, 5*time.Minute, conformance.BoundaryWorkflowChainTimeout,
+		"race instrumentation must not weaken the whole-chain bound")
+	// Each boundary case samples the first and final continuation segments.
+	// Keep the aggregate of every case's chain and replay deadlines below the
+	// engine package's 15-minute test timeout, leaving four minutes for its
+	// other shuffled tests and failure diagnostics.
+	workflowSliceCases := len(conformance.WorkflowSliceCases())
+	worstCaseSliceTime := time.Duration(workflowSliceCases) *
+		(conformance.BoundaryWorkflowChainTimeout + 2*workflowSliceReplayHelperTimeout)
+	require.Equal(t, 11*time.Minute, worstCaseSliceTime,
+		"workflow-slice deadline changes must preserve package-timeout headroom")
 
 	suite := &testsuite.WorkflowTestSuite{}
 	env := atABound(suite.NewTestWorkflowEnvironment())

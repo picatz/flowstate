@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // TestEveryStringsExtensionIsVersionPinned is the tripwire on a guarantee that
@@ -32,7 +34,7 @@ import (
 func TestEveryStringsExtensionIsVersionPinned(t *testing.T) {
 	t.Parallel()
 
-	root := repoRootDir(t)
+	root := testkit.RepoRoot(t)
 
 	var found int
 	require.NoError(t, filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
@@ -144,25 +146,4 @@ func hasStringsVersionOption(args []ast.Expr) bool {
 	}
 
 	return false
-}
-
-// repoRootDir walks up from the test's directory to the go.mod root.
-func repoRootDir(t *testing.T) string {
-	t.Helper()
-
-	dir, err := os.Getwd()
-	require.NoError(t, err)
-
-	for range 10 {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		require.NotEqual(t, parent, dir, "walked to the filesystem root without finding go.mod")
-		dir = parent
-	}
-
-	t.Fatal("go.mod not found within ten directories of the test")
-
-	return ""
 }

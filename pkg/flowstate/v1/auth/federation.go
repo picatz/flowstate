@@ -3,10 +3,9 @@ package auth
 import (
 	"crypto"
 	"fmt"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"net/http"
 	"time"
-
-	"github.com/goccy/go-yaml"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
@@ -212,7 +211,7 @@ type AssertionTarget struct {
 func ParseFederationPolicy(data []byte) (FederationPolicy, error) {
 	var policy FederationPolicy
 
-	if err := yaml.UnmarshalWithOptions(data, &policy, yaml.Strict()); err != nil {
+	if err := strictyaml.UnmarshalStrict(data, &policy); err != nil {
 		return FederationPolicy{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 

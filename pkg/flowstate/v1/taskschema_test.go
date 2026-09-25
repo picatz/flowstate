@@ -124,9 +124,10 @@ func TestDescribeTaskCarriesTheClaimsWithSecurityWeight(t *testing.T) {
 	// list — see TaskDef.SecretInputs' doc comment for why the two are not the
 	// same question).
 	synthetic := v1.TaskDef{
-		Name:           "synthetic",
-		DeferredInputs: []string{"outputs"},
-		SecretInputs:   []string{"token"},
+		Name:                 "synthetic",
+		DeferredInputs:       []string{"outputs"},
+		SecretInputs:         []string{"token"},
+		RequiredSecretInputs: []string{"token"},
 	}
 	syntheticDescribed := v1.DescribeTask(synthetic)
 
@@ -134,6 +135,8 @@ func TestDescribeTaskCarriesTheClaimsWithSecurityWeight(t *testing.T) {
 		"DeferredInputs on the TaskDef is not reaching TaskDescription")
 	require.Equal(t, []string{"token"}, syntheticDescribed.GetSecretInputs(),
 		"SecretInputs on the TaskDef is not reaching TaskDescription")
+	require.Equal(t, []string{"token"}, syntheticDescribed.GetRequiredSecretInputs(),
+		"RequiredSecretInputs on the TaskDef is not reaching TaskDescription")
 }
 
 // digestOf reproduces the marshaling [pkg/flowstate/v1/plugin.Host.Catalog]
@@ -179,6 +182,20 @@ func TestClaimsDigestChangesWithSecretInputs(t *testing.T) {
 		"secret_inputs gained an entry and the claims-only digest did not change")
 }
 
+func TestClaimsDigestChangesWithRequiredSecretInputs(t *testing.T) {
+	t.Parallel()
+
+	before := v1.TaskDescriptionClaimsOnly(v1.DescribeTask(v1.TaskDef{
+		Name: "connect", SecretInputs: []string{"dsn"},
+	}))
+	after := v1.TaskDescriptionClaimsOnly(v1.DescribeTask(v1.TaskDef{
+		Name: "connect", SecretInputs: []string{"dsn"}, RequiredSecretInputs: []string{"dsn"},
+	}))
+
+	require.NotEqual(t, digestOf(t, before), digestOf(t, after),
+		"required_secret_inputs gained an entry and the claims-only digest did not change")
+}
+
 // TestTaskSchemaDigestIsStableAcrossAClaimsChange is the P1 a Codex review on
 // #763 named: an in-flight durable run's ResolvedPlugin embeds
 // TaskSchemaDigest at submission, and the worker admission check compares it
@@ -195,12 +212,13 @@ func TestTaskSchemaDigestIsStableAcrossAClaimsChange(t *testing.T) {
 
 	before := v1.TaskDescriptionSansClaims(v1.DescribeTask(v1.TaskDef{Name: "commit_push"}))
 	after := v1.TaskDescriptionSansClaims(v1.DescribeTask(v1.TaskDef{
-		Name:             "commit_push",
-		NeedsPrevOutputs: true,
-		SecretInputs:     []string{"token"},
-		ShapesOutputs:    true,
-		DeferredInputs:   []string{"outputs"},
-		ExpressionInputs: []string{"expect"},
+		Name:                 "commit_push",
+		NeedsPrevOutputs:     true,
+		SecretInputs:         []string{"token"},
+		RequiredSecretInputs: []string{"token"},
+		ShapesOutputs:        true,
+		DeferredInputs:       []string{"outputs"},
+		ExpressionInputs:     []string{"expect"},
 	}))
 
 	require.Equal(t, digestOf(t, before), digestOf(t, after),
@@ -247,6 +265,12 @@ func TestTaskSchemaDigestIsStableAcrossASecretInputsNoteChange(t *testing.T) {
 		"declaring SecretInputs for a real field moved the task schema digest; the "+
 			"\"may hold a secret reference\" note taskInputNotes writes for it leaked into "+
 			"TaskDescriptionSansClaims, undoing the claims/schema digest split")
+
+	withSecretInput.RequiredSecretInputs = []string{"url"}
+	afterRequired := v1.TaskDescriptionSansClaims(v1.DescribeTask(withSecretInput))
+	require.Equal(t, digestOf(t, before), digestOf(t, afterRequired),
+		"declaring RequiredSecretInputs for a real field moved the task schema digest; "+
+			"its authoring note leaked into TaskDescriptionSansClaims")
 }
 
 // TestClaimsSchemaVersionDistinguishesUnknownFromFalse is the fail-closed

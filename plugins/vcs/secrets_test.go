@@ -9,26 +9,22 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// A literal token in a Flowfile is exactly what CLAUDE.md forbids: it would
-// put a credential in the file itself and in workflow history. This must be
-// refused, not merely discouraged by a comment.
-func TestTokenFromValueRefusesALiteral(t *testing.T) {
+// The task receives the literal wire shape only after the host resolved the
+// whole secret reference required by the manifest.
+func TestTokenFromValueAcceptsAHostResolvedString(t *testing.T) {
 	v := flowstatev1.NewValue("a-literal-token")
-	if _, err := tokenFromValue(context.Background(), v); err == nil {
-		t.Fatal("tokenFromValue with a literal: got no error, want one")
+	token, err := tokenFromValue(context.Background(), v)
+	if err != nil || token != "a-literal-token" {
+		t.Fatalf("tokenFromValue with a resolved string: got (%q, %v)", token, err)
 	}
 }
 
-// A secret reference naming a scheme this plugin does not own must be
-// refused rather than guessed at - resolving it would mean either silently
-// answering nothing, or (worse) treating a differently-scoped reference as
-// this plugin's own.
-func TestTokenFromValueRefusesAForeignScheme(t *testing.T) {
+func TestTokenFromValueRefusesAnUnresolvedReference(t *testing.T) {
 	v := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
 		SecretRef: &flowstatev1.SecretRef{Scheme: "env", Name: "GITHUB_TOKEN"},
 	}}
 	if _, err := tokenFromValue(context.Background(), v); err == nil {
-		t.Fatal("tokenFromValue with a foreign scheme: got no error, want one")
+		t.Fatal("tokenFromValue with an unresolved reference: got no error, want one")
 	}
 }
 
@@ -42,20 +38,17 @@ func TestTokenFromValueTreatsUnsetAsPublic(t *testing.T) {
 	}
 }
 
-// The one path that resolves successfully: this plugin's own scheme, backed
-// by the environment variable secrets.go derives from the reference name.
-func TestTokenFromValueResolvesItsOwnScheme(t *testing.T) {
+// The compatibility provider remains available to the host for existing
+// vcs: references, but the task never calls it directly.
+func TestCompatibilityProviderResolvesItsOwnScheme(t *testing.T) {
 	t.Setenv("VCS_SECRET_0__TEST_TOKEN", containmentSecret)
 
-	v := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{
-		SecretRef: &flowstatev1.SecretRef{Scheme: secretScheme, Name: "test-token"},
-	}}
-	token, err := tokenFromValue(context.Background(), v)
+	resp, err := resolveSecret(context.Background(), sdk.SecretRequest{Scheme: secretScheme, Name: "test-token"})
 	if err != nil {
-		t.Fatalf("tokenFromValue: unexpected error: %v", err)
+		t.Fatalf("resolveSecret: unexpected error: %v", err)
 	}
-	if token != containmentSecret {
-		t.Fatalf("token: got %q, want %q", token, containmentSecret)
+	if string(resp.Value) != containmentSecret {
+		t.Fatalf("token: got %q, want %q", resp.Value, containmentSecret)
 	}
 }
 

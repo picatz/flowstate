@@ -12,11 +12,13 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
+	"connectrpc.com/connect"
+	"github.com/goccy/go-yaml"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -79,11 +81,71 @@ import (
 // testable without standing up the stdio server — see
 // TestRemoteCatalogAddressForRespectsExplicitAddress.
 func remoteCatalogAddressFor(cmd *cobra.Command, flags serverFlags) string {
-	if cmd.Flags().Changed("address") || os.Getenv("FLOWSTATE_ADDRESS") != "" {
+	if addressExplicitlyConfigured(cmd) {
 		return flags.address
 	}
 
 	return ""
+}
+
+// addressExplicitlyConfigured reports whether an operator named a deployment,
+// either way one can be named. The one spelling of the question
+// [remoteCatalogAddressFor] documents, shared with [mcpRPCErrorDecorator]
+// because both answer differently depending on it.
+func addressExplicitlyConfigured(cmd *cobra.Command) bool {
+	return cmd.Flags().Changed("address") || os.Getenv("FLOWSTATE_ADDRESS") != ""
+}
+
+// mcpRPCErrorDecorator makes good on this file's own promise for the
+// lifecycle verbs: they address durable runs, which only a server has, and
+// "without --address they explain that rather than failing opaquely". Until
+// now only flowstate_get_catalog explained itself ([remoteCatalogCall]'s
+// refusal names the deployment and the repair); flowstate_run, flowstate_list
+// and their siblings answered a bare `unavailable: dial tcp ...: connection
+// refused` — no mention that the tool needs a server, no mention of
+// --address/FLOWSTATE_ADDRESS, and no way for an agent that never saw this
+// process's flags to know which address was even tried.
+//
+// Only unavailable answers are decorated: that is the code a dial failure
+// carries, and also the one a reachable server answers when it cannot serve —
+// the wording covers both honestly rather than guessing which happened. Every
+// other refusal (not found, permission denied, invalid argument) is the
+// server's own answer about the request and already names its subject.
+//
+// GetCatalog is skipped because its remote path already explains itself, in
+// terms specific to what a wrong catalog would cost; a second sentence on top
+// would say less by saying more.
+func mcpRPCErrorDecorator(flags serverFlags, explicit bool) func(rpc string, err error) error {
+	return func(rpc string, err error) error {
+		if rpc == "GetCatalog" {
+			return err
+		}
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			return err
+		}
+
+		// Connect wraps every transport failure as unavailable, including the
+		// ones this process produced before any bytes reached the network — a
+		// token file that cannot be read, a misconfigured --credential-source
+		// or client TLS triple. Those already name their own repair, and
+		// "fix --address, start the server" would point away from it; the
+		// [clientSideError] mark is how the transport says which half failed.
+		if _, ok := errors.AsType[*clientSideError](err); ok {
+			return err
+		}
+
+		tool := flowmcp.ToolName(rpc)
+		if explicit {
+			return fmt.Errorf("%s needs a Flowstate server, and the deployment at %s answered unavailable "+
+				"or could not be reached: %w\n  fix --address/FLOWSTATE_ADDRESS, or start that deployment, "+
+				"then retry", tool, flags.address, err)
+		}
+
+		return fmt.Errorf("%s addresses durable runs, which only a server has, and neither --address nor "+
+			"FLOWSTATE_ADDRESS names one; this dialed the default %s: %w\n  start a local stack with "+
+			"`flow server dev`, or point --address/FLOWSTATE_ADDRESS at a deployment that is already "+
+			"running, then retry", tool, flags.address, err)
+	}
 }
 
 // runMCP implements the mcp sub-command.
@@ -116,15 +178,20 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Build one provider registry for the lifetime of this server. Plugins add
+	// their providers to it at launch, and every local tool call builds its
+	// task runtime over this same registry; a second per-call registry would
+	// lose compatibility schemes such as github: between launch and execution.
+	providers, err := localSecretProviders(cmd)
+	if err != nil {
+		return err
+	}
+	defer providers.close()
+
 	// Launched here, once, before the first tool call can arrive — never per
 	// call, and never from anything but this command's own --plugin-dir, for
-	// the reasons given where the flag is declared in main.go. nil rather than
-	// a secret registry: the plugin registration server.go's own runServer
-	// passes secretProviders for is what lets a *worker* resolve a secret
-	// scheme a plugin claims, and this process has the same secret backend
-	// flowstate_run_local already takes through --secret-env/--secret-dir,
-	// wired separately in withLocalTaskRuntime per call.
-	_, closePlugins, err := startPlugins(cmd, nil)
+	// the reasons given where the flag is declared in main.go.
+	_, closePlugins, err := startPlugins(cmd, providers.registry)
 	if err != nil {
 		return err
 	}
@@ -166,12 +233,12 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		Redact: func(response *v1.GetResponse) *v1.GetResponse {
 			return redactGetResponse(response, nil, revealSensitiveRequested(cmd))
 		},
-	}
 
-	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
+		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
+		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd))}
 
 	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
-		stdioExtraTools(cmd)...)
+		stdioExtraTools(cmd, providers)...)
 }
 
 // stdioExtraTools is the three tools on this surface that are not RPCs, in one
@@ -182,9 +249,9 @@ func runMCP(cmd *cobra.Command, args []string) error {
 // None takes a timeout: stdio's single caller is the process that launched
 // this one, and this surface is unchanged by the bound `flow mcp serve`
 // applies for its own reasons. See [testToolHandler].
-func stdioExtraTools(cmd *cobra.Command) []flowmcp.ToolRegistration {
+func stdioExtraTools(cmd *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	return []flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
+		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd, providers)},
 		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
 		// The debugger's own front (#928 slice 3), beside the tool whose
 		// verdicts it explains.
@@ -339,22 +406,68 @@ func applyMCPEgressPolicy(cmd *cobra.Command) error {
 		return applyEgressPolicy(cmd)
 	}
 
-	policy, err := netpolicy.New(netpolicy.WithDenyRules("true"))
+	policy, document, err := mcpEgressPolicy()
 	if err != nil {
-		return fmt.Errorf("building the deny-by-default egress policy for flowstate_run_local: %w", err)
+		return err
 	}
 
-	if err := v1.DefaultRegistry().Register(v1.HTTPTaskDef(policy)); err != nil {
+	if err := v1.DefaultRegistry().Replace(v1.HTTPTaskDef(policy)); err != nil {
 		return fmt.Errorf("registering the http task for flowstate_run_local: %w", err)
 	}
 
+	// The same posture, on the other side of the process boundary. Registering
+	// the policy and leaving this unset is what made a model unable to fetch a
+	// URL from this process while still able to ask a `git`, `github` or `vcs`
+	// task to reach one: those plugins obey the grant now (#1332), and the
+	// grant they were getting was the ordinary deployment default.
+	setEgressPolicySnapshot(cmd, document)
+
 	return nil
+}
+
+// mcpEgressPolicy builds this command's own policy and writes it down, from one
+// config, so the policy it enforces on its built-in http task and the grant it
+// hands every plugin it launches cannot become two different postures.
+//
+// One value, marshalled once, both results derived from those bytes. The
+// alternative — build the policy from options here and write a document beside
+// it — is the shape the bug had: two constructions of one posture, which drift,
+// and nothing about them being adjacent in a file prevents that.
+//
+// The document is marked `deployment_default: true`, and the mark is honest: no
+// operator wrote this policy, this command chose it, which is exactly what
+// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk.EgressPolicyIsDeploymentDefault]
+// reports. It changes no plugin's reach here — the document permits nothing, and
+// `sql` refuses under the default in any case — so what it buys is that the
+// SDK's answer is true rather than convenient. A plugin is stopped here by what
+// the rules say; the marker only says who decided.
+func mcpEgressPolicy() (*netpolicy.Policy, []byte, error) {
+	document, err := yaml.Marshal(netpolicy.Config{
+		DeploymentDefault: true,
+		Egress:            netpolicy.EgressConfig{Deny: []string{"true"}},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("writing the deny-by-default egress policy for flowstate_run_local: %w", err)
+	}
+
+	// Parsed back rather than built from the value above, so the policy comes
+	// from the bytes the plugins get rather than from a sibling of them.
+	cfg, err := netpolicy.ParseConfig(document)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing the deny-by-default egress policy for flowstate_run_local: %w", err)
+	}
+	policy, err := cfg.Policy()
+	if err != nil {
+		return nil, nil, fmt.Errorf("building the deny-by-default egress policy for flowstate_run_local: %w", err)
+	}
+
+	return policy, document, nil
 }
 
 // runLocalToolHandler executes one submitted workflow.
 //
 // posture carries the process's flags — the only place a run's reach comes from.
-func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
+func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.ToolHandler {
 	if posture == nil {
 		posture = defaultLocalRunPosture()
 	}
@@ -414,11 +527,19 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 			return flowmcp.ToolError(err), nil
 		}
 
-		ctx, closeSecretProviders, err := withLocalTaskRuntime(posture, ctx, workflow)
-		if err != nil {
-			return flowmcp.ToolError(err), nil
+		if providers == nil {
+			var closeProviders func()
+			ctx, closeProviders, err = withLocalTaskRuntime(posture, ctx, workflow)
+			if err != nil {
+				return flowmcp.ToolError(err), nil
+			}
+			defer closeProviders()
+		} else {
+			ctx, err = withLocalTaskRuntimeUsing(posture, ctx, workflow, providers)
+			if err != nil {
+				return flowmcp.ToolError(err), nil
+			}
 		}
-		defer closeSecretProviders()
 
 		// `log:` steps go into the answer rather than onto a stream, and that is
 		// not a nicety: stdout is the MCP transport. A workflow that narrates
@@ -701,7 +822,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 
 	encoded, _, err := flowmcp.FitResultWithin(limit,
 		func() ([]byte, error) {
-			encoded, err := marshalJSON(report, false)
+			encoded, err := v1.MarshalSchemaJSON(report, false)
 			if err != nil {
 				return nil, fmt.Errorf("rendering the report: %w", err)
 			}
@@ -726,7 +847,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 			// cases and carries no refusal at all.
 			trimmed.Refused = capText(trimmed.GetRefused(), maxTestRefusedBytes)
 
-			encoded, err := marshalJSON(trimmed, false)
+			encoded, err := v1.MarshalSchemaJSON(trimmed, false)
 			if err != nil {
 				return nil, fmt.Errorf("rendering the report: %w", err)
 			}
@@ -765,7 +886,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 
 			var encoded []byte
 
-			for pass := 0; pass < maxTestFloorPasses; pass++ {
+			for range maxTestFloorPasses {
 				summary := &v1.TestReport{
 					File:    capText(report.GetFile(), share),
 					Refused: capText(trimmed.GetRefused(), share),
@@ -787,7 +908,7 @@ func renderTestResultWithin(report *v1.TestReport, limit int) ([]byte, error) {
 
 				var err error
 
-				encoded, err = marshalJSON(summary, false)
+				encoded, err = v1.MarshalSchemaJSON(summary, false)
 				if err != nil {
 					return nil, fmt.Errorf("rendering the report: %w", err)
 				}
@@ -926,11 +1047,12 @@ func checkToolRunInputs(workflow *v1.Workflow, inputs map[string]*v1.Value) erro
 
 // runLocalResult is the document the tool answers with.
 //
-// The run is carried verbatim as the protojson of a GetResponse — the same bytes
-// `flow run local -o json` writes and the same message flowstate_get answers
-// with — so one expression reads a rehearsal and a production run alike. It is
-// wrapped rather than extended because logs are not part of that schema, and
-// inventing a field for them would make this surface a second dialect.
+// The run is carried verbatim as the run document [v1.MarshalRunDocument]
+// renders — byte for byte what `flow run local -o json` writes, and the same
+// rendering flowstate_get answers with — so one `jq` expression reads a
+// rehearsal and a production run alike, from either door (#1553). It is wrapped
+// rather than extended because logs are not part of that schema, and inventing a
+// field for them would make this surface a second dialect.
 type runLocalResult struct {
 	Run  json.RawMessage     `json:"run"`
 	Logs []runLocalLogRecord `json:"logs,omitempty"`
@@ -1090,7 +1212,12 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord, pr
 		return preflightNote + "; " + note
 	}
 
-	run, err := marshalJSON(response, false)
+	// The document `flow run local -o json` prints, not the schema's own
+	// protojson: `steps.<id>.<output>` rather than `stepValues.<id>.namedValues`,
+	// and a value rather than CEL's tagged encoding of one. An author rehearsing
+	// through the CLI and an agent rehearsing through this tool are reading one
+	// run, and before this they could not share a jq filter over it (#1553).
+	run, err := v1.MarshalRunDocument(response, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
 	}
@@ -1231,7 +1358,10 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord, pr
 // renderTrimmedRun encodes one shrinking step's document, with the note that
 // says what left and why.
 func renderTrimmedRun(trimmed *v1.GetResponse, note string) ([]byte, error) {
-	run, err := marshalJSON(trimmed, false)
+	// The same rendering the untrimmed answer uses, per [renderRunLocalResult]:
+	// a reduced answer that changed dialect on the way down would be the bug
+	// this fixed, reintroduced on exactly the runs too large to eyeball (#1553).
+	run, err := v1.MarshalRunDocument(trimmed, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
 	}
@@ -1329,7 +1459,8 @@ func (l *runLocalLogs) Handle(_ context.Context, record slog.Record) error {
 
 // boundedRunLocalLogString spends from remaining without splitting UTF-8. The
 // bounded clone prevents a short retained prefix from keeping an
-// attacker-sized backing string alive for the lifetime of the MCP call.
+// attacker-sized backing string alive for the lifetime of the MCP call. No
+// marker: the budget belongs to the whole log, not to one field.
 func boundedRunLocalLogString(s string, remaining *int) string {
 	if len(s) <= *remaining {
 		*remaining -= len(s)
@@ -1337,11 +1468,8 @@ func boundedRunLocalLogString(s string, remaining *int) string {
 	}
 
 	end := *remaining
-	for end > 0 && !utf8.RuneStart(s[end]) {
-		end--
-	}
 	*remaining = 0
-	return strings.Clone(s[:end])
+	return strings.Clone(textbound.Cut(s, end))
 }
 
 // WithAttrs returns a handler that also emits attrs, collecting into the same

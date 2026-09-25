@@ -21,7 +21,10 @@ func ValidateCredentialTargets(workflow *Workflow, targets []string) error {
 
 func validateCredentialNodes(nodes []*Node, available map[string]struct{}, targets []string) error {
 	for _, node := range nodes {
-		if task := node.GetTask(); task != nil {
+		for _, task := range []*Task{node.GetTask(), node.GetUndo().GetTask()} {
+			if task == nil {
+				continue
+			}
 			def, found := LookupTask(task.GetName())
 			if found {
 				for _, input := range def.CredentialInputs {

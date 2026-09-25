@@ -2,7 +2,10 @@ package flowstatev1
 
 import (
 	"os"
+	"slices"
 	"sync"
+
+	"github.com/goccy/go-yaml"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
@@ -42,7 +45,7 @@ const AllowLoopbackEgressValue = "true"
 // ungoverned client — failing open here would undo the entire point.
 var defaultEgressPolicy = sync.OnceValue(func() *netpolicy.Policy {
 	var opts []netpolicy.Option
-	if os.Getenv(AllowLoopbackEgressEnv) == AllowLoopbackEgressValue {
+	if allowLoopbackEgress() {
 		opts = append(opts, netpolicy.WithAllowLoopback())
 	}
 	p, err := netpolicy.New(opts...)
@@ -51,6 +54,56 @@ var defaultEgressPolicy = sync.OnceValue(func() *netpolicy.Policy {
 	}
 	return p
 })
+
+// allowLoopbackEgress reads the one lever the default policy has, once.
+//
+// Once, and shared, because two things are derived from it — the policy the
+// built-in http task enforces and the document a worker grants every plugin it
+// launches ([DefaultEgressPolicyDocument]) — and they are the same deployment's
+// answer to one question. Reading the variable twice would let a process that
+// changed it between the reads govern its own task under one posture and its
+// plugins under the other.
+var allowLoopbackEgress = sync.OnceValue(func() bool {
+	return os.Getenv(AllowLoopbackEgressEnv) == AllowLoopbackEgressValue
+})
+
+// defaultEgressPolicyDocument writes the default down, once.
+//
+// Marshaling the [netpolicy.Config] rather than spelling the YAML is what makes
+// the document and the policy one fact: the same struct that parses an
+// operator's file produces this, so a field added to the config surface cannot
+// leave the default saying something the parser no longer reads. Failing to
+// marshal a struct with no dynamic content is a defect in Flowstate rather than
+// anything a workload can cause, which is why it panics for the same reason
+// [defaultEgressPolicy] does.
+var defaultEgressPolicyDocument = sync.OnceValue(func() []byte {
+	doc, err := yaml.Marshal(netpolicy.Config{
+		DeploymentDefault: true,
+		Egress:            netpolicy.EgressConfig{AllowLoopback: allowLoopbackEgress()},
+	})
+	if err != nil {
+		panic("flowstate: writing the default egress policy document: " + err.Error())
+	}
+	return doc
+})
+
+// DefaultEgressPolicyDocument returns the deployment default written as a policy
+// document: the same posture [DefaultEgressPolicy] builds, in the form an
+// operator's --egress-policy file has, marked `deployment_default: true`.
+//
+// A worker launching a plugin grants this when no operator policy was
+// configured. Serializing the default rather than leaving the grant out is what
+// makes an absent grant mean only "launched by something other than a worker":
+// a plugin under a default worker holds the policy that worker's own http task
+// runs under, and can see that it is the default rather than an operator's file
+// (see [netpolicy.Config.DeploymentDefault] and #1332).
+//
+// Each call returns a fresh copy, because the caller hands it to a plugin
+// launch that clones and forwards it, and a shared slice reaching that far is a
+// grant one plugin's launch could edit for the next.
+func DefaultEgressPolicyDocument() []byte {
+	return slices.Clone(defaultEgressPolicyDocument())
+}
 
 // DefaultEgressPolicy returns the egress policy the built-in http task
 // enforces when nothing has replaced it: internal address ranges denied,

@@ -64,6 +64,16 @@ func TestActingOnAFinishedRunSaysSoRatherThanFailing(t *testing.T) {
 	}, 60*time.Second, 200*time.Millisecond, "the run never appeared in a listing as finished")
 
 	for name, act := range map[string]func() error{
+		"cancel": func() error {
+			// Temporal accepts a cancel for a closed execution, so this one is
+			// the server's own decision rather than a classified refusal
+			// (#1299); it has to give the same answer as its siblings.
+			_, err := fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
+				WorkflowId: workflowID,
+				RunId:      runID,
+			}))
+			return err
+		},
 		"terminate": func() error {
 			_, err := fixture.teamA.Terminate(t.Context(), connect.NewRequest(&v1.TerminateRequest{
 				WorkflowId: workflowID,

@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // What this file is for.
@@ -63,6 +65,31 @@ func TestInstrumentNamesAreDistinctAndNamespaced(t *testing.T) {
 	require.Len(t, metricschema.InstrumentNames(), len(metricschema.Instruments))
 }
 
+// TestTaskRetriesHasNoAttemptOrExecutionIdentityDimension pins the cardinality
+// decision specific to the retry instrument. A declaration alone is not proof
+// that recording follows it — the both-driver manual-reader case proves the
+// collected attributes — but this is the schema-side failure when somebody
+// proposes splitting the counter by an attempt, run, or execution identifier.
+func TestTaskRetriesHasNoAttemptOrExecutionIdentityDimension(t *testing.T) {
+	t.Parallel()
+
+	instrument, ok := metricschema.InstrumentByName(metricschema.InstrumentTaskRetries)
+	require.True(t, ok)
+	require.ElementsMatch(t,
+		[]string{metricschema.TaskName, metricschema.Driver},
+		instrument.Keys,
+		"retries need only bounded task and driver dimensions; attempt identity remains on spans")
+
+	for _, key := range instrument.Keys {
+		class, allowed := metricschema.Classification(key)
+		require.True(t, allowed)
+		require.Contains(t,
+			[]metricschema.Class{metricschema.ClassConfiguration, metricschema.ClassConstruction},
+			class,
+			"retry metric key %q is not cardinality-bounded", key)
+	}
+}
+
 // TestEveryInstrumentCreatedInTheRepositoryIsDeclared is the second direction,
 // and the one that would catch an instrument nobody wrote down.
 //
@@ -82,7 +109,7 @@ func TestEveryInstrumentCreatedInTheRepositoryIsDeclared(t *testing.T) {
 
 	var offenders []string
 
-	require.NoError(t, filepath.WalkDir(repoRoot(t), func(path string, entry os.DirEntry, err error) error {
+	require.NoError(t, filepath.WalkDir(testkit.RepoRoot(t), func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -94,7 +121,7 @@ func TestEveryInstrumentCreatedInTheRepositoryIsDeclared(t *testing.T) {
 			// Same reason [TestEveryMetricRecordingSiteGoesThroughTheSchema]
 			// prunes it: a worktree is another checkout of this repository, and
 			// walking into one reports every site twice.
-			if rel, err := filepath.Rel(repoRoot(t), path); err == nil {
+			if rel, err := filepath.Rel(testkit.RepoRoot(t), path); err == nil {
 				if filepath.ToSlash(rel) == ".claude/worktrees" {
 					return filepath.SkipDir
 				}
@@ -110,9 +137,9 @@ func TestEveryInstrumentCreatedInTheRepositoryIsDeclared(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, line := range strings.Split(string(contents), "\n") {
+		for line := range strings.SplitSeq(string(contents), "\n") {
 			if literal.MatchString(line) {
-				rel, _ := filepath.Rel(repoRoot(t), path)
+				rel, _ := filepath.Rel(testkit.RepoRoot(t), path)
 				offenders = append(offenders, rel+": "+strings.TrimSpace(line))
 			}
 		}

@@ -16,8 +16,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
 // pushCommit adds one commit to the working repository at workDir (a clone
@@ -1027,5 +1029,98 @@ func TestGitLogCursorDrivenCallReportsNoResolvedRef(t *testing.T) {
 	}
 	if page2.ResolvedRef != "" {
 		t.Errorf("page 2: ResolvedRef = %q, want empty - a cursor-driven call reports none", page2.ResolvedRef)
+	}
+}
+
+// TestGitLogTaskEncodesCommitsForAWorkflow carries a real repository's commits
+// through the encode step gitLog ends with.
+//
+// Everything above this reads *gitv1.LogOutputs directly, which is the shape
+// before sdk.EncodeOutputs sees it. That left the encode step — the one a
+// workflow actually depends on — proven only by the empty case, where a list of
+// zero nested messages needs no conversion at all. A repeated Commit, each
+// carrying two nested Signature messages, is the shape #1456 found broken: the
+// task worked on a repository with nothing to report and failed on the first one
+// that had something.
+//
+// It calls doLog and then sdk.EncodeOutputs, which together are gitLog's body
+// past input validation, because gitLog accepts https:// only and a fixture is
+// served from the filesystem. That allowlist is the point of validate.go and is
+// not worth loosening for a test about encoding.
+//
+// The assertions are written the way a workflow reads it —
+// ${steps.log.commits[0].author.name} — because that spelling is the contract.
+func TestGitLogTaskEncodesCommitsForAWorkflow(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	work := newSeededWorkingClone(t, remote, "main")
+
+	when := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	sha := pushCommit(t, work, remote, "main", "security.txt", "policy v2\n",
+		"rotate the deploy key after the vendor incident",
+		"Author Person", "author@example.com",
+		"Committer Bot", "committer@example.com",
+		when)
+
+	out, err := doLog(context.Background(), logParams{
+		url:        fileURL(t, remote),
+		ref:        "main",
+		maxCommits: 10,
+	})
+	if err != nil {
+		t.Fatalf("doLog: %v", err)
+	}
+
+	outputs, err := sdk.EncodeOutputs(out)
+	if err != nil {
+		t.Fatalf("EncodeOutputs: %v", err)
+	}
+
+	commits := outputs.GetNamedValues()["commits"].GetLiteral().GetListValue().GetValues()
+	if len(commits) != 2 { // the seed commit, then this one
+		t.Fatalf("len(commits) = %d, want 2", len(commits))
+	}
+
+	// entriesOf reads a CEL map into a Go map so a field can be addressed by the
+	// name a workflow writes.
+	entriesOf := func(v *expr.Value) map[string]*expr.Value {
+		out := map[string]*expr.Value{}
+		for _, entry := range v.GetMapValue().GetEntries() {
+			out[entry.GetKey().GetStringValue()] = entry.GetValue()
+		}
+		return out
+	}
+
+	got := entriesOf(commits[0]) // most recent first
+	if got["sha"].GetStringValue() != sha.String() {
+		t.Errorf("commits[0].sha = %s, want %s", got["sha"].GetStringValue(), sha)
+	}
+	if got["message"].GetStringValue() != "rotate the deploy key after the vendor incident" {
+		t.Errorf("commits[0].message = %q, want the full message unmangled", got["message"].GetStringValue())
+	}
+
+	// The nested Signature messages are the part that could not be encoded at
+	// all before, and author and committer are kept distinct here for the same
+	// reason TestGitLogReturnsCommitDetails keeps them distinct.
+	author := entriesOf(got["author"])
+	if author["name"].GetStringValue() != "Author Person" || author["email"].GetStringValue() != "author@example.com" {
+		t.Errorf("commits[0].author = %v, want Author Person <author@example.com>", author)
+	}
+	committer := entriesOf(got["committer"])
+	if committer["name"].GetStringValue() != "Committer Bot" {
+		t.Errorf("commits[0].committer.name = %q, want Committer Bot", committer["name"].GetStringValue())
+	}
+	if author["when"].GetStringValue() == "" {
+		t.Error("commits[0].author.when is empty; the nested timestamp string must survive encoding")
+	}
+
+	// A repeated scalar inside a nested message, and the root commit's empty
+	// one, so neither direction depends on the other.
+	if n := len(got["parent_hashes"].GetListValue().GetValues()); n != 1 {
+		t.Errorf("commits[0].parent_hashes has %d entries, want 1", n)
+	}
+	root := entriesOf(commits[1])
+	if n := len(root["parent_hashes"].GetListValue().GetValues()); n != 0 {
+		t.Errorf("root commit parent_hashes has %d entries, want none", n)
 	}
 }

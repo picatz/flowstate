@@ -44,7 +44,7 @@ descend from are in Part I.
 | Construct | Write this | Not this | Why this one |
 | --- | --- | --- | --- |
 | Dispatch on one value with three or more outcomes | `switch:` with a `default:` that means something | a ternary tree, or sibling `if:` steps each testing the same value for equality | only the keyword lets the validator check the branches against the value's domain, which it does: an unreachable `default:` is refused by name |
-| Reading a field that may be absent | `x.?y.orValue(d)` | `has(x.y) ? x.y : d` | one traversal instead of a presence test and a separate read that can drift apart; `flow fix` already performs this rewrite (`fixoptional.go:22`) |
+| Reading a field that may be absent | `x.?y.orValue(d)` | `has(x.y) ? x.y : d` | one traversal instead of a presence test and a separate read that can drift apart; `flow fix` already performs this rewrite (`pkg/flowstate/v1/flowfile/fixoptional.go:22`) |
 | Asking whether a field was sent at all | `x.?y.hasValue()`, or `has(x.y)` | `x.?y.orValue(false)` | a default cannot tell "absent" from "present and false", so it collapses two answers into one |
 | A fact read more than once | a `value:` step, read as `${steps.<id>.value}` | the same subexpression written out at each site | the sites drift; one of them gets edited and the file still validates |
 | A constant used across steps | workflow `vars:` | repeating the literal | one place to change, and the name says what it is |
@@ -54,11 +54,13 @@ descend from are in Part I.
 | Naming a computed value | a `value:` step | the retired `cel:` step | a value is not an effect, and the key named the evaluator instead of the role |
 | Printing a line | `log:` | the retired `echo:` / `printf:` | the capability already existed under another name |
 | Reading a step's scalar output | `${steps.<id>.value}` | a bare `${steps.<id>}` | the six characters buy uniformity in every tool that reads outputs, and this is permanent (anti-goal 7) |
-| Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`parse_wait.go:397`) |
+| Bounding or re-attempting work | `timeout:` / `retry:` on the task step that does the work | the same keys on `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, a wait, or a `value:` | on those kinds the keys bind nothing, so the parser refuses them with a position and points at where they do work (`pkg/flowstate/v1/flowfile/parse_wait.go:397`) |
+| Naming a webhook delivery for dedupe | the event's own id, `${event.body.id}`, or a delivery id the sender repeats in a header — the body when both are on offer | a signature header, `${event.headers["stripe-signature"]}` | a signature is computed per attempt — a retry carries a new timestamp and a new MAC over the same event — so a key over it names the attempt and every real retry starts a second run; and a header is outside what the signature covers, so a captured delivery resends under a key of its sender's choosing (R10) |
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
+| A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
 
 The last row is the one place where the canonical spelling is not yet the only legal
-one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:128`) documents the
+one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:152`) documents the
 fence as optional for expression-typed fields, and it is: a step written
 `if: inputs.amount > 1`, with no fence anywhere, validates. Every `if:` in
 `examples/` that holds an expression writes the fence anyway, which is the corpus
@@ -164,7 +166,7 @@ inputs.amount.must: cannot be an expression; it is read when the workflow is
 compiled, so write the value out
 ```
 
-while `if:` accepts the fenced and the bare form alike (`value.go:128`). Whatever
+while `if:` accepts the fenced and the bare form alike (`pkg/flowstate/v1/flowfile/value.go:152`). Whatever
 #545 decides, this rule constrains the resolution:
 
 - It applies to **every** expression-typed field, at **one** edition boundary, with a
@@ -188,7 +190,7 @@ migration.
   question, which is a different question.
 - **A structurally repeated subexpression appearing three or more times** is a
   `value:` step waiting for a name. Structural identity is already implemented, as
-  `exprEqual` (`pkg/flowstate/v1/flowfile/negation.go:268`), and `flow audit` already
+  `exprEqual` (`pkg/flowstate/v1/flowfile/negation.go:270`), and `flow audit` already
   counts occurrences with it. Tier 4 *suggests* and never rewrites, because the
   rewrite would have to invent a name, and a rewriter that guesses names is the bug
   class `flow fix` exists never to be.
@@ -382,6 +384,44 @@ rules by nature. Even those name the artifact review checks against, which is th
 file, so the argument is "does the proposal pass the test" and never "what do we
 think good looks like".
 
+### R10. A dedupe key names the event, never the attempt
+
+A webhook's `idempotency_key:` is what a redelivery is recognized by: the run's id is
+derived from it, so two deliveries with one key are one run. The key therefore has
+to be a value the sender *repeats* when it retries — the event's own id in the body,
+or a delivery id a provider carries in a header for exactly this purpose — and never
+a signature header. A signature is computed per attempt: Stripe signs
+`<timestamp>.<body>` afresh for every retry of one event, and every provider that
+signs a timestamp does the same, so a key over `Stripe-Signature` dedupes only a
+byte-identical resend and starts a run for every real retry. Measured on the
+corpus example before it was corrected: one event delivered four times produced
+three runs (#1775), which for a payment capture is a double capture.
+
+Prefer the body when the sender offers the id in both places. What a webhook
+signature covers is the body — under the generic `hmac_sha256` scheme, the body and
+nothing else — so a key read out of a header is a key nobody signed. Whoever
+captures one legitimate delivery can send those exact bytes and that exact
+signature again under a delivery id of their choosing, and each resend is a new
+key, a new run id, and a redelivery the conflict and reuse policies never see as
+one; the generic scheme signs no timestamp either, so the capture stays good
+indefinitely. Keyed inside the signed body, the resend carries the same key and
+joins the first run. Where a provider repeats its id only in a header —
+`x-github-delivery`, `x-shopify-webhook-id` — that header is still the key to use,
+because it is the only id on offer and dedupe that runs twice is worse than dedupe
+an attacker can defeat; what this refuses is reaching for the header when the
+signed body carries the same id.
+
+The validator cannot refuse it, and does not try. A key over a header genuinely
+varies with the delivery, which is all a file can prove, and reading a header is the
+right key for a provider that repeats one (`x-shopify-webhook-id`). What a checker
+*can* know is the header's name, and the names a signature travels under are few
+and fixed.
+
+Enforcement: tier 4, as `R10/signature-header-key` in `flow lint`, which names the
+header it found and the value to key on for that provider. Reachable from
+`flow validate`'s own guidance too: the diagnostic for a missing key suggests
+`${event.body.id}` and says why a signature header is not a key.
+
 ## Part II: the tiers
 
 Four tiers over one idea: severity is decided by *whose problem it is*.
@@ -392,7 +432,7 @@ Four tiers over one idea: severity is decided by *whose problem it is*.
 | 1. Refuse | `flow validate` and the parser | position, problem, remedy; wrong everywhere rather than merely ugly; properties of the file only, never of a deployment | R4's fence rules, R6's no dead keys |
 | 2. Normalize | `flow fmt` | one form per construct, no options, idempotent, comments preserved | R7, and the byte-level half of R8 |
 | 3. Migrate | `flow fix` plus editions | byte-safe, exact-match, refuses rather than guesses, tested by bytes or by compiling the result and never by "still validates" | R3's retirements, R4's sweep, R5's guarded-read rewrite (shipped) |
-| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; the tooling half of R8 |
+| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; R10's signature-header check; the tooling half of R8 |
 
 Wrong-everywhere is tier 1. Same-meaning-two-spellings is tier 2 or tier 3.
 Legal-but-there-is-a-better-idiom is tier 4 and only tier 4, because promoting a
@@ -405,7 +445,7 @@ could have made is not a review comment. It is a missing check, and the review a
 is to file it.**
 
 `flow lint` is that tool, landed by [#646](https://github.com/picatz/flowstate/issues/646).
-It carries R5's three mechanical checks and nothing else, because those are what this
+It carries R5's three mechanical checks and R10's one, because those are what this
 table says tier 4 carries; each check's doc comment in
 `pkg/flowstate/v1/flowfile/lint.go` names the rule it descends from, and every finding
 names it too, so `R5/nested-conditional` is a heading to read here rather than a number
@@ -514,6 +554,26 @@ whose mapping spelling compiles to a *literal* rather than to the expression the
 value holds. A shaping task's `outputs:` keeps it too, and that one is a real
 distinction rather than a shortfall — a mapping there means a shaped set of names,
 so unfolding one would change what the file says.
+
+**Three YAML traps, named together.** YAML is the carrier, and three of its legal
+readings catch a newcomer and a generating agent before the language does. A block
+scalar written `|` on a whole-value expression keeps the newline YAML appends, so
+`if: |` over `${...}` is a string and not a bool (#1445); the canonical spelling is
+`|-`, or the plain scalar. A fence inside a flow mapping, `log: {message: ${x}}`,
+ends the mapping at the fence's own `}` (#1466); write the block form. And a plain
+scalar holding `: ` — every ternary, `${a ? b : c}` — is a mapping key to YAML
+(#1683); quote the whole value, `'${a ? b : c}'`, as the table above and every
+example that writes a ternary do. The third is the only one that stops the file from
+parsing at all, and the compiler answers it in this language's voice with the
+quoting as a suggested edit, so `flow lint` and `flow fmt` reach the rest of the file
+once it is applied.
+
+**A long expression may take a line of its own.** `value: |` or `value: >` followed
+by a single `${...}` is that expression, typed as it is written — the newline the
+block's default chomping appends is YAML's, not text the author wrote, so it does
+not turn the value into a string. Writing `|-` says the same thing and stays
+correct. A block scalar holding a fence *and* other text is still interpolation, and
+`|+` keeps the newlines it was explicitly asked to keep.
 
 **Folding is the other, smaller question, and stays parked.** `flow fmt` unfolds a
 folded block scalar into a single line. Re-folding is a re-wrapping decision — a

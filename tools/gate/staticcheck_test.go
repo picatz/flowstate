@@ -91,8 +91,9 @@ func readWorkflow(t *testing.T) ([]byte, staticcheckWorkflow) {
 //
 // So this compares whole command lines: the one the workflow runs, with its
 // `${{ env.* }}` expanded, against the one the gate's own staticcheck() builds
-// for the module-wide case. Bumping STATICCHECK_VERSION in ci.yml without
-// moving staticcheckVersion fails here, before a push.
+// for the module-wide case. The release comes from tools/external/go.mod for
+// both, so what is left to drift is the toolchain and the modfile the two
+// name; either fails here, before a push.
 func TestTheGateAndCIRunTheSameStaticcheck(t *testing.T) {
 	data, wf := readWorkflow(t)
 
@@ -102,13 +103,13 @@ func TestTheGateAndCIRunTheSameStaticcheck(t *testing.T) {
 	}
 	var want string
 	for _, s := range job.Steps {
-		if strings.Contains(s.Run, "staticcheck@") {
+		if strings.Contains(s.Run, "go tool") && strings.Contains(s.Run, "staticcheck") {
 			want = expandWorkflowExpr(t, strings.TrimSpace(s.Run), workflowEnv(t, data))
 			break
 		}
 	}
 	if want == "" {
-		t.Fatal("the staticcheck job runs no step invoking staticcheck@<version>")
+		t.Fatal("the staticcheck job runs no step invoking staticcheck through go tool")
 	}
 
 	got := staticcheck("./...").display()
@@ -117,7 +118,7 @@ func TestTheGateAndCIRunTheSameStaticcheck(t *testing.T) {
 			"  gate:   %s\n"+
 			"  ci.yml: %s\n"+
 			"the two differ only in scope by design; a different version or toolchain means a local pass\n"+
-			"predicts nothing about the job it exists to predict (update staticcheckVersion/staticcheckToolchain in main.go)",
+			"predicts nothing about the job it exists to predict (update staticcheckToolchain or toolsModfile in main.go)",
 			got, want)
 	}
 }

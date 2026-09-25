@@ -34,6 +34,11 @@ import "context"
 //   - [Scope.local] is true for every local run and false for every durable one,
 //     and it is what `run.local` renders. Anything reading the scope can tell the
 //     two apart by the field that exists to tell them apart.
+//   - [WorkloadIdentity.Mode] carries the same host-established fact across the
+//     plugin process boundary. [ProtoWorkloadIdentity] derives REHEARSAL only
+//     from [auth.WorkloadIdentity]'s unexported local marker; the durable driver
+//     overwrites serialized input with PRODUCTION at its activity boundary.
+//     Absence from an older host remains unspecified/unknown rather than production.
 //   - A minted credential's subject carries [auth]'s `_local` component, set by
 //     an unexported field only [auth.NewLocalWorkloadIdentity] can set — so a
 //     third-party relying party, which never sees `run.local`, still cannot be

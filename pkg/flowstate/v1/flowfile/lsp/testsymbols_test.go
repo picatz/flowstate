@@ -246,3 +246,22 @@ func TestASymbolNameMatchesTheReportThroughQuotesAndComments(t *testing.T) {
 		"a \\u escape the loader decodes was published verbatim, so the outline named a case "+
 			"flow test does not have")
 }
+
+func TestTestDocumentSymbolsDecodeQuotedStructuralKeys(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	c.initialize()
+
+	const src = "\"t\\u0065sts\": # suite\n" +
+		"  - \"na\\u006de\": smoke\n" +
+		"    \"inputs\":\n" +
+		"      \"cases: fixture # data\":\n" +
+		"        \"name\": bogus\n"
+	c.open("file:///quoted-symbols.test.yaml", src)
+	syms := c.symbols("file:///quoted-symbols.test.yaml")
+
+	require.Len(t, syms, 1)
+	assert.Equal(t, "smoke", syms[0].Name)
+	assert.Equal(t, "smoke", textInRange(src, syms[0].Location.Range),
+		"the semantic key length was used as a source offset for the symbol range")
+}

@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -246,8 +247,9 @@ const (
 
 // A documentStore holds the documents an editor has open, keyed by URI.
 type documentStore struct {
-	mu   sync.Mutex
-	docs map[lsp.DocumentURI]*document
+	mu          sync.Mutex
+	docs        map[lsp.DocumentURI]*document
+	localByPath map[string]lsp.DocumentURI
 
 	// building counts the document notifications in flight per URI: incremented
 	// before the parse starts, decremented once the result is in docs.
@@ -404,7 +406,22 @@ func (s *documentStore) await(ctx context.Context, disconnected <-chan struct{},
 	}
 }
 
-// open records a newly opened document and returns it.
+// open records a newly opened document and returns it, or the document already
+// stored when this open has been overtaken.
+//
+// The version guard is [documentStore.change]'s, for the same reason: the
+// connection wraps the handler in jsonrpc2.AsyncHandler, which starts a
+// goroutine per message and gives up the arrival ordering the protocol
+// guarantees. An open whose goroutine is scheduled behind a change would
+// otherwise replace the edited document with the opened text at version 1 --
+// an editor that takes the first keystrokes and then silently reverts them,
+// answering hover and diagnostics from pre-edit text until the next one lands.
+//
+// A document still in the store means this open was overtaken, because the
+// protocol requires didClose before a document is opened again and
+// [documentStore.close] removes it. So a close-then-open always applies, and an
+// open that finds an incumbent is either reordered or a client re-opening
+// without closing; neither is a reason to move the document backwards.
 func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, tasks *v1.Registry) *document {
 	// Announced before the parse and retired after the result is stored, so a
 	// request that arrives in between waits for this rather than reading past it.
@@ -418,7 +435,28 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}
+	if s.localByPath == nil {
+		s.localByPath = make(map[string]lsp.DocumentURI)
+	}
+	if prev, ok := s.docs[uri]; ok {
+		// Ordered against what the store holds, not against this open's own
+		// version. Zero is a legal document version, not a sentinel: a client
+		// that opens at zero and immediately edits to one is compliant, and
+		// comparing only opens above zero would let that open revert the edit —
+		// the very reversion this guard exists to stop. What zero means is that
+		// the *stored* document cannot be ordered against, which is the client
+		// that does not track versions at all; there last-write-wins is all
+		// that is on offer, so the open applies.
+		if prev.version > 0 && version <= prev.version {
+			doc = prev
+		}
+	}
 	s.docs[uri] = doc
+	if path, ok := doc.filesystemPath(); ok {
+		s.localByPath[filepath.Clean(path)] = uri
+	}
+	// Registered and woken on both paths: a request blocked on the build gate is
+	// waiting for this call, and an overtaken open still has to release it.
 	s.wakeLocked()
 	return doc
 }
@@ -456,6 +494,34 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 			return nil
 		}
 		text = prev.text
+	} else {
+		// No document to splice into, so this change set is applied only if it
+		// establishes the whole text by itself: at least one entry carrying no
+		// range, which replaces everything and makes whatever preceded it
+		// irrelevant. That is the sync kind this server advertises.
+		//
+		// Anything else would fabricate a document out of nothing — a range
+		// spliced into an empty string leaves the replacement alone, and an
+		// empty change set leaves the empty string — stored at the edit's
+		// version, which then looks newer than the didOpen still on its way.
+		// The guard in open would keep it, and the buffer would stay wrong for
+		// good. Ignoring the change instead leaves the open to land the real
+		// text, and the client's next edit applies to that.
+		//
+		// The test is "does a full replacement arrive", not "does a range
+		// arrive": an empty set carries no range and still establishes
+		// nothing, and a set ending in a full replacement carries one and
+		// establishes everything.
+		establishesText := false
+		for _, c := range changes {
+			if c.Range == nil {
+				establishesText = true
+				break
+			}
+		}
+		if !establishesText {
+			return nil
+		}
 	}
 	for _, c := range changes {
 		if c.Range == nil {
@@ -475,7 +541,13 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}
+	if s.localByPath == nil {
+		s.localByPath = make(map[string]lsp.DocumentURI)
+	}
 	s.docs[uri] = doc
+	if path, ok := doc.filesystemPath(); ok {
+		s.localByPath[filepath.Clean(path)] = uri
+	}
 	s.wakeLocked()
 	return doc
 }
@@ -493,10 +565,28 @@ func (s *documentStore) get(uri lsp.DocumentURI) (*document, bool) {
 	return doc, ok
 }
 
+// getByFilesystemPath finds an open local document independent of whether the
+// client spelled its URI with an empty or localhost authority.
+func (s *documentStore) getByFilesystemPath(path string) (*document, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	uri, ok := s.localByPath[filepath.Clean(path)]
+	if !ok {
+		return nil, false
+	}
+	doc, ok := s.docs[uri]
+	return doc, ok
+}
+
 // close forgets a document.
 func (s *documentStore) close(uri lsp.DocumentURI) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if doc := s.docs[uri]; doc != nil {
+		if path, ok := doc.filesystemPath(); ok && s.localByPath[filepath.Clean(path)] == uri {
+			delete(s.localByPath, filepath.Clean(path))
+		}
+	}
 	delete(s.docs, uri)
 	// Woken because the store changed, the same as every other mutation here: a
 	// waiter re-reads and decides for itself. It is the one mutation that can

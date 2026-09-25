@@ -154,7 +154,6 @@ var errorConformanceCases = []errorConformanceCase{
 func runErrorsPlugin() int {
 	tasks := make([]sdk.Task, 0, len(errorConformanceCases))
 	for _, c := range errorConformanceCases {
-		c := c
 		tasks = append(tasks, sdk.Task{
 			Name:    c.task,
 			Summary: "returns one classified error, for round-trip conformance",

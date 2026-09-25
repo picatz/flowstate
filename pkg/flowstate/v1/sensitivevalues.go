@@ -60,6 +60,13 @@ const SensitiveMarker = "[redacted]"
 // the shape the backstop exists for.
 const minSensitiveSubstringRunes = 2
 
+// maxSensitiveSubstringRedactionWork bounds one rendered value and
+// maxSensitiveSubstringMatcherBytes bounds the retained matcher built from
+// sensitive strings. Work past either bound withholds rather than weakening
+// redaction.
+const maxSensitiveSubstringRedactionWork = 1 << 20
+const maxSensitiveSubstringMatcherBytes = 64 << 10
+
 // maxSensitiveDescendants bounds how many values one redaction set may hold,
 // counting both what the walk below has collected and what it still has
 // queued. The queue is counted because it is memory the same input controls:
@@ -96,9 +103,10 @@ const maxSensitiveDescendants = 1024
 // completely, nothing can be shown to be safe, so every value the holder is
 // asked about is withheld.
 type sensitiveState struct {
-	values      []any
-	substrings  []string
-	withholdAll bool
+	values           []any
+	substrings       []string
+	substringMatcher *sensitiveSubstringMatcher
+	withholdAll      bool
 }
 
 // SensitiveValues is a run's redaction set: what a renderer must not print,
@@ -134,6 +142,13 @@ func (s SensitiveValues) held() sensitiveState {
 
 // sensitiveValuesOf returns a [SensitiveValues] closing over state.
 func sensitiveValuesOf(state sensitiveState) SensitiveValues {
+	if !state.withholdAll {
+		var ok bool
+		state.substringMatcher, ok = newSensitiveSubstringMatcher(state.substrings)
+		if !ok {
+			state = sensitiveState{withholdAll: true}
+		}
+	}
 	return SensitiveValues{state: func() sensitiveState { return state }}
 }
 
@@ -315,7 +330,30 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 			continue
 		}
 		state.values = append(state.values, plaintext)
-		state.substrings = append(state.substrings, plaintext)
+
+		// The substring half takes the floor [minSensitiveSubstringRunes]
+		// argues, which this path used to skip: a one-rune fixture secret
+		// (`t`, `1` — short by nature, since nothing about a test's
+		// `secrets:` is real material) marked every occurrence of that rune
+		// in every rendered line, shredding the very diagnostic its author
+		// was trying to read — and the substituted markers were themselves
+		// shredded, nesting `[redacted]` inside `[redacted]`. The value
+		// comparison above still holds at every length, so a rendered value
+		// *equal* to the plaintext redacts exactly as before.
+		//
+		// What the floor concedes, it concedes deliberately and in the open:
+		// a one-rune plaintext embedded in a *composite* string — the
+		// `"Bearer " + value` shape the backstop exists for — now prints,
+		// because there is no third option: redacting one rune everywhere it
+		// occurs is the shredder above, and withholding the whole rendering
+		// destroys the same diagnostic by a different door. This is the
+		// standing every non-root descendant of a declared `sensitive:`
+		// input already has (the walk above applies the identical floor to
+		// them), extended to the values this path adds; a fixture that needs
+		// the composite backstop uses a plaintext of two runes or more.
+		if utf8.RuneCountInString(plaintext) >= minSensitiveSubstringRunes {
+			state.substrings = append(state.substrings, plaintext)
+		}
 	}
 
 	return sensitiveValuesOf(state)
@@ -364,7 +402,7 @@ func (s SensitiveValues) RedactTree(v any) any {
 // wrong place. See [SensitiveValues.RedactText] for the answer that includes
 // it.
 func (s SensitiveValues) RedactSubstrings(rendered string) string {
-	return redactSensitiveSubstrings(rendered, s.held().substrings)
+	return redactSensitiveSubstringsWithMatcher(rendered, s.held().substringMatcher)
 }
 
 // RedactText is the whole answer for one rendered line: withheld entirely when
@@ -455,50 +493,222 @@ func redactSensitiveSubstrings(rendered string, substrings []string) string {
 	// both partial leaks, the second one whatever you sort by (Codex, #1052).
 	// A union of matches has no order to get wrong. One site, so every
 	// renderer shares the answer.
-	type span struct{ start, end int }
-	var spans []span
-	for _, s := range substrings {
-		if s == "" {
-			continue
-		}
-		for from := 0; from <= len(rendered)-len(s); {
-			i := strings.Index(rendered[from:], s)
-			if i < 0 {
-				break
-			}
-			start := from + i
-			spans = append(spans, span{start: start, end: start + len(s)})
-			// Advance one byte, not one match length: self-overlapping
-			// matches ("aa" across "aaa") must all enter the union.
-			from = start + 1
-		}
+	matcher, ok := newSensitiveSubstringMatcher(substrings)
+	if !ok {
+		return SensitiveMarker
 	}
-	if len(spans) == 0 {
+	return redactSensitiveSubstringsWithMatcher(rendered, matcher)
+}
+
+func redactSensitiveSubstringsWithMatcher(rendered string, matcher *sensitiveSubstringMatcher) string {
+	if matcher == nil {
+		return rendered
+	}
+	if len(rendered) > maxSensitiveSubstringRedactionWork {
+		return SensitiveMarker
+	}
+
+	redacted := make([]bool, len(rendered))
+	if !matcher.markMatches(redacted, rendered) {
 		return rendered
 	}
 
-	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
-
 	var b strings.Builder
-	prev := 0
-	current := spans[0]
-	flush := func() {
-		b.WriteString(rendered[prev:current.start])
-		b.WriteString(SensitiveMarker)
-		prev = current.end
-	}
-	for _, sp := range spans[1:] {
-		if sp.start <= current.end {
-			if sp.end > current.end {
-				current.end = sp.end
+	for i := 0; i < len(rendered); {
+		if !redacted[i] {
+			end := i + 1
+			for end < len(rendered) && !redacted[end] {
+				end++
 			}
+			b.WriteString(rendered[i:end])
+			i = end
 			continue
 		}
-		flush()
-		current = sp
+		b.WriteString(SensitiveMarker)
+		for i < len(rendered) && redacted[i] {
+			i++
+		}
 	}
-	flush()
-	b.WriteString(rendered[prev:])
 
 	return b.String()
+}
+
+// sensitiveSubstringMatcher is an immutable Aho-Corasick automaton. One is
+// built per SensitiveValues set and shared by every rendering call, so a long
+// transcript costs one pass over its text rather than one pass per sensitive
+// descendant per line.
+type sensitiveSubstringMatcher struct {
+	nodes []sensitiveSubstringNode
+}
+
+type sensitiveSubstringNode struct {
+	edges   []sensitiveSubstringEdge
+	failure int
+	longest int
+}
+
+type sensitiveSubstringEdge struct {
+	byteValue byte
+	next      int
+}
+
+func newSensitiveSubstringMatcher(substrings []string) (*sensitiveSubstringMatcher, bool) {
+	unique := make(map[string]struct{}, len(substrings))
+	totalBytes := 0
+	for _, substring := range substrings {
+		if substring == "" {
+			continue
+		}
+		if _, exists := unique[substring]; exists {
+			continue
+		}
+		if len(substring) > maxSensitiveSubstringMatcherBytes-totalBytes {
+			return nil, false
+		}
+		unique[substring] = struct{}{}
+		totalBytes += len(substring)
+	}
+	if len(unique) == 0 {
+		return nil, true
+	}
+
+	matcher := &sensitiveSubstringMatcher{nodes: []sensitiveSubstringNode{{}}}
+	for substring := range unique {
+		state := 0
+		for i := 0; i < len(substring); i++ {
+			next, ok := matcher.nextLinear(state, substring[i])
+			if !ok {
+				next = len(matcher.nodes)
+				matcher.nodes = append(matcher.nodes, sensitiveSubstringNode{})
+				matcher.nodes[state].edges = append(matcher.nodes[state].edges,
+					sensitiveSubstringEdge{byteValue: substring[i], next: next})
+			}
+			state = next
+		}
+		matcher.nodes[state].longest = max(matcher.nodes[state].longest, len(substring))
+	}
+	for i := range matcher.nodes {
+		sort.Slice(matcher.nodes[i].edges, func(a, b int) bool {
+			return matcher.nodes[i].edges[a].byteValue < matcher.nodes[i].edges[b].byteValue
+		})
+	}
+
+	queue := make([]int, 0, len(matcher.nodes)-1)
+	for _, edge := range matcher.nodes[0].edges {
+		queue = append(queue, edge.next)
+	}
+	for len(queue) > 0 {
+		state := queue[0]
+		queue = queue[1:]
+		for _, edge := range matcher.nodes[state].edges {
+			queue = append(queue, edge.next)
+			failure := matcher.nodes[state].failure
+			for failure != 0 {
+				if next, ok := matcher.next(failure, edge.byteValue); ok {
+					failure = next
+					break
+				}
+				failure = matcher.nodes[failure].failure
+			}
+			if failure == 0 {
+				if next, ok := matcher.next(0, edge.byteValue); ok && next != edge.next {
+					failure = next
+				}
+			}
+			matcher.nodes[edge.next].failure = failure
+			matcher.nodes[edge.next].longest = max(
+				matcher.nodes[edge.next].longest,
+				matcher.nodes[failure].longest,
+			)
+		}
+	}
+
+	return matcher, true
+}
+
+func (m *sensitiveSubstringMatcher) nextLinear(state int, value byte) (int, bool) {
+	for _, edge := range m.nodes[state].edges {
+		if edge.byteValue == value {
+			return edge.next, true
+		}
+	}
+	return 0, false
+}
+
+func (m *sensitiveSubstringMatcher) next(state int, value byte) (int, bool) {
+	edges := m.nodes[state].edges
+	i := sort.Search(len(edges), func(i int) bool { return edges[i].byteValue >= value })
+	if i < len(edges) && edges[i].byteValue == value {
+		return edges[i].next, true
+	}
+	return 0, false
+}
+
+func (m *sensitiveSubstringMatcher) markMatches(redacted []bool, text string) bool {
+	state := 0
+	found := false
+
+	// The union is accumulated one span at a time rather than marked as each
+	// match arrives, because matches arrive in increasing *end* offset and say
+	// nothing about where they start. A later-ending match can begin earlier
+	// than one already seen — `aa` inside `topsecret-aaa` ends first and starts
+	// last — so a high-water mark of what is already covered skips exactly the
+	// bytes the longer secret added in front of it, printing `topsecret-` in the
+	// clear (#1119). Only a match that cannot touch the open span closes it.
+	//
+	// Still one pass over the *text*. The marking is close to the length of the
+	// union but not equal to it: the arm below that reaches further back moves
+	// `pendingStart` without re-examining what an earlier `mark()` already
+	// covered, so two written spans can overlap — matches at [0,10), [20,21)
+	// and [5,30) write [0,10) and then [5,30). A rewritten byte is bounded by
+	// how far back a single match can reach, which is the longest sensitive
+	// value. Who chooses that value, and therefore whether this cost is worth
+	// bounding rather than noting, is #2027. Correctness does not depend on it
+	// either way: marking
+	// is idempotent, every match is inside the pending span when it is taken,
+	// and the hull is only ever widened over spans the current match contains.
+	pendingStart, pendingEnd := 0, 0
+	mark := func() {
+		for j := pendingStart; j < pendingEnd; j++ {
+			redacted[j] = true
+		}
+	}
+
+	for i := 0; i < len(text); i++ {
+		for state != 0 {
+			if _, ok := m.next(state, text[i]); ok {
+				break
+			}
+			state = m.nodes[state].failure
+		}
+		if next, ok := m.next(state, text[i]); ok {
+			state = next
+		}
+		length := m.nodes[state].longest
+		if length == 0 {
+			continue
+		}
+		start, end := i+1-length, i+1
+
+		switch {
+		case !found:
+			pendingStart = start
+		case start > pendingEnd:
+			// Disjoint: nothing later can reach back over the gap, because a
+			// match starting before this one would have to end before it too.
+			mark()
+			pendingStart = start
+		case start < pendingStart:
+			// Overlapping and reaching further back than anything so far.
+			pendingStart = start
+		}
+		pendingEnd = end
+		found = true
+	}
+
+	if found {
+		mark()
+	}
+
+	return found
 }

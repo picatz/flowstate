@@ -67,7 +67,7 @@ func Test_refuseCleartextCredential(t *testing.T) {
 	}
 
 	t.Run("a bearer credential to a public http destination is refused", func(t *testing.T) {
-		err := refuseCleartextCredential(bearerInputs, mustParse(t, "http://example.com/webhook"))
+		err := refuseCleartextCredential(bearerInputs, nil, mustParse(t, "http://example.com/webhook"))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "http://example.com/webhook")
 		require.Contains(t, err.Error(), "would send a credential in cleartext")
@@ -80,7 +80,7 @@ func Test_refuseCleartextCredential(t *testing.T) {
 	})
 
 	t.Run("a JIT credential target to a public http destination is refused", func(t *testing.T) {
-		err := refuseCleartextCredential(credentialInputs, mustParse(t, "http://example.com/webhook"))
+		err := refuseCleartextCredential(credentialInputs, nil, mustParse(t, "http://example.com/webhook"))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "would send a credential in cleartext")
 	})
@@ -88,28 +88,28 @@ func Test_refuseCleartextCredential(t *testing.T) {
 	t.Run("a bearer credential to a private, non-loopback http destination is still refused", func(t *testing.T) {
 		// The boundary CLAUDE.md's own worked examples keep re-finding: "not
 		// on the public internet" is not the exemption, "is this machine" is.
-		err := refuseCleartextCredential(bearerInputs, mustParse(t, "http://10.0.0.5/webhook"))
+		err := refuseCleartextCredential(bearerInputs, nil, mustParse(t, "http://10.0.0.5/webhook"))
 		require.Error(t, err)
 	})
 
 	t.Run("a bearer credential to https is not refused", func(t *testing.T) {
-		require.NoError(t, refuseCleartextCredential(bearerInputs, mustParse(t, "https://example.com/webhook")))
+		require.NoError(t, refuseCleartextCredential(bearerInputs, nil, mustParse(t, "https://example.com/webhook")))
 	})
 
 	t.Run("a bearer credential to loopback by IP is not refused", func(t *testing.T) {
-		require.NoError(t, refuseCleartextCredential(bearerInputs, mustParse(t, "http://127.0.0.1:9200/webhook")))
+		require.NoError(t, refuseCleartextCredential(bearerInputs, nil, mustParse(t, "http://127.0.0.1:9200/webhook")))
 	})
 
 	t.Run("a bearer credential to loopback by name is not refused", func(t *testing.T) {
-		require.NoError(t, refuseCleartextCredential(bearerInputs, mustParse(t, "http://localhost:9200/webhook")))
+		require.NoError(t, refuseCleartextCredential(bearerInputs, nil, mustParse(t, "http://localhost:9200/webhook")))
 	})
 
 	t.Run("a bearer credential to IPv6 loopback is not refused", func(t *testing.T) {
-		require.NoError(t, refuseCleartextCredential(bearerInputs, mustParse(t, "http://[::1]:9200/webhook")))
+		require.NoError(t, refuseCleartextCredential(bearerInputs, nil, mustParse(t, "http://[::1]:9200/webhook")))
 	})
 
 	t.Run("a request carrying no credential is never refused, on http or https", func(t *testing.T) {
-		require.NoError(t, refuseCleartextCredential(plainInputs, mustParse(t, "http://example.com/webhook")))
-		require.NoError(t, refuseCleartextCredential(plainInputs, mustParse(t, "https://example.com/webhook")))
+		require.NoError(t, refuseCleartextCredential(plainInputs, nil, mustParse(t, "http://example.com/webhook")))
+		require.NoError(t, refuseCleartextCredential(plainInputs, nil, mustParse(t, "https://example.com/webhook")))
 	})
 }

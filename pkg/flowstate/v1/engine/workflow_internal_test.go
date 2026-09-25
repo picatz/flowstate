@@ -65,10 +65,10 @@ func TestResolveTaskInputs_MixedTypes_Table(t *testing.T) {
 		wantInt64 *int64
 		wantBool  *bool
 	}{
-		{name: "string select", expr: "s.str", wantStr: strp("ok")},
-		{name: "string call", expr: "string(n.num)", wantStr: strp("2")},
+		{name: "string select", expr: "s.str", wantStr: new("ok")},
+		{name: "string call", expr: "string(n.num)", wantStr: new("2")},
 		{name: "int math", expr: "n.num + 3", wantInt64: intp(5)},
-		{name: "bool select", expr: "b.flag", wantBool: boolp(true)},
+		{name: "bool select", expr: "b.flag", wantBool: new(true)},
 	}
 
 	for _, tc := range tests {
@@ -92,9 +92,7 @@ func TestResolveTaskInputs_MixedTypes_Table(t *testing.T) {
 	}
 }
 
-func strp(s string) *string { return &s }
-func intp(i int64) *int64   { return &i }
-func boolp(b bool) *bool    { return &b }
+func intp(i int64) *int64 { return &i }
 
 func TestCompactPrevOutputsForTask_MinimalSubset(t *testing.T) {
 	prev := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{

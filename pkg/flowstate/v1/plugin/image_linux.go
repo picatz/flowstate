@@ -49,7 +49,7 @@ func pinToDescriptor(f *os.File, info fs.FileInfo) (*os.File, string, error) {
 		return f, "", err
 	}
 
-	held, err := raiseAboveExecShuffle(f)
+	held, err := raiseAboveExecShuffle(f, execFDFloor)
 	if err != nil {
 		// f is untouched and still usable by the caller.
 		return f, "", err
@@ -72,18 +72,51 @@ func pinToDescriptor(f *os.File, info fs.FileInfo) (*os.File, string, error) {
 	return held, execPath, nil
 }
 
-// raiseAboveExecShuffle moves f to a descriptor at or above [execFDFloor],
-// closing the original, and returns f unchanged when it is already clear.
+// prepareForExec moves a pinned image above every descriptor number os/exec may
+// use while rebuilding files in the child.
+//
+// syscall.ForkExec starts its scratch range one above both the child file count
+// and the largest source descriptor. It can then consume one descriptor for its
+// exec-error pipe and one for each child file that has to be moved out of the
+// way. A fixed floor is not enough: concurrent closes can leave all child-file
+// sources below the image, making the first scratch descriptor equal the image
+// descriptor and replacing it with a pipe. Executing that pipe through
+// /proc/self/fd fails with EACCES.
+//
+// launch passes every source descriptor explicitly, including stdin, so this
+// bound covers the complete file table os/exec will shuffle. The image remains
+// close-on-exec and is still the same open file description that was hashed.
+func (im *execImage) prepareForExec(files []*os.File) error {
+	floor := len(files)
+	for _, file := range files {
+		if file != nil && int(file.Fd()) > floor {
+			floor = int(file.Fd())
+		}
+	}
+	floor += len(files) + 2
+
+	held, err := raiseAboveExecShuffle(im.file, floor)
+	if err != nil {
+		return err
+	}
+
+	im.file = held
+	im.execPath = "/proc/self/fd/" + strconv.Itoa(int(held.Fd()))
+	return nil
+}
+
+// raiseAboveExecShuffle moves f to a descriptor at or above floor, closing the
+// original, and returns f unchanged when it is already clear.
 //
 // The duplicate keeps close-on-exec, which is what stops the plugin process from
 // inheriting a readable handle on its own image: exec resolves the name first
 // and closes the descriptor after, so nothing is lost by keeping the flag.
-func raiseAboveExecShuffle(f *os.File) (*os.File, error) {
-	if f.Fd() >= execFDFloor {
+func raiseAboveExecShuffle(f *os.File, floor int) (*os.File, error) {
+	if f.Fd() >= uintptr(floor) {
 		return f, nil
 	}
 
-	fd, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_DUPFD_CLOEXEC, execFDFloor)
+	fd, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_DUPFD_CLOEXEC, uintptr(floor))
 	if errno != 0 {
 		return nil, fmt.Errorf("moving the plugin image off descriptor %d: %w", f.Fd(), errno)
 	}

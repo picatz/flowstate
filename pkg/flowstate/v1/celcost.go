@@ -52,10 +52,11 @@ import (
 // # What is priced, and why the result rather than the operands
 //
 // [byteCostEstimator] charges every call that *produces* a string or bytes for
-// the size of what it produced. The estimator hook
-// ([interpreter.ActualCostEstimator]) is handed the function name, the argument
-// values and the result value, and unlike the overload ID all three are present
-// whether or not anything type-checked.
+// the size of what it produced, plus the few traversal calls whose fixed-size
+// result would otherwise hide work proportional to their input. The estimator
+// hook ([interpreter.ActualCostEstimator]) is handed the function name, the
+// argument values and the result value, and unlike the overload ID all three
+// are present whether or not anything type-checked.
 //
 // Pricing the result rather than the operands is what keeps this from being a
 // second spelling of cel-go's cost table. For concatenation the two agree
@@ -133,41 +134,61 @@ var evaluationCostEstimator interpreter.ActualCostEstimator = byteCostEstimator{
 // unchanged. Every call producing neither a string, bytes, nor a list takes
 // that path.
 func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, result ref.Val) *uint64 {
+	// Canonical map traversal sorts once before a comprehension walks the map.
+	// Charge the preflighted entry and string-key work recorded by the ordered
+	// view rather than letting determinism introduce an unmetered path.
+	if function == orderedMapFunction && len(args) == 1 {
+		if ordered, ok := result.(orderedMap); ok {
+			return &ordered.cost
+		}
+		cost := uint64(0)
+		return &cost
+	}
+
 	var chars int64
 
-	// json_parse is the one call here priced by what it was *handed* rather than
-	// by what it produced, and it has to be: it returns a map or a list of
-	// decoded values, which the switch below declines to price, so cel-go's
-	// default charged it 1 unit however many bytes it decoded. A workflow that
-	// can put a response body into an activation could then decode it once per
-	// iteration of a comprehension for about 13 units an iteration — the
-	// unbounded-repetition shape this whole file exists to close, on the one
-	// function whose work is most obviously linear in its input.
+	// json_parse and digest.sha256 are priced by what they were *handed* rather
+	// than by what they produced. json_parse returns a map or list the switch
+	// below declines to price; digest.sha256 returns the same 71-character string
+	// whether it traversed one input byte or a million. Charging either result
+	// would let a workflow repeat linear work over a response or webhook body for
+	// a flat unit per call.
 	//
 	// Charging the input at the same factor as every other traversal keeps the
-	// bound statable in the same sentence: an evaluation may decode roughly
-	// DefaultCostLimit / StringTraversalCostFactor characters of JSON, about ten
+	// bound statable in the same sentence: an evaluation may decode or hash
+	// roughly DefaultCostLimit / StringTraversalCostFactor characters, about ten
 	// million, however it spells the arithmetic. At the default budget that is
 	// nine or ten passes over a full default-size HTTP response body, and it
 	// refuses before the eleventh rather than after it.
 	//
-	// The residual, stated rather than left to be discovered: a decoded value is
-	// larger in memory than the bytes it came from, sometimes by a lot, and
+	// The JSON residual, stated rather than left to be discovered: a decoded value
+	// is larger in memory than the bytes it came from, sometimes by a lot, and
 	// nothing charges the decoded representation itself. What is bounded here is
 	// the input an evaluation may feed to the decoder, which is the multiplier
 	// the workflow controls; the per-value size is bounded where the value was
 	// admitted (a response body, a webhook payload, a specification), which is
 	// where a limit an operator can raise belongs.
-	if function == jsonParseFunction && len(args) == 1 {
+	if (function == jsonParseFunction || function == digestSHA256Function) && len(args) == 1 {
 		if chars = sizeOf(args[0]); chars < 0 {
 			return nil
 		}
 
-		cost := uint64(math.Ceil(float64(chars) * common.StringTraversalCostFactor))
-		if cost < 1 {
-			cost = 1
-		}
+		cost := max(uint64(math.Ceil(float64(chars)*common.StringTraversalCostFactor)), 1)
 
+		return &cost
+	}
+
+	// lists.range is priced by the elements it produced, which is cel-go's own
+	// pricing for it (ext/lists.go's trackListOutputSize) and unreachable on this
+	// path for the overload-ID reason above. Without it a range costs 1 unit at
+	// any size, so a comprehension could allocate the element bound
+	// (cellistbound.go) ten thousand times over for a few thousand units. Priced
+	// this way, a hundred `lists.range(10000)` calls spend [DefaultCostLimit].
+	if function == listsRangeFunction {
+		cost := uint64(1)
+		if n := sizeOf(result); n > 1 {
+			cost = uint64(n)
+		}
 		return &cost
 	}
 
@@ -191,6 +212,34 @@ func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, r
 	// does price by size, so a concatenation costs what cel-go would have
 	// charged it had an overload ID been resolved.
 	cost := uint64(math.Ceil(float64(chars) * common.StringTraversalCostFactor))
+
+	// A list concatenation that actually copied is charged for the elements it
+	// copied, whatever those elements hold.
+	//
+	// The bytes-entering rule above prices what a list *carries*, which is the
+	// right question for the allocation those bytes fund and the wrong one for
+	// the traversal. `[1] + [2]` moves no characters at all, so a fold building
+	// a list an element at a time — `lists.range(n).map(i, [i]).sum()` — was
+	// charged the one-unit floor for each of its n concatenations while copying
+	// 1, then 2, then 3 elements. The work is quadratic in n and the charge was
+	// linear, so an expression well inside every bound spent hundreds of
+	// megabytes and most of a second, and converting the result afterwards
+	// walked the same chain again (#1119).
+	//
+	// Only a concrete result is charged this way. cel-go accumulates a
+	// comprehension into a mutable list and appends in place, so the growing
+	// result an ordinary `map` or `filter` reports is one list being built
+	// rather than n copies of it; charging that by size would make
+	// `lists.range(10000).map(i, i + 1)` quadratic to price and refuse the
+	// comprehensions the profile exists to offer. The distinction is exactly
+	// whether a copy happened, which is what [traits.MutableLister] answers.
+	if result.Type() == types.ListType {
+		if _, mutable := result.(traits.MutableLister); !mutable {
+			if n := sizeOf(result); n > 0 && uint64(n) > cost {
+				cost = uint64(n)
+			}
+		}
+	}
 
 	// Never cheaper than the 1 unit cel-go charges a call it treats as O(1):
 	// pricing by size must not make a call free just because it moved few
@@ -249,7 +298,7 @@ func accumulatedChars(args []ref.Val) int64 {
 		}
 
 		var chars int64
-		for i := int64(0); i < length; i++ {
+		for i := range length {
 			element := list.Get(types.Int(i))
 			switch element.Type() {
 			case types.StringType, types.BytesType:

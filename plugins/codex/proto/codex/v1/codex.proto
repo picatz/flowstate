@@ -135,8 +135,13 @@ message ExecInputs {
   // the second and later iterations, immediately before the next turn, and
   // each attempt gets the same clean baseline the first one did.
   //
-  // Requires working_context to be set (refused as sdk.InvalidInput
-  // otherwise - there is nothing to reset) and requires
+  // Requires working_context to be set and sandbox_mode to permit writing
+  // (both refused as sdk.InvalidInput otherwise: there is nothing to reset in
+  // the first case, and in the second the reset writes - it reverts tracked
+  // content and deletes untracked files outright, and SANDBOX_MODE_READ_ONLY
+  // is the operator's ceiling as much as the author's request, so a task input
+  // mutating the checkout beneath it would be this Flowfile widening a grant
+  // deployment configuration did not give). It also requires
   // FLOWSTATE_CODEX_GIT_BIN to be configured with working_context resolving
   // to a plain git checkout (refused as sdk.Failed otherwise, rather than
   // silently doing nothing - an author who asked for a reset and did not

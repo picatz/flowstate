@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
@@ -305,7 +306,7 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 		}
 
 		if _, ok := verifier.keys[entry.Issuer]; !ok {
-			verifier.keys[entry.Issuer] = &keySet{
+			keys := &keySet{
 				issuer:       entry.Issuer,
 				staticURL:    entry.JWKSURL,
 				client:       client,
@@ -314,6 +315,15 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 				minRefresh:   cfg.minRefresh,
 				fetchTimeout: cfg.fetchTimeout,
 			}
+			if entry.JWKSFile != "" {
+				fixed, err := loadJWKSFile(entry.JWKSFile)
+				if err != nil {
+					return nil, fmt.Errorf("loading signing keys for issuer %q: %w", entry.Issuer, err)
+				}
+				keys.keys = fixed
+				keys.fixed = true
+			}
+			verifier.keys[entry.Issuer] = keys
 		}
 	}
 
@@ -386,11 +396,11 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 
 	candidates, trusted := v.entries[issuer]
 	if !trusted {
-		return Principal{}, fmt.Errorf("%w: %q", ErrUntrustedIssuer, truncate(issuer, maxClaimValueLength))
+		return Principal{}, fmt.Errorf("%w: %q", ErrUntrustedIssuer, textbound.Truncate(issuer, maxClaimValueLength))
 	}
 
 	if !slices.Contains(v.algorithms[issuer], alg) {
-		return Principal{}, fmt.Errorf("%w: issuer %q does not allow %q", ErrDisallowedAlgorithm, issuer, truncate(alg, 32))
+		return Principal{}, fmt.Errorf("%w: issuer %q does not allow %q", ErrDisallowedAlgorithm, issuer, textbound.Truncate(alg, 32))
 	}
 
 	keyID := headerString(token.Header, header.KeyID)
@@ -473,7 +483,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 			// Unreachable: an issuer is only trusted because it has entries. Stated
 			// anyway, because errors.Join of nothing is nil, and this function
 			// returning a nil error would be authenticating a caller as nobody.
-			return Principal{}, fmt.Errorf("%w: %q has no trust policy entries", ErrUntrustedIssuer, truncate(issuer, maxClaimValueLength))
+			return Principal{}, fmt.Errorf("%w: %q has no trust policy entries", ErrUntrustedIssuer, textbound.Truncate(issuer, maxClaimValueLength))
 		case 1:
 			return Principal{}, failures[0]
 		default:
@@ -500,6 +510,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		Audience:   audiences,
 		Namespace:  namespace,
 		Role:       entry.Role,
+		Actions:    slices.Clone(entry.Actions),
 		IssuedAt:   lifetime.issuedAt,
 		ExpiresAt:  lifetime.expiresAt,
 		Claims:     claims,
@@ -678,7 +689,7 @@ func verifiableAlgorithm(params header.Parameters) (jwa.Algorithm, error) {
 		switch strings.ToLower(typ) {
 		case "jwt", "at+jwt", "application/at+jwt":
 		default:
-			return "", fmt.Errorf("%w: header type %q is not a JWT", ErrMalformedToken, truncate(typ, 32))
+			return "", fmt.Errorf("%w: header type %q is not a JWT", ErrMalformedToken, textbound.Truncate(typ, 32))
 		}
 	}
 
@@ -689,12 +700,12 @@ func verifiableAlgorithm(params header.Parameters) (jwa.Algorithm, error) {
 
 	switch {
 	case isNone(alg):
-		return "", fmt.Errorf("%w: %q leaves the token unsigned", ErrDisallowedAlgorithm, truncate(alg, 32))
+		return "", fmt.Errorf("%w: %q leaves the token unsigned", ErrDisallowedAlgorithm, textbound.Truncate(alg, 32))
 	case isHMAC(alg):
 		// Refusing this outright is what makes algorithm confusion impossible
 		// rather than merely unlikely: there is no configuration in which a
 		// MAC-signed token is verified against an issuer's public key.
-		return "", fmt.Errorf("%w: %q is symmetric, and issuers publish only public keys", ErrDisallowedAlgorithm, truncate(alg, 32))
+		return "", fmt.Errorf("%w: %q is symmetric, and issuers publish only public keys", ErrDisallowedAlgorithm, textbound.Truncate(alg, 32))
 	}
 
 	return alg, nil
@@ -784,7 +795,7 @@ func verifiedClaims(claims jwt.ClaimsSet) (map[string]any, error) {
 		if err != nil {
 			// Claim names are safe to name and values are not; see
 			// [validateCarriedClaims].
-			return nil, fmt.Errorf("%w: claim %q: %w", ErrMalformedToken, truncate(name, maxClaimValueLength), err)
+			return nil, fmt.Errorf("%w: claim %q: %w", ErrMalformedToken, textbound.Truncate(name, maxClaimValueLength), err)
 		}
 
 		total += len(name) + size

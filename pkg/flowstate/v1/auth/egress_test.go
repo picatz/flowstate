@@ -160,6 +160,50 @@ func TestAPrivateIssuerIsReachedByANamedOptionAndNotByDisablingTheBoundary(t *te
 	require.Equal(t, "runner", principal.Subject)
 }
 
+// TestPolicyBlockedFetchReportsBlockedNotUnavailable is the regression for #1303:
+// an egress-policy denial must say "blocked by the identity egress policy", not
+// "temporarily unavailable". The error still wraps ErrIssuerUnavailable so
+// existing errors.Is checks match, but IssuerBlockedError carries the denied
+// hop (already redacted) and rule, and PublicReason names the cause.
+func TestPolicyBlockedFetchReportsBlockedNotUnavailable(t *testing.T) {
+	t.Parallel()
+
+	var (
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+	)
+
+	policy := auth.Policy{
+		Issuers: []auth.TrustedIssuer{{
+			Name:      "internal",
+			Issuer:    issuer.URL(),
+			Audiences: []string{"flowstate"},
+		}},
+	}
+	token := issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate"))
+
+	refusing, err := auth.NewOIDCVerifier(policy, auth.WithClock(clock.Now))
+	require.NoError(t, err)
+
+	_, err = refusing.Verify(t.Context(), token)
+
+	require.ErrorIs(t, err, auth.ErrIssuerUnavailable, "must still wrap the sentinel")
+	require.ErrorIs(t, err, netpolicy.ErrDenied, "must still wrap the denial")
+
+	var blocked *auth.IssuerBlockedError
+	require.ErrorAs(t, err, &blocked, "must be an IssuerBlockedError, not a plain wrap")
+	require.Equal(t, issuer.URL(), blocked.Issuer)
+	require.NotNil(t, blocked.Deny)
+	require.NotEmpty(t, blocked.Deny.Hop, "the denied hop must be captured")
+
+	reason := auth.PublicReason(err)
+	require.Contains(t, reason, "blocked",
+		"PublicReason must say 'blocked', not 'temporarily unavailable'")
+	require.NotContains(t, reason, "temporarily",
+		"a deterministic denial is not temporary")
+}
+
 // TestTrustPolicyEgressSectionReachesTheSameBoundary checks the file form: an
 // operator who cannot call a Go option still has to be able to name the
 // loosening their deployment needs, or the only reachable answer is to turn the

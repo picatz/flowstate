@@ -7,35 +7,26 @@ import (
 	"strconv"
 	"strings"
 
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// secretScheme is this plugin's own secret reference scheme:
-// `token: ${secret('git:some-name')}`, never a literal. See
-// plugins/vcs/secrets.go's doc comment for the full argument on why a
-// plugin task can only resolve its own scheme today - nothing about that
-// gap is specific to this plugin, so it is not repeated here in full; the
-// short version is that a plugin task's inputs reach it over RPC exactly as
-// given, and there is no RPC a plugin can call to ask the host to resolve an
-// arbitrary reference on its own behalf.
-//
-// Once PR #160 (TaskManifest.secret_inputs) merges, this plugin should
-// declare its token input there instead and drop this plugin-local scheme -
-// referenced here by number rather than built against, since that PR is not
-// merged yet.
+// secretScheme is the compatibility secret provider for existing
+// `${secret('git:...')}` references. Tasks no longer resolve it directly:
+// token is declared in secret_inputs, so the host resolves any configured
+// provider under the caller's namespace and scrubs the resulting value before
+// the task sees it. Keeping this provider preserves existing Flowfiles while
+// making it one backend behind the shared host-resolution contract.
 const secretScheme = "git"
 
 // secretEnvPrefix is what this plugin's secrets are named with in the
 // process environment.
 const secretEnvPrefix = "GIT_SECRET_"
 
-// resolveSecret answers a reference from the environment, scoped by
-// namespace - see plugins/vcs/secrets.go's identical function for the one
-// gap this shares with it: namespace is always the default (empty) one,
-// which is correct for a single-tenant deployment and wrong, in the way
-// documented there, for one serving several tenants from a shared worker
-// pool.
+// resolveSecret answers a reference from the environment, scoped by the
+// namespace the host established for the caller.
 func resolveSecret(_ context.Context, req sdk.SecretRequest) (sdk.SecretResponse, error) {
 	name, err := envSegment(req.Name)
 	if err != nil {
@@ -100,11 +91,12 @@ func envSegment(s string) (string, error) {
 	return b.String(), nil
 }
 
-// tokenFromValue extracts an HTTPS credential from a task's `token` input.
-// See plugins/vcs/secrets.go's identical function for the full argument: a
-// literal is refused outright, an unset input means a public repository,
-// and only this plugin's own scheme resolves.
-func tokenFromValue(ctx context.Context, v *flowstatev1.Value) (string, error) {
+// tokenFromValue extracts the host-resolved HTTPS credential from token. The
+// manifest requires any supplied token to be a whole secret reference, but by
+// the time this function runs the host has replaced that reference with its
+// string value. An unresolved reference is therefore a host/manifest defect,
+// not an input this plugin may resolve in the default namespace.
+func tokenFromValue(_ context.Context, v *flowstatev1.Value) (string, error) {
 	if v == nil {
 		return "", nil
 	}
@@ -112,24 +104,14 @@ func tokenFromValue(ctx context.Context, v *flowstatev1.Value) (string, error) {
 	switch kind := v.GetKind().(type) {
 	case nil:
 		return "", nil
-
-	case *flowstatev1.Value_SecretRef:
-		ref := kind.SecretRef
-		if ref.GetScheme() != secretScheme {
-			return "", sdk.InvalidInput(
-				"token must be a %q secret reference; got scheme %q", secretScheme, ref.GetScheme())
-		}
-		resp, err := resolveSecret(ctx, sdk.SecretRequest{Scheme: ref.GetScheme(), Name: ref.GetName()})
-		if err != nil {
-			return "", err
-		}
-		return string(resp.Value), nil
-
 	case *flowstatev1.Value_Literal:
-		return "", sdk.InvalidInput(
-			"token must be a secret reference (${secret('git:name')}), never a literal value; " +
-				"a literal here would put a credential in the Flowfile and in workflow history")
-
+		s, ok := kind.Literal.GetKind().(*expr.Value_StringValue)
+		if !ok {
+			return "", sdk.InvalidInput("token must resolve to a string")
+		}
+		return s.StringValue, nil
+	case *flowstatev1.Value_SecretRef:
+		return "", sdk.Failed("token reached this task still holding a secret reference; the host must resolve declared secret_inputs before invoking the plugin")
 	default:
 		return "", sdk.InvalidInput("token cannot be a %T", kind)
 	}

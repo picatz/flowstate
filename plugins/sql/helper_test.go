@@ -11,6 +11,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func init() {
+	allowSQLiteFilesForTests = true
+}
+
 // testDSN is a fresh, private sqlite database per test, backed by a file in
 // t.TempDir() rather than sqlite's own :memory: - the hermetic substrate
 // every test in this package runs against, per doc.go's "Why sqlite is

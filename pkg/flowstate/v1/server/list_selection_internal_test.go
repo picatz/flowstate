@@ -37,19 +37,19 @@ import (
 // have written them at submit.
 //
 // owner empty means the caller's own default tenant, matching how the rest of
-// these tests build "mine". labels nil writes no labels entry at all, which is
-// both a workflow that declared none and a run started before the memo key
-// existed — the two cases the summary deliberately does not distinguish.
+// these tests build "mine" — always positively recorded, per #1896: a memo
+// with no namespace entry at all is refused outright rather than resolved
+// into whichever caller has no namespace, so "mine" and "no tenant recorded"
+// are no longer the same absence. labels nil writes no labels entry at all,
+// which is both a workflow that declared none and a run started before the
+// memo key existed — the two cases the summary deliberately does not
+// distinguish.
 func labelledRun(t *testing.T, id, owner string, labels map[string]string) *workflow.WorkflowExecutionInfo {
 	t.Helper()
 
-	fields := map[string]*common.Payload{}
-
-	if owner != "" {
-		payload, err := converter.GetDefaultDataConverter().ToPayload(owner)
-		require.NoError(t, err)
-		fields[namespaceMemoKey] = payload
-	}
+	ownerPayload, err := converter.GetDefaultDataConverter().ToPayload(owner)
+	require.NoError(t, err)
+	fields := map[string]*common.Payload{namespaceMemoKey: ownerPayload}
 
 	if labels != nil {
 		payload, err := converter.GetDefaultDataConverter().ToPayload(labels)
@@ -57,14 +57,10 @@ func labelledRun(t *testing.T, id, owner string, labels map[string]string) *work
 		fields[labelsMemoKey] = payload
 	}
 
-	execution := &workflow.WorkflowExecutionInfo{
+	return &workflow.WorkflowExecutionInfo{
 		Execution: &common.WorkflowExecution{WorkflowId: id},
+		Memo:      &common.Memo{Fields: fields},
 	}
-	if len(fields) > 0 {
-		execution.Memo = &common.Memo{Fields: fields}
-	}
-
-	return execution
 }
 
 // pagingNamespace answers the way Temporal does: the token is an opaque

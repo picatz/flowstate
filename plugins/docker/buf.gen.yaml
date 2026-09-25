@@ -1,0 +1,23 @@
+version: v1
+# This plugin's schema imports nothing of the engine's: its input is a grant
+# name and a string map, and its outputs are scalars. Managed mode is still
+# enabled so the generated package matches every other plugin in this tree.
+managed:
+  enabled: true
+# Generated with the locally installed protoc-gen-go rather than a remote
+# plugin, so regenerating needs no network.
+#
+# # Regenerating
+#
+#   GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
+#
+#   # from the repository root, with protoc-gen-go on $PATH:
+#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/docker/proto\n' > buf.work.yaml
+#   go tool -modfile=tools/external/go.mod buf generate \
+#     --template plugins/docker/buf.gen.yaml --path plugins/docker/proto/docker -o plugins/docker
+#   git checkout -- buf.work.yaml
+plugins:
+  - plugin: go
+    out: gen
+    opt:
+      - paths=source_relative

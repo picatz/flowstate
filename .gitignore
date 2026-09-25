@@ -39,6 +39,13 @@ go.work
 # above for exactly the same reason.
 /vacuity
 
+# `go build ./tools/shipcheck` writes the binary here, and a `git add -A` on
+# the branch that added this line committed 4.6 MB of it. Caught in review
+# before merging, unlike #1125. The name is the hazard on top of the size: a
+# checked-in `./shipcheck` sits next to a `go run ./tools/shipcheck` in the
+# shipping procedure, so a reader could run an executable no build reproduces.
+/shipcheck
+
 # The embedding example's binary, for the same reason: `go build
 # ./examples/embedding` from the repo root writes it here. A 46 MB copy was
 # committed exactly this way in ff6131b and removed by #922.
@@ -50,6 +57,24 @@ go.work
 /plugins/*/flowstate-plugin-*
 /plugins/*/bin/
 
+# The same accident from the other direction: `go build ./...` run *inside* a
+# plugin module writes the binary beside its sources, named for the directory,
+# which the two patterns above do not match. /embedding above records the
+# 46 MB version of this mistake; this is the plugin-shaped one. A glob cannot
+# say "the file whose name is its directory's", so the modules are named.
+/plugins/codex/codex
+/plugins/docker/docker
+/plugins/git/git
+/plugins/github/github
+/plugins/jose/jose
+/plugins/oci/oci
+/plugins/oidc/oidc
+/plugins/scim/scim
+/plugins/slack/slack
+/plugins/sql/sql
+/plugins/ssh/ssh
+/plugins/vcs/vcs
+
 # Agent worktrees. Worktree isolation for subagents materializes under
 # .claude/worktrees/, which is scratch by definition: each is a copy of the
 # tree mid-edit, and committing one would commit a snapshot of unfinished
@@ -57,9 +82,26 @@ go.work
 # checked in.
 .claude/worktrees/
 
+# Claude SessionStart compiles the checked-in hook commands once per session;
+# per-tool hook events execute these checkout-local binaries directly.
+.claude/hooks/.bin/
+.claude/hooks/.cache/
+.claude/hooks/.lkg/
+
 .worktrees/
 
 # `make coverage`'s output (#519): raw GOCOVERDIR counters, the merged
 # profile, the HTML report and the per-package summary. Generated fresh by
 # every run and never a statement about a specific commit worth committing.
 .coverage/
+
+# `make release-artifacts` output. Release archives, checksums, and SBOMs are
+# uploaded by the release workflow; they are products of a tagged commit, not
+# source files to commit back into it. The sibling staging directory is ignored
+# at any output depth so `go build -buildvcs=true` sees the source tree's real
+# status rather than marking every release binary modified by its own output.
+/dist/
+.flowstate-release-*/
+
+# Per-orb portal metadata is runtime state, not repository configuration.
+.amp/portals/*
