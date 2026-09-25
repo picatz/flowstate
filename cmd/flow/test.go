@@ -61,11 +61,13 @@ func newTestCommand() *cobra.Command {
 			"`coverage.allow_unreached` by the key the diagnostic prints.\n\n" +
 			"A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name " +
 			"the workflow does not have refuses the case before it runs, with a suggestion — a claim " +
-			"about a step that does not exist would otherwise pass vacuously forever. A stub the case " +
-			"declared and the run never answered through is reported as a warning: a fact about the " +
-			"case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs " +
-			"inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle " +
-			"in cases that never invoke its task.\n\n" +
+			"about a step that does not exist would otherwise pass vacuously forever. Three conditions " +
+			"are reported as warnings: a stub the case declared and the run never answered through, " +
+			"a task invoked with no stub declared for it, and an invocation that no declared stub " +
+			"answered. Each is a fact about the case's own scaffolding, not a verdict, unless " +
+			"`--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt from the " +
+			"idle-stub warning — a file-level catch-all is expected to sit idle in cases that " +
+			"never invoke its task.\n\n" +
 			"A failing case prints its transcript beneath the unmet expectation: what each step " +
 			"produced and when virtual time moved, which stub answered it, each scripted signal " +
 			"with its sender, and the `switch:` arm taken — the account the expectation was judged " +
@@ -117,16 +119,19 @@ flow test -o jsonl examples/`,
 		"fail when a workflow has a step, or a `switch:` arm, no test case reached and no "+
 			"coverage.allow_unreached entry records why")
 
-	// The same opt-in shape for the warning tier (#926): a warning is a fact
-	// worth reading that is not a verdict — today, a stub the case declared
-	// and the run never answered through — and this is the flag that promotes
-	// it to a reason the command exits non-zero. Stubs inherited from
-	// `defaults:` are exempt from the warning itself (see
-	// flowtest's unusedStubWarnings), so a file-level catch-all never trips a
-	// suite that opted in.
+	// The same opt-in shape for the warning tier (#926, #1356): a warning is a
+	// fact worth reading that is not a verdict, and this is the flag that
+	// promotes it to a reason the command exits non-zero. Three classes: an
+	// idle stub (declared and never answered through), an unstubbed task
+	// (invoked with no stub declared for it), and an unmatched invocation
+	// (stubs declared but none matching). Stubs inherited from `defaults:`
+	// are exempt from the idle-stub warning (see flowtest's
+	// unusedStubWarnings), so a file-level catch-all never trips a suite
+	// that opted in.
 	cmd.Flags().Bool("fail-on-warning", false,
-		"fail when a case reports a warning — a stub the case declared and the run never "+
-			"answered through — instead of only printing it")
+		"fail when a case reports a warning — a stub declared and never answered through, "+
+			"a task invoked with no stub declared, or an invocation that no declared stub answered — "+
+			"instead of only printing it")
 
 	// The `go test -run` precedent (#929 slice 1). The honesty line is the
 	// non-negotiable half of the feature: a skip must be a decision you can
@@ -614,7 +619,7 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 // stays readable. The `--` its caller prints before it handles the remaining
 // hazard, a path beginning with `-` parsing as a flag.
 func shellArg(path string) string {
-	if path != "" && !strings.ContainsAny(path, " \t'\"\\$&|;<>()*?[]#~%{}!\n") {
+	if path != "" && !strings.ContainsAny(path, " \t'\"`\\$&|;<>()*?[]#~%{}!\n") {
 		return path
 	}
 	return "'" + strings.ReplaceAll(path, "'", `'"'"'`) + "'"
@@ -658,13 +663,26 @@ func indentRendering(text string) string {
 // `go test -v` reading of the flag.
 func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, transcripts [][]flowtest.TranscriptLine, failOnWarning, verbose bool) {
 	if refused := report.GetRefused(); refused != "" {
+		// Position-first when the loader already wrote the file into the
+		// reason (`file.test.yaml:2:5: test "chain" names no workflow`), so
+		// the line an editor's problem matcher reads is not the file named
+		// twice; the file is prefixed only for a reason that lacks one.
+		if strings.HasPrefix(refused, report.GetFile()+":") {
+			fmt.Fprintln(out, theme.Danger.Render(refused))
+			return
+		}
 		fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(report.GetFile()), theme.Danger.Render(refused))
 		return
 	}
 
 	for i, c := range report.GetCases() {
 		status := theme.Success.Render("PASS")
-		if !c.GetPassed() {
+		// A case that fails on a warning fails on its own line (#1668): under
+		// the flag the summary already counted it, and a reader who watches
+		// the lines saw green two lines above a red total. The same rule the
+		// exit code applies, [testFileResult.failed], said once more where
+		// the case is named.
+		if !c.GetPassed() || (failOnWarning && len(c.GetWarnings()) > 0) {
 			status = theme.Danger.Render("FAIL")
 		}
 		fmt.Fprintf(out, "%s  %s: %s\n", status, theme.Muted.Render(report.GetFile()), c.GetName())
@@ -674,11 +692,22 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, trans
 			continue
 		}
 		for _, f := range c.GetFailures() {
+			// `file:line:column:` first, the way `flow validate` writes a
+			// diagnostic, so an editor's problem matcher opens the test file at
+			// the claim rather than at its first line (#1558). Omitted when the
+			// claim has no position — a key the author never wrote — since a
+			// prefix pointing at line 0 would be worse than none.
+			where := ""
+			if f.GetLine() != 0 {
+				where = theme.Muted.Render(fmt.Sprintf("%s:%d:%d: ",
+					report.GetFile(), f.GetLine(), f.GetColumn()))
+			}
+
 			if f.GetStep() != "" {
-				fmt.Fprintf(out, "       %s (step %q): %s\n", f.GetField(), f.GetStep(), f.GetMessage())
+				fmt.Fprintf(out, "       %s%s (step %q): %s\n", where, f.GetField(), f.GetStep(), f.GetMessage())
 				continue
 			}
-			fmt.Fprintf(out, "       %s: %s\n", f.GetField(), f.GetMessage())
+			fmt.Fprintf(out, "       %s%s: %s\n", where, f.GetField(), f.GetMessage())
 		}
 		for _, w := range c.GetWarnings() {
 			line := fmt.Sprintf("%s: %s", w.GetField(), w.GetMessage())
@@ -817,7 +846,7 @@ func printArmGaps(out io.Writer, theme ui.Theme, cov *flowtest.Coverage, require
 //
 // Coverage is a schema field on each [v1.TestReport] now
 // ([v1.TestReport.Coverage]), attached before this is called, so the whole
-// document renders through protojson (via [marshalJSON]): one encoder, the
+// document renders through protojson (via [v1.MarshalSchemaJSON]): one encoder, the
 // schema's field names and enum spellings, and no second rendering of the
 // report to disagree with the first, which is the mixing the house rule against
 // "one thing spelled twice" warns about. JSONL emits one report per line; JSON
@@ -826,7 +855,7 @@ func printArmGaps(out io.Writer, theme ui.Theme, cov *flowtest.Coverage, require
 func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileResult) error {
 	if format == FormatJSONL {
 		for _, r := range results {
-			encoded, err := marshalJSON(r.report, false)
+			encoded, err := v1.MarshalSchemaJSON(r.report, false)
 			if err != nil {
 				return fmt.Errorf("rendering a test report: %w", err)
 			}
@@ -841,7 +870,7 @@ func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileRes
 	for _, r := range results {
 		reports.Files = append(reports.Files, r.report)
 	}
-	encoded, err := marshalJSON(reports, true)
+	encoded, err := v1.MarshalSchemaJSON(reports, true)
 	if err != nil {
 		return fmt.Errorf("rendering the test report as %s: %w", format, err)
 	}

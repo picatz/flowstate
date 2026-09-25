@@ -174,6 +174,32 @@ func TestWithValuesAddsToBothHalvesAndDoesNotMutate(t *testing.T) {
 		"an empty plaintext registers nothing: it occurs at every position of every string")
 }
 
+// TestWithValuesHoldsAOneRuneValueToTheSubstringFloor is the shredder case
+// [minSensitiveSubstringRunes] argues, on the path that used to skip the
+// floor: a case's `secrets: {env:TOKEN: e}` marked every `e` of every
+// rendered line — `authenticated: true` came back as
+// `auth[redacted]nticat[redacted]d: tru[r[redacted]dact[redacted]d]`, the
+// marker itself re-shredded — destroying the diagnostic while protecting
+// nothing the value comparison had not already caught.
+func TestWithValuesHoldsAOneRuneValueToTheSubstringFloor(t *testing.T) {
+	t.Parallel()
+
+	set := SensitiveValues{}.WithValues("e")
+
+	require.True(t, set.IsSensitive("e"),
+		"the value comparison holds at every length: a rendered value equal to the plaintext still redacts")
+	require.Equal(t, SensitiveMarker, set.RedactTree("e"),
+		"and the redaction itself, not only set membership: a value equal to the plaintext "+
+			"renders as the marker at any length")
+	require.Equal(t, "authenticated: true", set.RedactSubstrings("authenticated: true"),
+		"a one-rune plaintext must not join the substring backstop: replacing every occurrence "+
+			"of one rune is a shredder, not a redaction")
+
+	twoRunes := SensitiveValues{}.WithValues("ab")
+	require.Equal(t, "Bearer [redacted]", twoRunes.RedactSubstrings("Bearer ab"),
+		"the floor is a floor: at two runes the composite backstop still works")
+}
+
 // A sensitive input this cannot read withholds everything rather than
 // dropping out of the set: skipping it would leave *nothing* about that input
 // redacted anywhere, which is an allow-on-error in the one function whose job
@@ -317,6 +343,130 @@ func TestIntersectingSensitiveSubstringsRedactWhole(t *testing.T) {
 		"self-overlapping matches all enter the union")
 }
 
+func TestSensitiveSubstringMatcherPreservesTheUnionOfEveryMatch(t *testing.T) {
+	t.Parallel()
+
+	patternSets := [][]string{
+		{"ab", "bc"},
+		{"aa"},
+		{"ab", "abc"},
+		{"aba", "bab", "bc"},
+		{"", "ab", "ab"},
+		// Backward-extending overlaps: a short pattern that ends before a long
+		// one which started earlier. Every set above happens to be one where
+		// the matcher's end-offset order is also its start-offset order, which
+		// is why the corpus agreed with the reference while the prefix of a
+		// longer secret was printing in the clear (#1119).
+		{"aa", "baaa"},
+		{"c", "abc"},
+		{"bc", "aabc"},
+	}
+	for _, patterns := range patternSets {
+		for length := range 7 {
+			count := 1
+			for range length {
+				count *= 3
+			}
+			for encoded := range count {
+				text := make([]byte, length)
+				value := encoded
+				for i := range text {
+					text[i] = "abc"[value%3]
+					value /= 3
+				}
+				want := referenceSensitiveSubstringRedaction(string(text), patterns)
+				require.Equal(t, want, redactSensitiveSubstrings(string(text), patterns),
+					"patterns %q over text %q", patterns, text)
+			}
+		}
+	}
+}
+
+func referenceSensitiveSubstringRedaction(text string, patterns []string) string {
+	redacted := make([]bool, len(text))
+	for _, pattern := range patterns {
+		if pattern == "" || len(pattern) > len(text) {
+			continue
+		}
+		for from := 0; from <= len(text)-len(pattern); {
+			offset := strings.Index(text[from:], pattern)
+			if offset < 0 {
+				break
+			}
+			start := from + offset
+			for i := start; i < start+len(pattern); i++ {
+				redacted[i] = true
+			}
+			from = start + 1
+		}
+	}
+
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		if !redacted[i] {
+			b.WriteByte(text[i])
+			i++
+			continue
+		}
+		b.WriteString(SensitiveMarker)
+		for i < len(text) && redacted[i] {
+			i++
+		}
+	}
+	return b.String()
+}
+
+func TestSensitiveSubstringRedactionBoundsAttackerShapedWork(t *testing.T) {
+	t.Parallel()
+
+	rendered := strings.Repeat("a", maxSensitiveSubstringRedactionWork)
+	longOverlap := strings.Repeat("a", len(rendered)/2)
+	require.Equal(t, SensitiveMarker, redactSensitiveSubstrings(rendered, []string{longOverlap}),
+		"a long secret at many overlapping offsets must be matched in linear time")
+
+	duplicates := make([]string, 1024)
+	for i := range duplicates {
+		duplicates[i] = "aa"
+	}
+	require.Equal(t, SensitiveMarker,
+		redactSensitiveSubstrings(strings.Repeat("a", 100_000), duplicates),
+		"duplicate descendants must cost one search")
+
+	distinct := make([]string, 11)
+	for i := range distinct {
+		distinct[i] = fmt.Sprintf("secret-%d", i)
+	}
+	require.Equal(t, strings.Repeat("a", 100_000),
+		redactSensitiveSubstrings(strings.Repeat("a", 100_000), distinct),
+		"a multi-pattern matcher must scan the rendered value once")
+	require.Equal(t, SensitiveMarker,
+		redactSensitiveSubstrings(strings.Repeat("a", maxSensitiveSubstringRedactionWork+1), distinct),
+		"a rendered value past the absolute bound must be withheld")
+	require.Equal(t, "unchanged", redactSensitiveSubstrings("unchanged", nil),
+		"the common empty-set path must not allocate a redaction mask")
+}
+
+func TestSensitiveSubstringMatcherIsReusedAcrossATranscriptSizedRendering(t *testing.T) {
+	t.Parallel()
+
+	patterns := make([]string, maxSensitiveDescendants)
+	for i := range patterns {
+		patterns[i] = fmt.Sprintf("secret-%04d", i)
+	}
+	sensitive := SensitiveValues{}.WithValues(patterns...)
+	require.False(t, sensitive.WithholdAll())
+
+	line := strings.Repeat("x", 800)
+	for worker := range 8 {
+		t.Run(fmt.Sprintf("worker-%d", worker), func(t *testing.T) {
+			t.Parallel()
+			for range 1_250 {
+				require.Equal(t, line, sensitive.RedactSubstrings(line))
+			}
+		})
+	}
+}
+
 // redactSensitiveTree redacted values at every depth but preserved map keys,
 // so a sensitive key nested inside a structured value printed — including one
 // below the substring floor. Keys redact by exact match at every level.
@@ -352,4 +502,36 @@ func TestOnlyDeclaredInputsEnterTheSet(t *testing.T) {
 	require.False(t, set.IsSensitive("shown-value"))
 	require.Equal(t, "shown-value", set.RedactSubstrings("shown-value"))
 	require.False(t, strings.Contains(set.RedactSubstrings("hidden-value"), "hidden-value"))
+}
+
+// TestABackwardOverlapRedactsTheWholeSecret is #1119's leak in the shape it
+// reaches a person: two sensitive values where the short one is a substring of
+// the long one but does not start where it starts.
+//
+// The matcher reports a match at the position it *ends*, so `aa` is announced
+// before the `topsecret-aaa` containing it, and a high-water mark of what is
+// already covered then treats the longer secret as having only its final byte
+// left to redact. What printed was `topsecret-[redacted]` — the whole
+// distinguishing part of the value, in a failure message on a terminal, in CI
+// output, or in a test report an agent reads back.
+//
+// The single-pattern case is the control: it is what makes this a claim about
+// the overlap rather than about the long value being in the set at all.
+func TestABackwardOverlapRedactsTheWholeSecret(t *testing.T) {
+	t.Parallel()
+
+	const text = "failure: topsecret-aaa"
+
+	alone := SensitiveValues{}.WithValues("topsecret-aaa")
+	require.Equal(t, "failure: [redacted]", alone.RedactSubstrings(text),
+		"the long value alone must redact whole; if this fails the case below proves nothing")
+
+	both := SensitiveValues{}.WithValues("aa", "topsecret-aaa")
+	require.Equal(t, "failure: [redacted]", both.RedactSubstrings(text),
+		"adding a shorter sensitive value must not expose the longer one's prefix")
+
+	// The order the values were added in is not what decides it: the matcher
+	// walks the text, not the list.
+	reversed := SensitiveValues{}.WithValues("topsecret-aaa", "aa")
+	require.Equal(t, "failure: [redacted]", reversed.RedactSubstrings(text))
 }

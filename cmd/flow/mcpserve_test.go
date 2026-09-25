@@ -1,15 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
@@ -52,6 +57,7 @@ type mcpServeFixture struct {
 	issuer   *authtest.Issuer
 	resource *auth.ProtectedResource
 	logs     *bytes.Buffer
+	audit    *mcpServeAuditEmitter
 
 	// guard is the one the served surface was built with, kept so a test can
 	// hold its lock from outside and prove a handler really is behind it.
@@ -88,6 +94,21 @@ func newMCPServeFixtureWith(
 	issuer := authtest.NewIssuer()
 	t.Cleanup(func() { _ = issuer.Close() })
 
+	return newMCPServeFixtureForIssuer(t, issuer, maxSessions, maxRequestBytes, testTimeout)
+}
+
+// newMCPServeFixtureForIssuer builds one independently stateful handler that
+// trusts issuer. Two calls with the same issuer model two replicas of one
+// deployment: authentication agrees while process-local MCP sessions do not.
+func newMCPServeFixtureForIssuer(
+	t *testing.T,
+	issuer *authtest.Issuer,
+	maxSessions int,
+	maxRequestBytes int64,
+	testTimeout time.Duration,
+) *mcpServeFixture {
+	t.Helper()
+
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
 		Name:      "agent-idp",
 		Issuer:    issuer.URL(),
@@ -111,8 +132,11 @@ func newMCPServeFixtureWith(
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	guard := newMCPServeRegistryGuard()
+	auditSink := &mcpServeAuditEmitter{}
+	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(auditSink))
+	require.NoError(t, err)
 
-	tools, err := mcpServeTools(guard, testTimeout)
+	tools, err := mcpServeTools(guard, testTimeout, recorder, nil)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(logger, tools, verifier, protectedResource, mcpServeLimits{
@@ -127,8 +151,28 @@ func newMCPServeFixtureWith(
 	t.Cleanup(server.Close)
 
 	return &mcpServeFixture{
-		server: server, issuer: issuer, resource: protectedResource, logs: logs, guard: guard,
+		server: server, issuer: issuer, resource: protectedResource, logs: logs, audit: auditSink, guard: guard,
 	}
+}
+
+type mcpServeAuditEmitter struct {
+	mu      sync.Mutex
+	records []*v1.AuditRecord
+}
+
+func (e *mcpServeAuditEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.records = append(e.records, record)
+
+	return nil
+}
+
+func (e *mcpServeAuditEmitter) Records() []*v1.AuditRecord {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return append([]*v1.AuditRecord(nil), e.records...)
 }
 
 // endpoint is where the MCP surface answers: the resource's own path, which is
@@ -210,8 +254,8 @@ func (b bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 //
 // Two assertions and the second is as load-bearing as the first. The
 // challenge must name the RFC 9728 document (MCP's own MUST), and it must
-// name *no scope*: #567's D1 is deferred by omission, so a `scope` parameter
-// here would be this surface shipping a vocabulary nobody has decided.
+// name *no scope*: the vocabulary now exists, but no per-action enforcement
+// point can truthfully say which scope this request requires.
 func TestMCPServeChallengesAnUnauthenticatedRequest(t *testing.T) {
 	t.Parallel()
 
@@ -225,8 +269,69 @@ func TestMCPServeChallengesAnUnauthenticatedRequest(t *testing.T) {
 	require.Contains(t, challenge, `resource_metadata="`+fixture.resource.MetadataURL()+`"`,
 		"the 401 must point a client at the metadata document it can bootstrap from")
 	require.NotContains(t, challenge, "scope=",
-		"no scope vocabulary exists yet (#567 D1, deferred by omission); a challenge naming one "+
-			"would ship a spelling that has to migrate")
+		"no per-action enforcement point can truthfully name a required scope")
+	require.Contains(t, fixture.logs.String(), `reason="missing bearer token"`,
+		"the SDK rejects an absent header before calling the token verifier, and that refusal must still be observed")
+
+	// The document named by the challenge describes the exact audience this
+	// MCP surface admits. A second audience on the same trusted issuer entry is
+	// deliberately refused below, proving this is surface binding rather than
+	// only issuer-level verification.
+	metadataRequest, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		fixture.server.URL+fixture.resource.Path(), nil)
+	require.NoError(t, err)
+	metadataResponse, err := fixture.server.Client().Do(metadataRequest)
+	require.NoError(t, err)
+	defer metadataResponse.Body.Close()
+	require.Equal(t, http.StatusOK, metadataResponse.StatusCode)
+
+	var document struct {
+		Resource string `json:"resource"`
+	}
+	require.NoError(t, json.NewDecoder(metadataResponse.Body).Decode(&document))
+	require.Equal(t, mcpServeTestResource, document.Resource)
+
+	accepted := fixture.initialize(t, fixture.goodToken("coherent-agent"), "")
+	require.Equal(t, http.StatusOK, accepted.StatusCode,
+		"a token naming the challenge document's resource must be admitted")
+
+	const secretSubject = "mismatched-claim-that-must-not-leak"
+	mismatchedToken := fixture.issuer.MintToken(nil,
+		authtest.WithSubject(secretSubject), authtest.WithAudience(mcpServeTestOtherResource))
+	refused := fixture.initialize(t, mismatchedToken, "")
+	require.Equal(t, http.StatusUnauthorized, refused.StatusCode,
+		"a policy-trusted token for a different resource must be refused by MCP's surface binding")
+	refusedBody, err := io.ReadAll(refused.Body)
+	require.NoError(t, err)
+	refusedChallenge := refused.Header.Get("WWW-Authenticate")
+	require.Contains(t, refusedChallenge, `resource_metadata="`+fixture.resource.MetadataURL()+`"`)
+	for _, rendered := range []string{refusedChallenge, string(refusedBody), fixture.logs.String()} {
+		require.NotContains(t, rendered, mismatchedToken)
+		require.NotContains(t, rendered, secretSubject)
+		require.NotContains(t, rendered, mcpServeTestOtherResource)
+	}
+}
+
+// TestMCPServeObservesARefusalWithoutLoggingCredentialMaterial is the MCP half
+// of the refusal observability contract. The adapter gives the command the
+// internal cause, and the command records only its public classification.
+func TestMCPServeObservesARefusalWithoutLoggingCredentialMaterial(t *testing.T) {
+	fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+	const secretSubject = "subject-that-must-not-reach-mcp-logs"
+	const secretAudience = "https://audience-that-must-not-reach-mcp-logs.example.test"
+	token := fixture.issuer.WrongAudienceToken(secretAudience, nil, authtest.WithSubject(secretSubject))
+
+	resp := fixture.initialize(t, token, "")
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	logs := fixture.logs.String()
+	require.Contains(t, logs, "rejected MCP request")
+	require.Contains(t, logs, `path=`+fixture.resource.ResourcePath())
+	require.Contains(t, logs, `status=401`)
+	require.Contains(t, logs, `reason="token audience is not accepted"`)
+	require.NotContains(t, logs, token)
+	require.NotContains(t, logs, secretSubject)
+	require.NotContains(t, logs, secretAudience)
 }
 
 // TestMCPServeServesTheMetadataDocumentUnauthenticated: the document the
@@ -353,6 +458,148 @@ func TestMCPServeSessionRefusesAnotherPrincipalsToken(t *testing.T) {
 	hijacked := fixture.initialize(t, bob, sessionID)
 	require.Equal(t, http.StatusForbidden, hijacked.StatusCode,
 		"a session opened by one principal must refuse another's token")
+	logs := fixture.logs.String()
+	require.Contains(t, logs, "rejected MCP request")
+	require.Contains(t, logs, `status=403`)
+	require.Contains(t, logs, `reason="authenticated caller is not permitted on this session"`)
+	require.NotContains(t, logs, alice)
+	require.NotContains(t, logs, bob)
+}
+
+// TestMCPServeSessionsRequireTheirOriginProcess pins the deployment contract,
+// not merely the implementation detail behind it. Authentication is shared by
+// all three handlers, but the SDK session map and Flowstate's limiter maps are
+// newly allocated with each handler. That is both a second replica and a
+// restarted process: neither knows an id minted by the first.
+func TestMCPServeSessionsRequireTheirOriginProcess(t *testing.T) {
+	t.Parallel()
+
+	issuer := authtest.NewIssuer()
+	t.Cleanup(func() { _ = issuer.Close() })
+
+	first := newMCPServeFixtureForIssuer(t, issuer,
+		mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout)
+	secondReplica := newMCPServeFixtureForIssuer(t, issuer,
+		mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout)
+
+	token := first.goodToken("agent")
+	opened := first.initialize(t, token, "")
+	require.Equal(t, http.StatusOK, opened.StatusCode)
+
+	sessionID := opened.Header.Get(mcpSessionHeader)
+	require.NotEmpty(t, sessionID)
+
+	onOrigin := first.initialize(t, token, sessionID)
+	require.NotEqual(t, http.StatusNotFound, onOrigin.StatusCode,
+		"the process that minted the session id must still recognize it")
+
+	onOtherReplica := secondReplica.initialize(t, token, sessionID)
+	require.Equal(t, http.StatusNotFound, onOtherReplica.StatusCode,
+		"a load balancer must route an existing session back to the process that minted it")
+
+	// A fresh handler under the identical deployment identity is what a
+	// restarted process is: tokens still verify, but active sessions are gone.
+	restarted := newMCPServeFixtureForIssuer(t, issuer,
+		mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout)
+	afterRestart := restarted.initialize(t, token, sessionID)
+	require.Equal(t, http.StatusNotFound, afterRestart.StatusCode,
+		"restarting flow mcp serve must invalidate process-local sessions")
+}
+
+// TestMCPServePinsAdvertisedProtocolRevisions turns a go-sdk minor update into
+// an explicit protocol review. The SDK supports 2026-07-28, but this handler is
+// intentionally stateful, so server/discover must advertise the exact legacy
+// set it can actually serve and must not claim the stateless target revision.
+func TestMCPServePinsAdvertisedProtocolRevisions(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{` +
+		`"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+		`"io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},` +
+		`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, fixture.endpoint(), strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+fixture.goodToken("agent"))
+	req.Header.Set("MCP-Protocol-Version", "2026-07-28")
+	req.Header.Set("Mcp-Method", "server/discover")
+
+	resp, err := fixture.server.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	payload := raw
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		var data []string
+		scanner := bufio.NewScanner(bytes.NewReader(raw))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" && len(data) > 0 {
+				break
+			}
+			field, value, found := strings.Cut(line, ":")
+			if found && field == "data" {
+				data = append(data, strings.TrimPrefix(value, " "))
+			}
+		}
+		require.NoError(t, scanner.Err())
+		require.NotEmpty(t, data, "server/discover SSE response: %s", raw)
+		payload = []byte(strings.Join(data, "\n"))
+	}
+
+	var result struct {
+		Result struct {
+			SupportedVersions []string `json:"supportedVersions"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &result), "server/discover response: %s", raw)
+	require.Equal(t, []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"},
+		result.Result.SupportedVersions)
+	require.NotContains(t, result.Result.SupportedVersions, "2026-07-28",
+		"2026-07-28 removes protocol sessions and is only valid on the SDK's stateless HTTP handler")
+}
+
+// TestMCPServeSessionTopologyContractStaysVisible couples the executable
+// diagnostic, CLI help, and hand-written operator guide. A future change may
+// make this surface stateless, but it must update all three claims together.
+func TestMCPServeSessionTopologyContractStaysVisible(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	logMCPServeSessionTopology(slog.New(slog.NewTextHandler(&logs, nil)))
+	for _, claim := range []string{
+		"level=WARN",
+		"session_storage=" + mcpServeSessionStorage,
+		"session_affinity_header=" + mcpSessionHeader,
+		"horizontal_scaling=false",
+	} {
+		require.Contains(t, logs.String(), claim)
+	}
+
+	root := newRootCommand()
+	serve, _, err := root.Find([]string{"mcp", "serve"})
+	require.NoError(t, err)
+	require.Contains(t, serve.Long, "run one replica")
+	require.Contains(t, serve.Long, "restart to invalidate active sessions")
+
+	doc, err := os.ReadFile("../../docs/MCP_AUTHORIZATION.md")
+	require.NoError(t, err)
+	for _, claim := range []string{
+		"Session topology: one process, one replica",
+		"`session_storage=process_memory`",
+		"`session_affinity_header=Mcp-Session-Id`",
+		"`horizontal_scaling=false`",
+		"`2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`",
+		"building a distributed session store",
+	} {
+		require.Contains(t, string(doc), claim)
+	}
 }
 
 // TestMCPServeServesAReducedToolList is the "absent, not disabled" claim,
@@ -399,6 +646,26 @@ func TestMCPServeServesAReducedToolList(t *testing.T) {
 		"flowstate_debug is served for the identical reason: it drives the same stubbed run, and "+
 			"a finite script cannot hold it open — an exhausted script resumes the run, so the "+
 			"bound that ends a flowstate_test call ends this one (#928 slice 3)")
+
+	// Call every tool with an empty document. Some correctly return a tool
+	// refusal because their required arguments are absent; authorization is
+	// write-ahead of parsing, so each still owes exactly one decision record.
+	for name := range served {
+		_, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name:      name,
+			Arguments: map[string]any{},
+		})
+		require.NoError(t, err, "calling registered tool %q reached a transport failure", name)
+	}
+
+	recorded := map[string]int{}
+	for _, record := range fixture.audit.Records() {
+		recorded[record.GetMcpTool()]++
+	}
+	require.Len(t, recorded, len(served), "a served tool emitted no authorization decision")
+	for name := range served {
+		require.Equal(t, 1, recorded[name], "%q emitted other than one authorization decision", name)
+	}
 }
 
 // TestMCPServeReachesTheRequestByteBound crosses the byte bound rather than
@@ -557,6 +824,17 @@ func TestMCPServeLeaksNoTokenMaterial(t *testing.T) {
 
 	rendered := renderEveryShape(result)
 	require.NotContains(t, rendered, token, "the token reached a tool result")
+	require.Len(t, fixture.audit.Records(), 1,
+		"one admitted tools/call did not produce exactly one authorization record")
+	record := fixture.audit.Records()[0]
+	require.Equal(t, flowmcp.ToolName("Validate"), record.GetMcpTool())
+	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE, record.GetAction())
+	require.Equal(t, "agent", record.GetIdentity().GetSubject())
+	require.Equal(t, "agent-idp", record.GetIssuerName())
+	auditRendering := renderEveryShape(record)
+	require.NotContains(t, auditRendering, token, "the token reached the audit record")
+	require.NotContains(t, auditRendering, "message: hello",
+		"a Flowfile argument reached the audit record")
 
 	// And a refused token must not reach the log either — the failure path is
 	// the one that has a reason to mention what it refused.
@@ -635,7 +913,7 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, maxSessionRequests: 1, sessionIdle: time.Minute}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
 	require.NoError(t, err)
 
 	_, err = mcpServeHandler(slog.Default(), tools, nil, nil, limits)
@@ -675,6 +953,50 @@ func TestStdioMCPCommandDeclaresNoListener(t *testing.T) {
 		require.Nil(t, serve.Flags().Lookup(flag),
 			"`flow mcp serve` must not declare --%s: the tool it would govern is not served here", flag)
 	}
+}
+
+// TestMCPServeFlushesAuditOnAnErrorAfterInitialization covers the early-exit
+// half of the shutdown contract. A listener failure happens after the audit
+// provider exists but before the HTTP server can drain anything; buffered
+// records and exporter resources still have to be flushed on that path.
+func TestMCPServeFlushesAuditOnAnErrorAfterInitialization(t *testing.T) {
+	isolateAudit(t)
+
+	issuer := authCheckIssuer(t)
+	const resource = "https://flowstate.example.com/mcp"
+	policy := writeAuthCheckPolicy(t, auth.TrustedIssuer{
+		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{resource},
+	})
+
+	recorder, err := audit.NewRecorder(audit.WithoutStderr())
+	require.NoError(t, err)
+	flushed := false
+	auditState.mu.Lock()
+	auditState.started = true
+	auditState.recorder = recorder
+	auditState.shutdown = func(context.Context) { flushed = true }
+	auditState.mu.Unlock()
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, occupied.Close()) })
+
+	root := newRootCommand()
+	serve, _, err := root.Find([]string{"mcp", "serve"})
+	require.NoError(t, err)
+	serve.SetContext(t.Context())
+	for name, value := range map[string]string{
+		"auth-policy":          policy,
+		"protected-resource":   resource,
+		"authorization-server": issuer.URL(),
+		"listen":               occupied.Addr().String(),
+	} {
+		require.NoError(t, serve.Flags().Set(name, value))
+	}
+
+	err = runMCPServe(serve, nil)
+	require.ErrorContains(t, err, "listening on")
+	require.True(t, flushed, "an exit after audit initialization abandoned the audit provider")
 }
 
 // TestMCPSessionLimiterReleasesASlotTheSDKDoesNotKnow is Codex's finding on
@@ -753,7 +1075,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	require.Equal(t, "/", protectedResource.ResourcePath(),
 		"a bare-origin resource is the shape this test exists for")
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),

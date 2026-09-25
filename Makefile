@@ -1,4 +1,18 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize vacuity docs docs-preview appearance appearance-update coverage coverage-plugins
+.PHONY: check gate test test-plugins plugin-examples plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+
+# The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
+# are pinned once, as `tool` directives in tools/external/go.mod, checksummed
+# in the go.sum beside it and bumped by Dependabot with the plugin modules
+# (#1729). They live in their own module so their graphs stay out of the root
+# module's: `go tool -modfile` builds a tool from that module and runs it here,
+# in this directory, with this module's sources in front of it. Everything
+# that runs one of them — this file, ci.yml, deep.yml, tools/gate, the
+# genguard hook — spells the invocation this way and never a version.
+TOOLS_MODFILE := $(CURDIR)/tools/external/go.mod
+BUF := go tool -modfile=$(TOOLS_MODFILE) buf
+GOVULNCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) govulncheck
+STATICCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) staticcheck
+PKGSITE := go tool -modfile=$(TOOLS_MODFILE) pkgsite
 
 # gofmt from the toolchain go.mod pins, rather than whichever build sits on
 # PATH (#1061).
@@ -58,12 +72,18 @@ endef
 gate:
 	go run ./tools/gate
 
+# Build the complete release payload locally without publishing it. VERSION is
+# deliberately required rather than inferred from a moving branch; the release
+# workflow supplies the immutable tag after checking that it names this commit.
+release-artifacts:
+	go run ./tools/release -version "$(VERSION)"
+
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:
 	go build ./...
 	go vet ./...
 	$(require-gofmt)
-	@fmt_out="$$("$(GOFMT)" -l ./cmd ./pkg)" || exit 1; \
+	@fmt_out="$$("$(GOFMT)" -l $(GO_DIRS))" || exit 1; \
 	if [ -n "$$fmt_out" ]; then \
 		echo "gofmt -l found unformatted files:"; \
 		echo "$$fmt_out"; \
@@ -71,6 +91,7 @@ check:
 	fi
 	$(MAKE) test ARTIFACT_SWEEP=1
 	$(MAKE) test-plugins
+	$(MAKE) plugin-examples
 	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
 	go run ./cmd/flow lint --strict examples/
@@ -81,14 +102,16 @@ check:
 	docker compose -f examples/observability/docker-compose.yaml config -q
 	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
 	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
-	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
+	$(BUF) lint
+	$(BUF) breaking --against '.git#branch=origin/main'
+	$(BUF) generate
+	$(BUF) build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+	$(BUF) build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
 	git diff --exit-code
-	GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-	GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+	$(GOVULNCHECK) ./...
+	$(STATICCHECK) ./...
+	$(MAKE) vulncheck-plugins
+	$(MAKE) staticcheck-plugins
 
 # The bounded fuzz smokes CI's fuzz-smoke job runs — and it runs *this target*
 # rather than its own copy of them, so the local gate cannot pass a commit the
@@ -99,17 +122,57 @@ check:
 # is to find the input that explodes, and these bounds are what make it safe to
 # run on every push.
 #
-# The list is captured before the loop rather than piped into it: a pipeline's
-# status is the status of its right-hand side, so `list.sh | while read` would
+# The list is captured before the runner rather than piped into it: a pipeline's
+# status is the status of its right-hand side, so `list.sh | fuzzrun` would
 # report success on a run that fuzzed nothing at all if the list could not be
 # read — a check passing by not running, which is the failure this file
-# legislates against elsewhere. list.sh itself refuses to print an empty tier.
+# legislates against elsewhere. list.sh refuses to print an empty tier and
+# tools/fuzzrun refuses an empty standard input, so neither end can pass by
+# fuzzing nothing.
+#
+# The targets run several at a time (tools/fuzzrun), which is a bound this
+# target used to get wrong by conflating it with a different one. `-parallel 1`
+# gives each target one fuzzing worker and stays: it is what keeps a crash and
+# the memory behind it attributable to a single input. Running the targets
+# themselves one after another was never that bound — one worker is about one
+# core, so on a four-core runner three idled for every target's whole budget.
+#
+# Spending those cores on other targets is not free, because `-fuzztime` bounds
+# wall clock rather than executions: a target sharing the machine stops after
+# thirty seconds having done whatever a contended thirty seconds allowed. How
+# much that costs is measured in tools/fuzzrun, and it is why the default is
+# half the CPUs rather than all of them — a fuzzing target is a coordinator
+# process and a worker process, so one per CPU is twice as many processes as
+# cores and leaves each target about two thirds of the CPU it would have had
+# alone. Half the CPUs costs a median 8% and still nearly halves the wall clock.
+# The count is GOMAXPROCS rather than NumCPU: an affinity mask is not a quota,
+# so a lane given two cores on a large host must not dispatch by the host's.
+#
+# FUZZ_SMOKE_JOBS sets how many at once; unset, the runner uses one per two CPUs
+# and never more than there are targets. FUZZ_SMOKE_JOBS=1 is the serial loop
+# back, for a machine that wants its cores for something else, and a larger
+# value is available for a machine that is not a runner.
+#
+# FUZZ_SMOKE_TARGETS, when set, is a space-separated list of target names that
+# narrows the run to those (#1726):
+#
+#     make fuzz-smoke FUZZ_SMOKE_TARGETS="FuzzRoundTrip FuzzCELCompile"
+#
+# Unset, every smoke target runs, which is what `make check` and a local
+# rehearsal want. CI's fuzz-smoke job sets it from the plan job's fuzz_targets
+# output — the smoke targets whose package the diff reaches, computed by
+# `tools/gate -ci` from the same targets.txt — so a flowfile change fuzzes the
+# seven targets it can move rather than all thirteen. The narrowing is list.sh's
+# and not a second filter here: a name that is not in the smoke tier is a
+# refusal from the one reader, not a silently shorter run.
+# 0 is the runner's own default — one job per two CPUs — spelled here so that an
+# unset variable expands to something the flag can parse rather than to nothing.
+FUZZ_SMOKE_JOBS ?= 0
+
 fuzz-smoke:
-	@targets="$$(tools/fuzztargets/list.sh smoke)" || exit 1; \
-	echo "$$targets" | while read -r target dir; do \
-		echo "==> $$target ($$dir)"; \
-		GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz "$$target" -fuzztime 30s "./$$dir/" || exit 1; \
-	done
+	@targets="$$(tools/fuzztargets/list.sh smoke $(FUZZ_SMOKE_TARGETS))" || exit 1; \
+	printf '%s\n' "$$targets" | go run ./tools/fuzzrun \
+		-fuzztime 30s -timeout 120s -memlimit 512MiB -jobs $(or $(FUZZ_SMOKE_JOBS),0)
 
 # Bounded full test run (no -short). CI's `test` step runs this target rather
 # than its own copy of the command, so the bound cannot drift between the two —
@@ -120,8 +183,49 @@ fuzz-smoke:
 # Go can emit. `check` sets it; the PR lane does not, because it costs a couple
 # of minutes on a cold cache to guard a thing that changes when Go adds a port.
 # The tracked-file gate that check exists for runs either way, in milliseconds.
+#
+# The output is `go test -json`, read by tools/testsum (#1727), which prints a
+# failures-only summary — package, test, the assertion lines and the file:line
+# they name, and a count of what passed — and, under GitHub Actions, one
+# annotation per failing test plus a table in the job summary. The local loop
+# and CI therefore print the same shape, and a failure is a block at the end
+# rather than a line somewhere in five minutes of log. TEST_JSON, when set,
+# is a path the raw stream is also written to; CI uploads it as an artifact
+# so a later reader has the full record.
+#
+# TEST_SHUFFLE is passed to `go test -shuffle`: `on` runs each package's
+# tests in a random order and prints the seed, which testsum carries into
+# every failure it reports with a rerun line, so an order-dependent failure
+# is reproducible from the annotation. It defaults to on. Turning it on first
+# found three tests in cmd/flow that read the process-wide DefaultRegistry as
+# the build shipped it and failed under seed 1788698486191639409 whenever a
+# plugin or egress-policy test had run before them; the tests that register
+# into that registry now put it back when they end
+# (cmd/flow/registryrestore_test.go), which is what made the default safe.
+# To pin an order, or to reproduce a reported seed:
+#
+#     make test TEST_SHUFFLE=off
+#     go test -json -shuffle=1788698486191639409 ./cmd/flow | go run ./tools/testsum
+#
+# The recipe is a pipeline, and a pipeline's status is its last command's, so
+# the test targets select bash with pipefail for their recipes: a `go test`
+# that died before testsum saw a failure — a crash, a kill — must still be
+# red. /bin/sh is dash (0.5.12 on Ubuntu 24.04, here and on the runners),
+# which rejects `set -o pipefail`, and that is why this is a per-target shell
+# rather than a line in the recipe.
+#
+# Packages run one at a time because several own real Temporal test processes.
+# Letting those processes compete made the admitted-bound workflow-slice
+# rehearsal spend its entire five-minute bound before its first task ran; the
+# same complete engine package passes under the production-derived deadlines
+# when it owns the runner. Tests within each package retain their own parallelism.
+TEST_SHUFFLE ?= on
+TEST_PACKAGES ?= ./...
+
+test: SHELL := /bin/bash
+test: .SHELLFLAGS := -o pipefail -c
 test:
-	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -race -timeout 900s ./...
+	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -p=1 -timeout 900s $(TEST_PACKAGES) | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # The plugins are separate modules, which is the point of them: `./...` above
 # does not reach them, and a plugin that does not compile would leave every
@@ -129,17 +233,77 @@ test:
 # or runaway plugin test should fail with a diagnosable timeout naming its
 # package, not consume the job's whole budget and leave an operator guessing
 # which module hung.
+#
+# Each module's `go test` pipes through tools/testsum like `test` above, so a
+# plugin failure has the same shape and the same annotation. The tool is built
+# once here rather than `go run` from inside each module: a module directory
+# is outside the root module, and `go run ./tools/testsum` from there is a
+# path Go refuses. `-dir` tells testsum where the module sits in the
+# repository, so the annotation names plugins/<name>/... rather than a path
+# relative to the module.
+test-plugins: SHELL := /bin/bash
+test-plugins: .SHELLFLAGS := -o pipefail -c
 test-plugins:
 	$(require-gofmt)
-	@for module in plugins/*/; do \
+	@testsum="$$(mktemp -d "$${TMPDIR:-/tmp}/flowstate-testsum.XXXXXX")/testsum"; \
+	trap 'rm -rf "$$(dirname "$$testsum")"' EXIT HUP INT TERM; \
+	go build -o "$$testsum" ./tools/testsum || exit 1; \
+	for module in plugins/*/; do \
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> $$module"; \
 		( cd "$$module" && go build ./... && go vet ./... && \
-			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
+			GOMEMLIMIT=2GiB go test -json -shuffle=$(TEST_SHUFFLE) -race -timeout 300s ./... | "$$testsum" -dir "$${module%/}" ) || \
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
 		fmt_out="$$("$(GOFMT)" -l $$module)" || exit 1; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
 	done
+	# The two ratchets that read the plugin modules' sources, run here as well
+	# as under the root `go test ./...`: a plugin-only diff reaches CI through
+	# this target alone, and a body or a sleep copied into a plugin would
+	# otherwise pass it (Codex, #1839).
+	GOMEMLIMIT=1GiB go test -timeout 120s ./tools/dupbodies/ ./tools/wallclock/
+
+# The plugin modules carry the dependencies with the largest attack surface in
+# the tree (go-git, pgx, modernc.org/sqlite, go-github, the OpenAI client).
+# test-plugins builds, vets and tests them; these two targets add the scans
+# that `check` runs for the root module so no plugin dependency escapes
+# reachability analysis or static analysis.
+vulncheck-plugins:
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> govulncheck $$module"; \
+		( cd "$$module" && $(GOVULNCHECK) ./... ) || exit 1; \
+	done
+
+staticcheck-plugins:
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> staticcheck $$module"; \
+		( cd "$$module" && $(STATICCHECK) ./... ) || exit 1; \
+	done
+
+# Build the first-party plugins into an isolated directory, compare their
+# descriptors and security claims with the portable reviewed catalog, then
+# validate every plugin example against the complete native catalog from that
+# same build without executing plugin tasks. A plugin
+# module changing its task contract, a stale catalog, and an invalid example are
+# therefore one failing gate rather than three ways CI can stay silent (#1342).
+plugin-examples:
+	@generated="$$(mktemp "$${TMPDIR:-/tmp}/flowstate-plugin-contracts.XXXXXX")"; \
+	validation="$$(mktemp "$${TMPDIR:-/tmp}/flowstate-plugin-validation.XXXXXX")"; \
+	trap 'rm -f "$$generated" "$$validation"' EXIT HUP INT TERM; \
+	tools/pluginexamples/catalog.sh "$$generated" "$$validation"; \
+	diff -u examples/plugins/plugins.lock.json "$$generated" || { \
+		echo "plugin example catalog drifted; run 'make plugin-example-catalog-update' and review the result" >&2; \
+		exit 1; \
+	}; \
+	go run ./cmd/flow validate --plugin-catalog "$$validation" examples/plugins/
+
+# The explicit write side of plugin-examples. The check above never repairs the
+# artifact it judges; an author runs this target and reviews the portable
+# descriptor and claims-digest changes like any other generated contract.
+plugin-example-catalog-update:
+	tools/pluginexamples/catalog.sh examples/plugins/plugins.lock.json
 
 # The other half of `test-plugins`, and the reason that target now names it.
 #
@@ -176,16 +340,44 @@ tidy-plugins:
 # Sized to be cheap enough to keep: seconds, not minutes. It exists because
 # `-race -count=3` at the default GOMAXPROCS ran clean against a defect that
 # `-cpu=1` reproduced three times in ten (#278).
+#
+# Piped through tools/testsum like `test`, with the same TEST_JSON hook, so a
+# failure under this schedule is reported in the same shape as one under the
+# default. No TEST_SHUFFLE here: this target's whole point is the schedule,
+# and -count=20 already varies what the interleaving reaches.
+test-ordering: SHELL := /bin/bash
+test-ordering: .SHELLFLAGS := -o pipefail -c
 test-ordering:
-	GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
+	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+
+# One Temporal dev server that stays up for the inner loop (#1738). The
+# packages sharing a dev server — engine, server, temporalclient, cmd/flow —
+# each boot their own in TestMain, about eleven seconds before the first test
+# runs; with the variable this prints exported, they attach to this one and
+# start in about a second. Unset, `make test` and CI are exactly what they
+# were. Stop it with Ctrl-C. The recipe is silenced so stdout is the export
+# line alone and `eval "$(make dev-temporal)"` would work, though the server
+# has to stay up, so run it in another terminal and paste the line.
+#
+#     make dev-temporal          # prints: export FLOWSTATE_TEST_TEMPORAL_ADDRESS=...
+dev-temporal:
+	@go run ./tools/devtemporal
 
 # Bounded fast tier for the inner loop.
 test-fast:
 	GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 
+# Every directory holding Go, which is also what CI's gofmt step and the
+# gate's gofmt leg check: a tool under tools/ or a helper under internal/ is
+# held to the same formatting, and `make fmt` stopping short of them is how a
+# gofmt failure arrived from the gate twice in one day after this target had
+# been run. `check` reads the same list, so the local rehearsal and this
+# target cannot disagree about what is formatted.
+GO_DIRS := ./cmd ./pkg ./internal ./tools ./examples ./plugins
+
 fmt:
 	$(require-gofmt)
-	"$(GOFMT)" -w ./cmd ./pkg
+	"$(GOFMT)" -w $(GO_DIRS)
 
 # Report what Go's `go fix` modernizers would change, and change nothing
 # (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
@@ -239,6 +431,33 @@ modernize:
 vacuity:
 	go run ./tools/vacuity $(if $(SITES),-sites,)
 
+# Report the waits in tests that spend real time: `time.Sleep`, and testify's
+# Eventually family.
+#
+#     make wallclock          # a count per file, per kind
+#     make wallclock SITES=1  # every site
+#
+# Neither is counted inside `synctest.Test`: a sleep there returns the instant
+# the bubble is idle, and a condition is waited for with `synctest.Wait` rather
+# than asked about repeatedly. Both counts are held by `tools/wallclock`'s own
+# TestTheRepositoryWallClockSleepsOnlyGoDown and TestTheRepositoryPollsOnlyGoDown
+# under `go test ./...`, ratchets in both directions, so this target is for
+# reading the report (#1706).
+wallclock:
+	go run ./tools/wallclock $(if $(SITES),-sites,)
+
+# Report function bodies that appear more than once, largest first.
+#
+#     make dupbodies
+#
+# Bodies are compared as printed code, without comments or layout, so only the
+# same code matches and a renamed copy is missed on purpose. Generated files
+# are skipped. The groups are held by `tools/dupbodies`'s own
+# TestTheRepositoryDuplicateBodiesOnlyGoDown under `go test ./...`, a ratchet
+# in both directions, so this target is for reading the report (#1708, #1709).
+dupbodies:
+	go run ./tools/dupbodies
+
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result
 # with `git diff --exit-code`, so this is what to run when that pin fails.
@@ -264,7 +483,7 @@ docs:
 #     line, then lines indented under it. Without the blank line first, the
 #     indented text renders as an ordinary paragraph rather than as code.
 docs-preview:
-	go run golang.org/x/pkgsite/cmd/pkgsite@latest -http localhost:8080 .
+	$(PKGSITE) -http localhost:8080 .
 
 # Record the CLI's styled surfaces with charmbracelet/vhs and compare them
 # against the goldens under cmd/flow/internal/appearance/testdata. Needs vhs,

@@ -3,15 +3,18 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -210,4 +213,155 @@ func TestToolHandlersWithoutATokenRunUnauthenticated(t *testing.T) {
 				"a request carrying no verified principal left one on the handler's context")
 		})
 	}
+}
+
+// TestMCPAuditIsWriteAheadAndExactlyOnceForEveryExecutionOutcome separates the
+// authorization decision from what happens afterward. Success, a tool-level
+// refusal, and cancellation all reached the same authoritative allow before
+// the handler; none is a reason to rewrite that true decision or emit twice.
+func TestMCPAuditIsWriteAheadAndExactlyOnceForEveryExecutionOutcome(t *testing.T) {
+	const (
+		secretClaim = "PRIVATE-CLAIM-CORPUS-TEXT"
+		secretArg   = "prompt-with-secret-token"
+		secretOut   = "unbounded-tool-output-secret"
+	)
+
+	for _, outcome := range []string{"allowed", "tool refusal", "cancelled"} {
+		t.Run(outcome, func(t *testing.T) {
+			req, token := verifiedTokenInfo(t, map[string]any{"private": secretClaim})
+			req.Params.Arguments = json.RawMessage(`{"source":"` + secretArg + `"}`)
+
+			mutated := false
+			var sink toolAuditEmitter
+			sink.onEmit = func(record *v1.AuditRecord) {
+				require.False(t, mutated, "the tool ran before its authorization decision was written")
+			}
+			recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink))
+			require.NoError(t, err)
+
+			handler := wrapToolHandler(Deps{Audit: recorder}, "flowstate_validate",
+				func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					mutated = true
+					switch outcome {
+					case "tool refusal":
+						return ToolError(errors.New(secretOut)), nil
+					case "cancelled":
+						return ToolError(ctx.Err()), nil
+					default:
+						return &mcp.CallToolResult{}, nil
+					}
+				})
+
+			ctx := t.Context()
+			if outcome == "cancelled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			result, err := handler(ctx, req)
+			require.NoError(t, err)
+			require.True(t, mutated, "the positive control handler never ran")
+			if outcome != "allowed" {
+				require.True(t, result.IsError)
+			}
+
+			require.Len(t, sink.records, 1, "one tool invocation produced other than one authorization record")
+			record := sink.records[0]
+			require.Equal(t, "flowstate_validate", record.GetMcpTool())
+			require.Empty(t, record.GetRpc())
+			require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE, record.GetAction())
+			require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
+			require.Equal(t, "agent", record.GetIdentity().GetSubject())
+			require.Equal(t, "agent-idp", record.GetIssuerName())
+			require.Empty(t, record.GetIdentity().GetClaims(),
+				"MCP audit copied the token's claims instead of the bounded audit identity")
+
+			encoded, err := protojson.Marshal(record)
+			require.NoError(t, err)
+			for _, forbidden := range []string{token, secretClaim, secretArg, secretOut} {
+				require.NotContains(t, string(encoded), forbidden,
+					"credential, claim, argument, or tool output reached the audit record")
+			}
+		})
+	}
+}
+
+// TestMCPAuditRefusesBeforeTheHandlerWhenItCannotNameTheDecision covers both
+// fail-closed paths at the seam: a tool outside the authorization vocabulary
+// and a required sink failure. Neither is allowed to reach tool mutation, and
+// an unnameable operation cannot be emitted under a guessed action.
+func TestMCPAuditRefusesBeforeTheHandlerWhenItCannotNameTheDecision(t *testing.T) {
+	req, _ := verifiedTokenInfo(t, nil)
+
+	t.Run("unbound tool", func(t *testing.T) {
+		var sink toolAuditEmitter
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(&sink))
+		require.NoError(t, err)
+
+		called := false
+		handler := wrapToolHandler(Deps{Audit: recorder}, "flowstate_not_registered",
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				called = true
+				return &mcp.CallToolResult{}, nil
+			})
+		result, err := handler(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+		require.False(t, called)
+		require.Empty(t, sink.records)
+	})
+
+	t.Run("required sink failure", func(t *testing.T) {
+		const privateSinkDetail = "collector.internal:4317 unavailable"
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(toolAuditEmitterFunc(
+			func(context.Context, *v1.AuditRecord) error { return errors.New(privateSinkDetail) },
+		)), audit.Required())
+		require.NoError(t, err)
+
+		called := false
+		var reported error
+		handler := wrapToolHandler(Deps{
+			Audit: recorder,
+			AuditFailure: func(err error) {
+				reported = err
+			},
+		}, "flowstate_validate",
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				called = true
+				return &mcp.CallToolResult{}, nil
+			})
+		result, err := handler(t.Context(), req)
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+		require.False(t, called)
+		require.ErrorContains(t, reported, privateSinkDetail,
+			"the operator-facing failure omitted the sink detail")
+		require.Len(t, result.Content, 1)
+		text, ok := result.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		require.Equal(t, "the authorization decision could not be recorded; try again", text.Text)
+		require.NotContains(t, text.Text, privateSinkDetail,
+			"the remotely visible tool refusal exposed sink details")
+	})
+}
+
+type toolAuditEmitter struct {
+	records []*v1.AuditRecord
+	onEmit  func(*v1.AuditRecord)
+}
+
+func (e *toolAuditEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
+	if e.onEmit != nil {
+		e.onEmit(record)
+	}
+	e.records = append(e.records, record)
+
+	return nil
+}
+
+type toolAuditEmitterFunc func(context.Context, *v1.AuditRecord) error
+
+func (f toolAuditEmitterFunc) Emit(ctx context.Context, record *v1.AuditRecord) error {
+	return f(ctx, record)
 }

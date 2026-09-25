@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"log/slog"
 	"maps"
 	"os"
@@ -71,10 +70,8 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	// lines "reach a configured collector the same way" was describing something
 	// that could not happen: nothing on this path ever started the providers, so
 	// the same way was no way at all.
-	if _, err := startTelemetry(cmd.Context()); err != nil {
-		log.Printf("WARNING: telemetry is configured but could not be started, "+
-			"so this task invocation emits no trace: %v", err)
-	}
+	startTelemetryOrWarn(cmd.Context(),
+		slog.New(newRunLogHandler(cmd.ErrOrStderr(), newSurface(cmd).ErrTheme)))
 
 	// The same three policy surfaces `flow run local` applies, in the same order
 	// and through the same functions. A task invocation is a real execution, so it
@@ -92,11 +89,22 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Build the one provider registry before launching plugins, so a plugin's
+	// compatibility provider is registered into the same registry the task
+	// runtime later resolves through. This is the worker and run-local order;
+	// building a second registry after launch would make a retained git:/vcs:/
+	// github: reference unknown only on this direct-execution path.
+	providers, err := localSecretProviders(cmd)
+	if err != nil {
+		return err
+	}
+	defer providers.close()
+
 	// Before the task is looked up, because a plugin's tasks are not in the
 	// registry until its process is running. This is the same [startPlugins] every other
 	// plugin-aware verb calls, so `flow task run sql.query` resolves through the
 	// discovery, the descriptor contract and the wire codec a worker would use.
-	_, closePlugins, err := startPlugins(cmd, nil)
+	_, closePlugins, err := startPlugins(cmd, providers.registry)
 	if err != nil {
 		return err
 	}
@@ -141,11 +149,10 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	reveal := revealSensitiveRequested(cmd)
 	sensitive := sensitiveTaskInputs(cmd, def)
 
-	ctx, closeSecretProviders, err := withLocalTaskRuntime(cmd, cmd.Context(), workflow)
+	ctx, err := withLocalTaskRuntimeUsing(cmd, cmd.Context(), workflow, providers)
 	if err != nil {
 		return err
 	}
-	defer closeSecretProviders()
 
 	// Where a task's own log lines land, and how: the same handler `flow run local`
 	// installs, so a `log:` task narrates onto stderr here exactly as it does there
@@ -329,7 +336,7 @@ flow task run http --input url=https://example.com --input expect='${response.st
 flow task run http --input url=https://api.example.com/me --input bearer='${secret("env:API_TOKEN")}' --secret-env API_TOKEN --auth-policy policy.yaml
 
 # Run a task a plugin provides, through the same discovery a worker uses:
-flow task run example.greet --input name=world --plugin-dir ./plugins`
+flow task run example.greet --input name=world --plugin-dir ./plugins --auth-policy examples/plugins/greet/auth.yaml`
 
 // unknownTaskRunError says what was typed, what was probably meant, and what to
 // run to find out.

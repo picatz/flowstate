@@ -1,0 +1,14 @@
+edition: v2026.3
+name: testing-defaults
+inputs:
+  audience:
+    type: string
+    required: true
+steps:
+  - id: greet
+    log:
+      message: ${"hello, %s".format([inputs.audience])}
+outputs:
+  greeting:
+    value: ${"hello, %s".format([inputs.audience])}
+    description: the greeting the workflow produced

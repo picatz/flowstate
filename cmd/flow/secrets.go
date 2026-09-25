@@ -6,8 +6,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"uuid"
 
-	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -419,7 +419,7 @@ func runtimePolicy(cmd *cobra.Command, secretsConfigured bool) (*auth.Policy, *a
 		}
 		return nil, nil, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "a trust policy", maxPolicyFileBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading auth policy: %w", err)
 	}
@@ -470,12 +470,6 @@ func workerRuntime(cmd *cobra.Command, registry *secrets.Registry, configured bo
 // exactly this order since plugins landed (main.go's runWorker: secretRegistry,
 // startPlugins, workerRuntime), and this is that order on the drivers' other
 // side.
-//
-// `flow task run` deliberately does not hold it this way: it launches plugins
-// with no registry at all, so a plugin's secrets backend is not registered for
-// a single task invocation and one may be run without an access policy. That
-// is a real gap rather than a design, and it is left alone here because
-// closing it changes what an existing verb refuses; #436 is about the run.
 type localSecrets struct {
 	registry   *secrets.Registry
 	configured bool
@@ -607,6 +601,6 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	return v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store: store, Policy: secretAccess, Broker: broker,
 		Identity: identity,
-		Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.NewString()},
+		Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.New().String()},
 	}), nil
 }

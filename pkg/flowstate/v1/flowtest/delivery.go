@@ -32,9 +32,10 @@ import (
 // loadDelivery reads a stored delivery: one JSON document with `headers` and
 // `body`.
 //
-// Both halves, because a delivery is both. An idempotency key is usually a
-// signature header — `${event.headers["stripe-signature"]}` — so a fixture holding
-// only a body could not exercise the required field at all, and a case would be
+// Both halves, because a delivery is both. Verification reads a signature header,
+// and an idempotency key may read one too (`${event.headers["x-shopify-webhook-id"]}`
+// is a sound key for that provider), so a fixture holding only a body could not
+// rehearse the arithmetic or the required field at all, and a case would be
 // asserting the easy half of the mapping.
 //
 // The raw bytes of the body come back beside the decoded delivery, because
@@ -166,6 +167,36 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 			test.Trigger.Webhook, workflow.GetName(), declares)
 	}
 
+	// A bridge is a different fixture, and this one cannot rehearse it.
+	//
+	// `trigger:` replays a delivery that *starts* a run: everything below binds
+	// it into `inputs:` and the case then asserts `expect.inputs` and
+	// `expect.idempotency_key` against a run that begins with the delivery. A
+	// webhook carrying `signal:` binds no inputs and starts nothing — it answers
+	// a run that already exists — so running it through this path would report
+	// the inputs a bridge does not have, from a mapping
+	// [v1.BindWebhookTriggerSignal] and not [v1.BindWebhookTriggerInputs] is
+	// responsible for, and never deliver the payload to the gate at all. A
+	// rehearsal that quietly exercises a different production path than the one
+	// it names is worse than no rehearsal, which is the whole reason this
+	// harness computes verification rather than declaring it.
+	//
+	// Refused rather than approximated, and the sentence names the form that
+	// does work. The half a bridge's *addressing* needs — which parked run a
+	// `correlate:` picks out — has nothing to rehearse against here either: a
+	// case runs one workflow, so there is no second run for a correlation to
+	// choose between. What is rehearsable is what a delivery carries into the
+	// gate and what a redelivery does to it, and that is exactly what a scripted
+	// `signals:` entry with `delivery_id:` expresses.
+	if trigger.GetSignal() != nil {
+		return nil, "", nil, fmt.Errorf("trigger %q: this webhook declares `signal:`, so a delivery to it "+
+			"answers a `wait_for_signal:` in a run that already exists rather than starting one — there "+
+			"are no inputs for `trigger:` to replay. Script the answer instead: a `signals:` entry naming "+
+			"%q, the payload the trigger's `signal.with:` maps, and a `delivery_id:` (two entries sharing "+
+			"one are a redelivery, which answers no second gate)",
+			test.Trigger.Webhook, trigger.GetSignal().GetName())
+	}
+
 	delivery, rawBody, err := loadDelivery(deliveryPath)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("trigger %q: %w", test.Trigger.Webhook, err)
@@ -261,7 +292,7 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 		return nil, "", failures, nil
 	}
 
-	return bound, v1.WebhookDeliveryID(key), nil, nil
+	return bound, v1.WebhookDeliveryID(workflow.GetName(), trigger.GetName(), key), nil, nil
 }
 
 // caseVerifyKeys resolves the trigger's `verify:` keys against the case's own
@@ -327,9 +358,13 @@ func compareInputs(want map[string]any, got map[string]*v1.Value) []*v1.Diagnost
 		}
 		if !looseEqual(want[name], native) {
 			failures = append(failures, &v1.Diagnostic{
-				Field:   "expect.inputs",
-				Value:   name,
-				Message: fmt.Sprintf("input %q: expected %v, got %v", name, want[name], native),
+				Field: "expect.inputs",
+				Value: name,
+				// Nothing here is a secret: a replayed delivery is fixture
+				// text the file itself holds, so the rendering redacts nothing
+				// and the type leads for the reason [typedText] gives.
+				Message: fmt.Sprintf("input %q: expected %s, got %s", name,
+					typedText(want[name], sensitiveInputs{}), typedText(native, sensitiveInputs{})),
 			})
 		}
 	}

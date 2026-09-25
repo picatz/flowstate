@@ -133,6 +133,15 @@ type Diagnostic struct {
 	// omission: see the schema's own doc on [v1.Diagnostic.Edits] for why a
 	// checker that cannot name the exact replacement leaves this empty.
 	Edits []*v1.SuggestedEdit
+
+	// bareWord is the identifier an expression consists of entirely, when that
+	// identifier resolves to nothing — set by [validateInputRefs], read by
+	// [positionDiagnostics], and never rendered. It is the hand-off between the
+	// checker, which knows the expression is one unbound name, and the
+	// positioning pass, which alone can tell whether the author wrote that name
+	// unfenced (`value: dhl`) and so almost certainly meant the word; only then
+	// is the string spelling offered, with an edit that writes it (#1682).
+	bareWord string
 }
 
 // Error renders the diagnostic in the conventional line:column: message form so it
@@ -260,7 +269,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 		}}
 	}
 
-	return validateAtDepth(wf, 0, v1.UndoScopeTopLevel)
+	return validateAtDepth(wf, wf.GetProfile(), 0, v1.UndoScopeTopLevel)
 }
 
 // validateAtDepth is the whole of what [Validate] checks for one workflow, at
@@ -276,7 +285,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 // inside a `for_each` body or a `parallel` branch — a call is transparent to
 // whatever restriction already applies there, not an escape from it. See
 // [validateCallAtDepth], which does the composing.
-func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if wf.GetName() == "" {
@@ -303,69 +312,13 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 
 	// Step IDs are the names expressions use, so they are validated before
 	// anything that depends on resolving a reference.
-	seen := make(map[string]int, len(wf.GetSteps()))
-	for i, node := range wf.GetSteps() {
-		id := node.GetId()
+	ds = append(ds, validateStepIDs(wf.GetSteps())...)
 
-		switch {
-		case id == "":
-			ds = append(ds, Diagnostic{
-				Field:   fmt.Sprintf("steps[%d]", i),
-				Message: "step has no id; every step needs an id so later steps can reference its outputs",
-			})
-		case isDeclarationRoot(id):
-			// A root itself. Refused as an id, and this is the one collision
-			// rooting *creates* rather than removes — worth stating, because the
-			// rest of this change is about deleting rules like it.
-			//
-			// It has to be refused here rather than left to resolve, because the
-			// runtime deliberately lets a step of this name win: a spec compiled
-			// before the root existed may contain one, and a worker replaying it
-			// must keep resolving the way it always did. That compatibility is only
-			// safe while no *new* file can create the situation — otherwise a step
-			// called `steps` shadows the root, and every rooted reference in the
-			// file resolves against that step's outputs instead. Which validates
-			// clean and fails at run time with `no such key`.
-			//
-			// Every root rather than only `steps`: the argument is about what a name
-			// hides, not about which root was written first.
-			ds = append(ds, Diagnostic{
-				Step:    id,
-				Message: "id " + shadowsRoot("step", id),
-			})
-		case slices.Contains(celUnusableStepIDs, id):
-			// Four words, where there used to be twenty-one — see celUnusableStepIDs
-			// for which seventeen rooting made legal and why these did not follow.
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another id",
-					id, v1.StepsRoot, id),
-			})
-		case !isCELIdentifier(id):
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is not a valid identifier, so ${%s.…} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore",
-					id, id),
-			})
-		}
-
-		if first, dup := seen[id]; dup && id != "" {
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"duplicate id, already used by step %d; ids must be unique or one step's outputs silently replace the other's",
-					first+1),
-			})
-		} else if id != "" {
-			seen[id] = i
-		}
-	}
-
-	ds = append(ds, validateDeclaredInputs(wf)...)
+	ds = append(ds, validateDeclaredInputs(wf, profile)...)
 	ds = append(ds, validateTriggers(wf)...)
 	ds = append(ds, validateSignals(wf)...)
+	ds = append(ds, validateDebug(wf)...)
+	ds = append(ds, validateReservedSignalNames(wf)...)
 	ds = append(ds, validateConcurrency(wf)...)
 	ds = append(ds, validateWorkflowVars(wf)...)
 
@@ -429,17 +382,17 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 			// block it sits in.
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, inner, i, wf, depth)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, i, wf, profile, depth)...)
 				// A loop's body outputs do not escape it — only its own `results`
 				// output does — so body step ids must not become referenceable.
 
 			case *v1.Node_Loop:
-				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, i, wf, depth, placement)...)
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, i, wf, profile, depth, placement)...)
 				// A loop's body outputs do not escape it either — only its own
 				// `results` (and `state`) outputs do.
 
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, depth)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, profile, depth)...)
 				// Branch outputs are merged into the enclosing scope once the
 				// block completes, so a later step may reference them by id —
 				// recordStepInScope below adds them.
@@ -448,13 +401,13 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
 
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1, placement)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, profile, depth+1, placement)...)
 
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, i, wf)...)
 
 			case *v1.Node_Switch:
-				ds = append(ds, validateSwitch(id, kind.Switch, inner, i, wf, depth, placement)...)
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, i, wf, profile, depth, placement)...)
 				// Exactly one body runs and its outputs merge into the enclosing
 				// scope, the way a parallel branch's do, so a later step may
 				// reference a case-body step by id — and simply not resolve at
@@ -481,7 +434,84 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 	// Last, against the scope the walk ends with, because that is when a run
 	// evaluates them: every top-level step has finished, so a reference to the final
 	// step is correct here and would be a forward reference anywhere else.
-	ds = append(ds, validateDeclaredOutputs(wf, scope, len(wf.GetSteps()))...)
+	ds = append(ds, validateDeclaredOutputs(wf, profile, scope, len(wf.GetSteps()))...)
+	if err := v1.CheckWorkflowAtomicBlockActivities(wf); err != nil {
+		ds = append(ds, Diagnostic{Message: err.Error()})
+	}
+
+	return ds
+}
+
+// validateStepIDs checks every top-level step's id for problems that exist
+// independently of the rest of the file: empty, unusable in CEL, not a valid
+// identifier, shadowing a declaration root, or duplicated.
+//
+// Extracted so that [validateParsed] can run it on a partial workflow when the
+// compiler reported diagnostics — a step called `in` causes every reference to
+// it to be a CEL syntax error, and without this the id diagnostic is masked by
+// the expression one (#1292).
+func validateStepIDs(steps []*v1.Node) Diagnostics {
+	var ds Diagnostics
+
+	seen := make(map[string]int, len(steps))
+	for i, node := range steps {
+		id := node.GetId()
+
+		switch {
+		case id == "":
+			ds = append(ds, Diagnostic{
+				Field:   fmt.Sprintf("steps[%d]", i),
+				Message: "step has no id; every step needs an id so later steps can reference its outputs",
+			})
+		case isDeclarationRoot(id):
+			// A root itself. Refused as an id, and this is the one collision
+			// rooting *creates* rather than removes — worth stating, because the
+			// rest of this change is about deleting rules like it.
+			//
+			// It has to be refused here rather than left to resolve, because the
+			// runtime deliberately lets a step of this name win: a spec compiled
+			// before the root existed may contain one, and a worker replaying it
+			// must keep resolving the way it always did. That compatibility is only
+			// safe while no *new* file can create the situation — otherwise a step
+			// called `steps` shadows the root, and every rooted reference in the
+			// file resolves against that step's outputs instead. Which validates
+			// clean and fails at run time with `no such key`.
+			//
+			// Every root rather than only `steps`: the argument is about what a name
+			// hides, not about which root was written first.
+			ds = append(ds, Diagnostic{
+				Step:    id,
+				Message: "id " + shadowsRoot("step", id),
+			})
+		case slices.Contains(celUnusableStepIDs, id):
+			// Four words, where there used to be twenty-one — see celUnusableStepIDs
+			// for which seventeen rooting made legal and why these did not follow.
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another id",
+					id, v1.StepsRoot, id),
+			})
+		case !isCELIdentifier(id):
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"id %q is not a valid identifier, so ${%s.…} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore",
+					id, id),
+			})
+		}
+
+		if first, dup := seen[id]; dup && id != "" {
+			ds = append(ds, Diagnostic{
+				Step: id,
+				Message: fmt.Sprintf(
+					"duplicate id, already used by step %d; ids must be unique or one step's outputs silently replace the other's",
+					first+1),
+			})
+		} else if id != "" {
+			seen[id] = i
+		}
+	}
 
 	return ds
 }
@@ -899,7 +929,7 @@ func (s refScope) withLocal(name string) refScope {
 // The body is checked with the enclosing steps visible, because a body step may
 // legitimately reference a step defined before the loop, plus the iterator, which
 // exists only inside the body.
-func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
+func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int) Diagnostics {
 	var ds Diagnostics
 
 	if loop.GetItems() == nil {
@@ -978,7 +1008,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	// one line is the whole of what rooting deletes: with the two apart, an
 	// iterator sharing a step's name is no longer ambiguous, so the rule that used
 	// to forbid it has nothing left to prevent.
-	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, depth, v1.UndoScopeConcurrent)...)
+	return append(ds, validateNested(loop.GetBody(), enclosing.withLocal(iterator), index, wf, profile, depth, v1.UndoScopeConcurrent)...)
 }
 
 // validateNamedLoop checks a `loop:` node: its required body and stop condition,
@@ -995,7 +1025,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 // a `for_each` body — so a body that claimed [v1.UndoScopeLoop] unconditionally
 // would validate a compensation the engine refuses, which is invariant 3's exact
 // shape pointed at the validator.
-func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	if len(loop.GetBody()) == 0 {
@@ -1107,7 +1137,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	if hasState {
 		bodyScope = enclosing.withLocal(state)
 	}
-	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, depth, placement.IntoLoop())...)
+	return append(ds, validateNested(loop.GetBody(), bodyScope, index, wf, profile, depth, placement.IntoLoop())...)
 }
 
 // bodyHasNestedLoop reports whether a loop body directly or transitively contains
@@ -1223,7 +1253,7 @@ func validateLoopStateName(stepID, state string, enclosing refScope) Diagnostics
 }
 
 // validateParallel checks a parallel node and its branches.
-func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow, depth int) Diagnostics {
+func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int) Diagnostics {
 	var ds Diagnostics
 
 	if len(parallel.GetBranches()) == 0 {
@@ -1252,7 +1282,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 		// Each branch sees only what existed before the block, never a sibling's
 		// steps, which is what validation must model to catch a cross-branch
 		// reference.
-		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, depth, v1.UndoScopeConcurrent)...)
+		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, profile, depth, v1.UndoScopeConcurrent)...)
 		for _, node := range branch.GetSteps() {
 			seen[node.GetId()] = true
 		}
@@ -1267,7 +1297,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 // `loop:` body passes whatever [v1.UndoScope.IntoLoop] composes from the scope
 // the loop step itself sits in. A callee reached through a `call:` does not come
 // through here at all; see [validateCallAtDepth].
-func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnostics {
+func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	scope := enclosing.clone()
@@ -1327,19 +1357,19 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		if task == nil {
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_ForEach:
-				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf, depth)...)
+				ds = append(ds, validateLoop(id, kind.ForEach, inner, index, wf, profile, depth)...)
 			case *v1.Node_Loop:
-				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, index, wf, depth, placement)...)
+				ds = append(ds, validateNamedLoop(id, kind.Loop, inner, index, wf, profile, depth, placement)...)
 			case *v1.Node_Parallel:
-				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf, depth)...)
+				ds = append(ds, validateParallel(id, kind.Parallel, inner, index, wf, profile, depth)...)
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, index, wf)...)
 			case *v1.Node_Call:
-				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1, placement)...)
+				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, profile, depth+1, placement)...)
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, index, wf)...)
 			case *v1.Node_Switch:
-				ds = append(ds, validateSwitch(id, kind.Switch, inner, index, wf, depth, placement)...)
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, index, wf, profile, depth, placement)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -1764,11 +1794,19 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if suggestion, ok := nearest.Name(ref, slices.Sorted(maps.Keys(scope.steps))); ok {
 			message += fmt.Sprintf("; did you mean `%s.%s`?", v1.StepsRoot, suggestion)
 		}
-		ds = append(ds, Diagnostic{
+		d := Diagnostic{
 			Step: stepID, Field: inputName,
 			Message: message,
 			Code:    v1.DiagnosticCodeUnresolvedReference,
-		})
+		}
+		// An expression that is nothing but this one name is the shape of a word
+		// an author meant as a string: `value: dhl` beside a `case: express` that
+		// takes its word bare. Whether that is what happened is for the pass
+		// with the source in hand to decide — see [Diagnostic.bareWord].
+		if parsed.GetExpr().GetIdentExpr().GetName() == ref {
+			d.bareWord = ref
+		}
+		ds = append(ds, d)
 	}
 	return ds
 }
@@ -1952,7 +1990,7 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 		return
 	}
 	if sel := e.GetSelectExpr(); sel != nil {
-		// All four roots are recognised here, and an unrecognised root falls through
+		// All five roots are recognised here, and an unrecognised root falls through
 		// to the walk below so that `foo.bar` still reports `foo` as a bare name.
 		// That fall-through is what keeps adding a root from silently swallowing the
 		// diagnostic for a name that has none.
@@ -2130,6 +2168,46 @@ func ValidateSourceFile(path string) (Diagnostics, error) {
 	return validateThroughEdition(data, path)
 }
 
+// ParseAndValidateFile compiles a Flowfile read from disk and validates what it
+// compiled to, in one pass: the workflow [ParseFile] would return, beside the
+// diagnostics [ValidateSourceFile] would report about it.
+//
+// One entry for the callers that need both, because they used to call the two
+// and the second compiled the file again from its bytes — every expression
+// parsed twice before a step ran, which on a 4,000-step file was 0.9 s of a
+// 1.6 s `flow run local` (#1795). The parse is the cost; the validation of a
+// workflow already in hand is not.
+//
+// A file that does not compile is reported exactly as [ValidateSourceFile]
+// reports it: the error is the [Diagnostics], with the step-id checks run
+// against whatever partial workflow the compiler built, and there is no
+// workflow. The one failure that compiles the bytes again is the edition
+// gate, whose rewrite path needs the source rather than the tree — the cost
+// of agreeing with `flow validate` about an old file, paid only by an old
+// file.
+func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
+	data, err := readBoundedSource(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	wf, positions, err := parse(data, path, nil, new(int))
+	if err != nil {
+		var gate Diagnostics
+		if errors.As(err, &gate) && isEditionGate(gate) {
+			if _, verr := validateThroughEdition(data, path); verr != nil {
+				return nil, nil, verr
+			}
+		}
+	}
+
+	ds, err := validateParsed(wf, positions, err)
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, ds, nil
+}
+
 // ValidateSourceAt is [ValidateSource] for data that is not necessarily what
 // path holds on disk yet — an editor's unsaved buffer — resolving a `call:`
 // step relative to path's directory all the same. See [ParseAt].
@@ -2265,45 +2343,111 @@ func isEditionDeclaration(line string) bool {
 
 // parseAndValidate compiles data and validates what it compiled to, resolving a
 // `call:` relative to path when there is one.
+//
+// Calls [parse] directly rather than the public [Parse]/[ParseAt], so that when
+// the compiler reports diagnostics, the partial workflow is still available for
+// [validateParsed] to run the step-id checks against.
 func parseAndValidate(data []byte, path string) (Diagnostics, error) {
-	if path == "" {
-		return validateParsed(Parse(data))
-	}
-	return validateParsed(ParseAt(data, path))
+	return validateParsed(parse(data, path, nil, new(int)))
 }
 
 func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {
 	if err != nil {
+		// When the compiler built a partial workflow alongside its
+		// diagnostics, run the step-id checks so that a CEL-unusable id
+		// is diagnosed next to the expression parse error it caused.
+		// Without this, `id: in` with a reference `${steps.in.result}`
+		// reports only the expression's syntax error — the id diagnostic
+		// that explains *why* is masked.
+		var compilerDiags Diagnostics
+		if wf != nil && errors.As(err, &compilerDiags) {
+			idDiags := validateStepIDs(wf.GetSteps())
+			positionDiagnostics(idDiags, positions)
+			if len(idDiags) > 0 {
+				return nil, append(idDiags, compilerDiags...)
+			}
+		}
 		return nil, err
 	}
 
 	ds := Validate(wf)
+	positionDiagnostics(ds, positions)
+
+	// What the schema refuses, in the schema's own words, so that nothing this
+	// package accepts is refused at submit for a rule an author could have read
+	// here — see [schemaDiagnostics].
+	ds = append(ds, schemaDiagnostics(wf, positions)...)
+
+	// Whether it will *fit* is a different question from whether it is well
+	// formed, and an author should meet it here rather than at submit.
+	//
+	// These have no position because they describe a whole-document property.
+	// The atomic-bound sentence still names the enclosing step, but no single
+	// child line is the reason its aggregate crosses the ceiling.
+	if err := v1.CheckSpecSize(wf); err != nil {
+		ds = append(ds, Diagnostic{Message: err.Error()})
+	}
+
+	return ds, nil
+}
+
+// positionDiagnostics places each diagnostic at its source position, when the
+// compiler recorded one.
+func positionDiagnostics(ds Diagnostics, positions *Positions) {
+	if positions == nil {
+		return
+	}
 	for i := range ds {
 		span, ok := positions.Locate(ds[i].Step, ds[i].Field)
 		if ds[i].Kind != "" {
-			// A kind key is addressed exactly rather than by the candidate search
-			// Locate does for a field, because a kind is a key of the step and there
-			// is nowhere else it could be.
 			span, ok = positions.LocateKind(ds[i].Step, ds[i].Kind)
 		}
 		if ok {
 			ds[i].Line = span.Start.Line
 			ds[i].Column = span.Start.Column
 		}
+		if ds[i].bareWord != "" {
+			offerStringSpelling(&ds[i], positions)
+		}
+	}
+}
+
+// offerStringSpelling adds the string reading to a diagnostic about an
+// expression that is one unbound name, when the author wrote that name
+// without a fence.
+//
+// `value:` reads its scalar as CEL whether or not it is fenced, so `value: dhl`
+// is the identifier dhl — and the diagnostic listed the three things a bare
+// name can be and not the fourth thing this one almost certainly is, the word
+// (#1682). A `case: express` two lines up takes its word bare, which is what
+// makes the mistake look right.
+//
+// Unfenced is a fact the compiler recorded as it read the scalar
+// ([Positions.Unfenced]) rather than a guess from the compiled expression,
+// which has no fence left to look at, and rather than a comparison of spans,
+// which a quoted `value: "dhl"` — unfenced, and the likeliest way to reach for
+// a string — would fail. A fenced `${dhl}` keeps the diagnostic it had: an
+// author who wrote the fence was reaching for a reference, and the string
+// reading would be a guess about a different mistake.
+//
+// The edit replaces the scalar the author wrote with the fenced string, which
+// is safe for the reason every edit in this package is offered: the region is
+// the one the checker was looking at, and what goes in its place is the
+// expression the diagnostic names.
+func offerStringSpelling(d *Diagnostic, positions *Positions) {
+	if !positions.Unfenced(d.Step, d.Field) {
+		return
+	}
+	scalar, ok := positions.Locate(d.Step, d.Field)
+	if !ok {
+		return
 	}
 
-	// Whether it will *fit* is a different question from whether it is well
-	// formed, and an author should meet it here rather than at submit.
-	//
-	// It has no position, because there is nothing to point at: no single line is
-	// at fault, the document is. A diagnostic with no line is unusual enough in
-	// this package to be worth saying out loud — everything else here names a
-	// token, and the exception is deliberate rather than an omission.
-	if err := v1.CheckSpecSize(wf); err != nil {
-		ds = append(ds, Diagnostic{Message: err.Error()})
+	spelling := fmt.Sprintf("${%q}", d.bareWord)
+	d.Message += fmt.Sprintf("; this value is read as an expression, so a bare word is a name, and a string is written %s", spelling)
+	if edit := replaceSpan("write the string "+spelling, scalar, spelling); edit != nil {
+		d.Edits = append(d.Edits, edit)
 	}
-
-	return ds, nil
 }
 
 // validateWait checks a waiting step.
@@ -2320,6 +2464,14 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 	if err := v1.ValidateWait(wait); err != nil {
 		ds = append(ds, Diagnostic{Step: id, Message: err.Error()})
 		return ds
+	}
+
+	// A gate on a channel the engine owns would be answered by an ask to pause
+	// the run for debugging (#928). Reported here rather than over the workflow,
+	// because this is where the step id and the key the author wrote are both
+	// known — see [reservedSignalWaitDiagnostic].
+	if d, found := reservedSignalWaitDiagnostic(id, wait); found {
+		ds = append(ds, d)
 	}
 
 	// The same reference checking a condition gets, since these are the same kind
@@ -2470,10 +2622,8 @@ func declaredAnywhere(id string, wf *v1.Workflow) bool {
 					}
 				}
 			case *v1.Node_Switch:
-				for _, body := range v1.SwitchBodies(kind.Switch) {
-					if walk(body) {
-						return true
-					}
+				if slices.ContainsFunc(v1.SwitchBodies(kind.Switch), walk) {
+					return true
 				}
 			}
 		}

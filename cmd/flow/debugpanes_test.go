@@ -208,26 +208,22 @@ func TestTheLayoutFallsBackToTheDetectedCapabilities(t *testing.T) {
 // command starts. If the layout were the detected one, a terminal resized while
 // a run is held would be drawn against a width it stopped having.
 func TestTheLayoutIsMeasuredAtTheStop(t *testing.T) {
-	pty := aTerminal(t)
-
 	surface := ui.Plain(io.Discard, io.Discard)
-
-	console, restore, ok := attachDebugConsole(pty, pty, surface.Theme)
-	require.True(t, ok)
-	t.Cleanup(restore)
-
-	width, height, measured := console.size()
-	require.True(t, measured, "a real terminal could not be measured")
+	console := newDebugConsole(struct {
+		io.Reader
+		io.Writer
+	}{Reader: strings.NewReader(""), Writer: io.Discard}, flowdebug.Prompt, -1)
+	console.setSizeSource(func() (int, int, bool) { return 115, 37, true })
 
 	// Capabilities deliberately unlike the terminal's, so a layout reading them
 	// instead is visible rather than coincidentally right.
 	_, panes := debugPanesFor(context.Background(), console, io.Discard, surface.Theme,
-		ui.Capabilities{Width: width + 17, Height: height + 17}, func(string, flowdebug.Tone) {})
+		ui.Capabilities{Width: 132, Height: 54}, func(string, flowdebug.Tone) {})
 	require.NotNil(t, panes)
 
-	assert.Equal(t, width, panes.layout().Width,
+	assert.Equal(t, 115, panes.layout().Width,
 		"the layout used the width detected at startup rather than the terminal's now")
-	assert.Equal(t, height, panes.layout().Height,
+	assert.Equal(t, 37, panes.layout().Height,
 		"the layout used the height detected at startup rather than the terminal's now")
 }
 

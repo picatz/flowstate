@@ -18,7 +18,7 @@ import (
 func vcsDiff(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 	var in vcsv1.DiffInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
-		return nil, sdk.InvalidInput("%v", err)
+		return nil, err
 	}
 
 	repoURL, err := validateRepositoryURL(in.GetUrl())
@@ -172,18 +172,6 @@ func countNewlines(s string) int {
 	return n
 }
 
-// truncateBytes bounds a string to n bytes on a rune boundary, reporting
-// whether it cut anything off.
-func truncateBytes(s string, n int) (string, bool) {
-	if len(s) <= n {
-		return s, false
-	}
-	for n > 0 && !isRuneStart(s[n]) {
-		n--
-	}
-	return s[:n], true
-}
-
 // errPatchCapped is boundedPatchWriter's sentinel for "the cap was reached,"
 // distinguished from any other error fdiff.UnifiedEncoder.Encode might
 // return so encodeBoundedPatch can tell a full buffer apart from something
@@ -191,7 +179,7 @@ func truncateBytes(s string, n int) (string, bool) {
 var errPatchCapped = errors.New("vcs: patch byte cap reached")
 
 // boundedPatchWriter accepts writes up to max bytes total (cut on a rune
-// boundary, the same shape truncateBytes uses) and refuses every write past
+// boundary) and refuses every write past
 // it, which is what turns maxPatchBytes into a memory bound rather than a
 // bound on the string this function already finished building.
 type boundedPatchWriter struct {

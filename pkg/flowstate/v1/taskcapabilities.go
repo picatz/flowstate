@@ -1,0 +1,142 @@
+package flowstatev1
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+)
+
+// CurrentTaskCapabilitySchemaVersion is the requirement-walk semantics a
+// current control plane writes into [ResolvedTaskCapabilities].
+const CurrentTaskCapabilitySchemaVersion uint32 = 1
+
+// RequiredTaskNames returns the sorted, unique task capabilities a workflow can
+// reach, including compensations, nested control flow, and inlined callees.
+//
+// [specNodes] is that walk: [WalkWorkflow]'s one enumeration of a workflow's
+// node positions over walkEmbeddedWorkflows' bounded callee edge. Reaching it
+// through the shared iterator makes task availability one requirement walk
+// rather than a list maintained separately by the compiler, local evaluator,
+// and durable engine.
+func RequiredTaskNames(wf *Workflow) ([]string, error) {
+	required := map[string]struct{}{}
+	for node, err := range specNodes(wf) {
+		if err != nil {
+			return nil, fmt.Errorf("collecting task requirements: %w", err)
+		}
+		if task := node.GetTask(); task != nil {
+			required[task.GetName()] = struct{}{}
+		}
+		if task := node.GetUndo().GetTask(); task != nil {
+			required[task.GetName()] = struct{}{}
+		}
+	}
+
+	return slices.Sorted(maps.Keys(required)), nil
+}
+
+// ResolveTaskCapabilities records the admitting registry's decision on wf.
+// Caller-supplied state is discarded: only this control-plane operation may
+// attest that a deployment had every required task when it accepted the run.
+func ResolveTaskCapabilities(wf *Workflow, registry *Registry) error {
+	if wf == nil {
+		return fmt.Errorf("workflow cannot be nil")
+	}
+	wf.ResolvedTaskCapabilities = nil
+
+	required, err := RequiredTaskNames(wf)
+	if err != nil {
+		return err
+	}
+	if err := CheckTaskCapabilitiesAvailable(required, namesOf(registry)); err != nil {
+		return err
+	}
+
+	wf.ResolvedTaskCapabilities = &ResolvedTaskCapabilities{
+		SchemaVersion: CurrentTaskCapabilitySchemaVersion,
+		TaskNames:     required,
+	}
+	return nil
+}
+
+// PinnedTaskCapabilities reads and validates the control plane's durable task
+// decision. The bool distinguishes an old workflow carrying no decision from a
+// current workflow that affirmatively requires no tasks.
+func PinnedTaskCapabilities(wf *Workflow) ([]string, bool, error) {
+	if wf == nil || wf.GetResolvedTaskCapabilities() == nil {
+		return nil, false, nil
+	}
+
+	pin := wf.GetResolvedTaskCapabilities()
+	if pin.GetSchemaVersion() != CurrentTaskCapabilitySchemaVersion {
+		return nil, true, fmt.Errorf("task capability snapshot uses schema version %d; this worker understands only %d",
+			pin.GetSchemaVersion(), CurrentTaskCapabilitySchemaVersion)
+	}
+
+	required, err := RequiredTaskNames(wf)
+	if err != nil {
+		return nil, true, err
+	}
+	if !slices.Equal(pin.GetTaskNames(), required) {
+		return nil, true, fmt.Errorf("task capability snapshot does not match the workflow requirements: snapshot has [%s], workflow requires [%s]",
+			strings.Join(pin.GetTaskNames(), ", "), strings.Join(required, ", "))
+	}
+
+	return required, true, nil
+}
+
+// CheckTaskCapabilitiesIn is the local driver's admission check. It reads the
+// same context-scoped registry task dispatch will use, so a rehearsal never
+// borrows capabilities from the process-wide registry it cannot execute.
+func CheckTaskCapabilitiesIn(ctx context.Context, wf *Workflow) error {
+	required, pinned, err := PinnedTaskCapabilities(wf)
+	if err != nil {
+		return err
+	}
+	if !pinned {
+		required, err = RequiredTaskNames(wf)
+		if err != nil {
+			return err
+		}
+	}
+	return CheckTaskCapabilitiesAvailable(required, TaskNamesIn(ctx))
+}
+
+// CheckTaskCapabilitiesAvailable reports every required name missing from an
+// availability snapshot. Both inputs are names only: executable TaskDefs remain
+// owned by Registry, so this replay contract cannot become a second registry.
+func CheckTaskCapabilitiesAvailable(required, available []string) error {
+	has := make(map[string]struct{}, len(available))
+	for _, name := range available {
+		has[name] = struct{}{}
+	}
+
+	missing := make([]string, 0)
+	for _, name := range required {
+		if _, ok := has[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	// Leads with the words every other surface uses for this failure, since a
+	// first-time embedder meets this sentence before any other (#1674):
+	// "capabilities" is the replay contract's word, and on its own it says
+	// neither that the task is unregistered nor what to do about it. The
+	// task is named once, by [TaskError.Error]'s own `task %q:` prefix, so
+	// the cause does not repeat it.
+	return NewTaskError(missing[0], ErrorKindUnknownTask, fmt.Errorf(
+		"unknown task: required task capabilities are unavailable: %s; register it before running (Tasks.Register in an embedding program, a plugin directory on a worker), or validate the workflow first to have the step that names it pointed out",
+		strings.Join(missing, ", ")))
+}
+
+func namesOf(registry *Registry) []string {
+	if registry == nil {
+		return nil
+	}
+	return registry.Names()
+}

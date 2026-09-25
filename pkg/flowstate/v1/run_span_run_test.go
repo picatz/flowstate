@@ -182,7 +182,7 @@ func TestSpanNamesAreBoundedBeforeExport(t *testing.T) {
 	require.Error(t, err, "a 1 MiB workflow name was accepted, so this test no longer exercises the refused path")
 
 	// And the task span, whose name comes from a Task an embedder built by hand.
-	_, taskSpan := v1.StartTaskSpan(t.Context(), &v1.Task{Name: oversizedName}, "step")
+	_, taskSpan := v1.StartTaskSpan(t.Context(), &v1.Task{Name: oversizedName}, oversizedName)
 	taskSpan.End()
 
 	var checked int
@@ -218,10 +218,14 @@ func TestSpanNamesAreBoundedBeforeExport(t *testing.T) {
 		// the half that would otherwise relocate the value rather than remove it.
 		for _, attr := range stub.Attributes {
 			key := string(attr.Key)
-			if key != v1.SpanAttributeWorkflowName && key != v1.SpanAttributeTaskName {
+			if key != v1.SpanAttributeWorkflowName && key != v1.SpanAttributeTaskName && key != v1.SpanAttributeStepID {
 				continue
 			}
-			require.LessOrEqual(t, utf8.RuneCountInString(attr.Value.AsString()), limit+1,
+			attributeLimit := limit
+			if key == v1.SpanAttributeStepID {
+				attributeLimit = v1.MaxStepIDLen
+			}
+			require.LessOrEqual(t, utf8.RuneCountInString(attr.Value.AsString()), attributeLimit+1,
 				"%s carries an unbounded %s attribute", stub.Name, key)
 		}
 	}
@@ -237,6 +241,28 @@ func TestSpanNamesAreBoundedBeforeExport(t *testing.T) {
 			t.Fatal("an unvalidated oversized name reached a span, which is exported to a collector")
 		}
 	}
+}
+
+// TestTaskSpanOmitsFactsItsCallerDoesNotKnow pins the honest absence case.
+// StartTaskSpan owns neither execution driver's attempt counter, and an old
+// activity payload may carry no appended step id, so neither is guessed from a
+// timestamp, span name, or message.
+func TestTaskSpanOmitsFactsItsCallerDoesNotKnow(t *testing.T) {
+	recorder := conformance.RecordSpans(t)
+
+	_, span := v1.StartTaskSpan(t.Context(), &v1.Task{Name: "log"}, "")
+	span.End()
+
+	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
+	require.Len(t, stubs, 1)
+	attrs := map[string]struct{}{}
+	for _, attr := range stubs[0].Attributes {
+		attrs[string(attr.Key)] = struct{}{}
+	}
+	require.NotContains(t, attrs, v1.SpanAttributeStepID,
+		"an unknown step id was exported as if it were known")
+	require.NotContains(t, attrs, v1.SpanAttributeAttempt,
+		"the shared span constructor inferred an attempt outside either driver's durable source")
 }
 
 // TestALegalNameIsExportedExactly is the other half, and the reason the bound is

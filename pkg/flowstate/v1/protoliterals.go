@@ -425,6 +425,10 @@ func scalarFromLiteral(lit *expr.Value, fieldDesc protoreflect.FieldDescriptor) 
 		}
 		number, known := EnumValueNumber(fieldDesc.Enum(), v.StringValue)
 		if !known {
+			if EnumValueWithheld(fieldDesc.Enum(), v.StringValue) {
+				return protoreflect.Value{}, fmt.Errorf("%q is compiled into test builds of this task only, and a released build refuses it; write one of %s",
+					v.StringValue, strings.Join(EnumValueNames(fieldDesc.Enum()), ", "))
+			}
 			return protoreflect.Value{}, fmt.Errorf("%q is not one of %s",
 				v.StringValue, strings.Join(EnumValueNames(fieldDesc.Enum()), ", "))
 		}

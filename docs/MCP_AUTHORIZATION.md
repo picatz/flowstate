@@ -130,6 +130,7 @@ Two things, both already-familiar shapes rather than new machinery:
   point a client at a door the policy itself keeps locked.
 
   ```sh
+  # Run exactly one flow mcp serve replica.
   flow mcp serve --listen 127.0.0.1:8617 \
     --auth-policy /etc/flowstate/policy.yaml \
     --protected-resource https://flowstate.example.com/mcp \
@@ -149,6 +150,64 @@ Two things, both already-familiar shapes rather than new machinery:
   `https://flowstate.example.com/.well-known/oauth-protected-resource/mcp`,
   not at the bare prefix, and that exact URL is what the `WWW-Authenticate`
   challenge names.
+
+### Authorization audit
+
+Every registered tool call that reaches the authenticated handler emits one
+authorization record before its argument parser or tool implementation runs.
+The record names the tool by its full registered name and derives its
+`AuthorizationAction` from the same binding used by authorization conformance;
+it also carries the caller's attested workload identity and the bounded
+operator-chosen issuer-entry name and role that admitted it. It never carries
+the bearer token, token claims, tool arguments, prompts, submitted Flowfile or
+test corpus text, tool output, session id, or caller-chosen JSON-RPC request id.
+
+This records the decision, not the execution outcome. A tool implementation
+that refuses its inputs, returns an error, or observes cancellation after the
+allow still has exactly one truthful allow record. `--audit-required` makes a
+sink failure refuse the call before parsing or mutation; without it, audit is
+always on but best-effort, with stderr as the unconditional sink. The local
+stdio surface has one process-trusted caller rather than a bearer authorization
+decision and does not emit these MCP records.
+
+### Session topology: one process, one replica
+
+`flow mcp serve` is stateful today. The MCP SDK handler stores every session in
+this process's memory, and Flowstate's `--max-sessions` and
+`--max-session-requests` accounting is another process-local map. A restart
+therefore invalidates every active session. A request carrying an existing
+`Mcp-Session-Id` after a restart reaches a handler that has never seen that ID
+and is refused as an unknown session.
+
+Run **one replica**. A load-balanced fleet is not a supported horizontally
+scalable deployment: without session affinity, a request initialized on replica
+A can reach replica B, where its ID is unknown. If an operator temporarily runs
+more than one replica anyway, the load balancer must record which backend minted
+each `Mcp-Session-Id` and route every request carrying that ID back to that exact
+backend. Merely hashing the header is insufficient unless that routing scheme
+also guarantees the initializer landed on the same backend. Restarts still lose
+the mapping's server-side session, so affinity supplies routing, not durability.
+
+The limits are per process too. Two processes configured with
+`--max-sessions=32` may admit 64 sessions in aggregate, and
+`--max-session-requests=8` permits eight in-flight requests for the same local
+session on the process that owns it. No process observes or enforces a fleet-wide
+total. The startup warning reports this contract as structured fields:
+`session_storage=process_memory`,
+`session_affinity_header=Mcp-Session-Id`, and `horizontal_scaling=false`.
+
+This is also the protocol boundary. The current stateful handler answers
+`server/discover` but advertises only the legacy revisions it can serve over
+HTTP: `2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05`. The
+2026-07-28 revision is the target for removing this constraint, not a capability
+this deployment claims today. That revision removes protocol-level sessions:
+metadata is carried per request, each message is its own POST, there is no GET
+stream or DELETE termination, no `Mcp-Session-Id`, no `Last-Event-ID` resumption,
+and closing a request's SSE stream is cancellation. Moving to that stateless
+shape should delete the need for affinity; building a distributed session store
+for the legacy shape is deliberately not the plan. A go-sdk update can change
+this protocol surface, so tests pin the exact revisions the running handler
+advertises.
 
 The audience identifiers are intentionally not interchangeable. Connect RPC uses
 `--rpc-resource` / `FLOWSTATE_RPC_RESOURCE`; remote MCP uses
@@ -234,18 +293,16 @@ says plainly what it is missing.
   token endpoint, no PKCE verification performed here, no refresh tokens
   issued. Every one of those stays the operator's identity provider's job. If
   a deployment has no IdP, HTTP MCP is not available to it today —
-  `--insecure-no-auth` covers loopback development only.
-- **A scope vocabulary, and nothing that enforces it.** #567's D1 is
-  answered: the action list is in the schema
-  (`proto/flowstate/v1/authorization.proto`), one closed enum whose value
-  names spell the scopes, and the metadata document now advertises it as
-  `scopes_supported`. What has not landed is any place that *reads* a token's
-  scopes. Authorization here is still coarse — a caller with a verified,
-  audience-bound token from a trusted issuer may call every tool the trust
-  policy's claim rules and role admit — the same granularity every other
-  authenticated Connect RPC already has, and no `401`/`403` challenge names a
-  `scope` parameter, because a challenge naming one would tell a caller to
-  acquire a scope this deployment never consults.
+  `--insecure-no-auth` is refused on this command, and `flow mcp` over stdio is
+  the supported local shape.
+- **MCP still does not enforce token scopes.** #567's D1 is answered: the action
+  list is in the schema (`proto/flowstate/v1/authorization.proto`), one closed
+  enum whose value names spell the scopes, and the metadata document advertises
+  it as `scopes_supported`. Connect RPCs can now be restricted by the admitting
+  trust-policy entry's `actions:` list, using those same spellings. This MCP
+  surface does not yet apply that list, and no surface reads a token's `scope` or
+  `scp` claim; an MCP caller admitted by the trust policy may therefore call every
+  tool this reduced surface registers. A challenge must not imply otherwise.
 
   Two things the published list does not say, worth being explicit about
   because a scope value looks like a promise. It is a *vocabulary*, not a
@@ -253,9 +310,9 @@ says plainly what it is missing.
   what that action is, not that this surface registers a tool for it — the
   reduced tool list below is unchanged, and tools are discovered where a
   client actually discovers them, through MCP's own `tools/list`, rather than
-  from an OAuth metadata document its authorization layer reads. And a token
-  carrying one of these scopes is admitted no differently from one carrying
-  none, until the enforcement point exists.
+  from an OAuth metadata document its authorization layer reads. A token carrying
+  one of these scopes is admitted no differently from one carrying none; Connect
+  action grants come from trusted configuration, never from that token claim.
 - **No delegation.** A token carrying an RFC 8693 `act` or `may_act` claim —
   the shape an agent acting for a human produces — is refused outright, not
   silently accepted as the bare subject and not stripped down to one. Refusal

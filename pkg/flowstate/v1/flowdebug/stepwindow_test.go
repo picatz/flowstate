@@ -65,7 +65,7 @@ func TestTheStepListIsAnsweredAsAWindow(t *testing.T) {
 	// The property the O(N²) claim turns on: walking the run asks for a window
 	// per stop, and every one of them costs the window rather than the file.
 	copied := 0
-	for offset := 0; offset < declared; offset++ {
+	for offset := range declared {
 		copied += len(session.Steps(offset, asked).Steps)
 	}
 	assert.Less(t, copied, declared*asked+1,

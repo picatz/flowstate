@@ -21,6 +21,8 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // registerTestNamespace registers a Temporal namespace directly against the
@@ -39,7 +41,7 @@ func registerTestNamespace(t *testing.T) string {
 		t.Skip("skipping: needs the shared Temporal dev server, not started under -short; CI runs the full suite")
 	}
 
-	namespace := namespaceNameFor(t)
+	namespace := testkit.NamespaceNameFor(t)
 	_, err := devServer.Client().WorkflowService().RegisterNamespace(t.Context(),
 		&workflowservice.RegisterNamespaceRequest{
 			Namespace: namespace,
@@ -61,10 +63,15 @@ type startedFlowWorker struct {
 }
 
 // startFlowWorker builds the flow binary, starts `flow worker` with the given
-// extra arguments against the package's shared dev server, and waits for it to
-// log that it has started polling before returning — every test in this file
-// needs that ordering guarantee so a signal sent immediately after cannot race
-// process start-up.
+// extra arguments against the package's shared dev server, and waits for its
+// "starting worker" log before returning — every test in this file needs that
+// ordering guarantee so a signal sent immediately after cannot race process
+// start-up.
+//
+// Note what that line does and does not prove: runWorker emits it just *before*
+// w.Start(), and the internal listener binds later still, so it marks a worker
+// about to poll rather than one already polling. A test that needs either of
+// those to have happened must wait for something emitted after them.
 func startFlowWorker(t *testing.T, namespace string, env []string, extraArgs ...string) *startedFlowWorker {
 	t.Helper()
 
@@ -108,9 +115,10 @@ func startFlowWorker(t *testing.T, namespace string, env []string, extraArgs ...
 	go collect(stderr)
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 
-	// Wait for the worker to actually be polling before returning, so a signal
-	// sent right after this cannot race process start-up and accidentally prove
-	// that a process killed before it finished coming up "shut down gracefully."
+	// Wait for the worker to announce that it is starting before returning, so a
+	// signal sent right after this cannot race process start-up and accidentally
+	// prove that a process killed before it finished coming up "shut down
+	// gracefully."
 	require.Eventually(t, func() bool {
 		return strings.Contains(snapshot(), "starting worker")
 	}, 30*time.Second, 50*time.Millisecond,

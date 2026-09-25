@@ -26,8 +26,7 @@ func Example() {
 	}
 
 	if _, err := client.Do(req); errors.Is(err, netpolicy.ErrDenied) {
-		var denied *netpolicy.DenyError
-		if errors.As(err, &denied) {
+		if denied, ok := errors.AsType[*netpolicy.DenyError](err); ok {
 			fmt.Printf("%s: %s\n", denied.Reason, denied.Detail)
 		}
 	}

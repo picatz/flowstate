@@ -233,7 +233,7 @@ func dagDescriptorSet(depth, breadth int) *descriptorpb.FileDescriptorSet {
 	for i := 0; i <= depth; i++ {
 		message := &descriptorpb.DescriptorProto{Name: proto.String(fmt.Sprintf("M%d", i))}
 		if i < depth {
-			for j := 0; j < breadth; j++ {
+			for j := range breadth {
 				message.Field = append(message.Field, &descriptorpb.FieldDescriptorProto{
 					Name:     proto.String(fmt.Sprintf("f%d", j)),
 					Number:   proto.Int32(int32(j + 1)),

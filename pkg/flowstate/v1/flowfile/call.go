@@ -1,9 +1,9 @@
 package flowfile
 
 import (
-	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -241,15 +241,13 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
-	for _, prior := range ancestors {
-		if prior == resolved {
-			chain := append(append([]string{}, ancestors...), resolved)
-			c.report(spanOfNode(pathNode), callRef,
-				"calls itself through a chain of files rather than directly, which the parser "+
-					"catches the same way it catches an anchor referring to its own value: %s",
-				strings.Join(chain, " -> "))
-			return nil
-		}
+	if slices.Contains(ancestors, resolved) {
+		chain := append(append([]string{}, ancestors...), resolved)
+		c.report(spanOfNode(pathNode), callRef,
+			"calls itself through a chain of files rather than directly, which the parser "+
+				"catches the same way it catches an anchor referring to its own value: %s",
+			strings.Join(chain, " -> "))
+		return nil
 	}
 
 	data, err := readBoundedSource(resolved)
@@ -387,7 +385,7 @@ func formatSourceDigest(data []byte) string {
 // label, so `SHA256:AB12…` and `sha256:ab12…` name the same bytes, and refusing
 // one of them would be refusing a pin copied out of a tool that renders
 // upper-case for a difference that means nothing. The tree writes exactly one
-// form, [formatSourceDigest]'s, from [hex.EncodeToString], which is lower-case,
+// form, [formatSourceDigest]'s, which is lower-case,
 // so that is the form every diagnostic prints and the form a pin normalizes to
 // before being compared.
 func (c *compiler) verifySourcePin(pinNode ast.Node, stepPath string, r ref, target, actual string) bool {
@@ -400,7 +398,7 @@ func (c *compiler) verifySourcePin(pinNode ast.Node, stepPath string, r ref, tar
 	}
 	pin := strings.ToLower(written)
 
-	if !wellFormedSourcePin(pin) {
+	if v1.ValidateContentDigest(pin) != nil {
 		c.report(spanOfNode(pinNode), pinRef,
 			"is %s, which is not the shape of a pin; write `sha256:` and the 64 hex characters "+
 				"of the callee's SHA-256, which for %q is `digest: %s` right now",
@@ -418,21 +416,6 @@ func (c *compiler) verifySourcePin(pinNode ast.Node, stepPath string, r ref, tar
 	}
 
 	return true
-}
-
-// wellFormedSourcePin reports whether a lower-cased pin is written the way a
-// digest is written here.
-//
-// Length before content, deliberately. The pin is text an outside party chose,
-// bounded only by the megabyte a whole Flowfile may be, and a fixed-width hash
-// is the one input where the cheap check is also the complete one.
-func wellFormedSourcePin(pin string) bool {
-	digits, ok := strings.CutPrefix(pin, sourceDigestPrefix)
-	if !ok || len(digits) != sourceDigestHexLen {
-		return false
-	}
-	_, err := hex.DecodeString(digits)
-	return err == nil
 }
 
 // describeWrittenPin renders what the author wrote, for the diagnostic above,

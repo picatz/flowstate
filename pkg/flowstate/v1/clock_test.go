@@ -165,6 +165,13 @@ func TestVirtualClockDoesNotAdvancePastAConcurrentParticipant(t *testing.T) {
 		released <- <-clock.After(time.Hour)
 	}()
 
+	// Established rather than assumed: the goroutine above has to have
+	// registered its deadline before "the clock did not advance" says
+	// anything about a parked timer, and a loaded runner can hold a fresh
+	// goroutine back for longer than the quiet period below.
+	require.Eventually(t, func() bool { return clock.Pending() == 1 },
+		5*time.Second, 10*time.Millisecond, "the timer never parked")
+
 	// The lone timer registered above is parked, but the clock must not
 	// advance: a second participant is still entered and has not parked.
 	require.Never(t, func() bool {
@@ -179,9 +186,13 @@ func TestVirtualClockDoesNotAdvancePastAConcurrentParticipant(t *testing.T) {
 
 	clock.Leave() // participant B is done; only A's parked timer remains.
 
+	// The release is synchronous inside Leave; what is waited for is the
+	// goroutine forwarding it, which under the race detector on a busy
+	// runner has been starved for more than two seconds. The wait is long
+	// because it is only ever spent on the failure.
 	select {
 	case <-released:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("the clock never advanced once the other participant left")
 	}
 }

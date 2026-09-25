@@ -110,6 +110,7 @@ flow keys public --in identity/2026-08.pem`,
 	cmd.Flags().String("in", "", "path to a PKCS#8 private key PEM (required)")
 	cmd.Flags().String("id", "", "key id published in the JWK "+
 		"(default: --in's file name, without its extension)")
+	cmd.Flags().Bool("jwks", false, "wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file")
 	_ = cmd.MarkFlagRequired("in")
 
 	return cmd
@@ -145,7 +146,7 @@ func keyIDFromPath(path string) string {
 // does for the server's --identity-key flag, so `flow keys`/`flow jwt` and the
 // server accept exactly the same files.
 func readPrivateKeyPEM(path string) (crypto.PrivateKey, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -340,6 +341,7 @@ func runKeysPublic(cmd *cobra.Command, _ []string) error {
 
 	in, _ := cmd.Flags().GetString("in")
 	id, _ := cmd.Flags().GetString("id")
+	jwksDocument, _ := cmd.Flags().GetBool("jwks")
 
 	if id == "" {
 		id = keyIDFromPath(in)
@@ -360,10 +362,13 @@ func runKeysPublic(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	if jwksDocument {
+		return writeJWK(surface, map[string]any{"keys": []jwk.Value{jwkValue}})
+	}
 	return writeJWK(surface, jwkValue)
 }
 
-func writeJWK(surface *ui.UI, value jwk.Value) error {
+func writeJWK(surface *ui.UI, value any) error {
 	encoded, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return fmt.Errorf("rendering public JWK: %w", err)

@@ -18,6 +18,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestDeploymentOptionsNeedsBothHalves covers the pair rule.
@@ -104,7 +105,7 @@ func TestRegisterInstallsEverythingHistoryCanName(t *testing.T) {
 	// type" instead of a sentence naming the plugin, which reads as a broken
 	// worker rather than a rollout that is half done.
 	require.ElementsMatch(t,
-		[]string{"Task", "TaskInScope", "TaskWithPrev", "TaskAuthorized", "TaskInScopeAuthorized", "WorkflowVars", "CheckPlugins"}, registry.activities)
+		[]string{"Task", "TaskInScope", "TaskWithPrev", "TaskAuthorized", "TaskInScopeAuthorized", "WorkflowVars", "CheckPlugins", "CheckTaskCapabilities"}, registry.activities)
 }
 
 // TestRegisterPinsTheInterpreter is the assertion the whole versioning posture
@@ -221,6 +222,153 @@ func TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew(t *testing.T) {
 	requireRunCompletes(t, temporal, run, &outputs)
 }
 
+// TestFailureRecoverySurvivesVersionReplacementAndRollback composes the
+// lifecycle seams that the focused tests above and in workflow_test.go prove
+// separately. One run records a real effect on build one, receives a later
+// gate's signal early, crosses Continue-As-New before build one is removed,
+// completes on build two, and compensates both effects across the segment
+// boundary after a failure. The old build is then brought back and must serve a
+// new workload.
+//
+// The recorder is [conformance.NewUndoServer], the existing external-effect
+// ledger for both drivers. Reusing it keeps "recovered" tied to what the peer
+// observed rather than introducing a second account that could agree with the
+// engine while the world disagreed.
+func TestFailureRecoverySurvivesVersionReplacementAndRollback(t *testing.T) {
+	t.Parallel()
+
+	temporal := newTemporalNamespace(t)
+	base, recorded := conformance.NewUndoServer(t)
+	var undoCase conformance.UndoCase
+	for _, candidate := range conformance.UndoCases(base) {
+		if candidate.Name == "compensations run in reverse order when a later step fails" {
+			undoCase = candidate
+			break
+		}
+	}
+	require.NotNil(t, undoCase.Workflow, "the reverse-order compensation case is missing")
+
+	const (
+		deployment = "flowstate-recovery-test"
+		buildOne   = "build-one"
+		buildTwo   = "build-two"
+	)
+	taskQueue := "recovery-versioning-" + t.Name()
+
+	stopOne := startVersionedWorker(t, temporal, taskQueue, deployment, buildOne)
+	setCurrentVersion(t, temporal, deployment, buildOne)
+
+	// The release gate gives the test a deterministic point to install build
+	// two. The early gate follows it, so its delivery below is necessarily
+	// retained before that gate is reached rather than racing the worker.
+	spec := &v1.Workflow{
+		Name:    "versioned-failure-recovery",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{
+			undoCase.Workflow.GetSteps()[0],
+			signalStep("release-upgrade", "release", 0),
+			signalStep("early-gate", "early", 0),
+			signalStep("replacement-ready", "replacement", 0),
+			undoCase.Workflow.GetSteps()[1],
+			undoCase.Workflow.GetSteps()[2],
+		},
+	}
+
+	run, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
+		ID:                  "recovery-versioning-" + t.Name(),
+		TaskQueue:           taskQueue,
+		WorkflowTaskTimeout: conformance.BoundaryWorkflowTaskTimeout,
+	}, engine.Run, &v1.RunState{Workflow: spec, StepsBudget: 3})
+	require.NoError(t, err)
+	firstRunID := run.GetRunID()
+
+	// Delivered before the workflow can pass release-upgrade, and therefore
+	// before it reaches early-gate.
+	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "early", &v1.SignalDelivery{Payload: &v1.Node_Outputs{}}))
+	require.Eventually(t, func() bool {
+		got := recorded()
+		return len(got) == 1 && got[0] == "a"
+	}, 60*time.Second, 200*time.Millisecond, "build one never committed the first external effect")
+	requireRunHasExecuted(t, temporal, run.GetID())
+
+	stopTwo := startVersionedWorker(t, temporal, taskQueue, deployment, buildTwo)
+	setCurrentVersion(t, temporal, deployment, buildTwo)
+	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "release", &v1.SignalDelivery{Payload: &v1.Node_Outputs{}}))
+
+	require.Eventually(t, func() bool {
+		description, describeErr := temporal.DescribeWorkflowExecution(t.Context(), run.GetID(), "")
+		return describeErr == nil && description.GetWorkflowExecutionInfo().GetExecution().GetRunId() != firstRunID
+	}, 60*time.Second, 200*time.Millisecond, "the recovery run never crossed a history boundary")
+	// A new run exists, but its worker is not established until it executes a
+	// task. Remove build one while the workflow is held behind the replacement
+	// gate so all remaining work must be served by build two.
+	stopOne()
+	require.Equal(t, []string{"a"}, recorded(),
+		"the replacement segment performed an effect before build one was removed")
+	require.NoError(t, temporal.SignalWorkflow(t.Context(), run.GetID(), "", "replacement", &v1.SignalDelivery{Payload: &v1.Node_Outputs{}}))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	var outputs v1.Workflow_StepOutputs
+	err = run.Get(ctx, &outputs)
+	cancel()
+	require.Error(t, err, "the terminal step unexpectedly succeeded")
+	require.ErrorContains(t, err, undoCase.Summary,
+		"the replacement build did not recover compensations registered before Continue-As-New")
+	conformance.AssertRecorded(t, undoCase, recorded())
+
+	historyCtx, cancelHistory := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancelHistory()
+	histories := recordRunChain(historyCtx, t, temporal, run.GetID(), firstRunID)
+	cancelHistory()
+	require.Greater(t, len(histories), 1, "the scenario never crossed a history boundary")
+	require.LessOrEqual(t, len(histories), 10, "the bounded scenario grew too many history segments")
+	replayer := worker.NewWorkflowReplayer()
+	engine.RegisterWorkflows(replayer)
+	historyEvents := 0
+	for _, history := range histories {
+		require.NoError(t, replayer.ReplayWorkflowHistory(nil, history),
+			"a lifecycle segment did not replay after failure recovery")
+		for _, event := range history.GetEvents() {
+			require.NotEqual(t, enumspb.EVENT_TYPE_WORKFLOW_TASK_FAILED, event.GetEventType(),
+				"the lifecycle recovered only after a hidden workflow-task failure")
+			require.NotEqual(t, enumspb.EVENT_TYPE_WORKFLOW_TASK_TIMED_OUT, event.GetEventType(),
+				"the lifecycle recovered only after a hidden workflow-task timeout")
+			historyEvents++
+		}
+	}
+	require.LessOrEqual(t, historyEvents, 200, "the bounded scenario grew too many history events")
+
+	// Roll back routing only after the failed run has recovered. A fresh worker
+	// with build one's identity must then serve new work, not merely appear in
+	// deployment metadata.
+	startVersionedWorker(t, temporal, taskQueue, deployment, buildOne)
+	setCurrentVersion(t, temporal, deployment, buildOne)
+	stopTwo()
+	postRollback := &v1.Workflow{
+		Name:    "post-rollback-effect",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "record",
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   "http",
+				Inputs: map[string]*v1.Value{"url": v1.NewLiteral(base + "/do/post-rollback")},
+			}},
+		}},
+	}
+	rollbackRun, err := temporal.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{
+		ID:                  "post-rollback-" + t.Name(),
+		TaskQueue:           taskQueue,
+		WorkflowTaskTimeout: conformance.BoundaryWorkflowTaskTimeout,
+	}, engine.Run, &v1.RunState{Workflow: postRollback})
+	require.NoError(t, err)
+	requireRunCompletes(t, temporal, rollbackRun, &outputs)
+	wantRecorded := append(append([]string(nil), undoCase.Recorded...), "post-rollback")
+	require.Equal(t, wantRecorded, recorded(),
+		"the external-effect ledger did not observe exactly one post-rollback effect")
+	t.Logf("recovered across %d segments and %d history events; ledger recorded %d ordered effects",
+		len(histories), historyEvents, len(wantRecorded))
+}
+
 // requireRunHasExecuted blocks until a run has completed at least one workflow
 // task, which is when it has committed to the version serving it.
 //
@@ -266,9 +414,13 @@ func requireRunHasExecuted(t *testing.T, temporal client.Client, workflowID stri
 // next person to run it again; "it is RUNNING on attempt 4 of a workflow task"
 // tells them nothing is serving it, which is the answer.
 func requireRunCompletes(t *testing.T, temporal client.Client, run client.WorkflowRun, out any) {
+	requireRunCompletesWithin(t, temporal, run, out, 90*time.Second)
+}
+
+func requireRunCompletesWithin(t *testing.T, temporal client.Client, run client.WorkflowRun, out any, timeout time.Duration) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	err := run.Get(ctx, out)
@@ -291,7 +443,7 @@ func requireRunCompletes(t *testing.T, temporal client.Client, run client.Workfl
 	}
 
 	info := description.GetWorkflowExecutionInfo()
-	t.Fatalf("the resumed run never completed, so nothing served it after build one stopped: "+
+	t.Fatalf("the run never completed before its bounded wait elapsed: "+
 		"status=%v runID=%s historyLength=%d pendingWorkflowTaskAttempt=%d",
 		info.GetStatus(), info.GetExecution().GetRunId(), info.GetHistoryLength(),
 		description.GetPendingWorkflowTask().GetAttempt())

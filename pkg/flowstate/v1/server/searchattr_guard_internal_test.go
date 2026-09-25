@@ -79,7 +79,7 @@ func TestNoSearchAttributeIsBuiltOutsideTheOneConstructor(t *testing.T) {
 		require.NoError(t, err)
 		checked++
 
-		for _, line := range strings.Split(string(source), "\n") {
+		for line := range strings.SplitSeq(string(source), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "//") {
 				continue

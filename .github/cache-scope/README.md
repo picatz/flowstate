@@ -14,11 +14,11 @@ eighty-five seconds rebuilding staticcheck from source, run after run, with
 nothing in the file explaining the difference.
 
 A job that names one of these files alongside `go.sum` gets a key of its own,
-so its `go run tool@version` build is cached against itself rather than against
+so its `go tool` build is cached against itself rather than against
 whoever won.
 
 The contents are arbitrary and are not a version pin. That is deliberate: the
-tool versions live once, in `ci.yml`'s `env:` block, and copying them here
+tool versions live once, in `tools/external/go.mod`, and copying them here
 would be the same value written down twice — the defect this repository has
 paid for more than any other. Nothing needs the copy, because Go's build and
 module caches are content-addressed: a key that fails to change after a version

@@ -118,7 +118,7 @@ func TestACatalogRoundTripPreservesEveryClaim(t *testing.T) {
 //
 // Every schema-driven check in the validator asks the descriptor rather than
 // the rendering — validateTaskInputs returns nothing at all when def.Inputs is
-// nil — so a round trip that keeps the five claims and loses the descriptor is
+// nil — so a round trip that keeps the security-relevant claims and loses the descriptor is
 // a validator that reports nothing about a task's inputs and says so nowhere.
 func TestACatalogRoundTripPreservesTheInputSchema(t *testing.T) {
 	t.Parallel()
@@ -208,8 +208,8 @@ func TestACatalogLoadedValidatorRefusesWhatTheLaunchingOneRefuses(t *testing.T) 
 	// Into the default registry, which is the one the validator asks. Not
 	// removed afterwards, for the reason the neighbouring plugin tests give: a
 	// name is a plugin's, and a Go test binary is one process per package.
-	require.NoError(t, flowstatev1.DefaultRegistry().Register(launchedDef))
-	require.NoError(t, flowstatev1.DefaultRegistry().Register(rebuilt))
+	require.NoError(t, flowstatev1.DefaultRegistry().Replace(launchedDef))
+	require.NoError(t, flowstatev1.DefaultRegistry().Replace(rebuilt))
 
 	for _, file := range []struct {
 		name   string

@@ -45,3 +45,231 @@ orchestration reference, and this ledger (branch claude/factory-comms).
 Measurement baseline for wave 2: count clarification turns, owner edits
 to our artifacts, and review findings accepted vs noise, against this
 wave's artifacts.
+
+## Wave 2 (2026-09-01): the September slate, first dispatch
+
+Source: `2026-09-roadmap.md` (the step-back review), issues #1376–#1388.
+
+Dispatched: six builders and one reviewer at the deep tier, one mechanical
+slice (a dependabot retidy) at the cheap tier, all in isolated worktrees on
+one four-core machine. Landed the same day: two dependabot merges, PRs
+#1387 (#1306 gate base channel), #1389 (#1336 token on a descriptor), the
+#1281 review-and-fix, and the #1372 retidy. PR #1390 (#1332 egress grant,
+PR A) reached review; the doc-truth sweep (#1382) and the appearance flip
+(#1319) landed on the review branch itself.
+
+Friction, measured: five concurrent `go run ./tools/gate` runs pushed the
+load average to 50–80, turned ten-minute gates into forty-minute ones, and
+failed unrelated deadline-bound tests in every builder's wide leg — each
+slice lost roughly forty minutes to a result nobody could interpret. The
+redirect that fixed it: targeted package tests, push, open the PR with an
+honest verification section, CI as the authoritative gate; kill the
+contended gate by PID. Recorded as #1388 (the gate's own half) and as a
+rule below (the wave's half). Second friction: builders park inside a
+long foreground command and cannot read a redirect until it returns —
+bound the first gate attempt, not only the tests inside it.
+
+Receiver-cost outcomes, this wave: zero clarification turns from the
+owner on any brief; owner edits to our artifacts: none yet; review
+findings accepted vs noise: the #1281 review returned four accepted
+findings and one pre-existing non-finding; two reviews (#1389, #1390)
+pending at the time of writing.
+
+Third friction: the session scratchpad is shared across worktree agents,
+so two builders overwrote each other's draft files and one gate log was
+truncated mid-write. Rule: a dispatch brief names a per-agent scratch
+directory (the worktree's own `.git`-ignored path or a subdirectory keyed
+by slice), never the shared scratchpad.
+
+Rule adopted (settles #1386, option 1): one entry per dispatched wave,
+appended by the dispatching session before it ends, with the measurement
+line above filled from what that session actually observed. Second rule:
+at most two full gates run concurrently on one machine; the rest of a wave
+verifies with targeted package tests and lets PR CI be the gate.
+
+Evening addendum, same wave. Bot second passes: every push drew a fresh
+Codex pass, and the second passes were not noise — #1394's found the
+over-correction of a first-pass fix (a blanket cancelled-context guard that
+withheld allows for requests that had already left) and a
+permanent-versus-retryable inversion at the secret seam; #1390's found a
+help-text over-claim at the egress boundary; #1392's found the
+sensitive-output leak this session had already filed as #1396. Rule: a
+finding on a fix is read as carefully as a finding on the original, and a
+documented deferral gets an issue number in the reply, not a promise. CI
+infrastructure: three failures this evening were not the PR's — a Go module
+proxy stream error in the editors workflow, a `sum.golang.org` stream error
+installing vhs in `appearance`, and a browser-launch test in `cmd/flow`
+timing out under load on #1281 — each handled as one standing-down comment
+plus one re-run, never a second re-run. Own error: re-running a superseded
+editors run cancelled the newer head's run through the workflow's
+concurrency group; rule: re-run only the run for the current head. Own
+error: after a context reset the lead filed #1398 duplicating its own #1393
+from an hour earlier; rule: dup-check the session's own filings (issues
+created today by this account) before filing, not only the backlog.
+Receiver-cost update: bot findings accepted this evening, seventeen;
+disputed with evidence, one (a Copilot CEL parse claim); deferred with an
+issue each, three.
+
+Third own error, later the same evening: the lead recorded a decision on
+#489 that named CI work to do (`merge_group` support) from the roadmap's
+memory of the tree rather than from the tree; the builder dispatched for it
+found the whole of it already on main from #688 and correctly refused to
+fabricate a diff. Rule: a decision record that names work to do is written
+after a grep for the mechanism, not before; "unverifiable from the tree" in
+an older plan is a claim to re-check, not a fact to build on.
+
+Night addendum, same wave. At 22:00 UTC the account's five-hour token window
+closed (overage is disabled at the organization level) and cut all seven
+running agents off mid-task. Two were mid-edit, with uncommitted work in their
+worktrees; two had not yet written anything, and the harness then removed
+their empty worktrees as unchanged. Nothing pushed was lost, but the wave
+stood still for an hour and a quarter and two builders restarted from
+recreated worktrees. Facts worth keeping: an agent stopped this way keeps its
+transcript and resumes on one message, paying to re-read its context once the
+prompt cache has cooled; a fresh agent pays the same reading plus the
+orientation it has not done. Rule: resume, do not re-dispatch, an agent that
+stopped on a limit. Second rule: stagger. Seven parallel builders on one
+window reach the same reset together; the lead resumes the slices closest to
+landing first — two PRs in their last review round and one flake fix — and
+holds the largest build until those are pushed, so a second stop leaves
+finished work rather than seven half-finished branches. Third: the owner's
+other sessions draw on the same window, so a wave is sized against the
+account, not the session. One more CI anomaly for the evening's list: a push
+at 21:59 created no workflow run at all, with no skip marker in the message;
+the next push is the re-trigger, and the standing rule holds — no empty commit
+to kick CI.
+
+Small hours, same wave. Four merges between 23:54 and 01:03 UTC: #1410 (the
+carry-test deadlock budget), #1409 (container output keys, then the walk's
+depth bound), #1390 (the egress grant, after three security passes and sixteen
+resolved threads), #1394 (the worker audit, after four) — the fifth of the
+evening being the roadmap's own #1402 at 22:38. What the second half of the
+night taught. Bot third and fourth passes kept finding real siblings of a
+fixed finding rather than noise — the resolver path beside the task path for
+the identity install, the redirect hook's three early returns beside the rule
+path for the hop mark, an unbuildable grant beside a malformed one — so the
+rule is: after a fix, grep for the fixed shape's siblings before pushing,
+because the next pass will. Second: a design just landed was reversed on the
+next finding when it deserved to be — the attempt-1-only dispatch record could
+lose the very record whose failure caused the retry, and one record per
+attempt on both drivers replaced it inside the hour; a decision's cost is one
+push, not a defense. Third: the security reviewer ran beside CI on every head,
+in one worktree, its findings folded into the push already in flight; that is
+what held each PR to one review round per push. Fourth: "fold it into one
+push" arrives late as often as not — twice an agent had already pushed when
+the next item came, and each extra push cost a CI cycle and a bot pass; the
+remedy is for the lead to batch findings for a few minutes when several are
+landing at once, not to hurry the agent. Fifth, on protocol: a key a strict
+parser refuses is not additive, so #1411 takes the plugin protocol to 6 for
+the default grant's marker where #1393 had hoped PR B could stay at 5 — the
+version-4 lesson applied before it bit. Receiver-cost update for the night:
+bot findings acted on, sixteen; refuted with evidence, one (a deployment's
+proxy credential is not a workload credential); owner turns needed, zero.
+Wrap-up, same wave, 01:50 UTC. Two more merges: #1411 (PR B, protocol 6, after
+a Codex P1 showed `flow mcp` granting plugins the permissive default while
+refusing egress itself — closed by building the task's policy and the plugins'
+grant from one document) and #1413 (this ledger's first half). #1412 is in its
+last round. Five rules from the last two hours, all from evidence. The
+container's `PATH` gofmt is the base image's older build, while the Makefile
+derives `GOFMT` from the toolchain go.mod's `go` directive names, through
+`GOTOOLCHAIN=go$(GOVERSION) go env GOROOT`; a bare `gofmt -l` flagged a file
+CI accepts, and a bare `go env GOROOT` can pick a newer local toolchain just
+as wrongly, so "formatted" is spelled only by the Makefile's targets. A change
+to a proto or DSL surface runs every package under `pkg/flowstate/v1/...`
+before its push — the LSP's completion keys and protodoc's presence pin are
+the two that caught #1412 in CI rather than locally. The "second surface" is a
+sibling class of its own: `flow mcp` was the one command installing a
+non-default policy without an operator file, and the grep for callers of
+`applyEgressPolicy` is what found it. An agent does not end its turn waiting
+on a monitor; a stopped agent cannot act on what the monitor reports, so it
+reads the result and pushes, or says it is still running. And the reviewer
+does not arm watches or sleep loops for a head that has not landed; the lead
+names each head when it exists. Receiver-cost close: bot findings acted on
+across the night, twenty-two; refuted with evidence, one; owner turns needed,
+one — "wrap up for the night" — and that one arrived with every PR but the
+last already merged.
+
+#1412 merged at 02:42 UTC, the last of the night, after one more round on its
+final head: Codex found the header-reach check's aliasing escape by the
+comprehension spelling, the security pass found seven more spellings the same
+way, and one push replaced the deny-list with an allow-list and stopped
+redeliveries filling the local queue. Rule: a syntactic deny-list over an
+expression tree is refuted by aliasing the root — a comprehension variable, a
+ternary, a list or map literal, `has()` — and both reviewers passed it once
+because they probed the deny-list's own arms rather than the root; provenance
+is proved with an allow-list (`event` accepted only as the operand of `.body`),
+which needs no alias tracking because an alias must mention the root somewhere
+the rule refuses. Receiver-cost close, corrected for that round: bot findings
+acted on, twenty-four; refuted with evidence, one; owner turns needed, one.
+
+## Wave 3 (2026-09-02): the reference-model audit
+
+Source: `2026-09-reference-model.md`; the umbrella #1421 and its 23
+sub-issues (the numbers are not contiguous; the exact list is the table in
+that file).
+
+Dispatched: seven auditors at read-only, five deep and two mechanical, one
+lead verifying every citation before filing. Nothing landed in code by
+design; the deliverable was the slate. Friction, measured: the harness
+refuses a subagent's report `Write`, so four reports arrived as final
+messages (brief rule: ask for text, not a path); two agents put probe tests
+in the tracked tree and cleaned up on request (brief rule: name the
+scratch directory and forbid tracked-tree probes explicitly); one owner
+redirect mid-flight widened scope and cost two more agents rather than a
+re-brief. Receiver-cost: zero clarification turns; owner edits to our
+artifacts: none yet; findings accepted vs noise: to be measured as the
+issues are triaged.
+
+## Wave 4 (2026-09-02): the whole-system review
+
+Source: `2026-09-whole-system-review.md`; the fifteen issues it filed and the
+thirteen decisions it recorded on existing issues.
+
+Dispatched: six evidence agents at the Opus tier, one per dimension
+(language, runtime, identity, developer surfaces, plugins, process), one
+lead. Read-only by design; ~1.6M subagent tokens, ~650 tool calls, twelve
+minutes each in parallel. No second wave: the lead took the decisions
+against the reports rather than convening debate pairs, on the owner's
+budget instruction that morning.
+
+Friction, measured: the GitHub search API rate-limited after nine
+dup-check queries in one batch (REST reads and writes were unaffected), so
+the last five candidates were dup-checked against the open titles already
+in the lead's context — rule: dup-check in batches of no more than eight
+searches, and hold the open-title list from the first listing. One report
+called a decided question (#923) unanswered because the answer lived four
+comments down; rule: a decision comment's first line begins with the token
+`Decided`, styled if you like but with nothing before it, so that
+`grep -E '^\*{0,2}Decided'` finds it — this PR's own review caught that
+`**Decided**` defeats a plain `^Decided`, which is exactly what the rule was
+for; and a brief that asks "is X decided" names the comment anchor when the
+lead knows it. Two reports independently found the same
+unfiled gap (#1430's second-frontend framing), which is the signal the
+brief was well cut.
+
+Owner steer, one: D1 chose `list[string]`; the owner asked whether a type
+should be spelled as a CEL expression. A twenty-line probe against stock
+cel-go settled it in one turn — `list(string)` is what cel-go already
+prints, and `list`/`map` as type-level functions need no parser change —
+and D1 was amended on the PR with the evidence. Rule: before deciding a
+spelling, print what the toolchain already prints for the same thing; the
+lead applied R3 to the DSL and not to its own choice.
+
+Review caught what the lead did not, three times: the write-up asserted that
+`GetWorkflowHistory` had only test callers, that no test executes a plugin task
+end to end, and that the gate's `appearance` leg passes silently when its tools
+are absent. All three are false at `40cc365` — `server/timeline.go:232`,
+`plugin/reachable_test.go:135`, `tools/gate/main.go:524` — and two filed issues
+(#1475, #1478) were withdrawn on the strength of it. Each began as a subagent
+grep scoped to one package and was generalized to "the module" or "the tree" in
+the write-up; the lead's re-read of load-bearing citations did not re-run them.
+Rule: a claim of the form "nothing in the tree does X" is a repository-wide
+command with its output in the report, or it is written as the narrower thing
+actually checked. Codex caught a fourth in prose the lead wrote rather than
+inherited: a child-workflow requirement that would have shipped a real bug, and
+a proposal to rewrite an AGENTS.md invariant that AGENTS.md does not contain.
+
+Receiver-cost: zero clarification turns; owner turns, three, two about
+budget and one the steer above; owner edits to our artifacts, none —
+the steer arrived as a question and the lead carried it; findings
+accepted vs noise: to be measured as the fifteen filings are triaged.

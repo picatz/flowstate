@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 // and this CLI is where an author compares them. So they have to answer with the
 // same document, and they did not.
 //
-// `flow run` renders through [marshalJSON], which emits unpopulated fields;
+// `flow run` renders through [v1.MarshalSchemaJSON], which emits unpopulated fields;
 // `flow run local` rendered through a bare protojson.Marshal, which does not. One
 // finished step therefore read
 //
@@ -28,7 +27,7 @@ import (
 //	{"stepValues":{"hello":{}}}                   from the local one
 //
 // so `jq .stepValues.hello.namedValues` answered `{}` against production and `null`
-// against the rehearsal. That is exactly the difference [marshalJSON]'s comment
+// against the rehearsal. That is exactly the difference [v1.MarshalSchemaJSON]'s comment
 // exists to remove: a missing key and a null are the same question, and only one of
 // them is answerable without already knowing the schema.
 //
@@ -83,10 +82,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// Nothing is flushed here. [main] calls [flushTelemetry] after every command
 	// returns, precisely because a command that lives for a second is shorter
 	// than a batch exporter's window — which is this command exactly.
-	if _, err := startTelemetry(cmd.Context()); err != nil {
-		log.Printf("WARNING: telemetry is configured but could not be started, "+
-			"so this run emits no trace: %v", err)
-	}
+	//
+	// The warning goes through the run's own log handler — the one `log:` steps
+	// render through further down — so it has the WARN pill the rest of this
+	// command's stderr has rather than a line in a format nothing else here
+	// writes (#1716).
+	startTelemetryOrWarn(cmd.Context(),
+		slog.New(newRunLogHandler(cmd.ErrOrStderr(), newSurface(cmd).ErrTheme)))
 
 	// The same flag the worker takes, because a rehearsal under a different egress
 	// policy rehearses a different production. A file that does not load refuses
@@ -167,12 +169,31 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// does not satisfy the workflow's `inputs:` is a refusal about the command line,
 	// and reporting it after a `log:` step has already narrated two lines would make
 	// it look like the run got somewhere first.
+	// Read here rather than at its other use further down, because the two
+	// refusals below render values and this is the flag that says whether they
+	// may.
+	reveal := revealSensitiveRequested(cmd)
+
 	inputs, err := runInputs(cmd, workflow)
 	if err != nil {
-		return err
+		// Through the same writer as the binder's refusals below. A word a shell
+		// handed over that cannot be the declared type is the same class of
+		// mistake as one the binder refuses, and a caller who asked for JSON is
+		// owed a document for both (#1552).
+		//
+		// With no bound arguments in the set: collection is what failed, so
+		// there are none. The words the command line carried are in it
+		// regardless, which is what covers this refusal — see
+		// refusedRunSensitiveValues.
+		return refuseRunLocally(newSurface(cmd), rendering,
+			refusedRunSensitiveValues(cmd, workflow, nil, reveal), err)
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
-		return err
+		// And here the arguments exist — they were just collected — so the set
+		// is precise against them, and the binder's `got <value>` is cleared
+		// rather than the whole sentence withheld.
+		return refuseRunLocally(newSurface(cmd), rendering,
+			refusedRunSensitiveValues(cmd, workflow, inputs, reveal), err)
 	}
 
 	// A workload that waits for a signal needs something able to deliver one, or it
@@ -208,7 +229,6 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// command lost somewhere in it. Attached before the logger for exactly that
 	// reason; `narrate` is stderr itself everywhere else.
 	debugging, _ := cmd.Flags().GetBool("debug")
-	reveal := revealSensitiveRequested(cmd)
 
 	var (
 		console *debugConsole

@@ -3,6 +3,7 @@ package flowfile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -113,6 +114,16 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	for _, name := range sortedInputNames(task.GetInputs()) {
 		field := findField(def.Inputs, name)
 		if field == nil {
+			continue
+		}
+		if slices.Contains(def.RequiredSecretInputs, name) {
+			if task.GetInputs()[name].GetSecretRef() == nil {
+				ds = append(ds, Diagnostic{
+					Step:    stepID,
+					Field:   name,
+					Message: v1.RequiredSecretInputMessage(def.Name, name),
+				})
+			}
 			continue
 		}
 		// An input that has to be written as an expression is checked before the
@@ -500,6 +511,13 @@ func literalMismatch(field protoreflect.FieldDescriptor, literal *expr.Value) st
 			return fmt.Sprintf("expected one of %s, but this is %s", choices, literalKind(literal))
 		}
 		if _, known := v1.EnumValueNumber(field.Enum(), written.StringValue); !known {
+			if v1.EnumValueWithheld(field.Enum(), written.StringValue) {
+				// Spelled right and refused anyway: the schema marks it as a
+				// value released builds do not carry, so the choices are the
+				// remedy and a typo hunt is not (#1692).
+				return fmt.Sprintf("%q is compiled into test builds of this task only, and a released build refuses it; write one of %s",
+					written.StringValue, choices)
+			}
 			message := fmt.Sprintf("%q is not one of %s", written.StringValue, choices)
 			if suggestion, ok := nearestChoice(written.StringValue, v1.EnumValueNames(field.Enum())); ok {
 				message += fmt.Sprintf("; did you mean %q?", suggestion)
@@ -743,9 +761,9 @@ const (
 	// nowBinding is the clock, bound bare and only inside a wait.
 	nowBinding = "now"
 
-	// eventBinding is the delivery, bound bare and only inside a trigger. Not
-	// reserved as a step id, unlike `now`: inside a trigger there is no step scope
-	// for a step of this name to be shadowed *by*, so nothing an author writes can
+	// eventBinding is the delivery, bound bare and only inside a trigger. It is
+	// not reserved as a step id: inside a trigger there is no step scope for a
+	// step of this name to be shadowed by, so nothing an author writes can
 	// become ambiguous.
 	eventBinding = v1.EventRoot
 

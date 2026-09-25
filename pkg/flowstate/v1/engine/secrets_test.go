@@ -31,7 +31,7 @@ func TestSecretActivityCarriesIdentityAndStepToPolicy(t *testing.T) {
 	runtime, err := engine.NewTaskRuntimeConfig(store, policy, nil)
 	require.NoError(t, err)
 
-	const taskName = "test-secret-activity"
+	const taskName = "test_secret_activity"
 	require.NoError(t, v1.DefaultRegistry().Register(v1.TaskDef{
 		Name:            taskName,
 		AuthorityInputs: []string{"credential"},

@@ -1,0 +1,20 @@
+edition: v2026.3
+tests:
+  - name: a minted credential reaches the call and never the outputs
+    workflow: ./workflow.yaml
+    inputs:
+      invoice_id: inv_2026_0917
+    secrets:
+      # In a test the reference resolves to this; in a run it resolves to a
+      # token the plugin minted for that call.
+      oidc:billing-api: not-a-real-access-token
+    stubs:
+      - step: invoice
+        returns:
+          status: paid
+          total: 128.5
+    expect:
+      ran: [invoice, settled]
+      outputs:
+        status: paid
+        settled: true
