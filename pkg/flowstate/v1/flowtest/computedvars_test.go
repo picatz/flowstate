@@ -751,6 +751,74 @@ tests:
 		"the row replaced its entry's `secrets:`, but its entry's plaintext still reached a post-run witness (#2041)")
 }
 
+// TestATableRowsEntrySecretSurvivesEscapedInThePostBindPosture is the escaping
+// half of the same gap (Codex, on the previous fix for this one): a check
+// witness renders a string with Go's `%q`, which rewrites a tab, a newline, a
+// quote or a backslash before the redaction set ever reads the line, so the
+// entry's material must be redacted in both spellings post-bind exactly as
+// [casePosture] already redacts it pre-bind — see [bothSpellings].
+//
+// The workflow concatenates a prefix onto the secret rather than passing it
+// through whole, deliberately: a witness value *equal* to a sensitive value
+// is caught by [SensitiveValues.RedactTree]'s value comparison before %q
+// ever runs, which would pass this test even without [bothSpellings]. Only a
+// composite string exercises the substring backstop the escaping actually
+// bears on.
+func TestATableRowsEntrySecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
+	t.Parallel()
+
+	// A tab: YAML carries one inside a double-quoted scalar, and %q renders
+	// it `\t` — a different byte sequence than the raw material, so only the
+	// escaped spelling ever appears in the rendered witness.
+	const entrySecret = "sk-live\tescaped-8821"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: forwarder
+inputs:
+  tag:
+    type: string
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.tag}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n"+
+		"  - name: entry\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:VENDOR_TOKEN: \"sk-live\\tescaped-8821\"\n"+
+		"    cases:\n"+
+		"      - name: row\n"+
+		"        secrets:\n"+
+		"          env:ROW_TOKEN: row-material-2210\n"+
+		"        inputs:\n"+
+		"          tag: \"sk-live\\tescaped-8821\"\n"+
+		"        expect:\n"+
+		"          check:\n"+
+		"            - that: steps.echo.value == 'nope'\n"+
+		"              because: false on purpose, so the post-run witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, entrySecret, "the raw plaintext reached a post-run witness")
+	assert.NotContains(t, rendered, `sk-live\tescaped-8821`,
+		"the row replaced its entry's `secrets:`, but the entry's %q-escaped spelling still reached a post-run witness — "+
+			"only its raw spelling was in the redaction set, and %q never produces that byte sequence")
+	// The positive control: the substring backstop working at all, once the
+	// escaped spelling is in the set, is `prefix-[redacted]` — proof this
+	// witness was reached and redacted rather than absent from the report.
+	assert.Contains(t, rendered, `prefix-[redacted]`)
+}
+
 func TestATaintedStructuredLeafIsWithheldFromStubDiagnostics(t *testing.T) {
 	t.Parallel()
 

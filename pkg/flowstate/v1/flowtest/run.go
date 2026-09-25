@@ -873,12 +873,17 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	// A table row's entry's secret plaintext, which [Test.entrySecretMaterial]
 	// carries past `Secrets`' own whole-or-nothing rule for redaction only
-	// (#2041). `casePosture` above already includes it; the assignment two
-	// lines down replaces that posture wholesale rather than extending it, so
-	// without this line a row that replaced its entry's `secrets:` would
-	// withhold the entry's material only until the run's own inputs bind and
-	// lose it for every exit after (Codex).
-	sensitive = sensitive.WithValues(test.entrySecretMaterial...)
+	// (#2041). `casePosture` above already includes it, through the same
+	// `bothSpellings` every other value in this posture goes through — a
+	// secret holding a tab, a newline, a quote or a backslash prints escaped
+	// from a diagnostic that renders it with `%q`, and the escaped spelling
+	// is a spelling of the secret (Codex on #2040's finding, repeated here).
+	// The assignment two lines down replaces that posture wholesale rather
+	// than extending it, so without this line a row that replaced its
+	// entry's `secrets:` would withhold the entry's material — in only one
+	// of its two spellings — until the run's own inputs bind, and lose it
+	// entirely for every exit after (Codex).
+	sensitive = sensitive.WithValues(bothSpellings(test.entrySecretMaterial)...)
 
 	// And what a computed var inherited from one (#1072, repair 4). The
 	// substring backstop above is complete only while no var can *transform*
