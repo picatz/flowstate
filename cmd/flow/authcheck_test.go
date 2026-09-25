@@ -306,6 +306,15 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 		// upstream calls it malformed, and it puts the rest of the credential
 		// past where a before-first-slash read stops. An issuer carrying a
 		// query is not a usable issuer, so this refusal reads it greedily.
+		//
+		// Still reaches here after picatz/flowstate#2038:
+		// auth.ValidateHTTPSURL's own credentials check only searches the
+		// first *path* segment for the misread's tail (so that a real port
+		// followed by a path `@` several segments deep, as GCP's
+		// service-account endpoints write one, is not refused alongside it —
+		// see the comment on that check). The query in this shape puts the
+		// credential's tail outside the path entirely, so it is still this
+		// check, not that one, that catches it.
 		"a port misread whose credential spans a slash and a query": {
 			issuer:  "https://acct9:2024/s3c?" + password + "@issuer.example.com",
 			wantErr: "must not include a query string or fragment",

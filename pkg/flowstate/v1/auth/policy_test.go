@@ -606,23 +606,38 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
-			// The residual this deliberately does not close, pinned so it is a
-			// decision on the record: the port misread with the rest of the
-			// credential in what url.Parse calls the path. It is textually
-			// identical to `https://host:8443/path@thing`, an ordinary URL
-			// whose host a refusal must keep, so redacting past the slash
-			// would erase the host from every one of those. picatz/flowstate#2038
-			// holds the repair, which is to stop reading this as host, port
-			// and path at all.
-			name:    "a credential in what url.Parse calls the path is left alone",
-			url:     "http://acct9:2024/s3cr3t@issuer.example.com",
-			wantErr: `issuer "http://acct9:2024/s3cr3t@issuer.example.com" must use https`,
+			// picatz/flowstate#2038: a password whose leading run is all
+			// digits parses as a *port*, so this URL is well formed, carries
+			// no userinfo by url.Parse's reading, and used to be accepted —
+			// dialing host `acct9`, never `issuer.example.com`, with the rest
+			// of the credential riding the request path to it. Refused now,
+			// ahead of the scheme check, because the port that made the read
+			// well formed is exactly the marker that a slash-delimited read
+			// cannot be trusted here.
+			name:       "a credential url.Parse reads as a port and a path",
+			url:        "http://acct9:2024/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "http://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The same shape under https, so the fix is not merely the
+			// scheme check firing first: this used to pass every check in
+			// this function and reach validateIssuerURL, where it had no
+			// query or fragment to be refused for either — see
+			// picatz/flowstate#2039's note on this exact entry.
+			name:       "a credential url.Parse reads as a port and a path, under https",
+			url:        "https://acct9:2024/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
 			// The cost of the before-first-slash fallback, pinned so that
 			// narrowing it later is a decision rather than an accident: this
-			// URL carries no credential, and it is redacted anyway, because it
-			// is textually the same shape as the port misread above.
+			// URL carries no credential, and it is redacted anyway, because
+			// with no path slash the region searched is the whole remainder
+			// by default (see urlWithoutCredentials) — the same fallback the
+			// port-misread cases above rely on, minus the port gate this one
+			// never trips.
 			name:    "a credential-free query holding an at sign is redacted too",
 			url:     "http://issuer.example.com?tenant=a@b",
 			wantErr: `issuer "http://[redacted]@b" must use https`,
@@ -638,10 +653,44 @@ func TestValidateHTTPSURL(t *testing.T) {
 		{
 			// The other direction: a well-formed URL whose *path* holds an
 			// `@` keeps the strict reading, so the host an operator needs in
-			// order to find the entry is still in the sentence.
+			// order to find the entry is still in the sentence. No port here,
+			// so nothing could have swallowed a digit-leading password into
+			// one — the port gate on the check above is what keeps this
+			// accepted rather than refused like the pair below.
 			name:    "an at sign in the path of a valid URL is not a credential",
 			url:     "http://issuer.example.com/a@b",
 			wantErr: `issuer "http://issuer.example.com/a@b" must use https`,
+		},
+		{
+			// The accepted cost of the port gate, pinned as a decision: a
+			// real port followed by a path `@` that carries no credential at
+			// all, in the *first* path segment, is textually identical to
+			// the misread above — `scheme://word:digits/…@…` either way —
+			// and nothing past the string says which the author meant.
+			// picatz/flowstate#2038's own acceptance criteria asked for this
+			// exact shape to stay accepted; it cannot, without also
+			// re-accepting the reported bug through the same door, so this
+			// refuses both rather than guess. `must use https` on this
+			// scheme's twin above shows the port alone was never going to
+			// save it.
+			name:       "a real port and a credential-free path at sign are refused together",
+			url:        "https://issuer.example.com:8443/path@thing",
+			wantErr:    `issuer "https://[redacted]@thing" must not include credentials`,
+			wantAbsent: []string{"path"},
+		},
+		{
+			// The other edge of that same gate: an `@` several path segments
+			// past the port is ordinary path text the misread cannot have
+			// produced — a `/` in a written password splits it once, landing
+			// the remainder in the *first* segment, never a later one — so
+			// only the first segment is searched. This is the exact shape
+			// GCP's service-account impersonation endpoint builds
+			// (`.../serviceAccounts/<email>:generateAccessToken`, see
+			// gcpExchanger.impersonate and TestGCPExchanger): narrowing the
+			// port gate to the first segment is what this test would catch
+			// regressing.
+			name: "an at sign several path segments past a port is not a credential",
+			url:  "https://issuer.example.com:8443/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
 		},
 		{
 			// What holds isURLScheme's *character set* up, which is the
