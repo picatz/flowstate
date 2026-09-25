@@ -664,33 +664,81 @@ func TestValidateHTTPSURL(t *testing.T) {
 		{
 			// The accepted cost of the port gate, pinned as a decision: a
 			// real port followed by a path `@` that carries no credential at
-			// all, in the *first* path segment, is textually identical to
-			// the misread above — `scheme://word:digits/…@…` either way —
-			// and nothing past the string says which the author meant.
-			// picatz/flowstate#2038's own acceptance criteria asked for this
-			// exact shape to stay accepted; it cannot, without also
-			// re-accepting the reported bug through the same door, so this
-			// refuses both rather than guess. `must use https` on this
-			// scheme's twin above shows the port alone was never going to
-			// save it.
+			// all is textually identical to the misread above —
+			// `scheme://word:digits/…@…` either way — and nothing past the
+			// string says which the author meant. picatz/flowstate#2038's own
+			// acceptance criteria asked for this exact shape to stay
+			// accepted; it cannot, without reopening the same door the
+			// reported bug used, so this refuses both rather than guess.
+			// `must use https` on this scheme's twin above shows the port
+			// alone was never going to save it.
 			name:       "a real port and a credential-free path at sign are refused together",
 			url:        "https://issuer.example.com:8443/path@thing",
 			wantErr:    `issuer "https://[redacted]@thing" must not include credentials`,
 			wantAbsent: []string{"path"},
 		},
 		{
-			// The other edge of that same gate: an `@` several path segments
-			// past the port is ordinary path text the misread cannot have
-			// produced — a `/` in a written password splits it once, landing
-			// the remainder in the *first* segment, never a later one — so
-			// only the first segment is searched. This is the exact shape
-			// GCP's service-account impersonation endpoint builds
-			// (`.../serviceAccounts/<email>:generateAccessToken`, see
-			// gcpExchanger.impersonate and TestGCPExchanger): narrowing the
-			// port gate to the first segment is what this test would catch
-			// regressing.
-			name: "an at sign several path segments past a port is not a credential",
-			url:  "https://issuer.example.com:8443/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
+			// An earlier version of this check searched only the first path
+			// segment, on the reasoning that a `/` written inside a password
+			// splits its remainder into that one segment and no further. It
+			// does not: this credential's tail is in the *second* segment
+			// (Copilot), one slash past where that version stopped looking,
+			// and passed every check with it. The whole path is searched now
+			// instead — see the comment on the credentials check.
+			name:       "a credential whose tail is a second path segment past the port",
+			url:        "https://acct9:2024/s3cr3t/foo@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t", "foo"},
+		},
+		{
+			// The other way a bounded search missed the tail: a password
+			// that itself began with the slash that split it leaves an
+			// *empty* first path segment (Codex) — `//s3cr3t@host`, not
+			// `/s3cr3t@host` — which a first-segment-only search reads as
+			// "no segment, nothing to check" and lets straight through.
+			name:       "a credential behind a doubled path slash",
+			url:        "https://acct9:2024//s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The shape both the segment-scoped cases above exist to
+			// preserve, and the reason the port gate is not simply "any port
+			// and any path `@`": Google's IAM Credentials API builds exactly
+			// this path
+			// (`/v1/projects/-/serviceAccounts/<email>:generateAccessToken`,
+			// see gcpExchanger.impersonate), and a deployment reaching it
+			// through a non-default port would otherwise be unable to
+			// impersonate a service account at all. Accepted here because
+			// there is no port — production's real endpoint,
+			// https://iamcredentials.googleapis.com, has none either, so
+			// this check never runs for it regardless of path shape.
+			name: "Google's real service-account impersonation path, no explicit port",
+			url:  "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
+		},
+		{
+			// The same path shape *with* an explicit, non-loopback port is
+			// refused: nothing past the parsed string distinguishes this
+			// from the port-misread cases above, so AGENTS.md invariant 6's
+			// fail-closed answer applies here too, deliberately, per
+			// picatz/flowstate#2038's review thread. An operator who needs a
+			// custom IAM endpoint configures one without a port.
+			name:       "the same Google-shaped path with a non-loopback port is refused",
+			url:        "https://iam.internal.example.com:8443/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
+			wantErr:    `issuer "https://[redacted]@project.iam.gserviceaccount.com:generateAccessToken" must not include credentials`,
+			wantAbsent: []string{"iam.internal.example.com", "v1", "projects", "serviceAccounts", "name"},
+		},
+		{
+			// The loopback exemption, on the same footing as the plain-http
+			// loopback exemption already in this table: a target dialed at
+			// its own literal address cannot be "the wrong host" this check
+			// exists to prevent, and this exact shape — a local relying
+			// party standing in for Google's IAM Credentials API, reached
+			// through the ephemeral port a test listener binds to — is what
+			// TestGCPExchanger and TestGCPExchangerBoundsServiceAccountExpiry
+			// need accepted to run at all.
+			name: "the Google-shaped path is accepted against a loopback port",
+			url:  "https://127.0.0.1:8443/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
 		},
 		{
 			// What holds isURLScheme's *character set* up, which is the

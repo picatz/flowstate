@@ -1362,12 +1362,10 @@ func validateIssuerURL(issuer string) error {
 		// the query the rest of the credential became. So does
 		// `https://acct9:2024/s3c?r3t@host`, which mixes the delimiters: past
 		// picatz/flowstate#2038, [ValidateHTTPSURL]'s own credentials check
-		// also widens its search once it finds a port, but only across the
-		// first *path* segment — `s3c` here, no `@` in it — so that a real
-		// port followed by a path `@` several segments deep is not refused
-		// alongside the misread (see the comment on that check). A credential
+		// also widens its search once it finds a non-loopback port, but only
+		// across the *path* — `s3c` here, no `@` in it — so that a credential
 		// whose tail crossed into the query, as this one did, is still this
-		// check's to catch.
+		// check's to catch rather than being silently missed by neither.
 		//
 		// Read as malformed, which is the one place that is true of a URL
 		// url.Parse accepted. An issuer *is* its identifier: one carrying a
@@ -1455,33 +1453,48 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	// picatz/flowstate#2038.
 	//
 	// RFC 3986 §3.2 terminates the authority at the first `/`, `?` or `#`
-	// (https://www.rfc-editor.org/rfc/rfc3986#section-3.2), which is why
-	// url.Parse's reading of `acct9:2024` as the whole authority is correct
-	// by the grammar: userinfo written with an unescaped `/` is not valid
-	// syntax either way. What makes the shape worth refusing anyway is where
-	// the credential's tail can only have landed: a `/` written inside a
-	// `user:password` splits it once, so the remainder is exactly the *first*
-	// path segment — the run up to the next `/`, `?`, `#`, or the end of the
-	// string — and nowhere deeper. An `@` further into the path is an
-	// ordinary path character this split cannot have produced: GCP's
-	// service-account endpoints carry one several segments in
-	// (`.../serviceAccounts/name@project.iam.gserviceaccount.com:generate…`,
-	// exercised by TestGCPExchanger), and narrowing to the first segment is
-	// what keeps that accepted while still catching the credential.
+	// (https://www.rfc-editor.org/rfc/rfc3986#section-3.2), and §3.2.1's
+	// userinfo grammar — `*( unreserved / pct-encoded / sub-delims / ":" )`
+	// (https://www.rfc-editor.org/rfc/rfc3986#section-3.2.1) — has no `/` in
+	// it, which is why url.Parse's reading of `acct9:2024` as the whole
+	// authority is correct by the grammar: userinfo written with an
+	// unescaped `/` is not valid syntax either way. What is not correct is
+	// trusting that reading here: once a port is present, there is no bound
+	// on how many further `/` characters a leaked password's remainder
+	// crosses before reaching the real `@` and host, so an earlier version
+	// of this check that searched only the first path segment (the run up to
+	// the next `/`) was refusing `acct9:2024/s3cr3t@host` while missing
+	// `acct9:2024//s3cr3t@host` (an empty first segment, Codex) and
+	// `acct9:2024/s3cr3t/foo@host` (the tail one segment further in,
+	// Copilot) just as completely. The whole path is searched instead —
+	// everything url.Parse calls Path, stopping at the query or fragment
+	// exactly as [validateIssuerURL] does for the shape with no path slash
+	// at all (see the comment there) — which is provably complete against
+	// this misread: whatever the leaked password's remainder crossed, it is
+	// somewhere in this one region.
 	//
-	// Gated on parsed.Port() too, so this fires only where the misread can
-	// happen at all: a bare host with no port cannot have a digit-run
-	// swallowed into one, and `http://issuer.example.com/a@b` stays the
-	// ordinary path `@` it is regardless of segment depth.
+	// That completeness is also the cost: a URL whose port is genuinely
+	// correct and whose path genuinely, coincidentally carries an `@` —
+	// `https://host:8443/path@thing`, or a real API shape like Google's
+	// `.../serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken`
+	// — is textually identical to the misread and is refused alongside it.
+	// Nothing past the parsed string says which the author meant, so this
+	// fails closed per AGENTS.md invariant 6 rather than guess. An operator
+	// who needs that exact shape configures the endpoint without an explicit
+	// port, which is how every production OIDC issuer and Google's own real
+	// IAM Credentials API endpoint (https://iamcredentials.googleapis.com,
+	// no port) are already written — parsed.Port() stays empty for either,
+	// so this check does not run at all.
 	//
-	// Not extended to a query or fragment without a path slash first:
-	// `https://acct9:2024?s3cr3t@host` has no `/` in it, so `shown` above
-	// already found the `@` there (there is no narrower region for a
-	// query-only string to hide behind), and it is validateIssuerURL's
-	// query-and-fragment check, not this one, that refuses it — see the
-	// comment there.
-	if parsed.Port() != "" {
-		if segment := firstPathSegment(parsed); lastUserinfoDelimiter(segment) >= 0 {
+	// Loopback is the one exemption, on the same footing as the plain-http
+	// loopback exemption below rather than a new decision: a target dialed
+	// at its own literal loopback address cannot be "the wrong host" in the
+	// sense this check exists to prevent — the request never leaves the
+	// machine either way — and this repository's own test suite (GCP
+	// impersonation against a local relying party, TestGCPExchanger and
+	// TestGCPExchangerBoundsServiceAccountExpiry) needs a port to reach one.
+	if parsed.Port() != "" && !isLoopbackHost(parsed.Hostname()) {
+		if lastUserinfoDelimiter(parsed.EscapedPath()) >= 0 {
 			return nil, fmt.Errorf("%s %q must not include credentials", field, urlWithoutCredentials(rawURL, true))
 		}
 	}
@@ -1601,10 +1614,12 @@ const urlCredentialsMarker = "[redacted]"
 // `http://acct9:2024/s3cr3t@host` is the port misread with the rest of the
 // credential in what url.Parse calls the path, textually identical to
 // `http://host:8443/path@thing` above. Past picatz/flowstate#2038, that
-// function stops trusting the first-slash stop once url.Parse found a port
-// *and* an `@` in the first path segment — see [firstPathSegment] and the
-// comment on that check for why the search is narrowed to one segment rather
-// than dropped the rest of the way to "found a port" alone.
+// function stops trusting the first-slash stop once url.Parse found a
+// non-loopback port, detecting the shape by searching the whole path itself
+// (not this helper's narrower before-first-slash region) before ever calling
+// this one — this call only builds the redacted message once that check has
+// already decided to refuse. See the comment on that check for why the
+// search had to widen from one path segment to the whole path.
 func urlWithoutCredentials(rawURL string, malformed bool) string {
 	rest := rawURL
 	prefix := ""
@@ -1705,22 +1720,6 @@ func isASCIILetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && 
 // case, but `40` has no letter in it, so there is one spelling to look for.
 func lastUserinfoDelimiter(s string) int {
 	return max(strings.LastIndex(s, "@"), strings.LastIndex(s, "%40"))
-}
-
-// firstPathSegment is the run of parsed's path between its leading "/" and
-// the next "/", or the whole path when there is no other "/" — the run up to
-// a "?", "#" or the end, since [url.URL.EscapedPath] already stops there. It
-// is where a digit-led password's overflow can land when a "/" it carried
-// split it from what url.Parse read as the port: see the credentials check in
-// [ValidateHTTPSURL] that calls this. EscapedPath, not Path, because the
-// search below is for a literal "@" or "%40" as written, and Path has already
-// been percent-decoded.
-func firstPathSegment(parsed *url.URL) string {
-	path := strings.TrimPrefix(parsed.EscapedPath(), "/")
-	if slash := strings.IndexByte(path, '/'); slash >= 0 {
-		return path[:slash]
-	}
-	return path
 }
 
 // urlParseReason is why [url.Parse] refused, without the copy of the URL that
