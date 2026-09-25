@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 )
 
@@ -14,8 +15,11 @@ import (
 // rules already written, tested and documented rather than by a second set
 // that could come to disagree with them (#416's answers, inherited verbatim
 // rather than re-decided). Only the fields `defaults:` has no opinion about
-// are merged here, and all of them take the same one direction: the row's own
-// value wins, and the entry's is what a row that stated none inherits.
+// are merged here. Trigger, Starter and Signals take the same one direction:
+// the row's own value wins whole, and the entry's is what a row that stated
+// none inherits. Secrets merges key by key instead — see [mergeRow] — because
+// a row naming one secret of its own is not asking to drop the redaction
+// posture every other secret the entry declared depends on (#2041).
 
 // expandTableEntries turns every entry that declares `cases:` into its rows,
 // leaving entries that declare none exactly as they were.
@@ -168,10 +172,10 @@ func mergeRow(entry, row Test) Test {
 		Stubs:    entry.Stubs,
 	}, row)
 
-	// Everything else, in the one direction: stated beats inherited. These
-	// four are inherited whole or replaced whole — a row that writes any
-	// `signals:` writes all of them — because each is a list or a record
-	// whose halves are not independently meaningful. `expect:` is the
+	// Everything else, in the one direction: stated beats inherited. Trigger,
+	// Starter and Signals are inherited whole or replaced whole — a row that
+	// writes any `signals:` writes all of them — because each is a list or a
+	// record whose halves are not independently meaningful. `expect:` is one
 	// exception and is merged field by field; see [mergeExpectation].
 	if merged.Trigger == nil {
 		merged.Trigger = entry.Trigger
@@ -182,8 +186,21 @@ func mergeRow(entry, row Test) Test {
 	if len(merged.Signals) == 0 {
 		merged.Signals = entry.Signals
 	}
-	if len(merged.Secrets) == 0 {
-		merged.Secrets = entry.Secrets
+	// Secrets is the other exception, and deliberately not whole-or-nothing:
+	// a `secrets:` entry is what feeds a case's redaction posture as well as
+	// its stubbed secret backend (see [casePosture]), so a row naming one
+	// secret of its own must not silently drop every other secret the entry
+	// declared — that would run the row believing plaintext is bound where
+	// the entry's `secrets:` said otherwise, and a check or a scripted signal
+	// touching the entry's secret would print it in the clear (#2041). Merged
+	// key by key instead, the row's own value winning per key, the same rule
+	// [mergeDefaults] applies to `inputs:` one level up. A fresh map, so a
+	// second row merging the same entry does not alias this one's.
+	if len(entry.Secrets) > 0 {
+		secrets := make(map[string]string, len(entry.Secrets)+len(merged.Secrets))
+		maps.Copy(secrets, entry.Secrets)
+		maps.Copy(secrets, merged.Secrets)
+		merged.Secrets = secrets
 	}
 	merged.Expect = mergeExpectation(entry.Expect, row.Expect)
 

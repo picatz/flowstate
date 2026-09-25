@@ -647,9 +647,10 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// Both halves that are knowable now: what the file withholds, and the case's
 	// own `secrets:` plaintext. The second belongs here for the same reason as
 	// the first — `test.Secrets` is on the case before anything runs — and it is
-	// needed here too, because a *literal* var named from `secrets:` is
-	// deliberately not in [withheldVars] (see [withheldMaterial]) and would
-	// otherwise reach a setup failure through the value it was substituted into.
+	// needed here too, because a `secrets:` entry need not name a var at all: an
+	// inline literal plaintext value ([secretHoldingVars] only seeds a var it
+	// matches a `${vars.x}` reference in) never joins [withheldVars] and has no
+	// other way to reach this posture.
 	posture := casePosture(test, vars)
 
 	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth

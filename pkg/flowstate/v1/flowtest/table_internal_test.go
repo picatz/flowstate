@@ -127,6 +127,58 @@ func TestExpandingATableDoesNotNormalizeTheCallersClaims(t *testing.T) {
 		"the effective row did not retain the normalized claim")
 }
 
+// TestMergeRowMergesSecretsKeyByKey drives #2041's table route directly: a
+// row declaring one secret of its own used to lose every secret its entry
+// declared, because [mergeRow] replaced Secrets wholesale rather than merging
+// it the way [mergeDefaults] merges `inputs:` one level up. A row's own key
+// still wins on a collision — this is not "the entry always wins" — only the
+// entry's *other* keys must survive.
+func TestMergeRowMergesSecretsKeyByKey(t *testing.T) {
+	t.Parallel()
+
+	entry := Test{Name: "entry", Secrets: map[string]string{
+		"env:VENDOR_TOKEN": "entry-material",
+		"env:SHARED":       "entry-shared",
+	}}
+	row := Test{Name: "row", Secrets: map[string]string{
+		"env:ROW_TOKEN": "row-material",
+		"env:SHARED":    "row-shared",
+	}}
+
+	merged := mergeRow(entry, row)
+
+	assert.Equal(t, map[string]string{
+		"env:VENDOR_TOKEN": "entry-material",
+		"env:ROW_TOKEN":    "row-material",
+		"env:SHARED":       "row-shared",
+	}, merged.Secrets, "the row's own key wins on a collision; the entry's other keys still survive")
+
+	// The row's own map is untouched — mergeRow's contract is that it never
+	// mutates either input in place.
+	assert.Equal(t, map[string]string{"env:ROW_TOKEN": "row-material", "env:SHARED": "row-shared"}, row.Secrets)
+	assert.Equal(t, map[string]string{"env:VENDOR_TOKEN": "entry-material", "env:SHARED": "entry-shared"}, entry.Secrets)
+}
+
+// TestMergeRowSecretsAreOnlyMergedWhenTheEntryHasSome is the boundary: an
+// entry with no `secrets:` at all must not turn a row's nil Secrets into an
+// empty, allocated map, which would change what a case with genuinely no
+// secrets looks like to anything that checks `len(test.Secrets) == 0`.
+func TestMergeRowSecretsAreOnlyMergedWhenTheEntryHasSome(t *testing.T) {
+	t.Parallel()
+
+	entry := Test{Name: "entry"}
+	row := Test{Name: "row"}
+
+	merged := mergeRow(entry, row)
+	assert.Empty(t, merged.Secrets)
+
+	// And the ordinary inheritance direction still holds: a row that states
+	// none of its own inherits the entry's whole map.
+	entry.Secrets = map[string]string{"env:VENDOR_TOKEN": "entry-material"}
+	merged = mergeRow(entry, Test{Name: "row"})
+	assert.Equal(t, entry.Secrets, merged.Secrets)
+}
+
 func nonZeroExpectation() Expectation {
 	return Expectation{
 		Outputs:        map[string]any{"entry": true},
