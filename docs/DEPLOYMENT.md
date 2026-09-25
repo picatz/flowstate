@@ -53,15 +53,37 @@ tenant it serves — not just the tenant whose run happened to launch it.
 
 **What the host isolates, stated plainly (#1010):** a plugin runs as the same
 user as the worker, with the worker's full filesystem, network and kernel
-reach. The host guarantees which bytes run when pinned, that the plugin
-cannot read the worker's memory or its environment-borne credentials, cannot
-impersonate the host on its socket, and cannot outlive it. It does not
-constrain what the plugin does with the worker's own privileges — resource
-limits, filesystem visibility and syscall filtering are the deployment's job,
-exactly as they are for the worker itself. The host isolates **by process,
-not by privilege**, and no schema vocabulary claims otherwise; see [the
-four-tier isolation model](#the-four-tier-isolation-model) for where that
-kind of control actually lives.
+reach. The host guarantees which bytes run when pinned, and that the plugin
+does not directly inherit the worker's environment. The clean launch
+environment is not a confidentiality boundary: where the OS permits
+same-user process inspection, a plugin may still read the worker's
+environment and memory. It does not constrain what the plugin does with the
+worker's own privileges — resource limits, filesystem visibility and syscall
+filtering are the deployment's job, exactly as they are for the worker
+itself. The host isolates **by process, not by privilege**, and no schema
+vocabulary claims otherwise; see [the four-tier isolation
+model](#the-four-tier-isolation-model) for where that kind of control
+actually lives.
+
+Two more claims are true only within narrower limits than they first sound,
+for the same reason as above: same-user process inspection. A plugin's
+socket rejects a caller that never received the per-launch token, but that
+token sits in the worker's own memory before launch and moves into the
+plugin's own memory afterward — over a pipe on an inherited descriptor
+rather than the environment, so it is not one more thing `pluginEnv` has to
+guard, but memory inspection does not care which path a value arrived by
+(`launch.go`'s `tokenPipe`, `transport.go`'s `authInterceptor`). The
+guarantee is against a stranger that was never handed the token, not
+against the plugin itself or a same-user process that can read either
+process's memory. And group termination reaches every descendant left in
+the plugin's process group, but only when the host signals the group while
+the leader is still alive: `stop` is what sends that signal, gated on
+exactly that condition (`launch.go`'s `instance.stop`), so a plugin that
+exits or crashes on its own first — before anything calls `stop` — leaves
+its group unsignalled regardless of who stayed in it. Neither guarantee is
+containment against a plugin actively working to evade it, which the
+opening paragraph already says plainly; the second is not yet reliable
+cleanup for one that quietly does nothing evasive at all.
 
 ### Pinning which bytes a plugin name may run
 
@@ -127,15 +149,19 @@ for them — that is the open half of #146, and it is not what this answers.
 `pluginEnv` builds a plugin's environment from nothing, not by inheriting the
 worker's own (`pkg/flowstate/v1/plugin/launch.go`, `pluginEnv`). The worker's
 environment is where its own credentials live — a Temporal API key, a cloud
-role, whatever the deployment set as `FLOWSTATE_SECRET_*` — and a plugin
-process does not see any of it unless an operator names it explicitly in
-`Config.Env`. So the blast radius above is real, but it is *not* "a plugin can
-read `$FLOWSTATE_SECRET_DB_PASSWORD` off the worker's environment just by
-existing" — it has to be handed a secret through the sanctioned path
+role, whatever the deployment set as `FLOWSTATE_SECRET_*` — and a plugin's
+*own* environment block does not carry any of it unless an operator names it
+explicitly in `Config.Env`: that is non-inheritance, the narrower claim the
+caveat above already draws the line around, not immunity from the same-user
+process inspection that caveat names. So the blast radius above is real, but
+it is *not* "a plugin can read `$FLOWSTATE_SECRET_DB_PASSWORD` off the
+worker's environment just by existing, with no OS-level access beyond its
+own process" — it has to be handed a secret through the sanctioned path
 (`TaskManifest.secret_inputs`, resolved worker-side and passed over the
-socket) or reach it some other way. Know this before either over-trusting a
-plugin ("it's sandboxed, right?") or over-building a containment layer that
-duplicates a property the worker already has.
+socket), find it through the inspection the caveat above admits, or reach it
+some other way. Know this before either over-trusting a plugin ("it's
+sandboxed, right?") or over-building a containment layer that duplicates a
+property the worker already has.
 
 ### SQL plugin deployment and migration
 

@@ -661,41 +661,94 @@ steps:
 	}
 }
 
-// TestFixRefusesAnAliasExpansionPastTheNodeBudget is the bound this rewrite exists
-// on the wrong side of.
+// TestFixRefusesAnAliasExpansionPastTheNodeOrByteBudget is the bound this
+// rewrite exists on the wrong side of.
 //
 // Every other reader in this front end is safe from a billion-laughs document
 // because it refuses the construct without following it. This one follows every
-// alias, by design — so it is the one place the total-node budget is load-bearing
+// alias, by design — so it is the one place these budgets are load-bearing
 // rather than redundant, and the file it refuses is the file it would otherwise
-// expand into millions of values.
-func TestFixRefusesAnAliasExpansionPastTheNodeBudget(t *testing.T) {
+// expand into millions of values or megabytes it was never asked to hold.
+//
+// Two budgets, because they bound two different resources and a fan-out chain
+// can cross either first depending on how much text each level carries (#2045):
+// a chain whose levels are wide enough to copy real bytes on every visit
+// crosses maxBytes before maxNodes even notices, and #2045's own findings are
+// why that has to be true by construction rather than by coincidence — a
+// budget that only counted values could not have caught what caused them. The
+// second case below is the one shape that still needs maxNodes on its own:
+// many small values, referenced once, where nothing multiplies the bytes but
+// the sheer count of values is the resource actually at risk.
+func TestFixRefusesAnAliasExpansionPastTheNodeOrByteBudget(t *testing.T) {
 	t.Parallel()
 
-	// Eleven levels, eight references each: a few hundred bytes that name more
-	// values than there are atoms worth counting. The shape is the point — its
-	// alias *depth* is one per level, which is why a depth bound cannot see it and
-	// the node budget can.
-	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  level0: &level0\n    x: 1\n    y: 2\n")
-	for level := 1; level <= 11; level++ {
-		fmt.Fprintf(&b, "  level%d: &level%d\n", level, level)
-		for use := range 8 {
-			fmt.Fprintf(&b, "    use%d: *level%d\n", use, level-1)
+	t.Run("a wide fan-out crosses the byte budget", func(t *testing.T) {
+		t.Parallel()
+
+		// Eleven levels, eight references each: a few hundred bytes that
+		// would copy megabytes were every alias followed all the way down.
+		// The shape is the point — its alias *depth* is one per level, which
+		// is why a depth bound cannot see it and these budgets can.
+		var b strings.Builder
+		b.WriteString("edition: v2026.3\nname: t\nvars:\n  level0: &level0\n    x: 1\n    y: 2\n")
+		for level := 1; level <= 11; level++ {
+			fmt.Fprintf(&b, "  level%d: &level%d\n", level, level)
+			for use := range 8 {
+				fmt.Fprintf(&b, "    use%d: *level%d\n", use, level-1)
+			}
 		}
-	}
-	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
-	src := b.String()
+		b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+		src := b.String()
 
-	require.Less(t, len(src), 2048, "the input is supposed to be small; the expansion is what is not")
+		require.Less(t, len(src), 2048, "the input is supposed to be small; the expansion is what is not")
 
-	result, err := flowfile.Fix([]byte(src))
-	require.NoError(t, err)
+		result, err := flowfile.Fix([]byte(src))
+		require.NoError(t, err)
 
-	assert.Equal(t, src, string(result.Source), "the file has to come back byte for byte")
-	assert.False(t, result.Complete())
-	require.NotEmpty(t, result.Refusals)
-	assert.Contains(t, result.Refusals[0].Message, "more than 100000 values")
+		assert.Equal(t, src, string(result.Source), "the file has to come back byte for byte")
+		assert.False(t, result.Complete())
+		require.NotEmpty(t, result.Refusals)
+		assert.Contains(t, result.Refusals[0].Message, fmt.Sprintf("more than %d bytes", maxFlowfileBytes),
+			"this shape's fan-out copies enough text to cross the byte budget before the node budget ever sees it")
+	})
+
+	t.Run("many small values referenced once crosses the node budget", func(t *testing.T) {
+		t.Parallel()
+
+		// One anchor, one alias, no fan-out at all — every value this would
+		// write out is the same value the source already holds, once, so
+		// nothing here multiplies bytes the way the fan-out above does. What
+		// crosses is the sheer count of values a single expansion holds,
+		// which is exactly the resource the node budget and not the byte
+		// budget is the answer to.
+		//
+		// 20,000 rather than a rounder, larger count: the document's own
+		// declared entries alone hold about 60,000 nodes, comfortably under
+		// maxNodes, so it is specifically the one alias use doubling that
+		// count that crosses it — not the static document by itself, which
+		// a far larger entry count would also refuse and say nothing about
+		// the expansion.
+		const entries = 20_000
+		var b strings.Builder
+		b.WriteString("edition: v2026.3\nname: t\nvars:\n  big: &big\n")
+		for i := range entries {
+			fmt.Fprintf(&b, "    a%d: 1\n", i)
+		}
+		b.WriteString("  use: *big\n")
+		b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+		src := b.String()
+
+		require.Less(t, len(src), maxFlowfileBytes,
+			"the input on its own has to fit under the byte budget, so the refusal below is the node budget's and not the read cap's")
+
+		result, err := flowfile.Fix([]byte(src))
+		require.NoError(t, err)
+
+		assert.Equal(t, src, string(result.Source), "the file has to come back byte for byte")
+		assert.False(t, result.Complete())
+		require.NotEmpty(t, result.Refusals)
+		assert.Contains(t, result.Refusals[0].Message, "more than 100000 values")
+	})
 }
 
 // TestFixLeavesAnAsteriskInsideAScalarAlone is the negative direction of "whole
