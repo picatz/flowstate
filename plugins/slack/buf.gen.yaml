@@ -1,0 +1,11 @@
+version: v1
+managed:
+  enabled: true
+  override:
+    GO_PACKAGE:
+      flowstate/v1/value.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+plugins:
+  - plugin: go
+    out: gen
+    opt:
+      - paths=source_relative

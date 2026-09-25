@@ -90,11 +90,11 @@ func fullResults(plan map[string]bool) map[string]string {
 }
 
 // samplePlan is a realistic diff-scoped answer: a change reaching the engine
-// but not the fuzz targets or the CLI.
+// but not the flowtest package, the smoke fuzz targets or the CLI.
 func samplePlan() map[string]bool {
 	return map[string]bool{
-		"test": true, "vulncheck": true, "staticcheck": true,
-		"proto": false, "fuzz-smoke": false, "appearance": false,
+		"test": true, "test-plugins": true, "vulncheck": true, "staticcheck": true,
+		"test-ordering": false, "proto": false, "fuzz-smoke": false, "appearance": false,
 	}
 }
 

@@ -116,14 +116,14 @@ func TestP2UnstubbedTaskFailsClosedWithoutDialing(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
 
-	var connections int32
+	var connections atomic.Int32
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			atomic.AddInt32(&connections, 1)
+			connections.Add(1)
 			_ = conn.Close()
 		}
 	}()
@@ -163,7 +163,7 @@ tests:
 	// inside this window — 50ms of headroom on a loopback connection that
 	// either happens immediately or never does.
 	require.Never(t, func() bool {
-		return atomic.LoadInt32(&connections) > 0
+		return connections.Load() > 0
 	}, 50*time.Millisecond, 5*time.Millisecond,
 		"flow test dialed the network for a task this case declared no stub for")
 }
@@ -324,7 +324,7 @@ func TestP1LoadRejectsAnAliasBomb(t *testing.T) {
 	doc += "a0: &a0 [x,x,x,x,x,x,x,x,x,x]\n"
 	for i := 1; i <= 8; i++ {
 		doc += fmt.Sprintf("a%d: &a%d [", i, i)
-		for j := 0; j < 10; j++ {
+		for j := range 10 {
 			if j > 0 {
 				doc += ","
 			}
@@ -516,10 +516,8 @@ tests:
 	var wg sync.WaitGroup
 	failures := make(chan string, racers)
 
-	for i := 0; i < racers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range racers {
+		wg.Go(func() {
 			report := flowtest.RunFile(dir + "/x.test.yaml")
 			if refused := report.GetRefused(); refused != "" {
 				failures <- "refused: " + refused
@@ -530,7 +528,7 @@ tests:
 					failures <- fmt.Sprintf("case %q failed: %v", c.GetName(), c.GetFailures())
 				}
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

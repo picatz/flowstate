@@ -8,6 +8,13 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 )
 
+func TestRunMetricAttributesOmitAnUntrustedWorkflowName(t *testing.T) {
+	attrs := v1.RunMetricAttributes("", metricschema.DriverDurable, "", "")
+	if len(attrs) != 1 || string(attrs[0].Key) != metricschema.Driver {
+		t.Fatalf("empty metric workflow name produced %v; want only the driver", attrs)
+	}
+}
+
 // TestRunWorkflowRecordsRunLifecycleMetrics is the local half of #917's
 // run-lifecycle metrics: one successful run records exactly one start and one
 // completion, both attributed to the workflow's own name and

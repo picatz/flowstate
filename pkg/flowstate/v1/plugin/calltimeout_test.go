@@ -2,8 +2,14 @@ package plugin
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
 // The three directions [Plugin.callContext] has to get right, and #1130's bug
@@ -24,6 +30,29 @@ import (
 //
 // So all three are written down here together. Read apart they are three
 // timeout tests; read together they are the rule.
+
+// runDeadlinePlugin is a real SDK plugin whose task ends only when the request
+// context does. Its SDK serving path is what attaches the peer-side provenance
+// this test exists to exercise.
+func runDeadlinePlugin() int {
+	err := sdk.Run(context.Background(), sdk.Plugin{
+		Name:    "deadline",
+		Version: "0.0.1",
+		Tasks: []sdk.Task{{
+			Name:   "wait",
+			Input:  &flowstatev1.Task_Log_Inputs{},
+			Output: &flowstatev1.Task_Log_Outputs{},
+			Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}},
+	})
+	if err != nil {
+		return 1
+	}
+	return 0
+}
 
 // TestCallContextKeepsALongerCallerDeadline pins the defect exactly as #1130
 // stated it — a task that would run past DefaultCallTimeout under a two minute
@@ -171,12 +200,14 @@ func TestACallOutlivesCallTimeoutWhenItsCallerAllowedTheTime(t *testing.T) {
 }
 
 // TestACallWithNoDeadlineStillDiesAtCallTimeout is the backstop over the same
-// real path: the "slow" fixture blocks until its context ends, and with no
-// caller deadline the host's own bound is the only thing that can end it.
+// real path: the SDK fixture blocks until its context ends, and with no caller
+// deadline the host's own bound is the only thing that can end it. The wire
+// error and its structured provenance identify that bound without comparing
+// the host's clock to the deadline Connect propagates to the plugin process.
 func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(t, pluginDir(t, "slow"))
+	cfg := testConfig(t, pluginDir(t, "deadline"))
 	cfg.CallTimeout = time.Second
 
 	host := openHost(t, cfg)
@@ -187,7 +218,6 @@ func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	start := time.Now()
 	go func() {
 		// context.Background(), not t.Context(): a context the test would
 		// cancel at cleanup is a deadline of sorts, and the shape under test
@@ -198,15 +228,119 @@ func TestACallWithNoDeadlineStillDiesAtCallTimeout(t *testing.T) {
 
 	select {
 	case err := <-done:
-		elapsed := time.Since(start)
 		if err == nil {
-			t.Fatalf("a call with no deadline of its own succeeded after %s, want CallTimeout to end it", elapsed)
+			t.Fatal("a call with no deadline of its own succeeded, want CallTimeout to end it")
 		}
-		if elapsed < cfg.CallTimeout {
-			t.Errorf("the call ended after %s, before its %s CallTimeout; something other than the "+
-				"bound under test ended it", elapsed, cfg.CallTimeout)
+		var taskErr *flowstatev1.TaskError
+		require.ErrorAs(t, err, &taskErr)
+		if taskErr.Kind != flowstatev1.ErrorKindTimeout {
+			t.Errorf("call error kind = %s, want %s: %v", taskErr.Kind, flowstatev1.ErrorKindTimeout, err)
+		}
+		const deadlineExceeded = "deadline_exceeded: context deadline exceeded"
+		if !strings.Contains(err.Error(), deadlineExceeded) {
+			t.Errorf("call error = %v, want CallTimeout's %q refusal", err, deadlineExceeded)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("a call with no deadline of its own was still running 15s in, want it bounded by CallTimeout")
+	}
+}
+
+// TestCallContextCapsACallerDeadlineAtTheHostCeiling is the other direction of
+// #1130's rule, and the one it left open (#1119).
+//
+// Passing the caller's deadline through untouched is right for the case that
+// rule was written for — a step whose `timeout:` legitimately exceeds thirty
+// seconds — and wrong as the whole answer, because the caller is not the
+// operator. A step's `timeout:` arrives inside a submitted workflow, the schema
+// checks it for being greater than zero and nothing else, and the call it
+// becomes holds a plugin RPC and the activity slot beneath it open for exactly
+// as long as it names. So the deadline the author chose governs beneath a
+// ceiling the deployment chose, rather than instead of it.
+func TestCallContextCapsACallerDeadlineAtTheHostCeiling(t *testing.T) {
+	t.Parallel()
+
+	p := &Plugin{cfg: Config{CallTimeout: DefaultCallTimeout, MaxCallTimeout: DefaultMaxCallTimeout}}
+
+	// The shape a submitted workflow can ask for today: a `timeout:` with no
+	// upper bound in the schema.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*24*time.Hour)
+	defer cancel()
+
+	callCtx, callCancel := p.callContext(ctx)
+	defer callCancel()
+
+	deadline, ok := callCtx.Deadline()
+	require.True(t, ok, "a call under a month-long caller deadline carries no deadline of its own")
+
+	remaining := time.Until(deadline)
+	require.LessOrEqual(t, remaining, DefaultMaxCallTimeout,
+		"a workflow-authored deadline outlasted the host's ceiling: the step decides within "+
+			"the deployment's bound, not instead of it")
+
+	// Reached as well as not exceeded: the ceiling is the answer here, rather
+	// than some shorter number that would also satisfy the bound.
+	require.Greater(t, remaining, DefaultMaxCallTimeout-time.Minute)
+}
+
+// TestCallContextKeepsADeadlineBeneathTheCeiling is what the ceiling must not
+// break: #1130's own case, a step allowed far more than CallTimeout and less
+// than the ceiling, still governed by the step.
+func TestCallContextKeepsADeadlineBeneathTheCeiling(t *testing.T) {
+	t.Parallel()
+
+	p := &Plugin{cfg: Config{CallTimeout: DefaultCallTimeout, MaxCallTimeout: DefaultMaxCallTimeout}}
+
+	// A codex turn: minutes, far past CallTimeout, nowhere near the ceiling.
+	const budget = 10 * time.Minute
+
+	ctx, cancel := context.WithTimeout(t.Context(), budget)
+	defer cancel()
+
+	callCtx, callCancel := p.callContext(ctx)
+	defer callCancel()
+
+	deadline, ok := callCtx.Deadline()
+	require.True(t, ok)
+
+	require.Greater(t, time.Until(deadline), DefaultCallTimeout,
+		"the host's ordinary bound is capping a step that asked for longer (#1130)")
+
+	want, _ := ctx.Deadline()
+	require.Equal(t, want, deadline, "the caller's own deadline is the one that governs beneath the ceiling")
+}
+
+// TestCallContextCapsANoDeadlineCallAtTheHostCeiling is the other half of
+// [TestCallContextCapsACallerDeadlineAtTheHostCeiling], and the half that was
+// missing: a call arriving with no deadline of its own is still a call, so
+// [Config.MaxCallTimeout]'s claim to be the most any call may take has to hold
+// for it too.
+//
+// An operator who lowers the ceiling beneath [Config.CallTimeout] means the
+// lower number. Before the clamp, such a call took the no-deadline branch and
+// received CallTimeout — thirty seconds under a ceiling the deployment had set
+// to five — so a stalled plugin held its RPC and the activity slot under it
+// well past the bound its operator had written down.
+func TestCallContextCapsANoDeadlineCallAtTheHostCeiling(t *testing.T) {
+	t.Parallel()
+
+	const ceiling = 5 * time.Second
+
+	// The ceiling deliberately beneath CallTimeout, which is the only
+	// arrangement in which the two can disagree.
+	p := &Plugin{cfg: Config{CallTimeout: DefaultCallTimeout, MaxCallTimeout: ceiling}}
+	if ceiling >= DefaultCallTimeout {
+		t.Fatalf("this fixture needs a ceiling beneath CallTimeout, got %s and %s", ceiling, DefaultCallTimeout)
+	}
+
+	callCtx, cancel := p.callContext(context.Background())
+	defer cancel()
+
+	deadline, ok := callCtx.Deadline()
+	if !ok {
+		t.Fatal("a call with no deadline of its own was left unbounded, want the host ceiling")
+	}
+
+	if remaining := time.Until(deadline); remaining > ceiling {
+		t.Errorf("the call was left %s, want no more than MaxCallTimeout (%s)", remaining, ceiling)
 	}
 }

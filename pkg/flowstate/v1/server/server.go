@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"sync"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -56,6 +57,13 @@ func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error)
 			return nil, fmt.Errorf("configuring the Flowstate server: %w", err)
 		}
 	}
+
+	key, err := newListTokenKey()
+	if err != nil {
+		return nil, fmt.Errorf("configuring the Flowstate server: %w", err)
+	}
+	s.listTokenKey = key
+
 	return s, nil
 }
 
@@ -495,6 +503,12 @@ type FlowstateServer struct {
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
 
+	// listTokenKey authenticates the page tokens List issues, so that a token
+	// coming back is one this process handed out rather than one a caller
+	// built. Derived in [New] from the system's random source and held nowhere
+	// else; see [newListTokenKey] for what that means across replicas.
+	listTokenKey []byte
+
 	// audit records authorization decisions. Nil records nothing and is not an
 	// error: whether this deployment keeps an audit trail, and whether an
 	// action that cannot be recorded may happen at all, is a decision for the
@@ -520,9 +534,9 @@ type FlowstateServer struct {
 // It returns an error for a name this deployment registered twice with
 // different specifications, rather than an answer drawn from either of them.
 // See [FlowstateServer.noteTrustedWorkflowConflict].
-func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) (*v1.Workflow, error) {
+func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) (*v1.Workflow, bool, error) {
 	if requested == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	key := trustedWorkflowKey{namespace: namespace, name: requested.GetName()}
 	s.trustedWorkflowsMu.RLock()
@@ -535,12 +549,23 @@ func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workfl
 		// problem it is. It carries no specification detail — the request came
 		// from outside and the conflict is between two deployment-owned
 		// copies.
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(refusal))
+		return nil, false, connect.NewError(connect.CodeFailedPrecondition, errors.New(refusal))
 	}
 	if !ok {
-		return requested, nil
+		return requested, false, nil
 	}
-	return proto.Clone(trusted).(*v1.Workflow), nil
+	return proto.Clone(trusted).(*v1.Workflow), true, nil
+}
+
+// metricWorkflowName returns a workflow name only when the deployment, rather
+// than the request, chose it. Open submissions deliberately have no per-name
+// run metric: otherwise an admitted caller could permanently consume the
+// process-wide cardinality budget shared by every tenant on the worker.
+func metricWorkflowName(workflow *v1.Workflow, trusted bool) string {
+	if !trusted {
+		return ""
+	}
+	return workflow.GetName()
 }
 
 // registerTrustedWorkflow adds one deployment-owned specification to the
@@ -841,6 +866,94 @@ func signalPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[stri
 	}
 
 	return map[string]any{signalPolicyMemoKey: encoded}, nil
+}
+
+// debugPolicyMemoKey is the memo field recording who may pause a run under a
+// debug lease — [v1.Workflow.Debug], frozen at submit exactly as
+// [signalPolicyMemoKey] freezes its neighbour, and read back by the same
+// `DescribeWorkflowExecution` every verb already makes.
+//
+// A key of its own rather than a second field inside the signal policy entry,
+// even though both encode a partial [v1.Workflow]. The two stanzas are
+// independent — a workflow may declare either, both, or neither — and
+// `signalPolicies` fails closed on a *present* signal-policy key that decodes
+// to nothing, which is a rule a workflow declaring only `debug:` would trip if
+// the one key had to be written for it.
+//
+// Absent means **not debuggable**, which is the opposite of what an absent
+// [signalPolicyMemoKey] means and is the whole of the fail-closed decision
+// recorded on picatz/flowstate#928. A run started before this key existed
+// therefore reads correctly with no compatibility arm, for the reverse of the
+// usual reason: nothing could pause it then either.
+const debugPolicyMemoKey = "flowstate.debugPolicy"
+
+// signalProtocolMemoKey distinguishes runs submitted after the engine reserved
+// its signal prefix from runs whose workflows could legitimately use those
+// names. Its value is the protocol version understood by the submitting
+// server; absence means the legacy, unreserved signal surface.
+const (
+	signalProtocolMemoKey       = "flowstate.signalProtocolVersion"
+	currentSignalProtocol int32 = 1
+)
+
+// debugPolicyMemoEntry encodes a workflow's declared `debug:` stanza into its
+// own memo entry, through the same shape [signalPolicyMemoEntry] uses: a
+// partial [v1.Workflow] marshalled with proto, so the reader needs nothing but
+// `proto.Unmarshal` and `.GetDebug()`.
+//
+// Resolves the stanza's `subject: ${...}` rules against the run's bound inputs
+// before encoding, for the identical reason its neighbour does — the
+// enforcement path must never evaluate an expression, because it runs on every
+// ask and the expression reads values the caller chose.
+//
+// Returns a nil map for a workflow with no `debug:`, which is the fail-closed
+// zero case: no key, no lease, no pause.
+func debugPolicyMemoEntry(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+	declared := wf.GetDebug()
+	if declared == nil {
+		return nil, nil
+	}
+
+	resolved, err := v1.ResolvePolicySubjects(ctx, "debug", declared,
+		&v1.Scope{Profile: wf.GetProfile(), Inputs: inputs})
+	if err != nil {
+		return nil, fmt.Errorf("resolving the declared debug policy's per-run subjects: %w", err)
+	}
+
+	encoded, err := proto.Marshal(&v1.Workflow{Debug: resolved})
+	if err != nil {
+		return nil, fmt.Errorf("encoding the declared debug policy: %w", err)
+	}
+
+	return map[string]any{debugPolicyMemoKey: encoded}, nil
+}
+
+// policyMemoEntries is every authorization policy a run carries on its memo,
+// assembled once so that a path writing one of them cannot forget the other.
+//
+// Both submit paths — [FlowstateServer.prepareCreate] and
+// [FlowstateServer.CreateSchedule] — call this rather than the two encoders,
+// which is the same "one function, two callers" discipline
+// [signalPolicyMemoEntry]'s own comment records, extended to cover the moment
+// a second policy joined the first. The hole it forecloses is the one a
+// scheduled approval gate already had once: a firing that carried the tenant
+// memo and not the policy, so enforcement silently became the zero case.
+func policyMemoEntries(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value) (map[string]any, error) {
+	entries := map[string]any{signalProtocolMemoKey: currentSignalProtocol}
+
+	signals, err := signalPolicyMemoEntry(ctx, wf, inputs)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(entries, signals)
+
+	debug, err := debugPolicyMemoEntry(ctx, wf, inputs)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(entries, debug)
+
+	return entries, nil
 }
 
 // workflowNameMemoKey is the memo field recording a workflow's own declared
@@ -1192,15 +1305,23 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// name flat enough for one tenant to reach another's trusted entry.
 	identity := s.identityFor(ctx)
 
-	// The decision, written down before any of the work it permits.
+	// The admission decision, written down before any of the work it permits.
 	//
 	// Here, rather than at the [FlowstateServer.clientFor] call further down,
-	// because this RPC's authorization question is "may this caller start work
-	// in their own namespace" and nothing between here and there can change the
-	// answer: what follows is the specification being checked, which is a
-	// question about the file rather than about the caller. The resource is the
-	// run that does not exist yet, so the key is empty until the id is composed
-	// — a decision about starting work is not a decision about a run.
+	// because this RPC's first authorization question is "may this caller
+	// start work in their own namespace", and nothing between here and there
+	// can change *that* answer: what follows is the specification being
+	// checked, which is a question about the file rather than about the
+	// caller. The resource is the run that does not exist yet, so the key is
+	// empty until the id is composed — a decision about starting work is not
+	// a decision about a run.
+	//
+	// A second, later decision does still exist below —
+	// [FlowstateServer.authorizeManualStart] asks whether the workflow's own
+	// `manual:` block permits this caller specifically, which this admission
+	// cannot answer without the workflow in hand — and it is audited
+	// separately, as its own DENY, rather than folded into this ALLOW. See
+	// #1889.
 	if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE, identity.GetNamespace()); err != nil {
 		return nil, err
 	}
@@ -1218,7 +1339,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// equality that can only ever answer true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -1226,6 +1347,17 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err
+	}
+
+	// What this submission is, if the caller gave it a request id: the address
+	// it takes when nothing else addresses it, and the digests a retry is
+	// recognized by. Composed from the caller's own copy of the specification
+	// and the inputs as just bound — see [newSubmissionKey] — and from the
+	// namespace the identity above attested, never one the request named. Nil
+	// when the field is unset, which is every request before it existed.
+	submission, err := newSubmissionKey(identity.GetNamespace(), req.Msg.GetRequestId(), submitted, inputs)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	// A random id unless the caller named a business key, in which case the run
@@ -1236,7 +1368,16 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// already applies a few lines down, and for the identical reason — a
 	// workload must not be able to name the tenant it is addressed under, or
 	// the first thing anyone writes is another tenant's key.
-	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.NewString())
+	//
+	// A request id is the least specific of the three addresses and so is
+	// applied first: an entity key or a `concurrency:` block names *which run is
+	// live*, and the request id then decides only whether a submission colliding
+	// with it is a retry — see [RunRequest.request_id]'s composition rule and the
+	// already-started arm below.
+	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.New().String())
+	if submission != nil {
+		workflowID = submission.workflowID
+	}
 	if key := req.Msg.GetEntityKey(); key != "" {
 		entityID, err := v1.EntityWorkflowID(identity.GetNamespace(), key)
 		if err != nil {
@@ -1292,8 +1433,8 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := v1.CheckManualStart(workflow, identity.GetSubject(), req.Msg.GetReason()); err != nil {
-		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	if err := s.authorizeManualStart(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, workflow, req.Msg.GetReason()); err != nil {
+		return nil, err
 	}
 
 	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
@@ -1312,7 +1453,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// that has ended has released the resource, so the next submission naming the
 	// same key is a new run rather than a duplicate of the old one.
 	if workflow.GetConcurrency() != nil {
-		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER && submission == nil {
 			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
 		} else {
 			// Both of the other two, `join` included — see
@@ -1330,6 +1471,48 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// refused" and "this joined" are facts this code establishes rather than
 		// infers from a run id it cannot otherwise recognize.
 		options.WorkflowExecutionErrorWhenAlreadyStarted = true
+	}
+
+	if submission != nil {
+		// The fourth pair, the webhook receiver's, and for its reason: a request
+		// id names one submission forever, so a retry arriving after the run
+		// finished must find that run rather than start a second one. Only when
+		// the request id is the address — under an entity key or a permit, the
+		// address's own pair above stays in force and the request id decides
+		// nothing about the id's lifetime.
+		if workflowID == submission.workflowID {
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+			options.WorkflowIDReusePolicy = enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
+		}
+
+		// `terminate_other` is the one address whose own rule *destroys* what it
+		// collides with, and a request id says this submission may already be
+		// running. Resolving the collision first would answer the retry
+		// question by killing the run that is the answer: the incumbent gets no
+		// chance to compensate, the caller is handed a new run with `reused`
+		// false, and whatever the first attempt had already done is done again
+		// — from a request the contract promises is the same one submission,
+		// answered with the same run (#1119).
+		//
+		// So the first attempt refuses instead, and the terminate is re-issued
+		// below only once the incumbent has been read and found to be a
+		// *different* submission. A run that is this submission is returned as
+		// the retry it is; a run that is not is replaced exactly as
+		// `on_conflict:` says.
+		if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+			options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+		}
+
+		// Asked for the error under every address, for the reason
+		// [v1.Concurrency_ON_CONFLICT_JOIN] gives against `USE_EXISTING`: the
+		// error is what carries the incumbent's run id, so "this was a retry" is
+		// a fact this code establishes from the cluster's answer rather than
+		// infers from a run id it cannot otherwise recognize.
+		options.WorkflowExecutionErrorWhenAlreadyStarted = true
+
+		// The two digests a later request under this id is checked against —
+		// never the request id itself. See [requestMemoKey].
+		maps.Copy(memo, submission.memo())
 	}
 
 	// Provenance, in the same memo the tenant and the starter are recorded in and
@@ -1357,20 +1540,21 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// engine would then run in a different form, which is precisely the claim the
 	// field promises not to make.
 	//
-	// Compared by value, whole, rather than reported as "was there a trusted
-	// entry" or narrowed to the fields a client's redaction happens to read
-	// today. A deployment that registers the identical specification a caller
-	// submits has substituted nothing observable and keeps the caller's precise
-	// view; anything else — a substitution, a pin, a normalization added next
-	// year — answers false without needing to be enumerated here. That is the
-	// fail-closed direction: a transformation nobody thought to list still costs
-	// a caller a precise view rather than costing them a secret.
-	asSubmitted := proto.Equal(submitted, workflow)
+	// Compared by value rather than reported as "was there a trusted entry" or
+	// narrowed to the fields a client's redaction happens to read today. The one
+	// exception is a task-capability snapshot the caller omitted: it is
+	// control-plane attestation about this program, not an executable
+	// transformation of the program. A caller-supplied snapshot still makes the
+	// answer false when the server overwrites it. A plugin selection or any future
+	// normalization still answers false unless its owner makes an equally explicit
+	// semantic decision here, preserving the fail-closed direction.
+	asSubmitted := specificationAsSubmitted(submitted, workflow)
 
-	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
-		Workflow:    workflow,
-		StepsBudget: int32(s.maxStepsPerRun),
-		Identity:    identity,
+	state := &v1.RunState{
+		Workflow:           workflow,
+		StepsBudget:        int32(s.maxStepsPerRun),
+		Identity:           identity,
+		MetricWorkflowName: metricWorkflowName(workflow, trusted),
 
 		// Checked and defaulted, once, above. The engine reads them and never
 		// re-derives them, so every segment of the run sees what this submission
@@ -1382,14 +1566,87 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// are. Carried in state rather than derived, which is what makes
 		// `${trigger.kind}` the same value on every replay.
 		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
-	})
+	}
+
+	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
 	if err != nil {
-		// A conflict on the permit, which is the one failure here that is not this
-		// server failing. Both arms that can produce it are answered from the
-		// error itself, which carries the incumbent's run id, so neither costs a
-		// second Temporal call.
+		// A conflict on the id, which is the one failure here that is not this
+		// server failing. Every arm that can produce it is answered from the
+		// error itself, which carries the incumbent's run id.
 		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if submission != nil && errors.As(err, &already) {
+			// A retry of this very submission, under whichever address it took:
+			// answered with the run the earlier attempt started, and the reuse
+			// stated — see [v1.RunResponse.reused]. Refused, naming the run, when
+			// the key was reused for a different submission; and not a retry at
+			// all when the run recorded a different request, in which case the
+			// address's own rule below decides, exactly as it would have with no
+			// request id on this call.
+			resp, retry, err := s.reusedSubmission(ctx, workflowID, already.RunId, submission)
+			if err != nil {
+				return nil, err
+			}
+			if retry {
+				// A second record for a second decision: the first, above, was
+				// "may start work in this namespace", and this one is "this
+				// request is answered with run X", which names a resource the
+				// first could not. The record is what lets an operator see that
+				// a workload the audit trail shows started once was submitted
+				// twice, and by whom.
+				if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+					return nil, err
+				}
+
+				// SpecificationAsSubmitted is false for the join arm's reason: the
+				// specification that ran is the one the earlier attempt sent. The
+				// digest says this attempt sent the same bytes, but the answer
+				// was made about the deployment's trusted set at *that* start,
+				// and a fact this server did not establish now is one it does
+				// not state now.
+				return connect.NewResponse(&v1.RunResponse{
+					WorkflowId:               workflowID,
+					RunId:                    resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+					Status:                   getWorkflowExecutionStatus(resp),
+					Reused:                   true,
+					SpecificationAsSubmitted: proto.Bool(false),
+				}), nil
+			}
+
+			if workflow.GetConcurrency() == nil {
+				// Reachable only under an entity key: a request-addressed id
+				// holds nothing but its own submission, and the concurrency
+				// arms below own the permit's answer. The entity is live and
+				// this is not the submission that started it, which the
+				// entity's own address cannot express as anything but a
+				// refusal — see [RunRequest.request_id]'s composition rule.
+				return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf(
+					"%w: run %s of workflow %s", errNotARetry, already.RunId, workflowID))
+			}
+		}
+
 		if workflow.GetConcurrency() != nil && errors.As(err, &already) {
+			if onConflict == v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER {
+				// Reachable only with a request id, since without one the
+				// terminate was already applied above and no conflict reached
+				// here. The retry question has been asked and answered by now —
+				// an exact retry returned the incumbent above — so this
+				// collision is a genuinely different submission, and
+				// `on_conflict:` says it replaces what it found.
+				options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
+
+				run, err = temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+				if err != nil {
+					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
+				}
+
+				return connect.NewResponse(&v1.RunResponse{
+					WorkflowId:               workflowID,
+					RunId:                    run.GetRunID(),
+					Status:                   v1.RunResponse_STATUS_RUNNING,
+					SpecificationAsSubmitted: proto.Bool(asSubmitted),
+				}), nil
+			}
+
 			if onConflict == v1.Concurrency_ON_CONFLICT_JOIN {
 				// The incumbent, returned as this request's answer, with the join
 				// stated rather than left for the caller to deduce — see
@@ -1450,6 +1707,18 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 			SpecificationAsSubmitted: proto.Bool(asSubmitted),
 		},
 	), nil
+}
+
+func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
+	if submitted == nil || executed == nil {
+		return submitted == nil && executed == nil
+	}
+	if submitted.GetResolvedTaskCapabilities() != nil {
+		return false
+	}
+	got := proto.Clone(executed).(*v1.Workflow)
+	got.ResolvedTaskCapabilities = nil
+	return proto.Equal(submitted, got)
 }
 
 // validateSubmission is the submission-validation pipeline shared by
@@ -1516,8 +1785,45 @@ func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[stri
 // What stays in validateSubmission is what a submission brings: the inputs, and
 // the size of the pair. Those cannot be asked without a delivery.
 func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
+	// Bound the untrusted message before any recursive semantic walk. The size
+	// check is repeated below after control-plane fields are written, because
+	// those bytes must fit too; the structure check need not be repeated because
+	// plugin and task resolution add no executable nodes or values.
+	if err := v1.CheckSpecSize(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := v1.CheckStructureDepth(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := v1.CheckDeclarationTypes(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	if err := s.pinPlugins(wf); err != nil {
 		return err
+	}
+	// The registry is the task capability source of truth for this process, the
+	// same one GetCatalog reports and workers dispatch from. Resolve after
+	// plugins are pinned so a missing plugin is reported as that deployment
+	// problem rather than only as one of its task names being absent.
+	if err := v1.ResolveTaskCapabilities(wf, v1.DefaultRegistry()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+			"resolving task capabilities before durable execution: %w", err))
+	}
+
+	// Read from the same registry and immediately after resolving task
+	// capabilities above, because that resolution has already refused any
+	// unknown task; this check only has to rely on
+	// [v1.TaskDef.RequiredSecretInputs] for the tasks the registry knows.
+	//
+	// Unlike the refusals below, this one is not compiler parity alone: the harm
+	// it prevents is complete before any other mechanism gets a turn. A literal
+	// in an input a task requires as a whole secret reference is carried into
+	// workflow history by admission itself, and the plugin host's own refusal
+	// happens at dispatch, after the credential is already durable. See
+	// [v1.CheckRequiredSecretInputs].
+	if err := v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
@@ -1532,6 +1838,23 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// first time a signal is actually delivered and denied for a reason the
 	// author never saw at submit.
 	if err := v1.CheckSignalPolicies(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// The same argument for the `debug:` stanza, which compiles to the same
+	// [v1.SignalPolicy] and is checked by the same rules — see
+	// [v1.CheckDebugPolicy]. false: this is the workflow's own declaration,
+	// checked before [v1.BindRunInputs] has resolved anything, so a rule may
+	// still legitimately carry an unresolved `subject_from`.
+	if err := v1.CheckDebugPolicy(wf.GetDebug(), false); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// And the reservation the lease mechanics depend on: a workflow that waits
+	// for a signal the engine owns would have its gate answered by a pause ask.
+	// Refused here as well as in the compiler because a hand-built
+	// specification reaches this RPC with no compiler in front of it.
+	if err := v1.CheckReservedSignalNames(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -1567,6 +1890,14 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Statically known atomic segments are already too large before any input
+	// resolves. Refuse them here so a hand-built Protobuf specification gets the
+	// same admission answer as a compiled Flowfile; the drivers retain their
+	// pre-dispatch checks as backstops and for resolved for_each item counts.
+	if err := v1.CheckWorkflowAtomicBlockActivities(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Size is a separate question from validity, and it has to be asked here
 	// because here is where somebody is still listening.
 	//
@@ -1580,17 +1911,6 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// Refusing at submit turns that into a sentence an author can act on. The
 	// engine keeps its own check for what this one cannot predict.
 	if err := v1.CheckSpecSize(wf); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	// A Flowfile can never compile a structure this deep — the compiler
-	// refuses it directly, with a position — but a specification built by
-	// hand and submitted straight to this RPC arrives without a compiler in
-	// front of it. Every walk this package runs over a structure later
-	// (secret authority, reference collection for Continue-As-New, encoding
-	// a request body) reads [v1.MaxStructureDepth], so a value nested past it
-	// is refused here rather than under-inspected by all of them.
-	if err := v1.CheckStructureDepth(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -1661,10 +1981,8 @@ func (s *FlowstateServer) prepareCreate(
 	// `distinct_from_starter` will need to compare an authorized sender
 	// against.
 	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
-	for k, v := range starterMemoEntry(identity) {
-		memo[k] = v
-	}
-	signalEntry, err := signalPolicyMemoEntry(ctx, wf, inputs)
+	maps.Copy(memo, starterMemoEntry(identity))
+	signalEntry, err := policyMemoEntries(ctx, wf, inputs)
 	if err != nil {
 		// Two different failures share this one call, and they get the same
 		// answer for different reasons. CheckSignalPolicies and v1.Validate
@@ -1680,23 +1998,17 @@ func (s *FlowstateServer) prepareCreate(
 		// itself could not finish establishing.
 		return nil, nil, client.StartWorkflowOptions{}, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	for k, v := range signalEntry {
-		memo[k] = v
-	}
+	maps.Copy(memo, signalEntry)
 
 	// Unconditional, unlike the search attribute below: see
 	// [workflowNameMemoEntry] for why `flow list --filter 'name == ...'` must
 	// not depend on whether registration succeeded.
-	for k, v := range workflowNameMemoEntry(wf.GetName()) {
-		memo[k] = v
-	}
+	maps.Copy(memo, workflowNameMemoEntry(wf.GetName()))
 
 	// The author's labels, on the same terms and through the same one function
 	// [FlowstateServer.CreateSchedule] uses — see [labelsMemoEntry]. Nothing is
 	// added when the workflow declared none.
-	for k, v := range labelsMemoEntry(wf.GetLabels()) {
-		memo[k] = v
-	}
+	maps.Copy(memo, labelsMemoEntry(wf.GetLabels()))
 
 	// Derived from the authenticated tenant, never from the request — the same
 	// rule the memo above and the fairness key below already follow. Refused
@@ -1884,6 +2196,19 @@ func (s *FlowstateServer) identityFor(ctx context.Context) *v1.WorkloadIdentity 
 	}
 }
 
+// manualStartPrincipal returns the canonical identity manual-start policy may
+// authorize. It comes only from authentication middleware, never from the
+// request or from the durable identity derived from it. OIDC and mTLS callers
+// share [auth.Principal.ID]'s issuer-qualified spelling. Missing, zero, and the
+// explicitly unauthenticated development principal cannot satisfy an allowlist.
+func manualStartPrincipal(ctx context.Context) string {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.IsZero() || principal.IsAnonymous() {
+		return ""
+	}
+	return principal.ID()
+}
+
 // Get retrieves the status of a workflow execution by its ID (and optionally its run ID).
 func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
 	// Authorized before anything is read. This previously described the run and
@@ -1897,6 +2222,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	switch respStatus := getWorkflowExecutionStatus(resp); respStatus {
 	case v1.RunResponse_STATUS_RUNNING:
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		chain := s.chainOf(resp.GetWorkflowExecutionInfo(), start)
 		pending, pendingTruncated := s.pendingActivities(resp)
 
 		return connect.NewResponse(
@@ -1904,8 +2230,10 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
-				StartTime:  start,
+				StartTime:  chain.started,
 				CloseTime:  closed,
+				FirstRunId: resp.GetWorkflowExecutionInfo().GetFirstRunId(),
+				Segments:   chain.segments,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
 				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
@@ -1935,14 +2263,17 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("error getting workflow result: %w", err))
 		}
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		chain := s.chainOf(resp.GetWorkflowExecutionInfo(), start)
 
 		return connect.NewResponse(
 			&v1.GetResponse{
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
-				StartTime:  start,
+				StartTime:  chain.started,
 				CloseTime:  closed,
+				FirstRunId: resp.GetWorkflowExecutionInfo().GetFirstRunId(),
+				Segments:   chain.segments,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
 				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
@@ -1962,14 +2293,17 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 		), nil
 	case v1.RunResponse_STATUS_FAILED, v1.RunResponse_STATUS_CANCELED, v1.RunResponse_STATUS_TERMINATED, v1.RunResponse_STATUS_TIMED_OUT:
 		start, closed := runTimes(resp.GetWorkflowExecutionInfo())
+		chain := s.chainOf(resp.GetWorkflowExecutionInfo(), start)
 
 		return connect.NewResponse(
 			&v1.GetResponse{
 				WorkflowId: req.Msg.GetWorkflowId(),
 				RunId:      resp.WorkflowExecutionInfo.Execution.RunId,
 				Status:     respStatus,
-				StartTime:  start,
+				StartTime:  chain.started,
 				CloseTime:  closed,
+				FirstRunId: resp.GetWorkflowExecutionInfo().GetFirstRunId(),
+				Segments:   chain.segments,
 				// Who submitted this run, off the same Describe response
 				// everything else here comes from and through the same reader
 				// authorization uses. See [FlowstateServer.reportedStarter]; empty is a real
@@ -2090,12 +2424,10 @@ func failureError(
 	// above already follows and the schema states: `kind` is "always set
 	// alongside Message" (service.proto), and leaving it empty made the one
 	// failure this branch exists for the one failure a programmatic consumer
-	// could read nothing structural from. [v1.ErrorKindTimeout] is what
-	// engine.recordedStepKind answers for the step-level shape of this (#915),
-	// and a run-level timeout is that same fact one scope out — so it is the
-	// same word rather than a second one meaning the same thing.
-	var timeoutErr *temporal.TimeoutError
-	if errors.As(err, &timeoutErr) {
+	// could read nothing structural from. It must not reuse the retryable
+	// [v1.ErrorKindTimeout] that engine.recordedStepKind answers for a step:
+	// restarting a whole run can repeat effects from steps that already finished.
+	if timeoutErr, ok := errors.AsType[*temporal.TimeoutError](err); ok {
 		return timeoutFailure(status, timeoutErr.TimeoutType())
 	}
 
@@ -2116,14 +2448,34 @@ func failureError(
 // (service.proto), and this branch — the one shape of failure with nothing in
 // the chain to read a classification back out of — was the one leaving it
 // empty, so the only failure an agent could read nothing structural from was a
-// timeout. [v1.ErrorKindTimeout] is what engine.recordedStepKind answers for
-// the step-level shape of this (#915); a run-level timeout is that same fact
-// one scope out, so it is the same word rather than a second one meaning the
-// same thing, and the message is what says which scope.
+// timeout. A whole-run timeout has its own permanent kind: unlike retrying a
+// step attempt, restarting the run can repeat effects from an already-completed
+// prefix whose outcome is known only to the workload's operator.
+//
+// The status is what says whether this *is* that. Temporal closes a run whose
+// own execution or run budget expired as TIMED_OUT; an activity timeout that
+// escaped the workflow closes it FAILED, and reaches here only because nothing
+// upstream translated it. The engine translates the paths that can do that
+// (engine's preStepFailed, and durableStepTimeoutMessage for a step), so this
+// arm should be unreachable — but "should be unreachable" is not a thing to
+// assert by assigning the permanent kind to whatever arrives. A kind that says
+// "do not resubmit" is the wrong answer to give an agent about a run that never
+// started, and it is the answer a new pre-executor activity added without its
+// own translation would silently acquire. So the run-level kind is assigned on
+// the run-level fact rather than on the shape of the error, and anything else
+// timing out is classified as what it is: retryable, exactly as
+// engine.recordedStepKind answers for the same error one scope in.
 func timeoutFailure(status v1.RunResponse_Status, kind enums.TimeoutType) *v1.RunResponse_Error {
+	if status != v1.RunResponse_STATUS_TIMED_OUT {
+		return &v1.RunResponse_Error{
+			Message: status.String() + ": timed out (a budget inside the run expired, not the run's own)",
+			Kind:    v1.ErrorKindTimeout.String(),
+		}
+	}
+
 	return &v1.RunResponse_Error{
 		Message: status.String() + ": timed out (" + timeoutKindText(kind) + ")",
-		Kind:    v1.ErrorKindTimeout.String(),
+		Kind:    v1.ErrorKindRunTimeout.String(),
 	}
 }
 

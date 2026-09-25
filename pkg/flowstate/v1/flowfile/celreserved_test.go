@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -151,7 +152,7 @@ func TestMostReservedWordsBecameLegalStepIDs(t *testing.T) {
 
 	var legal []string
 	for _, word := range celReservedIdentifiers {
-		if !slicesContains(celUnusableStepIDs, word) {
+		if !slices.Contains(celUnusableStepIDs, word) {
 			legal = append(legal, word)
 		}
 	}
@@ -184,15 +185,4 @@ func TestUnusableStepIDIsReportedOnTheID(t *testing.T) {
 			"the diagnostic has to say what to do, not only what is wrong")
 		assert.True(t, strings.Contains(rendered, word), "it has to name the id; got %q", rendered)
 	}
-}
-
-// slicesContains is spelled out rather than imported so this file states its own
-// membership test alongside the two lists it is about.
-func slicesContains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }

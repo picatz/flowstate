@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,21 +12,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
-// hostFD is the file descriptor a plugin inherits the host-liveness pipe on.
+// hostFD and tokenFD are the descriptors a plugin inherits the host-liveness
+// pipe and the per-launch token on.
 //
 // Descriptors 0, 1 and 2 are stdin, stdout and stderr, and os/exec assigns
-// Cmd.ExtraFiles from 3 upwards, so the first extra file is always 3.
-const hostFD = 3
+// Cmd.ExtraFiles from 3 upwards, so these follow the order of the ExtraFiles
+// slice built in launch.
+const (
+	hostFD  = 3
+	tokenFD = 4
+)
 
 // instance is one running plugin process: handshaked, connected, and alive until
 // something stops it.
@@ -35,8 +44,9 @@ const hostFD = 3
 // the [Plugin] that supervises it, so that a restart replaces this wholesale
 // rather than mutating it.
 type instance struct {
-	name string
-	path string
+	name          string
+	path          string
+	stderrSecrets *stderrSecretScrubber
 
 	cmd  *exec.Cmd
 	pid  int
@@ -157,10 +167,39 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	}
 	defer stderrW.Close()
 
+	// Open stdin ourselves so every descriptor os/exec will rebuild in the
+	// child exists before a pinned image is moved above that scratch range. A
+	// nil Stdin makes os/exec open /dev/null later, after the bound is chosen.
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		hostPipeW.Close()
+		stdoutR.Close()
+		stderrR.Close()
+		return nil, pluginError(found.Name, found.Path, fmt.Errorf("%w: stdin: %w", ErrLaunch, err))
+	}
+	defer stdin.Close()
+
 	// The token exists for this launch only. Nothing persists it, and a restart
 	// mints a new one, so a token that leaked stops being useful the moment the
 	// process it belonged to ends.
 	token := rand.Text()
+
+	// It is handed over on its own inherited descriptor rather than in the
+	// environment, because an environment variable cannot be withdrawn. On Linux
+	// /proc/<pid>/environ shows the block the kernel copied at execve(2), so a
+	// token placed there stays readable for as long as the plugin runs, however
+	// promptly the plugin unsets it, and it is swept up by anything that
+	// collects environments — a diagnostic bundle, a core dump. A pipe leaves
+	// nothing behind: the token sits in kernel buffer space until the plugin
+	// reads it, and after that it exists only in the plugin's memory.
+	tokenPipeR, err := tokenPipe(token)
+	if err != nil {
+		hostPipeW.Close()
+		stdoutR.Close()
+		stderrR.Close()
+		return nil, pluginError(found.Name, found.Path, fmt.Errorf("%w: %w", ErrLaunch, err))
+	}
+	defer tokenPipeR.Close()
 
 	// An explicit argv with exactly one element: the executable. No shell, so
 	// nothing in the path or the environment is interpreted, and no arguments,
@@ -181,11 +220,11 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	cmd := exec.CommandContext(procCtx, execPath)
 	cmd.Args = []string{found.Path}
 	cmd.Dir = socketDir
-	cmd.Env = pluginEnv(cfg, socketPath, token)
-	cmd.Stdin = nil
+	cmd.Env = pluginEnv(cfg, found.Name, socketPath)
+	cmd.Stdin = stdin
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
-	cmd.ExtraFiles = []*os.File{hostPipeR}
+	cmd.ExtraFiles = []*os.File{hostPipeR, tokenPipeR}
 
 	isolateProcessGroup(cmd)
 
@@ -193,6 +232,16 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	// how long "asks" lasts before os/exec stops asking.
 	cmd.Cancel = func() error { return terminateProcess(cmd.Process, false) }
 	cmd.WaitDelay = cfg.ShutdownGrace
+
+	if image != nil && image.pinned {
+		if err := image.prepareForExec([]*os.File{stdin, stdoutW, stderrW, hostPipeR, tokenPipeR}); err != nil {
+			hostPipeW.Close()
+			stdoutR.Close()
+			stderrR.Close()
+			return nil, pluginError(found.Name, found.Path, fmt.Errorf("%w: preparing pinned image: %w", ErrLaunch, err))
+		}
+		cmd.Path = image.execPath
+	}
 
 	if err := cmd.Start(); err != nil {
 		hostPipeW.Close()
@@ -202,25 +251,27 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	}
 
 	inst = &instance{
-		name:       found.Name,
-		path:       found.Path,
-		cmd:        cmd,
-		pid:        cmd.Process.Pid,
-		proc:       cmd.Process,
-		socketDir:  socketDir,
-		socketPath: socketPath,
-		hostPipe:   hostPipeW,
-		stdout:     stdoutR,
-		stderr:     stderrR,
-		exited:     make(chan struct{}),
+		name:          found.Name,
+		path:          found.Path,
+		stderrSecrets: newStderrSecretScrubber(cfg.stderrClock),
+		cmd:           cmd,
+		pid:           cmd.Process.Pid,
+		proc:          cmd.Process,
+		socketDir:     socketDir,
+		socketPath:    socketPath,
+		hostPipe:      hostPipeW,
+		stdout:        stdoutR,
+		stderr:        stderrR,
+		exited:        make(chan struct{}),
 	}
 
 	log = log.With("pid", inst.pid)
 	log.Debug("plugin launched", "path", found.Path, "socket", socketPath)
 
-	// The child holds its own copies of the write ends and of the pipe's read
-	// end; ours must go, or nothing here ever sees EOF.
+	// The child holds its own copies of the write ends and of the inherited read
+	// ends; ours must go, or nothing here ever sees EOF.
 	hostPipeR.Close()
+	tokenPipeR.Close()
 	stdoutW.Close()
 	stderrW.Close()
 
@@ -255,15 +306,13 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	// The pump drains every line regardless of the limiter below: a full pipe
 	// looks like a hung plugin, and only what gets *relayed* into the host's
 	// own log is bounded.
-	inst.pumps.Add(1)
-	go func() {
-		defer inst.pumps.Done()
-		relay, flush := stderrRelayFunc(cfg, log)
+	inst.pumps.Go(func() {
+		relay, flush := stderrRelayFunc(cfg, log, inst.stderrSecrets)
 		pumpPluginLog(stderrR, cfg.MaxStderrLine, relay)
 		if summary := flush(); summary != "" {
 			log.Warn(summary)
 		}
-	}()
+	})
 
 	handshake, err := inst.handshake(cfg, stdoutR, log)
 	if err != nil {
@@ -329,7 +378,7 @@ func (i *instance) handshake(cfg Config, stdout io.Reader, log *slog.Logger) (pr
 				// worth saying so — the text is usually the reason.
 				return protocol.Handshake{}, fmt.Errorf(
 					"%w: stdout ended mid-line after %q; %w",
-					ErrHandshake, truncate(res.line, 128), i.exitReason(cfg.ShutdownGrace),
+					ErrHandshake, textbound.Truncate(res.line, 128), i.exitReason(cfg.ShutdownGrace),
 				)
 			}
 			return protocol.Handshake{}, fmt.Errorf("%w: %w", ErrHandshake, i.exitReason(cfg.ShutdownGrace))
@@ -364,17 +413,16 @@ func (i *instance) handshake(cfg Config, stdout io.Reader, log *slog.Logger) (pr
 	// anyway costs one goroutine and prevents a plugin that breaks the promise
 	// from blocking on a full pipe, which would look like a hung plugin rather
 	// than a noisy one.
-	i.pumps.Add(1)
-	go func() {
-		defer i.pumps.Done()
+	i.pumps.Go(func() {
 		var reported int
 		pumpPluginLog(reader, cfg.MaxStderrLine, func(line string, truncated bool) {
 			if reported++; reported <= 10 {
+				line, scrubbed := i.stderrSecrets.scrubFramedLine(line, truncated)
 				log.Warn("plugin wrote to stdout after the handshake, which the protocol reserves",
-					"line", line, "truncated", truncated)
+					"line", line, "truncated", truncated, "scrubbed", scrubbed)
 			}
 		})
-	}()
+	})
 
 	return handshake, nil
 }
@@ -403,14 +451,14 @@ func verifyHandshake(h protocol.Handshake, cfg Config, socketPath string) error 
 	if h.Network != protocol.NetworkUnix {
 		return fmt.Errorf(
 			"%w: serving on network %q; only %q is permitted",
-			ErrHandshake, truncate(h.Network, 32), protocol.NetworkUnix,
+			ErrHandshake, textbound.Truncate(h.Network, 32), protocol.NetworkUnix,
 		)
 	}
 
 	if h.Address != socketPath {
 		return fmt.Errorf(
 			"%w: serving on %q rather than the socket it was assigned, %q",
-			ErrHandshake, truncate(h.Address, 128), socketPath,
+			ErrHandshake, textbound.Truncate(h.Address, 128), socketPath,
 		)
 	}
 
@@ -436,8 +484,7 @@ func (i *instance) exitReason(grace time.Duration) error {
 		}
 	}
 
-	var exit *exec.ExitError
-	if errors.As(i.waitErr, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](i.waitErr); ok {
 		return fmt.Errorf("%w: %s, printing no handshake line", ErrExited, exit.ProcessState)
 	}
 	if i.waitErr != nil {
@@ -594,6 +641,36 @@ func makeSocketDir(base string) (dir, socket string, err error) {
 	return dir, socket, nil
 }
 
+// tokenPipe returns the read end of a pipe already holding the per-launch token,
+// for the plugin to inherit on tokenFD.
+//
+// The token is written and the write end closed before the process starts, so
+// the plugin reads one line and then EOF without the host having to stay and
+// feed it — and a plugin that never reads costs nothing, because a token is
+// orders of magnitude smaller than a pipe's buffer and the bytes are discarded
+// when both ends close.
+func tokenPipe(token string) (*os.File, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("token pipe: %w", err)
+	}
+
+	if err := protocol.WriteToken(w, token); err != nil {
+		w.Close()
+		r.Close()
+		return nil, err
+	}
+
+	// Closed here rather than deferred: the plugin's read must reach EOF, and
+	// nothing else the host does depends on this end staying open.
+	if err := w.Close(); err != nil {
+		r.Close()
+		return nil, fmt.Errorf("token pipe: %w", err)
+	}
+
+	return r, nil
+}
+
 // pluginEnv builds the environment a plugin is launched with.
 //
 // It starts empty rather than from the worker's own environment. The worker's
@@ -602,19 +679,54 @@ func makeSocketDir(base string) (dir, socket string, err error) {
 // plugin needs is named by an operator in Config.Env, which makes the set of
 // things a plugin can read a reviewable list rather than an accident of how the
 // worker was started.
-func pluginEnv(cfg Config, socketPath, token string) []string {
+//
+// The deployment's egress policy is the one thing every plugin gets without
+// being named: an environment built from nothing is also an environment with no
+// network policy in it, and a plugin cannot inherit what was never there. It is
+// the snapshot this launch carried, so a policy file edited afterwards reaches
+// the plugins started next rather than the ones already running. See
+// [Config.EgressPolicy].
+//
+// The proxy variables travel for the same reason and under the same condition:
+// see [proxyGrant].
+func pluginEnv(cfg Config, name, socketPath string) []string {
 	env := []string{
 		protocol.MagicCookieEnv + "=" + protocol.MagicCookieValue,
 		protocol.VersionsEnv + "=" + protocol.FormatVersions(cfg.protocolVersions()),
 		protocol.SocketEnv + "=" + socketPath,
-		protocol.TokenEnv + "=" + token,
+		protocol.TokenFDEnv + "=" + strconv.Itoa(tokenFD),
 		protocol.HostFDEnv + "=" + strconv.Itoa(hostFD),
 	}
 
+	// Configured, not non-empty. An operator's empty policy document is a policy
+	// — the built-in http task runs under what it builds — so the grant is
+	// forwarded as the empty string rather than left out, and the plugin side
+	// reads presence with os.LookupEnv. Testing the length here instead is what
+	// made a zero-byte --egress-policy file deny in plugins while allowing in
+	// the built-in task: one deployment, one file, two answers.
+	if cfg.EgressPolicy != nil {
+		env = append(env, protocol.EgressPolicyEnv+"="+base64.StdEncoding.EncodeToString(cfg.EgressPolicy))
+	}
+
+	env = append(env, proxyGrant(cfg, name)...)
+
 	// Operator-supplied entries come last, but cannot override the protocol's
-	// own: a Config.Env that redefined the socket path or the token would break
-	// the handshake in a way that looks like a plugin bug.
+	// own: a Config.Env that redefined the socket path or a token descriptor
+	// would break the handshake in a way that looks like a plugin bug.
 	for _, entry := range cfg.Env {
+		if isProtocolEnv(entry) {
+			continue
+		}
+		env = append(env, entry)
+	}
+
+	// Then this plugin's own configuration, which is nothing for every other
+	// plugin this host launches. It comes after the deployment-wide entries so
+	// that a variable set in both takes the value written for this plugin —
+	// os/exec keeps the last of a repeated key — and it is filtered the same
+	// way, because the handshake is not configuration whichever surface an
+	// operator writes it on.
+	for _, entry := range cfg.EnvByPlugin[name] {
 		if isProtocolEnv(entry) {
 			continue
 		}
@@ -624,17 +736,170 @@ func pluginEnv(cfg Config, socketPath, token string) []string {
 	return env
 }
 
+// proxyGrant returns the proxy variables to grant this launch, which is none
+// unless the deployment's policy asked to proxy.
+//
+// A policy that says `proxy_from_environment: true` is an operator saying the
+// way out of this deployment is through a proxy. The built-in http task obeys it
+// because it runs in the worker, where those variables are; a plugin's
+// environment is built from nothing, so the identical policy inside a plugin
+// finds no proxy and dials straight out. That is not a routing difference — on a
+// deployment whose egress is *only* permitted through that proxy it is the
+// plugin leaving the path the operator controls, and it happens with no error on
+// either side.
+//
+// So the proxy inputs are granted, like the policy itself, and tied to the same
+// switch: when the policy proxies, the worker's own values cross verbatim; when
+// it does not, none of them do. An operator who wants a plugin to reach a
+// different proxy names it in [Config.Env], and that entry wins — in either
+// spelling, for the whole variable; see the skip below.
+//
+// The flag is read out of the grant rather than carried beside it, so there is
+// one source of truth for what this deployment's policy says. Deriving it once
+// into a [Config] field would be cheaper and worse: a Config whose EgressPolicy
+// was set after the derivation would carry a flag that no longer described its
+// own bytes, which is the failure a derived copy always has.
+//
+// It is read out of a policy that *builds*, not one that merely parses, and the
+// difference is the whole of this function's safety. A `deny:` list whose CEL
+// does not compile parses fine and produces no policy at all, so a parse-only
+// read forwarded the operator's proxy URL — userinfo and all — under a grant
+// that could govern nothing. [Config.validate] refuses such a grant at
+// [NewHost], which turns this into a startup error an operator can read; the
+// same check is here because this must not depend on having been called through
+// NewHost to be safe. Two answers to one question, and both of them no.
+//
+// Building per launch rather than once: the alternative is caching a compiled
+// policy on Config, which is the derived copy above by another name. Launches
+// are a handful at worker startup, and the bytes are bounded by
+// [MaxEgressPolicyBytes].
+func proxyGrant(cfg Config, name string) []string {
+	if cfg.EgressPolicy == nil {
+		return nil
+	}
+
+	parsed, err := netpolicy.ParseConfig(cfg.EgressPolicy)
+	if err != nil || !parsed.Egress.ProxyFromEnvironment {
+		return nil
+	}
+	if _, err := parsed.Policy(); err != nil {
+		return nil
+	}
+
+	// Each variable is read at a call site naming its own constant rather than
+	// through a range over a list of names. Ranging reads the same six variables
+	// and is shorter, but it hides which ones from the environment-documentation
+	// drift test (cmd/flow/internal/docsgen), whose resolver follows a literal or
+	// a constant and nothing else — and a read it cannot follow is a hole in
+	// exactly the shape that test defends.
+	var granted []string
+	for _, variable := range []proxyVariable{
+		{
+			upper: protocol.HTTPProxyEnv, lower: protocol.HTTPProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPProxyLowerEnv)),
+		},
+		{
+			upper: protocol.HTTPSProxyEnv, lower: protocol.HTTPSProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.HTTPSProxyLowerEnv)),
+		},
+		{
+			upper: protocol.NoProxyEnv, lower: protocol.NoProxyLowerEnv,
+			upperValue: proxyValueOf(os.LookupEnv(protocol.NoProxyEnv)),
+			lowerValue: proxyValueOf(os.LookupEnv(protocol.NoProxyLowerEnv)),
+		},
+	} {
+		// An operator naming this variable in Config.Env is more specific than
+		// the worker's ambient value, and duplicate keys in one environment
+		// block are read differently by different runtimes. Skip rather than
+		// emit both.
+		//
+		// Per pair, not per name. HTTP_PROXY and http_proxy are two spellings of
+		// one variable, and ProxyFromEnvironment takes the uppercase when both
+		// are set — so forwarding the ambient HTTP_PROXY beside an operator's
+		// `http_proxy` override would leave the override outvoted by exactly the
+		// value it was written to replace, with nothing anywhere to say so.
+		// Either spelling being configured settles the variable, and neither
+		// ambient spelling crosses.
+		// Both blocks, because [Config.EnvByPlugin] is as much an operator
+		// naming this variable as [Config.Env] is - and more specific, being
+		// written for this plugin alone. Checking only the deployment-wide one
+		// would leave a per-plugin `http_proxy` beside an ambient HTTP_PROXY,
+		// which is precisely the outvoting this skip exists to prevent, with
+		// the plugin's own credentials going to the worker's proxy instead.
+		if configuredInEnv(cfg.Env, variable.upper, variable.lower) ||
+			configuredInEnv(cfg.EnvByPlugin[name], variable.upper, variable.lower) {
+			continue
+		}
+
+		if variable.upperValue.set {
+			granted = append(granted, variable.upper+"="+variable.upperValue.value)
+		}
+		if variable.lowerValue.set {
+			granted = append(granted, variable.lower+"="+variable.lowerValue.value)
+		}
+	}
+
+	return granted
+}
+
+// proxyVariable is one proxy setting in the two spellings
+// [net/http.ProxyFromEnvironment] accepts, with what the worker holds for each.
+type proxyVariable struct {
+	upper, lower           string
+	upperValue, lowerValue proxyValue
+}
+
+// proxyValue is one environment read: the value, and whether it was set at all.
+type proxyValue struct {
+	value string
+	set   bool
+}
+
+// proxyValueOf adapts [os.LookupEnv]'s two results, so a read can stay one
+// expression naming its constant.
+func proxyValueOf(value string, set bool) proxyValue {
+	return proxyValue{value: value, set: set}
+}
+
+// configuredInEnv reports whether an operator named either spelling of one proxy
+// variable in [Config.Env].
+func configuredInEnv(env []string, upper, lower string) bool {
+	return slices.ContainsFunc(env, func(entry string) bool {
+		return isEnvNamed(entry, upper) || isEnvNamed(entry, lower)
+	})
+}
+
+// isEnvNamed reports whether a KEY=VALUE entry has the given key.
+func isEnvNamed(entry, name string) bool {
+	return len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name
+}
+
 // isProtocolEnv reports whether an operator-supplied entry would collide with
 // one the protocol owns.
+//
+// protocol.TokenEnv is in the list although the host no longer sets it. The name
+// is retired, not free: an operator entry spelling it would put something a
+// plugin might read as the per-launch secret into the environment block, which
+// is exactly the place this protocol stopped keeping secrets.
+//
+// The egress grant is in the list for a different reason than the rest: not to
+// keep the handshake working, but because a policy composed by hand in Env and a
+// policy in [Config.EgressPolicy] are two spellings of one fact, and a
+// deployment that set both would have no way to know which one governed. The
+// field is the spelling; an Env entry under that name is dropped.
 func isProtocolEnv(entry string) bool {
 	for _, name := range []string{
 		protocol.MagicCookieEnv,
 		protocol.VersionsEnv,
 		protocol.SocketEnv,
 		protocol.TokenEnv,
+		protocol.TokenFDEnv,
 		protocol.HostFDEnv,
+		protocol.EgressPolicyEnv,
 	} {
-		if len(entry) > len(name) && entry[len(name)] == '=' && entry[:len(name)] == name {
+		if isEnvNamed(entry, name) {
 			return true
 		}
 	}
@@ -653,11 +918,16 @@ func isProtocolEnv(entry string) bool {
 // is a common reason, and often the one this limiter's summary would explain
 // — leaves its last window's count unreported. flush recovers it once, after
 // the pump can no longer call allow.
-func stderrRelayFunc(cfg Config, log *slog.Logger) (relay func(line string, truncated bool), flush func() string) {
+func stderrRelayFunc(cfg Config, log *slog.Logger, scrubber *stderrSecretScrubber) (relay func(line string, truncated bool), flush func() string) {
+	logLine := func(line string, truncated bool) {
+		// A prefix or one physical line cannot be matched against a retained
+		// value that crosses the framing boundary. Suppress it rather than
+		// relay part of a secret.
+		line, scrubbed := scrubber.scrubFramedLine(line, truncated)
+		log.Info("plugin log", "line", line, "truncated", truncated, "scrubbed", scrubbed)
+	}
 	if cfg.MaxStderrLinesPerMinute < 0 {
-		return func(line string, truncated bool) {
-			log.Info("plugin log", "line", line, "truncated", truncated)
-		}, func() string { return "" }
+		return logLine, func() string { return "" }
 	}
 
 	limiter := newStderrLimiter(cfg.MaxStderrLinesPerMinute, stderrRateWindow, cfg.stderrClock)
@@ -667,7 +937,7 @@ func stderrRelayFunc(cfg Config, log *slog.Logger) (relay func(line string, trun
 				log.Warn(summary)
 			}
 			if ok {
-				log.Info("plugin log", "line", line, "truncated", truncated)
+				logLine(line, truncated)
 			}
 		}, func() string {
 			return limiter.flush()

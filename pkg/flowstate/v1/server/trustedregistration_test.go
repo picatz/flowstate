@@ -102,7 +102,7 @@ func TestAReceiverCannotServeAWorkflowWhoseTrustIsPoisoned(t *testing.T) {
 	// Two registrations of one name that disagree — the key is poisoned.
 	first := webhookOnlyWorkflowWithManualDenied()
 	second := webhookOnlyWorkflowWithManualDenied()
-	second.Triggers.Manual = &v1.ManualTrigger{AllowedPrincipals: []string{"oncall@example.com"}}
+	second.Triggers.Manual = &v1.ManualTrigger{AllowedPrincipals: []string{"https://issuer.example.com#oncall@example.com"}}
 
 	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", first, second))
 

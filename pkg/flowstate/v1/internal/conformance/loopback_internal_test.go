@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"slices"
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -37,10 +38,10 @@ func TestTheLoopbackExemptionOutlastsItsFirstHolder(t *testing.T) {
 	const mark = "sentinel · the loopback exemption test"
 	sentinel := original
 	sentinel.Summary = mark
-	if err := registry.Register(sentinel); err != nil {
+	if err := registry.Replace(sentinel); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = registry.Register(original) })
+	t.Cleanup(func() { _ = registry.Replace(original) })
 
 	registered := func() string {
 		def, _ := registry.Lookup("http")
@@ -96,8 +97,8 @@ type deferredCleanup struct {
 func (d *deferredCleanup) Cleanup(fn func()) { d.cleanups = append(d.cleanups, fn) }
 
 func (d *deferredCleanup) runCleanups() {
-	for i := len(d.cleanups) - 1; i >= 0; i-- {
-		d.cleanups[i]()
+	for _, v := range slices.Backward(d.cleanups) {
+		v()
 	}
 	d.cleanups = nil
 }

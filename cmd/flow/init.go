@@ -446,7 +446,9 @@ steps:
       # ${...} is CEL, and an expression is the whole value rather than a
       # fragment spliced into text, so a greeting is built in CEL. A run's
       # inputs, earlier steps' outputs, and anything enclosing control flow
-      # bound are all in scope.
+      # bound are all in scope. One YAML rule to know: an expression holding
+      # ": " (a ternary, ${a ? b : c}) is quoted whole, '${a ? b : c}', or
+      # YAML reads the colon as a key before CEL sees it.
       message: ${"hello, " + inputs.name}
 `
 }
@@ -471,7 +473,9 @@ tests:
     stubs:
       # ` + "`where:`" + ` is the assertion. A ` + "`log`" + ` invocation whose message is anything
       # else matches no stub and fails the case, which ` + "`ran:`" + ` alone could not
-      # notice.
+      # notice. ` + "`returns:`" + ` is the step's finished outputs; for a step that
+      # shapes its own (` + "`http`" + ` with ` + "`outputs:`" + `), ` + "`response:`" + ` supplies the raw
+      # response instead and lets that shaping run.
       - task: log
         where: inputs.message == 'hello, flowstate'
         returns: {}

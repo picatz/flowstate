@@ -77,13 +77,12 @@ tests:
 	require.Contains(t, byFile, sibling, "the directory's stub was not reported against its own file")
 	require.Contains(t, byFile, path)
 
-	// The directory's: named after that file, numbered the way that file
-	// numbers it, and positioned in neither — an index into another document is
-	// not a line in this one.
+	// The directory's: named after that file, numbered and positioned the way
+	// that file writes it.
 	assert.Equal(t, "defaults.stubs[0]", byFile[sibling].Field,
 		"the directory's only stub was addressed at an index it does not have")
 	assert.Contains(t, byFile[sibling].Message, `defaults.stubs[0] for task "fromDir"`)
-	assert.Zero(t, byFile[sibling].Line, "a position was claimed in a document this parse has no tree for")
+	assert.Equal(t, 4, byFile[sibling].Line)
 
 	// The suite's own: its index, and its exact position.
 	line, column := spot(t, suite, "task: fromSuite")
@@ -137,6 +136,7 @@ tests:
 tests:
   - name: one
     workflow: ./workflow.yaml
+    expect: {failed: false}
     stubs:
       - task: log
         returns: {}
@@ -144,6 +144,7 @@ tests:
           message: nope
   - name: two
     workflow: ./workflow.yaml
+    expect: {failed: false}
     stubs:
       - task: log
         returns: {}
@@ -173,6 +174,7 @@ defaults:
   workflow: ./workflow.yaml
 tests:
   - name: table
+    expect: {failed: false}
     stubs:
       - task: fromEntry
         returns: {}
@@ -180,7 +182,9 @@ tests:
           message: nope
     cases:
       - name: one
+        expect: {failed: false}
       - name: two
+        expect: {failed: false}
 `
 	problems, _ := refuse(t, source)
 
@@ -212,6 +216,7 @@ defaults:
         message: nope
 tests:
   - name: table
+    expect: {failed: false}
     stubs:
       - task: shared
         returns: {}
@@ -219,7 +224,9 @@ tests:
           message: nope
     cases:
       - name: one
+        expect: {failed: false}
       - name: two
+        expect: {failed: false}
 `
 	problems, _ := refuse(t, source)
 	d := only(t, problems)

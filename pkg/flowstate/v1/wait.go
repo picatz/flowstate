@@ -12,6 +12,8 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // TimedOutOutput is the output every wait produces, reporting whether it ended
@@ -366,9 +368,8 @@ func signalSenderValue(sender *SignalSender) *Value {
 // name resolvable in exactly the place that has a clock behind it in *every* case
 // keeps the awkward version from being expressible at all.
 //
-// It is reserved as a step id for the same reason: a step named `now` would be
-// silently shadowed inside a wait expression, and `flowfile` refuses it rather
-// than letting a reference quietly mean something else.
+// Since rooting, `now` is no longer reserved as a step id: the clock is bare
+// and the step is `steps.now`, so the two spellings cannot collide.
 const NowIdentifier = "now"
 
 // evalWaitExpr evaluates a wait's expression with [NowIdentifier] bound.
@@ -383,9 +384,7 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bo
 		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
 	case *Value_Expr:
 		extra := make(map[string]ref.Val, len(bound)+1)
-		for name, value := range bound {
-			extra[name] = value
-		}
+		maps.Copy(extra, bound)
 		extra[NowIdentifier] = types.DefaultTypeAdapter.NativeToValue(now)
 
 		activation := scope.ActivationWith(ctx, extra)
@@ -458,7 +457,11 @@ func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_
 	}
 
 	bound := make(map[string]ref.Val, len(raw.GetNamedValues()))
-	for name, value := range raw.GetNamedValues() {
+	// Sorted because the first failure is observable and may enter durable
+	// state. A protobuf map has no order, so workflow-side map work must not let
+	// two runs of one specification report different failures.
+	for _, name := range slices.Sorted(maps.Keys(raw.GetNamedValues())) {
+		value := raw.GetNamedValues()[name]
 		converted, err := cel.ValueToRefValue(TypeAdapter, value.GetLiteral())
 		if err != nil {
 			return nil, fmt.Errorf("binding %q for outputs shaping: %w", name, err)
@@ -532,7 +535,7 @@ func EvalWaitDeadline(ctx context.Context, until *Value, scope *Scope, now time.
 		parsed, err := time.Parse(time.RFC3339, resolved)
 		if err != nil {
 			return time.Time{}, fmt.Errorf(
-				"wait_until produced %q, which is not an RFC 3339 time: %w", truncateForError(resolved), err)
+				"wait_until produced %q, which is not an RFC 3339 time: %w", textbound.Truncate(resolved, maxErrorValueBytes), err)
 		}
 		return parsed, nil
 
@@ -657,7 +660,7 @@ func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, la
 		parsed, err := ParseDuration(resolved)
 		if err != nil {
 			return 0, fmt.Errorf(
-				"%s produced %q, which is not a duration; write it as 30s, 5m, 1h, or 7d", label, truncateForError(resolved))
+				"%s produced %q, which is not a duration; write it as 30s, 5m, 1h, or 7d", label, textbound.Truncate(resolved, maxErrorValueBytes))
 		}
 
 		return parsed, nil
@@ -672,14 +675,15 @@ func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, la
 	}
 }
 
-// truncateForError bounds expression output on its way into a message.
-func truncateForError(s string) string {
-	const max = 64
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
-}
+// maxErrorValueBytes bounds expression output on its way into a message, via
+// [textbound.Truncate].
+//
+// The bound is the point of it: every caller renders a value some other party
+// chose the size of — an expression's result here, a task's own answer in
+// [checkEnumMembership] and [CheckOutputConstraint] — into text that becomes a
+// run's failure, and a failure the durable driver cannot persist while the
+// local driver returns it is invariant 3 broken by a diagnostic.
+const maxErrorValueBytes = 64
 
 // SignalNames returns every signal a workload can wait for, in the order they
 // appear, without repeats.

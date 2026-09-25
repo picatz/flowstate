@@ -61,10 +61,6 @@ type Cache struct {
 	// flight collapses concurrent resolutions of one reference.
 	flight singleflight.Group
 
-	// now is the clock, replaced in tests so expiry can be exercised without
-	// waiting for it.
-	now func() time.Time
-
 	mu sync.Mutex
 
 	// entries is keyed by namespace and reference text, not by the reference
@@ -118,7 +114,6 @@ func NewCache(provider Provider, opts ...CacheOption) *Cache {
 		provider: provider,
 		ttl:      DefaultCacheTTL,
 		max:      DefaultCacheMaxEntries,
-		now:      time.Now,
 		entries:  make(map[string]cacheEntry),
 	}
 
@@ -201,7 +196,7 @@ func (c *Cache) lookup(key string) (Secret, bool) {
 		return Secret{}, false
 	}
 
-	if !c.now().Before(entry.expires) {
+	if !time.Now().Before(entry.expires) {
 		delete(c.entries, key)
 		return Secret{}, false
 	}
@@ -220,7 +215,7 @@ func (c *Cache) store(key string, secret Secret) {
 
 	c.entries[key] = cacheEntry{
 		secret:  secret,
-		expires: c.now().Add(c.lifetime(secret)),
+		expires: time.Now().Add(c.lifetime(secret)),
 	}
 }
 
@@ -245,7 +240,7 @@ func (c *Cache) lifetime(secret Secret) time.Duration {
 //
 // The caller must hold c.mu.
 func (c *Cache) evictLocked() {
-	now := c.now()
+	now := time.Now()
 
 	for ref, entry := range c.entries {
 		if !now.Before(entry.expires) {

@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -14,10 +15,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -73,6 +81,24 @@ func runFakePlugin() int {
 	// before the by-hand fake path below.
 	if mode == "errors" {
 		return runErrorsPlugin()
+	}
+	if mode == "panic" {
+		return runPanicPlugin()
+	}
+	if mode == "deadline" {
+		return runDeadlinePlugin()
+	}
+	if mode == "caller-mode" {
+		return runCallerModePlugin()
+	}
+	if mode == "egress-grant" {
+		return runEgressGrantPlugin()
+	}
+	if mode == "egress-identity" {
+		return runEgressIdentityPlugin()
+	}
+	if mode == "egress-resolver" {
+		return runEgressResolverPlugin()
 	}
 
 	// The progress-relay conformance fixture is likewise a real SDK plugin
@@ -165,13 +191,27 @@ func runFakePlugin() int {
 		time.Sleep(10 * time.Second)
 		return 0
 
+	case "previous-version":
+		// A plugin built against the version before this one, announcing what
+		// its SDK would announce. Everything else about the line is correct, so
+		// the only thing the host can refuse it for is the version — which is
+		// the point: this is the binary a staggered upgrade actually produces,
+		// not a fixture with a number nobody ever shipped. Version 6 did ship,
+		// before flowstate/v1/schema.proto joined the files the engine
+		// provides, which is the pairing this refusal has to cover.
+		fmt.Printf("%s|%d|%d|unix|%s\n",
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version6,
+			os.Getenv(protocol.SocketEnv))
+		time.Sleep(10 * time.Second)
+		return 0
+
 	case "bad-address":
 		// The address is what this fixture gets wrong, so everything else about the
 		// line has to be right — including the protocol version. Announcing a
 		// retired one makes the host refuse on the version and never reach the
 		// address, which passes the test for the wrong reason.
 		fmt.Printf("%s|%d|%d|unix|/tmp/somewhere-else.sock\n",
-			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3)
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version7)
 		time.Sleep(10 * time.Second)
 		return 0
 
@@ -313,9 +353,45 @@ func fakeListen() (net.Listener, error) {
 // fakeAnnounce prints the handshake line.
 func fakeAnnounce() {
 	fmt.Printf("%s|%d|%d|%s|%s\n",
-		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3,
+		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version7,
 		protocol.NetworkUnix, os.Getenv(protocol.SocketEnv))
 }
+
+// fakeToken reads the per-launch token off the descriptor the host passed, the
+// way a real plugin's SDK does — which makes every test that talks to a fake
+// also a test that fd delivery works end to end.
+//
+// Once, because the descriptor yields the token and then EOF: a second read
+// would find nothing. An empty result is a failed read, and [fakeHandler]
+// refuses every request rather than letting "" match an absent header.
+var fakeToken = sync.OnceValue(func() string {
+	fd, err := strconv.Atoi(os.Getenv(protocol.TokenFDEnv))
+	if err != nil {
+		return ""
+	}
+
+	file := os.NewFile(uintptr(fd), "token")
+	if file == nil {
+		return ""
+	}
+	defer file.Close()
+
+	token, err := protocol.ReadToken(file)
+	if err != nil {
+		return ""
+	}
+
+	// A test that needs the exact value this launch minted says where to leave
+	// it. Only TestTheTokenIsNotInTheProcessEnvironment sets this, and it needs
+	// the real string to prove that string is nowhere in /proc/<pid>/environ —
+	// an assertion about the variable name alone would pass on a host that had
+	// merely renamed it.
+	if sink := os.Getenv("FLOWSTATE_TEST_TOKEN_SINK"); sink != "" {
+		_ = os.WriteFile(sink, []byte(token), 0o600)
+	}
+
+	return token
+})
 
 // fakeHandler builds the services this fake serves.
 func fakeHandler(mode string) (http.Handler, error) {
@@ -330,7 +406,7 @@ func fakeHandler(mode string) (http.Handler, error) {
 		connect.WithInterceptors(connect.UnaryInterceptorFunc(
 			func(next connect.UnaryFunc) connect.UnaryFunc {
 				return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-					if req.Header().Get(protocol.TokenHeader) != os.Getenv(protocol.TokenEnv) {
+					if want := fakeToken(); want == "" || req.Header().Get(protocol.TokenHeader) != want {
 						return nil, connect.NewError(connect.CodePermissionDenied,
 							errors.New("missing or wrong plugin token"))
 					}
@@ -477,6 +553,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 			NeedsScope:    true,
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
 
 	case "identity-stream":
@@ -496,9 +573,10 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			InputMessage:  "flowstate.v1.Task.Log.Inputs",
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
 
-	case "secret-task", "secret-task-error":
+	case "secret-task", "secret-task-error", "secret-task-log", "secret-task-stdout", "secret-task-health", "secret-task-health-error":
 		// Declares one input, "message", as accepting a host secret reference —
 		// the manifest field TestResolvePluginSecretInputs* and
 		// TestPluginTaskResolvesAndScrubsHostSecret exist to exercise.
@@ -510,6 +588,7 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 			SecretInputs:  []string{"message"},
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
 
 	default:
@@ -528,7 +607,63 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			InputMessage:  "flowstate.v1.Task.Log.Inputs",
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 		}}
+		setFixtureOutputManifest(base.Tasks...)
 		return base, nil
+	}
+}
+
+var fixtureOutputDescriptor = sync.OnceValues(func() (protoreflect.MessageDescriptor, error) {
+	names := []string{
+		"deployment_default", "echo", "error", "has_scope", "http_proxy",
+		"identity_namespace", "loopback", "metadata", "mode", "namespace",
+		"private", "public", "public_url", "received", "refusal", "result", "subject",
+	}
+	fields := make([]*descriptorpb.FieldDescriptorProto, 0, len(names))
+	for i, name := range names {
+		fields = append(fields, &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String(name),
+			Number:   proto.Int32(int32(i + 1)),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+			TypeName: proto.String(".google.api.expr.v1alpha1.Value"),
+		})
+	}
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:       proto.String("flowstate/tests/pluginfixture/v1/outputs.proto"),
+		Package:    proto.String("flowstate.tests.pluginfixture.v1"),
+		Syntax:     proto.String("proto3"),
+		Dependency: []string{"google/api/expr/v1alpha1/value.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name:  proto.String("Outputs"),
+			Field: fields,
+		}},
+	}, protoregistry.GlobalFiles)
+	if err != nil {
+		return nil, err
+	}
+	return file.Messages().ByName("Outputs"), nil
+})
+
+func fixtureOutputMessage() proto.Message {
+	descriptor, err := fixtureOutputDescriptor()
+	if err != nil {
+		panic(err)
+	}
+	return dynamicpb.NewMessage(descriptor)
+}
+
+func setFixtureOutputManifest(tasks ...*pluginv1.TaskManifest) {
+	descriptor, err := fixtureOutputDescriptor()
+	if err != nil {
+		panic(err)
+	}
+	raw, name, err := flowstatev1.MessageDescriptorBytes(descriptor)
+	if err != nil {
+		panic(err)
+	}
+	for _, task := range tasks {
+		task.OutputDescriptor = raw
+		task.OutputMessage = name
 	}
 }
 
@@ -539,6 +674,8 @@ type fakePluginService struct {
 	manifest *pluginv1.PluginManifest
 	mode     string
 }
+
+var fakeHealthMessage atomic.Value
 
 func (s *fakePluginService) Describe(context.Context, *connect.Request[pluginv1.DescribeRequest]) (*connect.Response[pluginv1.DescribeResponse], error) {
 	if s.mode == "describe-fails" {
@@ -556,6 +693,15 @@ func (s *fakePluginService) Health(context.Context, *connect.Request[pluginv1.He
 		}), nil
 	case "health-fails":
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("cannot answer"))
+	case "secret-task-health":
+		message, _ := fakeHealthMessage.Load().(string)
+		return connect.NewResponse(&pluginv1.HealthResponse{
+			Status:  pluginv1.HealthResponse_STATUS_NOT_SERVING,
+			Message: strings.Repeat("x", 1000) + message,
+		}), nil
+	case "secret-task-health-error":
+		message, _ := fakeHealthMessage.Load().(string)
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("backend reflected %s", message))
 	default:
 		return connect.NewResponse(&pluginv1.HealthResponse{
 			Status: pluginv1.HealthResponse_STATUS_SERVING,
@@ -595,6 +741,16 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pl
 	case name == "empty":
 		return connect.NewResponse(&pluginv1.ResolveResponse{}), nil
 
+	case name == "from-environment":
+		// The probe for Config.EnvByPlugin: this fake answers out of its own
+		// process environment, which a plugin inherits nothing of and receives
+		// only what the deployment configured for it by name.
+		value, ok := os.LookupEnv(fakeConfigEnv)
+		if !ok {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("no "+fakeConfigEnv+" in this plugin's environment"))
+		}
+		return connect.NewResponse(&pluginv1.ResolveResponse{Value: []byte(value)}), nil
+
 	case name == "leased":
 		// A backend that issues short-lived credentials and says so, which is the
 		// only party that knows.
@@ -616,6 +772,12 @@ func (s *fakeSecretService) Resolve(ctx context.Context, req *connect.Request[pl
 
 	return connect.NewResponse(&pluginv1.ResolveResponse{Value: []byte(value)}), nil
 }
+
+// fakeConfigEnv is the variable the fake plugin's "from-environment" secret
+// answers out of, standing in for the real ones a deployment configures a
+// plugin with — plugins/codex's base config path, plugins/git's own secret
+// variables.
+const fakeConfigEnv = "FLOWSTATE_TEST_PLUGIN_CONFIG"
 
 // sleepyTaskDuration is how long the "sleepy" fake below works before it
 // answers. It has to be comfortably longer than the CallTimeout its tests
@@ -727,6 +889,27 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 		// task's own scrubber protects against a reflecting server.
 		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("backend said: %s", received))
+
+	case "secret-task-log":
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		fmt.Fprintln(os.Stderr, received)
+		fmt.Fprintln(os.Stderr, base64.StdEncoding.EncodeToString([]byte(received)))
+		fmt.Fprintf(os.Stderr, "{\"token\":%q}\n", received)
+		go func() {
+			time.Sleep(25 * time.Millisecond)
+			fmt.Fprintf(os.Stderr, "late: %s\n", received)
+		}()
+		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
+
+	case "secret-task-stdout":
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		fmt.Fprintln(os.Stdout, received)
+		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
+
+	case "secret-task-health", "secret-task-health-error":
+		received := req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()
+		fakeHealthMessage.Store(received)
+		return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}}), nil
 	}
 
 	// Echo back what came in, plus what the request carried about the workload,
@@ -863,24 +1046,33 @@ func (w testWriter) Write(p []byte) (int, error) {
 
 // newCapturingLogger logs both to the test's output and into a buffer, so a
 // test can assert on what was logged as well as read it on a failure.
-func newCapturingLogger(t *testing.T, into *strings.Builder) *slog.Logger {
+func newCapturingLogger(t *testing.T, into *capturedLogs) *slog.Logger {
 	t.Helper()
 
-	var mu sync.Mutex
-	capture := writerFunc(func(p []byte) (int, error) {
-		mu.Lock()
-		into.Write(p)
-		mu.Unlock()
-		return testWriter{t}.Write(p)
-	})
-
-	return slog.New(slog.NewTextHandler(capture, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return slog.New(slog.NewTextHandler(
+		io.MultiWriter(into, testWriter{t}),
+		&slog.HandlerOptions{Level: slog.LevelDebug},
+	))
 }
 
-// writerFunc adapts a function to io.Writer.
-type writerFunc func([]byte) (int, error)
+// capturedLogs synchronizes writes from asynchronous log pumps with test
+// assertions that inspect the captured text.
+type capturedLogs struct {
+	mu      sync.Mutex
+	builder strings.Builder
+}
 
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+func (c *capturedLogs) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.builder.Write(p)
+}
+
+func (c *capturedLogs) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.builder.String()
+}
 
 // fmtSprint formats a value, for the containment checks that have to try every
 // verb rather than assume one.

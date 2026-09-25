@@ -80,17 +80,21 @@ func AssertRunMetrics(tb testing.TB, reader *sdkmetric.ManualReader, driver, wor
 			metricschema.InstrumentRunStarts, startPoints[0].Count)
 	}
 	wantStartAttrs := map[string]string{
-		metricschema.WorkflowName: workflowName,
-		metricschema.Driver:       driver,
+		metricschema.Driver: driver,
+	}
+	if workflowName != "" {
+		wantStartAttrs[metricschema.WorkflowName] = workflowName
 	}
 	if !sameAttributes(startPoints[0].Attributes, wantStartAttrs) {
 		tb.Fatalf("%s carries %v, want %v", metricschema.InstrumentRunStarts, startPoints[0].Attributes, wantStartAttrs)
 	}
 
 	wantOutcomeAttrs := map[string]string{
-		metricschema.WorkflowName: workflowName,
-		metricschema.Driver:       driver,
-		metricschema.RunOutcome:   wantOutcome,
+		metricschema.Driver:     driver,
+		metricschema.RunOutcome: wantOutcome,
+	}
+	if workflowName != "" {
+		wantOutcomeAttrs[metricschema.WorkflowName] = workflowName
 	}
 	if wantErrorType != "" {
 		wantOutcomeAttrs[metricschema.ErrorType] = wantErrorType

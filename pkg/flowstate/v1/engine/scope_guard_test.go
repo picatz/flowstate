@@ -91,6 +91,12 @@ var exemptScopeConstruction = map[string]string{
 		"composed, since the resolved key is what composes it. The scope is never an activity argument: the literal is " +
 		"digested into the id and discarded, and nothing inside a run ever reads the block.",
 
+	"pkg/flowstate/v1/server/server.go#debugPolicyMemoEntry": "the same shape as ResolveSignalPolicySubjects below, for the " +
+		"`debug:` stanza: it resolves `subject:` expressions at submit, against the run's bound inputs, before the run " +
+		"exists and so before there is a run identity to carry. The scope is discarded once the policy is encoded into " +
+		"the memo; it is never an activity argument, and the identity a debug policy decides on is the *asker's*, " +
+		"attested at delivery.",
+
 	"pkg/flowstate/v1/signalpolicy.go#ResolveSignalPolicySubjects": "resolves `subject_from:` expressions in the server, at " +
 		"submit, against the run's inputs — before the run exists and so before there is a run identity to carry. The scope " +
 		"is never an activity argument, and the identity a signal policy decides on is the *sender's*, attested at delivery.",
@@ -112,6 +118,11 @@ var exemptScopeConstruction = map[string]string{
 
 	"pkg/flowstate/v1/webhook.go#BindWebhookTriggerInputs": "a trigger is evaluated before there is a run to have an " +
 		"identity — the scope holds `event` and nothing else, deliberately, and the site says so.",
+
+	"pkg/flowstate/v1/webhooksignal.go#BindWebhookTriggerSignal": "the bridge's half of the same evaluation, and the " +
+		"same reason: the receiver evaluates `correlate:` and the payload against `event` alone, in the server " +
+		"process, before it has resolved which run the delivery even answers — so there is no run identity to " +
+		"carry, and the scope is never an activity argument.",
 
 	"pkg/flowstate/v1/flowtest/run.go#runCase": "the transcript's redaction set (#929) is built from the case's bound " +
 		"inputs through the same sensitiveNativeValues the stub diagnostics use, which reads a scope's inputs and " +

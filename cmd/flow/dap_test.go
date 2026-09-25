@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,10 +29,204 @@ import (
 
 // dapConn is one framed conversation with the adapter's stdio.
 type dapConn struct {
-	t   *testing.T
-	in  io.Writer
-	out *bufio.Reader
-	seq int
+	t    *testing.T
+	in   io.Writer
+	out  *bufio.Reader
+	seq  int
+	seen strings.Builder
+}
+
+const dapSensitiveValue = "s3cr3t-value-nothing-may-print"
+
+func TestFlowDAPRefusesSensitiveWorkflowWithoutReveal(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: `+dapSensitiveValue+`
+inputs:
+  token:
+    type: string
+    sensitive: true
+    default: `+dapSensitiveValue+`
+steps:
+  - id: first
+    value: "'hello'"
+outputs: {}
+`), 0o600))
+
+	stdout, stderr := flowDAPRefusal(t, workflow)
+	require.NotContains(t, stdout, dapSensitiveValue)
+	require.NotContains(t, stderr, dapSensitiveValue)
+}
+
+func TestFlowDAPRefusesSensitiveEmbeddedWorkflowWithoutReveal(t *testing.T) {
+	dir := t.TempDir()
+	callee := filepath.Join(dir, "callee.yaml")
+	require.NoError(t, os.WriteFile(callee, []byte(`edition: v2026.3
+name: sensitive-callee
+inputs:
+  token:
+    type: string
+    sensitive: true
+    default: `+dapSensitiveValue+`
+steps:
+  - id: inside
+    value: ${inputs.token}
+outputs: {}
+`), 0o600))
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: ordinary-caller
+steps:
+  - id: called
+    call: ./callee.yaml
+outputs: {}
+`), 0o600))
+
+	stdout, stderr := flowDAPRefusal(t, workflow)
+	require.NotContains(t, stdout, dapSensitiveValue)
+	require.NotContains(t, stderr, dapSensitiveValue)
+}
+
+func TestFlowDAPWithholdsDiagnosticsForAnInvalidWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: invalid-sensitive-probe
+steps:
+  - id: first
+    value: '${["`+dapSensitiveValue+`"]'
+outputs: {}
+`), 0o600))
+
+	stdout, stderr := flowDAPRefusal(t, workflow)
+	require.Contains(t, stdout, "workflow diagnostics withheld")
+	require.NotContains(t, stdout, dapSensitiveValue)
+	require.NotContains(t, stderr, dapSensitiveValue)
+}
+
+func TestFlowDAPReportsMissingWorkflowWithoutReveal(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-workflow.yaml")
+
+	stdout, stderr := flowDAPFailedLaunch(t, missing, "missing-workflow.yaml")
+	require.Contains(t, stdout, "missing-workflow.yaml")
+	require.NotContains(t, stdout, "workflow diagnostics withheld")
+	require.NotContains(t, stdout, "--reveal-sensitive")
+	require.Empty(t, stderr)
+}
+
+func TestFlowDAPRevealsSensitiveWorkflowOnlyWhenExplicitlyRequested(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: sensitive-probe
+inputs:
+  token:
+    type: string
+    sensitive: true
+    default: `+dapSensitiveValue+`
+steps:
+  - id: first
+    value: "'hello'"
+outputs: {}
+`), 0o600))
+
+	for _, test := range []struct {
+		name       string
+		commandArg []string
+		launchArg  map[string]any
+	}{
+		{"adapter flag", []string{"--reveal-sensitive"}, map[string]any{}},
+		{"launch configuration", nil, map[string]any{"revealSensitive": true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := append([]string{"dap"}, test.commandArg...)
+			cmd := flowBinaryCommand(buildFlowBinary(t), args...)
+			stdin, err := cmd.StdinPipe()
+			require.NoError(t, err)
+			stdout, err := cmd.StdoutPipe()
+			require.NoError(t, err)
+			require.NoError(t, cmd.Start())
+			t.Cleanup(func() {
+				_ = stdin.Close()
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			})
+
+			conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+			conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+			conn.await("response", "initialize")
+			conn.await("event", "initialized")
+			launch := map[string]any{"program": workflow}
+			maps.Copy(launch, test.launchArg)
+			conn.send("launch", launch)
+			conn.await("response", "launch")
+			conn.send("configurationDone", nil)
+			conn.await("response", "configurationDone")
+			conn.await("event", "stopped")
+
+			conn.send("evaluate", map[string]any{"expression": "inputs.token", "frameId": 1})
+			evaluated := conn.await("response", "evaluate")
+			require.Equal(t, true, evaluated["success"])
+			require.Contains(t, evaluated["body"].(map[string]any)["result"], dapSensitiveValue)
+		})
+	}
+}
+
+func flowDAPRefusal(t *testing.T, workflow string) (stdoutText, stderrText string) {
+	t.Helper()
+	stdoutText, stderrText = flowDAPFailedLaunch(t, workflow, "--reveal-sensitive")
+	require.Contains(t, stdoutText, "--reveal-sensitive")
+	require.Contains(t, stdoutText, "revealSensitive")
+	return stdoutText, stderrText
+}
+
+func flowDAPFailedLaunch(t *testing.T, workflow, messageFragment string) (stdoutText, stderrText string) {
+	t.Helper()
+
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+	conn.await("response", "initialize")
+	conn.await("event", "initialized")
+	conn.send("launch", map[string]any{"program": workflow})
+	conn.await("response", "launch")
+	conn.send("configurationDone", nil)
+	conn.await("response", "configurationDone")
+
+	var failure strings.Builder
+	for range 30 {
+		message := conn.read()
+		encoded, marshalErr := json.Marshal(message)
+		require.NoError(t, marshalErr)
+		failure.Write(encoded)
+		require.NotEqual(t, "stopped", message["event"], "the refused workflow started")
+		if message["event"] == "output" && strings.Contains(string(encoded), messageFragment) {
+			break
+		}
+	}
+	require.Contains(t, failure.String(), messageFragment)
+
+	exited := conn.await("event", "exited")
+	require.Equal(t, float64(1), exited["body"].(map[string]any)["exitCode"])
+	_ = stdin.Close()
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	return conn.seen.String(), stderr.String()
 }
 
 // send writes one request, framed as the protocol requires.
@@ -74,6 +269,7 @@ func (c *dapConn) read() map[string]any {
 	body := make([]byte, length)
 	_, err := io.ReadFull(c.out, body)
 	require.NoError(c.t, err)
+	c.seen.Write(body)
 
 	var message map[string]any
 	require.NoError(c.t, json.Unmarshal(body, &message), "the adapter wrote a frame that is not JSON: %s", body)
@@ -220,6 +416,66 @@ outputs: {}
 	conn.await("event", "terminated")
 }
 
+// TestFlowDAPAcceptsAPluginTask proves the editor front reaches the same launched
+// plugin registry and worker-side secret runtime as `flow run local
+// --plugin-dir`. The example plugin contributes both the task and the example:
+// provider; resolving through it proves the adapter did not launch the host with
+// a nil registry or execute without installing the resulting task runtime.
+func TestFlowDAPAcceptsAPluginTask(t *testing.T) {
+	dir := t.TempDir()
+	workflow := filepath.Join(dir, "workflow.yaml")
+	policy := filepath.Join(dir, "auth.yaml")
+	t.Setenv("EXAMPLE_SECRET_API_KEY", "dap-test-token")
+	require.NoError(t, os.WriteFile(policy, []byte(`issuers:
+  - name: local
+    issuer: https://issuer.example
+    audiences: [flowstate]
+    algorithms: [RS256]
+secrets:
+  allow: ['true']
+`), 0o600))
+	require.NoError(t, os.WriteFile(workflow, []byte(`edition: v2026.3
+name: plugin-debug
+steps:
+  - id: hello
+    example.greet:
+      greeting: Hello
+      name: debugger
+      token: ${secret('example:api-key')}
+outputs: {}
+`), 0o600))
+
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap",
+		"--plugin-dir", buildExamplePluginDir(t),
+		"--auth-policy", policy)
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	conn := &dapConn{t: t, in: stdin, out: bufio.NewReader(stdout)}
+	conn.send("initialize", map[string]any{"adapterID": "flowstate"})
+	conn.await("response", "initialize")
+	conn.await("event", "initialized")
+	conn.send("launch", map[string]any{"program": workflow})
+	conn.await("response", "launch")
+	conn.send("configurationDone", nil)
+	conn.await("response", "configurationDone")
+	entry := conn.await("event", "stopped")
+	assert.Equal(t, "entry", entry["body"].(map[string]any)["reason"],
+		"the plugin-backed workflow did not reach a debuggable run")
+
+	conn.send("continue", map[string]any{"threadId": 1})
+	conn.await("response", "continue")
+	conn.await("event", "terminated")
+}
+
 // TestFlowDAPValidatesBeforeItRunsAnything is the side effect somebody cannot
 // take back.
 //
@@ -267,7 +523,9 @@ outputs: {}
 	require.NoError(t, err)
 	require.NotEmpty(t, diagnostics, "the fixture validates, so there is nothing for this to catch")
 
-	cmd := flowBinaryCommand(buildFlowBinary(t), "dap")
+	// Reveal authorizes the invalid file's source diagnostics. The default DAP
+	// posture withholds them because no valid specification exists to classify.
+	cmd := flowBinaryCommand(buildFlowBinary(t), "dap", "--reveal-sensitive")
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()
@@ -346,4 +604,39 @@ func TestFlowDAPAtATerminalSaysWhatItIs(t *testing.T) {
 	var interactive strings.Builder
 	writeStdioBanner(&interactive, true, dapBanner)
 	assert.Equal(t, dapBanner, interactive.String())
+}
+
+// TestFlowDAPRefusesAPolicyItCannotLoad is the fail-closed half of giving this
+// adapter the deployment policy flags (#1119).
+//
+// `flow dap` runs the workflow its client names, with this operator's secret
+// providers and plugins behind it, so it is a real local execution surface. It
+// took neither --egress-policy nor --task-policy, which meant a rehearsal here
+// ran under the permissive defaults while the worker it is rehearsing enforced
+// an operator's file — a Flowfile could resolve an allowed secret and send it
+// to a public endpoint an egress policy would have refused.
+//
+// The claim is the order as much as the refusal: both policies load before any
+// plugin process starts and before a client can name a program, so a policy
+// that cannot be read refuses the adapter rather than leaving it serving under
+// the defaults.
+func TestFlowDAPRefusesAPolicyItCannotLoad(t *testing.T) {
+	t.Parallel()
+
+	for _, flag := range []string{"egress-policy", "task-policy"} {
+		t.Run(flag, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := newDAPCommand()
+			missing := filepath.Join(t.TempDir(), "absent.yaml")
+			require.NoError(t, cmd.Flags().Set(flag, missing))
+
+			// No stdin is wired, so reaching the protocol server at all would
+			// block rather than return: an error naming the file is therefore
+			// also evidence that nothing was served.
+			err := runDAP(cmd, nil)
+			require.Error(t, err, "a policy file that cannot be read was accepted")
+			require.Contains(t, err.Error(), missing)
+		})
+	}
 }

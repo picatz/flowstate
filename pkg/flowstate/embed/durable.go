@@ -45,6 +45,9 @@ import (
 // installed — a worker that started anyway would poll for activities it can
 // never actually execute, which is a `flow worker` misconfiguration this
 // package can catch before the worker takes its first task.
+// The installed set must also be complete before RunDurable: worker registration
+// freezes its task-capability names for admission, just as it freezes the task
+// functions dispatch will use for the worker's lifetime.
 //
 // runtime configures the worker-side authority available to every task this
 // worker runs — the durable counterpart to [RunOptions.Secrets] — built with

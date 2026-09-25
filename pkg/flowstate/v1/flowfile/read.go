@@ -42,10 +42,12 @@ func readBoundedSource(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if info.Mode().IsDir() {
+		return nil, fmt.Errorf("%s is a directory; name the Flowfile inside it", path)
+	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf(
-			"%s is not a regular file (%s); a Flowfile is read as bytes, and a device, pipe "+
-				"or directory has no size a bound could be checked against",
+			"%s is not a regular file (%s); name a regular file instead",
 			path, info.Mode().Type())
 	}
 

@@ -59,6 +59,12 @@ func buildExamplePluginDir(t *testing.T) string {
 		t.Skip("building the example plugin is slow; the flag wiring is covered without it")
 	}
 
+	// Every test that builds this directory goes on to launch the plugin,
+	// which registers `example.greet` into the process-wide registry with
+	// no undo of its own. The undo is here, so the registration ends with
+	// the test rather than with the binary (#1727).
+	restoreDefaultRegistryAfter(t)
+
 	dir, err := builtExamplePluginDir()
 	require.NoError(t, err, "building the example plugin")
 
@@ -179,13 +185,11 @@ func mcpValidateDiagnostics(t *testing.T, posture *cobra.Command, source string)
 // through the same [startPlugins] — a flag with nothing behind it would still
 // pass [TestTheMCPServerTakesThePluginFlags] above.
 //
-// Registering into [v1.DefaultRegistry] is a one-way door (see
-// [plugin.Host.Register]'s own doc), so the absence is asserted *first*: once
-// this test registers the example plugin, "example.greet" is in this test
-// binary's catalog for good. That is the same tradeoff
-// server.TestGetCatalogAnswersWithTheCatalog already accepts by asserting
-// Contains against the live registry rather than an exact set — there is no
-// Unregister for a test to restore either.
+// Registering into [v1.DefaultRegistry] is a one-way door for the host (see
+// [plugin.Host.Register]'s own doc), so the absence is asserted *first*, and
+// [buildExamplePluginDir] puts the registry back when this test ends, so a
+// test that ran before it and launched the plugin has already been undone
+// and "example.greet" is absent whatever the order (#1727).
 func TestPluginDirWiresPluginTasksIntoTheMCPSurface(t *testing.T) {
 	dir := buildExamplePluginDir(t)
 
@@ -225,4 +229,45 @@ steps:
 
 	assert.Empty(t, mcpValidateDiagnostics(t, with, workflow),
 		"a step naming a now-registered plugin task still failed to validate")
+}
+
+func TestMCPRunLocalRoutesAPluginProvidedSecretThroughTheLaunchRegistry(t *testing.T) {
+	dir := buildExamplePluginDir(t)
+
+	posture := &cobra.Command{Use: "mcp"}
+	addLocalRunFlags(posture)
+	addPluginFlags(posture)
+	posture.SetContext(t.Context())
+	require.NoError(t, posture.Flags().Set("plugin-dir", dir))
+	require.NoError(t, posture.Flags().Set("auth-policy", localSecretPolicy(t)))
+
+	providers, err := localSecretProviders(posture)
+	require.NoError(t, err)
+	t.Cleanup(providers.close)
+
+	_, closePlugins, err := startPlugins(posture, providers.registry)
+	require.NoError(t, err, "starting the example plugin")
+	t.Cleanup(closePlugins)
+
+	session := connectMCPWithProviders(t, posture, providers)
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.RunLocalToolName,
+		Arguments: map[string]any{"source": `edition: v2026.3
+name: greet
+steps:
+  - id: hi
+    example.greet:
+      name: world
+      token: ${secret("example:token")}
+`},
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	require.Len(t, result.Content, 1)
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, `no secret \"token\"`,
+		"MCP run_local did not route the reference to the provider registered by the plugin")
+	assert.Contains(t, text, "EXAMPLE_SECRET_TOKEN",
+		"MCP run_local did not route the reference to the provider registered by the plugin")
+	assert.NotContains(t, text, "unknown secret scheme")
 }

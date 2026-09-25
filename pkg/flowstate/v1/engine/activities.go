@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
@@ -91,7 +93,7 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 	// — see engine/workflow.go's varsScope, "Never Local", and
 	// [v1.CheckTaskPolicy]'s own doc for what this parameter can and cannot
 	// affect.
-	if err := v1.CheckTaskPolicy(ctx, task.GetName(), identity, false); err != nil {
+	if err := v1.CheckTaskPolicy(dispatchAttempt(ctx), task.GetName(), identity, false); err != nil {
 		recordTaskOutcome(span, err)
 		// Never benign: a deployment's task-shape policy denying dispatch is
 		// not the failure `continue_on_error:` describes — it is the
@@ -101,6 +103,40 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 		return activityError(task.GetName(), err, false)
 	}
 	return nil
+}
+
+// dispatchAttempt tells the shared dispatch check which attempt at this
+// dispatch it is running under.
+//
+// Temporal retries an activity by invoking it again, so this check — which
+// lives inside the activity — runs once per attempt, as the local driver's
+// now does inside its own retry loop. Each attempt is a dispatch that was
+// decided, and each decision is recorded against the attempt it belongs to,
+// so the record needs to know which one this is (Codex,
+// picatz/flowstate#1394). The substrate is asked rather than a counter
+// threaded through, the way [observeTask] asks it for the span's attempt, and
+// guarded the same way, because activity.GetInfo panics outside an activity
+// context.
+func dispatchAttempt(ctx context.Context) context.Context {
+	if !activity.IsActivity(ctx) {
+		return ctx
+	}
+
+	info := activity.GetInfo(ctx)
+	ctx = v1.NewContextWithDispatchID(ctx, durableDispatchID(info))
+
+	return v1.NewContextWithDispatchAttempt(ctx, int(info.Attempt))
+}
+
+// durableDispatchID returns a stable, globally useful identity for one
+// activity across its Temporal retries. ActivityID alone is unique only inside
+// one workflow execution and commonly repeats as a small sequence number, so
+// hash all three durable coordinates. The opaque fixed-width form also keeps a
+// caller-chosen workflow id out of the audit record and under its size bound.
+func durableDispatchID(info activity.Info) string {
+	sum := sha256.Sum256([]byte(info.WorkflowExecution.ID + "\x00" + info.WorkflowExecution.RunID + "\x00" + info.ActivityID))
+
+	return hex.EncodeToString(sum[:])
 }
 
 // Task is a Temporal activity that executes a single task.
@@ -265,8 +301,9 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOn
 // retryability from the error's application type, so an unclassified error is
 // retried until the attempt budget is exhausted — which for a deterministic
 // failure wastes the budget, and for a non-idempotent request repeats an
-// operation that already took effect. Classification happens in the
-// execution-independent layer; this function only maps it onto the substrate.
+// operation that already took effect. Classification and structured attempt
+// permission happen in the execution-independent layer; this function only
+// maps them onto the substrate.
 //
 // continueOnError is the step's own `continue_on_error:` (#750), threaded in
 // from every caller's own parameter of the same name — see [Task]'s doc for
@@ -309,7 +346,7 @@ func activityError(taskName string, err error, continueOnError bool) error {
 		category = temporal.ApplicationErrorCategoryBenign
 	}
 
-	if kind.Retryable() {
+	if v1.RetryPermitted(err) {
 		// A failure that told us when to come back gets that carried to the
 		// substrate, which schedules the next attempt. The alternative — sleeping
 		// where the failure happened — would hold a worker slot for the duration.
@@ -356,15 +393,15 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // observeTask runs one activity's work inside the task span and the duration
 // measurement, and adds the attempt, which is this driver's alone.
 //
-// The span and the instruments both come from [v1.ObserveTask], the one call
-// the local driver makes too, so the two drivers cannot end up naming an
+// The span and the instruments both come from [v1.ObserveTaskAttempt], the one
+// call the local driver makes too, so the two drivers cannot end up naming an
 // instrument or an attribute key differently — invariant 5 for a measurement
 // rather than for an outcome. What is added here is the attempt attribute and
 // the driver label, both of which only this side can supply.
 //
 // It takes the work rather than returning something to defer, so that an
 // activity whose task panics is recorded as the failure Temporal is about to
-// report rather than as a success. [v1.ObserveTask]'s doc has the whole
+// report rather than as a success. [v1.ObserveTaskAttempt]'s doc has the whole
 // argument, including why nothing on this path recovers the panic.
 //
 // The attempt is the substrate's, so it is asked of the substrate rather than
@@ -375,14 +412,22 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // *not* write this key from its own retry counter, which counts something else.
 // See [v1.StartTaskSpan]'s note on it.
 //
-// The attempt is deliberately *not* a metric attribute, only a span one: it is
-// bounded by a retry policy nobody promises to keep small, and a label whose
-// bound is somebody's configuration is the shape [metricschema] refuses.
+// The attempt is deliberately *not* a metric attribute: it is bounded by a
+// retry policy nobody promises to keep small, and a label whose bound is
+// somebody's configuration is the shape [metricschema] refuses.
+// ObserveTaskAttempt uses only whether it is greater than one to increment one
+// bounded retry series; which attempt it was remains span-only.
 func observeTask(ctx context.Context, task *v1.Task, stepID string, run func(context.Context, trace.Span) (*v1.Node_Outputs, error)) (*v1.Node_Outputs, error) {
-	return v1.ObserveTask(ctx, task, stepID, metricschema.DriverDurable,
+	attempt := 1
+	inActivity := activity.IsActivity(ctx)
+	if inActivity {
+		attempt = int(activity.GetInfo(ctx).Attempt)
+	}
+
+	return v1.ObserveTaskAttempt(ctx, task, stepID, metricschema.DriverDurable, attempt,
 		func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
-			if span.IsRecording() && activity.IsActivity(ctx) {
-				span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, int(activity.GetInfo(ctx).Attempt)))
+			if span.IsRecording() && inActivity {
+				span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, attempt))
 			}
 
 			return run(ctx, span)

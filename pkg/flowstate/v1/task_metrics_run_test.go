@@ -1,9 +1,13 @@
 package flowstatev1_test
 
 import (
+	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
@@ -23,6 +27,46 @@ func TestRunWorkflowTaskMetrics(t *testing.T) {
 	out, err := v1.Run(t.Context(), conformance.TaskMetricWorkflow())
 
 	conformance.AssertTaskMetrics(t, reader, metricschema.DriverLocal, out, err)
+}
+
+// TestRetryingTaskMetrics is the local caller of the shared retry case; the
+// engine package runs the same assertion through Temporal activity retries.
+func TestRetryingTaskMetrics(t *testing.T) {
+	var attempts atomic.Int32
+	registry := v1.DefaultRegistry()
+	require.NoError(t, registry.Register(conformance.TaskSpanRetryTaskDef(&attempts)))
+	t.Cleanup(func() { registry.Unregister(conformance.TaskSpanRetryTaskName) })
+
+	reader := conformance.RecordMetrics(t)
+	out, err := v1.Run(t.Context(), conformance.TaskSpanRetryWorkflow())
+
+	conformance.AssertTaskRetryMetrics(t, reader, metricschema.DriverLocal, out, err)
+}
+
+// TestAFailedRetryIsStillCounted pins the retry counter to the start of the
+// attempt rather than its terminal outcome. A move after successful completion
+// makes this mutation-sensitive case lose the retry while executions still
+// reports the failure.
+func TestAFailedRetryIsStillCounted(t *testing.T) {
+	reader := conformance.RecordMetrics(t)
+	task := &v1.Task{Name: "log"}
+	failure := v1.NewTaskError(task.GetName(), v1.ErrorKindUpstream,
+		errors.New("retry failed with "+conformance.TaskSpanSecret))
+
+	_, err := v1.ObserveTaskAttempt(t.Context(), task, "retrying", metricschema.DriverLocal, 2,
+		func(context.Context, trace.Span) (*v1.Node_Outputs, error) { return nil, failure })
+	require.ErrorIs(t, err, failure)
+
+	collected := conformance.CollectFlowstateMetrics(t, reader)
+	retries := collected[metricschema.InstrumentTaskRetries]
+	require.Len(t, retries, 1)
+	require.Equal(t, uint64(1), retries[0].Count,
+		"a started retry counts even when it terminates in failure")
+	executions := collected[metricschema.InstrumentTaskExecutions]
+	require.Len(t, executions, 1)
+	require.Equal(t, metricschema.OutcomeError, executions[0].Attributes[metricschema.TaskOutcome])
+	require.Equal(t, v1.ErrorKindUpstream.String(), executions[0].Attributes[metricschema.ErrorType],
+		"the bounded classification, not the secret-bearing error message, is exported")
 }
 
 // TestRunWorkflowRecordsNoMetricsWithoutAMeterProvider is the zero-config half,

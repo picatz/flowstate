@@ -1,0 +1,2 @@
+test-ordering: the flowtest package under -cpu=1, a build of its own.
+See README.md beside this file for why this file exists.

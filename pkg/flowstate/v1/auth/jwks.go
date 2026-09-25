@@ -8,13 +8,17 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwk"
@@ -124,6 +128,10 @@ type keySet struct {
 	cacheTTL     time.Duration
 	minRefresh   time.Duration
 	fetchTimeout time.Duration
+	// fixed marks keys loaded from jwks_file. They are immutable for this
+	// verifier's lifetime: rotation is an explicit file update and restart,
+	// never a request-triggered local reread.
+	fixed bool
 
 	mu sync.Mutex
 	// jwksURL is the discovered (or configured) key set URL, cached for the
@@ -157,6 +165,9 @@ func (ks *keySet) publicKey(ctx context.Context, keyID string, alg jwa.Algorithm
 	defer ks.mu.Unlock()
 
 	now := ks.clock()
+	if ks.fixed {
+		return ks.lookupLocked(keyID, alg)
+	}
 
 	cached := now.Before(ks.expiresAt)
 	if cached {
@@ -183,7 +194,7 @@ func (ks *keySet) publicKey(ctx context.Context, keyID string, alg jwa.Algorithm
 				ErrIssuerUnavailable, ks.issuer, (ks.minRefresh - elapsed).Round(time.Millisecond))
 		default:
 			return nil, fmt.Errorf("%w: %q, and the issuer's keys were refreshed %s ago",
-				ErrUnknownKey, truncate(keyID, maxClaimValueLength), elapsed.Round(time.Millisecond))
+				ErrUnknownKey, textbound.Truncate(keyID, maxClaimValueLength), elapsed.Round(time.Millisecond))
 		}
 	}
 
@@ -199,6 +210,13 @@ func (ks *keySet) publicKey(ctx context.Context, keyID string, alg jwa.Algorithm
 func (ks *keySet) prime(ctx context.Context) error {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
+
+	// File-backed sets are complete when the verifier is constructed. Priming
+	// must not replace an explicitly pinned local set through discovery, nor
+	// turn an offline configuration into a network-dependent startup.
+	if ks.fixed {
+		return nil
+	}
 
 	now := ks.clock()
 	if now.Before(ks.expiresAt) {
@@ -231,9 +249,9 @@ func (ks *keySet) lookupLocked(keyID string, alg jwa.Algorithm) (crypto.PublicKe
 		}
 		if known {
 			return nil, fmt.Errorf("%w: issuer key %q cannot verify a %q signature",
-				ErrDisallowedAlgorithm, truncate(keyID, maxClaimValueLength), alg)
+				ErrDisallowedAlgorithm, textbound.Truncate(keyID, maxClaimValueLength), alg)
 		}
-		return nil, fmt.Errorf("%w: %q", ErrUnknownKey, truncate(keyID, maxClaimValueLength))
+		return nil, fmt.Errorf("%w: %q", ErrUnknownKey, textbound.Truncate(keyID, maxClaimValueLength))
 	}
 
 	// A token without a "kid" is only unambiguous when exactly one published
@@ -301,7 +319,7 @@ func (ks *keySet) refreshLocked(ctx context.Context, now time.Time) error {
 
 	set, err := fetchJWKS(ctx, ks.client, jwksURL)
 	if err != nil {
-		ks.lastErr = fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, ks.issuer, err)
+		ks.lastErr = issuerUnavailable(ks.issuer, err)
 		return ks.lastErr
 	}
 
@@ -331,12 +349,24 @@ func (ks *keySet) resolveJWKSURLLocked(ctx context.Context) (string, error) {
 
 	jwksURL, err := discoverJWKSURL(ctx, ks.client, ks.issuer)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrIssuerUnavailable, err)
+		return "", issuerUnavailable(ks.issuer, err)
 	}
 
 	ks.jwksURL = jwksURL
 
 	return jwksURL, nil
+}
+
+// issuerUnavailable wraps a fetch error as [ErrIssuerUnavailable]. When the
+// underlying error is a policy denial ([*netpolicy.DenyError]), it returns an
+// [*IssuerBlockedError] instead, so that [PublicReason] and `flow auth check`
+// can distinguish "the egress policy refused this" from "the issuer did not
+// answer".
+func issuerUnavailable(issuer string, err error) error {
+	if denied, ok := errors.AsType[*netpolicy.DenyError](err); ok {
+		return &IssuerBlockedError{Issuer: issuer, Deny: denied}
+	}
+	return fmt.Errorf("%w: issuer %q: %w", ErrIssuerUnavailable, issuer, err)
 }
 
 // discoverJWKSURL fetches an issuer's OpenID Provider Metadata and returns the
@@ -359,7 +389,7 @@ func discoverJWKSURL(ctx context.Context, client *http.Client, issuer string) (s
 
 	if document.Issuer != issuer {
 		return "", fmt.Errorf("discovery document at %q declares issuer %q, want %q",
-			discoveryURL, truncate(document.Issuer, maxClaimValueLength), issuer)
+			discoveryURL, textbound.Truncate(document.Issuer, maxClaimValueLength), issuer)
 	}
 
 	if document.JWKSURI == "" {
@@ -390,6 +420,46 @@ func fetchJWKS(ctx context.Context, client *http.Client, jwksURL string) (*jwk.S
 		return nil, fmt.Errorf("key set at %q contains no keys", jwksURL)
 	}
 	return &set, nil
+}
+
+// loadJWKSFile reads and parses a local key set once, under the same byte and
+// key-shape bounds as a remote issuer response. A local file is configuration,
+// not a cache: callers cannot trigger a reread by inventing a key id.
+func loadJWKSFile(path string) ([]publicKey, error) {
+	// O_NONBLOCK makes opening a mistakenly named FIFO return so the descriptor
+	// can be rejected below instead of hanging server startup waiting for a
+	// writer. It has no effect on an ordinary file.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("opening jwks_file %q: %w", path, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspecting jwks_file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("jwks_file %q is not a regular file (%s)", path, info.Mode())
+	}
+
+	body, err := netpolicy.ReadLimited(file, maxJWKSBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading jwks_file %q: %w", path, err)
+	}
+
+	var set jwk.Set
+	if err := json.Unmarshal(body, &set); err != nil {
+		return nil, fmt.Errorf("decoding jwks_file %q: %w", path, err)
+	}
+	if len(set.Keys) == 0 {
+		return nil, fmt.Errorf("jwks_file %q contains no keys", path)
+	}
+
+	keys, err := parseJWKS(&set)
+	if err != nil {
+		return nil, fmt.Errorf("jwks_file %q: %w", path, err)
+	}
+	return keys, nil
 }
 
 // parseJWKS converts a JSON Web Key Set into the usable signing keys it
@@ -454,7 +524,7 @@ func parseJWK(value jwk.Value) (crypto.PublicKey, error) {
 		}
 		return key, nil
 	default:
-		return nil, fmt.Errorf("unsupported key type %q", truncate(keyType, 32))
+		return nil, fmt.Errorf("unsupported key type %q", textbound.Truncate(keyType, 32))
 	}
 }
 

@@ -63,6 +63,32 @@ var (
 // celEOF is how ANTLR spells "the input ended".
 const celEOF = "<EOF>"
 
+// cel-go's parser limits. These arrive without the syntax-error prefix and
+// without a position (line -1), because they are facts about the whole
+// expression rather than a token in it. Each is translated by shape so the
+// number cel-go reports is kept and the limit is named: the message's own noun
+// phrase sits before a colon, and reading the tail after it left an author
+// holding "250" (#1766).
+var (
+	// celRecursionLimit is the parser refusing to build a tree deeper than its
+	// configured depth. The number is the limit, not the depth reached.
+	celRecursionLimit = regexp.MustCompile(`^expression recursion limit exceeded: (\d+)$`)
+
+	// celSizeLimit is the parser refusing an expression longer than its
+	// code-point budget, with both the size seen and the limit.
+	celSizeLimit = regexp.MustCompile(`^expression code point size exceeds limit: size: (\d+), limit (\d+)$`)
+)
+
+// celDepthLimit is cel-go's other words for an expression that nests deeper
+// than its parser will descend: the ANTLR-level guard, which fires before the
+// expression-depth counter does on a long chain of binary operators (#1291).
+const celDepthLimit = "max recursion depth exceeded"
+
+// celSplitHelp is what to do about an expression a limit refused, whichever
+// limit it was: the parts have names once they are steps or `vars:`, and each
+// part is measured on its own.
+const celSplitHelp = "split it across `value:` steps or `vars:` and combine those instead"
+
 // TranslateCELMessage rewrites a cel-go parse failure into the vocabulary of the
 // person who wrote the expression.
 //
@@ -70,11 +96,26 @@ const celEOF = "<EOF>"
 // author's eye is already on when the parser ran out of input: "the expression
 // ends" is true but does not say where to type, and "ends after +" does.
 //
-// line and column are cel-go's 1-based position within src, or zero when it is
-// not known. Both are needed, not just the column: an expression may be several
-// lines (a block scalar is the common case), and cel-go's column is relative to
-// its line rather than to the start of the source.
+// line and column are cel-go's 1-based position within src; a line or column
+// below 1 means the position is not known, which is zero for a caller with
+// nothing to say and -1 for a parser limit, which cel-go reports about the
+// whole expression rather than a character in it. Both are needed, not just
+// the column: an expression may be several lines (a block scalar is the common
+// case), and cel-go's column is relative to its line rather than to the start
+// of the source.
 func TranslateCELMessage(msg, src string, line, column int) string {
+	if m := celRecursionLimit.FindStringSubmatch(msg); m != nil {
+		return fmt.Sprintf("nests more than %s levels of parentheses or calls, which is deeper "+
+			"than an expression is meant to go; %s", m[1], celSplitHelp)
+	}
+	if m := celSizeLimit.FindStringSubmatch(msg); m != nil {
+		return fmt.Sprintf("is %s characters, over the %s an expression may be; %s",
+			m[1], m[2], celSplitHelp)
+	}
+	if msg == celDepthLimit {
+		return "nests deeper than the parser will descend; " + celSplitHelp
+	}
+
 	rest, ok := strings.CutPrefix(msg, celSyntaxPrefix)
 	if !ok {
 		return msg

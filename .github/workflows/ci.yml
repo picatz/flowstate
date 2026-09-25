@@ -48,10 +48,11 @@ permissions:
 # govulncheck still reports newly disclosed vulnerabilities while pinned: the
 # advisory database is fetched at run time, so only the analyser is fixed here.
 # That is the split worth having — reproducible tool, current facts.
+# buf, govulncheck and staticcheck are not versioned here: they are `tool`
+# directives in tools/external/go.mod, run through `go tool -modfile`, so the
+# release is spelled once and Dependabot bumps it (#1729). Only the tools
+# fetched as binaries keep a pin in this block.
 env:
-  BUF_VERSION: v1.72.0
-  GOVULNCHECK_VERSION: v1.6.0
-  STATICCHECK_VERSION: 2026.2.1
   VHS_VERSION: v0.11.0
   TTYD_VERSION: 1.7.7
   TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
@@ -97,10 +98,19 @@ jobs:
     timeout-minutes: 5
     outputs:
       test: ${{ steps.plan.outputs.test }}
+      test_plugins: ${{ steps.plan.outputs.test_plugins }}
+      test_ordering: ${{ steps.plan.outputs.test_ordering }}
       proto: ${{ steps.plan.outputs.proto }}
       vulncheck: ${{ steps.plan.outputs.vulncheck }}
       staticcheck: ${{ steps.plan.outputs.staticcheck }}
       fuzz_smoke: ${{ steps.plan.outputs.fuzz_smoke }}
+      # Not a boolean: the smoke targets whose package this diff reaches,
+      # space-separated, which the fuzz-smoke job hands to `make fuzz-smoke`
+      # so it runs those rather than the tier (#1726). Every smoke target on
+      # a forced run. tools/gate/ci_test.go pins that this block forwards it,
+      # because an output the job does not forward reads as the empty string
+      # below — and for this one the empty string means "the whole tier".
+      fuzz_targets: ${{ steps.plan.outputs.fuzz_targets }}
       appearance: ${{ steps.plan.outputs.appearance }}
       # The same answers again as one JSON object, which is what the verdict
       # job reads. Deliberately the *same* object the `if:` expressions on the
@@ -144,15 +154,29 @@ jobs:
         id: plan
         run: go run ./tools/gate -ci
 
+
+  # ── The root suite, and the critical path ─────────────────────────────────
+  #
+  # The complete root race suite became 24 minutes when package binaries were
+  # serialized to keep independent Temporal servers from consuming one
+  # another's deadlines. In two measured runs, three independent packages
+  # accounted for 16m40s-17m47s of package execution. This matrix gives each
+  # one a runner and puts every other package in the rest lane, while every
+  # lane still invokes the same `make test` recipe contributors run. The
+  # matrix is one logical job to `needs.test.result`, so verdict remains the
+  # single fail-closed authority.
   test:
     needs: plan
     if: needs.plan.outputs.test == 'true'
     runs-on: ubuntu-latest
-    # A hung job otherwise runs to the six-hour default. Nothing here takes more
-    # than a few minutes, so this bounds a stuck dev server or a wedged test
-    # rather than constraining honest work — the same reasoning the engine
-    # applies to a step's own timeout.
-    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [engine, v1, cli, rest]
+    # The slowest measured lane is engine at 7m59s. Twenty minutes leaves five
+    # minutes after the test command's own 15-minute package deadline for a
+    # cold build, artifact upload, and final diagnostics.
+    timeout-minutes: 20
     steps:
       # persist-credentials: false everywhere in this workflow (and deep.yml,
       # and editors.yml): checkout otherwise leaves the job's GITHUB_TOKEN in
@@ -168,22 +192,20 @@ jobs:
       # version from go.mod keeps CI on exactly what local builds use, so a
       # toolchain-level security fix cannot be present locally and missing here.
       #
-      # cache-dependency-path names the plugin modules' go.sum files as well as
-      # the root one, because this job is the only one that builds them and
-      # setup-go's default key is the root go.sum alone. Without them the five
-      # plugin modules resolve and download their whole dependency graph on
-      # every run — which is why "Test plugin modules" takes ten to twenty
-      # minutes here against roughly one hundred seconds locally, on a job whose
-      # whole budget is fifteen. A separate module is the point of a plugin; the
-      # cost of that boundary is that its dependencies have to be cached
-      # deliberately rather than by default.
+      # cache-dependency-path names a lane-specific
+      # .github/cache-scope/test-${{ matrix.lane }} beside go.sum so each
+      # matrix lane's -race build cache has a key of its own rather than
+      # racing the other lanes and jobs that key on go.sum. See the README
+      # beside it.
+      # The plugin modules' go.sum files moved to test-plugins' key with the
+      # step that needs them.
       #
       # `cache:` below turns off *saving* to that cache for a fork PR's run,
       # while leaving restore alone. setup-go's default caching issues a cache
       # write token regardless of this job's `permissions:` block — cache
       # scoping is a property of the ref, not of what the workflow declares —
       # so contents: read does not touch it. Every job in this workflow runs
-      # `go test`, `go vet`, or a `go run pkg@pinned-version` that builds
+      # `go test`, `go vet`, or a `go tool` that builds
       # third-party code fresh, and a fork PR is the one context here where
       # that third-party code is untrusted. A poisoned entry a fork PR's run
       # planted would still need a same-repo run to *save* it before anything
@@ -196,16 +218,18 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
-            plugins/*/go.sum
+            .github/cache-scope/test-${{ matrix.lane }}
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       - name: Report toolchain
         run: go version
 
       - name: Build
+        if: matrix.lane == 'rest'
         run: go build ./...
 
       - name: Vet
+        if: matrix.lane == 'rest'
         run: go vet ./...
 
       # Cheap, and it stays cheap only while it is enforced. Two files had drifted
@@ -213,8 +237,9 @@ jobs:
       # saw — formatting noise then rides along in the next real diff and makes it
       # harder to review than it needed to be.
       - name: Format
+        if: matrix.lane == 'rest'
         run: |
-          unformatted=$(gofmt -l ./cmd ./pkg)
+          unformatted=$(gofmt -l ./cmd ./pkg ./internal ./tools ./examples ./plugins)
           if [ -n "$unformatted" ]; then
             echo "::error::not gofmt'd; run 'gofmt -w' on:"
             echo "$unformatted"
@@ -224,29 +249,42 @@ jobs:
       # `make test`, not a second copy of the command, so the memory and time
       # bounds cannot drift between here and the loop a contributor runs
       # locally. CLAUDE.md's rule is that the Makefile *is* what CI runs.
-      - name: Test
-        run: make test
-
-      # The plugins are separate Go modules, which is the point of them: a plugin
-      # owns its dependencies so an operator decides whether to trust them, and
-      # nothing a plugin needs reaches the engine's own go.mod.
       #
-      # The cost of that boundary is that `./...` from the root does not cross it.
-      # Every check above would stay green with a plugin that does not compile, so
-      # the modules are walked explicitly. Found by looking rather than by a
-      # failure, which is the only way this class is ever found — a module nobody
-      # builds is not red, it is absent.
-      - name: Test plugin modules
-        run: make test-plugins
+      # The target pipes `go test -json` through tools/testsum (#1727), which
+      # is what turns a failing test into an inline annotation on the Files
+      # tab and a row in this job's summary — before it, this step was five
+      # minutes of plain text and a failure was a `--- FAIL` line somewhere in
+      # it. TEST_JSON keeps the raw stream for the artifact step below, so
+      # the summary is the short answer and the record is still there.
+      - name: Test
+        shell: bash
+        run: |
+          case "${{ matrix.lane }}" in
+            engine) packages='./pkg/flowstate/v1/engine' ;;
+            v1) packages='./pkg/flowstate/v1' ;;
+            cli) packages='./cmd/flow' ;;
+            rest)
+              packages=$(go list ./... | grep -vxF \
+                -e github.com/picatz/flowstate/pkg/flowstate/v1/engine \
+                -e github.com/picatz/flowstate/pkg/flowstate/v1 \
+                -e github.com/picatz/flowstate/cmd/flow | tr '\n' ' ')
+              ;;
+            *) echo "::error::unknown test lane ${{ matrix.lane }}"; exit 1 ;;
+          esac
+          make test TEST_PACKAGES="$packages" TEST_JSON="go-test-${{ matrix.lane }}.json"
 
-      # A different schedule, not a longer one. The step above runs at the
-      # runner's GOMAXPROCS, where the local harness's virtual clock reaches
-      # only the interleavings parallelism happens to produce; GOMAXPROCS=1
-      # reaches the ones it does not. Cheap enough to sit in this job rather
-      # than earn one of its own — see the Makefile target for why it is
-      # scoped to the package whose every claim is an ordering claim.
-      - name: Ordering claims hold under a different schedule
-        run: make test-ordering
+      # The raw stream, whatever the outcome (`if: always()`): a reader who
+      # needs more than the summary — the log of a test that passed, the
+      # order a package ran in — has the full record without a rerun. It
+      # is the same JSON testsum read, so the two cannot disagree.
+      - name: Upload the raw go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-${{ matrix.lane }}-json
+          path: go-test-${{ matrix.lane }}.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       # The same mechanism as the proto job's generated-code check, on the four
       # reference documents that are derived rather than written: the task
@@ -260,6 +298,7 @@ jobs:
       # the schema: `flow docs generate` runs the binary, so a failure here is a
       # tree whose documentation disagrees with its own code.
       - name: Verify generated reference docs are current
+        if: matrix.lane == 'rest'
         run: |
           go run ./cmd/flow docs generate
           git diff --exit-code -- docs/reference/ || {
@@ -282,6 +321,7 @@ jobs:
       # (`steps:` or `tests:`), so a policy file or an observability config
       # under examples/ is never even handed to the rewriter.
       - name: Examples are in the current edition
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow fix --check examples/
 
       # Tier 4 of the style charter (docs/STYLE.md, Part II), over the corpus R8
@@ -303,6 +343,7 @@ jobs:
       # docs/STYLE.md are linted by TestShownWorkflowsAreLintClean in the test
       # run above, and they are clean.
       - name: Examples in the canonical style
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow lint --strict examples/
 
       # `flow test` is the reachability gate for #155: at least one example's
@@ -317,6 +358,7 @@ jobs:
       # coverage.allow_unreached (the three enterprise gates on !run.local are
       # the only residuals, reachable only against a real server).
       - name: Example workflows pass their own tests, every branch reached or reasoned
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow test --coverage-required examples/
 
       # `flow breaking` is `buf breaking` one level up: a workflow's declared
@@ -326,10 +368,16 @@ jobs:
       # breaking` closes it for the proto, in the callee author's own CI. The
       # comparison is against origin/main, which the default checkout does not
       # fetch, so it is fetched explicitly here (the proto job takes fetch-depth:
-      # 0 for the same reason). A break fails the same way validate does.
+      # 0 for the same reason). `+main:` matters on a rerun: checkout has already
+      # created origin/main at the run's original commit, and main may have moved
+      # since, so an unforced shallow fetch rejects the update as non-fast-forward
+      # before the breaking check can run. A break fails the same way validate
+      # does.
       - name: Fetch base branch for the breaking check
-        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+        if: matrix.lane == 'rest'
+        run: git fetch --no-tags --depth=1 origin +main:refs/remotes/origin/main
       - name: Example workflow contracts did not shrink against main
+        if: matrix.lane == 'rest'
         run: go run ./cmd/flow breaking --against origin/main examples/
 
       # The observability lab is eight services of other people's software, so
@@ -340,7 +388,124 @@ jobs:
       # `config` is a client-side operation: no daemon, no pulls, under a second.
       # The full-stack smoke is a manual step, written out in the lab's README.
       - name: Observability lab compose file resolves
+        if: matrix.lane == 'rest'
         run: docker compose -f examples/observability/docker-compose.yaml config -q
+
+  # The plugins are separate Go modules, which is the point of them: a plugin
+  # owns its dependencies so an operator decides whether to trust them, and
+  # nothing a plugin needs reaches the engine's own go.mod.
+  #
+  # The cost of that boundary is that `./...` from the root does not cross it.
+  # Every check in the test job would stay green with a plugin that does not
+  # compile, so the modules are walked explicitly. Found by looking rather than
+  # by a failure, which is the only way this class is ever found — a module
+  # nobody builds is not red, it is absent.
+  #
+  # A job of its own since #1726, so a plugin change is judged in two minutes
+  # rather than after the root suite, and the root suite is not held for the
+  # plugins. The plan selects it on a plugin change, on any affected root
+  # package (every plugin module replaces github.com/picatz/flowstate with
+  # ../.., so a root change is a change it compiles against), and on the
+  # examples and schema the catalog step reads — see ciDecisions. The six
+  # modules run serially within it; a matrix of six is the next step if their
+  # wall clock ever warrants it, and today it does not.
+  test-plugins:
+    needs: plan
+    if: needs.plan.outputs.test_plugins == 'true'
+    runs-on: ubuntu-latest
+    # Six separately cached modules whose cold paths a dependency bump puts in
+    # one run: "Test plugin modules" took ten to twenty minutes before their
+    # go.sum files were on the cache key, and can again on the run that moves
+    # them. Twenty leaves that headroom, on the same reasoning as test's.
+    timeout-minutes: 20
+    steps:
+      # persist-credentials / cache: — see the test job above. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # cache-dependency-path names the plugin modules' go.sum files as well as
+      # the root one, because this job is the only one that builds them and
+      # setup-go's default key is the root go.sum alone. Without them the
+      # plugin modules resolve and download their whole dependency graph on
+      # every run — which is why "Test plugin modules" took ten to twenty
+      # minutes against roughly one hundred seconds locally. A separate module
+      # is the point of a plugin; the cost of that boundary is that its
+      # dependencies have to be cached deliberately rather than by default.
+      # .github/cache-scope/test-plugins gives the key this job's own name,
+      # so the modules keep a warm cache without sharing a job with the root
+      # suite. See the README beside it.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            plugins/*/go.sum
+            .github/cache-scope/test-plugins
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      - name: Report toolchain
+        run: go version
+
+      - name: Test plugin modules
+        run: make test-plugins
+
+      # The module tests prove each plugin in isolation. This joins them to the
+      # author-facing surface: build every binary, diff the descriptors and
+      # security claims against the reviewed catalog, and validate every plugin
+      # example without credentials or network access.
+      - name: Validate plugin examples against the reviewed catalog
+        run: make plugin-examples
+
+  # A different schedule, not a longer one. The root suite runs at the
+  # runner's GOMAXPROCS, where the local harness's virtual clock reaches only
+  # the interleavings parallelism happens to produce; GOMAXPROCS=1 reaches the
+  # ones it does not. See the Makefile target for why it is scoped to the
+  # package whose every claim is an ordering claim.
+  #
+  # It used to sit in the test job as too cheap to earn one of its own. It was
+  # 2m33s there, after the 5m22s root suite it does not depend on, which is a
+  # third of a code PR's wait for nothing (#1726). The plan selects it when the
+  # flowtest package is affected — the local gate's own trigger — and on an
+  # examples/ change, because the package's fuzz seeds walk examples/ off disk.
+  test-ordering:
+    needs: plan
+    if: needs.plan.outputs.test_ordering == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials / cache: — see the test job above. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # cache-dependency-path: a key of this job's own. The flowtest test
+      # binary under -race is built here and nowhere else in this workflow
+      # with the same flags, so a shared key would either lose the race for
+      # the save or restore a cache that has none of it. See
+      # .github/cache-scope/README.md.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/cache-scope/test-ordering
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      - name: Report toolchain
+        run: go version
+
+      - name: Ordering claims hold under a different schedule
+        run: make test-ordering TEST_JSON=go-test-ordering.json
+
+      - name: Upload the raw ordering go test -json stream
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-ordering-json
+          path: go-test-ordering.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every
@@ -372,6 +537,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
+            tools/external/go.sum
             .github/cache-scope/proto
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
@@ -387,12 +553,12 @@ jobs:
       # The protocol has its own package now, which is what made the names it asks
       # for the right ones, so both the violations and the suppression are gone.
       - name: Lint
-        run: go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} lint
+        run: go tool -modfile=tools/external/go.mod buf lint
 
       # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
       # nothing ran them.
       - name: Check for breaking changes
-        run: go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} breaking --against '.git#branch=origin/main'
+        run: go tool -modfile=tools/external/go.mod buf breaking --against '.git#branch=origin/main'
 
       # Generated code is committed, so it can disagree with the schema it came
       # from. That disagreement is invisible locally — the build stays green using
@@ -415,9 +581,9 @@ jobs:
       # way the engine's can.
       - name: Verify generated code is current
         run: |
-          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} generate
-          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
-          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
+          go tool -modfile=tools/external/go.mod buf generate
+          go tool -modfile=tools/external/go.mod buf build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+          go tool -modfile=tools/external/go.mod buf build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
           git diff --exit-code -- . || {
             echo "::error::generated code does not match the schema; run 'make check' (or 'buf generate' plus the 'buf build' line beside it) and commit the result"
             exit 1
@@ -443,7 +609,17 @@ jobs:
       # reachability, not mere presence, so it fails only when our code can
       # actually reach the vulnerable path.
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./...
+        run: go tool -modfile=tools/external/go.mod govulncheck ./...
+
+      - name: Vulnerability scan (plugin modules)
+        run: |
+          failed=0
+          for module in plugins/*/; do
+            [ -f "$module/go.mod" ] || continue
+            echo "==> govulncheck $module"
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go tool -modfile=../../tools/external/go.mod govulncheck ./... ) || failed=1
+          done
+          exit $failed
 
   # Required, as of the end of its 48h advisory window. It landed advisory because
   # the govulncheck lesson generalizes to any newly-added check — a check nobody
@@ -473,6 +649,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
+            tools/external/go.sum
             .github/cache-scope/staticcheck
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
@@ -487,7 +664,17 @@ jobs:
       # says so per standard-library package instead of reporting findings. See
       # CLAUDE.md.
       - name: Static analysis
-        run: GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+        run: GOTOOLCHAIN=go1.27.0 go tool -modfile=tools/external/go.mod staticcheck ./...
+
+      - name: Static analysis (plugin modules)
+        run: |
+          failed=0
+          for module in plugins/*/; do
+            [ -f "$module/go.mod" ] || continue
+            echo "==> staticcheck $module"
+            ( cd "$module" && GOTOOLCHAIN=go1.27.0 go tool -modfile=../../tools/external/go.mod staticcheck ./... ) || failed=1
+          done
+          exit $failed
 
   # The real-issuer OIDC check used to live here as a job gated on the auth
   # package being affected. It moved to federation.yml (push to main only)
@@ -586,10 +773,27 @@ jobs:
       # one had — the weekly deep tier ran four of the ten targets this job ran,
       # because each of the four places holding the list was kept by hand. The
       # per-step boundary that is lost was there so a hanging target did not hide
-      # the others' output; the Makefile's loop prints `==> <target>` before each
-      # one and every target's output still streams into this step's log, so the
-      # hanging one is still the last one named.
-      - name: Fuzz smoke (every target in the smoke tier)
+      # the others' output. The targets now run several at a time through
+      # tools/fuzzrun, so "the hanging one is the last one named" is no longer
+      # how to read this log: a target announces itself when it starts and its
+      # output is printed in one piece when it finishes, so a target that hung
+      # is one this step named as started and never reported — and later targets
+      # will have started, and finished, after it. Its output is bounded per
+      # target, and says so when it dropped anything.
+      #
+      # Which targets is the plan's answer, not the tier's (#1726). Thirteen
+      # targets at 30s each plus a test-binary build per package was nine
+      # minutes of every run this job ran on, and a diff reaching flowfile
+      # cannot move what FuzzWebhookEventBinding explores. The plan publishes
+      # the smoke targets whose package the diff reaches — seven for a
+      # flowfile change, every one on a forced run — and the Makefile hands
+      # that list to tools/fuzztargets/list.sh, which refuses a name the tier
+      # does not hold rather than fuzzing what is left. tools/gate/ci_test.go
+      # pins this env line, because the Makefile's default is the whole tier
+      # and a step that dropped the variable would stay green at the old cost.
+      - name: Fuzz smoke (the targets in the smoke tier this diff reaches)
+        env:
+          FUZZ_SMOKE_TARGETS: ${{ needs.plan.outputs.fuzz_targets }}
         run: make fuzz-smoke
 
   # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a
@@ -612,17 +816,17 @@ jobs:
   # Advisory for the 48h window CLAUDE.md gives every newly added check, the same
   # window staticcheck, the fuzz smoke job and federation each had: a check
   # nobody has run against this tree can go red on code nobody touched, and a red
-  # build people learn to ignore is worse than no build. Drop `continue-on-error`
-  # on 2026-08-12 and let it be required. A failure after that is a styled
-  # surface that changed shape: read the diff, and if the new shape is the
-  # intended one, re-record with `make appearance-update` and commit the goldens
-  # in the same change that moved the surface.
+  # build people learn to ignore is worse than no build. That window lapsed on
+  # 2026-08-12 and `continue-on-error` came off on 2026-08-31 (#1319), so a
+  # failure here now fails `verdict`. A failure is a styled surface that changed
+  # shape: read the diff, and if the new shape is the intended one, re-record
+  # with `make appearance-update` and commit the goldens in the same change that
+  # moved the surface.
   appearance:
     needs: plan
     if: needs.plan.outputs.appearance == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     steps:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -688,12 +892,12 @@ jobs:
   # the plan never heard of is a failure too. The last two are the drift cases,
   # and tools/gate/ci_test.go catches them before a push rather than after.
   #
-  # One honest limitation, stated rather than left to be discovered: while
-  # `appearance` carries `continue-on-error: true`, its `needs` result is
-  # `success` even when it fails, so this job cannot distinguish those. That is
-  # what advisory means, and it is the only job here it applies to.
+  # No job here is advisory any more: `appearance` was the last to carry
+  # `continue-on-error: true`, under which its `needs` result read `success`
+  # even when it failed, and that came off on 2026-08-31 (#1319). Every result
+  # this job reads is now the job's own.
   verdict:
-    needs: [plan, test, proto, vulncheck, staticcheck, fuzz-smoke, appearance]
+    needs: [plan, test, test-plugins, test-ordering, proto, vulncheck, staticcheck, fuzz-smoke, appearance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

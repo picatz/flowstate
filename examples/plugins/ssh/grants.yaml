@@ -1,0 +1,56 @@
+# The operator's half, and the whole of this plugin's authority.
+#
+# A worker hands it to the plugin by name, because a plugin inherits nothing of
+# the worker's environment:
+#
+#   flow worker --plugin-dir ./plugins \
+#     --plugin-env ssh=FLOWSTATE_SSH_GRANTS=$PWD/examples/plugins/ssh/grants.yaml \
+#     --egress-policy examples/plugins/ssh/egress-policy.yaml
+#
+# Everything here is checked when the worker starts: a command that is not an
+# absolute path, a placeholder with no pattern, a pattern that does not compile,
+# a host permitting a command nobody granted, a timeout over the plugin's
+# ceiling - each is a startup failure rather than a runbook failing at three in
+# the morning.
+hosts:
+  web-prod:
+    address: web1.prod.example.com:22
+    user: runbook
+    # The key this worker authenticates with. A workflow cannot supply one: an
+    # SSH identity is authority over a machine, not a per-call credential.
+    identity_file: /etc/flowstate/ssh/runbook_ed25519
+    # The keys this host may present. There is no trust-on-first-use and no
+    # known_hosts fallback, so a host presenting anything else is refused in
+    # the handshake - before the command is sent.
+    host_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExam
+    # What may be run here. A command granted in this file and not listed here
+    # cannot run on this host.
+    commands: [service-status, restart-service]
+    # Optional: the tenants whose workflows may spend this grant. The namespace
+    # compared is the one the server established for the workload, never one the
+    # workload declared. Omitted, any namespace may spend it.
+    # namespaces: [platform]
+    connect_timeout: 10s
+
+commands:
+  service-status:
+    argv: ["/usr/bin/systemctl", "status", "${service}", "--no-pager"]
+    parameters:
+      service:
+        pattern: '[a-z0-9-]{1,64}\.service'
+        max_bytes: 64
+    timeout: 15s
+    max_output_bytes: 16384
+    # systemctl status exits 3 for an inactive unit. That is a fact about the
+    # command, which the operator granting it knows and a workflow author does
+    # not, so it is recorded here rather than being a task input.
+    success_exit_codes: [0, 3]
+
+  restart-service:
+    argv: ["/usr/bin/systemctl", "restart", "${service}"]
+    parameters:
+      service:
+        pattern: '[a-z0-9-]{1,64}\.service'
+        max_bytes: 64
+    timeout: 60s

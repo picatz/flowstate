@@ -1,0 +1,2 @@
+test-plugins: the six plugin modules, each with its own go.sum, and their example catalog.
+See README.md beside this file for why this file exists.

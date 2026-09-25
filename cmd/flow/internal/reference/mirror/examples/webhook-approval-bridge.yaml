@@ -1,0 +1,137 @@
+# A click in Slack answers this run's approval gate.
+#
+# `examples/webhook-trigger` shows the other half of the same block: a delivery
+# that *starts* a run, binding a payload into `inputs:`. This one answers a run
+# that is already waiting. The spelling for that is `signal:` where that file
+# writes `with:`, and the two are refused together — one delivery cannot both
+# start something and answer something already started.
+#
+# # Three questions a delivery has to pass, and where each is decided
+#
+#   - **Is it genuine?** `verify:` — unchanged from the start case, and the
+#     same schemes. An unverifiable delivery is refused, never allowed on the
+#     grounds that it could not be checked.
+#   - **Which run does it answer?** `correlate:`, evaluated against the
+#     delivery, yielding the run's *entity key* — the stable business key
+#     `RunRequest.entity_key` addresses a run by (see `examples/entity-order`).
+#     Not a workflow id read out of the payload: a payload is sender-shaped,
+#     neither scheme signs headers, and an id lifted from one would let a key
+#     holder name any run in the tenant.
+#   - **May this sender answer it?** `signals:` below, through the same check
+#     `flow signal` goes through. A delivery attests the *trigger* — it proves
+#     possession of a signing key, not a person — so the rule names the trigger:
+#     `flowstate://webhook#<workflow>/<trigger>`.
+#
+# That third one is why the `signals:` block here is not optional. A signal
+# name with no policy admits any sender, which is defensible behind the
+# server's own authentication and not on a route anybody can POST to, so
+# `flow validate` refuses a `signal:` whose name has no rule that could admit
+# its trigger. Delete the block below and this file stops compiling.
+#
+# # Why the gate is inside a `loop:`
+#
+# Because that is the shape where redelivery is dangerous, and this example is
+# meant to show it being handled rather than to assert it in prose. Webhook
+# delivery is at-least-once: the same click arrives twice, routinely. With one
+# gate a duplicate is harmless — the gate is already answered. With a loop, a
+# replay would answer the *next* stage, approving a rollout nobody clicked for.
+#
+# It does not, and no `if:` here is what stops it: the run records the delivery
+# ids it has consumed (`RunState.consumed_delivery_ids`) and drops a repeat at
+# intake, on both drivers. `workflow.test.yaml` proves it by sending one click
+# twice and asserting that exactly one stage was approved.
+#
+# # Declaring is not serving
+#
+# Nothing here serves an endpoint. A deployment decides that:
+#
+#     flow server --webhook examples/webhook-approval-bridge/workflow.yaml
+#
+# mounts it at POST /webhooks/webhook-approval-bridge/slack-approval and
+# resolves the `verify:` key at startup. Without that flag the block is checked
+# when the file compiles and rehearsed offline by `flow test`, and both drivers
+# ignore it — so
+#
+#     flow run local examples/webhook-approval-bridge/workflow.yaml
+#
+# runs the file now, with nobody to answer the gate, and reports what a rollout
+# nobody approved reports.
+edition: v2026.3
+name: webhook-approval-bridge
+description: A verified Slack delivery answers this run's `wait_for_signal:` gate, authorized by `signals:` and deduped by the run so one click cannot approve two stages.
+inputs:
+  release:
+    type: string
+    default: v1.4.2
+    description: the release being rolled out
+    must: this.matches(r'^v?[0-9]+\.[0-9]+\.[0-9]+$')
+triggers:
+  - webhook: slack-approval
+    verify:
+      hmac_sha256: ${secret('env:SLACK_SIGNING_SECRET')}
+
+    # What names one delivery, exactly as it does for a start — and here it is
+    # also what the run dedupes on, as the digest the receiver derives from it.
+    idempotency_key: ${event.body.trigger_id}
+    signal:
+      # A signal a `wait_for_signal:` below waits for. A name nothing waits for
+      # is refused: the delivery would be carried by the run forever.
+      name: stage-approved
+
+      # Which run. Slack round-trips the button's `value` unchanged, so the run
+      # puts its own entity key there when it posts the question.
+      correlate: ${event.body.actions[0].value}
+
+      # What the click carries into the gate, read back under `payload`. There
+      # is no signature to check these names against yet — a `wait_for_signal:`
+      # accepts whatever shape arrives and shapes it with its own `outputs:` —
+      # so this is a call site whose callee has not declared its parameters.
+      # `with:` is the spelling it will keep when one does.
+      with:
+        approved: ${event.body.actions[0].action_id == "approve"}
+        final: ${event.body.actions[0].block_id == "last-stage"}
+
+# Who may answer the gate. The subject is the trigger below, issuer-qualified:
+# a webhook delivery is attested as the source that admitted it, never as a
+# person, because a signature proves a key and not a click.
+#
+# `distinct_from_starter:` is deliberately absent, and that absence is a fact
+# about what this route can prove rather than a relaxation: it separates
+# *triggers* on this path, so setting it would promise a separation of duties
+# between two humans that no HMAC scheme attests.
+signals:
+  stage-approved:
+    allow:
+      - subject: "flowstate://webhook#webhook-approval-bridge/slack-approval"
+steps:
+  - id: rollout
+    description: Each stage waits for its own click, and one click answers one stage.
+    loop:
+      # The click says whether more stages follow, so an ordinary rollout ends
+      # on an answer rather than on a deadline. A gate nobody answers carries no
+      # payload at all, so `final` reads true there too — a rollout stops when
+      # the approvals stop, whichever way they stop.
+      until: ${steps.stage.final}
+      max_iterations: 3
+      steps:
+        - id: stage
+          wait_for_signal:
+            name: stage-approved
+            prompt: ${"Approve the next stage of " + inputs.release + "?"}
+            timeout: 24h
+            outputs:
+              # A missing `approved` is not an approval, and neither is a gate
+              # nobody answered: both read false.
+              approved: ${payload.?approved.orValue(false)}
+              final: ${payload.?final.orValue(true)}
+  - id: report
+    log:
+      level: info
+      message: '${"%s: %d of %d stages approved".format([inputs.release, steps.rollout.results.filter(r, r.stage.approved).size(), steps.rollout.results.size()])}'
+outputs:
+  stages_approved:
+    value: ${steps.rollout.results.filter(r, r.stage.approved).size()}
+    description: how many stages a click actually approved
+  stages_attempted:
+    value: ${steps.rollout.results.size()}
+    description: how many stages asked, whether or not anybody answered

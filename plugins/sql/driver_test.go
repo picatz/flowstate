@@ -7,11 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+
 	sqlv1 "github.com/picatz/flowstate/plugins/sql/gen/sql/v1"
 )
 
 func TestOpenDBRefusesAnUnrecognizedEngine(t *testing.T) {
-	_, err := openDB(sqlv1.Engine_ENGINE_UNSPECIFIED, "irrelevant")
+	_, err := openDB(t.Context(), sqlv1.Engine_ENGINE_UNSPECIFIED, "irrelevant", nil)
 	if err == nil {
 		t.Fatal("openDB(ENGINE_UNSPECIFIED): got no error, want a refusal")
 	}
@@ -21,7 +23,11 @@ func TestOpenDBRefusesAnUnrecognizedEngine(t *testing.T) {
 }
 
 func TestOpenDBRefusesAMalformedPostgresDSN(t *testing.T) {
-	_, err := openDB(sqlv1.Engine_ENGINE_POSTGRES, "not a valid postgres connection string \x00")
+	oldPolicy := egressPolicy
+	egressPolicy, _ = netpolicy.New(netpolicy.WithSchemes("postgres"))
+	t.Cleanup(func() { egressPolicy = oldPolicy })
+
+	_, err := openDB(t.Context(), sqlv1.Engine_ENGINE_POSTGRES, "not a valid postgres connection string \x00", nil)
 	if err == nil {
 		t.Fatal("openDB(ENGINE_POSTGRES) with a malformed DSN: got no error, want a refusal")
 	}

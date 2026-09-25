@@ -124,9 +124,10 @@ type transcriptEvent struct {
 	payload map[string]any
 	sender  string
 
-	task        string
-	stubOrdinal int
-	stubStep    string
+	task          string
+	stubOrdinal   int
+	stubStep      string
+	stubInherited bool
 }
 
 type transcriptEventKind int
@@ -327,8 +328,17 @@ func (r *runRecorder) WaitStarted(id, signal string, timeout time.Duration, boun
 // every stub diagnostic already numbers stubs by, the step the engine says
 // was being served ("" for a compensation, which runs off the run-level
 // context), and the task the stub replaced.
-func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingStep string) {
-	r.record(transcriptEvent{kind: eventStubAnswered, task: task, stubOrdinal: ordinal, step: servingStep, stubStep: stubStep})
+//
+// inherited says the stub reached the case through `defaults:`, which the
+// rendered identity carries (#1668): a case whose own filtered stub sits
+// beside an inherited catch-all for the same task reads, per invocation,
+// which of the two answered, instead of a bare number the author has to
+// count to across two lists.
+func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingStep string, inherited bool) {
+	r.record(transcriptEvent{
+		kind: eventStubAnswered, task: task, stubOrdinal: ordinal, step: servingStep, stubStep: stubStep,
+		stubInherited: inherited,
+	})
 }
 
 // stubUnmatched records that an invocation ended with no matcher answering —
@@ -520,6 +530,9 @@ func stubIdentity(e transcriptEvent) string {
 	if e.stubStep != "" {
 		target = fmt.Sprintf("step %q", e.stubStep)
 	}
+	if e.stubInherited {
+		target += ", from defaults"
+	}
 	return fmt.Sprintf("stub %d (%s)", e.stubOrdinal, target)
 }
 
@@ -684,6 +697,52 @@ func redactedScalarText(native any, sensitive sensitiveInputs) string {
 		text = fmt.Sprintf("%v", redacted)
 	}
 	return capRunes(sensitive.RedactSubstrings(text), 48)
+}
+
+// typedText is [redactedScalarText] led by the value's type in the spelling a
+// Flowfile declares one with — `string "1"` against `int 1` — so a mismatch
+// that is only a type mismatch reads as one rather than as a quoting
+// difference (#1669). A withheld value stays the marker alone: its type is
+// one more fact about it than the withholding meant to give. A null is the
+// one value whose type is the whole of it, so it is spelled once.
+func typedText(native any, sensitive sensitiveInputs) string {
+	if sensitive.WithholdAll() {
+		return redactedScalarText(native, sensitive)
+	}
+	if native == nil {
+		return "null"
+	}
+	return typeSpelling(native) + " " + redactedScalarText(native, sensitive)
+}
+
+// typeSpelling names a decoded value's type the way `inputs:` and `outputs:`
+// declarations spell one, which is the vocabulary an author of a test file
+// already reads in the Flowfile beside it.
+func typeSpelling(native any) string {
+	switch native.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return "int"
+	case float32, float64:
+		return "double"
+	case []byte:
+		return "bytes"
+	case time.Time:
+		return "timestamp"
+	case time.Duration:
+		return "duration"
+	case []any:
+		return "list"
+	case map[string]any:
+		return "map"
+	default:
+		return fmt.Sprintf("%T", native)
+	}
 }
 
 // redactedBareText is [redactedScalarText] for a string rendered into the
