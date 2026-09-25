@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/picatz/flowstate/internal/testkit"
 )
 
 // What this file is for.
@@ -34,82 +34,11 @@ import (
 // response.
 const theLeakedText = "s3cr3t-plugin-payload-that-must-never-be-exported"
 
-// recordSpans installs a recording tracer provider for the duration of a test
-// and returns the recorder. Mirrors engine/tracing_test.go's helper of the
-// same name and for the same reason: the global provider is where these spans
-// go, and it is restored afterward since this binary is shared with every
-// other test in the package.
-func recordSpans(t *testing.T) *tracetest.SpanRecorder {
-	t.Helper()
-
-	recorder := tracetest.NewSpanRecorder()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-
-	previous := otel.GetTracerProvider()
-	otel.SetTracerProvider(provider)
-
-	t.Cleanup(func() {
-		otel.SetTracerProvider(previous)
-		_ = provider.Shutdown(context.Background())
-	})
-
-	return recorder
-}
-
-// renderedSpans renders every recorded span through the %v family, over the
-// batch and over each span individually, and over a struct wrapping one and a
-// slice holding several — the containment shapes CLAUDE.md's "secrets never
-// enter workflow history" section names: reflection through an unexported
-// field is a leak a redacting accessor does nothing to stop, and a leak that
-// only shows up at index 2 of a batch is invisible to a test that constructs
-// only one record.
-func renderedSpans(recorder *tracetest.SpanRecorder) []string {
-	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
-
-	type wrapper struct {
-		one   tracetest.SpanStub
-		batch []tracetest.SpanStub
-	}
-
-	rendered := []string{
-		fmt.Sprintf("%v", stubs),
-		fmt.Sprintf("%+v", stubs),
-		fmt.Sprintf("%#v", stubs),
-	}
-
-	if len(stubs) > 0 {
-		w := wrapper{one: stubs[0], batch: stubs}
-		rendered = append(rendered,
-			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w))
-	}
-
-	for _, stub := range stubs {
-		rendered = append(rendered,
-			fmt.Sprintf("%v", stub),
-			fmt.Sprintf("%+v", stub),
-			fmt.Sprintf("%#v", stub),
-			stub.Name,
-			stub.Status.Description,
-		)
-
-		for _, attr := range stub.Attributes {
-			rendered = append(rendered, string(attr.Key), attr.Value.String(),
-				fmt.Sprintf("%v", attr), fmt.Sprintf("%+v", attr), fmt.Sprintf("%#v", attr))
-		}
-
-		for _, event := range stub.Events {
-			rendered = append(rendered, event.Name, fmt.Sprintf("%+v", event), fmt.Sprintf("%#v", event))
-		}
-	}
-
-	return rendered
-}
-
 // requireNoTextInSpans is the assertion itself.
 func requireNoTextInSpans(t *testing.T, recorder *tracetest.SpanRecorder, material string) {
 	t.Helper()
 
-	for _, rendered := range renderedSpans(recorder) {
+	for _, rendered := range testkit.RenderedSpans(recorder) {
 		require.NotContains(t, rendered, material,
 			"plugin error text reached a span, which is exported to a collector")
 	}
@@ -119,7 +48,7 @@ func requireNoTextInSpans(t *testing.T, recorder *tracetest.SpanRecorder, materi
 // engine's TestFailedTaskSpanCarriesTheClassificationNotTheMessage, over
 // telemetry.start rather than startTaskSpan/recordTaskOutcome.
 func TestPluginSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	tel := newTelemetry(Config{})
 
@@ -147,7 +76,7 @@ func TestPluginSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 // just the value" shape, since a leak surviving in record two of a batch is
 // exactly the kind a single-record test cannot see.
 func TestPluginSpanContainmentAcrossManyFailures(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	tel := newTelemetry(Config{})
 
@@ -173,7 +102,7 @@ func TestPluginSpanContainmentAcrossManyFailures(t *testing.T) {
 // successful operation must not be marked as failed, and must record no
 // status description at all.
 func TestPluginSpanSuccessRecordsNoErrorStatus(t *testing.T) {
-	recorder := recordSpans(t)
+	recorder := testkit.RecordSpans(t)
 
 	tel := newTelemetry(Config{})
 

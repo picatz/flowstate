@@ -40,6 +40,10 @@ func testGenerator(t *testing.T) *Generator {
 		FlagName:       func(f *pflag.Flag) string { return "--" + f.Name },
 		MCPTools:       []MCPTool{{Name: "flowstate_validate"}},
 		DefaultAddress: "127.0.0.1:8080",
+		TaskPolicy: PolicyReference{
+			Description: "test policy",
+			Fields:      []PolicyField{{Name: "allow", Type: "sequence of string"}},
+		},
 	})
 	require.NoError(t, err)
 
@@ -289,7 +293,7 @@ func TestEveryDocumentedReadLocationIsWhereItIsRead(t *testing.T) {
 // documentedReadLocations splits a `read:` column into the paths it names.
 func documentedReadLocations(column string) []string {
 	var locations []string
-	for _, part := range strings.Split(column, ",") {
+	for part := range strings.SplitSeq(column, ",") {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {
 			locations = append(locations, trimmed)
 		}

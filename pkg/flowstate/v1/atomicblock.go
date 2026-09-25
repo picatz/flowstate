@@ -3,9 +3,9 @@ package flowstatev1
 import "fmt"
 
 // MaxAtomicBlockActivities bounds how many task activities one
-// suspension-opaque stretch of a run may schedule: the ceiling on the
-// items × body product of a `for_each` that runs with no Continue-As-New
-// seam inside it.
+// suspension-opaque stretch of a run may schedule: the ceiling on a
+// `parallel:` block, and on the items × body product of a `for_each`, that
+// runs with no Continue-As-New seam inside it.
 //
 // A sequential top-level `for_each` needs no such bound, because it is paced:
 // every body step counts against the run's step budget, and the loop offers a
@@ -122,6 +122,112 @@ func CheckAtomicBlockActivities(items int, body []*Node) error {
 		return AtomicBlockActivitiesError(items, per, MaxAtomicBlockActivities)
 	}
 	return nil
+}
+
+// AtomicBlockBodyActivitiesError is the failure an enclosing atomic body
+// reports when its static worst case crosses [MaxAtomicBlockActivities]. The
+// walk saturates at one past the ceiling, so the sentence deliberately names
+// the crossed boundary rather than claiming an exact count it did not retain.
+func AtomicBlockBodyActivitiesError(max int) error {
+	return fmt.Errorf(
+		"this atomic stretch of history can schedule more than the ceiling of %d activities before its next Continue-As-New seam; "+
+			"shrink the block or page the work across several runs",
+		max)
+}
+
+// CheckAtomicBlockBodyActivities refuses a body whose static worst case does
+// not fit in one suspension-opaque history segment. Both drivers call it
+// before entering the bodies of `parallel:`, `switch:`, `loop:`, and a paced
+// top-level `for_each`; an already-atomic for_each is checked more precisely
+// by [CheckAtomicBlockActivities], using its resolved item count.
+//
+// Checking the enclosing body, rather than each nested `parallel:` alone, is
+// what makes sibling blocks share one budget and makes a for_each nested in a
+// branch contribute its ceiling × body cost before any sibling is dispatched.
+func CheckAtomicBlockBodyActivities(body []*Node) error {
+	if WorstCaseBodyActivities(body) > MaxAtomicBlockActivities {
+		return AtomicBlockBodyActivitiesError(MaxAtomicBlockActivities)
+	}
+	return nil
+}
+
+// CheckParallelAtomicBlockActivities weighs every branch in one parallel
+// block as the single atomic segment the drivers dispatch. The synthetic node
+// reuses [WorstCaseBodyActivities]'s one canonical structural walk, including
+// its shared node and call-depth bounds.
+func CheckParallelAtomicBlockActivities(parallel *Parallel) error {
+	return CheckAtomicBlockBodyActivities([]*Node{{
+		Kind: &Node_Parallel{Parallel: parallel},
+	}})
+}
+
+// CheckWorkflowAtomicBlockActivities refuses every statically over-ceiling
+// atomic segment in wf. It is the admission-time counterpart to the drivers'
+// pre-dispatch checks: Flowfile validation gives authors the refusal before a
+// run is submitted, and server validation applies it to hand-built Protobuf
+// specifications that never passed through the compiler.
+//
+// Only the outermost atomic boundary is weighed. Its structural worst case
+// already includes every nested parallel, loop, switch arm, for_each body and
+// inlined callee, so descending into that body again would turn a bounded walk
+// into quadratic work. Calls outside an atomic segment remain transparent and
+// are followed up to [MaxCallDepth], just as they are during execution.
+//
+// A for_each's resolved item count is intentionally not guessed here. This
+// check weighs one iteration's atomic body; the drivers retain
+// [CheckAtomicBlockActivities] as the exact check once items resolve.
+func CheckWorkflowAtomicBlockActivities(wf *Workflow) error {
+	nodesLeft := maxStructureWalkNodes
+
+	var check func([]*Node, int) error
+	check = func(nodes []*Node, callDepth int) error {
+		for _, node := range nodes {
+			if nodesLeft <= 0 {
+				return AtomicBlockBodyActivitiesError(MaxAtomicBlockActivities)
+			}
+
+			var activities int
+			switch kind := node.GetKind().(type) {
+			case *Node_Parallel, *Node_Switch:
+				// Include the container so parallel branches sum and switch arms
+				// select their widest body through the canonical structural walk.
+				activities = worstCaseActivities([]*Node{node}, &nodesLeft, callDepth)
+			case *Node_ForEach:
+				activities = worstCaseActivities(kind.ForEach.GetBody(), &nodesLeft, callDepth)
+			case *Node_Loop:
+				// One loop iteration is one atomic segment; iterations themselves
+				// remain separated by a Continue-As-New seam.
+				activities = worstCaseActivities(kind.Loop.GetBody(), &nodesLeft, callDepth)
+			case *Node_Call:
+				nodesLeft--
+				callee := kind.Call.GetWorkflow()
+				if callee == nil {
+					continue
+				}
+				nextDepth := callDepth + 1
+				if CheckCallDepth(nextDepth) != nil {
+					continue
+				}
+				if err := check(callee.GetSteps(), nextDepth); err != nil {
+					return fmt.Errorf("step %q: %w", node.GetId(), err)
+				}
+				continue
+			default:
+				nodesLeft--
+				continue
+			}
+
+			if activities > MaxAtomicBlockActivities {
+				return fmt.Errorf("step %q: %w", node.GetId(), AtomicBlockBodyActivitiesError(MaxAtomicBlockActivities))
+			}
+		}
+		return nil
+	}
+
+	if wf == nil {
+		return nil
+	}
+	return check(wf.GetSteps(), 0)
 }
 
 // WorstCaseBodyActivities counts how many task activities one pass over a

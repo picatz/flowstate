@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -102,6 +103,32 @@ func corpusWorkflows(t *testing.T) []exampleWorkflow {
 	require.Greater(t, len(out), 40,
 		"the walk over examples/ found %d workflows, which is too few to be the corpus — the path is wrong", len(out))
 	return out
+}
+
+// TestExamplesContainNoCredentialShapedLiterals is deliberately narrower than
+// a prose linter. It catches only unmistakable credential formats that should
+// never be committed to a Flowfile; placeholders and secret references remain
+// valid teaching material.
+func TestExamplesContainNoCredentialShapedLiterals(t *testing.T) {
+	t.Parallel()
+
+	patterns := []struct {
+		kind    string
+		pattern *regexp.Regexp
+	}{
+		{"AWS access key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
+		{"GitHub token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`)},
+		{"OpenAI API key", regexp.MustCompile(`sk-[A-Za-z0-9]{20,}`)},
+		{"PEM private key", regexp.MustCompile(`-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----`)},
+		{"Slack access token", regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{20,}`)},
+	}
+
+	for _, example := range corpusWorkflows(t) {
+		for _, credential := range patterns {
+			assert.False(t, credential.pattern.Match(example.source),
+				"examples/%s contains a credential-shaped %s literal; use a secret reference instead", example.rel, credential.kind)
+		}
+	}
 }
 
 // TestEveryExampleIsAlreadyWhatTheFormatterWrites is claim 1: the corpus is a

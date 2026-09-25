@@ -79,6 +79,39 @@ flow audit -o json examples/ | jq '.totals'
 |---|---|---|---|---|
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
+## `flow auth`
+
+Diagnose caller authentication against a trust policy
+
+```
+flow auth [command]
+```
+
+## `flow auth check`
+
+Check a bearer token against a trust policy
+
+```
+flow auth check [flags]
+```
+
+Verify one bearer token against a trust policy using the same OIDC verifier and issuer-rule matching path as `flow server`. This diagnoses policy-entry overlap; it does not simulate the server's surface-specific --rpc-resource check. The token is read only from a file or stdin: there is deliberately no token argument or --token flag, because credentials in argv leak through process listings, shell history, logs, and completion. Output names only the policy entry that admitted the token, or the policy entries that made it ambiguous; it never prints token claims. This is a concrete-token probe, not a static proof that every possible token matches at most one entry: check each representative caller before deploying a policy change.
+
+Examples:
+
+```sh
+# Check a projected workload token without putting it in argv:
+flow auth check --auth-policy trust.yaml --token-file /var/run/secrets/tokens/flowstate
+
+# Read a token from stdin instead:
+flow auth check --auth-policy trust.yaml --token-file - < "$TOKEN_FILE"
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--auth-policy <string>` | `string` | — | — | path to the trust policy to check (required) |
+| `--token-file <string>` | `string` | — | — | path containing the bearer token, or "-" to read stdin (required; the token itself is never accepted in argv) |
+
 ## `flow breaking`
 
 Report workflows whose declared inputs or outputs broke a contract
@@ -87,11 +120,13 @@ Report workflows whose declared inputs or outputs broke a contract
 flow breaking [path...] [flags]
 ```
 
-Compile every Flowfile at the working tree and at a git ref, match workflows by `name:`, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
+Compile every Flowfile at the working tree and at a git ref, match each workflow to its previous self by path, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, a declared output whose type or guarantee weakened, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
 
 The comparison is over the compiled protos, not the YAML text, so it is immune to formatting and comment churn. Each finding names the position in the working-tree file, what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as `validate`.
 
 A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `test` use. The `--against` ref must be present in the local git history: fetch the base branch first, exactly as the `buf breaking` check does.
+
+A workflow is its path: two files declaring one `name:` in different directories are two workflows, each compared against the file at its own path at the ref. A file that moved since the ref is matched with `--moved old=new`; without it the old path reads as removed and the new one as brand new.
 
 Examples:
 
@@ -102,11 +137,15 @@ flow breaking --against origin/main examples/
 
 # Check one workflow against the last commit:
 flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
+
+# A file that moved is compared against its old path, not reported as removed:
+flow breaking --against origin/main --moved shared/notify.yaml=workflows/notify.yaml .
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--against <string>` | `string` | — | — | git ref holding the old contract to compare the working tree against, such as origin/main |
+| `--moved <string,...>` | `stringArray` | — | — | a Flowfile that moved since the ref, as old=new paths, so it is compared against its old self (repeatable) |
 
 ## `flow cancel`
 
@@ -155,7 +194,7 @@ Print the workflow specification a Flowfile compiles to
 flow compile [workflow-file] [flags]
 ```
 
-Compile a Flowfile and write the resulting workflow specification to standard output, executing nothing and contacting no server.
+Compile a Flowfile and write the resulting workflow specification to standard output, executing no workflow step and contacting no server. `--plugin-dir` does launch those plugin binaries to read their task descriptors; use `--plugin-catalog` to compile against the same descriptors without starting a process.
 
 This is the sibling of `flow validate` and the two answer different questions. `flow validate` answers whether a file is correct, and its answer is the list of problems. This answers what a correct file becomes, and its answer is the specification: the same `Workflow` message `flow run` submits, so a reviewer, a diff, or a tool reading a step's compiled expressions is reading exactly what would have executed.
 
@@ -180,14 +219,23 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
+| `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
+| `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow dap`
 
 Debug a workflow from an editor, over the Debug Adapter Protocol
 
 ```
-flow dap
+flow dap [flags]
 ```
 
 Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and continue buttons drive a real local run.
@@ -205,6 +253,48 @@ flow dap
 # The terminal debugger, for a person:
 flow run local --debug examples/hello-world/workflow.yaml
 ```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
+| `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
+| `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
+| `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
+| `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
+| `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
+| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | absolute directory to discover plugins in, repeatable, in precedence order; a relative path is refused and $FLOWSTATE_PLUGIN_DIR is not read, because an editor starts this process in the workspace |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
+| `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
+| `--plugin-pins <string>` | `string` | — | — | path to a YAML pins file; $FLOWSTATE_PLUGIN_PINS is not read, because an editor starts this process in the workspace |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
+| `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
+| `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
+| `--secret-dir-namespaced` | `bool` | `false` | — | resolve file: secrets below a separate <secret-dir>/<namespace>/ directory |
+| `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
+| `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
+| `--secret-keychain` | `bool` | `false` | — | resolve keychain: secrets from the macOS keychain (default $FLOWSTATE_SECRET_KEYCHAIN, macOS only) |
+| `--secret-keychain-namespaced` | `bool` | `false` | — | give each tenant its own keychain service, <service>/<namespace> |
+| `--secret-keychain-service <string>` | `string` | — | `FLOWSTATE_SECRET_KEYCHAIN_SERVICE` | keychain service name entries are stored under (default $FLOWSTATE_SECRET_KEYCHAIN_SERVICE, then "flowstate") |
+| `--secret-op` | `bool` | `false` | — | resolve op: secrets through the 1Password CLI (default $FLOWSTATE_SECRET_OP) |
+| `--secret-op-namespaced` | `bool` | `false` | — | give each tenant its own 1Password vault, named after the namespace |
+| `--secret-op-vault <string>` | `string` | — | `FLOWSTATE_SECRET_OP_VAULT` | 1Password vault read when a run has no namespace (default $FLOWSTATE_SECRET_OP_VAULT, then "flowstate") |
+| `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
+| `--secret-vault-addr <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_ADDR` | address of the Vault or OpenBao instance vault: secrets are read from, such as https://vault.example.com:8200 (default $FLOWSTATE_SECRET_VAULT_ADDR) |
+| `--secret-vault-ca-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_CA_FILE` | PEM CA bundle to verify the vault's certificate against, instead of the system roots (default $FLOWSTATE_SECRET_VAULT_CA_FILE) |
+| `--secret-vault-kubernetes-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT` | where the Kubernetes auth method is mounted (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT, then "kubernetes") |
+| `--secret-vault-kubernetes-role <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE` | Vault role to authenticate as via the Kubernetes auth method, using this pod's projected service account token (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE; exactly one of this or a token must be configured) |
+| `--secret-vault-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_MOUNT` | where the KV v2 engine is mounted (default $FLOWSTATE_SECRET_VAULT_MOUNT, then "secret") |
+| `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
+| `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
+| `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
+| `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); with nothing configured, every task dispatches exactly as it does today (see #187) |
 
 ## `flow debug`
 
@@ -267,13 +357,15 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml --input
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -352,6 +444,8 @@ flow fix --stdout old.yaml > new.yaml
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -606,6 +700,7 @@ flow keys public --in identity/2026-08.pem
 |---|---|---|---|---|
 | `--id <string>` | `string` | — | — | key id published in the JWK (default: --in's file name, without its extension) |
 | `--in <string>` | `string` | — | — | path to a PKCS#8 private key PEM (required) |
+| `--jwks` | `bool` | `false` | — | wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file |
 
 ## `flow lint`
 
@@ -615,7 +710,7 @@ Suggest the canonical spelling where a Flowfile is legal but not idiomatic
 flow lint [path...] [flags]
 ```
 
-Walk Flowfiles and report where one is written in a way the style charter (docs/STYLE.md) has an opinion about: a conditional nested inside a conditional, one expression stated three or more times, and a chain of sibling `if:` steps testing one value for equality where a `switch:` would let the validator check the branches.
+Walk Flowfiles and report where one is written in a way the style charter (docs/STYLE.md) has an opinion about: a conditional nested inside a conditional, one expression stated three or more times, a chain of sibling `if:` steps testing one value for equality where a `switch:` would let the validator check the branches, and a webhook `idempotency_key:` that reads a signature header, which a sender computes afresh on every retry and so names the attempt rather than the event.
 
 Every file this reports on is legal, validates, and runs. These are suggestions, which is what tier 4 of the charter means: it warns and never blocks, and this command exits 0 on every finding it has. `--strict` opts into a nonzero exit, which is what the CI leg over `examples/` uses — the files this repository teaches from are held to a narrower standard than the language is, because they are what an author copies.
 
@@ -652,7 +747,7 @@ List your runs
 flow list [flags]
 ```
 
-List the runs belonging to your tenant, newest first. A page can come back short or empty with runs still to find, because the server scans a bounded number of executions per request; pass --all to walk the rest.
+List the runs belonging to your tenant, newest first. A page can come back short or empty with runs still to find, because the server scans a bounded number of executions per request; pass --all to walk the rest. STARTED is when the workload began: a run that continued as new is one row, named by its latest segment's run id and dated from its first segment's start. The JSON forms also carry the listed segment's own start and how many segments the workload has run as.
 
 Examples:
 
@@ -681,9 +776,14 @@ flow list --all --filter 'finished && close_time - start_time > duration("1h")'
 # name instead, and it is empty for a run older than this field.
 flow list --all --filter 'name == "nightly-etl"'
 
-# One team's runs, by the labels the Flowfile declares. Guard the index: a run
-# carrying no labels has no such key, and indexing one that is absent is an
-# error, exactly as close_time is null above.
+# One team's runs, by the labels the Flowfile declares. A run carrying no labels
+# has no such key, so read it as a key that may be absent: .? yields an optional
+# and orValue fills in the answer for a run without one.
+flow list --all --filter 'labels.?team.orValue("") == "payments"'
+
+# The same question with a guard instead, which still works. A bare
+# labels["team"] errors on every unlabelled run; such a run is then left out
+# rather than failing the listing, and the count of runs left out is reported.
 flow list --all --filter '"team" in labels && labels["team"] == "payments"'
 
 # Which runs nobody labelled with an owner. This is why labels binds to an empty
@@ -703,10 +803,10 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'
 | `--all` | `bool` | `false` | — | keep asking until the listing is exhausted, rather than returning one page |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, `name` (the workflow's own declared name, empty for a run older than this field), `labels` (the workflow's declared labels, a map: guard an index with "team" in labels), `starter` (the qualified issuer#subject who submitted it), and `worker_version` (the Worker Deployment version the run is pinned to, empty where versioning is off); for example status == "FAILED" |
+| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, `name` (the workflow's own declared name, empty for a run older than this field), `labels` (the workflow's declared labels, a map), where a key that may be absent is read with labels.?team.orValue(""); `starter` (the qualified issuer#subject who submitted it), and `worker_version` (the Worker Deployment version the run is pinned to, empty where versioning is off); for example status == "FAILED" |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
-| `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped |
+| `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped; opaque, and accepted only by the server that issued it, with the same --filter and --page-size, within a day |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -740,6 +840,8 @@ flow lsp --plugin-dir /opt/flowstate/plugins
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | absolute directory to discover plugins in, repeatable, in precedence order; a relative path is refused and $FLOWSTATE_PLUGIN_DIR is not read, because an editor starts this process in the workspace |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | — | path to a YAML pins file; $FLOWSTATE_PLUGIN_PINS is not read, because an editor starts this process in the workspace |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -792,10 +894,12 @@ flow mcp --plugin-dir ./plugins
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize local runs served to an agent |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -838,14 +942,14 @@ flow mcp serve [flags]
 
 Serve the Model Context Protocol over streamable HTTP, requiring every caller to present a bearer token this deployment's own trust policy accepts and whose audience names this resource specifically (RFC 8707 section 2). A request with no token is answered 401 with a WWW-Authenticate header naming the RFC 9728 protected resource metadata document, which this command also serves, so a compliant MCP client can bootstrap from the refusal alone.
 
-This is a different surface from `flow mcp`, not a transport switch on it. Over stdio there is exactly one caller and it is the process that spawned this one, which is what makes every posture flag there a decision taken once at start-up; over HTTP there are many callers and those flags would silently change meaning. So the tools that execute or dispatch anything are not served here: flowstate_run_local is absent, because over HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent because they would spend this process's own credential on a caller's behalf. What is served is what answers in this process and reaches nothing — flowstate_validate, flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs replace every task implementation before a step executes.
+This is a different surface from `flow mcp`, not a transport switch on it. Over stdio there is exactly one caller and it is the process that spawned this one, which is what makes every posture flag there a decision taken once at start-up; over HTTP there are many callers and those flags would silently change meaning. So the tools that execute or dispatch anything are not served here: flowstate_run_local is absent, because over HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent because they would spend this process's own credential on a caller's behalf. What is served is what answers in this process and reaches nothing — flowstate_validate, flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs replace every task implementation before a step executes. Sessions and their limits live only in this process: run one replica, and expect a restart to invalidate active sessions. A load-balanced fleet is not a supported horizontally scalable deployment.
 
-Flowstate is not an authorization server: it issues no tokens, runs no authorization or token endpoint, and verifies nothing it did not receive from the identity provider an operator configured. No scope vocabulary is advertised or challenged for yet, and a token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than read as its bare subject. See docs/MCP_AUTHORIZATION.md.
+Flowstate is not an authorization server: it issues no tokens, runs no authorization or token endpoint, and verifies nothing it did not receive from the identity provider an operator configured. The protected-resource document advertises the schema-owned scope vocabulary, but no request enforces or challenges for a scope yet, and a token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than read as its bare subject. See docs/MCP_AUTHORIZATION.md.
 
 Examples:
 
 ```sh
-# Behind a TLS-terminating proxy, advertising one identity provider:
+# One replica behind a TLS-terminating proxy, advertising one identity provider:
 flow mcp serve --listen 127.0.0.1:8617 \
   --auth-policy /etc/flowstate/policy.yaml \
   --protected-resource https://flowstate.example.com/mcp \
@@ -861,13 +965,14 @@ flow mcp serve --listen :8617 \
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the trust policy whose issuers may mint tokens for this surface (overrides FLOWSTATE_AUTH_POLICY). Required: there is no anonymous variant of this surface, and --insecure-no-auth is refused here |
 | `--authorization-server <string,...>` | `stringArray` | — | — | an authorization server this deployment advertises as able to mint tokens for --protected-resource. Repeatable; RFC 9728 requires at least one when --protected-resource is given. Each one must already be a kind: oidc issuer in --auth-policy — an authorization server this deployment's own verifier would reject is refused at start-up rather than advertised |
 | `--insecure-no-auth` | `bool` | `false` | — | refused on this surface: an OAuth 2.1 protected resource that authenticates nobody is a contradiction. Use `flow mcp` over stdio for local development |
 | `--listen <string>` | `string` | `127.0.0.1:8617` | — | address to serve the MCP surface on. Anything but a loopback address requires --tls-cert-file/--tls-key-file, or --tls-terminated-upstream when a proxy in front of this process already terminates TLS: a bearer token on a cleartext connection that leaves this machine is a credential handed to whatever is in between |
 | `--max-request-bytes <int64>` | `int64` | `1048576` | — | largest request body this surface will read, in bytes. A request over the limit is refused with 413 rather than buffered |
-| `--max-session-requests <int>` | `int` | `8` | — | how many requests one MCP session may have in flight at once. A request past the limit is refused with 503: --max-sessions bounds how many sessions exist and says nothing about how many connections one of them is replayed over |
-| `--max-sessions <int>` | `int` | `32` | — | how many MCP sessions may be open at once. A request that would open one past the limit is refused with 503; sessions idle for 5m0s are closed and their slots returned |
+| `--max-session-requests <int>` | `int` | `8` | — | how many requests one MCP session may have in flight in this process at once. A request past the limit is refused with 503: --max-sessions bounds how many sessions exist and says nothing about how many connections one of them is replayed over |
+| `--max-sessions <int>` | `int` | `32` | — | how many MCP sessions may be open in this process at once. A request that would open one past the limit is refused with 503; sessions idle for 5m0s are closed and their slots returned |
 | `--protected-resource <string>` | `string` | — | `FLOWSTATE_PROTECTED_RESOURCE` | the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as (overrides FLOWSTATE_PROTECTED_RESOURCE). No fragment, no trailing slash. Given together with one or more --authorization-server, this deployment serves RFC 9728 protected resource metadata at /.well-known/oauth-protected-resource, plus this resource's own path if it has one (RFC 9728 section 3.1's well-known-URI construction — a resource ending in /mcp serves its document at /.well-known/oauth-protected-resource/mcp, not at the bare prefix), and every 401 challenge names that exact document. Required on this command: this surface is the protected resource, so without one there is nothing to bind a token's audience to and `flow mcp serve` refuses to start rather than serving an unauthenticated MCP endpoint |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--test-timeout <duration>` | `duration` | `2m0s` | — | how long one flowstate_test call may run before it is stopped and reported as timed out. A submitted workflow can park forever on its own — a `wait_for_signal:` with no timeout and no scripted signal never completes — and while one runs, every other tool and resource on this surface waits for it |
@@ -905,6 +1010,8 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -921,7 +1028,7 @@ Start a workload on a Flowstate server and follow the run until it finishes.
 
 This verb always means the server, and it never falls back to running the workload here when no server answers: a network failure must not turn a deploy into a laptop run. `flow run local` is the other venue, and each run says which one it is on before it starts, so the address a shell happens to carry is never something to find out afterwards.
 
-Following works exactly as `flow watch` does, because it is the same code: a live view where there is a terminal, one line per change where there is not, and the outputs on stdout when the run produced them. The exit code is the run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects.
+Following works exactly as `flow watch` does, because it is the same code: a live view where there is a terminal, one line per change where there is not, and the outputs on stdout when the run produced them. The exit code is the run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects. With --detach the command returns as soon as the run has started, and the exit code is the start's: `flow run --detach x && flow watch <id>` is the two-step form of the default, for a CI job, a cron entry, or a script that must not hold a process open while a run waits hours on an approval.
 
 Stopping watching does not stop the run. The workflow id is printed as soon as the run starts, so `flow watch` can pick it up again afterwards.
 
@@ -951,6 +1058,9 @@ flow run examples/hello-world/workflow.yaml | jq .steps
 # In CI: one line per change, exit code reports the outcome.
 flow run examples/hello-world/workflow.yaml >/dev/null
 
+# Start a run and come back to it later, from a job that cannot wait:
+flow run --detach examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json -o json
+
 # Check a workflow without running it:
 flow validate examples/hello-world/workflow.yaml
 ```
@@ -960,6 +1070,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
+| `--detach` | `bool` | `false` | — | start the run and return once it has started, without following it; the exit code is then the start's rather than the run's, the ids are printed as they are when following, and `flow watch <id>` is the way back to the run |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
@@ -967,6 +1078,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reason <string>` | `string` | — | — | why this run is being started, recorded on it; required by a workflow whose `manual:` block asks for one |
+| `--request-id <string>` | `string` | — | — | idempotency key for this submission, a UUID or a caller-chosen string; a second `flow run` carrying the same value is answered with the run the first started rather than starting another. Generated per invocation when unset |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
@@ -1045,13 +1157,15 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
 | `--debug` | `bool` | `false` | — | hold the run before each step and read commands from the terminal — step, continue, until, break, inspect, scope, quit; the console shares stderr with the run's account, so stdout stays the answer under every --output |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -1134,6 +1248,7 @@ flow schedule create report.yaml --name report-us --input region=us-east-1
 | `--name <string>` | `string` | — | — | what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--paused` | `bool` | `false` | — | create the schedule without letting it fire, so its next firing times can be read before it takes one |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1371,17 +1486,19 @@ flow server --verbose
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--allow-issuer-wide-audiences` | `bool` | `false` | — | migration-only: accept any audience listed for a token's trusted issuer on Connect RPC; explicitly restores the pre-resource behavior and cannot be combined with --rpc-resource |
-| `--audit-required` | `bool` | `false` | — | fail a request whose authorization decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
+| `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept |
 | `--authorization-server <string,...>` | `stringArray` | — | — | an authorization server this deployment advertises as able to mint tokens for --protected-resource. Repeatable; RFC 9728 requires at least one when --protected-resource is given. Each one must already be a kind: oidc issuer in --auth-policy — an authorization server this deployment's own verifier would reject is refused at start-up rather than advertised |
 | `--deployment-name <string>` | `string` | — | `FLOWSTATE_DEPLOYMENT_NAME` | name of this Flowstate deployment, recorded in each run's workload identity and in every assertion subject it mints |
-| `--identity-claim <string,...>` | `stringArray` | — | — | caller token claim to carry into each run's workload identity (repeatable), such as repository or email; only named claims are carried, and they are what workload.claims[...] policy rules read |
+| `--identity-claim <string,...>` | `stringArray` | — | — | caller token claim to carry into each run and signal sender identity (repeatable), such as team or email; only named claims are persisted, and they are what signals: and workload.claims[...] policy rules read |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | path to a PKCS#8 PEM private key Flowstate signs its own assertions with, required when the trust policy configures federation; the file's base name becomes the published key id, so 2026-07.pem publishes as "2026-07". Repeatable: the first occurrence signs and every later one is published for verification only, so a restart that rotates keys does not reject assertions the previous process signed |
 | `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access; for local development only, and cannot be combined with --auth-policy (or an inherited FLOWSTATE_AUTH_POLICY), which authenticates every caller against a trust policy this flag would leave unread |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a private socket of this process's own; empty (the default) means no internal listener at all. Pass a loopback address, such as --internal-listen 127.0.0.1:9090, to turn it on — nothing else is accepted: it serves pprof, whose profiles carry this process's memory and running goroutines (secret values resolved into it among them), and it carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address this server listens on, as a bare host:port for net.Listen (default $FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, refusePlaintextListener requires --tls-cert-file/--tls-key-file or --tls-terminated-upstream |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -1436,7 +1553,7 @@ flow server dev [flags]
 
 Start everything a durable run needs, in one process: a Temporal dev server, the Flowstate control plane, and a worker polling the run queue. Everything binds loopback and everything is ephemeral unless --db names a file, so a session leaves nothing behind. Ctrl-C stops all three, the Temporal child process included.
 
-It takes two postures on your behalf and states both at start-up: callers are anonymous (what `flow server --insecure-no-auth` does) and the interpreter is unversioned (what `flow worker --allow-unversioned-interpreter` does). Both are acceptable here only because nothing is reachable off this machine, which is why the command refuses to start when that stops being true.
+By default it takes two postures on your behalf and states both at start-up: callers are anonymous (what `flow server --insecure-no-auth` does) and the interpreter is unversioned (what `flow worker --allow-unversioned-interpreter` does). Both are acceptable here only because nothing is reachable off this machine, which is why the command refuses to start when that stops being true. `--auth` replaces the anonymous posture with a generated local issuer and the same bearer-token middleware a deployment uses.
 
 The Temporal dev server is the `temporal` CLI, downloaded on first use and cached afterwards, so the first run needs network and later ones do not. Telemetry composes rather than being contained: set OTEL_EXPORTER_OTLP_ENDPOINT and traces, metrics and logs flow to it exactly as they do from `flow server` and `flow worker`, which is how this points at examples/observability.
 
@@ -1445,6 +1562,9 @@ Examples:
 ```sh
 # The whole stack, ephemeral, on loopback:
 flow server dev
+
+# The same stack with token authentication and a copyable sign command:
+flow server dev --auth
 
 # Keep the runs: Temporal persists to sqlite at this path.
 flow server dev --db ./flowstate.db
@@ -1464,15 +1584,19 @@ flow server dev -o json
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
-| `--audit-required` | `bool` | `false` | — | fail a request whose authorization decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
-| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution. Only its secrets section is read: this command serves every caller anonymously, so the policy's issuers go unused, and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring the authentication a deployment configured |
+| `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
+| `--auth` | `bool` | `false` | — | require a locally signed bearer token, generating or reusing a dev key and printing the sign command; the default remains anonymous |
+| `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution. Only its secrets section is read: issuer entries are unused (callers are anonymous by default, or verified against the generated local issuer with --auth), and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring deployment authentication |
 | `--db <string>` | `string` | — | — | persist Temporal to a sqlite file at this path, so runs survive a restart; unset keeps everything in memory and nothing outlives the process |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--identity-claim <string,...>` | `stringArray` | — | — | caller token claim to carry into each run and signal sender identity (repeatable), such as team or email; only named claims are persisted, and they are what signals: and workload.claims[...] policy rules read |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); loopback only, and a port of 0 takes a free one |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -1599,7 +1723,7 @@ flow task run http --input url=https://example.com --input expect='${response.st
 flow task run http --input url=https://api.example.com/me --input bearer='${secret("env:API_TOKEN")}' --secret-env API_TOKEN --auth-policy policy.yaml
 
 # Run a task a plugin provides, through the same discovery a worker uses:
-flow task run example.greet --input name=world --plugin-dir ./plugins
+flow task run example.greet --input name=world --plugin-dir ./plugins --auth-policy examples/plugins/greet/auth.yaml
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -1611,13 +1735,15 @@ flow task run example.greet --input name=world --plugin-dir ./plugins
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize this local rehearsal |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -1695,6 +1821,8 @@ flow tasks --plugin-catalog plugins.lock.json
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -1752,7 +1880,7 @@ Per file, `flow test` reports branch coverage: the set of the workflow's steps a
 
 A `switch:` is measured a second way, per arm rather than per step, because an arm's body may hold no steps at all: `steps: []` is how a switch writes down deliberately ignoring a value, and `case: [closed, merged]` is one body two literals share. Which arm a case took is read from the step's own `case` record, so an arm no case reached is reported by the position it was written at — the only name an arm has. Record one under `coverage.allow_unreached` by the key the diagnostic prints.
 
-A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name the workflow does not have refuses the case before it runs, with a suggestion — a claim about a step that does not exist would otherwise pass vacuously forever. A stub the case declared and the run never answered through is reported as a warning: a fact about the case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle in cases that never invoke its task.
+A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name the workflow does not have refuses the case before it runs, with a suggestion — a claim about a step that does not exist would otherwise pass vacuously forever. Three conditions are reported as warnings: a stub the case declared and the run never answered through, a task invoked with no stub declared for it, and an invocation that no declared stub answered. Each is a fact about the case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt from the idle-stub warning — a file-level catch-all is expected to sit idle in cases that never invoke its task.
 
 A failing case prints its transcript beneath the unmet expectation: what each step produced and when virtual time moved, which stub answered it, each scripted signal with its sender, and the `switch:` arm taken — the account the expectation was judged against, with every value passing through the same redaction the stub diagnostics apply. `-v` prints every case's transcript, passing or not.
 
@@ -1782,7 +1910,7 @@ flow test -o jsonl examples/
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
 | `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires --run to name exactly one case, and is refused with --output json and with seeded exploration |
-| `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub the case declared and the run never answered through — instead of only printing it |
+| `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and --coverage-required is refused alongside it, because a subset's coverage gaps are not the suite's |
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
@@ -1850,7 +1978,7 @@ Check workflows for problems without running them
 flow validate [workflow-file...] [flags]
 ```
 
-Check one or more Flowfiles for problems without executing them. Reports unknown tasks, duplicate or unusable step ids, and references to steps that do not exist or have not run yet, with the line each problem is on.
+Check one or more Flowfiles for problems without executing them. Reports unknown tasks, duplicate or unusable step ids, and references to steps that do not exist or have not run yet, with the line each problem is on. It also applies every rule the specification's schema declares — a step list over its bound, an id over its length — in the words the server refuses a submission with, so a rule the schema would refuse at submit is refused here first. What a deployment decides for itself at submit — the plugins it has pinned, the tasks it can run, its credential and signal policies — is still the server's answer.
 
 A file naming a plugin's task is checked against that plugin given --plugin-dir: the plugins there are launched here, through the same discovery, handshake and catalog a worker uses, and their tasks and input schemas are then what this command checks against — so a misspelled input to a plugin task is a diagnostic at your terminal rather than a failure at the worker. It launches third-party binaries, which is why it takes this flag rather than looking anywhere by default, and a plugin that will not start fails this command outright: carrying on without it would report every one of its tasks as unknown, which is a false report about the file.
 
@@ -1883,6 +2011,8 @@ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
@@ -2001,10 +2131,11 @@ flow worker --temporal-namespace production --deployment-name flowstate --build-
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--allow-unversioned-interpreter` | `bool` | `false` | — | start without a Worker Deployment version, accepting that deploying a different binary changes what runs already in flight compute; for local development |
+| `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution |
 | `--build-id <string>` | `string` | — | `FLOWSTATE_BUILD_ID` | version identifier for this worker's binary, unique per build. Required with --deployment-name |
 | `--deployment-name <string>` | `string` | — | `FLOWSTATE_DEPLOYMENT_NAME` | Worker Deployment this worker belongs to. With --build-id, pins every in-flight run to the interpreter version it started on; a run moves to the current version only at continue-as-new |
-| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
+| `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file every plugin is granted the same default policy built-in HTTP runs under, which sql refuses to reach a database under; when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity <string>` | `string` | — | `FLOWSTATE_WORKER_IDENTITY` | how this worker identifies itself to Temporal, shown in Event History and a Task Queue's poller list (#752); a platform-native identifier (a Kubernetes pod name from the downward API, an ECS task id) is the most useful value here. Unset builds one from --deployment-name/--build-id, --tenant if set, and this process's hostname — still more specific than the SDK's own pid@hostname default, but a real platform identifier beats it |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a private socket of this process's own; empty (the default) means no internal listener at all. Pass a loopback address, such as --internal-listen 127.0.0.1:9090, to turn it on — nothing else is accepted: it serves pprof, whose profiles carry this process's memory and running goroutines (secret values resolved into it among them), and it carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
@@ -2013,6 +2144,8 @@ flow worker --temporal-namespace production --deployment-name flowstate --build-
 | `--max-concurrent-workflow-tasks <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS` | maximum number of workflow tasks executing at once in this process; 0 takes the Temporal SDK default (1000). The value 1 is refused: a worker with a single workflow-task slot never polls its regular queue, which the SDK enforces by panicking |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
+| `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of --plugin-env for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by both is refused |
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning is adopted one plugin at a time, not all at once |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of --plugin-pin for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any --plugin-pin, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |

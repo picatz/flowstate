@@ -94,16 +94,16 @@ func TestTheOfflineVerbsTakeThePluginCatalogFlag(t *testing.T) {
 		return cmd
 	}
 
-	for _, verb := range []string{"validate", "tasks", "fix"} {
-		t.Run(verb, func(t *testing.T) {
+	for _, verb := range [][]string{{"validate"}, {"tasks"}, {"fix"}, {"compile"}, {"schedule", "create"}} {
+		t.Run(strings.Join(verb, " "), func(t *testing.T) {
 			t.Parallel()
 
-			assert.NotNil(t, find(t, verb).Flags().Lookup(pluginCatalogFlag),
-				"`flow %s` cannot be told what a plugin provides without launching one", verb)
+			assert.NotNil(t, find(t, verb...).Flags().Lookup(pluginCatalogFlag),
+				"`flow %s` cannot be told what a plugin provides without launching one", strings.Join(verb, " "))
 		})
 	}
 
-	for _, verb := range [][]string{{"worker"}, {"run", "local"}, {"task", "run"}} {
+	for _, verb := range [][]string{{"worker"}, {"run", "local"}, {"task", "run"}, {"dap"}} {
 		t.Run("not on "+strings.Join(verb, " "), func(t *testing.T) {
 			t.Parallel()
 
@@ -241,6 +241,13 @@ func TestTasksListsWhatACatalogHolds(t *testing.T) {
 	require.NoError(t, err, output)
 	assert.Contains(t, output, "Provided by the example plugin",
 		"the detail page does not say where the task came from:\n%s", output)
+
+	// And the copyable step is written under the `plugins:` block that makes
+	// the file safe to submit, at the version the catalog reports (#1676): a
+	// worker without the plugin refuses it at submit rather than failing the
+	// step with `unknown task`.
+	assert.Regexp(t, `plugins:\n\s+example: v[0-9]+\.[0-9]+\.[0-9]+\n\s+steps:`, output,
+		"the copyable step omits the plugins block:\n%s", output)
 }
 
 // TestACatalogAndAPluginDirAreRefusedTogether is the both-flags decision.
@@ -282,6 +289,7 @@ steps:
 		{"validate", []string{"validate", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir, path}},
 		{"tasks", []string{"tasks", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir}},
 		{"fix", []string{"fix", "--check", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir, path}},
+		{"compile", []string{"compile", "--" + pluginCatalogFlag, catalog, "--plugin-dir", dir, path}},
 		{"a pinned plugin", []string{"validate", "--" + pluginCatalogFlag, catalog, "--plugin", "example", path}},
 	} {
 		args := tc.args

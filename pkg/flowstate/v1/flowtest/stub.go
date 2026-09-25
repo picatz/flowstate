@@ -4,18 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -123,6 +125,10 @@ type stubbedTask struct {
 	// "the task ran and this stub never matched" in [unusedStubWarnings].
 	invoked bool
 
+	// rawOutputs is the task's own output names ([rawOutputNames]), resolved
+	// once at bind time for the answer-time half of [shapedOutputsMismatch].
+	rawOutputs []string
+
 	// respond is the task's own [v1.TaskDef.StubResponseFn], resolved once at
 	// bind time so a `response:` stub aimed at a task with no raw-response
 	// semantics is refused before the run rather than surfacing mid-case. Nil
@@ -214,17 +220,29 @@ func stubTaskNames(compiled []compiledStub) []string {
 // reference the workflow's own name for a thing instead of retyping a value the
 // step happens to carry (issue #416, principle 12).
 func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedTask, error) {
-	taskOfStep, kindOfStep := stepTasks(spec)
+	taskOfStep, kindOfStep, nodeOfStep := stepTaskNodes(spec)
 
 	byTask := make(map[string]*stubbedTask)
 	for i := range compiled {
 		m := compiled[i]
 
+		// A `returns:` that could only ever land on steps shaping their
+		// outputs, and carries none of the shaped names of any of them, is
+		// refused here, positioned on the stub, rather than at the first
+		// expression to read a name that never existed. Only where the
+		// answer is settled at load: a stub some unshaped step could still
+		// take is judged when it answers — see [stubbedTask.fn].
+		if m.hasReturns {
+			if mismatch := shapedOutputsMismatchAtBind(&m, taskOfStep, nodeOfStep); mismatch != "" {
+				return nil, fmt.Errorf("stub %d for %s: %s", m.ordinal, describeStubTarget(&m), mismatch)
+			}
+		}
+
 		task := m.task
 		if m.step != "" {
 			resolved, ok := taskOfStep[m.step]
 			if !ok {
-				return nil, unknownStepError(m.step, kindOfStep, taskOfStep)
+				return nil, unknownStepError(m.step, kindOfStep, taskOfStep, calleeSteps(spec))
 			}
 			task = resolved
 			m.stepScope = stubStepScope{workflow: spec.GetName(), step: m.step}
@@ -236,6 +254,7 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 			if def, exists := v1.DefaultRegistry().Lookup(task); exists {
 				t.respond = def.StubResponseFn
 			}
+			t.rawOutputs = rawOutputNames(task)
 			byTask[task] = t
 		}
 
@@ -258,6 +277,43 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 	return byTask, nil
 }
 
+// shapedOutputsMismatchAtBind decides [shapedOutputsMismatch] for a stub
+// before the run, where every step the stub could answer is known: the one
+// step a step-form stub names, or every step running a task-form stub's
+// task. Empty unless every candidate shapes its outputs and the answer
+// carries none of any candidate's shaped names — a stub that some unshaped
+// step could take, or that fits one of the shaped steps, is left to answer.
+func shapedOutputsMismatchAtBind(m *compiledStub, taskOfStep map[string]string, nodeOfStep map[string]*v1.Node) string {
+	var candidates []string
+	if m.step != "" {
+		candidates = []string{m.step}
+	} else {
+		for step, task := range taskOfStep {
+			if task == m.task {
+				candidates = append(candidates, step)
+			}
+		}
+		slices.Sort(candidates)
+	}
+
+	returned := slices.Sorted(maps.Keys(m.returns))
+	mismatch := ""
+	for _, step := range candidates {
+		node, ok := nodeOfStep[step]
+		if !ok {
+			return ""
+		}
+		found := shapedOutputsMismatch(step, shapedOutputNames(node), rawOutputNames(taskOfStep[step]), returned)
+		if found == "" {
+			return ""
+		}
+		if mismatch == "" {
+			mismatch = found
+		}
+	}
+	return mismatch
+}
+
 // describeStubTarget names a compiled stub the way the author aimed it, for a
 // diagnostic: by step where a step was named, by task otherwise.
 func describeStubTarget(m *compiledStub) string {
@@ -275,10 +331,23 @@ func describeStubTarget(m *compiledStub) string {
 // parallel) is told apart from one that does not exist at all, because the fix
 // differs: the first is a real id aimed at the wrong kind of step, the second is
 // a typo.
-func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[string]string) error {
+func unknownStepError(step string, kindOfStep, taskOfStep map[string]string, inCallee map[string]calleeStep) error {
 	if kind, exists := kindOfStep[step]; exists {
 		return fmt.Errorf("stub names step %q, which runs no task (it is a %s step) and so cannot be stubbed; "+
 			"stub a task step, or the task itself with `task:` and `where:`", step, kind)
+	}
+
+	// A name that is spelled exactly right, about a step this file cannot name.
+	// Step ids are local to a Flowfile, so a callee's step is genuinely not
+	// resolvable here — but answering a correct spelling with `did you mean
+	// "prep"?` tells an author to retype a right name as a different, unrelated
+	// one, which is a false sentence about their file (#1441). Say where the
+	// step lives and how to reach it instead.
+	if owner, exists := inCallee[step]; exists {
+		return fmt.Errorf("stub names step %q, which lives in workflow %q — reached by this workflow's "+
+			"%q step, not declared by it — and a `step:` stub resolves only against the workflow under "+
+			"test; stub the task it runs with `task:` and `where:`, which reaches inside a call",
+			step, owner.workflow, owner.callStep)
 	}
 
 	// Suggestions draw on every step the workflow has, not only the task
@@ -300,24 +369,128 @@ func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[
 	return fmt.Errorf("stub names unknown step %q, which this workflow has no task step for", step)
 }
 
-// stepTasks walks a compiled workflow and returns two maps: every task step's id
-// to the task it invokes, and every non-task step's id to a word naming its kind
-// (`wait`, `loop`, `for_each`, `call`, `value`). Together they cover every step a
-// step-form stub could name, so a stub aimed at a wait is told apart from one
-// aimed at nothing.
+// calleeStep is where a step a caller cannot name actually lives: the workflow
+// that declares it, and the caller's own `call:` step that reaches it.
+//
+// Both halves are needed to be useful. The workflow name alone leaves an author
+// hunting for which of several calls goes there; the call step alone does not
+// say what file to open.
+type calleeStep struct {
+	workflow string
+	callStep string
+}
+
+// calleeSteps indexes every step declared by a workflow this one calls, by id.
+//
+// Only what [stepTasks] deliberately does not walk. The two are complements
+// rather than a wider version of one another: [stepTasks] answers "what can a
+// `step:` stub resolve to", which stops at a `call:` because step ids are local
+// to a Flowfile, and this answers "if it cannot, is the name nonetheless real
+// somewhere", which is the difference between a typo and a scope.
+//
+// The nearest owner wins where a callee itself calls another: the id is reported
+// against the call step in *this* workflow that leads to it, which is the one an
+// author can see.
+//
+// Descent through `call:` is bounded by [v1.MaxCallDepth], the same bound
+// execution follows calls to. That is the one direction this walk goes that its
+// siblings ([stepTasks], collectAllStepIDs) do not, so it is the one that needs
+// a bound of its own; body nesting is left exactly as unbounded as they leave
+// it, and is bounded upstream by the compiler. Stopping early costs only the
+// specific sentence: an id past the bound falls through to the generic refusal,
+// which is still true.
+func calleeSteps(spec *v1.Workflow) map[string]calleeStep {
+	found := map[string]calleeStep{}
+
+	var record func(nodes []*v1.Node, owner calleeStep, depth int)
+	record = func(nodes []*v1.Node, owner calleeStep, depth int) {
+		if depth > v1.MaxCallDepth {
+			return
+		}
+		for _, node := range nodes {
+			if _, seen := found[node.GetId()]; !seen && node.GetId() != "" {
+				found[node.GetId()] = owner
+			}
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					record(branch.GetSteps(), owner, depth)
+				}
+			case *v1.Node_ForEach:
+				record(kind.ForEach.GetBody(), owner, depth)
+			case *v1.Node_Loop:
+				record(kind.Loop.GetBody(), owner, depth)
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					record(body, owner, depth)
+				}
+			case *v1.Node_Call:
+				// A callee's own callees keep the outermost call step, which is
+				// the one written in the file the author is looking at.
+				if callee := kind.Call.GetWorkflow(); callee != nil {
+					record(callee.GetSteps(),
+						calleeStep{workflow: callee.GetName(), callStep: owner.callStep}, depth+1)
+				}
+			}
+		}
+	}
+
+	var walk func(nodes []*v1.Node, depth int)
+	walk = func(nodes []*v1.Node, depth int) {
+		if depth > v1.MaxCallDepth {
+			return
+		}
+		for _, node := range nodes {
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					walk(branch.GetSteps(), depth)
+				}
+			case *v1.Node_ForEach:
+				walk(kind.ForEach.GetBody(), depth)
+			case *v1.Node_Loop:
+				walk(kind.Loop.GetBody(), depth)
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					walk(body, depth)
+				}
+			case *v1.Node_Call:
+				if callee := kind.Call.GetWorkflow(); callee != nil {
+					record(callee.GetSteps(), calleeStep{
+						workflow: callee.GetName(),
+						callStep: node.GetId(),
+					}, depth+1)
+				}
+			}
+		}
+	}
+	walk(spec.GetSteps(), 0)
+
+	return found
+}
+
+// stepTaskNodes walks a compiled workflow and returns three maps: every task
+// step's id to the task it invokes, every non-task step's id to a word naming
+// its kind (`wait`, `loop`, `for_each`, `call`, `value`), and every task step's
+// id to the step itself — for a check that has to read what a step declares,
+// its `outputs:` shaping, and not only which task it runs. Together the first
+// two cover every step a step-form stub could name, so a stub aimed at a wait
+// is told apart from one aimed at nothing.
 //
 // It descends into loop and for_each bodies and parallel branches for the same
 // reason coverage does: those hold steps an author wrote and could name. It does
 // not descend into a `call:`, whose steps belong to the callee's own file.
-func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[string]string) {
+func stepTaskNodes(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[string]string, nodeOfStep map[string]*v1.Node) {
 	taskOfStep = map[string]string{}
 	kindOfStep = map[string]string{}
+	nodeOfStep = map[string]*v1.Node{}
 	var walk func(nodes []*v1.Node)
 	walk = func(nodes []*v1.Node) {
 		for _, node := range nodes {
 			switch kind := node.GetKind().(type) {
 			case *v1.Node_Task:
 				taskOfStep[node.GetId()] = kind.Task.GetName()
+				nodeOfStep[node.GetId()] = node
 			case *v1.Node_Wait:
 				kindOfStep[node.GetId()] = "wait"
 			case *v1.Node_Call:
@@ -336,6 +509,17 @@ func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[
 				// nothing is invoked. The expression is the value.
 				kindOfStep[node.GetId()] = "value"
 			case *v1.Node_Parallel:
+				// The container's own id, beside its branches' steps. Without it
+				// a stub aimed at a `parallel:` step — a step an author wrote,
+				// which the transcript names and the debugger breaks on — was
+				// answered with "unknown step, which this workflow has no task
+				// step for": a sentence false twice over about a step three
+				// lines above it, and one that sends an author looking for a
+				// misspelling that is not there (#1441). Like a `for_each` or a
+				// `switch`, there is nothing to stub on the container itself —
+				// the branches are the work — so it belongs in the map that
+				// tells that apart from a typo.
+				kindOfStep[node.GetId()] = "parallel"
 				for _, branch := range kind.Parallel.GetBranches() {
 					walk(branch.GetSteps())
 				}
@@ -358,7 +542,86 @@ func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[
 		}
 	}
 	walk(spec.GetSteps())
-	return taskOfStep, kindOfStep
+	return taskOfStep, kindOfStep, nodeOfStep
+}
+
+// shapedOutputNames is the names a task step's own `outputs:` shaping
+// declares — the outputs a later step reads — and nothing for a step that
+// declares no shaping, or whose task does not evaluate one itself.
+//
+// Read off the compiled step rather than off the task: `outputs:` is one of
+// the inputs the task defers ([v1.TaskDef.DeferredInputs]), carried as a
+// mapping of expressions the task evaluates over its response, and the
+// mapping's keys are the step's outputs.
+func shapedOutputNames(node *v1.Node) []string {
+	task := node.GetTask()
+	def, ok := v1.DefaultRegistry().Lookup(task.GetName())
+	if !ok || !slices.Contains(def.DeferredInputs, "outputs") {
+		return nil
+	}
+	shaping := task.GetInputs()["outputs"].GetStructure().GetMap().GetEntries()
+	if len(shaping) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(shaping))
+}
+
+// rawOutputNames is the names a task's own outputs carry — the fields a step
+// without shaping would report: `status_code`, `headers`, `body` and `json`
+// for http, the last derived from the body when `parse_json:` is set — and
+// nothing for a task this build has no definition of.
+func rawOutputNames(task string) []string {
+	def, ok := v1.DefaultRegistry().Lookup(task)
+	if !ok {
+		return nil
+	}
+	fields := v1.Outputs(def)
+	names := make([]string, 0, len(fields))
+	for _, field := range fields {
+		names = append(names, field.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// shapedOutputsMismatch is the sentence a `returns:` stub gets when it
+// answers a step that shapes its outputs with the task's own raw fields and
+// none of the shaped names: empty otherwise.
+//
+// A step with `outputs:` reports the shaped names and nothing else, so a
+// `returns:` for it supplies those names — that is what `returns:` is, the
+// step's finished outputs. One that carries `status_code` or `body` instead is
+// the raw response an author meant to hand the shaping (#1687); left to run,
+// the mistake surfaced two screens away, at the first expression to read a
+// shaped name that never existed, naming that expression and not the stub.
+//
+// Only that shape is refused. An answer carrying a shaped name is the step's
+// answer; an empty answer, or one carrying a marker no step reads
+// (`accepted: true`, as examples/deployment-reconciler writes for a step
+// whose outputs nothing downstream consumes), is a case that does not care
+// what the step reported, and is entitled not to.
+func shapedOutputsMismatch(step string, shaped, raw, returned []string) string {
+	if len(shaped) == 0 {
+		return ""
+	}
+	var rawReturned []string
+	for _, name := range returned {
+		if slices.Contains(shaped, name) {
+			return ""
+		}
+		if slices.Contains(raw, name) {
+			rawReturned = append(rawReturned, name)
+		}
+	}
+	if len(rawReturned) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"step %q shapes its outputs from the response into %s, and this returns: carries %s — the task's own "+
+			"response fields — and none of the shaped names; returns: supplies the step's shaped outputs, so return "+
+			"those names, or write response: with the raw status_code, headers and body and let the step's own "+
+			"outputs: run over it",
+		step, strings.Join(shaped, ", "), strings.Join(rawReturned, ", "))
 }
 
 // compileReturns parses every ${...} a stub's `returns:` holds.
@@ -456,7 +719,7 @@ func compileReturnValue(v any) (any, error) {
 // so an unmatched-stub failure (see [unmatchedStubError]) can redact a value
 // that traces back to one, the same "display etiquette" every other surface
 // applies, not skipped just because this surface is new.
-func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.TaskFunc {
+func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstubbed *unstubbedTasks) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
 		// Resolved once per invocation, before any matcher runs, so a
 		// reference with no `secrets:` entry is refused regardless of
@@ -483,7 +746,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 		recordAnswer := func(m *compiledStub) {
 			if recorder := runRecorderFromContext(ctx); recorder != nil {
 				serving, _ := v1.TaskStepFromContext(ctx)
-				recorder.stubAnswered(name, m.ordinal, m.step, serving)
+				recorder.stubAnswered(name, m.ordinal, m.step, serving, m.fromDefaults)
 			}
 		}
 
@@ -581,6 +844,20 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
 			}
 
+			// The step this invocation is for shapes its outputs — the
+			// deferred `outputs:` mapping is in the input map — and the
+			// answer carries none of the shaped names: the raw-response
+			// mistake [shapedOutputsMismatch] describes, refused here at the
+			// stub for the stub some unshaped step could have taken, which
+			// the bind-time check had to let through (#1687).
+			if shaping := inputs["outputs"].GetStructure().GetMap().GetEntries(); len(shaping) > 0 {
+				serving, _ := v1.TaskStepFromContext(ctx)
+				if mismatch := shapedOutputsMismatch(serving, slices.Sorted(maps.Keys(shaping)), s.rawOutputs, slices.Sorted(maps.Keys(returns))); mismatch != "" {
+					return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput,
+						fmt.Errorf("stub %d for %s: %s", m.ordinal, describeStubTarget(m), mismatch))
+				}
+			}
+
 			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
 		}
 
@@ -590,6 +867,14 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			serving, _ := v1.TaskStepFromContext(ctx)
 			recorder.stubUnmatched(serving)
 		}
+
+		// And it is a hole in the case's scaffolding, recorded for the same
+		// reason an undeclared stub is: the refusal below is an ordinary step
+		// failure, so a `continue_on_error:` step swallows it whole and the
+		// case passes green about work that never happened. Reached where a
+		// `step:` stub binds its task — the sibling step running that task
+		// arrives here rather than at [unstubbedTaskFn].
+		unstubbed.recordUnmatched(ctx, name)
 
 		// A where: that failed to evaluate is a broken expression, the same
 		// kind [m.matches] itself would have reported had this returned
@@ -723,22 +1008,15 @@ type stubVerdict struct {
 // (CLAUDE.md, "bound anything that consumes untrusted input").
 const maxUnmatchedStubValueLen = 200
 
-// truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting
-// at a rune boundary rather than a byte offset. A byte cut through the
-// middle of a multi-byte UTF-8 sequence produces invalid UTF-8, which
-// encoding/json (and so `-o json`, via protojson) refuses to encode as a
-// string at all, turning one test's overlong value into every case's JSON
-// report failing to marshal, not just this one line's own display (#386
-// follow-up).
+// truncateRuneSafe elides rendered past max with [textbound.Cut], so one
+// test's overlong value cannot leave invalid UTF-8 that fails every case's
+// `-o json` report (#386 follow-up). The cut is named in the text rather than
+// with textbound's bare "...", since a rendered input often ends in one.
 func truncateRuneSafe(rendered string, max int) string {
 	if len(rendered) <= max {
 		return rendered
 	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(rendered[cut]) {
-		cut--
-	}
-	return rendered[:cut] + "...(truncated)"
+	return textbound.Cut(rendered, max) + "...(truncated)"
 }
 
 // formatUnmatchedStubValue renders one invocation input for the failure
@@ -883,6 +1161,62 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 // The two messages tell the two situations apart, because the fix differs: a
 // task never invoked is a stub aimed at nothing, while a matcher tried and
 // never matched is a `where:` (or an earlier stub) that took the traffic.
+// shadowedDefaultWarnings reports, for one case, every case stub written
+// beside an inherited stub for the same target that it does not replace
+// (#1668). Replacing a default takes the same target and the same `where:`,
+// byte for byte ([stubTargetKey]); a case stub with a different filter is
+// prepended instead, and the default stays live behind it.
+//
+// Only a *filtered* default is reported. An unfiltered default is the
+// fallthrough the merge rules promise — a catch-all the case's more specific
+// stub is tried ahead of — and the corpus writes that shape on purpose. A
+// default that carries its own `where:` beside a case stub carrying a
+// different one is the shadow: an author who wrote the case stub to override
+// the default has two live matchers, and which one answers a given call is
+// decided by filters that were never meant to be read together. The warning
+// says how to replace the default without repeating either expression: a
+// where clause can occupy most of [MaxTestFileBytes], and copying it into every
+// case warning would turn a bounded source document into an unbounded report.
+func shadowedDefaultWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
+	type shadow struct {
+		ordinal int
+		message string
+	}
+	var found []shadow
+
+	for task, stubs := range byTask {
+		for i := range stubs.matchers {
+			m := &stubs.matchers[i]
+			if m.fromDefaults || m.whereSource == "" {
+				continue
+			}
+			for j := range stubs.matchers {
+				d := &stubs.matchers[j]
+				if !d.fromDefaults || d.step != m.step || d.whereSource == "" || d.whereSource == m.whereSource {
+					continue
+				}
+				target := fmt.Sprintf("task %q", task)
+				if m.step != "" {
+					target = fmt.Sprintf("step %q", m.step)
+				}
+				found = append(found, shadow{ordinal: m.ordinal, message: fmt.Sprintf(
+					"stub %d (%s) does not replace the default stub for the same %s: their where: clauses differ, "+
+						"so both are live and the default still answers every call this one does not match; "+
+						"to replace it, write the default's where: byte for byte, or delete this stub",
+					m.ordinal, target, target)})
+				break
+			}
+		}
+	}
+
+	sort.Slice(found, func(i, j int) bool { return found[i].ordinal < found[j].ordinal })
+	warnings := make([]*v1.Diagnostic, 0, len(found))
+	for _, f := range found {
+		warnings = append(warnings, &v1.Diagnostic{Field: "stubs", Message: f.message})
+	}
+	return warnings
+}
+
 func unusedStubWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
 	type idle struct {
 		ordinal int

@@ -3,8 +3,7 @@ package embed
 import (
 	"context"
 	"fmt"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -93,7 +92,16 @@ type RunOptions struct {
 }
 
 // RunLocal compiles [RunOptions] into a run and executes workflow in this
-// process, returning what [v1.RunWithInputs] returns.
+// process, returning what [v1.RunWithInputs] returns: every step's outputs,
+// read with [StepOutput] and [StepOutputString].
+//
+// What comes back is as recorded, in the clear. A `sensitive:` declaration
+// bounds what Flowstate itself renders — a terminal, a test report, an
+// agent's answer — and not what a run returns to the program that ran it;
+// the outputs are the run's history, which a program holding them reads the
+// same way. An embedder that prints them, or hands them on, applies the
+// declared set itself ([v1.SensitiveInputValues]) rather than assuming the
+// facade did.
 //
 // This is [v1.RunWithInputs] underneath, the same submit boundary `flow run
 // local` uses — argument binding, submission-size bounds, and everything
@@ -158,13 +166,13 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 	if egressPolicy == nil {
 		egressPolicy = v1.DefaultEgressPolicy()
 	}
-	if err := registry.Register(v1.HTTPTaskDef(egressPolicy)); err != nil {
+	if err := registry.Replace(v1.HTTPTaskDef(egressPolicy)); err != nil {
 		return nil, fmt.Errorf("flowstate/embed: RunLocal: registering the http task for the given egress policy: %w", err)
 	}
 
 	if opts.Tasks != nil {
 		for _, def := range opts.Tasks.defs() {
-			if err := registry.Register(def); err != nil {
+			if err := registry.Replace(def); err != nil {
 				// [Tasks.Register] already validated this definition; a
 				// failure here means this package's own bookkeeping
 				// disagreed with what it accepted.
@@ -204,7 +212,7 @@ func RunLocal(ctx context.Context, workflow *Workflow, opts RunOptions) (*v1.Wor
 			Policy:   opts.Secrets.Policy,
 			Broker:   opts.Secrets.Broker,
 			Identity: opts.Secrets.Identity,
-			Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.NewString()},
+			Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.New().String()},
 		})
 	}
 	// Left unchanged otherwise: no [v1.TaskRuntime] on the context at all is

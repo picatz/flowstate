@@ -7,13 +7,12 @@ import (
 	"time"
 )
 
-// An ErrorKind classifies why a task failed, which determines whether retrying
-// it could ever succeed.
+// An ErrorKind is the compact user-facing classification of why a task failed.
 //
 // Classification lives here, in the execution-independent layer, so that local
-// and durable execution agree on what a failure means. The engine translates
-// these kinds into the retry semantics of the underlying durable execution
-// substrate; nothing here depends on that substrate.
+// and durable execution agree on what a failure means. For legacy task errors it
+// also supplies the retry default; structured attempts carry that permission in
+// [AttemptOutcome]. Nothing here depends on either execution substrate.
 type ErrorKind string
 
 const (
@@ -81,6 +80,31 @@ const (
 	// the rehearsal that exists to predict it.
 	ErrorKindTimeout ErrorKind = "Timeout"
 
+	// ErrorKindRunTimeout indicates the durable substrate ended the whole run
+	// because its execution or run budget expired. Unlike [ErrorKindTimeout],
+	// retrying here means starting the workload again rather than retrying one
+	// step attempt. Earlier steps may already have applied non-idempotent effects,
+	// so the safe answer is permanent: an operator must decide whether a new run
+	// is appropriate.
+	//
+	// Listed by [PermanentErrorKinds], which is the complete public answer to
+	// "which kinds cannot succeed on a retry" — a client that reads a kind off
+	// the wire and checks that membership must find this one there, or it is
+	// told the run may be resubmitted, which is the one thing this kind exists
+	// to say it must not be.
+	//
+	// The engine's activity retry policy is derived from that list rather than
+	// equal to it, and this kind is what made the difference visible. That
+	// policy's NonRetryableErrorTypes matches on the type an activity attached
+	// to a failure, and no activity can fail with this kind: it is synthesized
+	// run-side from Temporal's own timeout and never crosses the activity
+	// boundary as an ApplicationError. So the engine filters it out (see
+	// nonRetryableErrorTypes) rather than shipping a string no activity returns
+	// in every step's retry policy. Two lists, one classification: the public
+	// one is complete, and the activity one is what is left after removing the
+	// kinds that boundary cannot produce.
+	ErrorKindRunTimeout ErrorKind = "RunTimeout"
+
 	// ErrorKindInternal indicates a defect in Flowstate itself. These are
 	// retried, on the assumption that a genuine defect is better surfaced by
 	// exhausting attempts than by being silently swallowed.
@@ -108,13 +132,16 @@ const (
 	ErrorKindRateLimited ErrorKind = "RateLimited"
 )
 
-// Retryable reports whether a failure of this kind could succeed if attempted
-// again.
+// Retryable reports the legacy retry default projected from this kind.
 //
 // The default is deliberately false: an unrecognized kind is treated as
 // permanent, so a new kind cannot accidentally cause a non-idempotent operation
 // to be repeated. Retrying a POST that already took effect is worse than
 // surfacing a failure that might have resolved on its own.
+//
+// An attempt carrying [AttemptOutcome] uses that outcome's independent retry
+// permission instead. A kind describes a failure for a person; it cannot prove
+// whether the operation behind that failure is safe to repeat.
 func (k ErrorKind) Retryable() bool {
 	switch k {
 	case ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
@@ -134,8 +161,16 @@ func RetryableErrorKinds() []ErrorKind {
 
 // PermanentErrorKinds returns the kinds that cannot succeed on a retry.
 //
-// The engine passes these to the durable execution substrate so that a
-// deterministic failure fails once instead of consuming its whole retry budget.
+// Complete, and that is its contract: a client holding a kind read off
+// [RunResponse_Error] decides whether to resubmit by checking this membership,
+// so a kind missing here reads as one worth retrying.
+//
+// The engine derives its activity retry policy from this list rather than
+// passing it through unchanged, so that a deterministic failure fails once
+// instead of consuming its whole retry budget. What it removes on the way is
+// the kinds no activity can attach to a failure — see the engine's
+// nonRetryableErrorTypes, and [ErrorKindRunTimeout] for the one such kind
+// today.
 func PermanentErrorKinds() []ErrorKind {
 	return []ErrorKind{
 		ErrorKindInvalidInput,
@@ -144,6 +179,7 @@ func PermanentErrorKinds() []ErrorKind {
 		ErrorKindPolicyDenied,
 		ErrorKindLimitExceeded,
 		ErrorKindUpstreamUnknown,
+		ErrorKindRunTimeout,
 	}
 }
 
@@ -160,6 +196,11 @@ type TaskError struct {
 
 	// Err is the underlying cause.
 	Err error
+
+	// Outcome carries the independent evidence established by this attempt.
+	// Nil is the compatibility shape for tasks that have not adopted structured
+	// outcomes yet; those failures continue to derive retry behavior from Kind.
+	Outcome *AttemptOutcome
 
 	// RetryAfter is how long to wait before another attempt, when the failure said
 	// so. A 429 or a 503 carrying a Retry-After header is the server telling us when
@@ -211,8 +252,33 @@ func selfNamesTask(err error) bool {
 // [errors.As] through it.
 func (e *TaskError) Unwrap() error { return e.Err }
 
-// Retryable reports whether the failure could succeed if attempted again.
-func (e *TaskError) Retryable() bool { return e.Kind.Retryable() }
+// Retryable reports whether this attempt permits another try. Structured
+// outcomes are an authoritative narrowing and fail closed on an unspecified or
+// unknown permission; they cannot widen a permanent classification. Legacy
+// task errors retain the ErrorKind projection.
+func (e *TaskError) Retryable() bool {
+	if e.Kind == ErrorKindPolicyDenied {
+		return false
+	}
+	if e.Outcome == nil {
+		return e.Kind.Retryable()
+	}
+
+	return e.Kind.Retryable() &&
+		e.Outcome.GetRetryPermission() == AttemptOutcome_RETRY_PERMISSION_PERMITTED &&
+		e.Outcome.GetRepeatSafety() == AttemptOutcome_REPEAT_SAFETY_SAFE
+}
+
+// RetryPermitted reports the attempt's retry permission before driver policy
+// and budgets are applied. Structured task outcomes can narrow the ErrorKind
+// compatibility behavior but never widen it.
+func RetryPermitted(err error) bool {
+	if taskErr, ok := errors.AsType[*TaskError](err); ok {
+		return taskErr.Retryable()
+	}
+
+	return ClassifyError(err).Retryable()
+}
 
 // RetryAfter returns how long a failure asked us to wait before another attempt, or
 // zero when it did not say.
@@ -222,12 +288,102 @@ func (e *TaskError) Retryable() bool { return e.Kind.Retryable() }
 // fmt.Errorf("plugin %q: %w", ...) — and an assertion would silently find nothing
 // for every one of those.
 func RetryAfter(err error) time.Duration {
-	var taskErr *TaskError
-	if errors.As(err, &taskErr) {
+	if taskErr, ok := errors.AsType[*TaskError](err); ok {
+		if taskErr.Outcome != nil && taskErr.Outcome.GetRetryAfter() != nil {
+			if delay := taskErr.Outcome.GetRetryAfter().AsDuration(); delay > 0 {
+				return delay
+			}
+		}
 		return taskErr.RetryAfter
 	}
 
 	return 0
+}
+
+// An InputError is a submission the workflow's own declarations refuse: a name
+// it does not declare, a required input nobody gave, a value of the wrong type,
+// a `must:` a value does not satisfy.
+//
+// It exists because the caller needs to tell "you passed a bad argument" apart
+// from "Flowstate is broken", and until this type there was nothing to tell them
+// apart *by*. Every refusal at the submit boundary was a bare [fmt.Errorf], so
+// [ClassifyError] reported it as [ErrorKindInternal] — which errors.go defines
+// as a defect in Flowstate — and an embedder calling [RunWithInputs] could only
+// have known better by matching the sentence (#1552).
+//
+// # No Kind field
+//
+// A [TaskError] carries its kind because a task can fail many ways. This type
+// cannot: it is the submit boundary refusing a submission, which is
+// [ErrorKindInvalidInput] and nothing else. A field able to hold only one value
+// is a field somebody can eventually set to a second one, so the classification
+// is the type rather than something written on it, and [ClassifyError] is where
+// the two meet — one place, like every other kind.
+//
+// # Declared and Got
+//
+// Both are the schema's own words for a type, not Go's, and both are empty for a
+// refusal that is not about a type at all (a missing required input, an
+// undeclared name). A consumer reads them as "when present, this is a type
+// mismatch and these are the two types"; Err is always the whole sentence.
+type InputError struct {
+	// Input is the name the refusal concerns: the declaration's name, or the
+	// name a caller submitted when nothing declares it.
+	Input string
+
+	// Declared is the type the workflow declares for Input, when the refusal is
+	// about a type. Empty otherwise.
+	Declared string
+
+	// Got is what arrived instead, in the same vocabulary as Declared. Empty
+	// otherwise.
+	Got string
+
+	// Err is the refusal, worded once by whoever refused. It is the whole
+	// sentence a person reads, and the fields above are that sentence's facts
+	// made addressable rather than a second rendering of it.
+	Err error
+}
+
+// Error is the wrapped refusal's own sentence, unchanged.
+//
+// Nothing is prefixed. The binder's sentences already name the input ("input
+// %q is required and was not given"), and a wrapper adding `input "tenant":` in
+// front of that would say the name twice — the shape [TaskError.Error] avoids
+// through selfNamesTask, avoided here by construction instead.
+func (e *InputError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the refusal this classifies, so errors.Is still reaches
+// whatever the binder wrapped.
+func (e *InputError) Unwrap() error { return e.Err }
+
+// Retryable reports whether the failure could succeed if attempted again.
+//
+// Never: the submission is the caller's, and an identical submission is refused
+// identically. Present so this type answers the question [TaskError] answers,
+// rather than a caller having to know which error types have the method.
+func (e *InputError) Retryable() bool { return false }
+
+// invalidInput wraps a submit-boundary refusal so [ClassifyError] can see it.
+//
+// A helper rather than a literal at each site, so the fields a refusal does not
+// know stay unset by construction and a new refusal cannot accidentally invent
+// a Declared it never checked.
+func invalidInput(input string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &InputError{Input: input, Err: err}
+}
+
+// invalidInputType is [invalidInput] for the refusals that compared two types.
+func invalidInputType(input, declared, got string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &InputError{Input: input, Declared: declared, Got: got, Err: err}
 }
 
 // ParseErrorKind recognizes a string as one of the defined [ErrorKind] values,
@@ -246,7 +402,8 @@ func ParseErrorKind(s string) (ErrorKind, bool) {
 	switch ErrorKind(s) {
 	case ErrorKindInvalidInput, ErrorKindUnknownTask, ErrorKindExpression,
 		ErrorKindPolicyDenied, ErrorKindLimitExceeded, ErrorKindUpstreamUnknown,
-		ErrorKindUpstream, ErrorKindTimeout, ErrorKindInternal, ErrorKindRateLimited:
+		ErrorKindUpstream, ErrorKindTimeout, ErrorKindRunTimeout, ErrorKindInternal,
+		ErrorKindRateLimited:
 		return ErrorKind(s), true
 	default:
 		return "", false
@@ -256,6 +413,17 @@ func ParseErrorKind(s string) (ErrorKind, bool) {
 // NewTaskError returns a [TaskError] classifying a failure of the named task.
 func NewTaskError(task string, kind ErrorKind, err error) *TaskError {
 	return &TaskError{Task: task, Kind: kind, Err: err}
+}
+
+// NewTaskOutcomeError returns a task failure whose structured attempt evidence
+// is authoritative for retry permission. RetryAfter is mirrored onto the
+// legacy field while callers transition to [AttemptOutcome].
+func NewTaskOutcomeError(task string, kind ErrorKind, outcome *AttemptOutcome, err error) *TaskError {
+	taskErr := &TaskError{Task: task, Kind: kind, Err: err, Outcome: outcome}
+	if outcome != nil && outcome.GetRetryAfter() != nil {
+		taskErr.RetryAfter = outcome.GetRetryAfter().AsDuration()
+	}
+	return taskErr
 }
 
 // ClassifyError returns the kind of failure err represents.
@@ -287,11 +455,25 @@ func ClassifyError(err error) ErrorKind {
 	if err == nil {
 		return ""
 	}
+	// The overall step budget is an outer judgement over the last attempt's
+	// failure. Check it before TaskError because its structured cause is that
+	// last failure, and errors.As would otherwise classify the stale dependency
+	// error instead of the budget that actually ended the step (#1163).
+	if _, ok := errors.AsType[*scheduleToCloseTimeoutError](err); ok {
+		return ErrorKindTimeout
+	}
 	if taskErr, ok := errors.AsType[*TaskError](err); ok {
 		return taskErr.Kind
 	}
 	if _, ok := errors.AsType[*ExpressionError](err); ok {
 		return ErrorKindExpression
+	}
+	// After TaskError, which carries its own kind and must keep deciding for
+	// itself: a task refusing its inputs is already InvalidInput by that route,
+	// and a task whose failure wraps a submit refusal — a `call:` binding its
+	// callee's arguments — is still the task's failure to classify.
+	if _, ok := errors.AsType[*InputError](err); ok {
+		return ErrorKindInvalidInput
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrorKindTimeout

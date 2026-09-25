@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package jose.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/jose/gen/jose/v1;josev1";
+
+import "flowstate/v1/value.proto";
+import "google/api/expr/v1alpha1/value.proto";
+
+// VerifyInputs checks one JWT against the trust an operator configured.
+//
+// The trust roots are not inputs, and that is what makes this a verification
+// rather than a decoding: a workflow that could name the issuer, the key set,
+// the audience or the algorithms would be choosing what counts as valid, which
+// is the decision verification exists to take away from the caller.
+message VerifyInputs {
+  // Token is the compact JWS to verify.
+  //
+  // It may be written as a secret reference, and should be whenever it comes
+  // from somewhere that has one: a bearer token passed as a literal is written
+  // into durable history like any other input. A token that arrived in this
+  // run - a webhook body, a prior step's response - is already in history, and
+  // passing it here does not make that worse.
+  flowstate.v1.Value token = 1;
+
+  // Trust names which entry of the operator's trust policy to verify against.
+  // Empty verifies against the whole policy, which is what a deployment with
+  // one issuer wants; naming an entry is how a workflow says "this token must
+  // be the build system's, not any issuer we happen to trust".
+  string trust = 2;
+
+  // Audience, when set, must appear in the token's "aud" claim on top of
+  // whatever the policy requires. It narrows and never widens: a token the
+  // policy would refuse is refused whatever this says.
+  string audience = 3;
+}
+
+// VerifyOutputs is the verified caller. Every field here is from a signature
+// this plugin checked, under a key the operator's policy trusts.
+message VerifyOutputs {
+  // Issuer and Subject are the verified "iss" and "sub" claims.
+  string issuer = 1;
+  string subject = 2;
+
+  // TrustName is the operator-chosen name of the policy entry that admitted
+  // this token, so a run's history records which rule accepted it rather than
+  // only which issuer signed it.
+  string trust_name = 3;
+
+  // Audience is the verified "aud" claim, always a list even when the token
+  // carried one string.
+  repeated string audience = 4;
+
+  // ExpiresAt and IssuedAt are the verified time claims, as RFC 3339.
+  string expires_at = 5;
+  string issued_at = 6;
+
+  // Claims is the whole verified claims set, for the issuer-specific claims a
+  // policy decision needs - a repository, an email, a group list.
+  google.api.expr.v1alpha1.Value claims = 7;
+}

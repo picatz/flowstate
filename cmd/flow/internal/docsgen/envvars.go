@@ -138,8 +138,50 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_EGRESS_POLICY",
 			value:   "unset",
-			purpose: "Default for `--egress-policy`: a YAML policy governing the `http` task. When set it replaces the built-in policy entirely rather than merging with it.",
+			purpose: "Default for `--egress-policy`: a YAML policy governing built-in HTTP and granted to every plugin the worker launches. Enforcement inside a plugin is that plugin's own code, not something the worker can impose on a separate process: the five first-party destination clients apply the grant on their own connections — `git`, `github`, `slack`, `sql` (PostgreSQL) and `vcs`. The Codex CLI's own control-plane traffic always bypasses the grant, while its separate sandbox policy governs network access only for commands the agent starts; a third-party plugin can bypass the SDK too, and a deployment that must stop one confines it. With no file configured, every plugin is granted the same default policy built-in HTTP runs under; `sql` refuses to reach a database under that default and names this flag. When set it replaces the built-in policy entirely rather than merging with it.",
 			read:    "cmd/flow/egress.go",
+		},
+		{
+			name:    "FLOWSTATE_EGRESS_POLICY_B64",
+			value:   "unset",
+			purpose: "Internal grant from the plugin host to every plugin it launches: an immutable base64 encoding of the exact `--egress-policy` bytes the host already parsed, at most 64 KiB before encoding. It is a per-launch snapshot, so a policy file edited afterwards reaches the plugins the worker starts next rather than the ones already running. Operators configure the flag or `FLOWSTATE_EGRESS_POLICY`, not this variable directly; a plugin that asks the SDK for the policy or an HTTP client is refused when the grant is absent, rather than getting an ungoverned one. With no operator file the worker still grants its own default policy, written as a document marked `deployment_default: true`, so an unset variable means only that a Flowstate worker did not launch this process. Set-but-empty is a grant whose policy document is empty, which is what an empty `--egress-policy` file configures. Receiving the grant is not enforcing it: the five first-party destination clients (`git`, `github`, `slack`, `sql` and `vcs`) read it, and `sql` additionally refuses to reach a database when the grant is the deployment default rather than an operator's policy. The Codex CLI child receives no grant, so its own control-plane traffic always bypasses it; its sandbox policy governs only agent-started commands. A third-party plugin can likewise bypass the SDK and requires confinement.",
+			read:    "pkg/flowstate/v1/plugin/sdk/egress.go",
+		},
+		{
+			name:    "HTTP_PROXY",
+			value:   "unset",
+			purpose: "The worker's own proxy for plain HTTP, read by Go's `http.ProxyFromEnvironment` and honoured by the built-in `http` task when the egress policy sets `proxy_from_environment`. Under that policy the worker also grants it to every plugin it launches, verbatim, because a plugin's environment is built from nothing and would otherwise dial past the proxy the operator requires; under any other policy it is not forwarded. `http_proxy` is the same variable and Go prefers this spelling when both are set, so naming either one in the plugin host's `Env` replaces both.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "http_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `HTTP_PROXY`, and the same variable: Go's `http.ProxyFromEnvironment` reads both and prefers the uppercase. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "HTTPS_PROXY",
+			value:   "unset",
+			purpose: "The worker's own proxy for HTTPS, read by Go's `http.ProxyFromEnvironment`. Granted to launched plugins exactly as `HTTP_PROXY` is, and only when the egress policy sets `proxy_from_environment`.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "https_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `HTTPS_PROXY`, and the same variable. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "NO_PROXY",
+			value:   "unset",
+			purpose: "Hosts the worker reaches directly rather than through a proxy, read by Go's `http.ProxyFromEnvironment`. Granted to launched plugins alongside the proxy variables, and only when the egress policy sets `proxy_from_environment` — without it a plugin would proxy destinations the worker itself does not.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "no_proxy",
+			value:   "unset",
+			purpose: "The lowercase spelling of `NO_PROXY`, and the same variable. Granted to launched plugins on the same terms.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
 		},
 		{
 			name:    "FLOWSTATE_TASK_POLICY",
@@ -196,6 +238,18 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
+			name:    "FLOWSTATE_PLUGIN_ENV",
+			value:   "unset",
+			purpose: "Default for `--plugin-env-file`: a YAML file mapping a plugin name to the variables that plugin's processes are launched with (`env: {name: {KEY: VALUE}}`), merged with any --plugin-env. A plugin inherits nothing of the worker's environment, so this and the flag are the only way a deployment configures one. What belongs in it is an endpoint or a path to a document, not a secret value: a process environment is readable to anything running as this user.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_MAX_CALL_TIMEOUT",
+			value:   "1h",
+			purpose: "Ceiling on the deadline a plugin call may inherit from its caller. `--plugin-call-timeout` is the default a call with no deadline of its own gets; this is the most any call may take, so a caller that arrives with a long deadline cannot hold a plugin worker past it. An unparseable or non-positive value is refused at startup.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
 			name:    "FLOWSTATE_PLUGIN_PINS",
 			value:   "unset",
 			purpose: "Default for `--plugin-pins`: a YAML file mapping plugin names to the digest the binary answering to each must have, merged with any --plugin-pin (#1010). Unset means no pins file; a deployment with neither this nor --plugin-pin configures no digest pins, and every plugin name launches exactly as it always has.",
@@ -216,7 +270,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_PLUGIN_TOKEN",
 			value:   "unset",
-			purpose: "Handshake: the per-launch token a plugin authenticates its host with. Set by the host on the child process.",
+			purpose: "Retired: it carried the per-launch token up to plugin protocol version 3, and nothing sets or reads it now (#1336). The name stays reserved, so a plugin still does not see it if a deployment sets it.",
+			read:    "pkg/flowstate/v1/plugin/launch.go",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_TOKEN_FD",
+			value:   "unset",
+			purpose: "Handshake: the descriptor carrying the per-launch token a plugin authenticates its host with. Set by the host on the child process; never configured by an operator. The token itself is never in the environment, because /proc/<pid>/environ would then expose it for the plugin's whole life (#1336).",
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{

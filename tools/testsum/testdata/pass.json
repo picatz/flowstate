@@ -1,0 +1,32 @@
+{"Time":"2026-09-06T12:28:01.928139924Z","Action":"start","Package":"example.com/fixture/pass"}
+{"Time":"2026-09-06T12:28:01.933587646Z","Action":"output","Package":"example.com/fixture/pass","Output":"-test.shuffle 1788697681933315443\n"}
+{"Time":"2026-09-06T12:28:01.93368537Z","Action":"run","Package":"example.com/fixture/pass","Test":"TestTwo"}
+{"Time":"2026-09-06T12:28:01.933689215Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestTwo","Output":"=== RUN   TestTwo\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933692476Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestTwo","Output":"    pass_test.go:6: not today\n"}
+{"Time":"2026-09-06T12:28:01.933701023Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestTwo","Output":"--- SKIP: TestTwo (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933704328Z","Action":"skip","Package":"example.com/fixture/pass","Test":"TestTwo","Elapsed":0}
+{"Time":"2026-09-06T12:28:01.933711743Z","Action":"run","Package":"example.com/fixture/pass","Test":"TestOne"}
+{"Time":"2026-09-06T12:28:01.933717017Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestOne","Output":"=== RUN   TestOne\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933719213Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestOne","Output":"    pass_test.go:5: fine\n"}
+{"Time":"2026-09-06T12:28:01.933722117Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestOne","Output":"--- PASS: TestOne (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933723805Z","Action":"pass","Package":"example.com/fixture/pass","Test":"TestOne","Elapsed":0}
+{"Time":"2026-09-06T12:28:01.933726486Z","Action":"run","Package":"example.com/fixture/pass","Test":"TestThree"}
+{"Time":"2026-09-06T12:28:01.933734171Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestThree","Output":"=== RUN   TestThree\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933736105Z","Action":"run","Package":"example.com/fixture/pass","Test":"TestThree/child"}
+{"Time":"2026-09-06T12:28:01.933737783Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestThree/child","Output":"=== RUN   TestThree/child\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933743933Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestThree/child","Output":"--- PASS: TestThree/child (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933746157Z","Action":"pass","Package":"example.com/fixture/pass","Test":"TestThree/child","Elapsed":0}
+{"Time":"2026-09-06T12:28:01.933748303Z","Action":"output","Package":"example.com/fixture/pass","Test":"TestThree","Output":"--- PASS: TestThree (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.933750097Z","Action":"pass","Package":"example.com/fixture/pass","Test":"TestThree","Elapsed":0}
+{"Time":"2026-09-06T12:28:01.933751566Z","Action":"output","Package":"example.com/fixture/pass","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.937146231Z","Action":"output","Package":"example.com/fixture/pass","Output":"ok  \texample.com/fixture/pass\t0.007s\n"}
+{"Time":"2026-09-06T12:28:01.937183285Z","Action":"pass","Package":"example.com/fixture/pass","Elapsed":0.009}
+{"Time":"2026-09-06T12:28:01.98079026Z","Action":"start","Package":"example.com/fixture/sub"}
+{"Time":"2026-09-06T12:28:01.985497184Z","Action":"output","Package":"example.com/fixture/sub","Output":"-test.shuffle 1788697681985326268\n"}
+{"Time":"2026-09-06T12:28:01.985564621Z","Action":"run","Package":"example.com/fixture/sub","Test":"TestSub"}
+{"Time":"2026-09-06T12:28:01.985568188Z","Action":"output","Package":"example.com/fixture/sub","Test":"TestSub","Output":"=== RUN   TestSub\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.985576416Z","Action":"output","Package":"example.com/fixture/sub","Test":"TestSub","Output":"--- PASS: TestSub (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.985578765Z","Action":"pass","Package":"example.com/fixture/sub","Test":"TestSub","Elapsed":0}
+{"Time":"2026-09-06T12:28:01.985589945Z","Action":"output","Package":"example.com/fixture/sub","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-09-06T12:28:01.989273244Z","Action":"output","Package":"example.com/fixture/sub","Output":"ok  \texample.com/fixture/sub\t0.008s\n"}
+{"Time":"2026-09-06T12:28:01.989298607Z","Action":"pass","Package":"example.com/fixture/sub","Elapsed":0.009}

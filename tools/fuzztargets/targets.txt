@@ -1,17 +1,18 @@
 # Every fuzz target in this module, and the tiers that run it. This file is the
 # one written source of that list: the Makefile's fuzz-smoke target loops over
 # it, .github/workflows/deep.yml's fuzz-deep job loops over it, and tools/gate
-# derives from it the set of packages whose affectedness decides whether the PR
-# lane's fuzz-smoke job runs. CI's fuzz-smoke job runs `make fuzz-smoke`, so it
-# reads this file too, at one remove. A new target therefore lands here, in one
+# derives from it which smoke targets a PR's diff reaches — the list the PR
+# lane's fuzz-smoke job runs, and whether it runs at all (#1726). CI's
+# fuzz-smoke job runs `make fuzz-smoke`, so it reads this file too, at one
+# remove. A new target therefore lands here, in one
 # place, and tools/fuzztargets' own test fails if it lands anywhere else — it
 # walks the tree for `func Fuzz…(f *testing.F)` and compares the set.
 #
 # Columns, whitespace-separated: target, package directory (module-relative),
 # tiers (comma-separated, no spaces).
 #
-#   smoke  30s per target, on every push and every PR whose diff can reach a
-#          package holding a target. The bound that makes it safe to run that
+#   smoke  30s per target, on every push and, on a PR, for each target whose
+#          package the diff reaches. The bound that makes it safe to run that
 #          often is what keeps the list here short of every target: the job's
 #          budget is ten minutes and ten targets already spend most of it.
 #   deep   10m per target, weekly, on a schedule. Every target belongs to this
@@ -57,3 +58,24 @@ FuzzSignalDeliveryDecode     pkg/flowstate/v1/engine        deep
 # re-argued in this change; moving them to smoke is a one-word edit here.
 FuzzScanAgreesWithSplitFence pkg/flowstate/v1/flowfile      deep
 FuzzEscapeFencesRoundTrips   pkg/flowstate/v1/flowfile      deep
+
+# The boundary parsers (#1721): what an operator, an identity provider, a
+# plugin process or a submitter feeds, where a panic is a denial of service
+# against a shared server. tools/fuzztargets/boundaries.txt names the parser
+# each covers, and its test refuses a new exported parser in those packages
+# with no target. All of them are deep-only, for the budget reason the header
+# gives: three of them joined the smoke tier in the first cut, and the PR that
+# added them reached every package holding a target, which put sixteen
+# targets at 30s each plus their builds past the job's ten minutes and had it
+# cancelled. The token verifier's target stands up an httptest issuer besides,
+# which is a deep-tier cost by nature. Promoting one is a one-word edit here,
+# paid for by demoting another.
+FuzzParsePolicy              pkg/flowstate/v1/auth                       deep
+FuzzNamespaceMap             pkg/flowstate/v1/auth                       deep
+FuzzVerifyRefusesAMutatedToken pkg/flowstate/v1/auth                     deep
+FuzzPluginHandshake          pkg/flowstate/v1/plugin/internal/protocol   deep
+FuzzParseConfig              pkg/flowstate/v1/netpolicy                  deep
+FuzzParsePinsConfig          pkg/flowstate/v1/plugin                     deep
+FuzzParseEnvConfig           pkg/flowstate/v1/plugin                     deep
+FuzzBindRunInputs            pkg/flowstate/v1                            deep
+FuzzRootParsers              pkg/flowstate/v1                            deep

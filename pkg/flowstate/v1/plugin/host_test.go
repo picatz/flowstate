@@ -3,9 +3,12 @@ package plugin
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -431,7 +434,7 @@ func TestSecretIdentityCrossesBoundary(t *testing.T) {
 func TestSecretValueDoesNotEscape(t *testing.T) {
 	t.Parallel()
 
-	var logs strings.Builder
+	var logs capturedLogs
 	cfg := testConfig(t, pluginDir(t, "ok"))
 	cfg.Logger = newCapturingLogger(t, &logs)
 
@@ -596,39 +599,44 @@ func TestTaskErrorClassification(t *testing.T) {
 	}
 }
 
-// TestOversizedResponseIsRefused checks that a plugin cannot make the host
-// allocate without limit, which is the one thing a plugin fully controls the
-// size of.
+// TestOversizedResponseIsRefused checks repeatedly that a plugin cannot make
+// the host allocate without limit, which is the one thing a plugin fully
+// controls the size of. Reopening the fd-backed fake each time also stresses the
+// pinned-image launch that once flaked before either size assertion ran (#1230).
 func TestOversizedResponseIsRefused(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(t, pluginDir(t, "huge"))
-	cfg.MaxResponseBytes = 8 << 10 // Smaller than the 256 KiB the fake returns.
+	for i := range 10 {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			cfg := testConfig(t, pluginDir(t, "huge"))
+			cfg.MaxResponseBytes = 8 << 10 // Smaller than the 256 KiB the fake returns.
 
-	host := openHost(t, cfg)
+			host := openHost(t, cfg)
 
-	t.Run("task", func(t *testing.T) {
-		_, err := host.TaskDefs()[0].Fn(t.Context(), nil, nil)
-		if err == nil {
-			t.Fatal("an oversized response was accepted")
-		}
-		if !strings.Contains(err.Error(), "message is larger than configured max") &&
-			!strings.Contains(err.Error(), "resource_exhausted") {
-			t.Errorf("error = %v, want one about the response being too large", err)
-		}
-	})
+			t.Run("task", func(t *testing.T) {
+				_, err := host.TaskDefs()[0].Fn(t.Context(), nil, nil)
+				if err == nil {
+					t.Fatal("an oversized response was accepted")
+				}
+				if !strings.Contains(err.Error(), "message is larger than configured max") &&
+					!strings.Contains(err.Error(), "resource_exhausted") {
+					t.Errorf("error = %v, want one about the response being too large", err)
+				}
+			})
 
-	t.Run("secret", func(t *testing.T) {
-		_, err := host.SecretProviders()[0].Resolve(t.Context(), secrets.Request{
-			Ref: secrets.NewRef("huge", "big"),
+			t.Run("secret", func(t *testing.T) {
+				_, err := host.SecretProviders()[0].Resolve(t.Context(), secrets.Request{
+					Ref: secrets.NewRef("huge", "big"),
+				})
+				if err == nil {
+					t.Fatal("an oversized response was accepted")
+				}
+				if !errors.Is(err, secrets.ErrTooLarge) {
+					t.Errorf("error = %v, want one wrapping %v", err, secrets.ErrTooLarge)
+				}
+			})
 		})
-		if err == nil {
-			t.Fatal("an oversized response was accepted")
-		}
-		if !errors.Is(err, secrets.ErrTooLarge) {
-			t.Errorf("error = %v, want one wrapping %v", err, secrets.ErrTooLarge)
-		}
-	})
+	}
 }
 
 // TestHealthNotServingDoesNotRestart checks the distinction the proto's comments
@@ -669,6 +677,24 @@ func TestHealthNotServingDoesNotRestart(t *testing.T) {
 	}
 	if state := p.State(); state != StateReady {
 		t.Errorf("state = %v, want ready", state)
+	}
+}
+
+func TestCheckHealthPreservesUnchangedRPCErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	host := openHost(t, testConfig(t, pluginDir(t, "health-fails")))
+	p, ok := host.Lookup("health-fails")
+	if !ok {
+		t.Fatal("plugin was not launched")
+	}
+
+	health := p.CheckHealth(t.Context())
+	if health.Status != HealthUnreachable {
+		t.Fatalf("health = %v, want unreachable", health.Status)
+	}
+	if code := connect.CodeOf(health.Err); code != connect.CodeUnavailable {
+		t.Errorf("health error code = %v, want %v (err: %v)", code, connect.CodeUnavailable, health.Err)
 	}
 }
 

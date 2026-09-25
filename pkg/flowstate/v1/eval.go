@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/common/types/traits"
 	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -232,12 +234,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 	// contain one, and a worker evaluates the stored AST rather than re-parsing it.
 	if len(e.Prev.GetStepValues()) == 0 {
 		if name == StepsRoot {
-			root, err := e.stepsMap()
-			if err != nil {
-				return nil, false
-			}
-
-			return root, true
+			return e.stepsMap(), true
 		}
 
 		return e.ambientRoot(name)
@@ -256,11 +253,7 @@ func (e *StepsOutputActivation) ResolveName(name string) (any, bool) {
 		// run started on an older build keeps resolving the way it always did —
 		// invariant 10, which is why this arm exists at all.
 		if name == StepsRoot {
-			root, err := e.stepsMap()
-			if err != nil {
-				return nil, false
-			}
-			return root, true
+			return e.stepsMap(), true
 		}
 		return e.ambientRoot(name)
 	}
@@ -455,15 +448,148 @@ const ResponseRoot = "response"
 // last one and letting CEL apply `.a.result` itself means this needs no idea how
 // deep a reference goes — which is exactly the bug the bare form has to guard
 // against by refusing any name with a second dot in it.
-func (e *StepsOutputActivation) stepsMap() (ref.Val, error) {
-	values := e.Prev.GetStepValues()
-	entries := make(map[ref.Val]ref.Val, len(values))
-	for id, outputs := range values {
-		vals, err := e.outputsToMap(outputs)
-		if err != nil {
+//
+// The map converts a step's outputs when that step is read, not when the root
+// is handed back. CEL asks for the root on every rooted reference — `steps.a.b`
+// arrives as `steps` plus two qualifiers — so a root that converted every
+// finished step up front cost every expression a walk over the whole run so
+// far: a straight chain of N `value:` steps paid N² conversions, and 4,000 of
+// them took thirteen seconds locally where the same work as a loop took a
+// third of one (#1758). A reference now costs the step it reads.
+//
+// What the map says does not change. Its size, its keys, its iteration, and
+// what each entry holds are exactly what the converted map held; only the
+// moment of conversion moved. A step whose outputs cannot be converted — a
+// secret reference stored under an output — used to make the whole root
+// unresolvable, so that reading any other step's outputs failed as an
+// unresolved reference; it now fails only the read that reaches it, with the
+// reason, and the other steps still resolve.
+func (e *StepsOutputActivation) stepsMap() ref.Val {
+	return &lazyStepsMap{activation: e, values: e.Prev.GetStepValues()}
+}
+
+// lazyStepsMap is the `steps` root: one CEL map keyed by step id whose entries
+// are converted on the read that reaches them, and never before. See
+// [StepsOutputActivation.stepsMap] for why.
+//
+// It is every map trait CEL's own maps carry — indexing, presence, size,
+// iteration, equality, conversion — so that an expression treating the root as
+// a whole map (`size(steps)`, `steps.map(id, …)`, `has(steps.a)`) reads it the
+// way it always did, through the same qualifiers CEL applies to any map.
+type lazyStepsMap struct {
+	activation *StepsOutputActivation
+	values     map[string]*Node_Outputs
+
+	// converted holds every step read so far, so an expression naming the same
+	// step twice converts it once. Allocated on the first read.
+	converted map[string]ref.Val
+}
+
+var _ traits.Mapper = (*lazyStepsMap)(nil)
+
+// Find converts the named step's outputs, or reports that no such step has run.
+// A step whose outputs cannot be converted is found, as an error value carrying
+// the reason, which is what CEL raises for the read.
+func (m *lazyStepsMap) Find(key ref.Val) (ref.Val, bool) {
+	id, ok := key.(types.String)
+	if !ok {
+		return nil, false
+	}
+	if v, done := m.converted[string(id)]; done {
+		return v, true
+	}
+	outputs, ran := m.values[string(id)]
+	if !ran {
+		return nil, false
+	}
+	v, err := m.activation.outputsToMap(outputs)
+	if err != nil {
+		v = types.NewErr("step %q: %v", string(id), err)
+	}
+	if m.converted == nil {
+		m.converted = map[string]ref.Val{}
+	}
+	m.converted[string(id)] = v
+
+	return v, true
+}
+
+func (m *lazyStepsMap) Get(key ref.Val) ref.Val {
+	v, found := m.Find(key)
+	if !found {
+		return types.ValOrErr(key, "no such key: %v", key)
+	}
+	return v
+}
+
+func (m *lazyStepsMap) Contains(key ref.Val) ref.Val {
+	_, found := m.Find(key)
+	return types.Bool(found)
+}
+
+func (m *lazyStepsMap) Size() ref.Val { return types.Int(len(m.values)) }
+
+func (m *lazyStepsMap) IsZeroValue() bool { return len(m.values) == 0 }
+
+func (m *lazyStepsMap) Iterator() traits.Iterator {
+	return types.NewStringList(TypeAdapter, slices.Collect(maps.Keys(m.values))).Iterator()
+}
+
+func (m *lazyStepsMap) Type() ref.Type { return types.MapType }
+
+func (m *lazyStepsMap) Value() any {
+	whole, err := m.whole()
+	if err != nil {
+		return err.Value()
+	}
+	return whole.Value()
+}
+
+func (m *lazyStepsMap) Equal(other ref.Val) ref.Val {
+	whole, err := m.whole()
+	if err != nil {
+		return err
+	}
+	return whole.Equal(other)
+}
+
+func (m *lazyStepsMap) ConvertToNative(typeDesc reflect.Type) (any, error) {
+	whole, err := m.whole()
+	if err != nil {
+		return nil, err
+	}
+	return whole.ConvertToNative(typeDesc)
+}
+
+func (m *lazyStepsMap) ConvertToType(typeVal ref.Type) ref.Val {
+	switch typeVal {
+	case types.MapType:
+		return m
+	case types.TypeType:
+		return types.MapType
+	}
+	return types.NewErr("type conversion error from '%s' to '%s'", types.MapType, typeVal)
+}
+
+// whole is the root converted in full, for the operations that have to see
+// every entry at once: equality, and conversion to a Go value. They are the
+// uses the eager map served, at the cost it charged — and with the answer it
+// gave, which is that a step whose outputs cannot be converted makes the whole
+// an error rather than a map with a hole in it.
+//
+// Converted in id order, so that when more than one step cannot be converted
+// the error names the same step every time. Go's map order would pick one at
+// random, and an error that changes between evaluations of the same run is a
+// nondeterminism the workflow side must not have (invariant 4).
+func (m *lazyStepsMap) whole() (traits.Mapper, *types.Err) {
+	entries := make(map[ref.Val]ref.Val, len(m.values))
+	for _, id := range slices.Sorted(maps.Keys(m.values)) {
+		key := types.String(id)
+		v := m.Get(key)
+		if err, failed := v.(*types.Err); failed {
 			return nil, err
 		}
-		entries[types.String(id)] = vals
+		entries[key] = v
 	}
 	return types.NewRefValMap(TypeAdapter, entries), nil
 }
@@ -809,6 +935,99 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 	}, nil
 }
 
+// MapKeyTypeError is what [LiteralToGo] refuses a map key with: a Go
+// map[string]any holds string keys and nothing else, so a value keyed by
+// anything CEL also allows — an int, an unsigned int, a bool — has no plain
+// spelling at all.
+//
+// A named type rather than a bare sentence because two places now read the same
+// judgement. The projection in `cmd/flow` keeps the schema's tagged encoding for
+// a value that will not convert, and [CheckOutputValue] refuses a `type: struct`
+// output that would reach that fallback — a declaration promising a plain
+// object, kept by the rule the projection itself applies rather than by a second
+// rule beside it that could come to disagree (#1404).
+type MapKeyTypeError struct {
+	// KeyType names the refused key's type the way a declaration spells one.
+	//
+	// The name only, never the key: a refusal composed from this is the failure
+	// text of a run whose output may be declared `sensitive:`, and a key is part
+	// of that value (invariant 7).
+	KeyType string
+}
+
+func (e *MapKeyTypeError) Error() string {
+	return fmt.Sprintf(
+		"map key of type %s cannot be converted to a Go map key: only string keys are supported",
+		e.KeyType)
+}
+
+// LiteralKindError is what [LiteralToGo] refuses a literal with when the union
+// holds a kind no plain Go value can spell at all — a type, an enum, or a
+// packed message, none of which a Flowfile can write and each of which a
+// hand-built specification or a future profile could still carry here.
+//
+// Named for the same reason [MapKeyTypeError] is: [CheckOutputValue] refuses a
+// declared container that would otherwise reach the projection's fallback, and
+// the rule about what will not convert has to be the projection's own rather
+// than a second one beside it.
+type LiteralKindError struct {
+	// Kind is the Go type of the schema's oneof arm, and only that.
+	//
+	// Not the value: this travels into the failure text of a run whose output
+	// may be declared `sensitive:`, and every part of a value is part of the
+	// value (invariant 7). A kind is a fact about the schema instead.
+	Kind string
+}
+
+func (e *LiteralKindError) Error() string {
+	return fmt.Sprintf("a %s cannot be converted to a Go value", e.Kind)
+}
+
+// LiteralDepthError is what [LiteralToGo] refuses a literal with when its lists
+// and maps nest past [MaxStructureDepth].
+//
+// Depth is the resource this walk spends, and the walk is recursive, so a value
+// nested deeply enough exhausts a goroutine's stack — a crash of the whole
+// process, which no caller can recover from, in place of an answer. The bound is
+// [MaxStructureDepth] rather than a number of this file's own, per the
+// one-constant rule [maxConstraintValueDepth] states at length: this descends an
+// `expr.Value`'s lists and maps, which is the identical resource
+// [walkConstraintValue] and [CheckStructureDepth] already bound at 32 wherever a
+// value can arrive. Every value this system already accepts is inside it, so the
+// guard refuses nothing that used to convert.
+//
+// It terminates a cyclic literal too, without a visited set. A cycle is only
+// constructible in process — a protobuf message decoded from the wire is a tree
+// — so an embedder that has already broken that contract gets a refusal at depth
+// rather than an unbounded descent.
+type LiteralDepthError struct {
+	// Depth is the bound, not how deep the value went: the walk stops at the
+	// bound, so how much further the value nests is exactly what it did not
+	// measure.
+	Depth int
+}
+
+func (e *LiteralDepthError) Error() string {
+	return fmt.Sprintf("nests deeper than the %d levels this conversion can walk", e.Depth)
+}
+
+// mapKeyTypeName names a map key's type in the vocabulary a declaration is
+// written in.
+//
+// [DeclaredTypeName] over [inputTypeOf] answers for CEL's own key set — a CEL
+// map key is a string, an int, an unsigned int, or a bool — which is what lets a
+// refusal about one read in the same words a declared type does. The schema's
+// literal union is wider than that set, so a hand-built specification can carry
+// a key [inputTypeOf] has no declared type for; [literalKindName] names those,
+// and the sentence stays a sentence rather than naming "no type".
+func mapKeyTypeName(key *expr.Value) string {
+	if t, ok := inputTypeOf(key); ok {
+		return DeclaredTypeName(t)
+	}
+
+	return literalKindName(key)
+}
+
 // LiteralToGo converts a resolved CEL literal into a plain Go value,
 // recursively for a list or a map. It is the reverse of what [NewValue]
 // performs when a Go value becomes a literal.
@@ -816,7 +1035,27 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 // This is the one spelling of that conversion: flowtest and embed both call
 // it rather than each keeping their own copy of the switch, so a step's
 // recorded value reads back the same way no matter which package reads it.
+//
+// Bounded by [MaxStructureDepth], which is why the recursion is a separate
+// function carrying a depth: the guard belongs to the walk rather than to any
+// one caller, so every one of them — the run document's projection, flowtest,
+// flowdebug, embed, and [CheckOutputValue] — is answered rather than crashed by
+// a value nested past what a recursive walk can afford. See [LiteralDepthError].
 func LiteralToGo(v *expr.Value) (any, error) {
+	return literalToGo(v, 0)
+}
+
+// literalToGo is [LiteralToGo]'s recursion, counting how far it has descended.
+//
+// depth increments on the way into a list element and into a map entry, which is
+// the accounting [walkConstraintValue] uses over the same value — so a literal
+// one walk accepts is one the other accepts, rather than two walks agreeing on a
+// constant and disagreeing about what it counts.
+func literalToGo(v *expr.Value, depth int) (any, error) {
+	if depth > MaxStructureDepth {
+		return nil, &LiteralDepthError{Depth: MaxStructureDepth}
+	}
+
 	switch kind := v.GetKind().(type) {
 	case nil, *expr.Value_NullValue:
 		return nil, nil
@@ -835,7 +1074,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 	case *expr.Value_ListValue:
 		list := make([]any, 0, len(kind.ListValue.GetValues()))
 		for i, element := range kind.ListValue.GetValues() {
-			native, err := LiteralToGo(element)
+			native, err := literalToGo(element, depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("element %d: %w", i, err)
 			}
@@ -852,10 +1091,10 @@ func LiteralToGo(v *expr.Value) (any, error) {
 			// this target cannot represent rather than corrupt the result.
 			key, ok := entry.GetKey().GetKind().(*expr.Value_StringValue)
 			if !ok {
-				return nil, fmt.Errorf("map key of type %T cannot be converted to a Go map key: only string keys are supported", entry.GetKey().GetKind())
+				return nil, &MapKeyTypeError{KeyType: mapKeyTypeName(entry.GetKey())}
 			}
 			name := key.StringValue
-			native, err := LiteralToGo(entry.GetValue())
+			native, err := literalToGo(entry.GetValue(), depth+1)
 			if err != nil {
 				return nil, fmt.Errorf("key %q: %w", name, err)
 			}
@@ -863,7 +1102,7 @@ func LiteralToGo(v *expr.Value) (any, error) {
 		}
 		return object, nil
 	default:
-		return nil, fmt.Errorf("a %T cannot be converted to a Go value", kind)
+		return nil, &LiteralKindError{Kind: fmt.Sprintf("%T", kind)}
 	}
 }
 
@@ -886,6 +1125,16 @@ func NewValue(v any) *Value {
 	case string, int, float64, float32, int64, bool, *expr.Value,
 		int8, int16, int32, uint, uint8, uint16, uint32, uint64:
 		return NewLiteral(val)
+	case []byte:
+		return &Value{
+			Kind: &Value_Literal{
+				Literal: &expr.Value{
+					Kind: &expr.Value_BytesValue{
+						BytesValue: val,
+					},
+				},
+			},
+		}
 	case []any:
 		return NewLiteralList(val...)
 	case error:
@@ -997,6 +1246,12 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 			return nil, err
 		}
 		if err := CheckSubmissionSize(w, bound); err != nil {
+			return nil, err
+		}
+		// Before eval can perform even its first task. The check reads the
+		// context-scoped registry that dispatch reads, so a rehearsal using a
+		// run-only registry cannot borrow tasks from the process-wide one.
+		if err := CheckTaskCapabilitiesIn(ctx, w); err != nil {
 			return nil, err
 		}
 
@@ -1451,9 +1706,7 @@ type asyncHeld struct {
 // itself would read whatever had accumulated by the time the join called it.
 func cloneStepOutputs(outputs *Workflow_StepOutputs) *Workflow_StepOutputs {
 	clone := &Workflow_StepOutputs{StepValues: make(map[string]*Node_Outputs, len(outputs.GetStepValues()))}
-	for id, value := range outputs.GetStepValues() {
-		clone.StepValues[id] = value
-	}
+	maps.Copy(clone.StepValues, outputs.GetStepValues())
 
 	return clone
 }
@@ -1594,11 +1847,12 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 	// evaluates CEL, which a cancelled context refuses; a task that wins the
 	// cancellation race would then have its compensation fail to register, and the
 	// run would compensate everything except the effect that was just created.
-	// The durable driver has always registered on context.Background() (see
-	// engine/execute.go), so this is the two drivers agreeing rather than a new
-	// rule; WithoutCancel rather than Background because the values on ctx — the
-	// secret runtime, the rehearsal identity — are ones a compensation's inputs
-	// may legitimately read.
+	// The durable driver has always registered on the background context (its
+	// `evalContext`, engine/evalcontext.go, which states the invariant every
+	// workflow-side evaluation shares), so this is the two drivers agreeing
+	// rather than a new rule; WithoutCancel rather than Background because the
+	// values on ctx — the secret runtime, the rehearsal identity — are ones a
+	// compensation's inputs may legitimately read.
 	entry, err := UndoRegistrationFor(context.WithoutCancel(ctx), node, inner, outputs)
 	if err != nil {
 		return nil, err
@@ -1621,11 +1875,11 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 // resilience of the step it is undoing, and giving it a *different* answer would
 // be one more number written down twice.
 //
-// The scope carries the profile and the run identity, and nothing more. The
-// task's inputs were resolved when the step succeeded, so there is nothing here
-// left to evaluate against a run; what remains unresolved is only what a task
-// evaluates against its own response, which needs no other run scope in either
-// driver.
+// The scope carries the profile, the run identity, and the local driver's
+// host-owned marker, and nothing more. The task's inputs were resolved when the
+// step succeeded, so there is nothing here left to evaluate against a run; what
+// remains unresolved is only what a task evaluates against its own response,
+// which needs no other run scope in either driver.
 //
 // Identity is the exception, for the reason the run scope above carries it
 // (#295): the task-shape policy reads `identity.namespace`, so a compensation
@@ -1637,6 +1891,7 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Identity = RehearsalIdentityFromContext(ctx)
+	scope.Local = true
 	// The step the compensation undoes, which is the id the durable
 	// driver dispatches a compensation with (`executor.runUndoTask` passes
 	// `entry.GetStepId()`) — so the span naming it says the same thing on
@@ -1736,7 +1991,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// [UndoScopeCall]. A call reached from inside a for_each body or a
 		// parallel branch must not become an escape hatch out of the
 		// concurrency refusal just because a call sits between the two.
-		return runCall(pushWaitAncestor(ctx, node.GetId()), n.Call, scope, undo, placement.IntoCall(), depth+1)
+		return runCall(pushWaitAncestor(ctx, node.GetId()), node.GetId(), NodeKind(node), n.Call, scope, undo, placement.IntoCall(), depth+1)
 
 	default:
 		return nil, fmt.Errorf("unsupported node kind: %T", n)
@@ -1777,7 +2032,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 // the `call:` step itself regardless, since a call has no effect of its own —
 // the compensation belongs on the callee's steps, not on the step that
 // reaches them.
-func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+func runCall(ctx context.Context, callerStep, callerKind string, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	if err := CheckCallDepth(depth); err != nil {
 		return nil, err
 	}
@@ -1796,7 +2051,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 	// [OriginalProfile] instead — a different vocabulary from the one its
 	// steps, scoped moments later through the same [CalleeProfile] call
 	// inside [CallScope], actually run under.
-	vars, err := EvalVars(ctx, CalleeProfile(scope, callee), callee.GetVars())
+	vars, err := EvalVars(ctx, CalleeProfile(scope.GetProfile(), callee), callee.GetVars())
 	if err != nil {
 		return nil, fmt.Errorf("calling %q: %w", callee.GetName(), err)
 	}
@@ -1818,7 +2073,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 	// `callee.GetName()`, so there is one source and two audiences rather than
 	// two spellings — and the first is what a step boundary reads, because a
 	// run with no secrets configured still has a workflow.
-	calleeCtx := contextWithExecutingWorkflow(ctx, callee.GetName())
+	calleeCtx := contextWithExecutingCall(ctx, callerStep, callerKind, callee.GetName())
 	if runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime); ok {
 		calleeCtx = ContextWithSecretStep(calleeCtx, callee.GetName(), runtime.Step.Run, "")
 	}
@@ -1862,6 +2117,9 @@ func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, pla
 	body, outputs, err := SelectSwitchCase(ctx, sw, scope)
 	if err != nil {
 		return nil, err
+	}
+	if err := CheckAtomicBlockBodyActivities(body); err != nil {
+		return nil, &SwitchBodyError{Err: err, Selection: outputs}
 	}
 
 	// enterAtomicBlock because the durable driver runs the taken body at
@@ -1939,6 +2197,13 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		if err := CheckAtomicBlockActivities(len(items), loop.GetBody()); err != nil {
 			return nil, err
 		}
+	} else if len(items) > 0 {
+		// A paced loop has a seam between iterations, but each individual body
+		// is still one atomic segment. Weigh it once before the first iteration
+		// rather than once per item.
+		if err := CheckAtomicBlockBodyActivities(loop.GetBody()); err != nil {
+			return nil, err
+		}
 	}
 
 	name := IteratorName(loop)
@@ -1962,9 +2227,7 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// outputs, which keeps an iteration's behavior independent of how many
 		// ran before it.
 		iterationOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-		for k, v := range scope.GetOutputs().GetStepValues() {
-			iterationOutputs.StepValues[k] = v
-		}
+		maps.Copy(iterationOutputs.StepValues, scope.GetOutputs().GetStepValues())
 
 		// A local, not a var: the iterator is bound right where the body's
 		// expressions are written, so it stays bare.
@@ -2068,6 +2331,9 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 	if err != nil {
 		return nil, err
 	}
+	if err := CheckAtomicBlockBodyActivities(loop.GetBody()); err != nil {
+		return nil, err
+	}
 
 	resultsBytes := 0
 	iterations := make([]*Workflow_StepOutputs, 0)
@@ -2088,9 +2354,7 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// between iterations is the carried state, exactly as a `for_each`'s only
 		// thread is its item.
 		iterationOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-		for k, v := range scope.GetOutputs().GetStepValues() {
-			iterationOutputs.StepValues[k] = v
-		}
+		maps.Copy(iterationOutputs.StepValues, scope.GetOutputs().GetStepValues())
 
 		// The carried state is bound bare, the same standing as a loop iterator, so a
 		// body written for a loop that names one reads `${cursor}`. A loop that carries
@@ -2179,6 +2443,9 @@ func onlyBodyOutputs(body []*Node, scope *Workflow_StepOutputs) *Workflow_StepOu
 // compensation log ordered by who finished first is exactly the completion order
 // #418 promises is never observable.
 func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *UndoLog, depth int) error {
+	if err := CheckParallelAtomicBlockActivities(parallel); err != nil {
+		return err
+	}
 	before := cloneStepOutputs(scope.GetOutputs())
 
 	// Each branch's outputs, merged only at the join and only when every branch
@@ -2268,8 +2535,25 @@ func EvalCondition(ctx context.Context, condition *Value, prev *Workflow_StepOut
 // EvalConditionInScope evaluates a condition against a scope, so a loop body can
 // guard on its own item as well as on earlier steps' outputs.
 func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (bool, error) {
+	run, _, err := EvalConditionInScopeWithCost(ctx, condition, scope)
+
+	return run, err
+}
+
+// EvalConditionInScopeWithCost is [EvalConditionInScope] plus the deterministic
+// CEL cost of evaluating the condition. An absent or literal condition costs
+// zero.
+//
+// The cost is what lets the durable driver charge a condition to the segment it
+// ran in ([engine.executor.chargeWorkflowCost]). A condition decides whether a
+// step runs and is then thrown away, so a false one leaves nothing behind that
+// says it was evaluated — no output, no history event, no step counted — while
+// having spent whatever `lists.range(10000).map(...)` spends. Every workflow-
+// side expression a segment evaluates has to be charged to it, or a loop whose
+// body is entirely skipped is unbounded work the budget never sees (#1119).
+func EvalConditionInScopeWithCost(ctx context.Context, condition *Value, scope *Scope) (bool, uint64, error) {
 	if condition == nil {
-		return true, nil
+		return true, 0, nil
 	}
 
 	ev := DefaultEvaluator()
@@ -2277,23 +2561,27 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 	case *Value_Literal:
 		b, ok := kind.Literal.GetKind().(*expr.Value_BoolValue)
 		if !ok {
-			return false, fmt.Errorf("condition must be a boolean, got %s", literalKindName(kind.Literal))
+			return false, 0, fmt.Errorf("condition must be a boolean, got %s", literalKindName(kind.Literal))
 		}
-		return b.BoolValue, nil
+		return b.BoolValue, 0, nil
 
 	case *Value_Expr:
-		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
+		// The cost travels with the error too: an expression that exhausted its
+		// own budget spent every unit of it, and a segment that forgot the
+		// spending of a failed evaluation would let a tolerated failure be the
+		// way to evaluate for free.
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 		if err != nil {
-			return false, fmt.Errorf("evaluating condition: %w", err)
+			return false, cost, fmt.Errorf("evaluating condition: %w", err)
 		}
 		b, ok := out.Value().(bool)
 		if !ok {
-			return false, fmt.Errorf("condition must evaluate to a boolean, got %s", out.Type())
+			return false, cost, fmt.Errorf("condition must evaluate to a boolean, got %s", out.Type())
 		}
-		return b, nil
+		return b, cost, nil
 
 	default:
-		return false, fmt.Errorf("unsupported condition kind %T", condition.GetKind())
+		return false, 0, fmt.Errorf("unsupported condition kind %T", condition.GetKind())
 	}
 }
 
@@ -2312,6 +2600,14 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // durable driver's two authority-carrying activity entry points write, from the
 // same constant. See [StartTaskSpan].
 func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope, stepID string) (*Node_Outputs, error) {
+	// One identity for this logical dispatch, stable across the retry loop
+	// below. A UUID rather than task or step names: both can repeat in loops,
+	// calls, and parallel branches, while an audit consumer needs to collapse
+	// only the attempts that belong to this invocation.
+	if EnforcementAuditorIn(ctx) != nil {
+		ctx = NewContextWithDispatchID(ctx, uuid.New().String())
+	}
+
 	// Resolved here, above the loop, because this is the position the durable
 	// driver resolves at: in workflow code, before an activity is scheduled
 	// (`engine/execute.go`'s runTask). Inputs are part of the *specification*, so
@@ -2335,54 +2631,6 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	// attempt under both drivers; see [ResolvableInputs].
 	resolved, err := ResolveTaskInputs(ctx, task, scope)
 	if err != nil {
-		return nil, err
-	}
-
-	// The deployment's task-shape policy (#187), consulted once for the whole
-	// dispatch — above the retry loop below, not inside it, because a
-	// dispatch's task name and identity do not change between retries of the
-	// same step, and a denial must produce none of a retry's side effects
-	// either. Placed after inputs resolve and before any attempt runs: inputs
-	// resolution never touches a secret reference (see [ResolveTaskInputs]
-	// and eval.go's own note on [Value_SecretRef]), so a denied dispatch here
-	// has still resolved no credential — the deployment-side echo of
-	// invariant 7 the design record for #187 states. The durable driver
-	// checks at the identical position, once per activity entry
-	// (`engine/activities.go`), which is what keeps the two drivers agreeing
-	// about which dispatches are denied.
-	// scope.GetLocal() is true for a rehearsal run through any local-driver
-	// entry point; it changes nothing about the decision above, only
-	// whether a resulting denial's message says so — see [CheckTaskPolicy]'s
-	// own doc.
-	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity(), scope.GetLocal()); err != nil {
-		// A denied dispatch still gets its span, because durably it has one: the
-		// check runs *inside* the activity there (`engine.checkTaskDispatchPolicy`
-		// takes the span it writes the failure onto), so a policy that refuses a
-		// task produces one `flowstate.task/<name>` span with an error status
-		// under the durable driver. A local run that recorded nothing here would
-		// disagree about the trace precisely where an operator most wants to look
-		// — the netpolicy round tripper makes the same argument one package over
-		// for a refused request. The span covers no work, and there is none: the
-		// dispatch was refused before an attempt ran.
-		// Observed rather than merely spanned, for the same reason: durably
-		// this dispatch produces a task span *and* — since the denial is
-		// counted by the shared [CheckTaskPolicy] above — a denial. The
-		// execution instruments have to see the refused dispatch on both
-		// drivers too, or a local run's error rate would omit exactly the
-		// failures an operator most wants counted.
-		//
-		// Attempt 1, and not because there is nothing better to say: a policy
-		// refusal happens above the retry loop, so this dispatch had exactly
-		// one attempt and it was refused. The durable driver reports the same
-		// number here for the same reason — its check runs inside the activity,
-		// where `activity.GetInfo` reads 1 on a first dispatch — so the two
-		// agree without either one guessing.
-		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
-			func(_ context.Context, span trace.Span) (*Node_Outputs, error) {
-				span.SetAttributes(attribute.Int(SpanAttributeAttempt, 1))
-				return nil, err
-			})
-
 		return nil, err
 	}
 
@@ -2410,11 +2658,61 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// them apart by whether a cause is present at all.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, timeouts.ScheduleToClose,
-			fmt.Errorf("schedule-to-close timeout of %s reached", timeouts.ScheduleToClose))
+			&scheduleToCloseTimeoutCause{timeout: timeouts.ScheduleToClose})
 		defer cancel()
 	}
 
 	for attempt := 1; ; attempt++ {
+		// The deployment's task-shape policy (#187), consulted for this
+		// attempt — inside the loop, where the durable driver's own check also
+		// sits: its check is in the activity, and Temporal retries by invoking
+		// the activity again, so it decides per attempt. Checking once here and
+		// retrying beneath it made the same run answer differently on the two
+		// drivers, both about a policy tightened mid-run and about how many
+		// decisions the trail holds (Codex, picatz/flowstate#1394).
+		//
+		// Placed after inputs resolve and before any attempt runs: inputs
+		// resolution never touches a secret reference (see [ResolveTaskInputs]
+		// and eval.go's own note on [Value_SecretRef]), so a denied dispatch
+		// here has still resolved no credential — the deployment-side echo of
+		// invariant 7 the design record for #187 states. A denial returns
+		// without running or retrying anything, so it still produces none of a
+		// retry's side effects.
+		//
+		// scope.GetLocal() is true for a rehearsal run through any local-driver
+		// entry point; it changes nothing about the decision, only whether a
+		// resulting denial's message says so — see [CheckTaskPolicy]'s own doc.
+		if err := CheckTaskPolicy(NewContextWithDispatchAttempt(ctx, attempt),
+			resolved.GetName(), scope.GetIdentity(), scope.GetLocal()); err != nil {
+			// A denied dispatch still gets its span, because durably it has
+			// one: the check runs *inside* the activity there
+			// (`engine.checkTaskDispatchPolicy` takes the span it writes the
+			// failure onto), so a policy that refuses a task produces one
+			// `flowstate.task/<name>` span with an error status under the
+			// durable driver. A local run that recorded nothing here would
+			// disagree about the trace precisely where an operator most wants
+			// to look — the netpolicy round tripper makes the same argument one
+			// package over for a refused request. The span covers no work, and
+			// there is none: the dispatch was refused before the attempt ran.
+			//
+			// Observed rather than merely spanned, for the same reason:
+			// durably this dispatch produces a task span *and* — since the
+			// denial is counted by the shared [CheckTaskPolicy] above — a
+			// denial. The execution instruments have to see the refused
+			// dispatch on both drivers too, or a local run's error rate would
+			// omit exactly the failures an operator most wants counted.
+			//
+			// The span carries this attempt's number, which is the one the
+			// durable driver's `activity.GetInfo` reports for the same refusal.
+			_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
+				func(_ context.Context, span trace.Span) (*Node_Outputs, error) {
+					span.SetAttributes(attribute.Int(SpanAttributeAttempt, attempt))
+					return nil, err
+				})
+
+			return nil, err
+		}
+
 		var out *Node_Outputs
 		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID, attempt)
 		if err == nil {
@@ -2424,7 +2722,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 		// Only failures that could plausibly succeed on another attempt are
 		// retried, matching how the durable driver classifies them.
-		if attempt >= attempts || !ClassifyError(err).Retryable() {
+		if attempt >= attempts || !RetryPermitted(err) {
 			return nil, err
 		}
 
@@ -2448,11 +2746,43 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// to run at test speed rather than spend the backoff for real.
 		select {
 		case <-ctx.Done():
+			// Keep the failure that was waiting to be retried as the cause. The
+			// schedule-to-close budget is the fact that ended the step, but the
+			// dependency's last answer is still the evidence explaining what the
+			// retry loop was doing when the budget ran out. Temporal preserves the
+			// same cause when its server expires this budget during backoff; dropping
+			// it here made the local rehearsal strictly less informative.
+			if _, ok := errors.AsType[*scheduleToCloseTimeoutCause](context.Cause(ctx)); ok {
+				return nil, &scheduleToCloseTimeoutError{timeout: timeouts.ScheduleToClose, err: err}
+			}
 			return nil, withCancellationCause(ctx, ctx.Err())
 		case <-ClockFromContext(ctx).After(delay):
 		}
 	}
 }
+
+// scheduleToCloseTimeoutCause distinguishes this step's overall budget from an
+// outer run deadline that may stop the same derived context first.
+type scheduleToCloseTimeoutCause struct{ timeout time.Duration }
+
+func (e *scheduleToCloseTimeoutCause) Error() string {
+	return fmt.Sprintf("schedule-to-close timeout of %s reached", e.timeout)
+}
+
+// scheduleToCloseTimeoutError reports that the overall step budget, rather
+// than the last attempt, ended a local retry loop. Its cause remains the last
+// attempt's structured failure so errors.As can still recover the dependency's
+// classification; [ClassifyError] deliberately recognizes this outer fact first.
+type scheduleToCloseTimeoutError struct {
+	timeout time.Duration
+	err     error
+}
+
+func (e *scheduleToCloseTimeoutError) Error() string {
+	return fmt.Sprintf("schedule-to-close timeout of %s reached: %v", e.timeout, e.err)
+}
+
+func (e *scheduleToCloseTimeoutError) Unwrap() error { return e.err }
 
 // withCancellationCause enriches err with the reason ctx (or the timeout
 // nearest to it) was given for stopping, when that reason is more specific
@@ -2523,8 +2853,7 @@ func WithCause(err error, cause error) error {
 		return err
 	}
 
-	var already *causeEnrichedError
-	if errors.As(err, &already) {
+	if _, ok := errors.AsType[*causeEnrichedError](err); ok {
 		return err
 	}
 
@@ -2582,7 +2911,7 @@ func (e *causeEnrichedError) Unwrap() error {
 // `activity.GetInfo(ctx).Attempt`, read in engine/activities.go. See
 // [StartTaskSpan]'s doc for why one key carries both and why that is honest.
 func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string, attempt int) (*Node_Outputs, error) {
-	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
+	return ObserveTaskAttempt(ctx, task, stepID, metricschema.DriverLocal, attempt,
 		func(ctx context.Context, span trace.Span) (*Node_Outputs, error) {
 			span.SetAttributes(attribute.Int(SpanAttributeAttempt, attempt))
 			return runStepAttempt(ctx, task, timeout, scope)
@@ -2708,6 +3037,16 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 	// task's result does not change between attempts, so retrying spends a
 	// worker's time to learn the same thing twice.
 	if err := checkTaskOutputElementBound(t.Name, out); err != nil {
+		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
+	}
+
+	// Depth beside breadth, for the same reason and at the same choke point.
+	// checkTaskOutputElementBound above already walks a Literal-kind result
+	// for depth too; this closes the gap it leaves for a Structure-kind one,
+	// which it skips rather than walks — see [CheckTaskOutputDepth]'s own
+	// doc for why this reuses that walk (#1770's fourth door) but words the
+	// refusal for the task's own result rather than a submitted value.
+	if err := CheckTaskOutputDepth(t.Name, out); err != nil {
 		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
 	}
 

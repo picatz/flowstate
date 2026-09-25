@@ -41,6 +41,9 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if _, err := loadPluginCatalog(cmd); err != nil {
+		return fmt.Errorf("--%s names what this scheduled file is checked against, and it could not be read: %w", pluginCatalogFlag, err)
+	}
 
 	workflow, err := loadWorkflow(args[0])
 	if err != nil {
@@ -627,6 +630,10 @@ flow schedule create report.yaml --name report-us --input region=us-east-1`,
 
 	addOutputFlag(createCmd)
 	addInputFlags(createCmd)
+	// Scheduling submits a specification and executes no plugin in this process,
+	// so it accepts the saved, reviewable descriptor source rather than launching
+	// plugin binaries merely to compile the file.
+	addPluginCatalogFlag(createCmd)
 	createCmd.Flags().String("name", "",
 		"what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants")
 	createCmd.Flags().Bool("paused", false,

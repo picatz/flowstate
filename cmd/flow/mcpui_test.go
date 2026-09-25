@@ -388,7 +388,7 @@ func regionOf(t *testing.T, source, name string) string {
 // literal, and the literals are what several of these tests are looking at.
 func withoutComments(region string) string {
 	var kept []string
-	for _, line := range strings.Split(region, "\n") {
+	for line := range strings.SplitSeq(region, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "//") {
 			continue
 		}

@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
@@ -84,10 +83,8 @@ func resolveOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
 	}
 
 	format := OutputFormat(strings.ToLower(strings.TrimSpace(requested)))
-	for _, accepted := range outputFormats {
-		if format == accepted {
-			return format, nil
-		}
+	if slices.Contains(outputFormats, format) {
+		return format, nil
 	}
 
 	names := make([]string, 0, len(outputFormats))
@@ -152,7 +149,7 @@ func addOutputFlag(cmd *cobra.Command) {
 // Only those verbs, because it only means something there: a run's answer is the
 // one document this CLI renders rather than passes through, so everywhere else
 // `--raw` would be a flag that changes nothing, which is worse than a flag that is
-// absent. See rundoc.go for what the rendering is and why it is derived from the
+// absent. See pkg/flowstate/v1/rundoc.go for what the rendering is and why it is derived from the
 // descriptors rather than written down.
 func addRawOutputFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool("raw", false,
@@ -169,34 +166,17 @@ func resolveRawOutput(cmd *cobra.Command) bool {
 	return raw
 }
 
-// marshalJSON renders a message the way the schema describes it.
-//
-// protojson rather than encoding/json, so the field names are the schema's and an
-// enum is its name rather than the integer behind it — `"STATUS_COMPLETED"` reads,
-// and survives a renumbering that `4` would not.
-//
-// EmitUnpopulated is deliberate: a consumer indexing `.closeTime` on a run that has
-// not finished should find null rather than a missing key, because the two are the
-// same question and only one of them is answerable without knowing the schema.
-func marshalJSON(message proto.Message, indent bool) ([]byte, error) {
-	options := protojson.MarshalOptions{EmitUnpopulated: true}
-	if indent {
-		options.Indent = "  "
-	}
-
-	return options.Marshal(message)
-}
-
 // writeJSON writes one document, indented for a person who is about to read it and
 // compact for the line-per-record form.
 //
 // The schema's own shape, for the verbs whose answer *is* a schema document: a
 // compiled workflow, a validation report, a task catalog, a schedule. A run's
-// answer goes through [writeRunJSON] instead, which renders it — see rundoc.go for
+// answer goes through [writeRunJSON] instead, which renders it — see
+// pkg/flowstate/v1/rundoc.go for
 // what that means and why the two are different functions rather than one with a
 // mode.
 func writeJSON(surface *ui.UI, format OutputFormat, message proto.Message) error {
-	encoded, err := marshalJSON(message, format == FormatJSON)
+	encoded, err := v1.MarshalSchemaJSON(message, format == FormatJSON)
 	if err != nil {
 		return fmt.Errorf("rendering the answer as %s: %w", format, err)
 	}
@@ -254,11 +234,11 @@ func resolveRunRendering(cmd *cobra.Command) (runRendering, error) {
 // writeRunJSON writes one run document.
 //
 // The counterpart of [writeJSON] for the answers a run gives, and the only place
-// the rendering in rundoc.go is reached from — so `flow run`, `flow run local`,
+// the rendering in pkg/flowstate/v1/rundoc.go is reached from — so `flow run`, `flow run local`,
 // `flow get`, `flow watch` and `flow task run` cannot end up writing four
 // different documents about one finished run.
 func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message) error {
-	encoded, err := marshalRunDocument(message, rendering.format == FormatJSON, rendering.raw)
+	encoded, err := v1.MarshalRunDocument(message, rendering.format == FormatJSON, rendering.raw)
 	if err != nil {
 		return fmt.Errorf("rendering the answer as %s: %w", rendering.format, err)
 	}
@@ -266,6 +246,66 @@ func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message)
 	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
 
 	return err
+}
+
+// refuseRunLocally answers a refusal that happened before the run started.
+//
+// `--output json` means the answer is a document, and until this a submit
+// refusal was the one outcome of `flow run local` that broke that promise: a
+// run that *started* and failed wrote a GetResponse carrying STATUS_FAILED and
+// the reason, while a command line the workflow's own `inputs:` refused wrote
+// prose on stderr and an empty stdout. A caller that had asked for JSON had
+// nothing to parse, for the failure they were most likely to hit first (#1552).
+//
+// The same document, through the same writer, classified through the same
+// [v1.ClassifyError] the started-and-failed path uses — so the two agree by
+// construction rather than by two renderings that match today. A refusal about
+// the caller's own argument reports [v1.ErrorKindInvalidInput] rather than
+// "Internal", which is what [v1.InputError] exists to make knowable.
+//
+// The exit code and the reason are what they were whatever the format. The text
+// shape still writes no document, for the reason the started-and-failed path
+// gives: an empty stdout is a meaningful answer there.
+//
+// sensitive is the run's own redaction set, and this function applies it to
+// both places the refusal is rendered — the document on stdout and the error
+// returned for stderr. It used to apply it to neither, which is how a value an
+// author declared `sensitive:` reached a machine-readable stdout that a caller
+// commonly stores or forwards, on a command line the workflow's own `inputs:`
+// refused (Codex). The started-and-failed path a hundred lines down in
+// runlocal.go has always redacted both; this is that path's answer for the
+// refusals that never get that far. See refusedRunSensitiveValues for why the
+// set is built differently here.
+func refuseRunLocally(surface *ui.UI, rendering runRendering, sensitive v1.SensitiveValues, refusal error) error {
+	// Classified off the original chain, before the redaction below drops it.
+	// [redactFailureError] deliberately does not Unwrap — that is the whole
+	// point of it — so a classification read afterwards would report Internal,
+	// a defect in Flowstate, for the caller's own bad argument: the exact
+	// regression #1552 landed to fix.
+	kind := v1.ClassifyError(refusal).String()
+
+	redacted := redactFailureError(refusal, sensitive)
+
+	if !rendering.WantsDocument() {
+		return redacted
+	}
+
+	response := &v1.GetResponse{
+		Status: v1.RunResponse_STATUS_FAILED,
+		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+			// The redacted sentence itself rather than a second pass with
+			// [redactFailureText], so the document and the stderr line cannot
+			// come to say different things about one refusal.
+			Message: redacted.Error(),
+			Kind:    kind,
+		}},
+	}
+
+	if err := writeRunJSON(surface, rendering, response); err != nil {
+		return err
+	}
+
+	return redacted
 }
 
 // A mutation's result is an answer, so the verbs that perform one carry `--output`
@@ -366,7 +406,8 @@ const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdou
 //
 // It names the paths because a caller reading `--help` is deciding what to index,
 // and it makes the stability promise because the alternative is silence, and
-// silence is what makes people depend on a shape nobody agreed to. See rundoc.go
+// silence is what makes people depend on a shape nobody agreed to. See
+// pkg/flowstate/v1/rundoc.go
 // for how the rendering is derived from the schema.
 const runDocumentHelp = "\n\nThe run document on stdout is written for a program. A step's outputs " +
 	"are `.steps.<id>.<output>` — the path the file itself writes as " +
@@ -633,7 +674,7 @@ func writeStepOutputs(surface *ui.UI, rendering runRendering, response *v1.GetRe
 		return nil
 	}
 
-	encoded, err := marshalRunDocument(outputs, false, rendering.raw)
+	encoded, err := v1.MarshalRunDocument(outputs, false, rendering.raw)
 	if err != nil {
 		return fmt.Errorf("formatting the outputs of the run: %w", err)
 	}
@@ -699,11 +740,18 @@ func newSurface(cmd *cobra.Command) *ui.UI {
 // environment already carries: `--no-color` is the most explicit ask there is, and
 // a flag typed on this invocation must not lose to a variable exported for every
 // invocation.
+//
+// CLICOLOR_FORCE is overridden alongside, because colorprofile only lets
+// NO_COLOR win where the stream is a terminal: through a pipe the NO_COLOR
+// branch is never reached and CLICOLOR_FORCE=1 forces colour anyway — exactly
+// the stream a person adds `--no-color` for. Overridden to "0" rather than
+// filtered out of the slice, so it is the same append-last mechanism as
+// NO_COLOR and not a second one that edits the environment.
 func environForSurface(cmd *cobra.Command) []string {
 	environ := os.Environ()
 
 	if noColor, _ := cmd.Flags().GetBool("no-color"); noColor {
-		environ = append(environ, "NO_COLOR=1")
+		environ = append(environ, "NO_COLOR=1", "CLICOLOR_FORCE=0")
 	}
 
 	return environ

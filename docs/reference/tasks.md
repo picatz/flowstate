@@ -98,7 +98,7 @@ Duration constructors, available to every expression: `days`, `hours`, `minutes`
 Inside a wait's own expressions (`sleep:`, `wait_until:`, and a signal's
 `timeout:`) and nowhere else, `now` is bound to the evaluation moment.
 
-CEL libraries every expression reaches: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`.
+CEL libraries every expression reaches: `bindings`, `comprehensions`, `digest`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`.
 
 ### Functions
 
@@ -114,6 +114,7 @@ arity, and whether it is written on a namespace or a value — as Signature.
 | `transformList` | `comprehensions` | macro | `[1, 2].transformList(i, v, v * 2)` | — |
 | `transformMap` | `comprehensions` | macro | `{'a': 1}.transformMap(k, v, v * 10)` | — |
 | `transformMapEntry` | `comprehensions` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` | — |
+| `digest.sha256` | `digest` | function | — | `digest.sha256(bytes) -> string`<br>`digest.sha256(string) -> string` |
 | `base64.decode` | `encoders` | function | — | `base64.decode(string) -> bytes` |
 | `base64.encode` | `encoders` | function | — | `base64.encode(bytes) -> string` |
 | `json.encode` | `encoders` | function | — | `json.encode(dyn) -> string` |
@@ -121,10 +122,12 @@ arity, and whether it is written on a namespace or a value — as Signature.
 | `distinct` | `lists` | function | — | `list(<T>).distinct() -> list(<T>)` |
 | `flatten` | `lists` | function | — | `list(dyn).flatten(int) -> list(dyn)`<br>`list(list(<T>)).flatten() -> list(<T>)` |
 | `lists.range` | `lists` | function | — | `lists.range(int) -> list(int)` |
+| `reduce` | `lists` | macro | `[1, 2, 3].reduce(a, v, 0, a + v)` | — |
 | `reverse` | `lists` | function | — | `list(<T>).reverse() -> list(<T>)`<br>`string.reverse() -> string` |
 | `slice` | `lists` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
 | `sort` | `lists` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
 | `sortBy` | `lists` | macro | `[3, 1, 2].sortBy(v, v)` | — |
+| `sum` | `lists` | macro | `[1, 2, 3].sum()` | — |
 | `greatest` | `math` | macro | `math.greatest(1, 2)` | — |
 | `least` | `math` | macro | `math.least(3, 4)` | — |
 | `math.abs` | `math` | function | — | `math.abs(double) -> double`<br>`math.abs(int) -> int`<br>`math.abs(uint) -> uint` |

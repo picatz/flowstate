@@ -8,12 +8,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // MaxResourceKeyBytes bounds the one value in a record a caller influences.
@@ -24,6 +26,41 @@ import (
 // depend on whether their arguments parse. So the emitter bounds what it was
 // handed rather than assuming somebody else did.
 const MaxResourceKeyBytes = 256
+
+// DefaultWriterQueueSize is the number of audit records the best-effort
+// stderr sink can hold while its writer is unavailable. Once full, new records
+// are dropped rather than applying an unbounded writer delay to RPC handlers.
+const DefaultWriterQueueSize = 256
+
+// MaxProvenanceBytes bounds each operator-chosen policy label copied from the
+// attested Principal. These are not token claims, but configuration is still an
+// input to a durable sink and therefore bounded where it is spent.
+const MaxProvenanceBytes = auth.MaxPolicyProvenanceBytes
+
+// MaxRuleBytes bounds the operator's policy rule copied into an enforcement
+// record. The schema says the same number (AuditRecord.rule's max_bytes), and
+// this is the half that holds: a rule is configuration rather than a caller's
+// text, but a CEL expression has no length an operator agreed to, and a bound
+// is spent where the value is.
+const MaxRuleBytes = 256
+
+// MaxDispatchIDBytes bounds the substrate-generated identity grouping task
+// attempts into one logical dispatch. The schema says the same number; the
+// recorder enforces it because Temporal owns activity-id generation and no
+// external component gets to choose audit record size without a bound.
+const MaxDispatchIDBytes = 256
+
+// MaxDeliveryIDBytes bounds the webhook delivery id an acceptance record
+// carries. It is a digest this system computes, so it has a fixed width; the
+// bound is the schema's, enforced here so the recorder never trusts a caller
+// to have kept to it.
+const MaxDeliveryIDBytes = 128
+
+// MaxCorrelationIDBytes bounds the server-minted request identifier a
+// control-plane record carries. The schema says the same number. A UUID is 36
+// bytes; the bound is held here anyway, because the value crosses a context
+// on its way in and a bound is spent where the value is.
+const MaxCorrelationIDBytes = 64
 
 // Emitter writes one record to one sink.
 //
@@ -37,15 +74,16 @@ type Emitter interface {
 // Subject is what a decision was about, as the seam making it already knows
 // it.
 //
-// The action is deliberately absent: it is derived from RPC through
-// [v1.AuthorizationActionForRPC], the deployment's one closed vocabulary, so a
-// call site cannot record a decision under an action other than the one that
-// authorizes the operation. That derivation is also what makes the audited
-// surface a property of the bindings rather than a second list — see
-// [AuditedActions].
+// The action is deliberately absent: it is derived from RPC or MCPTool through
+// the deployment's one closed vocabulary, so a call site cannot record a
+// decision under an action other than the one that authorizes the operation.
+// Exactly one operation name must be present.
 type Subject struct {
 	// RPC is the WorkflowService method by its schema name, e.g. "Signal".
 	RPC string
+
+	// MCPTool is the full registered MCP tool name, e.g. "flowstate_test".
+	MCPTool string
 
 	// Identity is the caller as this deployment attested them. Nil for an
 	// unauthenticated caller, which a deployment started with
@@ -57,6 +95,40 @@ type Subject struct {
 	// resource at all.
 	ResourceKind v1.AuditResourceKind
 	ResourceKey  string
+
+	// IssuerName and Role are policy provenance: operator-chosen values from
+	// the TrustedIssuer entry that admitted the caller, never token claims.
+	IssuerName string
+	Role       string
+}
+
+// correlationIDKey carries a request's correlation id through the context
+// from the interceptor that mints it to every seam that records under it.
+//
+// The context and not a Subject field, so that every control-plane record a
+// request writes carries the id whichever seam built the subject: a Subject
+// assembled by hand would otherwise silently lack it. Empty when no
+// interceptor minted one — a handler driven directly in a test — which the
+// record then reports as absent rather than inventing.
+type correlationIDKey struct{}
+
+// ContextWithCorrelationID returns ctx carrying id as the request's
+// correlation id, for every record the request goes on to write.
+//
+// Server-minted only. The value is what joins a request's allow record to a
+// later INTERNAL_ERROR record for the same request, and what the caller is
+// told on that error; a caller-chosen value here would be peer text reaching
+// a durable sink, which is the thing this record has no field for.
+func ContextWithCorrelationID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, correlationIDKey{}, id)
+}
+
+// CorrelationIDFromContext reads the id [ContextWithCorrelationID] stored, or
+// "" when none was.
+func CorrelationIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(correlationIDKey{}).(string)
+
+	return id
 }
 
 // Recorder is the process's audit sink, and the policy about it.
@@ -175,6 +247,48 @@ func (r *Recorder) Deny(ctx context.Context, subject Subject, code v1.AuditDenyC
 	return r.record(ctx, subject, v1.AuditDecision_AUDIT_DECISION_DENY, code)
 }
 
+// InternalError records that the server failed inside the handler after
+// whatever it had already decided: the request was answered with an internal
+// error, by the recover interceptor rather than by the handler.
+//
+// The one record that is not a decision, and the one case a request writes
+// two. The allow before it stands — see AUDIT_DECISION_INTERNAL_ERROR in
+// proto/flowstate/v1/audit.proto — and the correlation id ctx carries is what
+// joins the two. No deny code, because nothing was decided; no panic value, because a
+// panic can quote the request that caused it and the process log is where
+// that goes.
+func (r *Recorder) InternalError(ctx context.Context, subject Subject) error {
+	return r.record(ctx, subject, v1.AuditDecision_AUDIT_DECISION_INTERNAL_ERROR,
+		v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED)
+}
+
+// EnforcementAllow records that a worker-side policy permitted a workload.
+//
+// The other half of the trail (picatz/flowstate#1379): task dispatch, secret
+// access, egress and credential assumption, recorded by the same recorder into
+// the same sinks under the same schema as the control plane's decisions. This
+// is [flowstatev1.EnforcementAuditor]'s allow half — the interface lives in the schema's
+// own package because that package cannot import this one.
+//
+// A record is written where the policy is consulted, so an allow is written
+// before what it permits happens — with one stated exception at the egress
+// seam, whose verdict is reached inside the policy's transport. See
+// proto/flowstate/v1/audit.proto's "The worker's half".
+func (r *Recorder) EnforcementAllow(ctx context.Context, subject v1.EnforcementSubject) error {
+	return r.recordEnforcement(ctx, subject, v1.AuditDecision_AUDIT_DECISION_ALLOW,
+		v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED)
+}
+
+// EnforcementDeny records that a worker-side policy refused a workload.
+//
+// The code, and the rule that matched when one did — never a denial's prose,
+// for the reason [Recorder.Deny] gives and one more: at these seams the prose
+// is built from what the policy was evaluating, which is the workload's own
+// data. See [flowstatev1.EnforcementSubject.Rule].
+func (r *Recorder) EnforcementDeny(ctx context.Context, subject v1.EnforcementSubject, code v1.AuditDenyCode) error {
+	return r.recordEnforcement(ctx, subject, v1.AuditDecision_AUDIT_DECISION_DENY, code)
+}
+
 // Required reports whether a sink failure is the caller's failure.
 func (r *Recorder) Required() bool {
 	return r != nil && r.required
@@ -185,7 +299,7 @@ func (r *Recorder) record(ctx context.Context, subject Subject, decision v1.Audi
 		return nil
 	}
 
-	record, err := r.newRecord(subject, decision, code)
+	record, err := r.newRecord(ctx, subject, decision, code)
 	if err != nil {
 		// Not a sink failure, and so not gated on required: a record that
 		// cannot be built means this seam cannot say what it just decided, and
@@ -195,6 +309,53 @@ func (r *Recorder) record(ctx context.Context, subject Subject, decision v1.Audi
 		return err
 	}
 
+	operation := subject.RPC
+	if operation == "" {
+		operation = subject.MCPTool
+	}
+
+	return r.emit(ctx, record, decision, operation)
+}
+
+// recordEnforcement is [Recorder.record]'s worker-side twin: a different
+// subject and a different operation vocabulary, the same clock, the same
+// bounds, the same fan-out and the same required-mode contract, because a
+// deployment reading one trail must not have to know which half of the process
+// wrote a given line.
+func (r *Recorder) recordEnforcement(ctx context.Context, subject v1.EnforcementSubject, decision v1.AuditDecision, code v1.AuditDenyCode) error {
+	if r == nil {
+		return nil
+	}
+
+	if subject.Point == v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_UNSPECIFIED {
+		// The same class of failure newRecord's unbound-RPC error is, and
+		// ungated for the same reason: a seam that cannot name which policy
+		// decided has not recorded the decision.
+		return errors.New("audit: no enforcement point identifies the decision")
+	}
+
+	record := &v1.AuditRecord{
+		Decision:         decision,
+		EnforcementPoint: subject.Point,
+		Identity:         auditIdentity(subject.Identity),
+		ResourceKind:     subject.ResourceKind,
+		ResourceKey:      boundResourceKey(subject.ResourceKey),
+		DecidedAt:        timestamppb.New(r.now()),
+		DenyCode:         code,
+		Rule:             boundString(subject.Rule, MaxRuleBytes),
+		Attempt:          subject.Attempt,
+		DispatchId:       boundString(subject.DispatchID, MaxDispatchIDBytes),
+		DeliveryId:       boundString(subject.DeliveryID, MaxDeliveryIDBytes),
+		Joined:           subject.Joined,
+		Count:            subject.Count,
+	}
+
+	return r.emit(ctx, record, decision, subject.Point.String())
+}
+
+// emit hands one built record to every sink and applies the deployment's
+// policy about their failures.
+func (r *Recorder) emit(ctx context.Context, record *v1.AuditRecord, decision v1.AuditDecision, operation string) error {
 	var failures []error
 	for _, emitter := range r.emitters {
 		if err := emitter.Emit(ctx, record); err != nil {
@@ -210,58 +371,92 @@ func (r *Recorder) record(ctx context.Context, subject Subject, decision v1.Audi
 	}
 
 	return fmt.Errorf("audit: recording the %s decision for %s: %w",
-		decision, subject.RPC, errors.Join(failures...))
+		decision, operation, errors.Join(failures...))
 }
 
-// newRecord assembles the record, deriving everything derivable.
-func (r *Recorder) newRecord(subject Subject, decision v1.AuditDecision, code v1.AuditDenyCode) (*v1.AuditRecord, error) {
-	action, err := v1.AuthorizationActionForRPC(subject.RPC)
+// newRecord assembles the record, deriving everything derivable — the action
+// from the operation, and the correlation id from ctx, where the recover
+// interceptor put it before the handler ran.
+func (r *Recorder) newRecord(ctx context.Context, subject Subject, decision v1.AuditDecision, code v1.AuditDenyCode) (*v1.AuditRecord, error) {
+	var (
+		action v1.AuthorizationAction
+		err    error
+	)
+	switch {
+	case subject.RPC != "" && subject.MCPTool != "":
+		return nil, errors.New("audit: exactly one of RPC or MCPTool must identify the decision")
+	case subject.RPC != "":
+		action, err = v1.AuthorizationActionForRPC(subject.RPC)
+	case subject.MCPTool != "":
+		action, err = v1.AuthorizationActionForMCPTool(subject.MCPTool)
+	default:
+		return nil, errors.New("audit: no RPC or MCP tool identifies the decision")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("audit: %w", err)
 	}
 
 	return &v1.AuditRecord{
-		Action:       action,
-		Decision:     decision,
-		Rpc:          subject.RPC,
-		Identity:     subject.Identity,
-		ResourceKind: subject.ResourceKind,
-		ResourceKey:  boundResourceKey(subject.ResourceKey),
-		DecidedAt:    timestamppb.New(r.now()),
-		DenyCode:     code,
+		Action:        action,
+		Decision:      decision,
+		Rpc:           subject.RPC,
+		McpTool:       subject.MCPTool,
+		Identity:      auditIdentity(subject.Identity),
+		ResourceKind:  subject.ResourceKind,
+		ResourceKey:   boundResourceKey(subject.ResourceKey),
+		DecidedAt:     timestamppb.New(r.now()),
+		DenyCode:      code,
+		IssuerName:    boundString(subject.IssuerName, MaxProvenanceBytes),
+		Role:          boundString(subject.Role, MaxProvenanceBytes),
+		CorrelationId: boundString(CorrelationIDFromContext(ctx), MaxCorrelationIDBytes),
 	}, nil
+}
+
+// auditIdentity retains the bounded identity coordinates needed to identify
+// the caller while structurally excluding claims. Claims may be safe for the
+// workload identity carried into a run, but an authorization trail does not
+// need their values to say who made which decision.
+func auditIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
+	if identity == nil {
+		return nil
+	}
+
+	return &v1.WorkloadIdentity{
+		Subject:    identity.GetSubject(),
+		Issuer:     identity.GetIssuer(),
+		Namespace:  identity.GetNamespace(),
+		Deployment: identity.GetDeployment(),
+	}
 }
 
 // boundResourceKey truncates on a rune boundary rather than mid-sequence, so a
 // bounded record is still a readable one — #993's one part worth keeping.
 func boundResourceKey(key string) string {
-	if len(key) <= MaxResourceKeyBytes {
-		return key
-	}
-
-	return strings.ToValidUTF8(key[:MaxResourceKeyBytes], "")
+	return boundString(key, MaxResourceKeyBytes)
 }
 
-// AuditedActions is the audited surface, derived rather than listed.
+func boundString(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+
+	return strings.ToValidUTF8(value[:maxBytes], "")
+}
+
+// AuditedActions is the set of actions this recorder can express, derived
+// rather than listed. The name predates MCP support.
 //
-// It is every action the bindings attach to at least one RPC, in the schema's
-// own order. Nothing here is hand-kept, which is the point: an RPC added to
-// the service without a binding already fails
-// TestEveryRPCHasExactlyOneAuthorizationAction, so an RPC cannot arrive
-// unaudited without that failure being the thing a reviewer sees.
-//
-// The three MCP-only actions — mcp.run_local, mcp.test and mcp.debug — are
-// bound to no RPC and therefore fall out of this set. That is v1's written
-// exemption rather than an oversight: those tools execute in the process
-// serving them and have no RPC seam to decide at.
-// TestTheAuditedSurfaceIsTheRPCSurface asserts the exemption is exactly those
-// three, so a fourth unaudited action cannot join them quietly.
+// It is every action the bindings attach to at least one RPC or MCP-only tool,
+// in the schema's own order. Actual seam coverage is asserted separately: all
+// RPCs reach server audit, and every tool registered by authenticated
+// `flow mcp serve` is invoked through its audit wrapper. Local stdio makes no
+// bearer authorization decision.
 func AuditedActions() []v1.AuthorizationAction {
 	bindings := v1.AuthorizationActionBindings()
 
 	actions := make([]v1.AuthorizationAction, 0, len(bindings))
 	for _, binding := range bindings {
-		if len(binding.GetRpcs()) > 0 {
+		if len(binding.GetRpcs()) > 0 || len(binding.GetMcpTools()) > 0 {
 			actions = append(actions, binding.GetAction())
 		}
 	}
@@ -280,6 +475,121 @@ func NewWriterEmitter(w io.Writer) Emitter {
 	}
 
 	return &writerEmitter{w: w}
+}
+
+// NewAsyncWriterEmitter writes records on a background goroutine through a
+// bounded queue. Emit never waits for the writer: a full queue is reported as
+// an error, which a best-effort Recorder deliberately swallows. The returned
+// flush waits for records already accepted into the queue, subject to ctx.
+//
+// A drop is counted, and the writer goroutine reports the running total in
+// one summary line to the same sink — before the next record it writes, and
+// at flush — so backpressure loss is visible to whoever reads the trail
+// rather than silent, at a rate the writer sets rather than once per drop.
+//
+// This emitter is for best-effort mode only. Required auditing must use
+// [NewWriterEmitter], where completion of Emit proves the record was written.
+func NewAsyncWriterEmitter(w io.Writer, queueSize int) (Emitter, func(context.Context) error) {
+	if w == nil {
+		return nil, func(context.Context) error { return nil }
+	}
+	if queueSize <= 0 {
+		queueSize = DefaultWriterQueueSize
+	}
+
+	e := &asyncWriterEmitter{
+		w:     w,
+		queue: make(chan asyncWriterItem, queueSize),
+	}
+	go e.run()
+	return e, e.flush
+}
+
+type asyncWriterItem struct {
+	line    []byte
+	flushed chan error
+}
+
+type asyncWriterEmitter struct {
+	w     io.Writer
+	queue chan asyncWriterItem
+
+	// dropped counts records Emit refused since the last summary the writer
+	// goroutine managed to sink. doc.go promises a trail that is complete
+	// rather than sampled; when best-effort mode breaks that promise to keep
+	// a stalled consumer off the RPC path, the break has to be visible.
+	dropped atomic.Uint64
+}
+
+func (e *asyncWriterEmitter) Emit(_ context.Context, record *v1.AuditRecord) error {
+	line, err := protojson.MarshalOptions{}.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("audit: marshaling the record: %w", err)
+	}
+
+	select {
+	case e.queue <- asyncWriterItem{line: append(line, '\n')}:
+		return nil
+	default:
+		e.dropped.Add(1)
+		return errors.New("audit: writer queue is full")
+	}
+}
+
+func (e *asyncWriterEmitter) run() {
+	for item := range e.queue {
+		e.reportDropped()
+		var err error
+		if item.line != nil {
+			_, err = e.w.Write(item.line)
+			if err != nil {
+				err = fmt.Errorf("audit: writing the record: %w", err)
+			}
+		}
+		if item.flushed != nil {
+			item.flushed <- err
+		}
+	}
+}
+
+// reportDropped writes the one line describing what a full queue dropped
+// since the last report — the shape plugin's stderrLimiter (#714) settled:
+// suppression must never be invisible, so it is reported once, at a rate the
+// writer chooses, rather than once per dropped record. run calls it ahead of
+// every item, so the summary lands before the next record a reader sees and
+// again at flush, and a drop is never lost to shutdown.
+//
+// Prose, deliberately not protojson: records are one JSON object per line,
+// and a summary that parsed as JSON could be mistaken for a record by a
+// consumer of the trail. The sink already interleaves the process's ordinary
+// stderr, so a non-JSON line is nothing a record consumer has not seen.
+func (e *asyncWriterEmitter) reportDropped() {
+	n := e.dropped.Swap(0)
+	if n == 0 {
+		return
+	}
+
+	if _, err := fmt.Fprintf(e.w, "audit: %d records dropped: writer queue was full\n", n); err != nil {
+		// The count outlives a writer that is still failing; the next record
+		// or flush retries the report.
+		e.dropped.Add(n)
+	}
+}
+
+func (e *asyncWriterEmitter) flush(ctx context.Context) error {
+	flushed := make(chan error, 1)
+	select {
+	case e.queue <- asyncWriterItem{flushed: flushed}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case err := <-flushed:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type writerEmitter struct {

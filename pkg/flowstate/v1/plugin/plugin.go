@@ -15,9 +15,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // State is what a plugin is currently doing.
@@ -114,6 +116,9 @@ type Health struct {
 	// Err is why the plugin could not be reached, when Status is
 	// [HealthUnreachable].
 	Err error
+
+	messageScrubbed bool
+	errorScrubbed   bool
 }
 
 // stableRun is how long a plugin has to stay up before its restart budget is
@@ -358,12 +363,26 @@ func (p *Plugin) ready() (*instance, error) {
 // second deadline invented here to shorten it with.
 func (p *Plugin) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
-		// WithCancel, not the bare ctx: every caller in this package owns the
-		// returned cancel and the streaming one relies on cancelling to release
-		// the call, so both shapes have to be a context this call can end.
-		return context.WithCancel(ctx)
+		// Beneath [Config.MaxCallTimeout], not instead of it. The paragraphs
+		// above are why the host's ordinary bound no longer shortens a deadline
+		// the author chose — but "the author chose it" is the reason it needs a
+		// ceiling of its own rather than none at all: the author is whoever
+		// submitted the workflow, `timeout:` is checked only for being
+		// positive, and this call holds a plugin RPC and the activity slot
+		// under it for exactly as long as it says (#1119).
+		//
+		// [context.WithTimeout] keeps whichever deadline is earlier, so the
+		// step's own `timeout:` still governs every call that is not trying to
+		// outlast the deployment.
+		return context.WithTimeout(ctx, p.cfg.maxCallTimeout())
 	}
-	return context.WithTimeout(ctx, p.cfg.CallTimeout)
+	// Beneath the ceiling too, for the same reason: [Config.MaxCallTimeout]
+	// says it is the most any call may take, and a call that arrived with no
+	// deadline is still a call. An operator who lowers the ceiling below
+	// [Config.CallTimeout] means the lower number — clamping here is what makes
+	// that true, rather than refusing the pair at startup and making a
+	// deployment reason about which of its two knobs is smaller.
+	return context.WithTimeout(ctx, min(p.cfg.CallTimeout, p.cfg.maxCallTimeout()))
 }
 
 // CheckHealth polls the plugin now, rather than waiting for the next scheduled
@@ -387,10 +406,12 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	var health Health
 	switch {
 	case err != nil:
+		healthErr, scrubbed := inst.stderrSecrets.scrubError(err)
 		health = Health{
-			Status:    HealthUnreachable,
-			CheckedAt: time.Now(),
-			Err:       pluginError(p.name, p.path, err),
+			Status:        HealthUnreachable,
+			CheckedAt:     time.Now(),
+			Err:           pluginError(p.name, p.path, healthErr),
+			errorScrubbed: scrubbed,
 		}
 	case resp.Msg.GetStatus() == pluginv1.HealthResponse_STATUS_SERVING:
 		health = Health{Status: HealthServing, CheckedAt: time.Now()}
@@ -398,10 +419,15 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 		// Anything that is not explicitly serving is treated as not serving,
 		// including STATUS_UNSPECIFIED. A plugin that does not say it can serve
 		// has not said it can serve.
+		message, scrubbed := inst.stderrSecrets.scrub(resp.Msg.GetMessage())
+		if len(resp.Msg.GetMessage()) >= 1024 && inst.stderrSecrets.hasEntries() {
+			message, scrubbed = secrets.Redacted, true
+		}
 		health = Health{
-			Status:    HealthNotServing,
-			CheckedAt: time.Now(),
-			Message:   truncate(resp.Msg.GetMessage(), 1024),
+			Status:          HealthNotServing,
+			CheckedAt:       time.Now(),
+			Message:         textbound.Truncate(message, 1024),
+			messageScrubbed: scrubbed,
 		}
 	}
 
@@ -516,7 +542,7 @@ func (p *Plugin) describe(ctx context.Context, inst *instance) (*pluginv1.Plugin
 	}
 
 	manifest := resp.Msg.GetManifest()
-	if err := p.checkManifest(manifest); err != nil {
+	if err := p.checkManifest(inst, manifest); err != nil {
 		return nil, pluginError(p.name, p.path, err)
 	}
 
@@ -525,7 +551,7 @@ func (p *Plugin) describe(ctx context.Context, inst *instance) (*pluginv1.Plugin
 
 // checkManifest applies every rule a manifest has to satisfy before the host
 // will use anything the plugin offers.
-func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
+func (p *Plugin) checkManifest(inst *instance, manifest *pluginv1.PluginManifest) error {
 	// The schema's own rules first, so that a field this code goes on to read is
 	// known to be within its declared bounds.
 	if err := flowstatev1.Validate(manifest); err != nil {
@@ -537,8 +563,9 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 		// everything by the binary's name regardless, so a plugin cannot claim
 		// another's identity by describing itself as it. It is still worth
 		// saying, because the mismatch will confuse whoever reads the logs.
+		manifestName, scrubbed := inst.stderrSecrets.scrub(manifest.GetName())
 		p.log.Warn("plugin manifest name does not match its binary",
-			"manifest_name", truncate(manifest.GetName(), 64), "binary_name", p.name)
+			"manifest_name", textbound.Truncate(manifestName, 64), "binary_name", p.name, "scrubbed", scrubbed)
 	}
 
 	// A capability the host does not know is ignored rather than refused, which
@@ -598,7 +625,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 			if !p.cfg.schemePermitted(scheme) {
 				return fmt.Errorf(
 					"%w: claims scheme %q, which this deployment does not permit (permitted: %s)",
-					ErrSchemeNotPermitted, truncate(scheme, 32), strings.Join(p.cfg.PermittedSchemes, ", "),
+					ErrSchemeNotPermitted, textbound.Truncate(scheme, 32), strings.Join(p.cfg.PermittedSchemes, ", "),
 				)
 			}
 		}
@@ -608,7 +635,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 		seen := make(map[string]struct{}, len(manifest.GetTasks()))
 		for _, task := range manifest.GetTasks() {
 			if _, dup := seen[task.GetName()]; dup {
-				return fmt.Errorf("%w: provides task %q twice", ErrManifest, truncate(task.GetName(), 64))
+				return fmt.Errorf("%w: provides task %q twice", ErrManifest, textbound.Truncate(task.GetName(), 64))
 			}
 			seen[task.GetName()] = struct{}{}
 		}
@@ -678,14 +705,19 @@ func (p *Plugin) supervise() {
 				// Restarting it would replace a process that is answering
 				// correctly with an identical one that will answer the same
 				// way, so this is reported and left alone.
+				message, scrubbed := inst.stderrSecrets.scrub(health.Message)
+				scrubbed = scrubbed || health.messageScrubbed
 				p.log.Warn("plugin reports it cannot serve; its backend is the thing to look at, not the plugin",
-					"message", health.Message)
+					"message", message, "scrubbed", scrubbed)
 			case HealthUnreachable:
 				consecutiveUnreachable++
+				errText, scrubbed := inst.stderrSecrets.scrub(health.Err.Error())
+				scrubbed = scrubbed || health.errorScrubbed
 				p.log.Warn("plugin did not answer a health check",
 					"consecutive", consecutiveUnreachable,
 					"threshold", p.cfg.HealthFailureThreshold,
-					"error", health.Err)
+					"error", errors.New(errText),
+					"scrubbed", scrubbed)
 
 				if consecutiveUnreachable >= p.cfg.HealthFailureThreshold {
 					consecutiveUnreachable = 0
@@ -970,13 +1002,13 @@ func manifestUnchanged(before, after *pluginv1.PluginManifest) error {
 	for _, task := range afterTasks {
 		previous, ok := byName[task.GetName()]
 		if !ok {
-			return fmt.Errorf("came back providing task %q, which it did not provide before", truncate(task.GetName(), 64))
+			return fmt.Errorf("came back providing task %q, which it did not provide before", textbound.Truncate(task.GetName(), 64))
 		}
 		if !proto.Equal(previous, task) {
 			// The engine validates workflows against the descriptors from the
 			// first manifest, so a task whose schema changed would be validated
 			// against one shape and executed against another.
-			return fmt.Errorf("came back defining task %q differently", truncate(task.GetName(), 64))
+			return fmt.Errorf("came back defining task %q differently", textbound.Truncate(task.GetName(), 64))
 		}
 	}
 
@@ -1020,7 +1052,7 @@ func capabilityNames(caps []pluginv1.Capability) []string {
 func taskNames(tasks []*pluginv1.TaskManifest) []string {
 	names := make([]string, 0, len(tasks))
 	for _, t := range tasks {
-		names = append(names, truncate(t.GetName(), 64))
+		names = append(names, textbound.Truncate(t.GetName(), 64))
 	}
 	slices.Sort(names)
 	return names
@@ -1029,8 +1061,7 @@ func taskNames(tasks []*pluginv1.TaskManifest) []string {
 // connectError reports whether err came back from a plugin as a Connect error,
 // and with which code.
 func connectError(err error) (connect.Code, bool) {
-	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
+	if connectErr, ok := errors.AsType[*connect.Error](err); ok {
 		return connectErr.Code(), true
 	}
 	return 0, false

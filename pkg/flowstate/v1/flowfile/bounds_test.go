@@ -65,7 +65,7 @@ func TestCallPinsRefusesABillionLaughsAtTheNodeBudget(t *testing.T) {
 	for i := 1; i <= 9; i++ {
 		level := strconv.Itoa(i)
 		b.WriteString("l" + level + ": &l" + level + " [")
-		for j := 0; j < 9; j++ {
+		for j := range 9 {
 			if j > 0 {
 				b.WriteByte(',')
 			}

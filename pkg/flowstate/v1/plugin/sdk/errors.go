@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -110,12 +111,58 @@ func Unavailable(format string, args ...any) error {
 	return &classified{code: connect.CodeUnavailable, retryable: true, err: fmt.Errorf(format, args...)}
 }
 
-// IsConflict reports whether err is (or wraps) a [Conflict] classification -
-// the predicate a plugin's own tests, or a caller deciding how to log a
+// The predicates below report which classification an error carries. They are
+// what a plugin's own tests, and a caller deciding how to log or dispatch on a
 // failure, use instead of matching on message text, which is free to change.
-func IsConflict(err error) bool {
+//
+// Each reads through wrapping, so an error given context with fmt.Errorf still
+// answers for what it is. An unclassified error - a bare error, or one from
+// outside this SDK - answers false to all of them, which is the same thing the
+// engine concludes: a failure that named no classification is permanent and
+// unexplained.
+
+// IsNotFound reports whether err is (or wraps) a [NotFound] classification.
+func IsNotFound(err error) bool { return hasCode(err, connect.CodeNotFound, false) }
+
+// IsPermissionDenied reports whether err is (or wraps) a [PermissionDenied]
+// classification.
+func IsPermissionDenied(err error) bool { return hasCode(err, connect.CodePermissionDenied, false) }
+
+// IsInvalidInput reports whether err is (or wraps) an [InvalidInput]
+// classification.
+func IsInvalidInput(err error) bool { return hasCode(err, connect.CodeInvalidArgument, false) }
+
+// IsConflict reports whether err is (or wraps) a [Conflict] classification.
+func IsConflict(err error) bool { return hasCode(err, connect.CodeAborted, false) }
+
+// IsUnavailable reports whether err is (or wraps) an [Unavailable] or
+// [UnavailableAfter] classification - the one retryable answer, and so the one
+// worth testing for separately from the rest.
+func IsUnavailable(err error) bool { return hasCode(err, connect.CodeUnavailable, false) }
+
+// IsOutcomeUnknown reports whether err is (or wraps) an [OutcomeUnknown]
+// classification: a call that may already have taken effect.
+//
+// Distinct from [Failed], which shares its code: the difference between the two
+// is not the code but the verdict on retrying, so this asks about the verdict.
+func IsOutcomeUnknown(err error) bool { return hasCode(err, connect.CodeUnknown, true) }
+
+// IsFailed reports whether err is (or wraps) a [Failed] classification: the
+// step did not succeed, the outcome is known, and retrying spends an attempt on
+// the same answer.
+//
+// The other half of [IsOutcomeUnknown]. The two share a connect code, so a
+// caller reading the code alone cannot tell them apart, and reading the message
+// is what this family exists to stop.
+func IsFailed(err error) bool { return hasCode(err, connect.CodeUnknown, false) }
+
+// hasCode is the one place the classification is read out of an error.
+func hasCode(err error, code connect.Code, unknownOutcome bool) bool {
 	var c *classified
-	return errors.As(err, &c) && c.code == connect.CodeAborted
+	if !errors.As(err, &c) || c.code != code {
+		return false
+	}
+	return c.unknownOutcome == unknownOutcome
 }
 
 // UnavailableAfter is [Unavailable] with a preferred delay before the next
@@ -213,5 +260,42 @@ func asConnectError(err error) error {
 		converted.AddDetail(detail)
 	}
 
+	return converted
+}
+
+// taskConnectError adds the request-context provenance that only the serving
+// side can know. Connect propagates the caller's deadline to ctx, but its wire
+// timer can expire just before the caller's local timer. Without this detail
+// the host cannot distinguish that ordering from a plugin-owned backend
+// deadline, because both otherwise arrive as CodeDeadlineExceeded.
+func taskConnectError(ctx context.Context, err error) error {
+	converted := asConnectError(err)
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) || !errors.Is(err, context.DeadlineExceeded) {
+		return converted
+	}
+
+	// An SDK classification or an author-supplied Connect status is the
+	// plugin's explicit account of its own operation and wins even when its
+	// cause is the request deadline. In particular, OutcomeUnknown must remain
+	// non-retryable: relabelling it Timeout could perform a mutation twice.
+	var classifiedErr *classified
+	var authoredConnectErr *connect.Error
+	if errors.As(err, &classifiedErr) || errors.As(err, &authoredConnectErr) {
+		return converted
+	}
+
+	converted = connect.NewError(connect.CodeDeadlineExceeded, err)
+
+	var connectErr *connect.Error
+	if !errors.As(converted, &connectErr) {
+		return converted
+	}
+
+	detail, detailErr := connect.NewErrorDetail(&pluginv1.TaskErrorProvenance{
+		CallerDeadlineExceeded: true,
+	})
+	if detailErr == nil {
+		connectErr.AddDetail(detail)
+	}
 	return converted
 }

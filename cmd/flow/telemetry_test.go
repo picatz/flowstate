@@ -15,9 +15,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
+	"github.com/go-logr/logr"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/assert"
@@ -32,6 +33,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -79,6 +81,23 @@ func isolateTelemetry(t *testing.T) {
 	// delegating instance this one may have pointed at a collector.
 	logglobal.SetLoggerProvider(noopLog.NewLoggerProvider())
 
+	// The error handler is a global of the same kind, with the same
+	// delegate-exactly-once trap: the SDK's default handler forwards to the
+	// first handler ever set and keeps forwarding to it after a "restore". So
+	// the baseline is a concrete handler that reads [telemetryLogger] at call
+	// time — never a handler holding a logger some test installed — and a test
+	// that wants to read what the SDK reported installs its own on top.
+	errorHandler := otel.GetErrorHandler()
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		telemetryLogger.Warn("telemetry reported an error", "err", err)
+	}))
+
+	// The SDK's internal logger has no getter, so it cannot be put back; the
+	// baseline is the bridge [initTelemetry] installs, over whatever
+	// [telemetryLogger] is at that moment — and again on the way out, after a
+	// test that swapped the logger has restored it.
+	otel.SetLogger(logr.FromSlogHandler(telemetryLogger.Handler()))
+
 	telemetryState.mu.Lock()
 	started, handler, shutdown, err := telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err
 	telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err = false, nil, nil, nil
@@ -96,6 +115,8 @@ func isolateTelemetry(t *testing.T) {
 		otel.SetMeterProvider(meterProvider)
 		otel.SetTextMapPropagator(propagator)
 		logglobal.SetLoggerProvider(loggerProvider)
+		otel.SetErrorHandler(errorHandler)
+		otel.SetLogger(logr.FromSlogHandler(telemetryLogger.Handler()))
 
 		telemetryState.mu.Lock()
 		telemetryState.started, telemetryState.handler, telemetryState.shutdown, telemetryState.err = started, handler, shutdown, err
@@ -412,7 +433,37 @@ func TestTelemetryResourceIdentifiesThisCopy(t *testing.T) {
 		"which copy of flowstate this is, without an operator wiring the downward API")
 	require.Contains(t, attrs, "host.name")
 	require.Contains(t, attrs, "process.pid")
+	require.Contains(t, attrs, "process.executable.name")
 	require.Contains(t, attrs, "process.runtime.name")
+}
+
+func TestTelemetryResourceKeepsDetectedAttributesAndToleratesTheirAbsence(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	for _, test := range []struct {
+		name     string
+		detected []attribute.KeyValue
+	}{
+		{name: "absent"},
+		{name: "present", detected: []attribute.KeyValue{attribute.String("host.name", "detected-host")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			res, err := telemetryResourceWith(t.Context(), resource.WithAttributes(test.detected...))
+			require.NoError(t, err)
+
+			attrs := resourceAttributes(res.Attributes())
+			require.Equal(t, "flowstate", attrs["service.name"],
+				"an empty detector must not erase the fixed service identity")
+			if len(test.detected) == 0 {
+				require.NotContains(t, attrs, "host.name",
+					"absent detector data must remain absent rather than be invented")
+			} else {
+				require.Equal(t, "detected-host", attrs["host.name"],
+					"an attribute the detector found was dropped while merging the resource")
+			}
+		})
+	}
 }
 
 // TestTheResourceCarriesNoCommandArguments is the negative direction, and it is
@@ -437,6 +488,16 @@ func TestTheResourceCarriesNoCommandArguments(t *testing.T) {
 	require.NotContains(t, attrs, "process.command_line")
 	require.NotContains(t, attrs, "process.executable.path",
 		"a path carries a username and a deployment's layout; the name answers the question")
+	require.NotContains(t, attrs, "process.owner",
+		"a username is not needed to identify the emitting process")
+	require.NotContains(t, attrs, "process.runtime.description",
+		"the runtime name and version carry the useful identity without a free-form description")
+	require.NotContains(t, attrs, "host.id",
+		"a durable machine identifier is broader and longer-lived than this process needs")
+	for key := range attrs {
+		require.False(t, strings.HasPrefix(key, "k8s."),
+			"Kubernetes topology %q was inferred without a Kubernetes resource detector", key)
+	}
 }
 
 // TestTheInstanceIDIsStableWithinTheProcess pins the property that makes the id
@@ -455,33 +516,25 @@ func TestTheInstanceIDIsStableWithinTheProcess(t *testing.T) {
 	id := resourceAttributes(first.Attributes())["service.instance.id"]
 	require.NotEmpty(t, id)
 	require.Equal(t, id, resourceAttributes(second.Attributes())["service.instance.id"])
-}
+	parsed, err := uuid.Parse(id)
+	require.NoError(t, err)
 
-// TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand covers the path a
-// container with no usable entropy source takes.
-//
-// uuid.NewString is Must(NewRandom()), so reaching for the convenient spelling
-// would panic from inside a resource builder — past telemetryResource's error
-// return and past the client path that warns and continues without telemetry.
-// Telemetry describes the work and must never be the reason the work does not
-// happen, so the failure costs one attribute and a warning, exactly as a
-// partial detector does.
-func TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand(t *testing.T) {
-	isolateTelemetry(t)
-	telemetryOff(t)
-
-	previous := instanceID
-	t.Cleanup(func() { instanceID = previous })
-	instanceID = func() (uuid.UUID, error) { return uuid.Nil, errors.New("no entropy available") }
-
-	res, err := telemetryResource(t.Context())
-	require.NoError(t, err, "an unobtainable instance id must not fail the resource")
-
-	attrs := resourceAttributes(res.Attributes())
-	require.NotContains(t, attrs, "service.instance.id",
-		"a nil UUID reported as an instance id would collide across every copy that hit this path")
-	require.Equal(t, "flowstate", attrs["service.name"],
-		"the rest of the resource is unaffected")
+	// Read out of the bytes rather than asked of the value: the standard
+	// library's [uuid.UUID] is an array with no Version or Variant accessor, so
+	// the two fields are where RFC 9562 puts them. The version is the high
+	// nibble of octet 6 (RFC 9562 §4.2,
+	// https://www.rfc-editor.org/rfc/rfc9562#section-4.2) and the variant is the
+	// two high bits of octet 8 (§4.1,
+	// https://www.rfc-editor.org/rfc/rfc9562#section-4.1).
+	//
+	// Both halves are asserted because only together do they say "version 4".
+	// The nibble alone is satisfied by a value with the variant bits of a
+	// Microsoft-legacy or reserved layout, where octet 6 does not mean what
+	// version 4 means.
+	require.Equal(t, byte(4), parsed[6]>>4,
+		"the process instance must be a fresh random identity, not a hostname or reusable pid")
+	require.Equal(t, byte(0b10), parsed[8]>>6,
+		"a version read out of an identifier that does not carry the RFC 9562 variant is read out of the wrong bits")
 }
 
 // TestTelemetryResourceLetsTheEnvironmentWin is the direction that is easy to
@@ -494,7 +547,11 @@ func TestTelemetryResourceLetsTheEnvironmentWin(t *testing.T) {
 	telemetryOff(t)
 
 	t.Setenv("OTEL_SERVICE_NAME", "flowstate-eu")
-	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=staging")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", strings.Join([]string{
+		"deployment.environment=staging",
+		"service.instance.id=deployment-instance",
+		"host.name=deployment-host",
+	}, ","))
 
 	res, err := telemetryResource(t.Context())
 	require.NoError(t, err)
@@ -502,6 +559,10 @@ func TestTelemetryResourceLetsTheEnvironmentWin(t *testing.T) {
 	attrs := resourceAttributes(res.Attributes())
 	require.Equal(t, "flowstate-eu", attrs["service.name"], "OTEL_SERVICE_NAME must override the built-in name")
 	require.Equal(t, "staging", attrs["deployment.environment"])
+	require.Equal(t, "deployment-instance", attrs["service.instance.id"],
+		"the deployment must be able to replace the random process identity")
+	require.Equal(t, "deployment-host", attrs["host.name"],
+		"the deployment must be able to replace detected host identity")
 }
 
 // resourceAttributes flattens a resource for assertion.

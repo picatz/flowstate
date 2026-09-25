@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"testing"
@@ -133,9 +134,7 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 	// everything the verifier checks before the bound still passes.
 	claims := func(extra map[string]any) map[string]any {
 		set := issuer.Claims(authtest.WithSubject("workflow-runner"), authtest.WithAudience("flowstate"))
-		for name, value := range extra {
-			set[name] = value
-		}
+		maps.Copy(set, extra)
 		return set
 	}
 

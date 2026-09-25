@@ -132,10 +132,72 @@ func Test_httpTask_egressCredentials_allowlistedHost(t *testing.T) {
 // drift on what counts as a credential.
 func Test_taskCarriesCredential(t *testing.T) {
 	partnerAPI := "partner-api"
+	ref := &Value{Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}}
 
-	require.False(t, taskCarriesCredential(&Task_HTTP_Inputs{}))
+	require.False(t, taskCarriesCredential(&Task_HTTP_Inputs{}, nil))
 	require.True(t, taskCarriesCredential(&Task_HTTP_Inputs{
-		Bearer: &Value{Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}},
+		Bearer: ref,
+	}, nil))
+	require.True(t, taskCarriesCredential(&Task_HTTP_Inputs{Credential: &partnerAPI}, nil))
+	require.True(t, taskCarriesCredential(&Task_HTTP_Inputs{Json: NewStructureMap(map[string]*Value{
+		"token": ref,
+	})}, nil))
+	require.True(t, taskCarriesCredential(&Task_HTTP_Inputs{Form: map[string]*Value{
+		"token": ref,
+	}}, nil))
+	require.True(t, taskCarriesCredential(&Task_HTTP_Inputs{}, NewStructureMap(map[string]*Value{
+		"Authorization": ref,
+	})))
+}
+
+// Every HTTP position that resolves a nested secret must cross the credential
+// egress gate before consulting the secret backend. Otherwise an author could
+// select an alternate representation to bypass a credential-to-host binding.
+func Test_httpTask_egressCredentials_nestedSecretsAreDeniedBeforeResolution(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a credential-scoped denial must prevent the request from reaching the peer")
+		w.WriteHeader(http.StatusOK)
 	}))
-	require.True(t, taskCarriesCredential(&Task_HTTP_Inputs{Credential: &partnerAPI}))
+	t.Cleanup(server.Close)
+
+	policy, err := netpolicy.New(
+		netpolicy.WithAllowLoopback(),
+		netpolicy.WithDenyRules(`credentials && !(host in ["partner-a.example.com"])`),
+	)
+	require.NoError(t, err)
+	fn := taskFuncHTTP(policy)
+
+	provider := &countingSecretProvider{value: "secret-material"}
+	store, err := secrets.NewStore(provider)
+	require.NoError(t, err)
+	authPolicy, err := (auth.SecretAccessPolicy{Allow: []string{"true"}}).Compile()
+	require.NoError(t, err)
+	ctx := ContextWithTaskRuntime(t.Context(), TaskRuntime{
+		Store: store, Policy: authPolicy,
+		Identity: auth.WorkloadIdentity{Subject: "test-user", Issuer: "https://issuer.example", Namespace: "test"},
+		Step:     auth.StepRef{Workflow: "test-workflow", Run: "test-run", Step: "fetch"},
+	})
+	ref := func() *Value {
+		return &Value{Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}}
+	}
+
+	for _, test := range []struct {
+		name  string
+		input map[string]*Value
+	}{
+		{name: "header", input: map[string]*Value{"headers": NewStructureMap(map[string]*Value{"Authorization": ref()})}},
+		{name: "json", input: map[string]*Value{"json": NewStructureMap(map[string]*Value{"token": ref()})}},
+		{name: "form", input: map[string]*Value{"form": NewStructureMap(map[string]*Value{"token": ref()})}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.input["url"] = NewValue(server.URL)
+			_, err := fn(ctx, test.input, nil)
+
+			var taskErr *TaskError
+			require.ErrorAs(t, err, &taskErr)
+			require.Equal(t, ErrorKindPolicyDenied, taskErr.Kind)
+			require.Equal(t, int64(0), provider.resolves.Load(),
+				"the egress preflight must run before resolving a nested secret")
+		})
+	}
 }

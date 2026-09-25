@@ -1,5 +1,10 @@
 package flowtest
 
+import (
+	"fmt"
+	"slices"
+)
+
 // Table entries (#924 slice 2): a `tests:` entry that declares `cases:` is a
 // template, and each row under it is one run merged over that template.
 //
@@ -87,6 +92,25 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 
 			continue
 		}
+		if len(entry.Expect.Check) > MaxChecksPerTest {
+			p.report(site{test: entry.Name, at: where.field("expect").field("check")},
+				"test %q table entry declares %d checks, more than the limit of %d",
+				entry.Name, len(entry.Expect.Check), MaxChecksPerTest)
+
+			continue
+		}
+		// Judge the expectation fields the entry wrote once, while both its
+		// source path and its identity are still available. mergeExpectation
+		// marks the copies each row inherits, so the ordinary case pass below
+		// skips those copies but continues to judge row-written overrides.
+		// Clone the claims before validation strips a tolerated `${...}` fence:
+		// Run also uses this pass for a Go-built File, and running one must not
+		// mutate the caller's slice or race with another run of the same file.
+		entry.Expect.Check = slices.Clone(entry.Expect.Check)
+		entrySite := site{test: entry.Name, at: where}
+		checkOthers(p, entrySite, &entry)
+		checkCheckClaims(p, entrySite.in(where.field("expect").field("check")),
+			fmt.Sprintf("test %q expect", entry.Name), entry.Expect.Check, len(entry.Expect.Check), "")
 
 		for i, row := range entry.Cases {
 			rowWhere := where.field("cases").item(i)
@@ -99,6 +123,20 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 				p.report(site{test: entry.Name, at: rowWhere.field("cases")},
 					"test %q case %q declares its own `cases:`, and a table is one "+
 						"level deep; move the rows up, or split the entry in two", entry.Name, row.Name)
+
+				continue
+			}
+			if len(row.Expect.Check) > MaxChecksPerTest {
+				p.report(site{test: entry.Name + "/" + row.Name, at: rowWhere.field("expect").field("check")},
+					"test %q case %q declares %d checks, more than the limit of %d",
+					entry.Name, row.Name, len(row.Expect.Check), MaxChecksPerTest)
+
+				continue
+			}
+			if checks := len(entry.Expect.Check) + len(row.Expect.Check); checks > MaxChecksPerTest {
+				p.report(site{test: entry.Name + "/" + row.Name, at: rowWhere.field("expect").field("check")},
+					"test %q case %q declares %d checks after its table entry is applied, more than the limit of %d",
+					entry.Name, row.Name, checks, MaxChecksPerTest)
 
 				continue
 			}
@@ -194,39 +232,54 @@ func mergeExpectation(entry, row Expectation) Expectation {
 	merged := row
 	if merged.Outputs == nil {
 		merged.Outputs = entry.Outputs
+		merged.fromEntry.outputs = entry.Outputs != nil
 	}
 	if merged.Inputs == nil {
 		merged.Inputs = entry.Inputs
+		merged.fromEntry.inputs = entry.Inputs != nil
 	}
 	if merged.Refused == nil {
 		merged.Refused = entry.Refused
+		merged.fromEntry.refused = entry.Refused != nil
 	}
 	if merged.IdempotencyKey == "" {
 		merged.IdempotencyKey = entry.IdempotencyKey
+		merged.fromEntry.idempotencyKey = entry.IdempotencyKey != ""
 	}
 	if merged.Failed == nil {
 		merged.Failed = entry.Failed
+		merged.fromEntry.failed = entry.Failed != nil
 	}
 	if merged.ErrorContains == "" {
 		merged.ErrorContains = entry.ErrorContains
+		merged.fromEntry.errorContains = entry.ErrorContains != ""
 	}
 	if merged.Compensated == nil {
 		merged.Compensated = entry.Compensated
+		merged.fromEntry.compensated = entry.Compensated != nil
 	}
 	if merged.Ran == nil {
 		merged.Ran = entry.Ran
+		merged.fromEntry.ran = entry.Ran != nil
 	}
 	if merged.Skipped == nil {
 		merged.Skipped = entry.Skipped
+		merged.fromEntry.skipped = entry.Skipped != nil
 	}
 	if merged.Others == "" {
 		merged.Others = entry.Others
+		merged.fromEntry.others = entry.Others != ""
 	}
 	// Check is the one accumulating field: the entry's claims and the row's
 	// all hold, entry first (see the field's own doc for why predicates
 	// union where values override). A fresh slice, so rows sharing an entry
 	// cannot append into each other's backing array.
-	merged.Check = append(append([]CheckClaim{}, entry.Check...), row.Check...)
+	inherited := make([]CheckClaim, 0, len(entry.Check)+len(row.Check))
+	for _, claim := range entry.Check {
+		claim.fromEntry = true
+		inherited = append(inherited, claim)
+	}
+	merged.Check = append(inherited, row.Check...)
 
 	return merged
 }

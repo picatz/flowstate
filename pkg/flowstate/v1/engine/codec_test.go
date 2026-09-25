@@ -13,6 +13,8 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/toycodec"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // The durable half of the codec seam, exercised end to end through the
@@ -109,7 +111,7 @@ func TestCodecCoversInputsSignalsAndOutputs(t *testing.T) {
 	require.NotNil(t, approval, "the wait produced no outputs at all")
 	require.False(t, approval.GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue(),
 		"the wait timed out: the signal never made it through the codec")
-	require.True(t, payloadField(t, approval, "approved").GetBoolValue())
+	require.True(t, conformance.PayloadField(t, approval, "approved").GetBoolValue())
 	require.NotNil(t, outputs.GetStepValues()["deploy"],
 		"the gated step did not run")
 

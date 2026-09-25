@@ -72,24 +72,29 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"sync"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
 // ErrNotLaunchedByHost reports that the process was not started by a Flowstate
@@ -309,6 +314,13 @@ type Task struct {
 	// than the plugin asking it to.
 	SecretInputs []string
 
+	// RequiredSecretInputs names inputs that must be supplied as whole secret
+	// references. Each must also be in SecretInputs. The host refuses a literal
+	// before resolving inputs or invoking Fn, so sensitive connection material
+	// cannot be embedded in workflow history merely because the plugin receives
+	// a resolved secret in the same wire shape as a literal.
+	RequiredSecretInputs []string
+
 	// ShapesOutputs declares that this task reads an input named `outputs` as a
 	// mapping of output name to expression, and returns those names as the
 	// step's outputs in place of the ones its descriptor declares.
@@ -336,7 +348,10 @@ type Task struct {
 
 // TaskFunc executes one task, given its resolved inputs and the scope its own
 // expressions are evaluated against. It has the same shape as the engine's own
-// task functions.
+// task functions. If it panics, the SDK recovers that call, logs the panic and
+// stack through the plugin logger, and returns a permanent unknown-outcome
+// failure: the function may have applied side effects before panicking, so the
+// host must not retry it automatically.
 type TaskFunc func(ctx context.Context, inputs map[string]*flowstatev1.Value, scope *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error)
 
 // HealthFunc reports whether the plugin can serve. Returning an error is
@@ -644,7 +659,7 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version3})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version7})
 	if !ok {
 		// Say what to do, not only what is wrong. This refusal is the whole
 		// point of the version bump: it is reached by whichever side is older,
@@ -655,7 +670,7 @@ func readEnvironment() (environment, error) {
 			"%w: the host offered %s and this plugin speaks %d; "+
 				"a host and its plugins must be upgraded together across this change, "+
 				"so upgrade whichever of the two is older",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version3,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version7,
 		)
 	}
 
@@ -664,21 +679,107 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s is not set", protocol.SocketEnv)
 	}
 
-	token := os.Getenv(protocol.TokenEnv)
-	if token == "" {
-		return environment{}, fmt.Errorf("sdk: %s is not set", protocol.TokenEnv)
+	token, err := readToken()
+	if err != nil {
+		return environment{}, err
 	}
 
-	// The environment is this process's own, but it is also readable by anything
-	// that can read this process, so the token does not stay there any longer
-	// than it has to.
-	os.Unsetenv(protocol.TokenEnv)
+	// The grant is captured here, with the rest of the launch environment, and
+	// deliberately not at the first call that wants it. [Run] reaches this
+	// before it builds a handler or serves anything, so no task function and no
+	// plugin-registered code has run yet — which closes the window where a
+	// plugin could write its own FLOWSTATE_EGRESS_POLICY_B64 and have the SDK
+	// hand back a client governed by a policy the operator never wrote.
+	//
+	// A failure is not returned. A malformed or oversized grant is a fact about
+	// the deployment that belongs to whoever asks for a policy, and it is
+	// reported there, naming the variable — refusing the whole launch here would
+	// stop a plugin that never touches the network over a grant it never uses.
+	// The error is latched by the capture, so the answer is the same whether it
+	// is asked for now or later.
+	captureEgressGrant()
 
 	return environment{
 		socketPath:      socketPath,
 		protocolVersion: version,
 		token:           func() string { return token },
 	}, nil
+}
+
+// tokenReadTimeout bounds how long a plugin waits for its token line.
+//
+// The host writes the line and closes its end of the pipe before this process
+// starts, so the bytes are already in the kernel buffer by the time anything
+// here reads: the read is a copy, not a wait. Seconds are therefore generous
+// against every honest case, and what they bound is the dishonest one — a
+// launcher that holds the pipe open and writes less than
+// [protocol.MaxTokenBytes], or nothing at all, which no byte bound ever ends.
+const tokenReadTimeout = 5 * time.Second
+
+// readToken reads the per-launch secret off the descriptor the host passed.
+//
+// The secret is not in the environment, and that is the whole point. On Linux
+// /proc/<pid>/environ shows the block the kernel copied at execve(2): a value
+// delivered there is readable for this process's entire life — to root, to
+// anything that can ptrace it, and to any tool that sweeps environments into a
+// diagnostic bundle or a core dump. Unsetting it, which this function replaces,
+// edited this process's own copy and changed none of that.
+//
+// A descriptor is read once and closed. What it held existed in kernel buffer
+// space, so after this returns the token is in this process's memory and nowhere
+// else that another process can name.
+//
+// The read is bounded in time as well as in bytes. Whoever launched this process
+// decides what reaches the descriptor and when that stops, and [Run] can neither
+// serve nor notice cancellation while this waits — so an unbounded read here is
+// a launch that hangs, where the contract says a plugin which cannot get its
+// token refuses.
+func readToken() (string, error) {
+	raw, ok := os.LookupEnv(protocol.TokenFDEnv)
+	if !ok {
+		return "", fmt.Errorf("sdk: %s is not set", protocol.TokenFDEnv)
+	}
+
+	// Bounded before it is parsed, and rejected below descriptor 3: this is
+	// input from outside, and a plugin cannot know it was launched by the host
+	// it thinks it was. The protocol only ever names an inherited extra
+	// descriptor, which starts at 3, so a number naming stdin, stdout or stderr
+	// is a refusal rather than a read from whatever those happen to be.
+	fd, err := strconv.Atoi(raw)
+	if err != nil || fd < 3 {
+		return "", fmt.Errorf(
+			"sdk: %s does not name an inherited descriptor: %q",
+			protocol.TokenFDEnv, textbound.Truncate(raw, 32),
+		)
+	}
+
+	file, err := openTokenDescriptor(fd)
+	if err != nil {
+		return "", fmt.Errorf("sdk: %s names descriptor %d, which cannot be read: %w", protocol.TokenFDEnv, fd, err)
+	}
+	defer file.Close()
+
+	// A descriptor the poller will not take is one whose read does not wait on
+	// anybody — a regular file a launcher redirected into place returns its
+	// bytes without a writer being there at all. That is the only case
+	// [os.ErrNoDeadline] reports here, and it is not the case this bound exists
+	// for, so it is skipped rather than refused.
+	if err := file.SetReadDeadline(time.Now().Add(tokenReadTimeout)); err != nil && !errors.Is(err, os.ErrNoDeadline) {
+		return "", fmt.Errorf("sdk: %s: bounding the read of descriptor %d: %w", protocol.TokenFDEnv, fd, err)
+	}
+
+	token, err := protocol.ReadToken(file)
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return "", fmt.Errorf(
+				"sdk: %s: descriptor %d carried no complete token line within %s",
+				protocol.TokenFDEnv, fd, tokenReadTimeout,
+			)
+		}
+		return "", fmt.Errorf("sdk: %s: %w", protocol.TokenFDEnv, err)
+	}
+
+	return token, nil
 }
 
 // listen creates the plugin's socket.
@@ -793,19 +894,59 @@ func (t Task) manifest(prose *flowstatev1.DescriptorProse) (*pluginv1.TaskManife
 		return nil, fmt.Errorf("sdk: task %q output: %w", t.Name, err)
 	}
 
+	if err := t.checkInputNames(); err != nil {
+		return nil, err
+	}
+
 	return &pluginv1.TaskManifest{
-		Name:             t.Name,
-		Summary:          t.Summary,
-		InputDescriptor:  inputDescriptor,
-		InputMessage:     inputMessage,
-		OutputDescriptor: outputDescriptor,
-		OutputMessage:    outputMessage,
-		DeferredInputs:   slices.Clone(t.DeferredInputs),
-		ExpressionInputs: slices.Clone(t.ExpressionInputs),
-		NeedsScope:       t.NeedsScope,
-		SecretInputs:     slices.Clone(t.SecretInputs),
-		ShapesOutputs:    t.ShapesOutputs,
+		Name:                 t.Name,
+		Summary:              t.Summary,
+		InputDescriptor:      inputDescriptor,
+		InputMessage:         inputMessage,
+		OutputDescriptor:     outputDescriptor,
+		OutputMessage:        outputMessage,
+		DeferredInputs:       slices.Clone(t.DeferredInputs),
+		ExpressionInputs:     slices.Clone(t.ExpressionInputs),
+		NeedsScope:           t.NeedsScope,
+		SecretInputs:         slices.Clone(t.SecretInputs),
+		RequiredSecretInputs: slices.Clone(t.RequiredSecretInputs),
+		ShapesOutputs:        t.ShapesOutputs,
 	}, nil
+}
+
+// checkInputNames verifies that every name in the task's input-claim lists
+// (DeferredInputs, ExpressionInputs, SecretInputs, RequiredSecretInputs)
+// is a field of the input descriptor. A typo here fails open on the control
+// the list implements — most critically, a misspelled RequiredSecretInputs
+// entry lets a literal credential into durable history.
+func (t Task) checkInputNames() error {
+	var fields protoreflect.FieldDescriptors
+	if t.Input != nil {
+		fields = t.Input.ProtoReflect().Descriptor().Fields()
+	}
+
+	check := func(list []string, label string) error {
+		for _, name := range list {
+			if fields == nil || fields.ByName(protoreflect.Name(name)) == nil {
+				if t.Input == nil {
+					return fmt.Errorf("sdk: task %q %s names %q but the task declares no input message", t.Name, label, name)
+				}
+				return fmt.Errorf("sdk: task %q %s names %q which is not a field of its input message", t.Name, label, name)
+			}
+		}
+		return nil
+	}
+
+	if err := check(t.DeferredInputs, "deferred_inputs"); err != nil {
+		return err
+	}
+	if err := check(t.ExpressionInputs, "expression_inputs"); err != nil {
+		return err
+	}
+	if err := check(t.SecretInputs, "secret_inputs"); err != nil {
+		return err
+	}
+	return check(t.RequiredSecretInputs, "required_secret_inputs")
 }
 
 // describeMessage serializes a message's file descriptor and everything it
@@ -878,7 +1019,7 @@ func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, 
 			byName[task.Name] = task
 		}
 
-		path, handler := pluginv1connect.NewTaskServiceHandler(&taskService{tasks: byName}, opts...)
+		path, handler := pluginv1connect.NewTaskServiceHandler(&taskService{plugin: p.Name, tasks: byName}, opts...)
 		mux.Handle(path, handler)
 	}
 
@@ -971,7 +1112,7 @@ func (s *pluginService) Health(ctx context.Context, _ *connect.Request[pluginv1.
 		// their backend puts in an error.
 		return connect.NewResponse(&pluginv1.HealthResponse{
 			Status:  pluginv1.HealthResponse_STATUS_NOT_SERVING,
-			Message: truncate(err.Error(), 1024),
+			Message: textbound.Truncate(err.Error(), 1024),
 		}), nil
 	}
 
@@ -1000,8 +1141,17 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[plugin
 	// claimed.
 	if !slices.Contains(s.schemes, ref.GetScheme()) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
-			"this plugin does not resolve %q", truncate(ref.GetScheme(), 32)))
+			"this plugin does not resolve %q", textbound.Truncate(ref.GetScheme(), 32)))
 	}
+
+	// The same install the task handlers make, for the same reason: a
+	// ResolveFunc that reaches a network backend does it through the SDK's
+	// governed client, and an `identity.*` rule in the deployment's policy is
+	// evaluated against whatever netpolicy finds on the request's context. The
+	// wire carries the identity here (the host sets it in
+	// plugin/secrets.go's Resolve), so dropping it made a resolver the one
+	// entry point where a tenant rule silently did not apply.
+	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
 
 	resp, err := s.resolve(ctx, SecretRequest{
 		Scheme:    ref.GetScheme(),
@@ -1029,7 +1179,132 @@ func (s *secretService) Resolve(ctx context.Context, req *connect.Request[plugin
 type taskService struct {
 	pluginv1connect.UnimplementedTaskServiceHandler
 
-	tasks map[string]Task
+	plugin          string
+	tasks           map[string]Task
+	panicReportOnce sync.Once
+	panicReports    chan taskPanicReport
+}
+
+const maxPendingTaskPanicReports = 16
+
+type taskPanicReport struct {
+	ctx          context.Context
+	task         string
+	value        any
+	stack        []byte
+	secretValues []string
+}
+
+// call runs plugin-authored task code behind the SDK's per-call panic boundary.
+// A panic can happen after an external side effect, so reporting it as an
+// ordinary transport failure would let the host retry work whose outcome is
+// unknown. Keep the process serving, but fail this call permanently with the
+// same explicit verdict a plugin author would return through [OutcomeUnknown].
+func (s *taskService) call(
+	ctx context.Context,
+	task Task,
+	inputs map[string]*flowstatev1.Value,
+	scope *flowstatev1.Scope,
+) (outputs *flowstatev1.Node_Outputs, err error) {
+	secretValues := taskSecretValues(task, inputs)
+	completed := false
+	defer func() {
+		if !completed {
+			value := recover()
+			outputs = nil
+			err = OutcomeUnknown("task %q panicked; outcome unknown", task.Name)
+			s.queuePanicReport(ctx, task.Name, secretValues, value, debug.Stack())
+		}
+	}()
+
+	outputs, err = task.Fn(ctx, inputs, scope)
+	completed = true
+	return outputs, err
+}
+
+func taskSecretValues(task Task, inputs map[string]*flowstatev1.Value) []string {
+	values := make([]string, 0, len(task.SecretInputs))
+	for _, name := range task.SecretInputs {
+		if value := inputs[name].GetLiteral().GetStringValue(); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+// queuePanicReport keeps telemetry outside the response path. A custom logger,
+// panic formatter, or meter provider can block forever; none may delay the
+// permanent verdict and turn it back into a retryable host timeout. One lazily
+// started worker and a bounded queue contain that failure to this process.
+func (s *taskService) queuePanicReport(ctx context.Context, task string, secretValues []string, value any, stack []byte) {
+	s.panicReportOnce.Do(func() {
+		s.panicReports = make(chan taskPanicReport, maxPendingTaskPanicReports)
+		go s.reportPanics()
+	})
+
+	report := taskPanicReport{
+		ctx:          context.WithoutCancel(ctx),
+		task:         task,
+		value:        value,
+		stack:        stack,
+		secretValues: secretValues,
+	}
+	select {
+	case s.panicReports <- report:
+	default:
+		// Telemetry is best-effort. Never block an unknown-outcome response
+		// behind a saturated or stuck diagnostic sink.
+	}
+}
+
+func (s *taskService) reportPanics() {
+	for report := range s.panicReports {
+		s.reportPanic(report)
+	}
+}
+
+func (s *taskService) reportPanic(report taskPanicReport) {
+	defer func() { _ = recover() }()
+
+	meter := Meter(report.ctx)
+	if meter != nil {
+		if counter, err := meter.Int64Counter(metricschema.InstrumentPluginTaskPanics); err == nil {
+			counter.Add(report.ctx, 1, metricschema.WithAttributes(
+				attribute.String(metricschema.PluginName, s.plugin),
+				attribute.String(metricschema.TaskName, report.task),
+			))
+		}
+	}
+
+	panicValue := printablePanicValue(report.value)
+	scrubber := secrets.NewScrubber()
+	for _, value := range report.secretValues {
+		scrubber.AddValue(value)
+	}
+	panicValue = scrubber.Scrub(panicValue)
+
+	Logger(report.ctx).ErrorContext(report.ctx, "plugin task panicked; outcome unknown",
+		metricschema.PluginName, s.plugin,
+		metricschema.TaskName, report.task,
+		"panic", panicValue,
+		"stack", string(report.stack),
+	)
+}
+
+// printablePanicValue treats a panic's words as input-derived diagnostic text:
+// useful in a scrubbed plugin log, never copied into the RPC error. This runs
+// only on the bounded reporting worker, so a plugin-defined String or Error
+// method cannot delay the unknown-outcome response.
+func printablePanicValue(value any) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = fmt.Sprintf("<%T could not be formatted>", value)
+		}
+	}()
+	if b, ok := value.([]byte); ok {
+		return string(b)
+	}
+	return fmt.Sprint(value)
 }
 
 // Execute runs a task.
@@ -1037,7 +1312,7 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 	task, ok := s.tasks[req.Msg.GetTask().GetName()]
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
-			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
+			"this plugin does not provide task %q", textbound.Truncate(req.Msg.GetTask().GetName(), 64)))
 	}
 
 	// Installed on every call, whether or not the request named an identity:
@@ -1045,9 +1320,9 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 	// found, carrying an empty namespace.
 	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
 
-	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
+	outputs, err := s.call(ctx, task, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
 	if err != nil {
-		return nil, asConnectError(err)
+		return nil, taskConnectError(ctx, err)
 	}
 
 	return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: outputs}), nil
@@ -1075,7 +1350,7 @@ func (s *taskService) ExecuteStream(
 	task, ok := s.tasks[req.Msg.GetTask().GetName()]
 	if !ok {
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
-			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
+			"this plugin does not provide task %q", textbound.Truncate(req.Msg.GetTask().GetName(), 64)))
 	}
 
 	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
@@ -1119,9 +1394,9 @@ func (s *taskService) ExecuteStream(
 		})
 	})
 
-	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
+	outputs, err := s.call(ctx, task, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
 	if err != nil {
-		return asConnectError(err)
+		return taskConnectError(ctx, err)
 	}
 
 	// Fn has returned, so no goroutine it started should still be calling the
@@ -1156,17 +1431,4 @@ func phaseToWire(phase flowstatev1.Phase) (pluginv1.TaskPhase, bool) {
 	default:
 		return pluginv1.TaskPhase_TASK_PHASE_UNSPECIFIED, false
 	}
-}
-
-// truncate bounds text on its way into a response or an error.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// Cut on a rune boundary, since this bounds text that came from a workflow
-	// or from a backend rather than from here.
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "..."
 }

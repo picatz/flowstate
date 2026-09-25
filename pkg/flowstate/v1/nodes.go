@@ -74,12 +74,8 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 	// the one that hits it: a scope with no bare bindings at all, which is every
 	// `wait_until:` outside a loop.
 	locals := make(map[string]ref.Val, len(s.GetVars())+len(extra))
-	for name, v := range refValues(s.GetVars()) {
-		locals[name] = v
-	}
-	for name, v := range extra {
-		locals[name] = v
-	}
+	maps.Copy(locals, refValues(s.GetVars()))
+	maps.Copy(locals, extra)
 
 	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress(), s.GetTrigger())
 }
@@ -150,9 +146,7 @@ func (s *Scope) WithLocal(name string, item *Value) *Scope {
 		// whole run, and dropping it here would leave `${trigger.kind}` resolving
 		// in a step's own `if:` and empty inside a loop body two lines below it.
 		next.Trigger = s.Trigger
-		for k, v := range s.Vars {
-			next.Vars[k] = v
-		}
+		maps.Copy(next.Vars, s.Vars)
 	}
 	next.Vars[name] = item
 	return next
@@ -189,13 +183,9 @@ func (s *Scope) WithLocals(locals map[string]*Value) *Scope {
 		// whole run, and dropping it here would leave `${trigger.kind}` resolving
 		// in a step's own `if:` and empty inside a loop body two lines below it.
 		next.Trigger = s.Trigger
-		for k, v := range s.Vars {
-			next.Vars[k] = v
-		}
+		maps.Copy(next.Vars, s.Vars)
 	}
-	for k, v := range locals {
-		next.Vars[k] = v
-	}
+	maps.Copy(next.Vars, locals)
 
 	return next
 }
@@ -228,13 +218,9 @@ func (s *Scope) WithAmbientVars(vars map[string]*Value) *Scope {
 		// whole run, and dropping it here would leave `${trigger.kind}` resolving
 		// in a step's own `if:` and empty inside a loop body two lines below it.
 		next.Trigger = s.Trigger
-		for k, v := range s.AmbientVars {
-			next.AmbientVars[k] = v
-		}
+		maps.Copy(next.AmbientVars, s.AmbientVars)
 	}
-	for k, v := range vars {
-		next.AmbientVars[k] = v
-	}
+	maps.Copy(next.AmbientVars, vars)
 
 	return next
 }
@@ -272,11 +258,11 @@ func IteratorName(loop *ForEach) string {
 //     so it paces a runaway rather than stopping one.
 //
 // One neighbour bounds a different axis of the same loop:
-// [MaxAtomicBlockActivities] caps the items × body product of a `for_each`
-// that runs as one suspension-opaque stretch — declared `max_parallel:`, or
-// reached inside concurrent or otherwise unsuspendable work — where the
-// pacing the step budget provides (and the cost math below assumes) does not
-// exist.
+// [MaxAtomicBlockActivities] caps the whole body of a suspension-opaque
+// stretch, including `parallel:` branches and the items × body product of a
+// `for_each` declared `max_parallel:` or reached inside otherwise
+// unsuspendable work, where the pacing the step budget provides (and the cost
+// math below assumes) does not exist.
 //
 // The resource here is the length of a list an expression computed, so that is
 // what this bounds, per CLAUDE.md's rule about bounding the resource whose size
@@ -365,32 +351,52 @@ func CheckForEachItems(items []*Value) error {
 // likely a mistake than an intent, and silently treating it as a one-element list
 // would hide the mistake.
 func ResolveItems(ctx context.Context, loop *ForEach, scope *Scope) ([]*Value, error) {
+	elements, _, err := ResolveItemsWithCost(ctx, loop, scope)
+
+	return elements, err
+}
+
+// ResolveItemsWithCost is [ResolveItems] plus the deterministic CEL cost of the
+// list expression. A literal list costs zero.
+//
+// A `for_each` nested inside another loop re-evaluates its `items:` on every
+// outer iteration, so the expression repeats with no history to bound it. See
+// [engine.executor.chargeWorkflowCost].
+func ResolveItemsWithCost(ctx context.Context, loop *ForEach, scope *Scope) ([]*Value, uint64, error) {
 	items := loop.GetItems()
 	if items == nil {
-		return nil, fmt.Errorf("for_each has no items")
+		return nil, 0, fmt.Errorf("for_each has no items")
 	}
 
 	ev := DefaultEvaluator()
-	var out ref.Val
+	var (
+		out  ref.Val
+		cost uint64
+	)
 
 	switch kind := items.GetKind().(type) {
 	case *Value_Expr:
 		var err error
-		out, err = ev.EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
+		out, cost, err = ev.EvalParsedBaseWithCost(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 		if err != nil {
-			return nil, fmt.Errorf("evaluating items: %w", err)
+			return nil, cost, fmt.Errorf("evaluating items: %w", err)
 		}
 	case *Value_Literal:
 		var err error
 		out, err = cel.ValueToRefValue(TypeAdapter, kind.Literal)
 		if err != nil {
-			return nil, fmt.Errorf("converting items: %w", err)
+			return nil, 0, fmt.Errorf("converting items: %w", err)
 		}
 	default:
-		return nil, fmt.Errorf("unsupported items kind %T", items.GetKind())
+		return nil, 0, fmt.Errorf("unsupported items kind %T", items.GetKind())
 	}
 
-	return listElements(out)
+	elements, err := listElements(out)
+	if err != nil {
+		return nil, cost, err
+	}
+
+	return elements, cost, nil
 }
 
 // listElements returns the elements of a CEL list value as Values.
@@ -406,7 +412,7 @@ func listElements(val ref.Val) ([]*Value, error) {
 	}
 
 	elems := make([]*Value, 0, size)
-	for i := int64(0); i < size; i++ {
+	for i := range size {
 		elem := lister.Get(types.Int(i))
 		if types.IsError(elem) {
 			return nil, fmt.Errorf("reading item %d: %v", i, elem)
@@ -535,12 +541,14 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 	resolvable, deferred := ResolvableInputs(task.GetName(), task.GetInputs())
 
 	inputs := make(map[string]*Value, len(task.GetInputs()))
-	for name, v := range deferred {
-		inputs[name] = v
-	}
+	maps.Copy(inputs, deferred)
 
 	ev := DefaultEvaluator()
-	for name, v := range resolvable {
+	// Sorted because the first failure is observable and may enter durable
+	// state. A protobuf map has no order, so workflow-side map work must not let
+	// two runs of one specification report different failures.
+	for _, name := range slices.Sorted(maps.Keys(resolvable)) {
+		v := resolvable[name]
 		if _, isExpr := v.GetKind().(*Value_Expr); !isExpr {
 			inputs[name] = v
 			continue
@@ -617,17 +625,30 @@ func EvalVars(ctx context.Context, profile string, declared map[string]*Value) (
 // them, for the reason [EvalWorkflowVars] gives: a protobuf map has no order, so "the
 // one declared above" is not something the file can mean.
 func EvalStepVars(ctx context.Context, node *Node, scope *Scope) (*Scope, error) {
+	inner, _, err := EvalStepVarsWithCost(ctx, node, scope)
+
+	return inner, err
+}
+
+// EvalStepVarsWithCost is [EvalStepVars] plus the deterministic CEL cost of the
+// block. A step that declares no vars, or only literal ones, costs zero.
+//
+// A step's `vars:` are evaluated in workflow code like its condition, and a
+// step may declare them without scheduling anything — so a loop over such a
+// step repeats them with no history to bound it. See
+// [engine.executor.chargeWorkflowCost].
+func EvalStepVarsWithCost(ctx context.Context, node *Node, scope *Scope) (*Scope, uint64, error) {
 	declared := node.GetVars()
 	if len(declared) == 0 {
-		return scope, nil
+		return scope, 0, nil
 	}
 
-	vars, err := evalVarsAgainst(ctx, scope.GetProfile(), declared, scope)
+	vars, cost, err := evalVarsAgainstWithCost(ctx, scope.GetProfile(), declared, scope)
 	if err != nil {
-		return nil, err
+		return nil, cost, err
 	}
 
-	return scope.WithLocals(vars), nil
+	return scope.WithLocals(vars), cost, nil
 }
 
 // evalVarsAgainst evaluates a `vars:` block against a scope, returning literals.
@@ -637,10 +658,19 @@ func EvalStepVars(ctx context.Context, node *Node, scope *Scope) (*Scope, error)
 // disagree about a detail — which errors are fatal, whether a literal is passed
 // through, what order failures are reported in — that no author ever asked to differ.
 func evalVarsAgainst(ctx context.Context, profile string, declared map[string]*Value, base *Scope) (map[string]*Value, error) {
+	vars, _, err := evalVarsAgainstWithCost(ctx, profile, declared, base)
+
+	return vars, err
+}
+
+// evalVarsAgainstWithCost is [evalVarsAgainst] plus the deterministic CEL cost
+// of every expression in the block. Literal vars cost zero.
+func evalVarsAgainstWithCost(ctx context.Context, profile string, declared map[string]*Value, base *Scope) (map[string]*Value, uint64, error) {
 	if len(declared) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
+	var spent uint64
 	ev := DefaultEvaluator()
 	vars := make(map[string]*Value, len(declared))
 
@@ -654,18 +684,19 @@ func evalVarsAgainst(ctx context.Context, profile string, declared map[string]*V
 			continue
 		}
 
-		out, err := ev.EvalParsedBase(ctx, profile, v.GetExpr(), base.Activation(ctx))
+		out, cost, err := ev.EvalParsedBaseWithCost(ctx, profile, v.GetExpr(), base.Activation(ctx))
+		spent += cost
 		if err != nil {
-			return nil, fmt.Errorf("var %q: %w", name, err)
+			return nil, spent, fmt.Errorf("var %q: %w", name, err)
 		}
 		literal, err := cel.RefValueToValue(out)
 		if err != nil {
-			return nil, fmt.Errorf("var %q: converting result: %w", name, err)
+			return nil, spent, fmt.Errorf("var %q: converting result: %w", name, err)
 		}
 		vars[name] = &Value{Kind: &Value_Literal{Literal: literal}}
 	}
 
-	return vars, nil
+	return vars, spent, nil
 }
 
 // Activation returns the CEL activation for evaluating an expression against step
@@ -712,12 +743,8 @@ func MergeOutputs(base, overlay *Workflow_StepOutputs) *Workflow_StepOutputs {
 	merged := &Workflow_StepOutputs{
 		StepValues: make(map[string]*Node_Outputs, len(base.GetStepValues())+len(overlay.GetStepValues())),
 	}
-	for k, v := range base.GetStepValues() {
-		merged.StepValues[k] = v
-	}
-	for k, v := range overlay.GetStepValues() {
-		merged.StepValues[k] = v
-	}
+	maps.Copy(merged.StepValues, base.GetStepValues())
+	maps.Copy(merged.StepValues, overlay.GetStepValues())
 	return merged
 }
 

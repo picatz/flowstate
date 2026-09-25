@@ -23,6 +23,12 @@ That stores the entry `flowstate`'s `github-token` account, which is what
 
 ## Running it
 
+Like its `env:`, `vault:`, `op:` and `command:` siblings, this file points `url:`
+at `api.example.com`, which resolves nowhere: the run reaches the half the example
+is about — the worker consulting the keychain inside the activity that needs the
+value — and then stops at the request itself. Point `url:` at something real to
+carry it further.
+
 ```console
 $ flow run local examples/keychain-secret/workflow.yaml \
     --secret-keychain \

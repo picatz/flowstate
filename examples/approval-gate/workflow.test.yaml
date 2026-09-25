@@ -38,10 +38,13 @@
 # whole-value `${...}` fence is an expression over the block's other vars,
 # evaluated once when the file loads, in dependency order. The addresses and
 # the issuer then agree with each other by construction rather than by
-# everyone remembering to edit eight lines — and the workflow's own
-# `signals:` rule qualifies its subject with exactly this issuer
-# (workflow.yaml, `subject: ${"https://issuer.example.com#" + ...}`), so the
-# two halves of that comparison are stated in one place here.
+# everyone remembering to edit eight lines.
+#
+# The issuer here is the one the workflow's own `signals:` rule writes. It is
+# not an input: a subject is only unique within the issuer that attested it, so
+# a run that chose its own issuer would be choosing which population of
+# `team: release-managers` the gate asks rather than narrowing the one the file
+# grants. A deployment edits that line; a case here states the same literal.
 vars:
   domain: example.com
   issuer: "${'https://issuer.' + vars.domain}"
