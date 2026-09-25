@@ -40,7 +40,7 @@ func TestAnnounceInboundOrdersTheBuild(t *testing.T) {
 	s := &FlowfileServer{Logger: discardLogger()}
 	uri := lsp.DocumentURI("file:///ordered.yaml")
 
-	release := s.announceInbound(requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
+	_, release := s.announceInbound(context.Background(), requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
 		TextDocument: lsp.TextDocumentItem{URI: uri, Version: 1, Text: "edition: v2026.3\n"},
 	}))
 
@@ -111,7 +111,7 @@ func TestAnnounceInboundIgnoresWhatBuildsNothing(t *testing.T) {
 		{"empty uri", requestWithParams(t, "textDocument/didChange", lsp.DidChangeTextDocumentParams{})},
 	}
 	for _, tc := range cases {
-		release := s.announceInbound(tc.req)
+		_, release := s.announceInbound(context.Background(), tc.req)
 		s.docs.mu.Lock()
 		n := len(s.docs.building)
 		s.docs.mu.Unlock()

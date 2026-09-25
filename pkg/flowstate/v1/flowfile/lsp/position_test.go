@@ -283,7 +283,7 @@ func TestStoreAppliesIncrementalEdits(t *testing.T) {
 	require.NotNil(t, doc)
 	assert.NotPanics(t, func() { _ = doc.text })
 
-	store.close("file:///edit.yaml")
+	store.close("file:///edit.yaml", 0)
 	_, ok := store.get("file:///edit.yaml")
 	assert.False(t, ok)
 }
@@ -322,9 +322,107 @@ func TestStoreRejectsStaleEdits(t *testing.T) {
 	// — and closing is what makes it a reopen. The protocol requires didClose
 	// before a document is opened again, and close removes it from the store, so
 	// this open has no incumbent to be ordered against.
-	store.close("file:///stale.yaml")
+	store.close("file:///stale.yaml", 0)
 	reopened := store.open("file:///stale.yaml", 1, "name: reopened\n", nil)
 	assert.Equal(t, "name: reopened\n", reopened.text)
+}
+
+// TestStoreCloseIsSupersededByALaterTicket is the store-level companion to
+// requestrace_test.go's wire-level #1986 regression: it isolates the ticket
+// guard itself, independent of goroutine scheduling, the way
+// TestStoreRejectsAnOvertakenOpen isolates open's version guard.
+//
+// close carries no version — [lsp.DidCloseTextDocumentParams] has only a
+// TextDocumentIdentifier — so it cannot be ordered the way open and change
+// are. A close whose ticket is behind the one a same-URI open or change has
+// already claimed is superseded and must not delete what that later
+// notification established, however the two handler goroutines happen to be
+// scheduled.
+func TestStoreCloseIsSupersededByALaterTicket(t *testing.T) {
+	t.Parallel()
+
+	var store documentStore
+	uri := lsp.DocumentURI("file:///ticket.yaml")
+
+	store.open(uri, 1, "name: one\n", nil)
+
+	// The close's ticket is claimed first — it is the notification that
+	// arrived first on the wire — but a same-URI open claims a later ticket
+	// before the close's handler gets to run, which is what a reordered
+	// close-then-reopen looks like from the store's side.
+	staleClose := store.nextTicket(uri)
+	store.nextTicket(uri) // claimed by the reopen below, matching arrival order
+	reopened := store.open(uri, 2, "name: reopened\n", nil)
+	require.NotNil(t, reopened)
+
+	applied := store.close(uri, staleClose)
+	assert.False(t, applied, "a close behind a later ticket applied anyway")
+
+	current, ok := store.get(uri)
+	require.True(t, ok, "a superseded close deleted the document a later open established")
+	assert.Same(t, reopened, current)
+	assert.Equal(t, "name: reopened\n", current.text)
+
+	// A close that IS the newest ticket for its URI still applies, so the
+	// guard only ever holds back a superseded close.
+	currentClose := store.nextTicket(uri)
+	assert.True(t, store.close(uri, currentClose), "a current close was treated as stale")
+	_, ok = store.get(uri)
+	assert.False(t, ok, "a current close left the document in place")
+}
+
+// TestStoreCloseAlwaysWakesWaiters covers the acceptance criterion closest to
+// a regression a reviewer would miss: close is the one mutation that can take
+// a document away, so [documentStore.await] must never be left blocked on a
+// channel close stopped closing. The new superseded path returns before
+// touching docs at all, which is exactly the shape of change that forgets to
+// wake — this pins that it does not, alongside the ordinary close the
+// guard must not have slowed down.
+func TestStoreCloseAlwaysWakesWaiters(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(s *documentStore, uri lsp.DocumentURI) int64 // returns the ticket to close with
+	}{
+		{
+			name: "a current close",
+			setup: func(s *documentStore, uri lsp.DocumentURI) int64 {
+				s.open(uri, 1, "name: one\n", nil)
+				return s.nextTicket(uri)
+			},
+		},
+		{
+			name: "a close superseded by a later ticket",
+			setup: func(s *documentStore, uri lsp.DocumentURI) int64 {
+				s.open(uri, 1, "name: one\n", nil)
+				stale := s.nextTicket(uri)
+				s.nextTicket(uri) // claimed by a same-URI notification announced after this close
+				return stale
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var store documentStore
+			uri := lsp.DocumentURI("file:///wake.yaml")
+			ticket := tt.setup(&store, uri)
+
+			store.mu.Lock()
+			settled := store.settledLocked()
+			store.mu.Unlock()
+
+			store.close(uri, ticket)
+
+			select {
+			case <-settled:
+			default:
+				t.Fatal("close returned without waking a waiter blocked on the store's settled channel")
+			}
+		})
+	}
 }
 
 // TestStoreIgnoresARangeEditWithNothingToSpliceInto covers the case that makes

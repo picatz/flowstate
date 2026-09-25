@@ -268,6 +268,44 @@ type documentStore struct {
 	// identical to one answered from memory once you're only counting
 	// milliseconds. Nil in production, where the call costs nothing.
 	awaitTrace func(boundExpired bool)
+
+	// closeGate, when set, is called by [documentStore.close] with uri before
+	// the ticket guard runs, and blocks until told to proceed. It exists for a
+	// test that needs one specific handler ordering guaranteed rather than
+	// raced: hold a close there until a concurrent reopen has landed, then
+	// release it, so the close is provably evaluating its guard after the
+	// reopen instead of merely by luck of the scheduler. Nil in production,
+	// where the call costs nothing.
+	closeGate func(uri lsp.DocumentURI)
+
+	// ticket is the arrival-order counter behind [documentStore.nextTicket]:
+	// one per URI, advanced synchronously on the connection's read loop for
+	// every didOpen, didChange or didClose — see
+	// [FlowfileServer.announceInbound] — so its value always reflects how many
+	// of that URI's document notifications have been announced so far,
+	// regardless of which one's handler goroutine the scheduler runs next.
+	// [documentStore.close] is the one reader: open and change order against
+	// the version the protocol gives them, but a didClose carries only a
+	// TextDocumentIdentifier, so this ticket is the only thing close has to
+	// tell a notification a later one has already superseded from one that is
+	// still current (#1986).
+	ticket map[lsp.DocumentURI]int64
+}
+
+// nextTicket hands uri its next arrival-order ticket and returns it.
+//
+// Called from [FlowfileServer.announceInbound] on the connection's read loop,
+// before a document notification's handler is dispatched onto its own
+// goroutine — the one place per-URI arrival order still exists once
+// jsonrpc2.AsyncHandler takes over dispatch.
+func (s *documentStore) nextTicket(uri lsp.DocumentURI) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ticket == nil {
+		s.ticket = make(map[lsp.DocumentURI]int64)
+	}
+	s.ticket[uri]++
+	return s.ticket[uri]
 }
 
 // setAwaitTrace installs the test hook described on [documentStore.awaitTrace].
@@ -277,6 +315,15 @@ func (s *documentStore) setAwaitTrace(f func(boundExpired bool)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.awaitTrace = f
+}
+
+// setCloseGate installs the test hook described on [documentStore.closeGate].
+// Locked because it is set from a different goroutine than the one that will
+// read it inside [documentStore.close].
+func (s *documentStore) setCloseGate(f func(uri lsp.DocumentURI)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeGate = f
 }
 
 // beginBuild records that a document notification for uri is being handled.
@@ -578,10 +625,45 @@ func (s *documentStore) getByFilesystemPath(path string) (*document, bool) {
 	return doc, ok
 }
 
-// close forgets a document.
-func (s *documentStore) close(uri lsp.DocumentURI) {
+// close forgets a document, and reports whether it did.
+//
+// ticket is the arrival-order ticket [documentStore.nextTicket] handed this
+// close's didClose when the read loop announced it. The connection wraps the
+// handler in jsonrpc2.AsyncHandler, which starts a goroutine per message and
+// gives up the arrival ordering the protocol otherwise guarantees; open and
+// change close that gap by ordering against the version the protocol gives
+// every edit, but [lsp.DidCloseTextDocumentParams] carries only a
+// TextDocumentIdentifier, nothing to compare. Without its own ordering, a
+// close whose goroutine is scheduled behind the didOpen that reopened the
+// same URI deletes the document the reopen just established — the client
+// believes the buffer is open, the server holds nothing (#1986).
+//
+// A close is current when its ticket is still the newest one issued for uri;
+// anything else means a same-URI notification arrived after it and has
+// already been announced, and that is what should stand, whatever it turns
+// out to be once it lands. A caller that never claims a ticket — passing the
+// zero value — compares against a URI's zero entry in [documentStore.ticket]
+// and always applies, which keeps every direct call this method had before
+// tickets existed behaving the same.
+//
+// A stale close is not otherwise a no-op: it still wakes waiters, the same as
+// a close that lands, because [documentStore.await] cannot tell "nothing
+// changed" from "everything changed back" without re-reading the store either
+// way.
+func (s *documentStore) close(uri lsp.DocumentURI, ticket int64) bool {
+	s.mu.Lock()
+	gate := s.closeGate
+	s.mu.Unlock()
+	if gate != nil {
+		gate(uri)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ticket[uri] != ticket {
+		s.wakeLocked()
+		return false
+	}
 	if doc := s.docs[uri]; doc != nil {
 		if path, ok := doc.filesystemPath(); ok && s.localByPath[filepath.Clean(path)] == uri {
 			delete(s.localByPath, filepath.Clean(path))
@@ -593,4 +675,5 @@ func (s *documentStore) close(uri lsp.DocumentURI) {
 	// take a document away, and a waiter must not be left holding a channel that
 	// nothing will ever close.
 	s.wakeLocked()
+	return true
 }

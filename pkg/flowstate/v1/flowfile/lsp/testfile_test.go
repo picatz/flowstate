@@ -577,7 +577,7 @@ func TestAClosedSuiteCannotConsumeADefaultsDependencySlot(t *testing.T) {
 	s := &FlowfileServer{Logger: discardLogger()}
 	uri := lsp.DocumentURI("file:///closed/suite.test.yaml")
 	suite := s.docs.open(uri, 1, validSuite, nil)
-	s.docs.close(uri)
+	s.docs.close(uri, 0)
 
 	tracked, current := s.rememberTestDefaults(suite, "file:///closed/testdefaults.yaml")
 	assert.False(t, tracked)

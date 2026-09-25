@@ -204,11 +204,22 @@ func (c *client) open(uri, text string) lsp.PublishDiagnosticsParams {
 // the build behind it, which is the whole of #317.
 func (c *client) openNoWait(uri, text string) {
 	c.t.Helper()
+	c.openVersionNoWait(uri, text, 1)
+}
+
+// openVersionNoWait is [client.openNoWait] with an explicit version, for a
+// test that opens the same URI more than once and needs a reopen's version to
+// say so rather than default to 1 — a reopen still at 1 would leave a
+// still-present incumbent read as the newer of the two by
+// [documentStore.open]'s own version guard, which is a different mechanism
+// than the one under test.
+func (c *client) openVersionNoWait(uri, text string, version int) {
+	c.t.Helper()
 	require.NoError(c.t, c.conn.Notify(c.t.Context(), "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
 		TextDocument: lsp.TextDocumentItem{
 			URI:        lsp.DocumentURI(uri),
 			LanguageID: "flowfile",
-			Version:    1,
+			Version:    version,
 			Text:       text,
 		},
 	}))
@@ -221,6 +232,17 @@ func (c *client) changeNoWait(uri, text string, version int) {
 	require.NoError(c.t, c.conn.Notify(c.t.Context(), "textDocument/didChange", lsp.DidChangeTextDocumentParams{
 		TextDocument:   lsp.VersionedTextDocumentIdentifier{TextDocumentIdentifier: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)}, Version: version},
 		ContentChanges: []lsp.TextDocumentContentChangeEvent{{Text: text}},
+	}))
+}
+
+// closeNoWait sends didClose and returns as soon as the notification is on
+// the wire, with no wait of any kind — what an editor does, and what a
+// didOpen sent right behind it needs in order to race the close rather than
+// wait politely behind it.
+func (c *client) closeNoWait(uri string) {
+	c.t.Helper()
+	require.NoError(c.t, c.conn.Notify(c.t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)},
 	}))
 }
 

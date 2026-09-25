@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"testing"
@@ -110,7 +111,8 @@ func FuzzLSPFrames(f *testing.F) {
 			requireFrameRoundTrips(t, &req)
 
 			// The read-loop half of dispatch, which no recover covers.
-			server.announceInbound(&req)()
+			_, release := server.announceInbound(context.Background(), &req)
+			release()
 		}
 
 		server.docs.mu.Lock()
@@ -204,6 +206,11 @@ var lspFrameSeeds = [][]byte{
 	// An incremental edit, which is the notification #403 names and the one
 	// announceInbound registers a build for.
 	[]byte(frame(`{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"untitled:a.yaml","version":2},"contentChanges":[{"range":{"start":{"line":5,"character":13},"end":{"line":5,"character":15}},"text":"bye"}]}}`)),
+	// A close and a reopen back to back, the shape #1986 is about: didClose
+	// claims an arrival-order ticket the same way didOpen and didChange do,
+	// but registers no build.
+	[]byte(frame(`{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"untitled:a.yaml"}}}`) +
+		frame(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:a.yaml","languageId":"yaml","version":1,"text":"edition: v2026.3\n"}}}`)),
 	// A didChange whose params are structurally fine and semantically empty,
 	// and one whose uri is missing: the two shapes announceInbound is
 	// documented as registering nothing for.

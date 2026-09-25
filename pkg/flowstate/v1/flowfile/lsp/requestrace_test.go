@@ -219,3 +219,73 @@ func testHoverThroughAChangeStorm(t *testing.T) {
 	// And asking again answers from it.
 	require.Contains(t, hoverText(c.hover(uri, at.Line, at.Character)), "final_marker", "hover kept answering from a version older than the last change")
 }
+
+// TestDidCloseReorderedBehindDidOpenKeepsTheReopen is the wire-level
+// regression test for #1986.
+//
+// documentStore.close deletes unconditionally, and didClose is not on
+// [NewHandler]'s ordered announcement path the way didOpen and didChange are:
+// a client that closes a document and immediately reopens it can have the two
+// handlers run in the opposite order, since the connection wraps the server in
+// jsonrpc2.AsyncHandler and starts a goroutine per message. Open lands first,
+// close second, and close deletes the document the reopen just established —
+// the client believes the buffer is open, the server holds nothing.
+//
+// The reorder is forced through [documentStore.closeGate] rather than raced:
+// the close's handler is held open right where it is about to apply its
+// guard, the reopen is sent and allowed to land in full, and only then is the
+// close released — provably evaluating a now-stale ticket rather than merely
+// happening to run late. A version of this test that only raced the two
+// messages could pass against the bug on one run and fail on the next; this
+// one fails against an unguarded close every time.
+func TestDidCloseReorderedBehindDidOpenKeepsTheReopen(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &FlowfileServer{Logger: discardLogger()}
+		uri := lsp.DocumentURI("file:///reorder.yaml")
+
+		proceed := make(chan struct{})
+		server.docs.setCloseGate(func(u lsp.DocumentURI) {
+			if u == uri {
+				<-proceed
+			}
+		})
+
+		c := newClientFor(t, server)
+		c.initialize()
+
+		c.openNoWait(string(uri), "name: original\n")
+		synctest.Wait()
+		if _, ok := c.serverDoc(string(uri)); !ok {
+			t.Fatal("the initial open never landed")
+		}
+
+		// The close and the reopen an editor sends right behind it, exactly as
+		// they go out on the wire: didClose then didOpen for the same URI, with
+		// nothing waiting in between. synctest.Wait below returns only once
+		// every goroutine in the bubble is durably blocked, which the close's
+		// handler now is: parked in the gate above.
+		c.closeNoWait(string(uri))
+		synctest.Wait()
+
+		// The reopen's own version is higher than the incumbent's rather than
+		// reset to 1, so this exercises only the close guard under test:
+		// version 1 over a still-present version-1 document would also be
+		// rejected by documentStore.open's own guard (#1983), a different
+		// mechanism this test is not about.
+		c.openVersionNoWait(string(uri), "name: reopened\n", 2)
+		synctest.Wait()
+
+		doc, ok := c.serverDoc(string(uri))
+		require.True(t, ok, "the reopen did not land while the stale close was held open")
+		require.Equal(t, "name: reopened\n", doc.text)
+
+		// Only now does the close get to evaluate its guard — provably after
+		// the reopen it was reordered behind, not by luck of the scheduler.
+		close(proceed)
+		synctest.Wait()
+
+		doc, ok = c.serverDoc(string(uri))
+		require.True(t, ok, "a close reordered behind its own reopen deleted the reopened document")
+		assert.Equal(t, "name: reopened\n", doc.text, "the reopened document's text did not survive the reordered close")
+	})
+}
