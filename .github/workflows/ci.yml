@@ -913,21 +913,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          # A supersession is not a failure to be scored the same way: the
-          # ref's concurrency group cancels an in-progress run when a newer
-          # push lands (deliberately, for a pull request — see the
-          # concurrency: block above), and the cancelled run's own head will
-          # never be evaluated for merging, only the superseding push's will.
-          # That makes it categorically different from a job this diff
-          # actually broke, and issue #2030 is exactly that it read as
-          # identical to one without opening the run's log. The check still
-          # fails here — a cancelled job proved nothing, so there is still
-          # nothing to justify a pass with, and fail-closed does not bend for
-          # this — but the message says which one it is, right in the
-          # annotation the Checks tab already shows, so a reader never has to
-          # fetch a log to tell them apart.
+          # A cancellation is not a failure to be scored the same way: it
+          # proved nothing either direction, rather than proving something
+          # broken. The check still fails here — there is still nothing to
+          # justify a pass with, and fail-closed does not bend for this — but
+          # the annotation says so, right where the Checks tab already shows
+          # it, so a reader never has to fetch a log to learn that much.
+          #
+          # What it cannot say is *why* this was cancelled: this job has no
+          # way to tell a newer push's supersession (this ref's concurrency
+          # group, deliberately, for a pull request — see the concurrency:
+          # block above) from a person cancelling the run by hand, or from a
+          # runner fault. It is careful to claim only the first as the common
+          # case rather than the fact, and named the other two rather than
+          # implying they cannot happen (#2030's own fix, and the review that
+          # followed it, both turned on this: an annotation asserting a
+          # specific cause it cannot verify is a second, narrower way to read
+          # a check wrong instead of a first).
+          cancelled_note="most often because a newer push superseded this run on this ref; on main or a merge group, where that is disabled, or if nothing else pushed, it was cancelled by hand or by a runner fault instead — either way this is not evidence the diff is broken; re-run it, or check the superseding push's own run if there is one"
+
           if [ "${PLAN_RESULT}" = "cancelled" ]; then
-            echo "::error::the plan job was cancelled, not failed — a newer push superseded this run before it finished; this check still fails because a cancelled plan established nothing, but it is not evidence anything is broken, see the superseding push's own run instead"
+            echo "::error::the plan job was cancelled, not failed — ${cancelled_note}"
             exit 1
           fi
           if [ "${PLAN_RESULT}" != "success" ]; then
@@ -955,10 +961,10 @@ jobs:
               false:skipped)
                 echo "ok       ${job}: skipped, and the plan says this diff cannot reach it" ;;
               true:cancelled)
-                echo "::error::${job} was selected by the plan for this diff but was cancelled, not failed — a newer push superseded this run before it finished; this check still fails, but it is not evidence anything is broken, see the superseding push's own run instead"
+                echo "::error::${job} was selected by the plan for this diff but was cancelled, not failed — ${cancelled_note}"
                 status=1 ;;
               false:cancelled)
-                echo "::error::${job} was not selected by the plan but reports cancelled — a newer push superseded this run before that job's if: condition could even be evaluated; this check still fails, but it is not evidence anything is broken, see the superseding push's own run instead"
+                echo "::error::${job} was not selected by the plan but reports cancelled — ${cancelled_note}"
                 status=1 ;;
               true:*)
                 echo "::error::${job} was selected by the plan for this diff but its result was '${got}'"

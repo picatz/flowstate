@@ -205,8 +205,11 @@ func TestAPlanThatDidNotSucceedFailsTheVerdict(t *testing.T) {
 // that failed on its own merits — both are a red `verdict` — and telling them
 // apart cost a log fetch every time. The check must still fail (a cancelled
 // plan established nothing, so there is still nothing to justify a pass
-// with), but the annotation the Checks tab already shows must now say which
-// one this is.
+// with), but the annotation the Checks tab already shows must now distinguish
+// a cancellation from a failure. It names supersession as the common case
+// rather than the fact — review on #2030 itself pointed out that `verdict`
+// cannot actually tell a superseding push from a hand cancellation or a
+// runner fault, so the wording must not claim more than that.
 func TestASupersededPlanFailsTheVerdictAndSaysSo(t *testing.T) {
 	plan := samplePlan()
 	ok, out := runVerdict(t, "cancelled", plan, fullResults(plan))
@@ -214,7 +217,7 @@ func TestASupersededPlanFailsTheVerdictAndSaysSo(t *testing.T) {
 		t.Fatalf("a cancelled plan must still fail the verdict:\n%s", out)
 	}
 	if !strings.Contains(out, "cancelled") || !strings.Contains(out, "superseded") {
-		t.Errorf("the failure should name supersession, not just non-success, so it reads differently from a real failure without opening a log:\n%s", out)
+		t.Errorf("the failure should name supersession as the likely cause, not just non-success, so it reads differently from a real failure without opening a log:\n%s", out)
 	}
 	if strings.Contains(out, "did not succeed") {
 		t.Errorf("a cancelled plan should not get the generic did-not-succeed message meant for an actual failure:\n%s", out)
@@ -236,5 +239,31 @@ func TestASupersededSelectedJobFailsTheVerdictAndSaysSo(t *testing.T) {
 	}
 	if !strings.Contains(out, "test was selected by the plan") || !strings.Contains(out, "superseded") {
 		t.Errorf("the failure should name the job and supersession, not read as an ordinary bad result:\n%s", out)
+	}
+}
+
+// TestAnUnselectedJobThatWasCancelledFailsTheVerdictAndSaysSo is the
+// `false:cancelled` shape: a job the plan did not select reports cancelled
+// rather than the `skipped` an untouched `if:` condition produces — the case
+// a superseding push produces when it lands before an unselected job even
+// got to evaluate its own `if:`. It is not [TestAJobThatRanUnselectedFailsTheVerdict]'s
+// case (a job that ran and proved more than was asked): a cancelled job
+// proved nothing, so it needs the same supersession-aware wording the
+// selected-and-cancelled case gets, not the "plan and that job's if:
+// disagree" message a job that actually ran would.
+func TestAnUnselectedJobThatWasCancelledFailsTheVerdictAndSaysSo(t *testing.T) {
+	plan := samplePlan()
+	results := fullResults(plan)
+	results["proto"] = "cancelled"
+
+	ok, out := runVerdict(t, "success", plan, results)
+	if ok {
+		t.Fatalf("a cancelled unselected job must still fail the verdict:\n%s", out)
+	}
+	if !strings.Contains(out, "proto was not selected") || !strings.Contains(out, "superseded") {
+		t.Errorf("the failure should name the job and supersession, not read as an ordinary bad result:\n%s", out)
+	}
+	if strings.Contains(out, "disagree") {
+		t.Errorf("a cancelled unselected job is not the plan/if: disagreement case and should not get that message:\n%s", out)
 	}
 }

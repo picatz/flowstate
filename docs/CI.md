@@ -171,9 +171,19 @@ where several pushes land close together, since every superseded run's
 `verdict` goes red the same way a real regression would. `verdict` still
 fails either way — a cancelled `plan` or a cancelled selected job established
 nothing, so there is still nothing to justify a pass with, and that is not
-weakened — but the two `::error::` annotations it prints now say which one
-happened, in the same place the Checks tab already renders them, so telling
-them apart costs reading the annotation rather than fetching a log.
+weakened — but its `::error::` annotations now say that this was a
+cancellation rather than a failure, in the same place the Checks tab already
+renders them, so a reader learns that much without fetching a log.
+
+What the annotation cannot say is *why* the job was cancelled: `verdict` has
+no way to tell a newer push's supersession from a person cancelling the run
+by hand or from a runner fault, so it names supersession as the common case
+on a pull request rather than as the established fact — main and a merge
+group are excluded from `cancel-in-progress` above, so a cancellation there
+is never supersession, and the annotation says that too. An early draft of
+this fix asserted supersession outright; review on #2030 itself caught that a
+check whose whole design is "never report a pass it cannot justify" should
+not turn around and report a cause it cannot justify either.
 
 ### The merge queue
 
