@@ -232,7 +232,7 @@ func TestStopWhoseContextEndsFirstStillKillsTheStubbornHelper(t *testing.T) {
 
 	// The premise: the helper ignores SIGTERM, so only the hurried SIGKILL can
 	// have ended it this early in the grace period.
-	if !waitFor(t, 2*time.Second, func() bool { return processGoneOrZombie(t, pid) }) {
+	if !waitFor(t, 250*time.Millisecond, func() bool { return processGoneOrZombie(t, pid) }) {
 		t.Errorf("stop gave up waiting after %s and returned while helper process %d, "+
 			"which ignores SIGTERM, was still running: the expired wait did not hurry "+
 			"the escalation to its SIGKILL", elapsed, pid)
@@ -307,7 +307,11 @@ func TestStopWithAnEarlierCanceledContextStillEndsTheStubbornHelper(t *testing.T
 		t.Fatalf("stop with an already-canceled ctx took %s; want at most hurryWait (%s)", elapsed, hurryWait)
 	}
 
-	if !waitFor(t, 2*time.Second, func() bool { return processGoneOrZombie(t, pid) }) {
+	// 250ms, not the grace period: without the hurry, the helper would still
+	// die from the ordinary escalation within grace of the reap, which this
+	// test already waited out before calling stop, so a longer wait here
+	// would pass without the mechanism it names.
+	if !waitFor(t, 250*time.Millisecond, func() bool { return processGoneOrZombie(t, pid) }) {
 		t.Fatalf("helper process %d, which ignores SIGTERM, was still running after a "+
 			"call to stop whose ctx had already ended: the ended wait did not hurry the "+
 			"escalation to its SIGKILL", pid)

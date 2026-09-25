@@ -90,7 +90,11 @@ and sends its SIGKILL at once (bounded by a further second for it to
 land), the same rule `instance.stop` applies to a leader that outlives
 its context. So a caller winding a plugin or the whole host down
 (`Host.Close`) does not return, and the worker process does not exit,
-leaving a stubborn descendant that nothing will kill.
+leaving a stubborn descendant that nothing will kill. Run the worker under
+an init process (`docker run --init`, tini) rather than as PID 1: orphaned
+helpers reparent to PID 1, and one that never reaps them leaves zombies
+that keep the group looking alive, so every plugin stop waits out its full
+grace period (#2078).
 
 ### Pinning which bytes a plugin name may run
 

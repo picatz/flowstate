@@ -670,13 +670,10 @@ func (i *instance) waitEscalated(ctx context.Context) bool {
 	}
 
 	// No independent grace-bounded timer here: escalateAbandonedGroup already
-	// owns a grace period of its own, started at a different moment. A second,
-	// separately-started timer for the same nominal duration races it and can
-	// fire microseconds before the real escalation finishes, which is exactly
-	// what let a stubborn helper outlive stop's wait for it. ctx is the only
-	// bound this wait needs — once SIGKILL is sent the escalation goroutine's
-	// own close(i.escalated) is bounded by the kernel, not by the plugin, so
-	// there is nothing left to time out against short of ctx itself.
+	// owns a grace period of its own, started at a different moment, and a
+	// second timer for the same nominal duration races it. This caller's ctx
+	// bounds the wait; when it ends first, the hurry below cuts the
+	// escalation's grace short and hurryWait bounds what is left.
 	select {
 	case <-i.escalated:
 		return true
