@@ -35,56 +35,60 @@ func TestExtendedEnvIsBuiltOncePerKey(t *testing.T) {
 	assert.Equal(t, 1, e.extendedEnvs.len(), "one key, one retained entry — three calls must not grow it")
 }
 
-// TestExtendedEnvKeyIncludesCostLimit pins the acceptance criterion directly:
-// the cost estimator orderedMapEnvOption installs is closed over the cost
-// limit, so a memo keyed on the environment alone would let two evaluations
-// under different Limits share one extended environment and enforce
-// whichever limit happened to build it first. Two entries, not one
-// overwritten, is what proves the key carries the cost.
+// TestExtendedEnvKeyIncludesCostLimit pins the acceptance criterion directly
+// against [Evaluator.extendedEnvFor] itself, not against the cache type in
+// isolation: a key built without the cost limit would let a change to
+// e.limits.Cost between two calls silently reuse the first call's extension.
+// e.limits is never mutated after construction in production (WithLimits
+// inside NewEvaluator is the only assignment this package makes outside this
+// test), so this reaches into the unexported field to simulate the one thing
+// that would make the cost field's presence in the key observable, the way
+// extendedEnvKey's own doc comment explains it is meant to guard against.
 func TestExtendedEnvKeyIncludesCostLimit(t *testing.T) {
 	t.Parallel()
 
-	base, err := DefaultEvaluator().ProfileEnv(CurrentProfile)
+	e := NewEvaluator(WithLimits(Limits{Cost: 1, InterruptCheckFrequency: DefaultInterruptCheckFrequency}))
+	env, err := e.ProfileEnv(CurrentProfile)
 	require.NoError(t, err)
 
-	lowExt, err := base.Extend(orderedMapEnvOption(1))
+	low, err := e.extendedEnvFor(env)
 	require.NoError(t, err)
-	highExt, err := base.Extend(orderedMapEnvOption(DefaultCostLimit))
+	require.Equal(t, 1, e.extendedEnvs.len())
+
+	e.limits.Cost = DefaultCostLimit
+	high, err := e.extendedEnvFor(env)
 	require.NoError(t, err)
 
-	var c extendedEnvCache
-	gotLow := c.put(extendedEnvKey{env: base, cost: 1}, &extendedEnvResult{env: lowExt})
-	gotHigh := c.put(extendedEnvKey{env: base, cost: DefaultCostLimit}, &extendedEnvResult{env: highExt})
+	assert.NotSame(t, low, high, "a changed cost limit over the same base environment must build a new extension, not reuse the old one")
+	assert.Equal(t, 2, e.extendedEnvs.len(), "two cost limits are two entries, not one overwriting the other")
 
-	assert.Same(t, lowExt, gotLow.env)
-	assert.Same(t, highExt, gotHigh.env)
-	assert.NotSame(t, gotLow.env, gotHigh.env, "two cost limits over the same base environment must not collide to one entry")
-	assert.Equal(t, 2, c.len(), "distinct cost limits are distinct entries, not one overwriting the other")
-
-	fromLow, ok := c.get(extendedEnvKey{env: base, cost: 1})
-	require.True(t, ok)
-	assert.Same(t, lowExt, fromLow.env)
-
-	fromHigh, ok := c.get(extendedEnvKey{env: base, cost: DefaultCostLimit})
-	require.True(t, ok)
-	assert.Same(t, highExt, fromHigh.env)
+	// Both stay reachable under their own cost, proving this is a real second
+	// entry and not a coincidental pointer from a transient build.
+	e.limits.Cost = 1
+	stillLow, err := e.extendedEnvFor(env)
+	require.NoError(t, err)
+	assert.Same(t, low, stillLow)
+	assert.Equal(t, 2, e.extendedEnvs.len(), "revisiting an already-keyed cost must not grow the cache further")
 }
 
-// TestEvalDistinctCostLimitsDoNotShareAnExtendedEnv is the behavioral half of
-// TestExtendedEnvKeyIncludesCostLimit: two [Evaluator]s built with different
-// [Limits.Cost] but evaluating the same shared base environment (the shape
-// an embedder handing Eval an arbitrary *cel.Env can produce) must enforce
-// their own budget, not whichever one happened to extend the environment
-// first.
-func TestEvalDistinctCostLimitsDoNotShareAnExtendedEnv(t *testing.T) {
+// TestEvalDistinctCostLimitsBothEnforceTheirOwnBudget is a different, weaker
+// claim than TestExtendedEnvKeyIncludesCostLimit and is kept for what it
+// actually proves: two [Evaluator]s, each with its own [Limits.Cost] and its
+// own extendedEnvs cache (a struct field, never shared across evaluators),
+// enforce their own program-level cost budget over one shared base
+// environment — the shape an embedder handing Eval an arbitrary *cel.Env can
+// produce — regardless of caching. This does not exercise extendedEnvKey's
+// cost field at all: the overall cost meter is a *program* option
+// ([Limits.programOptions]), reapplied at every env.Program call from
+// whichever evaluator is calling, so this would pass even with an
+// environment-only key. It is here because the property is still true and
+// still worth pinning, under its own name rather than one that overclaims.
+func TestEvalDistinctCostLimitsBothEnforceTheirOwnBudget(t *testing.T) {
 	t.Parallel()
 
 	tight := NewEvaluator(WithLimits(Limits{Cost: 1, InterruptCheckFrequency: DefaultInterruptCheckFrequency}))
 	generous := NewEvaluator(WithLimits(Limits{Cost: DefaultCostLimit, InterruptCheckFrequency: DefaultInterruptCheckFrequency}))
 
-	// One base environment, shared between both evaluators — the identity
-	// [Evaluator.Eval]'s exported contract allows and which is exactly the
-	// case an environment-only key would collide on.
 	env, err := tight.ProfileEnv(CurrentProfile)
 	require.NoError(t, err)
 
@@ -98,6 +102,39 @@ func TestEvalDistinctCostLimitsDoNotShareAnExtendedEnv(t *testing.T) {
 
 	_, err = generous.Eval(ctx, env, ast, map[string]any{})
 	require.NoError(t, err, "a million-unit budget must allow the same comprehension over the same base environment")
+}
+
+// TestEvalParsedWithCostReusesTheExtendedEnvironment guards specifically
+// against EvalParsedWithCost's own call site regressing to an inline
+// env.Extend — a change none of the Eval-based tests above would catch,
+// since they never call EvalParsed or EvalParsedWithCost. Two distinct
+// specification sites (two parsed-expression pointers, the identity
+// EvalParsed's own program cache keys on — see TestEvalParsedCompilesAnExpressionSiteOnce)
+// evaluated against the same base environment must still share one extended
+// environment: if EvalParsedWithCost stopped calling extendedEnvFor,
+// e.extendedEnvs would stay at zero through this whole test, since nothing
+// else on this path populates it.
+func TestEvalParsedWithCostReusesTheExtendedEnvironment(t *testing.T) {
+	t.Parallel()
+
+	e := NewEvaluator()
+	env, first := parsedExprForTest(t, e, `vars.n * 2`)
+	_, second := parsedExprForTest(t, e, `vars.n * 3`)
+
+	require.Equal(t, 0, e.extendedEnvs.len(), "nothing extended before the first evaluation")
+
+	ctx := context.Background()
+	out1, err := e.EvalParsed(ctx, env, first, map[string]any{"vars": map[string]any{"n": int64(2)}})
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), out1.Value())
+
+	out2, err := e.EvalParsed(ctx, env, second, map[string]any{"vars": map[string]any{"n": int64(2)}})
+	require.NoError(t, err)
+	assert.Equal(t, int64(6), out2.Value())
+
+	assert.Equal(t, 1, e.extendedEnvs.len(),
+		"two distinct specification sites over one base environment must share one extended environment")
+	assert.Equal(t, 2, e.programs.len(), "two distinct sites are still two distinct compiled programs")
 }
 
 // TestEvalReusesTheExtendedEnvironmentAndStillEnforcesCost is the safety half

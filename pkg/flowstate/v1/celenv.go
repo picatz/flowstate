@@ -150,16 +150,36 @@ type envResult struct {
 // extendedEnvKey identifies an environment already extended with the
 // ordered-map function bound to one cost limit.
 //
-// Both halves matter. The environment, because Extend rebinds every function
-// it carries into a fresh dispatcher behind a fresh sync.Once (cel-go's own
-// comment on [cel.Env]'s sharedDispatcher field says as much: it is "built
-// once and reused across every Program() constructed from this env" — the
-// memoization Eval throws away every call by re-Extending, which is what
-// this cache restores). The cost limit, because [orderedMapEnvOption] closes
-// over it to install the cost estimator: a key without it would let two
-// evaluations under different [Limits.Cost] share one environment and
-// evaluate under whichever limit built it first — see
-// TestEvalDistinctCostLimitsDoNotShareAnExtendedEnv.
+// The environment half is what makes the memo pay off: Extend rebinds every
+// function it carries into a fresh dispatcher behind a fresh sync.Once
+// (cel-go's own comment on [cel.Env]'s sharedDispatcher field says as much:
+// it is "built once and reused across every Program() constructed from this
+// env" — the rebuild Eval used to pay on every call by re-Extending, which
+// is what this cache removes). The overall per-evaluation cost meter is
+// unaffected by which cached extension a program is built from: it is
+// installed by [Limits.programOptions] as *program* options, applied fresh
+// at every env.Program call from e.limits.Cost, not carried by the
+// environment.
+//
+// The cost half is still in the key, as defense in depth rather than because
+// anything observable depends on it today. [orderedMapEnvOption] does close
+// over costLimit at env-construction time, for the one thing this
+// environment-level function does: [orderMapWithinCost]'s own bound on the
+// cost of reordering a map's keys, checked when a comprehension range is
+// evaluated — a narrower, separate check from the program-level cost meter
+// above. If two callers with different [Limits.Cost] ever shared one cached
+// extension, whichever limit built it would silently govern that check for
+// both (TestExtendedEnvKeyIncludesCostLimit exercises this directly against
+// [extendedEnvFor]). It cannot happen through the caches this file builds:
+// extendedEnvs is a field of one [Evaluator], never shared across
+// evaluators, and e.limits is assigned exactly once, by [WithLimits] inside
+// [NewEvaluator] — the only assignment to that field anywhere in this
+// package outside a test that deliberately breaks the rule to exercise this
+// key (TestExtendedEnvKeyIncludesCostLimit again). The
+// cost field costs nothing to keep and removes the need for every future
+// change here to reprove that invariant by hand — a shared cache or a
+// mutable Limits are exactly the changes an env-only key would silently
+// break under.
 type extendedEnvKey struct {
 	env  *cel.Env
 	cost uint64
@@ -185,13 +205,22 @@ type extendedEnvResult struct {
 // already fails when it is full.
 //
 // Measured, not guessed: runtime.MemStats around 2,000 extensions of one
-// base environment showed ~10.4 KiB of heap retained and ~91 allocations
-// paid per extension. 256 entries bounds this cache at roughly 2.7 MiB worst
-// case — generous
-// slack over what the tree itself ever produces (a handful of profile and
-// library-set environments, times the one cost limit each [Evaluator] is
-// constructed with), sized for the exported surface rather than the in-tree
-// call sites, which never approach it.
+// already-referenced base environment showed ~10.4 KiB of heap retained and
+// ~91 allocations paid per extension. That is the marginal cost when the
+// base is pinned elsewhere anyway — every in-tree call site's base comes
+// from e.envs, which already holds it for the Evaluator's lifetime. It is
+// not the whole cost an entry can retain: env.Extend's result keeps its
+// base alive through its own parent field (cel-go's [cel.Env.parent]), so an
+// entry whose base is not otherwise referenced — an arbitrary environment an
+// embedder builds and hands to the exported [Evaluator.Eval] once — pins
+// that whole base for as long as the entry lives. A base built for every
+// profile library, the largest this build has, measured at ~75.7 KiB the
+// same way. Worst case for 256 entries of the largest, otherwise-unreferenced
+// shape is then on the order of 256 × (75.7 + 10.4) KiB ≈ 22 MiB — well
+// under [DefaultProgramCacheBytes]'s 32 MiB, the closest precedent in this
+// file for what a caller-triggered cache may retain, and still far past what
+// the in-tree call sites ever approach, where the marginal ~10.4 KiB is the
+// true added cost.
 const maxExtendedEnvs = 256
 
 // extendedEnvCache is a mutex-guarded, capacity-bounded map of extended
