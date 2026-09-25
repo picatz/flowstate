@@ -1396,33 +1396,42 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 // parse error, a missing host, literal userinfo, and the https-or-loopback
 // scheme rule, still runs. For a URL this package composed itself: a base
 // that already passed [ValidateHTTPSURL] in full, with an operator-supplied
-// field appended through [url.PathEscape].
+// field appended after a literal "/" this package writes, through
+// [url.PathEscape].
 //
-// PathEscape guarantees what makes the skip safe: it escapes every
-// character with a role in URL structure — "/", "?", "#", and the ":" a
-// port needs — so the appended field cannot introduce a new one of those or
-// move where the authority the base already named ends. What it does not
-// escape is "@" and the ":" a userinfo delimiter would use, since both are
-// valid, unescaped pchar (RFC 3986 §3.3,
-// https://www.rfc-editor.org/rfc/rfc3986#section-3.3) — which is exactly
-// the credential-shaped content [ValidateHTTPSURL]'s search exists to
-// catch, and exactly what a real resource identifier legitimately contains:
-// gcpExchanger.impersonate builds
-// `.../serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken`
-// this way, an operator-configured service account email in the path, not
-// a credential in the authority.
+// What makes the skip safe is not that PathEscape hides every structural
+// character — it does not: url.PathEscape("a:b@c/d?e#f") is
+// "a:b@c%2Fd%3Fe%23f", so a literal ":" and "@" survive unescaped, since
+// both are valid, unescaped pchar (RFC 3986 §3.3,
+// https://www.rfc-editor.org/rfc/rfc3986#section-3.3) and PathEscape has no
+// reason to touch them. It is that the authority is already fully decided
+// before the escaped field is ever reached: gcpExchanger.impersonate writes
+// the fixed literal "/projects/-/serviceAccounts/" — this package's own
+// text, not the operator's — between the validated base and the escaped
+// field, so the field always lands after a "/" that already ended the
+// authority. PathEscape does escape "/", "?", "#" and "%", so the field
+// cannot open a new path segment, a query, or a fragment of its own; it can
+// only ever be read as literal content within the one segment the fixed
+// literal already placed it in. `.../serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken`
+// is exactly that: an operator-configured service account email as path
+// content, not a credential in the authority — which is also exactly the
+// shape [ValidateHTTPSURL]'s search cannot tell apart from the misread it
+// exists to catch, which is why this function exists to skip that search
+// rather than ask the shared check to make that call.
 //
-// Before picatz/flowstate#2038 widened that search past one path segment,
-// this shape passed it by accident; after, an `iam_endpoint` on a
-// non-loopback port loaded but failed every impersonation request, quoting
-// a misleading "must not include credentials" refusal for a URL that both
-// carries no credential and that this package, not an operator, built
-// character for character from an already-validated base. Skipping the
-// search here — rather than widening what [ValidateHTTPSURL] itself
-// accepts, which would reopen the same door for a URL an operator writes
-// by hand — is what restores that endpoint, without asking the shared
-// check to trust a value it cannot tell apart from the misread it exists to
-// refuse.
+// On main, before picatz/flowstate#2038, [ValidateHTTPSURL] tested only
+// parsed.User != nil, which url.Parse never sets for this shape — there was
+// no search to pass, only nothing for that one test to catch. Once this
+// package's own fix added the ambiguous-authority search this composed URL
+// is textually indistinguishable from the misread it targets, and an
+// `iam_endpoint` on a non-loopback port started loading but failing every
+// impersonation request, quoting a misleading "must not include
+// credentials" refusal for a URL that both carries no credential and that
+// this package, not an operator, built. Skipping the search here — rather
+// than widening what [ValidateHTTPSURL] itself accepts, which would reopen
+// the same door for a URL an operator writes by hand — is what restores
+// that endpoint, without asking the shared check to trust a value it
+// cannot tell apart from the misread it exists to refuse.
 func validateComposedHTTPSURL(rawURL, field string) (*url.URL, error) {
 	return validateHTTPSURL(rawURL, field, false)
 }
@@ -1485,7 +1494,23 @@ func validateHTTPSURL(rawURL, field string, checkAmbiguousAuthority bool) (*url.
 	// Credentials in an issuer or key set URL would be sent on every fetch and
 	// have to be compared as part of the issuer claim.
 	if parsed.User != nil {
-		return nil, fmt.Errorf("%s %q must not include credentials", field, shown)
+		// shown, computed above, can itself leak a second credential here:
+		// `https://ac@t9:2024/s3cr3t@keys.example.com` splits as userinfo
+		// `ac`, host `t9`, port `2024`, path `/s3cr3t@keys.example.com` — so
+		// [hostCarriesPortDelimiter] is true of this same URL — and shown's
+		// region narrowed to before the first slash finds the early `@`,
+		// cuts there, and then appends the *unbounded* remainder of the raw
+		// string after that cut, which still holds the password past the
+		// slash it never searched (flowstate-reviewer). The same widening
+		// [hostCarriesPortDelimiter] triggers below is applied here for
+		// exactly that reason: it is the same ambiguity, just caught one
+		// branch earlier because url.Parse read the first `@` as userinfo
+		// rather than leaving it for the search below to find.
+		userShown := shown
+		if hostCarriesPortDelimiter(parsed.Host) {
+			userShown = urlWithoutCredentials(rawURL, true)
+		}
+		return nil, fmt.Errorf("%s %q must not include credentials", field, userShown)
 	}
 
 	// A password whose leading run is all digits parses as a *port* instead
@@ -1551,9 +1576,10 @@ func validateHTTPSURL(rawURL, field string, checkAmbiguousAuthority bool) (*url.
 	//
 	// Loopback is the one exemption written into this check itself, on the
 	// same footing as the plain-http loopback exemption below rather than a
-	// new decision: a target dialed at its own literal loopback address
-	// cannot be "the wrong host" in the sense this check exists to prevent
-	// — the request never leaves the machine either way.
+	// new decision: a target dialed at [isLoopbackHost]'s own address —
+	// literal loopback, or "localhost" by name — cannot be "the wrong host"
+	// in the sense this check exists to prevent — the request never leaves
+	// the machine either way.
 	if checkAmbiguousAuthority && hostCarriesPortDelimiter(parsed.Host) && !isLoopbackHost(parsed.Hostname()) {
 		if wide := urlWithoutCredentials(rawURL, true); wide != rawURL {
 			return nil, fmt.Errorf("%s %q must not include credentials", field, wide)

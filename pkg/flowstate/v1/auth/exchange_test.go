@@ -1,9 +1,12 @@
 package auth_test
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -883,6 +886,96 @@ func TestGCPExchanger(t *testing.T) {
 			require.Nil(t, exchanger)
 		})
 	}
+}
+
+// TestGCPExchangerImpersonatesThroughANonLoopbackPortedIAMEndpoint is
+// picatz/flowstate#2038's finding 2: every other GCP test reaches its relying
+// party through a plain httptest.Server on 127.0.0.1, which
+// auth.ValidateHTTPSURL's loopback exemption accepts on its own — reverting
+// gcpExchanger.impersonate to auth.postJSON, undoing the fix that shape needs,
+// fails none of them. This test routes the impersonation request through a
+// hostname that is not loopback (iam.corp.example, with a real port) so it
+// exercises the ambiguous-authority skip that fix depends on, not the
+// loopback exemption sitting beside it.
+//
+// The hostname is never resolved: a custom Transport.DialContext redirects it
+// to an in-process TLS server, which is what lets the test name a host that
+// is not loopback without any real network egress.
+func TestGCPExchangerImpersonatesThroughANonLoopbackPortedIAMEndpoint(t *testing.T) {
+	t.Parallel()
+
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	const pool = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/flowstate"
+	const fakeIAMAuthority = "iam.corp.example:8443"
+
+	var mu sync.Mutex
+	var impersonatePath string
+	var impersonateAuthHeader string
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/token" {
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"access_token":      "federated-token",
+				"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				"token_type":        "Bearer",
+				"expires_in":        3600,
+			})
+			return
+		}
+
+		mu.Lock()
+		impersonatePath = r.URL.Path
+		impersonateAuthHeader = r.Header.Get("Authorization")
+		mu.Unlock()
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"accessToken": "service-account-token",
+			"expireTime":  referenceTime.Add(time.Hour).UTC().Format(time.RFC3339),
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	// Every dial for fakeIAMAuthority lands on the TLS server above instead;
+	// every other address (the STS endpoint below, on the server's own real
+	// address) dials normally. InsecureSkipVerify is test-only here: the
+	// server's certificate does not, and could not, name a host this test
+	// never puts on the network.
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if addr == fakeIAMAuthority {
+					addr = server.Listener.Addr().String()
+				}
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // test-only: see comment above.
+		},
+	}
+
+	exchanger, err := auth.NewGCPExchanger(auth.GCPConfig{
+		Audience:            pool,
+		Endpoint:            server.URL + "/v1/token",
+		IAMEndpoint:         "https://" + fakeIAMAuthority + "/iam/v1",
+		ServiceAccountEmail: "flowstate@project.iam.gserviceaccount.com",
+		Clock:               clock.Now,
+		HTTPClient:          client,
+	})
+	require.NoError(t, err, "a non-loopback ported iam_endpoint must load")
+
+	credential, err := exchanger.Exchange(t.Context(), mintAssertion(t, issuer, pool))
+	require.NoError(t, err, "impersonation through a non-loopback ported iam_endpoint must succeed")
+
+	bearer, ok := credential.Bearer()
+	require.True(t, ok)
+	require.Equal(t, "service-account-token", bearer)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, impersonatePath, "generateAccessToken",
+		"the request never reached the impersonation endpoint")
+	require.Equal(t, "Bearer federated-token", impersonateAuthHeader,
+		"impersonation authenticates with the federated token from the first leg")
 }
 
 // TestExchangerRejectsUnprotectedEndpoints checks that no exchanger can be

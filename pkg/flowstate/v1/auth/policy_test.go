@@ -610,6 +610,25 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantAbsent: []string{"s3cr3t"},
 		},
 		{
+			// The same username-`@` shape with a slash rather than a query,
+			// which used to leak the password: url.Parse still splits
+			// userinfo `ac`, host `t9`, port `2024`, path
+			// `/s3cr3t@keys.example.com`, and the redaction this refusal
+			// quotes was built from the region *before* the first slash — so
+			// it found the early `@`, cut there, and then appended the
+			// unbounded remainder of the raw string, password and all, past
+			// the marker: `issuer "https://[redacted]@t9:2024/s3cr3t@keys.example.com"
+			// must not include credentials` (flowstate-reviewer). Pre-existing
+			// in the code this touches, reached only once
+			// [hostCarriesPortDelimiter] made this URL's host ambiguous in
+			// the first place, so fixed and pinned here rather than filed
+			// separately.
+			name:       "a username holding an at sign in front of a port misread, with a slash",
+			url:        "https://ac@t9:2024/s3cr3t@keys.example.com",
+			wantErr:    `issuer "https://[redacted]@keys.example.com" must not include credentials`,
+			wantAbsent: []string{"t9", "s3cr3t"},
+		},
+		{
 			// The cost of reading past the authority, with a real credential
 			// present: the later `@` is the one cut at, so the host goes too.
 			// Pinned so that narrowing the region later is a decision.
