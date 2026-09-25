@@ -230,3 +230,109 @@ func testHoverThroughAChangeStorm(t *testing.T) {
 	// And asking again answers from it.
 	require.Contains(t, hoverText(c.hover(uri, at.Line, at.Character)), "final_marker", "hover kept answering from a version older than the last change")
 }
+
+// TestDidOpenWaitsForAnInFlightDidCloseOnTheSameURI is the wire-level
+// regression test for #1986 itself: a same-URI didClose and didOpen sent back
+// to back must have their handlers run in that order, because the connection
+// wraps the server in jsonrpc2.AsyncHandler, which starts a goroutine per
+// message and gives up the arrival order the protocol otherwise implies. A
+// close whose handler goroutine the scheduler happens to run behind the
+// reopen's own goroutine used to delete the document the reopen had just
+// established — the client believes the buffer is open, the server holds
+// nothing.
+//
+// The reorder this test proves against is forced through
+// [documentStore.closeGate] rather than raced: the close's handler is held
+// open, mid-dispatch, well past the point a scheduler would ordinarily have
+// let it finish, and the reopen is sent and given every chance to run ahead
+// of it. The final assertion is the one that catches the regression: without
+// the queue, the late close deletes the document the reopen established, so
+// nothing survives. The check made while the close is still gated shows the
+// reopen has not run ahead of it; on its own it cannot tell a queue from
+// [documentStore.open]'s version guard, which also keeps the incumbent for a
+// reopen at version 1, so it describes the queued state rather than proving it.
+func TestDidOpenWaitsForAnInFlightDidCloseOnTheSameURI(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &FlowfileServer{Logger: discardLogger()}
+		uri := lsp.DocumentURI("file:///reorder.yaml")
+
+		proceed := make(chan struct{})
+		server.docs.setCloseGate(func(u lsp.DocumentURI) {
+			if u == uri {
+				<-proceed
+			}
+		})
+
+		c := newClientFor(t, server)
+		c.initialize()
+
+		c.openNoWait(string(uri), "name: original\n")
+		synctest.Wait()
+		if _, ok := c.rawServerDoc(string(uri)); !ok {
+			t.Fatal("the initial open never landed")
+		}
+
+		// The close and the reopen an editor sends right behind it, exactly as
+		// they go out on the wire: didClose then didOpen for the same URI, with
+		// nothing waiting in between. synctest.Wait below returns only once
+		// every goroutine in the bubble is durably blocked, which the close's
+		// handler now is: parked in the gate above, mid-dispatch.
+		c.closeNoWait(string(uri))
+		synctest.Wait()
+
+		// The reopen at version 1 — the version a real reopen actually carries
+		// — sent while the close is still gated open.
+		c.openVersionNoWait(string(uri), "name: reopened\n", 1)
+		synctest.Wait()
+
+		// The reopen's handler must not have run at all yet: it is queued
+		// behind the still-gated close, so the store still shows the
+		// *original* document untouched, not the reopen and not nothing.
+		// [client.rawServerDoc] on purpose, not [documentStore.await]: the
+		// reopen's own build is in flight (its beginBuild already ran when it
+		// was announced), so await would wait out its full build timeout
+		// rather than answer this instant — this assertion is about the
+		// state *before* anything settles.
+		doc, ok := c.rawServerDoc(string(uri))
+		require.True(t, ok, "the original document was removed before the gated close was ever released")
+		require.Equal(t, "name: original\n", doc.text,
+			"the reopen's handler ran ahead of the still-gated close it should be queued behind")
+
+		// Releasing the gate lets the close finish, which unblocks the
+		// reopen's handler in turn.
+		close(proceed)
+		synctest.Wait()
+
+		doc, ok = c.server.docs.await(c.t.Context(), make(chan struct{}), uri)
+		require.True(t, ok, "a close that finally ran left no document for the reopen queued behind it")
+		assert.Equal(t, "name: reopened\n", doc.text,
+			"the reopened document's text did not survive the close it was queued behind")
+	})
+}
+
+// TestPerURIQueueStateIsBoundedByWhatIsInFlight is the boundedness half of
+// #1986's fix: [documentStore.enqueue] keeps one entry per URI with a
+// document notification still queued or in flight, and CLAUDE.md's "bound
+// work where it is spent" applies to that map the same as to any other one a
+// long-running connection accumulates. A `flow lsp` process serving an editor
+// for a whole session opens and closes many files, and an entry that
+// survived its own notification finishing would make this map grow with
+// every URI the editor had ever touched rather than with how many it has
+// open right now.
+func TestPerURIQueueStateIsBoundedByWhatIsInFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		uri := "file:///bounded.yaml"
+
+		c.openNoWait(uri, "name: one\n")
+		synctest.Wait()
+		c.closeNoWait(uri)
+		synctest.Wait()
+
+		c.server.docs.mu.Lock()
+		n := len(c.server.docs.tail)
+		c.server.docs.mu.Unlock()
+		assert.Zero(t, n, "a URI with nothing queued or in flight still has a queue entry")
+	})
+}
