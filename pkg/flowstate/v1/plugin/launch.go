@@ -226,14 +226,26 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 
 	go func() {
 		inst.waitErr = cmd.Wait()
+
 		// Wait reaps only the group leader. Helpers the plugin left in its
-		// process group can still be running, so clean the group while the pid
-		// is still known to name this launch. A process-group id cannot be
-		// recycled while that group has members; doing this before publishing
-		// the exit therefore reaches surviving helpers without leaving the
-		// later supervisor path to signal a reused id.
+		// process group can still be running, so clean the group while the
+		// pid is still known to name this launch: publishing the exit first
+		// would let [instance.stop] observe reaped() and skip its own
+		// signal, exactly the gap this closes. Signalling immediately after
+		// Wait returns, before anything else runs in this goroutine, keeps
+		// the pid-reuse window [terminateProcess] already documents as
+		// small — no syscall or blocking call intervenes — rather than the
+		// arbitrary delay a caller of stop may otherwise introduce.
 		terminateProcess(inst.proc, false)
 		close(inst.exited)
+
+		// A helper that traps or ignores SIGTERM is otherwise unreachable
+		// after this point: stop's own SIGKILL escalation
+		// (`instance.stop`, below) is gated on the leader still being
+		// alive, which by now it never is again. Finish independently of
+		// stop ever being called, on the same grace period stop would have
+		// given it.
+		escalateAbandonedGroup(inst.proc, cfg.ShutdownGrace)
 	}()
 
 	// stderr is a plugin's only diagnostic channel, so it is captured from
@@ -459,7 +471,13 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 		// group now holds that number.
 		//
 		// This is the common path, not an edge: the supervisor reaches here from
-		// the exit it observed, so the process is already gone.
+		// the exit it observed, so the process is already gone. That is not a
+		// gap: the waiter goroutine that reaped it already signalled the group
+		// once, immediately, while the pid still named this launch, and
+		// [escalateAbandonedGroup] carries that through to SIGKILL on its own —
+		// see the comment beside `cmd.Wait` in [launch]. What stop still owns is
+		// the case this goroutine has not reached yet: the leader is alive when
+		// stop runs, so stop is the first and only signal it gets.
 		if i.proc != nil && !i.reaped() {
 			terminateProcess(i.proc, false)
 
@@ -520,6 +538,30 @@ func (i *instance) waitExit(ctx context.Context, grace time.Duration) bool {
 		return false
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// escalateAbandonedGroup finishes what the group leader's own exit signal
+// could not: a helper it left behind that traps or ignores SIGTERM.
+//
+// Run from the waiter goroutine rather than from [instance.stop], because by
+// the time a plugin's leader has exited on its own, reaped() is already true
+// and stop's escalation never runs at all — this is the only path that ever
+// reaches a surviving helper in that case. grace is the same period stop
+// would have granted, so a helper gets no less time to exit cleanly for its
+// leader having gone first.
+//
+// A group with nothing left in it is the common case and this returns at
+// once: [processGroupAlive] is one signal-0 syscall, not a sleep.
+func escalateAbandonedGroup(proc *os.Process, grace time.Duration) {
+	if proc == nil || !processGroupAlive(proc.Pid) {
+		return
+	}
+
+	time.Sleep(grace)
+
+	if processGroupAlive(proc.Pid) {
+		terminateProcess(proc, true)
 	}
 }
 

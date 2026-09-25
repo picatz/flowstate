@@ -71,3 +71,13 @@ func processAlive(pid int) bool {
 	}
 	return syscall.Kill(pid, 0) != syscall.ESRCH
 }
+
+// processGroupAlive is [processAlive] aimed at the group rather than the one
+// process: the same signal-0 existence probe, addressed by the negative pid
+// [isolateProcessGroup] and [terminateProcess] already use for it.
+func processGroupAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return syscall.Kill(-pid, 0) != syscall.ESRCH
+}

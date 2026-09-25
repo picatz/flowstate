@@ -101,6 +101,36 @@ func runFakePlugin() int {
 		}
 		return 3
 
+	case "exit-with-stubborn-child":
+		// Ignoring SIGTERM here, in the leader, before forking is what makes
+		// this race-free: fork duplicates the parent's signal disposition
+		// table atomically, so the child is born with SIGTERM already
+		// ignored, with no window during its own startup where the default
+		// disposition (terminate) could apply — unlike a child that has to
+		// run a `trap` statement of its own after starting, which loses
+		// exactly that race against a signal sent this soon after Start
+		// returns. POSIX keeps an ignored disposition across exec too (only
+		// a caught signal resets to default), so it survives into
+		// /bin/sleep. One process, one pid throughout, that a plain SIGTERM
+		// cannot end — which is what proves escalation to SIGKILL actually
+		// runs rather than only being reachable in principle.
+		//
+		// ignoreSIGTERM is unix-only (see helper_unix_test.go /
+		// helper_other_test.go): this whole mode is only ever launched by
+		// launch_linux_test.go, but the case has to compile everywhere this
+		// package builds.
+		ignoreSIGTERM()
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := os.WriteFile(os.Getenv("FLOWSTATE_TEST_CHILD_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 3
+
 	case "exit-now", "crash-loop":
 		fmt.Fprintln(os.Stderr, "this plugin exits immediately")
 		return 3
