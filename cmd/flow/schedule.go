@@ -74,10 +74,10 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	// doc comment already states for a command that never declared it.
 	inputs, err := runInputs(cmd, workflow)
 	if err != nil {
-		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, nil, revealSensitiveRequested(cmd)))
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, nil, err, revealSensitiveRequested(cmd)))
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
-		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, revealSensitiveRequested(cmd)))
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, err, revealSensitiveRequested(cmd)))
 	}
 
 	name, _ := cmd.Flags().GetString("name")

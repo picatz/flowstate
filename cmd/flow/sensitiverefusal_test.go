@@ -108,8 +108,8 @@ func TestInputFileNumericOverflowLeavesAnOrdinaryFieldInTheClear(t *testing.T) {
 // overflowing number is one of its fields rather than the field itself.
 // normalizeJSON recurses through the whole value carrying the declared name
 // at every depth, so the refusal names "creds" however deep the number that
-// broke it was — and sensitiveInputFileWords has to walk exactly as deep to
-// catch it.
+// broke it was — and [numericOverflowError] carries that same name up from
+// whatever depth [normalizeJSON] was at when it failed.
 func TestInputFileNumericOverflowNestedInAStructIsAlsoRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -133,6 +133,62 @@ steps:
 	assert.NotContains(t, stderr, overflowNumber)
 	assert.NotContains(t, err.Error(), overflowNumber)
 	assert.Contains(t, stdout, "creds", "the refusal no longer says which input it is about")
+}
+
+// TestStructuredInputFlagNumericOverflowRedactsASensitiveField is #2044's
+// second review finding: valueFromJSON and normalizeJSON are also what
+// decodes a structured --input flag's own JSON (coerceInput, for a `list` or
+// `struct` declaration), not only --input-file's document. Before the fix,
+// [sensitiveInputWords] read only the flag's whole word — `creds={"pin":1e999}`
+// — as a plaintext, which the substring backstop matches only where that
+// exact text occurs; the overflowing number rendered inside the refusal
+// sentence by itself, `holds 1e999`, is a different string and slipped
+// through. Reading [numericOverflowError] off the refusal instead of the flag
+// text redacts the number itself, for this source exactly as for the file's.
+func TestStructuredInputFlagNumericOverflowRedactsASensitiveField(t *testing.T) {
+	t.Parallel()
+
+	structured := `edition: v2026.3
+name: onboard-struct-flag
+inputs:
+  creds:
+    type: struct
+    sensitive: true
+steps:
+  - id: greet
+    log:
+      message: onboarding
+`
+	stdout, stderr, err := runLocal(t, structured, "--output", "json",
+		"--input", `creds={"pin": `+overflowNumber+`}`)
+	require.Error(t, err, "an out-of-range number in a structured flag's JSON is refused")
+
+	assert.NotContains(t, stdout, overflowNumber)
+	assert.NotContains(t, stderr, overflowNumber)
+	assert.NotContains(t, err.Error(), overflowNumber)
+	assert.Contains(t, stdout, "creds", "the refusal no longer says which input it is about")
+}
+
+// TestStructuredInputFlagNumericOverflowLeavesAnOrdinaryFieldInTheClear is
+// the negative direction of the case above.
+func TestStructuredInputFlagNumericOverflowLeavesAnOrdinaryFieldInTheClear(t *testing.T) {
+	t.Parallel()
+
+	structured := `edition: v2026.3
+name: onboard-struct-flag-ordinary
+inputs:
+  meta:
+    type: struct
+steps:
+  - id: greet
+    log:
+      message: onboarding
+`
+	_, stderr, err := runLocal(t, structured, "--input", `meta={"count": `+overflowNumber+`}`)
+	require.Error(t, err, "an out-of-range number in a structured flag's JSON is refused")
+
+	assert.Contains(t, stderr, overflowNumber,
+		"an ordinary field's overflow value in a structured flag was withheld, not only a sensitive one's")
 }
 
 // sensitiveScheduleWorkflow is sensitiveRefusalWorkflow (runlocal_refusal_test.go)
@@ -242,30 +298,80 @@ func TestAScheduleCreateRefusalDoesNotPrintASensitiveArgument(t *testing.T) {
 	}
 }
 
+// sensitiveWithOrdinaryMustWorkflow declares a sensitive int beside an
+// ordinary one that has its own `must:`, so a test can fail the *ordinary*
+// field's constraint and check that the value the binder's `got <value>`
+// quotes for it — not just the field's name — survives redaction. A
+// misspelled undeclared name (the shape these two tests used before) proves
+// only that the sentence naming it was not withheld whole; the binder's
+// refusal for an undeclared name never quotes a value at all, so it cannot
+// stand in for the case redaction could still widen into a withholding.
+const sensitiveWithOrdinaryMustWorkflow = `edition: v2026.3
+name: onboard-ordinary-must
+inputs:
+  pin:
+    type: int
+    sensitive: true
+    must: this > 9999
+  region:
+    type: string
+    must: this in ["eu-west-1", "us-east-1"]
+steps:
+  - id: greet
+    log:
+      message: onboarding
+`
+
+// sensitiveScheduleWithOrdinaryMustWorkflow is sensitiveWithOrdinaryMustWorkflow
+// with the `triggers: schedule:` block `flow schedule create` requires.
+const sensitiveScheduleWithOrdinaryMustWorkflow = `edition: v2026.3
+name: onboard-ordinary-must-schedule
+triggers:
+  schedule:
+    cron: "0 * * * *"
+inputs:
+  pin:
+    type: int
+    sensitive: true
+    must: this > 9999
+  region:
+    type: string
+    must: this in ["eu-west-1", "us-east-1"]
+steps:
+  - id: greet
+    log:
+      message: onboarding
+`
+
+// ordinaryMustValue is the value sensitiveWithOrdinaryMustWorkflow's own
+// `region` must: refuses, quoted in the binder's "got <value>" the same way
+// a sensitive field's would be — the value under test, not the field name.
+const ordinaryMustValue = "oceania"
+
 // TestARemoteRunRefusalStillPrintsAnOrdinaryArgument and
 // TestAScheduleCreateRefusalStillPrintsAnOrdinaryArgument are the direction
 // the fix must not take with it, the same property
 // TestARefusedCommandLineStillPrintsAnOrdinaryArgument pins for `flow run
-// local`: a workflow that declares one sensitive input must still report an
-// ordinary one's value in the clear.
+// local`: a workflow that declares one sensitive input must still quote an
+// ordinary one's own refused *value*, not only report that it was refused.
 func TestARemoteRunRefusalStillPrintsAnOrdinaryArgument(t *testing.T) {
 	t.Parallel()
 
-	path := writeWorkflowFile(t, sensitiveRefusalWorkflow)
-	res := runFlow(t, "run", path, "--input", "pin=10000", "--input", "reigon=eu-west-1")
+	path := writeWorkflowFile(t, sensitiveWithOrdinaryMustWorkflow)
+	res := runFlow(t, "run", path, "--input", "pin=10000", "--input", "region="+ordinaryMustValue)
 	require.Error(t, res.Err)
 
-	assert.Contains(t, res.Output(), "reigon",
-		"the misspelled name the refusal is about was withheld too")
+	assert.Contains(t, res.Output(), ordinaryMustValue,
+		"an ordinary field's own must: refusal withheld the value it quotes, not only a sensitive one's")
 }
 
 func TestAScheduleCreateRefusalStillPrintsAnOrdinaryArgument(t *testing.T) {
 	t.Parallel()
 
-	path := writeWorkflowFile(t, sensitiveScheduleWorkflow)
-	res := runFlow(t, "schedule", "create", path, "--input", "pin=10000", "--input", "reigon=eu-west-1")
+	path := writeWorkflowFile(t, sensitiveScheduleWithOrdinaryMustWorkflow)
+	res := runFlow(t, "schedule", "create", path, "--input", "pin=10000", "--input", "region="+ordinaryMustValue)
 	require.Error(t, res.Err)
 
-	assert.Contains(t, res.Output(), "reigon",
-		"the misspelled name the refusal is about was withheld too")
+	assert.Contains(t, res.Output(), ordinaryMustValue,
+		"an ordinary field's own must: refusal withheld the value it quotes, not only a sensitive one's")
 }

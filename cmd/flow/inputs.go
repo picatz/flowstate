@@ -375,16 +375,18 @@ func decodeInputJSON(raw string) (any, error) {
 // read as written: whole numbers are ints and the rest are floats. That is the same
 // rule the YAML parser applies to a literal in a file.
 func valueFromJSON(name string, decoded any, declaration *v1.InputDeclaration) (*v1.Value, error) {
+	declaredType := v1.DeclaredTypeName(declaration.GetType())
+
 	if number, ok := decoded.(json.Number); ok && declaration.GetType() == v1.InputDeclaration_TYPE_FLOAT {
 		asFloat, err := number.Float64()
 		if err != nil {
-			return nil, fmt.Errorf("input %q is %s, which is not a number this can carry", name, number)
+			return nil, numericOverflow(name, declaredType, string(number))
 		}
 
 		return v1.NewLiteral(asFloat), nil
 	}
 
-	normalized, err := normalizeJSON(name, decoded)
+	normalized, err := normalizeJSON(name, declaredType, decoded)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +400,13 @@ func valueFromJSON(name string, decoded any, declaration *v1.InputDeclaration) (
 // too, and a number left as a json.Number reaches [v1.NewValue] as a string kind it
 // does not know — which would arrive as an error value inside an otherwise fine
 // argument rather than as a refusal anyone could read.
-func normalizeJSON(name string, decoded any) (any, error) {
+//
+// declaredType travels unchanged through the recursion: a number nested inside
+// a struct or list has no declaration of its own, but the refusal it can still
+// earn is about the *declaration that contains it*, and [numericOverflow]
+// needs that name for the same reason [inputCoercionError] gives one — a
+// classified refusal beats an internal one (#1552).
+func normalizeJSON(name, declaredType string, decoded any) (any, error) {
 	switch value := decoded.(type) {
 	case json.Number:
 		if whole, err := value.Int64(); err == nil {
@@ -407,7 +415,7 @@ func normalizeJSON(name string, decoded any) (any, error) {
 
 		asFloat, err := value.Float64()
 		if err != nil {
-			return nil, fmt.Errorf("input %q holds %s, which is not a number this can carry", name, value)
+			return nil, numericOverflow(name, declaredType, string(value))
 		}
 
 		return asFloat, nil
@@ -415,7 +423,7 @@ func normalizeJSON(name string, decoded any) (any, error) {
 	case map[string]any:
 		normalized := make(map[string]any, len(value))
 		for key, held := range value {
-			converted, err := normalizeJSON(name, held)
+			converted, err := normalizeJSON(name, declaredType, held)
 			if err != nil {
 				return nil, err
 			}
@@ -427,7 +435,7 @@ func normalizeJSON(name string, decoded any) (any, error) {
 	case []any:
 		normalized := make([]any, 0, len(value))
 		for _, held := range value {
-			converted, err := normalizeJSON(name, held)
+			converted, err := normalizeJSON(name, declaredType, held)
 			if err != nil {
 				return nil, err
 			}
@@ -438,6 +446,48 @@ func normalizeJSON(name string, decoded any) (any, error) {
 
 	default:
 		return value, nil
+	}
+}
+
+// numericOverflowError is the input name and exact decoded text of a JSON
+// number [valueFromJSON] or [normalizeJSON] could not carry as either an
+// int64 or a float64 — too large, too small, or too precise for either
+// conversion to represent.
+//
+// A typed error, wrapped in a [v1.InputError] by [numericOverflow] below, so
+// two things downstream can both read it rather than re-deriving it from the
+// rendered sentence: [v1.ClassifyError] reports this the caller's own
+// argument instead of Internal, the same reason [inputCoercionError] wraps
+// one (#1552), and sensitive.go's [refusedRunSensitiveValues] adds Text to a
+// run's redaction set when Input names a `sensitive:` declaration — reading
+// it off this error rather than reopening --input-file or the structured
+// --input flag's own JSON a second time, which cannot be made to work for
+// every source either accepts: a FIFO already drained by the first read
+// blocks forever on a second open, and a pipe or /dev/stdin has already
+// reached end of file (#2044).
+type numericOverflowError struct {
+	// Input is the declaration this number was inside, at whatever depth a
+	// struct or list nested it at.
+	Input string
+	// Text is the number's own decoded text, exactly as it appears in Error.
+	Text string
+}
+
+func (e *numericOverflowError) Error() string {
+	return fmt.Sprintf("input %q holds %s, which is not a number this can carry", e.Input, e.Text)
+}
+
+// numericOverflow builds the refusal [valueFromJSON] and [normalizeJSON] both
+// return for this one failure, wrapping [*numericOverflowError] in a
+// [v1.InputError] the same way [inputCoercionError] wraps its own — see that
+// function's comment for what Got is deliberately not set to here either:
+// naming a type nobody declared and this function never decided would be
+// worse than naming none.
+func numericOverflow(name, declaredType, text string) error {
+	return &v1.InputError{
+		Input:    name,
+		Declared: declaredType,
+		Err:      &numericOverflowError{Input: name, Text: text},
 	}
 }
 

@@ -955,10 +955,10 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// path grows a JSON rendering of its own.
 	inputs, err := runInputs(cmd, workflow)
 	if err != nil {
-		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, nil, reveal))
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, nil, err, reveal))
 	}
 	if err := checkRunInputs(workflow, inputs); err != nil {
-		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, reveal))
+		return redactFailureError(err, refusedRunSensitiveValues(cmd, workflow, inputs, err, reveal))
 	}
 
 	reason, _ := cmd.Flags().GetString("reason")

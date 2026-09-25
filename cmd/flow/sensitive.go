@@ -1,9 +1,8 @@
 package main
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -851,9 +850,13 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 	return response
 }
 
-// refusedRunSensitiveValues is the redaction set for a `flow run local` that is
-// refused before the run starts: a word the shell handed over that cannot be
-// the declared type, or arguments the binder refuses.
+// refusedRunSensitiveValues is the redaction set for `flow run local`, `flow
+// run` and `flow schedule create` when the command line is refused before a
+// run starts: a word the shell handed over that cannot be the declared type,
+// a JSON number too large for it, or arguments the binder refuses. All three
+// verbs read the same `inputs:` declarations the same way and refuse the
+// same two calls — [runInputs] and [checkRunInputs] — so one set serves all
+// three refusals rather than one per caller.
 //
 // [runSensitiveValues] cannot answer here, and its fail-closed answer is the
 // reason. It binds, and on this path the bind is the thing that failed, so it
@@ -879,8 +882,11 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 // The words themselves are in the set too, and they have to be. A refusal that
 // the coercion made — `--input pin=hunter2` against `type: int` — quotes a
 // word that never became a [v1.Value] at all, so no set built out of values
-// can hold it, and it is the first refusal a mistyped sensitive argument earns.
-func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submitted map[string]*v1.Value, reveal bool) v1.SensitiveValues {
+// can hold it, and it is the first refusal a mistyped sensitive argument
+// earns. refusal is that error, read rather than reconstructed, for the one
+// other refusal a set built from values and flags cannot reach either — a
+// numeric-overflow refusal's own quoted number; see [sensitiveOverflowWords].
+func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submitted map[string]*v1.Value, refusal error, reveal bool) v1.SensitiveValues {
 	names := v1.SensitiveInputNames(workflow)
 	if reveal || len(names) == 0 {
 		return v1.SensitiveValues{}
@@ -902,7 +908,7 @@ func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submit
 	}
 
 	words := sensitiveInputWords(cmd, names)
-	words = append(words, sensitiveInputFileWords(cmd, names)...)
+	words = append(words, sensitiveOverflowWords(refusal, names)...)
 
 	return v1.SensitiveInputValues(values, names).WithValues(words...)
 }
@@ -925,11 +931,15 @@ func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submit
 // the `name=value` shape ever changes.
 //
 // A value given through --input-file rather than a flag is not read back
-// here. It reaches the set as a bound value by the ordinary path whenever it
-// decodes; the one refusal that quotes it before then — a JSON number too
-// large for the declared type to carry — is [sensitiveInputFileWords]'s
-// instead, because it has to read the file to reach it and this function
-// deliberately does not (#2044).
+// here, and neither is a structured --input flag's own JSON. Both reach the
+// set as a bound value by the ordinary path whenever they decode; the one
+// refusal that quotes one of them before then — a JSON number too large for
+// the declared type to carry — is [sensitiveOverflowWords]'s instead, read
+// off the refusal itself rather than by opening --input-file a second time.
+// A second open cannot be made to work for every source this flag and
+// --input-file both accept: a FIFO is drained by the first read and blocks
+// forever on a second open, and a pipe or /dev/stdin has already reached end
+// of file by the time a refusal is being redacted (#2044).
 func sensitiveInputWords(cmd *cobra.Command, names map[string]bool) []string {
 	flags, _ := cmd.Flags().GetStringArray("input")
 
@@ -944,83 +954,31 @@ func sensitiveInputWords(cmd *cobra.Command, names map[string]bool) []string {
 	return words
 }
 
-// sensitiveInputFileWords is the raw text of every JSON number nested inside
-// a declared-sensitive field of --input-file's document, collected before
-// [valueFromJSON] would convert any of it.
+// sensitiveOverflowWords returns the exact decoded text a numeric-overflow
+// refusal quotes, when the input it names is declared `sensitive:` —
+// otherwise nil.
 //
-// This exists for the one refusal [inputsFromJSON] can produce that a bound
-// [*v1.Value] can never carry: a number past what an int64 or a float64 can
-// hold — `{"pin":1e999}` against `sensitive: true, type: int` — fails inside
-// [normalizeJSON] before a [*v1.Value] exists at all, and the refusal quotes
-// the number's own decoded text verbatim (#2044). No later refusal on this
-// path reaches this function at all: a value that *does* convert reaches the
-// binder as a submitted value, covered by the ordinary value half of the
-// set, and a type mismatch the binder itself refuses names a declared type,
-// never the raw value (#1552's own argument for why a coercion refusal is the
-// one class that has to quote the word).
-//
-// A file that does not exist, does not parse, or is not a JSON object of
-// arguments contributes nothing here. That is not fail-open: the refusal
-// [inputsFromFile] returns in each of those cases is a syntax position or an
-// open error, never a value, so there is nothing this function could have
-// redacted from it, and returning early costs the caller nothing it needed.
-// Reading the file a second time, after [runInputs] already tried and
-// failed to, is the cost of building this half of the set at all: a rare,
-// refusal-only path, and the read is bounded exactly as the first one was.
-func sensitiveInputFileWords(cmd *cobra.Command, names map[string]bool) []string {
-	if len(names) == 0 {
-		return nil
-	}
-	path, _ := cmd.Flags().GetString("input-file")
-	if path == "" {
+// This exists for the one refusal a value set and [sensitiveInputWords] both
+// miss: a JSON number past what an int64 or a float64 can hold —
+// `{"pin":1e999}` against `sensitive: true, type: int`, from --input-file or
+// from a structured --input flag's own JSON alike — fails inside
+// [normalizeJSON] or [valueFromJSON] before a [*v1.Value] exists at all, so
+// no set built out of values can hold it, and it never reaches the shell-word
+// text [sensitiveInputWords] reads either (a structured flag's value is JSON,
+// not a word). Both call sites construct a [*numericOverflowError] for
+// exactly this failure, which is what this reads back rather than opening
+// --input-file a second time: a second open cannot be made to work for every
+// source that flag and --input-file both accept — a FIFO already drained by
+// the first read blocks forever on a second open, and a pipe or /dev/stdin
+// has already reached end of file — so the fix has to be reading the one
+// refusal already in hand, not reading the input again (#2044).
+func sensitiveOverflowWords(refusal error, names map[string]bool) []string {
+	var overflow *numericOverflowError
+	if !errors.As(refusal, &overflow) || !names[overflow.Input] {
 		return nil
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	data, err := readInputsFile(path, f)
-	if err != nil {
-		return nil
-	}
-
-	fields, err := decodeInputJSONObject(data)
-	if err != nil {
-		return nil
-	}
-
-	var words []string
-	for name, value := range fields {
-		if names[name] {
-			words = collectJSONNumberWords(value, words)
-		}
-	}
-
-	return words
-}
-
-// collectJSONNumberWords appends the raw text of every json.Number nested in
-// decoded to words, walking maps and lists the same way [normalizeJSON] does
-// — so this reaches the identical set of numbers a conversion failure there
-// could quote, at any nesting depth a struct or list input holds one.
-func collectJSONNumberWords(decoded any, words []string) []string {
-	switch value := decoded.(type) {
-	case json.Number:
-		return append(words, string(value))
-	case map[string]any:
-		for _, child := range value {
-			words = collectJSONNumberWords(child, words)
-		}
-	case []any:
-		for _, child := range value {
-			words = collectJSONNumberWords(child, words)
-		}
-	}
-
-	return words
+	return []string{overflow.Text}
 }
 
 // runSensitiveValues is the redaction set for a run this process is starting:
