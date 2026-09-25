@@ -31,6 +31,50 @@ func TestTestDocumentSymbolsHandlesManySiblingCases(t *testing.T) {
 	assert.Equal(t, "c9999", got[count-1].Name)
 }
 
+// TestKeyPathTrackerPopsAtMostOncePerLine is the mechanism the linear-time
+// claim actually rests on, checked by counting rather than by timing — the
+// same convention flowdebug's TestTheStepListIsAnsweredAsAWindow uses, and for
+// the same reason: a timing assertion flakes on a busy machine, and an
+// allocation count moves with the runtime, but a count of a named operation is
+// exact.
+//
+// TestTestDocumentSymbolsHandlesManySiblingCases above proves
+// [testDocumentSymbols] returns the right 10,000 symbols; it cannot tell a
+// linear scan from the quadratic one it replaced, since both produce the same
+// answer, only at different cost — a Copilot review on this PR asked for an
+// operation-count or bounded performance check instead. [keyPathTracker.advance]
+// pops before it pushes and returns the popped-down path as enclosing, so the
+// number of keys popped on one call is exactly the shrink from the path's
+// length before the call to len(enclosing). Summed over a whole scan, that
+// total can never exceed the total number of keys ever pushed, which can never
+// exceed the number of lines — the amortized argument the type's own doc
+// comment states ("each key is pushed and popped at most once"), pinned here
+// as a count instead of left as prose.
+func TestKeyPathTrackerPopsAtMostOncePerLine(t *testing.T) {
+	t.Parallel()
+
+	const count = 10_000
+	lines := make([]string, 0, count+1)
+	lines = append(lines, "tests:")
+	for i := range count {
+		lines = append(lines, fmt.Sprintf("  - name: c%d", i))
+	}
+
+	var (
+		tracker keyPathTracker
+		pops    int
+	)
+	for _, line := range lines {
+		before := len(tracker)
+		enclosing := tracker.advance(line)
+		pops += before - len(enclosing)
+	}
+
+	assert.LessOrEqual(t, pops, len(lines),
+		"the tracker popped more keys across the scan than lines exist to have pushed them, "+
+			"which is exactly the per-line rescanning this type replaces")
+}
+
 // TestTestDocumentSymbolsNamesEachCase: a suite with two independent cases
 // (no `cases:` rows) gets one symbol per `tests:` entry, named by its own
 // `name:`.
