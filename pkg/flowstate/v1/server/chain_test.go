@@ -52,6 +52,16 @@ func TestAContinuedWorkloadIsReportedFromWhereItBegan(t *testing.T) {
 	// actually found. CollectT's FailNow calls runtime.Goexit the same way,
 	// but the deferred write it leaves behind still runs during that unwind,
 	// so a tick's real assertion failures reach the timeout's report intact.
+	//
+	// The duplicate check is recorded on t directly, not only on the tick's
+	// CollectT: EventuallyWithT (testify v1.12.1) discards a failed tick and
+	// simply retries, so a duplicate seen on one tick and gone by the next
+	// would otherwise vanish along with it — silently retrying away the one
+	// thing this test exists to catch. t.Errorf is documented safe to call
+	// from any goroutine, unlike t.Fatalf, and fails the test outright rather
+	// than leaving that to a tick that may not reproduce it; the tick's own
+	// CollectT is still failed too, so the poll keeps going rather than
+	// wrongly reading a duplicate as success.
 	var listed *v1.RunSummary
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		resp, lerr := flowstate.List(t.Context(), connect.NewRequest(&v1.ListRequest{}))
@@ -64,7 +74,9 @@ func TestAContinuedWorkloadIsReportedFromWhereItBegan(t *testing.T) {
 			if run.GetWorkflowId() != workflowID {
 				continue
 			}
-			if !assert.Nil(c, found, "one workload is listed as more than one row") {
+			if found != nil {
+				t.Errorf("one workload is listed as more than one row")
+				assert.Fail(c, "one workload is listed as more than one row")
 				return
 			}
 			found = run
