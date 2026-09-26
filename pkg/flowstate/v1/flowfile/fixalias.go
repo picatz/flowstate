@@ -2,6 +2,7 @@ package flowfile
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -502,11 +503,43 @@ func (in *aliasInliner) rewrite() {
 			fmt.Sprintf("alias `*%s` would be replaced with the value `&%s` names", name, name))
 	}
 
-	for _, anchor := range in.anchorNodes {
+	for _, anchor := range anchorsRightToLeft(in.anchorNodes) {
 		if !in.dropMarker(anchor) {
 			return
 		}
 	}
+}
+
+// anchorsRightToLeft orders anchors so that [aliasInliner.dropMarker] never
+// locates one by a column a previous removal has already shifted (#2106).
+//
+// Two anchors interact only when they share a line: removing one's marker
+// moves every column to its right on that same line, and an anchor on a
+// different line is never touched by another line's edit at all. So the
+// only thing this has to fix is the order *within* one line — rightmost
+// first, so a removal never has to be read back through a line a marker to
+// its own left has already shortened. [dropMarker]'s own column lookup was
+// otherwise unaffected: a marker written left of every other one on its line
+// is still found exactly where the parser read it, and a marker alone on its
+// line is found there regardless of order.
+//
+// [in.anchorNodes] is collected in source order, so anchors sharing a line
+// already arrive left to right; a single [slices.SortStableFunc] over the
+// anchors themselves — never over a line's own text — reverses that within
+// each line and leaves the order between lines alone, which is the one
+// property [dropMarker]'s per-anchor scan needs to stay bounded by the line
+// it edits rather than by how many other anchors this rewrite has already
+// processed.
+func anchorsRightToLeft(anchors []*ast.AnchorNode) []*ast.AnchorNode {
+	out := slices.Clone(anchors)
+	slices.SortStableFunc(out, func(a, b *ast.AnchorNode) int {
+		ap, bp := a.Start.Position, b.Start.Position
+		if ap.Line != bp.Line {
+			return cmp.Compare(ap.Line, bp.Line)
+		}
+		return cmp.Compare(bp.Column, ap.Column) // descending: rightmost first
+	})
+	return out
 }
 
 // replacement returns the lines one site's line becomes.

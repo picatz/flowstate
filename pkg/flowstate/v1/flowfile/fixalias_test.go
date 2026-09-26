@@ -796,3 +796,88 @@ steps:
 
 	assert.Equal(t, want, string(result.Source))
 }
+
+// TestFixDropsSeveralAnchorMarkersOnOneLine is #2106's two reproductions.
+//
+// [aliasInliner.dropMarker] removes each anchor's `&name` marker in the order
+// [aliasInliner.anchorNodes] holds them, which follows the document — left to
+// right on a line two anchors share. Every removal edits the line it is on in
+// place, so a second anchor further right is then located by the *original*
+// column the parser read, which the first removal has already shifted left.
+//
+// The first case is the shape that used to fail safe: the shifted offset does
+// not hold "&b", so the rewrite refused rather than guessed. It is included
+// here as the positive direction of the same fix, since removing right to
+// left resolves it correctly instead of merely refusing it.
+//
+// The second case is the shape that did not fail safe: the anchor `&b`'s
+// value is the quoted string `"&b"`, chosen so that once `&aa`'s marker
+// shifts the line, `&b`'s stale column lands inside those quotes rather than
+// past the end of the line — and the text there happens to read `&b` too, so
+// the old code deleted it instead of refusing. That corrupts the document
+// silently: `flow fix` reports success on a file that no longer holds the
+// value the author wrote, and the real `&b` marker survives to be removed on
+// the fixed-point loop's next round, which is what let the corruption through
+// unnoticed by [FixResult.Refusals].
+func TestFixDropsSeveralAnchorMarkersOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	t.Run("two bare anchors sharing a line", func(t *testing.T) {
+		t.Parallel()
+
+		src := `edition: v2026.3
+name: t
+x: [&a 1, &b 2]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+		want := `edition: v2026.3
+name: t
+x: [1, 2]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+		result, err := flowfile.Fix([]byte(src))
+		require.NoError(t, err)
+		require.Empty(t, result.Refusals, "both anchors should be removable now that they are dropped right to left")
+		require.True(t, result.Complete())
+		assert.Equal(t, want, string(result.Source))
+	})
+
+	t.Run("a marker's own text does not delete a look-alike inside a quoted value", func(t *testing.T) {
+		t.Parallel()
+
+		// &b's value is the quoted string "&b" — chosen so that removing &aa's
+		// marker first shifts &b's stale column onto that quoted text rather
+		// than off the end of the line, which is what let the old left-to-right
+		// removal mistake the quoted bytes for the marker instead of refusing.
+		src := `edition: v2026.3
+name: t
+x: [&aa 1, &b "&b"]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+		want := `edition: v2026.3
+name: t
+x: [1, "&b"]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+		result, err := flowfile.Fix([]byte(src))
+		require.NoError(t, err)
+		require.Empty(t, result.Refusals)
+		require.True(t, result.Complete())
+		assert.Equal(t, want, string(result.Source),
+			"the quoted value \"&b\" must survive removing &aa's marker on the same line")
+	})
+}

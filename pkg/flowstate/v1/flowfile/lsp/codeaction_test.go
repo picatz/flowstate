@@ -405,3 +405,34 @@ func TestCodeActionQuotesAnUnquotedTernaryInADocumentThatDoesNotParse(t *testing
 	assert.Empty(t, c.codeAction(uri, wholeOf(src), []lsp.CodeActionKind{lsp.CAKRefactor}, nil),
 		"asked for anything but a quickfix, an unparsable document offers nothing")
 }
+
+// TestCodeActionDropsSeveralAnchorMarkersOnOneLine is #2106 reached through the
+// editor rather than the command: two anchors sharing one line, with no alias to
+// either. Before #2106's fix, [aliasInliner.dropMarker] located the second one by a
+// column the first removal had already shifted, so [flowfile.Fix] refused the
+// document and this handler offered nothing for a file with nothing else wrong with
+// it. The fix makes the migration reachable here the same way it does from the
+// command line, so this checks the editor's own entry point and not just Fix's.
+func TestCodeActionDropsSeveralAnchorMarkersOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.3
+name: t
+x: [&a 1, &b 2]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	const uri = "file:///anchors-on-one-line.yaml"
+	c := newClient(t)
+	c.initialize()
+	c.open(uri, src)
+
+	actions := c.codeAction(uri, wholeOf(src), nil, nil)
+	require.NotEmpty(t, actions, "no action offered for a document flow fix can migrate")
+
+	migrate := actionOfKind(t, actions, codeActionKindSourceFixAll)
+	assert.Equal(t, fixedSource(t, src), applyEdit(t, uri, src, migrate.Edit))
+}
