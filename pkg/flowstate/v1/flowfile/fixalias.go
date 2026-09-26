@@ -519,9 +519,7 @@ func (in *aliasInliner) rewrite() {
 			fmt.Sprintf("alias `*%s` would be replaced with the value `&%s` names", name, name))
 	}
 
-	if !in.dropMarkers() {
-		return
-	}
+	in.dropMarkers()
 }
 
 // dropMarkers removes every anchor's `&name` marker, one line at a time.
@@ -550,7 +548,7 @@ func (in *aliasInliner) rewrite() {
 // column in one forward pass ([byteOffsetsOfColumns]) and rewriting the
 // line in one pass ([dropMarkersFromLine]) costs O(L+k) per line instead
 // (#2106, round two).
-func (in *aliasInliner) dropMarkers() bool {
+func (in *aliasInliner) dropMarkers() {
 	byLine := map[int][]*ast.AnchorNode{}
 	var lines []int
 	for _, anchor := range in.anchorNodes {
@@ -567,12 +565,17 @@ func (in *aliasInliner) dropMarkers() bool {
 		slices.SortFunc(anchors, func(a, b *ast.AnchorNode) int {
 			return cmp.Compare(a.Start.Position.Column, b.Start.Position.Column)
 		})
+		// A refusal on one line stops the walk here rather than dropping
+		// markers from every other line too: the document is refused
+		// wholesale either way (see [inlineWholeValueAliases]'s own doc
+		// comment), so continuing would only grow [fixer.changes] with
+		// edits a refused run never applies. Nothing above this call
+		// depends on the return value, which is why the caller,
+		// [aliasInliner.rewrite], no longer reads one either.
 		if !in.dropMarkersOnLine(line, anchors) {
-			return false
+			return
 		}
 	}
-
-	return true
 }
 
 // dropMarkersOnLine removes every one of anchors' markers from the one line
@@ -670,6 +673,19 @@ func dropMarkersFromLine(text string, columns []int, names []string) (rewritten 
 	for i, at := range offsets {
 		want := "&" + names[i]
 		if at+len(want) > len(text) || text[at:at+len(want)] != want {
+			return text, i, false, steps, false
+		}
+		// A parser position and text match on their own do not rule out
+		// two markers claiming the same bytes: [byteOffsetsOfColumns]
+		// trusts the columns it is given, and nothing before this walk
+		// checks that they are actually in order. Reached only when a
+		// caller's positions do not agree with the text the way the
+		// parser's own should always — goccy gives no way to make it
+		// happen — but "should never" is not "cannot", and every slice
+		// this rewrite makes below assumes markers are disjoint and in
+		// order; refusing here is what keeps that assumption from
+		// becoming a panic instead of a diagnostic.
+		if i > 0 && at < markers[i-1].at+markers[i-1].w {
 			return text, i, false, steps, false
 		}
 		markers[i] = marker{at: at, w: len(want)}

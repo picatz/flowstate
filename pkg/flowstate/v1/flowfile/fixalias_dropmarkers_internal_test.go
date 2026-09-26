@@ -78,7 +78,7 @@ func TestDropMarkersScanIsLinearInLineLength(t *testing.T) {
 	// k is small and fixed, not tuned to this fixture's own anchor count —
 	// the property under test is that [aliasInliner.markerScanSteps] tracks
 	// the document's own length, not the anchor count multiplied by it. An
-	// O(k·L) regression fails this by orders of magnitude on 30,000 anchors,
+	// O(k·L) regression fails this by orders of magnitude on 42,000 anchors,
 	// not by a margin this bound would need tuning to catch.
 	const k = 4
 	bound := k * len(src)
@@ -172,6 +172,60 @@ func TestDropMarkersFromLineMatchesTheOldSequentialAnswer(t *testing.T) {
 			got, badIndex, notLocated, _, ok := dropMarkersFromLine(tt.text, tt.columns, tt.names)
 			require.True(t, ok, "refused at index %d (notLocated=%v)", badIndex, notLocated)
 			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestDropMarkersFromLineRefusesOverlappingMarkers is independent review's
+// own finding on this rewrite: [byteOffsetsOfColumns] trusts the columns it
+// is given and [dropMarkersFromLine]'s own validation loop only checked
+// each marker against the text at its own offset, never against the marker
+// before it — so two positions that each independently matched their own
+// "&name", but claimed overlapping bytes, reached the build loop's slicing
+// with markers that are not actually disjoint and in order, which is what
+// every slice there assumes. `text[markers[i].at+markers[i].w : next]`
+// panics with a negative-length slice bounds error instead of refusing,
+// for a caller whose positions do not agree with the text the way the
+// parser's own always should — goccy itself has no way to produce this,
+// but "should never" is not "cannot", and main's own single-anchor
+// dropMarker refuses the same shape rather than trusting it. Both cases
+// are two markers whose *names* differ but whose *text* overlaps: the
+// first is a byte a shorter name's own match consumes twice ("&ab" read as
+// "&a" plus a one-byte overlap with "&ab" starting on the same "&"), the
+// second is two names that together spell out one contiguous run of bytes
+// ("&a&b" read as "&a&b" and, overlapping it, "&b").
+func TestDropMarkersFromLineRefusesOverlappingMarkers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		text    string
+		columns []int
+		names   []string
+	}{
+		{
+			name:    "two names matching the same leading byte",
+			text:    "&ab x",
+			columns: []int{1, 1},
+			names:   []string{"a", "ab"},
+		},
+		{
+			name:    "two names spelling out one overlapping run",
+			text:    "&a&b x",
+			columns: []int{1, 3},
+			names:   []string{"a&b", "b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, badIndex, notLocated, _, ok := dropMarkersFromLine(tt.text, tt.columns, tt.names)
+			require.False(t, ok, "expected overlapping markers to be refused rather than accepted")
+			require.False(t, notLocated, "expected the same refusal a text mismatch gets, not a missing column")
+			require.Equal(t, tt.text, got, "a refusal must not rewrite anything")
+			require.Equal(t, 1, badIndex, "expected the second (overlapping) marker to be the one named")
 		})
 	}
 }

@@ -799,16 +799,17 @@ steps:
 
 // TestFixDropsSeveralAnchorMarkersOnOneLine is #2106's two reproductions.
 //
-// A left-to-right removal of each anchor's `&name` marker — the order
-// [aliasInliner.anchorNodes] holds them in, which follows the document — edits
-// the line it is on in place, so a second anchor further right is then
-// located by the *original* column the parser read, which the first removal
-// has already shifted left.
+// The original single-anchor `dropMarker` removed each anchor's `&name`
+// marker one at a time, in [aliasInliner.anchorNodes]'s own (left-to-right,
+// document) order. Each removal edited the line it was on in place, so a
+// second anchor further right was then located by the *original* column the
+// parser read, which the first removal had already shifted left.
 //
 // The first case is the shape that used to fail safe: the shifted offset does
 // not hold "&b", so the rewrite refused rather than guessed. It is included
-// here as the positive direction of the same fix, since removing right to
-// left resolves it correctly instead of merely refusing it.
+// here as the positive direction of the same fix, since finding and removing
+// every marker on the line together, through [dropMarkersFromLine], resolves
+// it correctly instead of merely refusing it.
 //
 // The second case is the shape that did not fail safe: the anchor `&b`'s
 // value is the quoted string `"&b"`, chosen so that once `&aa`'s marker
@@ -844,7 +845,7 @@ steps:
 
 		result, err := flowfile.Fix([]byte(src))
 		require.NoError(t, err)
-		require.Empty(t, result.Refusals, "both anchors should be removable now that they are dropped right to left")
+		require.Empty(t, result.Refusals, "both anchors should be removable now that dropMarkersFromLine finds and removes them together")
 		require.True(t, result.Complete())
 		assert.Equal(t, want, string(result.Source))
 	})
