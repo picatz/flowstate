@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 
 	"github.com/goccy/go-yaml/parser"
@@ -158,6 +159,13 @@ type contribution struct {
 	// or under one of them is attributed to file and positioned in doc.
 	paths []loc
 
+	// restated are the vars the suite shadows with a value equal to the
+	// directory's own, sorted. The suite's copy is withheld when it is on a
+	// path to a secret, but every other suite still reads the directory's, so
+	// [File.evaluateVars] refuses a restated var exactly as it refuses one
+	// the directory contributed (#2080).
+	restated []string
+
 	// ownChecks and ownStubs are how many claims and stubs the *suite's* own
 	// `defaults:` block wrote, counted before the fold. After it, index i of
 	// `defaults.check` is no longer entry i of the suite's list — the
@@ -246,8 +254,12 @@ func (dd *dirDefaults) combineInto(file *File) contribution {
 			contributed = append(contributed, at("vars"))
 		} else {
 			for _, name := range slices.Sorted(maps.Keys(dd.Vars)) {
-				if _, stated := file.Vars[name]; !stated {
+				own, stated := file.Vars[name]
+				switch {
+				case !stated:
 					contributed = append(contributed, at("vars").field(name))
+				case reflect.DeepEqual(own, dd.Vars[name]):
+					moved.restated = append(moved.restated, name)
 				}
 			}
 		}

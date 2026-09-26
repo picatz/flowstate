@@ -23,7 +23,7 @@ import (
 // reads it — through a scripted signal name that matches no gate the workflow
 // waits on. Taint is a fact about one suite's `secrets:`, so `a.test.yaml` is
 // refused at load for putting a directory var on a path to a secret, naming
-// the remedy: state `token` in its own `vars:`.
+// the remedy: move `token` into its own `vars:`.
 //
 // b.test.yaml's own mismatch still prints the value, by design: no file b can
 // see calls it a secret, and a.test.yaml is refused before it can. The rule
@@ -73,7 +73,7 @@ func TestASuiteNamingASecretFromADirectoryVarIsRefused(t *testing.T) {
 
 				assert.Contains(t, res.Output(), "vars.token is stated by testdefaults.yaml",
 					"the refusal names the directory's var and the file that states it (#2080)")
-				assert.Contains(t, res.Output(), "state vars.token in the suite's own vars:",
+				assert.Contains(t, res.Output(), "move vars.token into the suite's own vars: and remove it from testdefaults.yaml",
 					"the refusal names the remedy")
 			})
 		}

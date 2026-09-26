@@ -102,9 +102,10 @@ import (
 //	where the closure     | at the   | taint is a fact about ONE suite's
 //	  stops               | suite    | `secrets:`, and a var testdefaults.yaml
 //	                      | file     | states is printed by every suite beside it,
-//	                      |          | so a directory var on a path to a secret
-//	                      |          | is refused, naming the remedy: state it in
-//	                      |          | the suite's own vars (#2080,
+//	                      |          | so a directory var on a path to a secret,
+//	                      |          | or a suite's copy of one, is refused,
+//	                      |          | naming the remedy: move it into the
+//	                      |          | suite's own vars (#2080,
 //	                      |          | [File.evaluateVars])
 //	what a reference IS   | one      | CEL binds `vars.token` and `vars['token']`
 //	                      | recog-   | to one value, so ONE function answers "which
@@ -631,7 +632,7 @@ func checkVarLeaves(p *problems, r site, where string, value any, depth int) {
 				}
 				const rule = "a computed leaf must be one whole-value `${...}` expression, with no literal text around it"
 				if len(quoted) == 0 {
-					p.report(r, "%s holds an unterminated `${`; %s", where, rule)
+					p.report(r, "%s holds `${` outside one whole-value fence; %s", where, rule)
 				} else {
 					p.report(r, "%s holds the expression %s surrounded by other text; %s",
 						where, strings.Join(quoted, " and "), rule)
@@ -960,7 +961,10 @@ type fileVars struct {
 // own diagnostic is the one an author acts on, and a cascade would report one
 // mistake once per reader of it — the rule [problems] already states for a
 // value whose kind is already wrong.
-func (f *File) evaluateVars(p *problems) {
+//
+// restated names the vars the suite states with the very value the
+// directory's testdefaults.yaml also gives them ([contribution.restated]).
+func (f *File) evaluateVars(p *problems, restated []string) {
 	block := at(v1.VarsRoot)
 
 	nodes := collectVarNodes(f.Vars)
@@ -976,19 +980,24 @@ func (f *File) evaluateVars(p *problems) {
 	// means in #1072's record: the seed is a syntactic fact about the document
 	// and the closure is a fact about the dependency graph, so a refusal below
 	// knows what it may not print before there is a value to print.
-	taint := taintedVars(declared, expandSecretHolding(secretHoldingVars(f.Tests), nodes))
+	holding := secretHoldingVars(f.Tests)
+	taint := taintedVars(declared, expandSecretHolding(holding, nodes))
 
 	// The closure may not reach a var the directory's testdefaults.yaml
 	// stated (#2080). Taint is a fact about one suite's `secrets:`, and a
 	// shared var's value is printed by every other suite in the directory,
-	// none of which can see that this one called it a secret; a suite's own
-	// `vars:` shadows the directory's, so stating the var there keeps the
-	// value inside the one file that withholds it. Once per root, since the
-	// fold records provenance per top-level name. Names a path, never a value.
+	// none of which can see that this one called it a secret. The value has
+	// to *move* into the suite that withholds it: a suite that shadows the
+	// directory's var with the same value (restated, from
+	// [dirDefaults.combineInto]) loads the copy it withholds while its
+	// siblings keep printing the directory's, so it is refused too. Once per
+	// root, since the fold records provenance per top-level name. Names a
+	// path, never a value.
 	refusedRoots := map[string]bool{}
 	for _, name := range taint.names() {
 		root := strings.SplitN(name, ".", 2)[0]
-		if refusedRoots[root] || !p.writtenElsewhere(block.field(root)) {
+		shared := p.writtenElsewhere(block.field(root))
+		if refusedRoots[root] || !shared && !slices.Contains(restated, root) {
 			continue
 		}
 		refusedRoots[root] = true
@@ -996,10 +1005,25 @@ func (f *File) evaluateVars(p *problems) {
 		if node, known := nodes[name]; known {
 			spot = node.spot
 		}
-		p.report(spot, "vars.%s is stated by %s but is on a path to a secret: %s. A secret-holding var "+
-			"must be stated in the suite that names the secret, so every suite that can print the value "+
-			"withholds it; state vars.%s in the suite's own vars:",
-			name, DirDefaultsName, taint.path(name), root)
+		remedy := fmt.Sprintf("move vars.%s into the suite's own vars: and remove it from %s", root, DirDefaultsName)
+		if !shared {
+			p.report(spot, "vars.%s restates the value %s gives it and is on a path to a secret: %s. "+
+				"Every other suite in the directory still reads that value from %s, where nothing "+
+				"withholds it; %s", name, DirDefaultsName, taint.path(name), DirDefaultsName, remedy)
+
+			continue
+		}
+		message := fmt.Sprintf("vars.%s is stated by %s but is on a path to a secret: %s. Every suite in "+
+			"the directory reads a var %s states, and only the suite that names the secret withholds "+
+			"it; %s", name, DirDefaultsName, taint.path(name), DirDefaultsName, remedy)
+		p.report(spot, "%s", message)
+		// Again at the `secrets:` entry that seeds the path, which the suite
+		// wrote: the position above is in testdefaults.yaml, and an editor
+		// publishes a problem only on the document it is positioned in, so
+		// without this the suite that is refused shows nothing.
+		if seed, known := holding[strings.SplitN(taint.seed(name), ".", 2)[0]]; known {
+			p.report(site{at: seed.at}, "%s", message)
+		}
 	}
 
 	resolved := make(map[string]bool, len(nodes))
@@ -1096,19 +1120,25 @@ func (f *File) evaluateVars(p *problems) {
 	// runs next — so every one of them is cleared through what this file
 	// withholds, in both spellings (#2080). Installed once, here, rather than
 	// raced by an earlier partial set: nothing has been substituted before
-	// this line, the vars diagnostics above quote a fence or a taint path
-	// rather than a value, and [checkVarLeaves], the one that used to quote a
-	// leaf's raw text, now quotes only the fences it found in it.
+	// this line, and [checkVarLeaves] no longer quotes the literal text around
+	// a leaf's fences. What is still quoted above this line is the expression
+	// as written, by the established rule: [varDeclaration.fence] in an
+	// evaluation error, and cel-go's source snippet in a parse error. That
+	// text is the author's, and it can hold literal material of its own — a
+	// string literal inside the fence, or everything between the braces of
+	// `${a} literal ${b}`, which [flowfile.SplitFence] accepts as one
+	// expression — so these are not a guarantee that no var text precedes
+	// this line (#2108).
 	p.withholdText(f.varsWithheld.text)
 }
 
-func expandSecretHolding(holding map[string]string, nodes map[string]varNode) map[string]string {
+func expandSecretHolding(holding map[string]secretSeed, nodes map[string]varNode) map[string]string {
 	expanded := map[string]string{}
-	for name, where := range holding {
+	for name, seed := range holding {
 		prefix := varPath{{key: name}}
 		for id, node := range nodes {
 			if pathHasPrefix(node.path, prefix) {
-				expanded[id] = where
+				expanded[id] = seed.where
 			}
 		}
 	}
@@ -1566,6 +1596,14 @@ func (p *problems) renderVarCycle(cycle []string, declared map[string]*varDeclar
 	return strings.Join(hops, " → ")
 }
 
+// A secretSeed is the `secrets:` position that names one var: in prose, for
+// the path a diagnostic renders, and as a path, for a diagnostic that must be
+// positioned in the suite rather than at a var the directory wrote.
+type secretSeed struct {
+	where string
+	at    loc
+}
+
 // secretHoldingVars are the vars a `secrets:` position references, and the
 // position that references each — the seed of [taintedVars], and the far end
 // of the path its diagnostics name.
@@ -1576,11 +1614,11 @@ func (p *problems) renderVarCycle(cycle []string, declared map[string]*varDeclar
 // [checkExpansionBounds] before this walk exists. Keys are visited in sorted
 // order and the first position to name a var is the one kept, so a file with
 // two references to one var says the same thing every time.
-func secretHoldingVars(tests []Test) map[string]string {
-	holding := map[string]string{}
+func secretHoldingVars(tests []Test) map[string]secretSeed {
+	holding := map[string]secretSeed{}
 
-	var walk func(where string, tests []Test)
-	walk = func(where string, tests []Test) {
+	var walk func(where string, spot loc, tests []Test)
+	walk = func(where string, spot loc, tests []Test) {
 		for i := range tests {
 			at := fmt.Sprintf("%s[%d]", where, i)
 			for _, key := range slices.Sorted(maps.Keys(tests[i].Secrets)) {
@@ -1589,13 +1627,16 @@ func secretHoldingVars(tests []Test) map[string]string {
 					continue
 				}
 				if _, seen := holding[match[1]]; !seen {
-					holding[match[1]] = fmt.Sprintf("%s.secrets[%q]", at, key)
+					holding[match[1]] = secretSeed{
+						where: fmt.Sprintf("%s.secrets[%q]", at, key),
+						at:    spot.item(i).field("secrets").field(key),
+					}
 				}
 			}
-			walk(at+".cases", tests[i].Cases)
+			walk(at+".cases", spot.item(i).field("cases"), tests[i].Cases)
 		}
 	}
-	walk("tests", tests)
+	walk("tests", at("tests"), tests)
 
 	return holding
 }
@@ -1632,9 +1673,19 @@ func (t varTaint) names() []string { return slices.Sorted(maps.Keys(t.via)) }
 // *from* a secret and contributing *to* one are the same relation seen from
 // two ends, and a reader who has the chain does not need to be told which.
 func (t varTaint) path(name string) string {
-	hops := []string{v1.VarsRoot + "." + name}
-	for hop := t.via[name]; hop != ""; hop = t.via[hop] {
+	var hops []string
+	for _, hop := range t.chain(name) {
 		hops = append(hops, v1.VarsRoot+"."+hop)
+	}
+
+	return fmt.Sprintf("%s, which %s references", strings.Join(hops, " → "), t.reference[t.seed(name)])
+}
+
+// chain is one var's hops to its seed, the var first and the seed last.
+func (t varTaint) chain(name string) []string {
+	hops := []string{name}
+	for hop := t.via[name]; hop != ""; hop = t.via[hop] {
+		hops = append(hops, hop)
 		if len(hops) > MaxVarsPerFile {
 			// Unreachable: `via` is a breadth-first tree, so it has no cycle.
 			// A bound anyway, because a rendering that walks a map somebody
@@ -1643,10 +1694,15 @@ func (t varTaint) path(name string) string {
 			break
 		}
 	}
-	seed := hops[len(hops)-1]
 
-	return fmt.Sprintf("%s, which %s references", strings.Join(hops, " → "),
-		t.reference[strings.TrimPrefix(seed, v1.VarsRoot+".")])
+	return hops
+}
+
+// seed is the var whose `secrets:` reference taints name.
+func (t varTaint) seed(name string) string {
+	hops := t.chain(name)
+
+	return hops[len(hops)-1]
 }
 
 // taintedVars closes the seeds over the dependency graph in *both* directions,

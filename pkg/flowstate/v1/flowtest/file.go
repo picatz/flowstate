@@ -1374,7 +1374,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	if !checkVars(p, file.Vars) {
 		return nil, p.err()
 	}
-	file.evaluateVars(p)
+	file.evaluateVars(p, moved.restated)
 	file.resolveVars(p)
 
 	// Rows are expanded before defaults are merged, which is what makes the
