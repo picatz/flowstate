@@ -696,12 +696,10 @@ tests:
 // TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening drives Codex's
 // review finding on #2041: `runCase` establishes its posture from
 // [casePosture] — which includes a table row's [Test.entrySecretMaterial] —
-// before anything can fail, but then *replaces* it wholesale with a freshly
-// built `sensitive` set once the run's inputs bind, rather than extending it
-// (see run.go's own comment on that assignment). Without also adding
-// entrySecretMaterial to that rebuilt set, a row that replaced its entry's
-// `secrets:` would withhold the entry's plaintext only until bind and print
-// it in the clear in every witness after — a check's, in particular, since a
+// before anything can fail, and now widens it with the run's own bound-input
+// material ([sensitiveInputs.Merge]) once the inputs bind (#2079). A row that
+// replaced its entry's `secrets:` must still have the entry's plaintext
+// withheld in every witness after bind — a check's, in particular, since a
 // check is judged after the run completes.
 func TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening(t *testing.T) {
 	t.Parallel()
@@ -882,10 +880,11 @@ outputs: {}
 // TestACasesOwnSecretSurvivesEscapedInThePostBindPosture is the same gap one
 // level down from the two table tests above, for the plainest case there is:
 // an ordinary case's own inline `secrets:`, no table and no `vars:` at all.
-// `test.Secrets` joins the run-time posture too (line 863's own comment), and
-// it had the identical missing-bothSpellings gap independent reviewers found
-// on entrySecretMaterial and vars.withheld.text, since all three are rebuilt
-// in the same three-line stretch.
+// `test.Secrets` joins the run-time posture too, through [casePosture] and
+// the same [sensitiveInputs.Merge] widening as entrySecretMaterial and
+// vars.withheld.text (#2079) — all three used to be rebuilt by hand in the
+// same three-line stretch, each with the identical missing-bothSpellings gap
+// independent reviewers found on it in turn.
 func TestACasesOwnSecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
 	t.Parallel()
 

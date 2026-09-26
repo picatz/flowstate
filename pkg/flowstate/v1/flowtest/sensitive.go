@@ -25,7 +25,12 @@ type sensitiveInputs = v1.SensitiveValues
 const sensitiveMarker = v1.SensitiveMarker
 
 // sensitiveNativeValues builds the redaction set for a run from the scope its
-// inputs were bound into. See [v1.SensitiveInputValues].
+// inputs were bound into. See [v1.SensitiveInputValues], which now carries a
+// `%q`-escaped spelling of every string it collects — root or descendant —
+// alongside the raw one, so a `sensitive:` input holding a tab, a newline, a
+// quote or a backslash prints redacted from a `%q`-rendered witness such as
+// [checkWitnesses]'s the same way it already does from a plain one (Codex,
+// #2079's issue comment; Copilot, on this fix's own first, root-only pass).
 func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sensitiveInputs {
 	return v1.SensitiveInputValues(scope.GetInputs(), sensitiveNames)
 }

@@ -860,56 +860,40 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
 	}
 
-	// The case's own `secrets:` plaintext joins the set (Codex, #1052):
-	// [resolveSecretInputs] exposes those values to stub expressions, so a
-	// stub can echo one into a step's outputs, and the rule is absolute — a
-	// resolved secret never prints, whatever path it took (CLAUDE.md,
-	// "secrets never enter workflow history"). Both lists, the pair every
-	// declared sensitive value gets: the value comparison catches the whole,
-	// the substring backstop catches "Bearer " + secret. An empty value is
-	// skipped — replacing the empty string would mark every position in
-	// every line while protecting nothing.
-	//
-	// Both spellings, for the same reason as entrySecretMaterial and
-	// vars.withheld.text below: `casePosture` already carries this same
-	// material through `bothSpellings`, and the assignment a few lines down
-	// replaces that posture wholesale rather than extending it, so a secret
-	// holding a tab, a newline, a quote or a backslash — bound to a stub's
-	// input and echoed into a step's body, say — printed escaped from a
-	// check witness once the run's own inputs bound (Codex, exact-head
-	// review on #2066).
-	sensitive = sensitive.WithValues(bothSpellings(slices.Collect(maps.Values(test.Secrets)))...)
-
-	// A table row's entry's secret plaintext, which [Test.entrySecretMaterial]
-	// carries past `Secrets`' own whole-or-nothing rule for redaction only
-	// (#2041) — both spellings, for the same reason as `test.Secrets` above.
-	sensitive = sensitive.WithValues(bothSpellings(test.entrySecretMaterial)...)
-
-	// And what a computed var inherited from one (#1072, repair 4). The
-	// substring backstop above is complete only while no var can *transform*
-	// anything: `${vars.token.substring(0, 8)}` is a prefix of a secret, so it
-	// matches no sensitive value and contains none, and it would have printed
-	// in a witness in the clear. The taint is decided at load, by reference
-	// rather than by inspecting a value ([withheldFrom]), and this is where it
-	// becomes the one redaction set every surface of this case already shares.
-	// Both spellings, for the same reason as `test.Secrets` above — #2041
-	// widened this text to include a literal secret-seeded var, not only a
-	// computed one, so it needs the identical treatment.
-	sensitive = sensitive.WithValues(bothSpellings(vars.withheld.text)...)
-
-	// The posture widens to the case's own set here. `sensitive` is built fresh
-	// from the run's own inputs (sensitiveNativeValues) and then, in the three
-	// assignments above, made to carry every value casePosture already carried
-	// too — not by extending that posture, but by re-deriving the same material
-	// a second time and replacing it outright. That second construction is
-	// exactly how one comes to withhold less than the other (casePosture's own
-	// doc gives the general rule); three review rounds on #2041 found it three
-	// times, once per value casePosture carries, which is the shape #2079 tracks
-	// as its own defect rather than a checklist to keep re-deriving correctly.
+	// The posture widens to the run's own set here — by extending, not
+	// replacing (#2079). `posture` already carries the case's own `secrets:`
+	// plaintext, [Test.entrySecretMaterial] and `vars.withheld.text`, each in
+	// both plain and `%q` spellings ([casePosture] builds it that way once, at
+	// the top of this function); [sensitiveInputs.Merge] widens it with
+	// `sensitive` — the run's bound-input material, [sensitiveNativeValues]
+	// already both-spelled on its own — rather than this function
+	// re-deriving casePosture's three sources a second time and replacing
+	// `posture` with only that. Re-deriving them by hand is exactly the
+	// pattern that went missing one value at a time across three review
+	// rounds on #2041/#2066: whatever `casePosture` is given to carry next
+	// reaches every exit below it without a matching line here.
 	// Every exit taken from this point on renders through this fuller set, and
 	// every exit before it through what was already known — which is the whole
 	// of the ordering fix, in one assignment.
-	posture = sensitive
+	//
+	// Reverting only this line back to `posture = sensitive` cannot be pinned
+	// by an integration test today (Copilot): every value `casePosture`
+	// currently returns is also one of the three sources the pre-#2079
+	// implementation re-added by hand right above this comment's old
+	// location, so a fixture built from any of them renders identically
+	// either way — confirmed directly with `go test -overlay`, swapping this
+	// file for its pre-#2079 body against this package's whole suite: every
+	// test still passed. What this line actually buys is a source
+	// `casePosture` does not have *yet* — "whatever `casePosture` is given
+	// to carry next", in this same comment above — surviving without a
+	// matching line here, which is exactly the property
+	// [SensitiveValues.Merge]'s own unit tests
+	// (TestMergeExtendsRatherThanReplaces, TestMergeWithholdsWhenEitherSideDoes)
+	// pin directly. A test built to fail on this line alone would have to
+	// invent a fourth source no real `casePosture` call site produces, which
+	// tests a hypothetical rather than this function.
+	posture = posture.Merge(sensitive)
+	sensitive = posture
 
 	// A debugging session prints what the transcript prints, so it withholds
 	// what the transcript withholds (Codex, #1109). Capability-discovered the
