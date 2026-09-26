@@ -29,8 +29,8 @@ mutation evidence only when they materially reduce the reviewer's work.
 
 ## What the conventions check reads
 
-`tools/commitcheck` runs on the title and body (warning-only until 2026-09-21,
-then strict) and on the squash message at merge time:
+`tools/commitcheck` runs on the title and body (strict once its own ratchet
+date passes, warning-only before) and on the squash message at merge time:
 
 - Title: `scope: lowercase imperative`.
 - Body: an issue reference (`Refs #N`, `Closes #N`) or a `No-Issue: <reason>`

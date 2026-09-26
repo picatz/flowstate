@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,14 +48,15 @@ func TestOutsideActionsAFindingIsAPlainLine(t *testing.T) {
 func TestAnOversizedInputIsRefusedRatherThanRead(t *testing.T) {
 	t.Parallel()
 
-	_, _, _, err := message("", "", "", strings.NewReader(strings.Repeat("x", maxInput+1)))
+	_, _, _, _, err := message("", "", "", strings.NewReader(strings.Repeat("x", maxInput+1)))
 	assert.ErrorContains(t, err, "over", "a message past the bound was read whole")
 
-	subject, body, where, err := message("", "", "", strings.NewReader("a: b\n\nbody\n"))
+	subject, body, where, actor, err := message("", "", "", strings.NewReader("a: b\n\nbody\n"))
 	assert.NoError(t, err)
 	assert.Equal(t, "a: b", subject)
 	assert.Equal(t, "\nbody", body)
 	assert.Equal(t, commitcheck.SurfaceCommit, where, "stdin carries whatever the caller has; the stricter surface applies")
+	assert.Empty(t, actor, "stdin carries no pull request, so no actor to read one from")
 }
 
 // The event payload is the only place [commitcheck.SurfacePullRequest] is
@@ -72,20 +74,67 @@ func TestTheEventPayloadIsReadAsAPullRequestBody(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "event.json")
 	payload, err := json.Marshal(map[string]any{
-		"pull_request": map[string]string{"title": "a: b", "body": stored},
+		"pull_request": map[string]any{
+			"title": "a: b",
+			"body":  stored,
+			"user":  map[string]string{"login": "someone"},
+		},
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, payload, 0o600))
 
-	subject, body, where, err := message("", "", path, nil)
+	subject, body, where, actor, err := message("", "", path, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "a: b", subject)
 	assert.Equal(t, stored, body)
 	require.Equal(t, commitcheck.SurfacePullRequest, where,
 		"a body read back from the forge already carries the footer the forge appended")
+	assert.Equal(t, "someone", actor)
 
 	assert.Empty(t, commitcheck.Check(subject, body, where),
 		"end to end: the appended footer is not reported against the author who did not write it")
 	assert.NotEmpty(t, commitcheck.Check(subject, body, commitcheck.SurfaceCommit),
 		"and the same text in a commit message still is, so the surface is what decides")
+}
+
+// TestARatchetDateMakesTheCheckStrictOnItsOwn pins both sides of
+// [ratchetDate]: nothing in the workflow has to flip a flag, because the
+// comparison itself is what #2024 found missing.
+func TestARatchetDateMakesTheCheckStrictOnItsOwn(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, ratchetPassed(ratchetDate.Add(-time.Second)), "a moment before the ratchet date is still warning-only")
+	assert.True(t, ratchetPassed(ratchetDate), "the ratchet date itself is strict")
+	assert.True(t, ratchetPassed(ratchetDate.Add(time.Second)), "a moment after the ratchet date is strict")
+}
+
+// TestADependabotPullRequestIsExempt pins the one exemption #2024 added:
+// Dependabot's own title and body, which its human maintainer never chose
+// and could not have held to these conventions, do not count against it.
+func TestADependabotPullRequestIsExempt(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, exempt(commitcheck.SurfacePullRequest, dependabotActor))
+	assert.False(t, exempt(commitcheck.SurfacePullRequest, "someone"),
+		"a human's pull request still owes the conventions")
+	assert.False(t, exempt(commitcheck.SurfaceCommit, dependabotActor),
+		"a commit message carries no actor to exempt; only the event payload does")
+
+	path := filepath.Join(t.TempDir(), "event.json")
+	payload, err := json.Marshal(map[string]any{
+		"pull_request": map[string]any{
+			"title": "build(deps): bump x from 1 to 2",
+			"body":  "Bumps x from 1 to 2.",
+			"user":  map[string]string{"login": dependabotActor},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, payload, 0o600))
+
+	subject, body, where, actor, err := message("", "", path, nil)
+	require.NoError(t, err)
+	require.Equal(t, dependabotActor, actor)
+	assert.NotEmpty(t, commitcheck.Check(subject, body, where),
+		"the conventions this exemption skips are real: on its own the check would flag this title and body")
+	assert.True(t, exempt(where, actor))
 }

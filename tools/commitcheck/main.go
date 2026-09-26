@@ -7,9 +7,18 @@
 //
 // Under GitHub Actions each finding is a `::warning` annotation naming the
 // rule and the skill that explains it; elsewhere it is a line on stderr. The
-// exit status is zero unless -strict is given: the check runs warning-only
-// until 2026-09-21 so the ratchet is visible before it bites, and the plan
-// job flips the flag then.
+// exit status is zero unless a run is strict and reports a finding: with
+// -strict, or on its own once [ratchetDate] has passed. The date lives here,
+// beside the rules it ratchets, rather than as a flag someone would have had
+// to add to .github/workflows/commitcheck.yml on the day — that workflow
+// calls this command with no flags and stays correct as the date moves
+// (#2024). commitcheck is its own workflow rather than a step of ci.yml's
+// plan job, because it must re-run on an edited pull request, which the plan
+// job does not.
+//
+// A pull request opened by [dependabotActor] is exempt from every rule: its
+// title and body are Dependabot's own template, not text its nominal author
+// chose and could hold to these conventions (#2024).
 package main
 
 import (
@@ -19,9 +28,37 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/picatz/flowstate/internal/commitcheck"
 )
+
+// ratchetDate is when this check starts failing a strict run on its own,
+// without -strict. #1728 set the ratchet warning-only so the mechanism was
+// visible before it could reject anything; #2024 moved the flip from a
+// workflow edit nobody made into this comparison, which cannot be forgotten
+// the way an edit can.
+var ratchetDate = time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+
+// ratchetPassed is whether now is on or past [ratchetDate], pulled out of
+// main so a test can pin both sides of the date without waiting for it.
+func ratchetPassed(now time.Time) bool {
+	return !now.Before(ratchetDate)
+}
+
+// dependabotActor is the one automated pull request author this repository's
+// dependabot.yml configures (#2024). Named rather than matched by a `[bot]`
+// suffix or an actor type, in keeping with this package's existing
+// attribution rule: an exemption from a convention is a claim about a
+// specific known author, not a pattern any account could satisfy.
+const dependabotActor = "dependabot[bot]"
+
+// exempt is whether where's message owes these conventions nothing: only a
+// pull request opened by [dependabotActor], whose title and body Dependabot
+// generates and its human maintainer never chooses.
+func exempt(where commitcheck.Surface, actor string) bool {
+	return where == commitcheck.SurfacePullRequest && actor == dependabotActor
+}
 
 func main() {
 	title := flag.String("title", "", "the subject to check; with -body-file, the two halves of a message")
@@ -34,66 +71,75 @@ func main() {
 	}
 	flag.Parse()
 
-	subject, body, where, err := message(*title, *bodyFile, os.Getenv("GITHUB_EVENT_PATH"), os.Stdin)
+	subject, body, where, actor, err := message(*title, *bodyFile, os.Getenv("GITHUB_EVENT_PATH"), os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "commitcheck: %v\n", err)
 		os.Exit(2)
 	}
 
+	if exempt(where, actor) {
+		fmt.Fprintf(os.Stderr, "commitcheck: skipping %s's pull request; its title and body are not text a contributor chose (#2024)\n", actor)
+		return
+	}
+
 	findings := commitcheck.Check(subject, body, where)
 	report(os.Stderr, findings, os.Getenv("GITHUB_ACTIONS") == "true")
 
-	if *strict && len(findings) > 0 {
+	if (*strict || ratchetPassed(time.Now())) && len(findings) > 0 {
 		os.Exit(1)
 	}
 }
 
 // message picks the subject and body from wherever this invocation carries
 // them: the flags, the pull request in the event payload, or a whole message
-// on stdin with the subject as its first line.
+// on stdin with the subject as its first line. actor is the pull request's
+// author login, and only the event payload carries one.
 //
 // Only the event payload is known to be a pull request body, which the forge
 // has already appended its own footer to. The flags and stdin carry whatever
 // the caller has in hand, so they are read as a commit message, which is the
 // stricter of the two.
-func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, where commitcheck.Surface, err error) {
+func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, where commitcheck.Surface, actor string, err error) {
 	switch {
 	case title != "":
 		if bodyFile != "" {
 			data, err := readFile(bodyFile, stdin)
 			if err != nil {
-				return "", "", 0, err
+				return "", "", 0, "", err
 			}
 			body = string(data)
 		}
-		return title, body, commitcheck.SurfaceCommit, nil
+		return title, body, commitcheck.SurfaceCommit, "", nil
 
 	case eventPath != "":
 		data, err := readBounded(eventPath, nil)
 		if err != nil {
-			return "", "", 0, fmt.Errorf("reading the event payload: %w", err)
+			return "", "", 0, "", fmt.Errorf("reading the event payload: %w", err)
 		}
 		var event struct {
 			PullRequest *struct {
 				Title string `json:"title"`
 				Body  string `json:"body"`
+				User  struct {
+					Login string `json:"login"`
+				} `json:"user"`
 			} `json:"pull_request"`
 		}
 		if err := json.Unmarshal(data, &event); err != nil {
-			return "", "", 0, fmt.Errorf("decoding the event payload: %w", err)
+			return "", "", 0, "", fmt.Errorf("decoding the event payload: %w", err)
 		}
 		if event.PullRequest == nil {
-			return "", "", 0, fmt.Errorf("the event payload carries no pull request; this check reads pull_request events")
+			return "", "", 0, "", fmt.Errorf("the event payload carries no pull request; this check reads pull_request events")
 		}
-		return event.PullRequest.Title, event.PullRequest.Body, commitcheck.SurfacePullRequest, nil
+		return event.PullRequest.Title, event.PullRequest.Body, commitcheck.SurfacePullRequest, event.PullRequest.User.Login, nil
 
 	default:
 		data, err := readBounded("-", stdin)
 		if err != nil {
-			return "", "", 0, fmt.Errorf("reading the message from stdin: %w", err)
+			return "", "", 0, "", fmt.Errorf("reading the message from stdin: %w", err)
 		}
 		subject, body, _ = strings.Cut(strings.TrimSpace(string(data)), "\n")
-		return subject, body, commitcheck.SurfaceCommit, nil
+		return subject, body, commitcheck.SurfaceCommit, "", nil
 	}
 }
 
