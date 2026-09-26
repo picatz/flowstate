@@ -149,6 +149,21 @@ func Run() {}
 	}
 }
 
+func TestASubtreeDoesNotJudgeTheRestOfItsModule(t *testing.T) {
+	t.Parallel()
+
+	root := fixtureModule(t, `// Package app links to [example.com/m/lib.Greet], outside the subtree.
+package app
+
+// Run runs.
+func Run() {}
+`)
+	findings, links, err := Check(filepath.Join(root, "app"))
+	require.NoError(t, err)
+	require.Positive(t, links)
+	require.Empty(t, findings, "lib was never walked, so its absence from the index is not a typo")
+}
+
 func TestALinkGluedToASuffixIsNotALink(t *testing.T) {
 	t.Parallel()
 

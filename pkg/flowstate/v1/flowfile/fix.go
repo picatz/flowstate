@@ -127,12 +127,12 @@ type FixChange struct {
 // rather than a deep file, which is why it is reported rather than silently accepted.
 const maxFixRounds = 8
 
-// mergeRefusals combines the first pass's refusals with any a later round
+// mergeRefusals combines the first pass's refusals with any that a later round
 // added. A refusal the first pass already made is the same refusal, said about
-// the file that is staying, so its position wins. One only a later round made
-// names a shape that came out of an edit now not being made; its position is
-// the best there is, and dropping it would hide hand work the author has to
-// discover by fixing the first item and rerunning. No rewrite today produces a
+// the file that is staying, so its position wins. A refusal that only a later
+// round made names a shape that came out of an edit now not being made; its
+// position is the best there is, and dropping it would hide hand work the
+// author would otherwise discover only by fixing the first item and rerunning. No rewrite today produces a
 // refusable shape from a clean one, so the later list adds nothing yet; this
 // exists so a rewrite added tomorrow cannot silently shorten the report.
 // Matched by message, because positions move between rounds.

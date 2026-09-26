@@ -46,6 +46,7 @@ var bracketed = regexp.MustCompile(`(^|[^\pL\pN_\]])\[(\*?[\pL_][\pL\pN_]*(?:\.[
 type pkg struct {
 	importPath string
 	module     string // the module path of the go.mod the package belongs to
+	moduleDir  string // the directory holding that go.mod
 	fset       *token.FileSet
 	files      []*ast.File
 	doc        *doc.Package
@@ -107,8 +108,17 @@ func Check(root string) ([]Finding, int, error) {
 	}
 
 	c := checker{root: root, exported: exported, packageNames: map[string]bool{}, modules: map[string]bool{}}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, 0, err
+	}
 	for _, p := range pkgs {
-		c.modules[p.module] = true
+		// Only a module whose go.mod is under the root was loaded whole, so
+		// only there does a missing package mean a typo rather than a
+		// package this walk never reached.
+		if rel, err := filepath.Rel(absRoot, p.moduleDir); err == nil && filepath.IsLocal(rel) {
+			c.modules[p.module] = true
+		}
 		c.packageNames[p.doc.Name] = true
 		c.packageNames[path.Base(p.importPath)] = true
 	}
@@ -127,7 +137,7 @@ type checker struct {
 	root         string
 	exported     map[string]map[string]bool
 	packageNames map[string]bool // declared names and import-path bases
-	modules      map[string]bool // module paths of every go.mod under the root
+	modules      map[string]bool // module paths of the go.mod files under the root
 	findings     []Finding
 	links        int
 }
@@ -435,7 +445,7 @@ func loadDir(dir string) ([]*pkg, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
-	importPath, module, err := importPathOf(dir)
+	importPath, module, moduleDir, err := importPathOf(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -446,35 +456,35 @@ func loadDir(dir string) ([]*pkg, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dir, err)
 		}
-		pkgs = append(pkgs, &pkg{importPath: importPath, module: module, fset: fset, files: files, doc: dp})
+		pkgs = append(pkgs, &pkg{importPath: importPath, module: module, moduleDir: moduleDir, fset: fset, files: files, doc: dp})
 	}
 	return pkgs, nil
 }
 
 // importPathOf derives a directory's import path, and the module it belongs
-// to, from the module line of the nearest go.mod at or above it.
-func importPathOf(dir string) (importPath, module string, err error) {
+// to with that module's directory, from the nearest go.mod at or above it.
+func importPathOf(dir string) (importPath, module, moduleDir string, err error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for d := abs; ; d = filepath.Dir(d) {
 		module, err := modulePath(filepath.Join(d, "go.mod"))
 		if err == nil {
 			rel, err := filepath.Rel(d, abs)
 			if err != nil {
-				return "", "", err
+				return "", "", "", err
 			}
 			if rel == "." {
-				return module, module, nil
+				return module, module, d, nil
 			}
-			return module + "/" + filepath.ToSlash(rel), module, nil
+			return module + "/" + filepath.ToSlash(rel), module, d, nil
 		}
 		if !os.IsNotExist(err) {
-			return "", "", err
+			return "", "", "", err
 		}
 		if filepath.Dir(d) == d {
-			return "", "", fmt.Errorf("%s: no go.mod at or above it", dir)
+			return "", "", "", fmt.Errorf("%s: no go.mod at or above it", dir)
 		}
 	}
 }
