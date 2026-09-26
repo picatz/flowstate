@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/testsuite"
 )
 
 func TestLauncherArgsIgnoreOrdinaryTestInvocation(t *testing.T) {
@@ -71,13 +73,13 @@ func TestEnsureCLICachedSkipsDownloadWhenAlreadyCached(t *testing.T) {
 	require.NoError(t, os.WriteFile(cliCachePath(), []byte("fake cli"), 0o755))
 
 	oldDownload := downloadCLI
-	downloadCLI = func(context.Context) error {
+	downloadCLI = func(context.Context, log.Logger) error {
 		t.Fatal("downloadCLI called although the cache path already existed")
 		return nil
 	}
 	t.Cleanup(func() { downloadCLI = oldDownload })
 
-	path, err := ensureCLICached(t.Context())
+	path, err := ensureCLICached(t.Context(), discardLogger{})
 	require.NoError(t, err)
 	require.Equal(t, cliCachePath(), path)
 }
@@ -94,17 +96,44 @@ func TestEnsureCLICachedDownloadsWhenMissing(t *testing.T) {
 
 	called := false
 	oldDownload := downloadCLI
-	downloadCLI = func(context.Context) error {
+	downloadCLI = func(context.Context, log.Logger) error {
 		called = true
 		return os.WriteFile(cliCachePath(), []byte("fake cli"), 0o755)
 	}
 	t.Cleanup(func() { downloadCLI = oldDownload })
 
-	path, err := ensureCLICached(t.Context())
+	path, err := ensureCLICached(t.Context(), discardLogger{})
 	require.NoError(t, err)
 	require.True(t, called, "ensureCLICached did not call the download seam for a missing cache path")
 	require.Equal(t, cliCachePath(), path)
 	require.FileExists(t, path)
+}
+
+// TestEnsureCLICachedTrustsTheCacheOverAReportedError pins the F2 fix:
+// downloadCLI's deliberately invalid HostPort (cliDownloadOnlyHostPort) makes
+// it return a non-nil error even when the download it triggered succeeded,
+// so ensureCLICached must decide success or failure by statting the cache
+// path, never by whether downloadCLI returned an error. This also covers a
+// concurrent download racing on the SDK's own atomic rename: whichever
+// process's error surfaces here, the file landing is what matters.
+func TestEnsureCLICachedTrustsTheCacheOverAReportedError(t *testing.T) {
+	dir := t.TempDir()
+	old := cliCacheDir
+	cliCacheDir = func() string { return dir }
+	t.Cleanup(func() { cliCacheDir = old })
+
+	oldDownload := downloadCLI
+	downloadCLI = func(context.Context, log.Logger) error {
+		// The real seam always errors on success too (invalid HostPort), but
+		// the download itself landed the file.
+		require.NoError(t, os.WriteFile(cliCachePath(), []byte("fake cli"), 0o755))
+		return errors.New("invalid HostPort: address download-only: missing port in address")
+	}
+	t.Cleanup(func() { downloadCLI = oldDownload })
+
+	path, err := ensureCLICached(t.Context(), discardLogger{})
+	require.NoError(t, err, "a reported error was trusted over the cache path that was actually populated")
+	require.Equal(t, cliCachePath(), path)
 }
 
 // TestEnsureCLICachedNamesTheDownloadOnFailure is the negative direction: a
@@ -117,23 +146,44 @@ func TestEnsureCLICachedNamesTheDownloadOnFailure(t *testing.T) {
 	t.Cleanup(func() { cliCacheDir = old })
 
 	oldDownload := downloadCLI
-	downloadCLI = func(context.Context) error {
+	downloadCLI = func(context.Context, log.Logger) error {
 		return errors.New("temporal.download unreachable")
 	}
 	t.Cleanup(func() { downloadCLI = oldDownload })
 
-	_, err := ensureCLICached(t.Context())
+	_, err := ensureCLICached(t.Context(), discardLogger{})
 	require.ErrorContains(t, err, "downloading the Temporal CLI")
 	require.ErrorContains(t, err, "temporal.download unreachable")
 }
 
-func TestCLICachePathUsesSDKVersionFormula(t *testing.T) {
+// TestCLICachePathMatchesTheSDKsOwnResolver replaces a circular check (this
+// package's own formula reproduced back at itself) with one against the
+// SDK's real cache lookup: a file seeded at exactly the path cliCachePath
+// computes must read to the SDK as a cache hit. Only the version cannot
+// drift silently (temporal.SDKVersion is exported and shared verbatim); the
+// "temporal-cli-go-sdk-" prefix and the DestDir/os.TempDir() default are
+// copied by hand, and this is what actually holds them to the SDK's own
+// downloadIfNeeded (go.temporal.io/sdk@v1.48.0, testsuite/devserver.go)
+// rather than to a description of it.
+//
+// A wrong path would make the SDK treat the seeded file as a miss and try to
+// fetch instead, which the cancelled context turns into a distinguishable
+// error — no network is reached either way.
+func TestCLICachePathMatchesTheSDKsOwnResolver(t *testing.T) {
 	dir := t.TempDir()
 	old := cliCacheDir
 	cliCacheDir = func() string { return dir }
 	t.Cleanup(func() { cliCacheDir = old })
 
-	got := cliCachePath()
-	require.Equal(t, filepath.Dir(got), dir)
-	require.Contains(t, filepath.Base(got), "temporal-cli-go-sdk-")
+	require.NoError(t, os.WriteFile(cliCachePath(), []byte("fake cli"), 0o755))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
+		CachedDownload: testsuite.CachedDownload{DestDir: dir},
+		ClientOptions:  &client.Options{HostPort: cliDownloadOnlyHostPort},
+	})
+	require.ErrorContains(t, err, "invalid HostPort",
+		"the SDK did not read the seeded file as a cache hit at cliCachePath's location, so it "+
+			"does not match the SDK's own resolver")
 }

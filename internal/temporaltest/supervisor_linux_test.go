@@ -103,53 +103,53 @@ func TestSupervisorStopsOwnedServerWhenTerminated(t *testing.T) {
 	_ = harness.cmd.Wait()
 }
 
-// TestSupervisorSurvivesASlowDownload proves the fix for #2116: a supervised
-// start succeeds through the public entry point every caller uses even when
-// the Temporal CLI download takes longer than the SDK's fixed ~60s connect
-// wait (testsuite/devserver.go's waitServerReady/retryFor in the pinned
-// go.temporal.io/sdk@v1.48.0, which DevServerOptions has no field to extend).
-// Before the fix, that download ran inside the supervisor, inside the outer
-// wait's budget; StartWith now runs it in the parent, before the supervisor
-// (and that wait) starts at all.
+// TestSupervisorHandsOffTheCachedCLI proves the fix for #2116 at the exact
+// mechanism a broken hand-off would break: the path StartWith resolves must
+// be what the supervisor's own StartDevServer call actually runs, not merely
+// a path that happens to also be found by the SDK's own default lookup.
 //
-// The delay is a deterministic sleep, not real network speed: downloadCLI is
-// replaced with a fake that waits, then supplies the CLI this machine already
-// has cached (linked, not copied, to avoid doubling a large binary on a
-// disk-constrained shared machine) so the rest of the start is genuine.
-func TestSupervisorSurvivesASlowDownload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping: boots a real supervised dev server")
-	}
-
-	// Read only: whatever already populated this machine's shared cache is
-	// left exactly as found.
-	realCached := cliCachePath()
+// The supervisor inherits this process's environment, including TMPDIR, so a
+// test that left TMPDIR alone could not tell "the hand-off works" from "the
+// hand-off is broken, but the supervisor's own default lookup found the same
+// real cache anyway" — both look identical when the shared cache is warm,
+// which it is on this machine. TMPDIR here is set to an empty directory, so
+// the SDK's own default lookup inside the supervisor is guaranteed to miss;
+// HTTPS_PROXY/HTTP_PROXY point at a closed local port, so a supervisor that
+// fell back to downloading fails fast instead of hanging or reaching the
+// network for real. cliCacheDir instead points at a private directory
+// holding a link to whatever CLI this machine already has cached, so
+// StartWith's own predownload step never needs the network either — this
+// test has no sleep of its own (the wallclock ratchet in
+// tools/wallclock/wallclock_test.go already counts one sleep for this file,
+// the poll in temporalProcess below; a wait added a second here without
+// widening that entry would fail it).
+func TestSupervisorHandsOffTheCachedCLI(t *testing.T) {
+	realCached := cliCachePath() // before any override, in this process
 	if _, err := os.Stat(realCached); err != nil {
 		t.Skipf("no cached Temporal CLI to reuse at %s (%v); this test avoids a real download", realCached, err)
 	}
 
-	dir := t.TempDir()
-	oldCacheDir, oldDownload := cliCacheDir, downloadCLI
-	cliCacheDir = func() string { return dir }
-	downloadCLI = func(context.Context) error {
-		time.Sleep(65 * time.Second) // longer than the SDK's fixed connect wait
-		return linkOrCopyFile(realCached, cliCachePath())
-	}
-	t.Cleanup(func() { cliCacheDir, downloadCLI = oldCacheDir, oldDownload })
+	linkDir := t.TempDir()
+	oldCacheDir := cliCacheDir
+	cliCacheDir = func() string { return linkDir }
+	t.Cleanup(func() { cliCacheDir = oldCacheDir })
+	require.NoError(t, linkOrCopyFile(realCached, cliCachePath()))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Setenv("TMPDIR", t.TempDir()) // empty: the SDK's own default lookup must miss
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	started := time.Now()
-	server, err := Start(ctx, &client.Options{})
-	require.NoError(t, err)
+	var output strings.Builder
+	server, err := StartWith(ctx, StartOptions{ClientOptions: &client.Options{}, Stdout: &output, Stderr: &output})
+	require.NoError(t, err, "supervisor output:\n%s", output.String())
 	t.Cleanup(func() { _ = server.Stop() })
 
-	require.GreaterOrEqual(t, time.Since(started), 65*time.Second,
-		"the simulated download did not run before the supervised server answered")
-
-	_, err = server.Client().CheckHealth(ctx, &client.CheckHealthRequest{})
-	require.NoError(t, err, "the supervised server did not answer after a simulated slow download")
+	require.Contains(t, output.String(), "ExePath "+cliCachePath(),
+		"the supervisor did not log starting the CLI this process cached at cliCachePath(), so it "+
+			"either did not receive the hand-off or did not use it:\n%s", output.String())
 }
 
 // linkOrCopyFile makes src available at dst, hard-linking when the two paths

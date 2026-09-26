@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 )
@@ -56,7 +57,7 @@ func StartWith(ctx context.Context, options StartOptions) (*testsuite.DevServer,
 		return nil, fmt.Errorf("locating the test binary for Temporal supervision: %w", err)
 	}
 
-	cliPath, err := ensureCLICached(ctx)
+	cliPath, err := ensureCLICached(ctx, downloadLogger(options.ClientOptions))
 	if err != nil {
 		return nil, err
 	}
@@ -89,21 +90,62 @@ func cliCachePath() string {
 	return path
 }
 
-// downloadCLI populates the SDK's download cache by starting and immediately
-// stopping a throwaway dev server. The SDK does not expose a download-only
-// entry point, so this is the only way to reach its (tested) download and
-// extraction code rather than duplicating it here.
+// cliDownloadOnlyHostPort is a ClientOptions.HostPort with no colon, so
+// net.SplitHostPort rejects it. testsuite.StartDevServer (SDK
+// devserver.go:80-96) resolves and downloads the CLI first, and only after
+// that validates HostPort, before ever building a command or starting a
+// process; passing this HostPort therefore runs the SDK's download to
+// completion (or finds it already cached) and then fails deterministically
+// before anything is executed or any port is bound. Verified against
+// go.temporal.io/sdk@v1.48.0 with a standalone probe: a cache miss returns
+// "failed fetching info: … context canceled" under a cancelled context, and
+// a cache hit returns "invalid HostPort: … missing port in address" with no
+// process started either way.
+const cliDownloadOnlyHostPort = "download-only"
+
+// downloadCLI populates the SDK's download cache without ever starting or
+// binding a server: see [cliDownloadOnlyHostPort]. The SDK does not expose a
+// download-only entry point, so this reaches its own tested download and
+// extraction code by shape rather than duplicating it, and — unlike starting
+// a real throwaway server — never risks leaking an unsupervised process or a
+// held port if the SDK returned early without stopping what it started.
+//
+// logger receives the SDK's own progress logging (only relevant on an actual
+// download); see [downloadLogger] for why a caller who did not ask for one
+// gets a discarding logger instead of the SDK's default.
 //
 // A seam: a test replaces this with a fake that never touches the network.
-var downloadCLI = func(ctx context.Context) error {
-	server, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
+var downloadCLI = func(ctx context.Context, logger log.Logger) error {
+	_, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
 		CachedDownload: testsuite.CachedDownload{DestDir: cliCacheDir()},
+		ClientOptions:  &client.Options{HostPort: cliDownloadOnlyHostPort, Logger: logger},
 	})
-	if err != nil {
-		return err
-	}
-	return server.Stop()
+	return err
 }
+
+// downloadLogger is the logger downloadCLI's warm-up uses: the caller's own,
+// if StartOptions.ClientOptions set one, or one that discards everything.
+// Without this, the SDK's default logger (go.temporal.io/sdk's
+// internal/log.NewDefaultLogger) writes straight to this process's os.Stdout
+// regardless of StartOptions.Stdout, which would land download progress on a
+// caller's real stdout ahead of anything it means to print there itself —
+// tools/devtemporal's single `export …` line (Makefile:359) is exactly such
+// a caller.
+func downloadLogger(clientOptions *client.Options) log.Logger {
+	if clientOptions != nil && clientOptions.Logger != nil {
+		return clientOptions.Logger
+	}
+	return discardLogger{}
+}
+
+// discardLogger is a [log.Logger] that keeps every entry off stdout; see
+// [downloadLogger].
+type discardLogger struct{}
+
+func (discardLogger) Debug(string, ...any) {}
+func (discardLogger) Info(string, ...any)  {}
+func (discardLogger) Warn(string, ...any)  {}
+func (discardLogger) Error(string, ...any) {}
 
 // ensureCLICached makes sure the SDK's download cache already holds the
 // Temporal CLI, downloading it first if it does not, and returns its path.
@@ -118,18 +160,26 @@ var downloadCLI = func(ctx context.Context) error {
 // mentions the download that actually ran out of time (#2116). With the CLI
 // already cached, the supervisor's own StartDevServer call (RunLauncher,
 // below) uses ExistingPath and never downloads at all.
-func ensureCLICached(ctx context.Context) (string, error) {
+//
+// downloadCLI's deliberately invalid HostPort (see [cliDownloadOnlyHostPort])
+// means it returns a non-nil error on the success path too, so whether the
+// download actually happened is decided by statting the cache path
+// afterward, never by the error's presence or text: that also tolerates a
+// concurrent download racing on the SDK's own atomic rename, and keeps a
+// real download failure from being reported as an unrelated startup failure.
+func ensureCLICached(ctx context.Context, logger log.Logger) (string, error) {
 	path := cliCachePath()
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
 	}
-	if err := downloadCLI(ctx); err != nil {
-		return "", fmt.Errorf("downloading the Temporal CLI before starting the supervised dev server: %w", err)
+	downloadErr := downloadCLI(ctx, logger)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
 	}
-	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("downloading the Temporal CLI before starting the supervised dev server: %s missing after download: %w", path, err)
+	if downloadErr == nil {
+		downloadErr = fmt.Errorf("%s still missing and downloadCLI reported no error", path)
 	}
-	return path, nil
+	return "", fmt.Errorf("downloading the Temporal CLI before starting the supervised dev server: %w", downloadErr)
 }
 
 // RunLauncher runs the supervisor mode selected by Start. It returns handled=false
