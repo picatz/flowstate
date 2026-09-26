@@ -941,9 +941,6 @@ func (f *File) evaluateVars(p *problems) {
 
 	nodes := collectVarNodes(f.Vars)
 	declared := f.declareVars(p)
-	if len(declared) == 0 {
-		return
-	}
 
 	order, cycles := varOrder(declared)
 	for _, cycle := range cycles {
@@ -956,21 +953,6 @@ func (f *File) evaluateVars(p *problems) {
 	// and the closure is a fact about the dependency graph, so a refusal below
 	// knows what it may not print before there is a value to print.
 	taint := taintedVars(declared, expandSecretHolding(secretHoldingVars(f.Tests), nodes))
-
-	base, err := varEvaluator().Env()
-	if err != nil {
-		// Nothing can be evaluated without an environment, so this is the whole
-		// report for the block rather than one entry's worth of it — the answer
-		// [checkCheckClaims] gives to the same failure.
-		p.report(site{at: block}, "vars: building the expression environment: %s", err)
-
-		return
-	}
-
-	// One activation over the file's own map, which the loop below writes into:
-	// dependency order guarantees every name an expression reads already holds
-	// its value, and a var can read nothing else.
-	activation := map[string]any{v1.VarsRoot: f.Vars}
 
 	resolved := make(map[string]bool, len(nodes))
 	for _, name := range slices.Sorted(maps.Keys(nodes)) {
@@ -986,46 +968,73 @@ func (f *File) evaluateVars(p *problems) {
 		resolved[name] = true
 	}
 
-	for _, name := range order {
-		d := declared[name]
-		if d.ast == nil {
-			// Refused at its parse or by a root check, where it was reported.
-			continue
-		}
-		if slices.ContainsFunc(d.deps, func(dep string) bool { return !resolved[dep] }) {
-			// A dependency was refused, or sits on a cycle. Silence here, for
-			// the reason this function's doc gives: the dependency's own
-			// diagnostic is the one to act on.
-			continue
-		}
-
-		value, err := evaluateVar(base, d, activation)
+	// A file with no computed var has nothing for the loop below to evaluate
+	// — building an environment for it would be a cost with no reader — but
+	// it may still have a literal seed, and [withheldMaterial] below needs
+	// `taint` and `resolved` regardless (#2041: a file with only a literal
+	// `vars:` block used to short-circuit before either was computed, which
+	// left its seed's material unprotected for every case in the file).
+	if len(declared) > 0 {
+		base, err := varEvaluator().Env()
 		if err != nil {
-			p.report(d.spot, "vars.%s: evaluating %s: %s",
-				name, d.fence, scrubbedVarError(err, taint, d.deps))
+			// Nothing can be evaluated without an environment, so this is the
+			// whole report for the block rather than one entry's worth of it
+			// — the answer [checkCheckClaims] gives to the same failure. The
+			// file is refused either way, which is what makes `f.varsWithheld`
+			// below staying whatever a literal-only pass already gave it safe:
+			// no case runs to read it.
+			p.report(site{at: block}, "vars: building the expression environment: %s", err)
+		} else {
+			// One activation over the file's own map, which the loop below
+			// writes into: dependency order guarantees every name an
+			// expression reads already holds its value, and a var can read
+			// nothing else.
+			activation := map[string]any{v1.VarsRoot: f.Vars}
 
-			continue
-		}
-		if len(d.path) > 1 {
-			switch value.(type) {
-			case map[string]any, []any:
-				p.report(d.spot, "vars.%s is a YAML leaf whose expression produced a container; "+
-					"structured vars keep the map/list shape written in YAML. Put each expression at "+
-					"the leaf it computes, rather than building a dynamic container with CEL", name)
+			for _, name := range order {
+				d := declared[name]
+				if d.ast == nil {
+					// Refused at its parse or by a root check, where it was
+					// reported.
+					continue
+				}
+				if slices.ContainsFunc(d.deps, func(dep string) bool { return !resolved[dep] }) {
+					// A dependency was refused, or sits on a cycle. Silence
+					// here, for the reason this function's doc gives: the
+					// dependency's own diagnostic is the one to act on.
+					continue
+				}
 
-				continue
+				value, err := evaluateVar(base, d, activation)
+				if err != nil {
+					p.report(d.spot, "vars.%s: evaluating %s: %s",
+						name, d.fence, scrubbedVarError(err, taint, d.deps))
+
+					continue
+				}
+				if len(d.path) > 1 {
+					switch value.(type) {
+					case map[string]any, []any:
+						p.report(d.spot, "vars.%s is a YAML leaf whose expression produced a "+
+							"container; structured vars keep the map/list shape written in YAML. "+
+							"Put each expression at the leaf it computes, rather than building a "+
+							"dynamic container with CEL", name)
+
+						continue
+					}
+				}
+				// Judged the moment it exists, and *before* it is stored — so
+				// it never enters the activation, and no later evaluation can
+				// quote it (Codex, #1197). Its dependents then skip on the
+				// guard above, which is the cascade rule this loop already
+				// follows: the root refusal stands for the chain.
+				if refuseUnprotectableVar(p, d.spot.at, taint, name, value) {
+					continue
+				}
+				setVarNode(f.Vars, d.path, value)
+				resolved[name] = true
 			}
 		}
-		// Judged the moment it exists, and *before* it is stored — so it never
-		// enters the activation, and no later evaluation can quote it (Codex,
-		// #1197). Its dependents then skip on the guard above, which is the
-		// cascade rule this loop already follows: the root refusal stands for
-		// the chain.
-		if refuseUnprotectableVar(p, d.spot.at, taint, name, value) {
-			continue
-		}
-		setVarNode(f.Vars, d.path, value)
-		resolved[name] = true
 	}
 
 	values := map[string]any{}
@@ -1787,13 +1796,18 @@ func unprotectableValue(value any) (string, bool) {
 // withheldMaterial narrows the taint to what a case has to be told about, and
 // pairs each name with the strings its value holds.
 //
-// A literal var referenced from `secrets:` is left out. Its plaintext is that
-// case's own secret and already joins that case's redaction set (run.go's
-// `WithValues`), and withholding it file-wide would change what a case that
-// never named the secret redacts — a behaviour change this slice has no reason
-// to make. Every *other* tainted var is in, computed or not: a literal can only
-// be tainted by standing on a path between expressions, which no file without
-// expressions has, so nothing an existing suite can express changes meaning.
+// Every tainted var is in, seed or derived, literal or computed, and this set
+// is file-wide: [File.evaluateVars] computes it once per file and every case
+// in that file redacts through the same one ([casePosture]). A literal var
+// named straight from `secrets:` used to be left out, on the reasoning that
+// its plaintext already reaches the case that declared the secret through
+// that case's own `secrets:` map, and widening it file-wide would change what
+// a case that never named the secret redacts. That reasoning assumed the
+// seed's material stays inside the case that named it — but a fixture
+// position may put `${vars.x}` in *any* case, so a seed left out here prints
+// in full for every case that reads it and never named the secret itself
+// (#2041). Every tainted var answers to the same rule now: computed or not,
+// seed or not, a name this closure reaches is a name every case withholds.
 //
 // A var whose evaluation failed contributes nothing, and needs to: the
 // document is refused, so no case will run and there is no value to protect.
@@ -1802,13 +1816,6 @@ func unprotectableValue(value any) (string, bool) {
 func withheldMaterial(p *problems, block loc, declared map[string]*varDeclaration, taint varTaint, resolved map[string]bool, values map[string]any) withheldVars {
 	var names, text []string
 	for _, name := range taint.names() {
-		_, computed := declared[name]
-		if !computed && taint.via[name] == "" {
-			// A literal seed: the `secrets:` entry naming it already carries its
-			// plaintext into the case that declared it, and this is the one
-			// place widening would reach a file that states no expression.
-			continue
-		}
 		names = append(names, name)
 		if !resolved[name] {
 			continue

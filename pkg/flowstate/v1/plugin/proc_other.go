@@ -36,3 +36,10 @@ func processAlive(pid int) bool {
 	}
 	return proc.Signal(os.Signal(nil)) == nil
 }
+
+// processGroupAlive is [processAlive] here: grouping is a POSIX notion this
+// platform has no mechanism for (see [isolateProcessGroup]), so the leader is
+// the only member there ever is to account for.
+func processGroupAlive(pid int) bool {
+	return processAlive(pid)
+}
