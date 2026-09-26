@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"maps"
 	"strings"
 	"testing"
@@ -183,6 +184,18 @@ func TestReissueStartedReadsTheNonceAndFailsClosed(t *testing.T) {
 			require.Equal(t, "r-1", resp.GetWorkflowExecutionInfo().GetExecution().GetRunId())
 		})
 	}
+
+	// A run the cluster just reported running is not "not found" because
+	// reading it back failed.
+	t.Run("the describe fails", func(t *testing.T) {
+		t.Parallel()
+
+		s := mustNew(t, &fakeRunClient{describeErr: errors.New("frontend unavailable")})
+		resp, _, err := s.reissueStarted(t.Context(), key.workflowID, "r-1", key, "mine")
+		require.Equal(t, connect.CodeUnavailable, connect.CodeOf(err), "%v", err)
+		require.ErrorContains(t, err, "run r-1 ")
+		require.Nil(t, resp)
+	})
 }
 
 // withField is fields with one more, leaving fields itself as it was.

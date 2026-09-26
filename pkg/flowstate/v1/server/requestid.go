@@ -245,6 +245,16 @@ func (s *FlowstateServer) reissueStarted(ctx context.Context, workflowID, runID 
 			"run %s of workflow %s answered this submission's start request id but records a different submission",
 			runID, workflowID))
 	}
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		// [FlowstateServer.authorizeRunDecision] answers every failed lookup
+		// NotFound, which is the right answer for a run a caller named and the
+		// wrong one for a run the cluster just told this call is running: the
+		// run exists, and what failed is reading it back. Retrying the request
+		// finds it through the retry arm.
+		return nil, false, connect.NewError(connect.CodeUnavailable, fmt.Errorf(
+			"run %s of workflow %s was started but could not be read back; retry the request to be answered with it",
+			runID, workflowID))
+	}
 	if err != nil {
 		return nil, false, err
 	}

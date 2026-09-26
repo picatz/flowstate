@@ -5608,7 +5608,10 @@ already carries with that run, before the conflict policy is consulted. So
 neither can terminate the other's run; both are answered with one run id, and
 the one whose start was folded onto the other's is told `reused`. A genuinely
 different submission carries a different request id and still replaces the
-incumbent (#1966).
+incumbent (#1966). An embedded server whose Temporal client was not dialed
+with `temporalclient`'s options, or with `temporalclient.StartInterceptor`
+installed, cannot send that request id, so it refuses such a replacement
+`FailedPrecondition` before terminating anything.
 
 ### Submit-time, which is why both drivers agree
 

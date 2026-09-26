@@ -41,6 +41,13 @@ import (
 // about — see [WithNamespace] for the assumption that made this necessary.
 // `netpolicy.New` and `secrets/vault.NewProvider` are the same shape, for the
 // same reason.
+//
+// temporalClient, and every client a [WithNamespacePool] pool holds, should be
+// dialed with [temporalclient.Config.Options] or have
+// [temporalclient.StartInterceptor] installed. A `terminate_other` replacement
+// under a request id depends on it to keep identical racing submissions from
+// terminating each other's runs, and on a client without it such a
+// replacement is refused `FailedPrecondition` before anything is terminated.
 func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error) {
 	s := &FlowstateServer{
 		temporalClient: temporalClient,
@@ -1569,7 +1576,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 	}
 
-	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+	// No request id of its own (the SDK's stands): this is here so the
+	// `terminate_other` reissue below can tell, before it destroys anything,
+	// whether this client applies one at all.
+	probe := &temporalclient.StartRequest{}
+	run, err := temporal.ExecuteWorkflow(temporalclient.WithStartRequest(ctx, probe), options, engine.Run, state)
 	if err != nil {
 		// A conflict on the id, which is the one failure here that is not this
 		// server failing. Every arm that can produce it is answered from the
@@ -1633,6 +1644,18 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 				// an exact retry returned the incumbent above — so this
 				// collision is a genuinely different submission, and
 				// `on_conflict:` says it replaces what it found.
+				//
+				// Refused, before anything is terminated, on a client the
+				// start above did not pass [temporalclient.StartInterceptor]
+				// on: such a client sends the SDK's random request id in
+				// place of the one below, and two identical submissions
+				// could then each terminate the other's run (#1966).
+				if !probe.Applied() {
+					return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(
+						"refusing a terminate_other replacement under a request_id: this server's Temporal client "+
+							"does not apply start request ids, so identical submissions could terminate each other's runs; "+
+							"dial it with temporalclient.Config.Options or install temporalclient.StartInterceptor"))
+				}
 				options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
 
 				// Sent with a request id derived from the submission (#1966).
@@ -1652,7 +1675,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 				// had its memo written.
 				nonce := rand.Text()
 				options.Memo[startMemoKey] = nonce
-				run, err = temporal.ExecuteWorkflow(temporalclient.WithStartRequestID(ctx, submission.startRequestID()), options, engine.Run, state)
+				run, err = temporal.ExecuteWorkflow(temporalclient.WithStartRequest(ctx, &temporalclient.StartRequest{ID: submission.startRequestID()}), options, engine.Run, state)
 				if err != nil {
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
 				}

@@ -51,7 +51,7 @@ import (
 // tell the two racers' own calls apart. An unexported, unshared type so
 // nothing outside this file can set or read it.
 //
-// It is also the evidence that [temporalclient.WithStartRequestID] can work at
+// It is also the evidence that [temporalclient.WithStartRequest] can work at
 // all: the interceptor reads this value from the context the SDK hands the
 // gRPC call, which carries it only because the SDK derives that context from
 // the one [server.FlowstateServer.Run] passes to ExecuteWorkflow.
@@ -394,4 +394,64 @@ func TestADifferentTerminateOtherSubmissionStillReplacesUnderTheRace(t *testing.
 	statuses := []v1.RunResponse_Status{firstDesc.Msg.GetStatus(), secondDesc.Msg.GetStatus()}
 	require.ElementsMatch(t, []v1.RunResponse_Status{v1.RunResponse_STATUS_RUNNING, v1.RunResponse_STATUS_TERMINATED}, statuses,
 		"exactly one of the two different submissions' runs should have survived the race")
+}
+
+// TestATerminateOtherReplacementRefusesAClientWithoutTheStartInterceptor is
+// the fail-closed half of #1966's fix: an embedder's own client, dialed
+// without [temporalclient.StartInterceptor], cannot send the derived request
+// id, so a request_id replacement under it could race exactly as before the
+// fix. It is refused before anything is terminated, and naming the fix; a
+// submission without a request_id, which never depended on the id, still
+// replaces as it always has.
+func TestATerminateOtherReplacementRefusesAClientWithoutTheStartInterceptor(t *testing.T) {
+	t.Parallel()
+
+	plain, namespace := newTemporalNamespace(t)
+	startWorker(t, plain)
+
+	bare, err := client.Dial(client.Options{
+		HostPort:  devServer.FrontendHostPort(),
+		Namespace: namespace,
+		Logger:    newTestingLogger(t),
+	})
+	require.NoError(t, err)
+	t.Cleanup(bare.Close)
+	s := mustNew(t, bare, server.WithNamespace("acme"))
+
+	incumbent, err := s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: proto.String("bare-incumbent"),
+	}))
+	require.NoError(t, err)
+	workflowID := incumbent.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, plain, workflowID)
+
+	_, err = s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow:  exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:    clusterInputs("checkout"),
+		RequestId: proto.String("bare-replacement"),
+	}))
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "%v", err)
+	require.ErrorContains(t, err, "temporalclient.StartInterceptor")
+
+	incumbentRunID := incumbent.Msg.GetRunId()
+	still, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID, RunId: &incumbentRunID}))
+	require.NoError(t, err)
+	require.Equal(t, v1.RunResponse_STATUS_RUNNING, still.Msg.GetStatus(), "the refusal terminated the incumbent")
+	live, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+	require.NoError(t, err)
+	require.Equal(t, incumbentRunID, live.Msg.GetRunId(), "the refusal started a run anyway")
+
+	// No request_id: the direct TERMINATE_EXISTING path, which never read the
+	// id, is not refused.
+	replaced, err := s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: exclusiveWorkflow(v1.Concurrency_ON_CONFLICT_TERMINATE_OTHER),
+		Inputs:   clusterInputs("checkout"),
+	}))
+	require.NoError(t, err)
+	require.NotEqual(t, incumbentRunID, replaced.Msg.GetRunId())
+	stopped, err := s.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID, RunId: &incumbentRunID}))
+	require.NoError(t, err)
+	require.Equal(t, v1.RunResponse_STATUS_TERMINATED, stopped.Msg.GetStatus())
 }
