@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -496,22 +499,179 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	}
 }
 
-// TestCIFetchesMainWithAForcedRefUpdate is the regression for main run
-// 33263047571. A rerun may begin with origin/main at the commit checkout first
-// fetched and then observe main having moved. A depth-one fetch without `+`
-// rejects that ordinary update as non-fast-forward and fails before `flow
-// breaking` can inspect anything.
-func TestCIFetchesMainWithAForcedRefUpdate(t *testing.T) {
+// TestCIFetchesTheBreakingCheckBaseWithAForcedRefUpdate is the regression for
+// main run 33263047571, carried forward onto the fixed-base-commit fetch
+// #2074 replaced it with: a rerun may begin with the local origin/main at
+// some other commit (a prior attempt's fetch, or — before #2074 — the branch
+// tip checkout itself fetched), and a fetch without `+` rejects that ordinary
+// pointer move as non-fast-forward and fails before `flow breaking` or `buf
+// breaking` can inspect anything. Both the test job's rest lane (`flow
+// breaking`) and the proto job (`buf breaking`) fetch the identical base, by
+// id, from the plan's breaking_base_sha output — the mechanism #2074 exists to
+// keep from drifting into two answers.
+func TestCIFetchesTheBreakingCheckBaseWithAForcedRefUpdate(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
+	for _, job := range []string{"test", "proto"} {
+		var found bool
+		for _, step := range wf.Jobs[job].Steps {
+			if step.Name != "Fetch the breaking check's base commit" {
+				continue
+			}
+			found = true
+			if !strings.Contains(step.Run, "+$BASE_SHA:refs/remotes/origin/main") {
+				t.Errorf("%s job's breaking-check base fetch must force the remote-tracking ref update; got %q", job, step.Run)
+			}
+			if want, got := "${{ needs.plan.outputs.breaking_base_sha }}", step.Env["BASE_SHA"]; got != want {
+				t.Errorf("%s job's breaking-check base fetch reads BASE_SHA from %q, want %q", job, got, want)
+			}
+		}
+		if !found {
+			t.Errorf("the %s job has no base fetch for the breaking check", job)
+		}
+	}
+}
+
+// TestCIBreakingChecksCompareAgainstTheirOwnCheckout pins the other half of
+// #2074's fix: `flow breaking` and `buf breaking` must still read
+// `origin/main` (via the ref that step above just pinned to the fixed base),
+// not some other ref — a reviewer changing one without the other would leave
+// the fetch pinning a commit that the breaking command then ignores.
+func TestCIBreakingChecksCompareAgainstTheirOwnCheckout(t *testing.T) {
 	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
 	for _, step := range wf.Jobs["test"].Steps {
-		if step.Name == "Fetch base branch for the breaking check" {
-			if !strings.Contains(step.Run, "origin +main:refs/remotes/origin/main") {
-				t.Fatalf("the breaking check's base fetch must force the remote-tracking ref update; got %q", step.Run)
+		if step.Name == "Example workflow contracts did not shrink against main" {
+			if !strings.Contains(step.Run, "flow breaking --against origin/main") {
+				t.Fatalf("flow breaking must compare against origin/main; got %q", step.Run)
+			}
+			goto proto
+		}
+	}
+	t.Fatal("the test job has no flow breaking step")
+proto:
+	for _, step := range wf.Jobs["proto"].Steps {
+		if step.Name == "Check for breaking changes" {
+			if !strings.Contains(step.Run, "buf breaking --against '.git#branch=origin/main'") {
+				t.Fatalf("buf breaking must compare against .git#branch=origin/main; got %q", step.Run)
 			}
 			return
 		}
 	}
-	t.Fatal("the test job has no base fetch for the breaking check")
+	t.Fatal("the proto job has no buf breaking step")
+}
+
+// TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent runs the plan
+// job's own "Which commit the breaking checks compare against" shell script —
+// not a reimplementation of it — against each event shape ci.yml triggers on,
+// so a future edit to the script itself is caught here rather than first
+// misdiagnosing a PR in production. This is the regression for #2074: main
+// moving between a stale checkout and a later `git fetch origin main` made an
+// unrelated PR read as tightening a contract main itself had just loosened, and
+// a rerun did not clear it because it reused the same checkout while fetching
+// an even newer main.
+func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
+	var script string
+	for _, step := range wf.Jobs["plan"].Steps {
+		if step.Name == "Which commit the breaking checks compare against" {
+			script = step.Run
+			break
+		}
+	}
+	if script == "" {
+		t.Fatal("the plan job has no step computing the breaking-check base")
+	}
+
+	const validSHA = "1111111111111111111111111111111111111111"
+	const zeroSHA = "0000000000000000000000000000000000000000"
+
+	run := func(t *testing.T, env map[string]string) (sha string, ok bool) {
+		t.Helper()
+		outFile := filepath.Join(t.TempDir(), "github_output")
+		if err := os.WriteFile(outFile, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = []string{"GITHUB_OUTPUT=" + outFile}
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Logf("script stderr: %s", stderr.String())
+			return "", false
+		}
+		out, err := os.ReadFile(outFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := strings.TrimSpace(string(out))
+		sha, found := strings.CutPrefix(line, "sha=")
+		if !found {
+			t.Fatalf("$GITHUB_OUTPUT did not contain a sha= line: %q", line)
+		}
+		return sha, true
+	}
+
+	t.Run("pull_request uses the PR's base sha", func(t *testing.T) {
+		sha, ok := run(t, map[string]string{
+			"EVENT_NAME":           "pull_request",
+			"PR_BASE_SHA":          validSHA,
+			"MERGE_GROUP_BASE_SHA": "",
+			"PUSH_BEFORE_SHA":      "",
+		})
+		if !ok || sha != validSHA {
+			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
+		}
+	})
+
+	t.Run("merge_group uses the queue's base sha", func(t *testing.T) {
+		sha, ok := run(t, map[string]string{
+			"EVENT_NAME":           "merge_group",
+			"PR_BASE_SHA":          "",
+			"MERGE_GROUP_BASE_SHA": validSHA,
+			"PUSH_BEFORE_SHA":      "",
+		})
+		if !ok || sha != validSHA {
+			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
+		}
+	})
+
+	t.Run("push to main uses the sha before the push", func(t *testing.T) {
+		sha, ok := run(t, map[string]string{
+			"EVENT_NAME":           "push",
+			"PR_BASE_SHA":          "",
+			"MERGE_GROUP_BASE_SHA": "",
+			"PUSH_BEFORE_SHA":      validSHA,
+		})
+		if !ok || sha != validSHA {
+			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
+		}
+	})
+
+	t.Run("a push whose before is all zeroes fails closed", func(t *testing.T) {
+		_, ok := run(t, map[string]string{
+			"EVENT_NAME":           "push",
+			"PR_BASE_SHA":          "",
+			"MERGE_GROUP_BASE_SHA": "",
+			"PUSH_BEFORE_SHA":      zeroSHA,
+		})
+		if ok {
+			t.Fatal("a push with no real prior commit must fail rather than compare against nothing")
+		}
+	})
+
+	t.Run("an event this workflow does not otherwise trigger on fails closed", func(t *testing.T) {
+		_, ok := run(t, map[string]string{
+			"EVENT_NAME":           "workflow_dispatch",
+			"PR_BASE_SHA":          "",
+			"MERGE_GROUP_BASE_SHA": "",
+			"PUSH_BEFORE_SHA":      "",
+		})
+		if ok {
+			t.Fatal("an unhandled event must fail rather than silently pick an empty base")
+		}
+	})
 }
 
 // TestGo127LeakCheckDoesNotRequestTheDeletedExperiment pins the toolchain

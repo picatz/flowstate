@@ -117,6 +117,11 @@ jobs:
       # jobs below are driven from: a verdict computed from a second source
       # could agree with a plan nobody ran.
       decisions: ${{ steps.plan.outputs.decisions }}
+      # The commit the breaking checks (test/rest's `flow breaking` and
+      # proto's `buf breaking`) diff against — see the step below. Computed
+      # once, here, so both jobs read the same answer instead of each
+      # re-deriving it.
+      breaking_base_sha: ${{ steps.breaking_base.outputs.sha }}
     steps:
       # fetch-depth: 0 rather than the shallow default, because a merge-base
       # does not exist in a one-commit history. It costs nothing here — the
@@ -154,6 +159,49 @@ jobs:
         id: plan
         run: go run ./tools/gate -ci
 
+      # #2074: `flow breaking` (test/rest) and `buf breaking` (proto) each
+      # fetched `origin/main` by name at the point their own step ran, minutes
+      # after checkout. A pull request's checkout is a merge ref built against
+      # main as of the triggering event; if main moved before that later fetch
+      # ran, the two jobs compared the PR against a *different* main than the
+      # one the checkout was actually built from, and a main commit that
+      # loosened a contract made an unrelated PR read as tightening it. A
+      # rerun did not clear it — the rerun reused the same merge-ref checkout
+      # while fetching an even newer `origin/main`.
+      #
+      # The fix is to name the base the triggering event itself recorded,
+      # rather than asking the ref what it currently points to. Each event this
+      # workflow runs on carries exactly one: a pull_request's checkout is the
+      # PR merged with `base.sha`; a merge_group's is the prospective merge
+      # against `base_sha`; a push to main is main advancing from `before`. All
+      # three are commit ids the event fixed when it fired, so they read the
+      # same on a rerun as they did on the first attempt. Computed once, here,
+      # rather than re-derived in each consuming job, so a fix to the rule is
+      # one edit and the two breaking checks cannot answer this differently.
+      - name: Which commit the breaking checks compare against
+        id: breaking_base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) sha=$PR_BASE_SHA ;;
+            merge_group) sha=$MERGE_GROUP_BASE_SHA ;;
+            push) sha=$PUSH_BEFORE_SHA ;;
+            *)
+              echo "::error::no breaking-check base rule for event $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          case "$sha" in
+            ''|0000000000000000000000000000000000000000)
+              echo "::error::event $EVENT_NAME gave no usable breaking-check base commit" >&2
+              exit 1
+              ;;
+          esac
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
   # ── The root suite, and the critical path ─────────────────────────────────
   #
@@ -366,16 +414,26 @@ jobs:
       # compile time (#172), so an interface break strikes the callee author's
       # next compile rather than a running spec. This closes that gap where `buf
       # breaking` closes it for the proto, in the callee author's own CI. The
-      # comparison is against origin/main, which the default checkout does not
-      # fetch, so it is fetched explicitly here (the proto job takes fetch-depth:
-      # 0 for the same reason). `+main:` matters on a rerun: checkout has already
-      # created origin/main at the run's original commit, and main may have moved
-      # since, so an unforced shallow fetch rejects the update as non-fast-forward
-      # before the breaking check can run. A break fails the same way validate
-      # does.
-      - name: Fetch base branch for the breaking check
+      # comparison is against a base commit, which the default checkout does not
+      # fetch, so it is fetched explicitly here.
+      #
+      # The base is `needs.plan.outputs.breaking_base_sha` (see the plan job's
+      # "Which commit the breaking checks compare against" step), not the
+      # `origin/main` branch pointer — #2074: fetching `main` by name here, well
+      # after checkout, could pull a commit newer than the one the checkout's
+      # merge ref was actually built against, so a contract main loosened
+      # in between made an unrelated PR read as tightening it. Fetching the
+      # plan's fixed commit id and forcing it onto the local `origin/main`
+      # pointer gives `--against origin/main` below the same answer on every
+      # attempt, including a rerun. `+` still matters: it forces the local ref
+      # onto that commit rather than rejecting the write as non-fast-forward if
+      # this step ever runs twice in one job. A break fails the same way
+      # validate does.
+      - name: Fetch the breaking check's base commit
         if: matrix.lane == 'rest'
-        run: git fetch --no-tags --depth=1 origin +main:refs/remotes/origin/main
+        env:
+          BASE_SHA: ${{ needs.plan.outputs.breaking_base_sha }}
+        run: git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
       - name: Example workflow contracts did not shrink against main
         if: matrix.lane == 'rest'
         run: go run ./cmd/flow breaking --against origin/main examples/
@@ -518,10 +576,14 @@ jobs:
     timeout-minutes: 10
     steps:
       # persist-credentials: false — see the test job above; same reason here.
+      #
+      # No fetch-depth: 0: `buf breaking`'s base commit is fetched explicitly
+      # below, by id, the same way test/rest's `flow breaking` is — see that
+      # job's comment and #2074. An unshallow checkout used to stand in for
+      # that fetch, which is what let the base drift to whatever `origin/main`
+      # was at checkout time rather than the commit the plan actually named.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # buf breaking compares against the base branch, which has to be present.
-          fetch-depth: 0
           persist-credentials: false
 
       # cache: — see the test job above; fork PRs restore but don't save. #577.
@@ -554,6 +616,15 @@ jobs:
       # for the right ones, so both the violations and the suppression are gone.
       - name: Lint
         run: go tool -modfile=tools/external/go.mod buf lint
+
+      # `.git#branch=origin/main` resolves against this checkout's own local
+      # `refs/remotes/origin/main`, which the step below points at the plan's
+      # fixed base commit rather than leaving it to float — see the fetch
+      # step's comment on the test job's rest lane and #2074.
+      - name: Fetch the breaking check's base commit
+        env:
+          BASE_SHA: ${{ needs.plan.outputs.breaking_base_sha }}
+        run: git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
 
       # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
       # nothing ran them.

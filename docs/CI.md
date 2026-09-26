@@ -321,6 +321,67 @@ forwards every output the plan publishes, and that the `fuzz-smoke` step reads
 `fuzz_targets` — because the Makefile's default is the whole tier, and a step
 that dropped the variable would stay green at the old cost.
 
+### The breaking checks compare against a fixed base, not a moving one
+
+`flow breaking` (`test`'s `rest` lane, over `examples/`) and `buf breaking`
+(the `proto` job, over the schema) each need a git ref holding the old
+contract. Before #2074 both fetched `origin/main` by *name*, right before
+running: `git fetch --no-tags --depth=1 origin +main:refs/remotes/origin/main`
+then `flow breaking --against origin/main examples/`, and the proto job took
+`fetch-depth: 0` on its checkout so a plain `.git#branch=origin/main` had
+`origin/main` to read.
+
+That fetch runs minutes after checkout, and a pull request's checkout is a
+merge ref GitHub built by merging the PR onto whatever `main` was *at the
+triggering event*, not at fetch time. If `main` advanced in between — landing
+an ordinary merge, unrelated to the PR — the two jobs compared the PR's
+checkout against a *newer* `main` than the one it was actually built from. On
+2026-09-25, #2010 loosened an example's contract by merging to `main`; two PRs
+that touched no example failed `test (rest)` within the next few minutes with
+`flow breaking` reporting they had *tightened* it — main's own loosening,
+read backwards, because the PR's checkout still held the tighter shape and the
+fetch pulled main after it moved. A rerun did not clear it: a rerun reuses the
+same merge-ref checkout, so it observed the same problem against whatever
+`main` had moved to by the time it fetched again. Only a new push — a fresh
+merge ref — cleared it.
+
+The fix compares against the commit id the *triggering event itself* recorded,
+not against a branch pointer asked for again later. Every event this workflow
+runs on carries exactly one such id, fixed the moment the event fired and
+unchanged on a rerun:
+
+| Event | Base commit |
+| --- | --- |
+| `pull_request` | `github.event.pull_request.base.sha` — main as of the merge ref this checkout is built from |
+| `merge_group` | `github.event.merge_group.base_sha` — main as of the prospective merge this run tests |
+| `push` (to `main`) | `github.event.before` — main immediately before this push, so the diff is exactly what the push just landed |
+
+The `plan` job resolves this once, in a "Which commit the breaking checks
+compare against" step (`id: breaking_base`), and publishes it as the
+`breaking_base_sha` output beside the job booleans — one mechanism, so the
+`test` and `proto` jobs cannot answer the question differently. The event
+fields are read through `env:` rather than interpolated into `run:`, and an
+event this workflow does not otherwise trigger on, or an event whose recorded
+base reads as empty or the all-zero SHA (a push creating a ref from nothing),
+fails the step rather than silently comparing against nothing.
+
+Each consuming job fetches that fixed commit and forces it onto its own local
+`refs/remotes/origin/main` — `git fetch --no-tags --depth=1 origin
+"+$BASE_SHA:refs/remotes/origin/main"` — so the existing `flow breaking
+--against origin/main` and `buf breaking --against '.git#branch=origin/main'`
+invocations need no change: both already read whatever `origin/main` locally
+points to, and that pointer is now pinned to the base the plan named rather
+than left to float. The proto job's checkout dropped `fetch-depth: 0`
+accordingly — it no longer needs the whole repository's history, only the one
+base commit, fetched by id the same way the `rest` lane's does.
+
+`tools/gate/ci_test.go`'s `TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent`
+runs the plan step's own script against each event shape, so a future edit to
+the case statement is caught here instead of first misdiagnosing a PR in
+production; `TestCIFetchesTheBreakingCheckBaseWithAForcedRefUpdate` and
+`TestCIBreakingChecksCompareAgainstTheirOwnCheckout` pin that both jobs fetch
+the same output and that the breaking commands still read `origin/main`.
+
 ### The fuzz tier was slower than the fuzzing it did
 
 Narrowing the tier to what a diff reaches left the other half of `fuzz-smoke`
