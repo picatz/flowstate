@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // What a refused `*.test.yaml` reports (#923 step 1): every problem the file
@@ -364,6 +366,35 @@ type problems struct {
 	// the collector pays nothing for a line most reports never print.
 	sole  string
 	spans bool
+
+	// sensitive is what a problem's own message may not print, installed once
+	// [File.evaluateVars] has computed what the file's `vars:` withhold
+	// (#2080's [problems.withholdText]) — the zero value beforehand, which
+	// redacts nothing and costs one nil check per problem. `problems.report`
+	// in this package quotes a fixture value the way every other rendering
+	// here does — `%q` — and a value substituted from a withheld var is run
+	// data by the time it reaches one of those positions exactly as it is
+	// once a case binds it, so it needs the identical pair of spellings.
+	sensitive sensitiveInputs
+}
+
+// withholdText widens what a problem's message may not print with text, in
+// both plain and `%q` spellings — the pair [bothSpellings] gives every other
+// rendering in this package. Called once, by [File.evaluateVars], right after
+// it computes what the file's vars withhold.
+//
+// A set too large to enumerate withholds every later message whole, which
+// protects the material and leaves an author a report of markers with no
+// reason in it; so the file is refused here, naming the cause, and that one
+// problem is recorded before the set is installed so it reads in the clear.
+// It names no sizes: the bound is [v1.SensitiveValues]' own.
+func (p *problems) withholdText(text []string) {
+	sensitive := p.sensitive.WithValues(bothSpellings(text)...)
+	if sensitive.WithholdAll() {
+		p.report(site{at: at(v1.VarsRoot)}, "vars: the material this file withholds exceeds what one "+
+			"redaction set can enumerate; keep a value derived from a secret to the shape a fixture needs")
+	}
+	p.sensitive = sensitive
 }
 
 // newProblems collects against a parsed document, or against none — the Go
@@ -421,6 +452,24 @@ func (p *problems) reportKey(r site, format string, args ...any) {
 
 // record appends one problem, up to both bounds, counting every one.
 func (p *problems) record(r site, atKey bool, message string) {
+	// Cleared before either bound reads its length, so both are bounds on
+	// what a reader would actually see (#2080): a problem quoting a fixture
+	// value substituted from a withheld var must not print it any more than a
+	// case's own check witness does, once [File.evaluateVars] has installed
+	// what this load withholds ([problems.withholdText]). The zero value
+	// beforehand redacts nothing, so a problem reported before vars are known
+	// costs the one nil check [SensitiveValues.RedactText] already pays.
+	//
+	// Through RedactText rather than RedactSubstrings directly (Copilot): a
+	// set too large to enumerate withholds by answering [SensitiveValues.WithholdAll],
+	// and RedactSubstrings deliberately does not consult that flag on its
+	// own — every other rendering in this package checks it first and
+	// substitutes a marker; calling the substring half alone here was the
+	// one seam that did not, so a withheld set printed this message
+	// unredacted rather than as the marker every other surface would have
+	// shown for it.
+	message = p.sensitive.RedactText(message, "[withheld]")
+
 	p.total++
 
 	// Which document the problem is about is decided for every problem found,

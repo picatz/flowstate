@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -267,4 +268,210 @@ func mkdir(t *testing.T, dir string) string {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	return dir
+}
+
+// A var testdefaults.yaml states is printed by every suite in the directory,
+// and taint is a fact about one suite's `secrets:`, so a suite whose taint
+// closure reaches a directory var is refused rather than trusted to be the
+// only reader (#2080). The four tests below are the rule's three shapes and
+// its positive control.
+
+// TestASuiteNamingADirectoryVarAsASecretIsRefused is #2080's first leak at
+// its source: the suite names the directory's var from `secrets:` directly.
+func TestASuiteNamingADirectoryVarAsASecretIsRefused(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-dirseed-5521"
+
+	dir := t.TempDir()
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), "vars:\n  token: "+secret+"\n")
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: names the directory's var as a secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+    expect: {failed: false}
+`)
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err, "a directory var on a path to a secret must refuse the suite (#2080)")
+	assert.Contains(t, err.Error(), flowtest.DirDefaultsName)
+	assert.Contains(t, err.Error(), "vars.token")
+	assert.Contains(t, err.Error(), `secrets["env:TOKEN"] references`, "the refusal names the chain")
+	assert.Contains(t, err.Error(), "move vars.token into the suite's own vars: and remove it from testdefaults.yaml", "the refusal names the remedy")
+	assert.NotContains(t, err.Error(), secret, "the refusal names a path, never the value")
+
+	// Reported in both documents: at the directory var, where the text is,
+	// and at the suite's own `secrets:` entry, so an editor showing only the
+	// suite shows why it is refused.
+	var diagnostics *flowtest.Diagnostics
+	require.ErrorAs(t, err, &diagnostics)
+	files := map[string]string{}
+	for _, problem := range diagnostics.Problems {
+		files[problem.File] = problem.Field
+		assert.Positive(t, problem.Line, "%s is positioned", problem.File)
+	}
+	assert.Contains(t, files, filepath.Join(dir, flowtest.DirDefaultsName))
+	assert.Equal(t, "tests[0].secrets.env:TOKEN", files[path], "the suite's copy of the refusal sits at the entry that seeds the path")
+}
+
+// TestASuiteAliasOfADirectoryVarNamedAsASecretIsRefused is the transitive
+// shape: the suite's own var reads the directory's, and `secrets:` names the
+// alias. The closure reaches the directory var backward, so the refusal is
+// the same, with the hop in its path.
+func TestASuiteAliasOfADirectoryVarNamedAsASecretIsRefused(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-diralias-7730"
+
+	dir := t.TempDir()
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), "vars:\n  token: "+secret+"\n")
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+vars:
+  alias: ${vars.token}
+tests:
+  - name: names a local alias of the directory's var as a secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.alias}
+    expect: {failed: false}
+`)
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err, "an alias does not launder a directory var out of the rule (#2080)")
+	assert.Contains(t, err.Error(), flowtest.DirDefaultsName)
+	assert.Contains(t, err.Error(), "vars.token → vars.alias", "the refusal walks the alias back to the directory var")
+	assert.NotContains(t, err.Error(), secret)
+
+	// The suite's copy of the refusal sits at the `secrets:` entry naming the
+	// alias — the seed of the path — not at one naming the refused root.
+	var diagnostics *flowtest.Diagnostics
+	require.ErrorAs(t, err, &diagnostics)
+	var fields []string
+	for _, problem := range diagnostics.Problems {
+		if problem.File == path {
+			fields = append(fields, problem.Field)
+		}
+	}
+	assert.Contains(t, fields, "tests[0].secrets.env:TOKEN", "the refused suite carries the refusal at its seed")
+}
+
+// TestANestedDirectoryVarOnASecretPathIsRefusedAtItsRoot is the structured
+// shape: a fixture reference names a whole var, so a nested directory leaf
+// reaches `secrets:` through a suite var that reads it. Provenance is per
+// top-level name, so the refusal and its remedy name the root.
+func TestANestedDirectoryVarOnASecretPathIsRefusedAtItsRoot(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-dirnested-1184"
+
+	dir := t.TempDir()
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), "vars:\n  request:\n    token: "+secret+"\n")
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: ${vars.request.token}
+tests:
+  - name: names a nested directory leaf as a secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+    expect: {failed: false}
+`)
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err, "a nested directory leaf on a path to a secret must refuse the suite (#2080)")
+	assert.Contains(t, err.Error(), "vars.request.token is stated by "+flowtest.DirDefaultsName)
+	assert.Contains(t, err.Error(), "move vars.request into the suite's own vars: and remove it from testdefaults.yaml")
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// TestASuiteStatingItsOwnSecretVarShadowsTheDirectory is the remedy the
+// refusals above name, and the rule's positive control: the suite states
+// `token` itself, so the value it withholds lives in the one file that
+// withholds it — the directory's `token` is a different, harmless value — and
+// the directory's other var, on no secret path, is read as it always was.
+func TestASuiteStatingItsOwnSecretVarShadowsTheDirectory(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-dirshadow-6402"
+
+	dir := t.TempDir()
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), `
+vars:
+  token: directory-placeholder
+  caller: team-a
+`)
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: `+secret+`
+tests:
+  - name: withholds its own secret
+    workflow: ./workflow.yaml
+    inputs: {who: "${vars.caller}"}
+    secrets:
+      env:TOKEN: ${vars.token}
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      check:
+        - that: vars.token == 'nope'
+          because: false on purpose, so the witness renders
+`)
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused(), "a suite stating its own secret-holding var is the remedy, and loads")
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+
+	rendered := fmt.Sprintf("%v %+v", c.GetFailures(), c.GetFailures())
+	assert.Contains(t, rendered, "[redacted]", "#2041's withholding holds for the suite's own var")
+	assert.NotContains(t, rendered, secret)
+}
+
+// TestASuiteCopyingADirectoryVarItNamesAsASecretIsRefused is the remedy
+// followed as a copy rather than a move: the suite restates the directory's
+// value in its own `vars:` and withholds that copy, but testdefaults.yaml
+// still states it, so every other suite in the directory reads and prints it.
+// Refused in the same words, and positioned in the suite, which wrote the
+// copy.
+func TestASuiteCopyingADirectoryVarItNamesAsASecretIsRefused(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-dircopy-3907"
+
+	dir := t.TempDir()
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), "vars:\n  token: "+secret+"\n")
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: `+secret+`
+tests:
+  - name: withholds a copy the directory still states
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+    expect: {failed: false}
+`)
+
+	_, err := flowtest.Load(path)
+	require.Error(t, err, "a copy leaves the directory's value readable by every other suite (#2080)")
+	var diagnostics *flowtest.Diagnostics
+	require.ErrorAs(t, err, &diagnostics)
+	require.NotEmpty(t, diagnostics.Problems)
+	assert.Equal(t, path, diagnostics.Problems[0].File, "positioned in the suite, which wrote the copy")
+	assert.Contains(t, err.Error(), "vars.token restates the value testdefaults.yaml gives it")
+	assert.Contains(t, err.Error(), "move vars.token into the suite's own vars: and remove it from testdefaults.yaml")
+	assert.NotContains(t, err.Error(), secret, "the refusal names a path, never the value")
 }
