@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // EscapeControl renders control characters as their escaped spelling, for text
@@ -54,4 +56,31 @@ func EscapeControl(s string) string {
 	}
 
 	return b.String()
+}
+
+// maxRenderedPhaseBytes bounds how much of a heartbeat's phase reaches a
+// rendered line.
+//
+// The server this talks to already bounds what it decodes (server.go's
+// heartbeatPhase), but that is a fact about one deployment's build and
+// `--address` can point anywhere (AGENTS.md invariant 10) — a peer that is
+// not this repository's own server, or one running an older build, offers no
+// such promise. So the line this process is about to print bounds it again,
+// for the same reason the decode side does: one heartbeat must not be able to
+// make the line arbitrarily long (invariant 5).
+const maxRenderedPhaseBytes = 256
+
+// RenderedPhase is a heartbeat's phase, cut to [maxRenderedPhaseBytes] and
+// escaped exactly as [EscapeControl] treats the failure beside it on the same
+// pending-activity line — the same threat, on a field that used to reach the
+// line unescaped and unbounded (#2067).
+//
+// `flow watch`'s change-detection identity calls this too, on the same value
+// and for the same text, so the two cannot disagree about what "changed"
+// means: an identity built from the raw phase could move when the rendered
+// line does not (a byte trimmed off the tail past the bound) or hold still
+// when it does (a control character the render escapes into visibly
+// different text).
+func RenderedPhase(phase string) string {
+	return EscapeControl(textbound.Cut(phase, maxRenderedPhaseBytes))
 }

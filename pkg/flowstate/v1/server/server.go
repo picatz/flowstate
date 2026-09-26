@@ -12,6 +12,7 @@ import (
 	"uuid"
 
 	"connectrpc.com/connect"
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -2507,18 +2508,34 @@ func timeoutKindText(kind enums.TimeoutType) string {
 	}
 }
 
+// maxHeartbeatPhaseBytes bounds the phase [FlowstateServer.heartbeatPhase]
+// decodes from one heartbeat detail.
+//
+// [v1.Phase]'s vocabulary is three short constants, so Flowstate's own worker
+// never approaches this. What heartbeats this activity is not necessarily
+// that worker: a worker on a modified tree, or one polling a task queue this
+// deployment never intended to serve, chooses these bytes with nothing
+// stopping it, and this field is read on every `flow get` and `flow watch`
+// poll of a run with a retrying step (AGENTS.md invariant 5).
+const maxHeartbeatPhaseBytes = 256
+
 // heartbeatPhase reads the phase a running attempt last heartbeated.
 //
 // Empty for every shape of "nothing to say": an attempt that has not reported
 // yet, an attempt waiting to be retried and therefore not running at all, a
-// worker older than the field, or details this cannot decode. Those are different
-// facts, and none of them is "the step is doing nothing" — which is why the schema
-// says so on the field rather than leaving a renderer to guess.
+// worker older than the field, details this cannot decode, or a decoded value
+// outside [v1.Phase]'s own vocabulary. Those are different facts, and none of
+// them is "the step is doing nothing" — which is why the schema says so on the
+// field rather than leaving a renderer to guess.
 //
 // A decode failure is silence rather than an error, deliberately. This is an aside
 // about a running attempt on a response whose subject is the run: a `flow get`
 // that failed because a heartbeat payload was written by something encoding
-// differently would be refusing to answer a question it can answer.
+// differently would be refusing to answer a question it can answer. The
+// vocabulary check the value gets afterward is the same rule applied one step
+// further: a string that decoded cleanly but is not one [v1.Phase] constant was
+// not written by this repository's own worker either, and there is nothing to
+// say about it rather than something to pass along unverified (#2067).
 func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 	if details == nil || len(details.GetPayloads()) == 0 {
 		return ""
@@ -2529,7 +2546,14 @@ func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 		return ""
 	}
 
-	return phase
+	phase = textbound.Cut(phase, maxHeartbeatPhaseBytes)
+
+	switch phase {
+	case v1.PhaseRequesting.String(), v1.PhaseReadingResponse.String(), v1.PhaseCallingPlugin.String():
+		return phase
+	default:
+		return ""
+	}
 }
 
 // getWorkflowExecutionStatus maps the Temporal workflow execution status to Flowstate's run response status.

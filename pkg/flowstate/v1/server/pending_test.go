@@ -7,11 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The Describe response carried the answer and the server read only the status
@@ -191,4 +195,48 @@ func TestAStuckFanOutIsReportedWithoutBeingWholeOfIt(t *testing.T) {
 	require.Len(t, few, 1)
 	assert.Equal(t, "connection refused", few[0].GetLastFailure())
 	assert.False(t, fewTruncated)
+}
+
+// TestHeartbeatPhaseIsBoundedAndRestrictedToTheVocabulary is heartbeatPhase's own
+// coverage of #2067: a heartbeat detail is written by whatever process ran the
+// activity attempt, not necessarily this repository's own worker, which
+// heartbeats only [v1.Phase]'s three constants (engine/heartbeat.go). A phase
+// outside that vocabulary, or one long enough to make the answer as large as the
+// attempt chose, gets the same silence heartbeatPhase already gives an
+// undecodable payload.
+func TestHeartbeatPhaseIsBoundedAndRestrictedToTheVocabulary(t *testing.T) {
+	t.Parallel()
+
+	s := mustNew(t, nil)
+
+	payloadOf := func(t *testing.T, value string) *commonpb.Payloads {
+		t.Helper()
+
+		payload, err := converter.GetDefaultDataConverter().ToPayload(value)
+		require.NoError(t, err)
+
+		return &commonpb.Payloads{Payloads: []*commonpb.Payload{payload}}
+	}
+
+	// The positive direction, so the vocabulary check is not mistaken for a
+	// blanket refusal: a phase Flowstate's own worker can actually heartbeat
+	// still reaches the caller.
+	require.Equal(t, v1.PhaseRequesting.String(), s.heartbeatPhase(payloadOf(t, v1.PhaseRequesting.String())),
+		"a phase this repository's own worker can heartbeat was withheld")
+
+	// A worker on a modified tree, or one polling a task queue this deployment
+	// never intended to serve, controls these bytes with nothing to stop it.
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, "uploading")),
+		"a phase outside v1.Phase's vocabulary reached the caller unverified")
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, "requesting\x1b[31mCLEARED\x1b[0m")),
+		"a control sequence riding along with an otherwise-real phase name reached "+
+			"the caller unverified")
+
+	long := strings.Repeat("x", 10_000)
+	got := s.heartbeatPhase(payloadOf(t, long))
+	assert.LessOrEqual(t, len(got), maxHeartbeatPhaseBytes,
+		"one heartbeat made this answer as long as whatever the attempt heartbeated")
+	assert.Equal(t, "", got,
+		"a bounded value happened to still equal one of v1.Phase's constants, which "+
+			"would mean this case tests nothing about the bound")
 }
