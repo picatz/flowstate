@@ -511,7 +511,23 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 		// call rather than the workflow.
 		inputs, err := runLocalToolInputs(workflow, args.Inputs)
 		if err != nil {
-			return flowmcp.ToolError(err), nil
+			// Through the same redaction seam `flow run local`'s own input
+			// refusal has gone through since #2070 (runlocal.go), rather than a
+			// second mechanism for the same concern (invariant 2): a
+			// `sensitive:` input's value must not reach this tool result any
+			// more than it reaches stderr, and a tool result is exactly the
+			// machine-readable record an agent carries forward that
+			// refusedRunSensitiveValues' own doc names as the reason this
+			// exists. inputs is what runLocalToolInputs decoded before the
+			// failure — nil for a failure inputsFromJSON itself raised (a
+			// numeric overflow, say), the bound map for one
+			// checkToolRunInputs raised on top of it (a `must:` failure) — the
+			// same distinction the CLI's two call sites of
+			// refusedRunSensitiveValues draw between a collection failure and
+			// a bind failure (#2076).
+			reveal := revealSensitiveRequested(posture)
+			sensitive := refusedRunSensitiveValues(posture, workflow, inputs, err, reveal)
+			return flowmcp.ToolError(redactFailureError(err, sensitive)), nil
 		}
 
 		timeout, _ := posture.Flags().GetDuration("run-local-timeout")
