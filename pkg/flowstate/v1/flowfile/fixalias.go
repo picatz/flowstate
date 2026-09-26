@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/token"
 )
 
 // Inlining a whole-value alias, which is the migration path across the refusal
@@ -190,7 +191,25 @@ type aliasInliner struct {
 	// nothing would already cost is not free, and a budget that only counted
 	// the growth would let a large file's last few bytes of headroom be spent
 	// on an expansion this rewrite never priced.
+	//
+	// [aliasInliner.chargeScan] also charges *scanning* source text against
+	// this same total, not only the output [appendLine] builds — the one
+	// budget this file already prices takes both rather than growing a
+	// second mechanism for the second resource (AGENTS.md invariant 2;
+	// #2075). A rewrite that never scanned more than it charged would not
+	// need this, but every scan named on [aliasInliner.chargeScan] can be
+	// handed attacker-sized source text — a token's padding, a block's
+	// blank tail — whether or not the *value* it resolves to is ever large.
 	bytes int
+
+	// scanBytes is the total size of every source-text read this rewrite
+	// has charged through [aliasInliner.chargeScan] — a token's Origin, a
+	// line, or a block's extent — as distinct from bytes charged for the
+	// output [aliasInliner.appendLine] builds. Both add to
+	// [aliasInliner.bytes] alike, but this one lets a test observe total
+	// scan work on its own, without having to reconstruct it from whichever
+	// specific cache did or didn't fire (#2075).
+	scanBytes int
 
 	// blockEnds caches [fixer.blockEnd]'s answer for an anchor's block
 	// extent, keyed by the anchor itself, so an anchor many sites alias is
@@ -199,52 +218,73 @@ type aliasInliner struct {
 	// expanded — [aliasInliner.rewrite] only ever edits [fixer.lines] itself
 	// in [aliasInliner.dropMarker], after every site's replacement is
 	// already recorded — so the same [first, last] line range answers every
-	// site that opens on this anchor.
+	// site that opens on this anchor. The scan itself is charged through
+	// [aliasInliner.chargeScan] once, at the point this cache is filled.
 	blockEnds map[*ast.AnchorNode]int
+
+	// blockBases caches [indentWidth] of an anchor's block's first line,
+	// keyed by the anchor, for the same reason [blockEnds] does: YAML
+	// indentation is a run of spaces an author (or an attacker) chooses the
+	// width of, not bounded by how deeply the document nests, so
+	// [aliasInliner.spliceBlock] re-measuring it once per site would be the
+	// same shape [blockEnds] and [anchorSpans] already close, just on a
+	// third line of the anchor's own (#2075).
+	blockBases map[*ast.AnchorNode]int
+
+	// anchorSpans caches [spanOfNode]'s answer for an anchor's value, keyed
+	// by the anchor: both [aliasInliner.spliceScalar] and
+	// [aliasInliner.spliceBlock] call it before they ever reach their own
+	// caches below, so without this one an anchor's value is re-spanned —
+	// walking every token via [eachToken] and scanning each one's `Origin`
+	// via [tokenText] — once per site regardless of whether the value
+	// itself is cached. [aliasInliner.spanOf] charges that scan through
+	// [aliasInliner.chargeScan] before it runs, using each token's `Origin`
+	// length, which [originLen] gets in O(1) per token without doing the
+	// scan itself (#2075).
+	anchorSpans map[*ast.AnchorNode]Span
 
 	// scalarValues caches the source text [aliasInliner.spliceScalar] reads
 	// off an anchor's own line, for the same reason [blockEnds] does:
 	// [byteOffsetOfColumn] rescans that line from its start on every call,
 	// and a scalar anchor many sites alias would otherwise pay that rescan
-	// again at every site rather than once (#2075).
+	// again at every site rather than once (#2075). The scan is charged
+	// through [aliasInliner.chargeScan] in [aliasInliner.scalarValueOf].
 	scalarValues map[*ast.AnchorNode]string
 
-	// scalarValueComputations counts [aliasInliner.scalarValueOf]'s own
-	// calls — one per anchor that misses [scalarValues], never one per
-	// site — the counter a test checks to prove that caching, the same way
-	// [fixer.blockEndScans] proves [blockEnds] (#2075).
-	scalarValueComputations int
-
 	// splits caches [aliasInliner.split]'s answer for one alias, keyed by
-	// the alias node itself. A site nested inside a block that many outer
-	// sites re-expand is not itself re-expanded once per outer site — it is
-	// [aliasInliner.replacement]'s own recursion through
+	// the alias node itself, plus the two derived forms
+	// [aliasInliner.spliceBlock] rebuilds on every visit —
+	// `strings.TrimRight(prefix, " ")` and whether `suffix` is blank once
+	// trimmed — so those are not re-scanned either just because prefix and
+	// suffix themselves came from a cache. A site nested inside a block
+	// that many outer sites re-expand is not itself re-expanded once per
+	// outer site — it is [aliasInliner.replacement]'s own recursion through
 	// [aliasInliner.expandRange] that visits it again for every outer
 	// site — so without this cache, [split] rescans that inner alias's own
 	// line (byte offset, trailing comment, key-colon checks) once per
 	// outer site rather than once for the alias, the same shape [blockEnds]
-	// and [scalarValues] close for an anchor's own line (#2075).
+	// and [scalarValues] close for an anchor's own line (#2075). The scan
+	// is charged through [aliasInliner.chargeScan] in [split] itself.
 	splits map[*ast.AliasNode]splitResult
-
-	// splitComputations counts [aliasInliner.split]'s own calls — one per
-	// alias that misses [splits], never one per outer site that happens to
-	// re-expand it — the counter a test checks to prove that caching, the
-	// same way [scalarValueComputations] proves [scalarValues] (#2075).
-	splitComputations int
-
-	// splitScans counts the bytes of the alias's own line [split] reads on
-	// each of its own calls (never on a [splits] cache hit): unlike
-	// [scalarValueComputations], which only has to show the call count stay
-	// flat, this has to show the same shape [fixer.blockEndScans] does —
-	// that the *work* per call still scales with the line, not just that
-	// the call count stayed low — since [byteOffsetOfColumn] scans the
-	// alias's own line up to its column, which is O(line length) (#2075).
-	splitScans int
 }
 
-// splitResult is one alias's cached [aliasInliner.split] answer.
+// splitResult is one alias's cached [aliasInliner.split] answer, plus the
+// two forms [aliasInliner.spliceBlock] derives from it.
 type splitResult struct {
 	prefix, suffix string
+
+	// trimmedPrefix is `strings.TrimRight(prefix, " ")`, precomputed once:
+	// it is bounded by prefix's own length, already charged when [prefix]
+	// was split from its line, so computing it here costs nothing this
+	// rewrite has not already paid for — but recomputing it on every visit
+	// to a cached alias, as [aliasInliner.spliceBlock]'s mapping form used
+	// to, would still cost that much again each time (#2075).
+	trimmedPrefix string
+
+	// suffixBlank is `strings.TrimSpace(suffix) == ""`, precomputed for the
+	// same reason: [aliasInliner.spliceBlock]'s sequence form checks this on
+	// every visit to decide whether a trailing comment survived the split.
+	suffixBlank bool
 }
 
 // collectAnchors records every anchor in the document, walking with [ast.Walk] so
@@ -532,12 +572,13 @@ func (in *aliasInliner) replacement(site aliasSite, stack []string) ([]string, b
 }
 
 // splitOf returns [aliasInliner.split]'s answer for site, computed once per
-// alias and cached in [aliasInliner.splits]: a site nested inside a block
-// is re-split every time [aliasInliner.replacement]'s own recursion through
-// [aliasInliner.expandRange] visits it again for another outer site, and
-// without this cache that repeats [split]'s scan of the alias's own line —
-// potentially long — once per outer site rather than once for the alias
-// itself (#2075).
+// alias and cached in [aliasInliner.splits] along with the two forms
+// [aliasInliner.spliceBlock] derives from it: a site nested inside a block
+// is re-split (and re-derived) every time [aliasInliner.replacement]'s own
+// recursion through [aliasInliner.expandRange] visits it again for another
+// outer site, and without this cache that repeats [split]'s scan of the
+// alias's own line — potentially long — once per outer site rather than
+// once for the alias itself (#2075).
 func (in *aliasInliner) splitOf(site aliasSite) (prefix, suffix string, ok bool) {
 	if cached, hit := in.splits[site.alias]; hit {
 		return cached.prefix, cached.suffix, true
@@ -551,7 +592,12 @@ func (in *aliasInliner) splitOf(site aliasSite) (prefix, suffix string, ok bool)
 	if in.splits == nil {
 		in.splits = map[*ast.AliasNode]splitResult{}
 	}
-	in.splits[site.alias] = splitResult{prefix, suffix}
+	in.splits[site.alias] = splitResult{
+		prefix:        prefix,
+		suffix:        suffix,
+		trimmedPrefix: strings.TrimRight(prefix, " "),
+		suffixBlank:   strings.TrimSpace(suffix) == "",
+	}
 
 	return prefix, suffix, true
 }
@@ -563,12 +609,18 @@ func (in *aliasInliner) splitOf(site aliasSite) (prefix, suffix string, ok bool)
 // suffix is whatever followed the alias, which may only be a comment. Anything
 // else there means the line holds more than this one value, and a whole-line edit
 // would lose it.
+//
+// The whole line is charged through [aliasInliner.chargeScan] before any of
+// it is scanned: [byteOffsetOfColumn] below reads up to the alias's own
+// column, and every `strings.Trim*` call further down reads a piece of what
+// this charges, so one charge here covers this function's own scan in full
+// (#2075).
 func (in *aliasInliner) split(site aliasSite) (prefix, suffix string, ok bool) {
-	in.splitComputations++
-
 	pos := site.alias.Start.Position
 	text := in.f.line(pos.Line)
-	in.splitScans += len(text)
+	if !in.chargeScan(site.alias, len(text)) {
+		return "", "", false
+	}
 
 	at, located := byteOffsetOfColumn(text, pos.Column)
 	if !located {
@@ -607,6 +659,18 @@ func (in *aliasInliner) split(site aliasSite) (prefix, suffix string, ok bool) {
 		return prefix, suffix, true
 	}
 
+	// Charged separately from the line above: [spanOfNode] walks
+	// site.key's own tokens and [tokenText] scans each one's `Origin`,
+	// which is not bounded by this line's own length — a key's Origin
+	// captures every raw byte since the previous token, so a key that
+	// merely follows a long run of blank lines or comments elsewhere in
+	// the document carries that whole run in its own Origin (found via
+	// this file's own probe for the unrelated block-blank-tail shape,
+	// #2075).
+	if !in.chargeScan(site.alias, originLen(site.key)) {
+		return "", "", false
+	}
+
 	keySpan := spanOfNode(site.key)
 	if !keySpan.IsValid() || keySpan.Start.Line != pos.Line {
 		in.refuseAlias(site.alias,
@@ -624,11 +688,68 @@ func (in *aliasInliner) split(site aliasSite) (prefix, suffix string, ok bool) {
 	return prefix, suffix, true
 }
 
+// spanOf returns [spanOfNode]'s answer for an anchor's value, computed once
+// per anchor and cached in [aliasInliner.anchorSpans]. Both
+// [aliasInliner.spliceScalar] and [aliasInliner.spliceBlock] call this
+// before they ever reach their own value caches, so without this one an
+// anchor's value would be re-spanned once per site regardless of whether
+// the value itself is cached: [spanOfNode] walks every token in the value
+// via [eachToken], and [tokenText] scans each token's `Origin` — the raw
+// source bytes the parser keeps to reproduce the document byte for byte,
+// including any padding written before the token — with
+// [strings.TrimSpace]. [originLen] gets the same total [tokenText] would
+// scan without doing the scan itself (each token's `Origin` already knows
+// its own length), which is what lets this charge for the scan through
+// [aliasInliner.chargeScan] before it runs rather than after (#2075).
+func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Span, bool) {
+	if span, cached := in.anchorSpans[anchor]; cached {
+		return span, true
+	}
+
+	if !in.chargeScan(alias, originLen(anchor.Value)) {
+		return Span{}, false
+	}
+
+	span := spanOfNode(anchor.Value)
+	if in.anchorSpans == nil {
+		in.anchorSpans = map[*ast.AnchorNode]Span{}
+	}
+	in.anchorSpans[anchor] = span
+
+	return span, true
+}
+
+// originLen returns the total length of every token's `Origin` in a
+// subtree — the same total [tokenText] would scan with [strings.TrimSpace]
+// on each one — without doing that scan: a string's own length is O(1) to
+// read, so walking the tokens with [eachToken] and summing `len(tok.Origin)`
+// (or `len(tok.Value)`, [tokenText]'s own fallback when a token carries no
+// `Origin`) costs one [len] per token rather than one scan per token's
+// worth of source bytes.
+func originLen(n ast.Node) int {
+	total := 0
+	eachToken(n, func(tok *token.Token) {
+		if tok == nil {
+			return
+		}
+		if tok.Origin != "" {
+			total += len(tok.Origin)
+			return
+		}
+		total += len(tok.Value)
+	})
+
+	return total
+}
+
 // charge adds n to the bytes an expansion has spent and refuses once that
 // crosses [maxBytes], exactly where [countNodes]'s own comment says a charge
 // belongs: at the point of spend, before the memory is allocated, rather than
-// after — see [aliasInliner.appendLine], the one place a produced line ever
-// pays it.
+// after. It is the one mechanism both directions of spend go through —
+// [aliasInliner.appendLine] for a line this rewrite produces, and
+// [aliasInliner.chargeScan] for source text this rewrite reads in order to
+// build one, so that a scan large enough to matter is bounded by the same
+// budget an output large enough to matter already was (#2075).
 func (in *aliasInliner) charge(alias *ast.AliasNode, n int) bool {
 	in.bytes += n
 	if in.bytes > maxBytes {
@@ -640,6 +761,25 @@ func (in *aliasInliner) charge(alias *ast.AliasNode, n int) bool {
 	}
 
 	return true
+}
+
+// chargeScan is [aliasInliner.charge] for source text this rewrite is about
+// to scan (or, where the exact size is only known once the scan is already
+// done, has just finished scanning) rather than for a line it is about to
+// produce. It is the one accounting path every per-expansion read of line or
+// token text in this file goes through — [split], [spanOfNode]/[tokenText]
+// on an anchor's value (via [aliasInliner.spanOf]), the derived trims
+// [splitResult] precomputes, [fixer.blockEnd], and [byteOffsetOfColumn] —
+// so a read added later that forgets to memoize its own answer is still
+// bounded by [maxBytes] rather than bounded only by whichever cache someone
+// remembered to write for it (#2075's own review round: the round before
+// this one added a cache per finding, and the next finding was a read
+// [split]'s cache never covered because it ran before that cache was even
+// consulted).
+func (in *aliasInliner) chargeScan(alias *ast.AliasNode, n int) bool {
+	in.scanBytes += n
+
+	return in.charge(alias, n)
 }
 
 // appendLine is the one place a line this rewrite produces is added to a
@@ -690,7 +830,10 @@ func (in *aliasInliner) appendLine(alias *ast.AliasNode, out []string, line stri
 // The value's own source text is copied, so its quoting is whatever the author
 // chose rather than whatever a re-render would produce.
 func (in *aliasInliner) spliceScalar(site aliasSite, prefix, suffix string, anchor *ast.AnchorNode) ([]string, bool) {
-	span := spanOfNode(anchor.Value)
+	span, ok := in.spanOf(site.alias, anchor)
+	if !ok {
+		return nil, false
+	}
 	if !span.IsValid() || span.Start.Line != span.End.Line {
 		in.refuseAlias(site.alias,
 			"the value `&%s` names is not written on one line, so it cannot be written after `%s`; write it out by hand",
@@ -699,8 +842,8 @@ func (in *aliasInliner) spliceScalar(site aliasSite, prefix, suffix string, anch
 		return nil, false
 	}
 
-	value, ok := in.scalarValues[anchor]
-	if !ok {
+	value, cached := in.scalarValues[anchor]
+	if !cached {
 		var found bool
 		value, found = in.scalarValueOf(site, anchor, span)
 		if !found {
@@ -725,11 +868,15 @@ func (in *aliasInliner) spliceScalar(site aliasSite, prefix, suffix string, anch
 // rescans the anchor's own line from its start every time it is called, and a
 // scalar anchor many sites alias would otherwise pay that rescan again at
 // every site rather than once — the same shape [aliasInliner.blockEnds]
-// caches for a block value (#2075).
+// caches for a block value (#2075). The whole line is charged through
+// [aliasInliner.chargeScan] before either [byteOffsetOfColumn] call below
+// reads any of it.
 func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, span Span) (string, bool) {
-	in.scalarValueComputations++
-
 	text := in.f.line(span.Start.Line)
+	if !in.chargeScan(site.alias, len(text)) {
+		return "", false
+	}
+
 	from, located := byteOffsetOfColumn(text, span.Start.Column)
 	if !located {
 		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
@@ -765,7 +912,10 @@ func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, sp
 func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, anchor *ast.AnchorNode, stack []string) ([]string, bool) {
 	name := anchorName(anchor)
 
-	span := spanOfNode(anchor.Value)
+	span, ok := in.spanOf(site.alias, anchor)
+	if !ok {
+		return nil, false
+	}
 	if !span.IsValid() {
 		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", name)
 
@@ -774,23 +924,57 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 
 	first := span.Start.Line
 	anchorLine := anchor.Start.Position.Line
-	base := indentWidth(in.f.line(first))
-	if first <= anchorLine || base <= indentWidth(in.f.line(anchorLine)) {
-		// Either the block opens on the anchor's own line — `- &s id: x`, whose
-		// first line is not a whole line of the block — or it is written at or left
-		// of the anchor's own indentation, which is legal YAML for a sequence and
-		// gives the copy no indentation to measure a shift from. Both are shapes
-		// where "copy these lines" is not what the value is.
-		in.refuseAlias(site.alias,
-			"the value `&%s` names does not open on its own line under the anchor, so its lines cannot be copied as a block; write it out by hand",
-			name)
 
-		return nil, false
+	// [indentWidth] only counts leading spaces, but YAML indentation is
+	// exactly as attacker-sized as anything else this file charges for —
+	// nesting *depth* is not the resource at risk here, the width of one
+	// line's own indent is — so [aliasInliner.blockBases] caches the answer
+	// per anchor the same way [aliasInliner.anchorSpans] and
+	// [aliasInliner.blockEnds] do, rather than re-measuring both lines once
+	// per site (#2075).
+	base, baseCached := in.blockBases[anchor]
+	if !baseCached {
+		if !in.chargeScan(site.alias, len(in.f.line(first))+len(in.f.line(anchorLine))) {
+			return nil, false
+		}
+
+		base = indentWidth(in.f.line(first))
+		if first <= anchorLine || base <= indentWidth(in.f.line(anchorLine)) {
+			// Either the block opens on the anchor's own line — `- &s id: x`, whose
+			// first line is not a whole line of the block — or it is written at or left
+			// of the anchor's own indentation, which is legal YAML for a sequence and
+			// gives the copy no indentation to measure a shift from. Both are shapes
+			// where "copy these lines" is not what the value is.
+			in.refuseAlias(site.alias,
+				"the value `&%s` names does not open on its own line under the anchor, so its lines cannot be copied as a block; write it out by hand",
+				name)
+
+			return nil, false
+		}
+
+		if in.blockBases == nil {
+			in.blockBases = map[*ast.AnchorNode]int{}
+		}
+		in.blockBases[anchor] = base
 	}
 
-	last, cached := in.blockEnds[anchor]
-	if !cached {
+	last, blockCached := in.blockEnds[anchor]
+	if !blockCached {
+		before := in.f.blockEndBytesScanned
 		last = in.f.blockEnd(first-1, base-1)
+
+		// The scan already ran — [fixer.blockEnd] has no way to charge
+		// mid-scan without a budget-shaped hook on a type every other
+		// caller in this package also shares — so this charges its exact
+		// cost immediately after, before the range is used to build a
+		// replacement, into the same budget every other scan in this file
+		// charges before running. A document with many anchors each
+		// opening a large block is still bounded by [maxBytes] the same
+		// way one anchor aliased by many sites already is (#2075).
+		if !in.chargeScan(site.alias, in.f.blockEndBytesScanned-before) {
+			return nil, false
+		}
+
 		if in.blockEnds == nil {
 			in.blockEnds = map[*ast.AnchorNode]int{}
 		}
@@ -844,7 +1028,7 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 	}
 
 	if site.sequence {
-		if strings.TrimSpace(suffix) != "" {
+		if !in.splits[site.alias].suffixBlank {
 			in.refuseAlias(site.alias,
 				"a comment is written after this alias, and the value `&%s` names is a block whose first line goes where the comment is; move the comment above the item and run this again",
 				name)
@@ -877,7 +1061,7 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 
 	// The key keeps its line — with its comment, if it had one — and the block goes
 	// underneath it, which is the only place a block value can be written.
-	out, ok := in.appendLine(site.alias, nil, strings.TrimRight(prefix, " ")+suffix)
+	out, ok := in.appendLine(site.alias, nil, in.splits[site.alias].trimmedPrefix+suffix)
 	if !ok {
 		return nil, false
 	}

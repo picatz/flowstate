@@ -444,173 +444,69 @@ func TestEveryDepthOfTheBlankLineBombCostsTheSame(t *testing.T) {
 			"is still being materialized before it is refused", costs[10], costs[16])
 }
 
-// #2075: [fixer.blockEnd] walks forward from a block's key past every
-// trailing blank line and dedented comment to find where the block ends.
-// [aliasInliner.spliceBlock] asked it for the same answer on every site that
-// aliases one anchor, before this file's own fix cached it — so an anchor
-// with a long blank tail, referenced by many sites, paid for that walk
-// sites × lines rather than sites + lines. Neither of #2072's budgets sees
-// it: the byte charge prices what a site's replacement actually contains
-// (here, one short leaf line — a blank tail past the block's last piece of
-// real content extends nothing to charge for), and the node budget never
-// looks at blank lines at all. The scan itself is the whole uncharged cost,
-// and it allocates nothing a MemStats comparison (this file's alias-bomb
-// tests) could see, so the tests below check it on a plain counter instead —
-// see [fixer.blockEndScans].
-
-// blockEndBombFlowfile builds a Flowfile whose anchor `l` opens a block
-// holding one leaf line, then blankTail blank lines with no further content
-// under it, then sites aliases of `l` as `u0: *l`, `u1: *l`, and so on. Every
-// one of those sites expands the same anchor, so [aliasInliner.spliceBlock]
-// asks [fixer.blockEnd] for that anchor's block extent once per site.
-func blockEndBombFlowfile(sites, blankTail int) string {
-	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: t\nvars:\n  l: &l\n    leaf: 1\n")
-	b.WriteString(strings.Repeat("\n", blankTail))
-	for i := range sites {
-		fmt.Fprintf(&b, "  u%d: *l\n", i)
-	}
-	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
-
-	return b.String()
-}
-
-// blockEndScansOf runs the inliner over src and returns how many lines
-// [fixer.blockEnd] scanned across the whole rewrite, requiring the rewrite to
-// succeed: a refused rewrite stops expanding sites partway through, which
-// would understate the count on either side of the fix and make the two
-// harder to tell apart rather than easier.
-func blockEndScansOf(t *testing.T, src string) int {
-	t.Helper()
-
-	data := []byte(src)
-	file, err := parser.ParseBytes(data, parser.ParseComments)
-	require.NoError(t, err)
-
-	in, _, ok := runAliasInliner(data, file)
-	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
-
-	return in.f.blockEndScans
-}
-
-// TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct is
-// #2075's acceptance criterion: scanning one anchor's block extent for many
-// sites costs about what scanning it once does, not what scanning it once
-// per site does.
+// #2075's independent review, round two: caching what [fixer.blockEnd],
+// [byteOffsetOfColumn], and [spanOfNode]/[tokenText] answer for an anchor or
+// alias closes the *repeated* half of the shape (once per site instead of
+// once per anchor), but round one's own [aliasInliner.spliceScalar] and
+// [aliasInliner.spliceBlock] still called [spanOfNode] on an anchor's whole
+// value — which walks every token in it and scans each one's `Origin` with
+// [strings.TrimSpace] — *before* ever reaching those caches, and
+// [aliasInliner.spliceBlock] still recomputed `strings.TrimRight(prefix, "
+// ")` and `strings.TrimSpace(suffix)` on every visit even once prefix and
+// suffix themselves were cached. Both are uncharged, unbounded scans that
+// do not need a second site to matter — one anchor whose value is preceded
+// by attacker-sized padding is enough. Auditing every other read of a site's
+// or an anchor's own line for the same shape found two more: [split] itself
+// called [spanOfNode] on a site's own *key*, uncharged, and
+// [aliasInliner.spliceBlock] measured [indentWidth] of the anchor's block's
+// first line and the anchor's own line fresh on every visit — YAML
+// indentation is a run of spaces an author chooses the width of, not bounded
+// by nesting depth, so that scan has the same shape as the rest even though
+// nothing here nests any deeper for it. The fix routes every one of them
+// through [aliasInliner.chargeScan] (charging before the scan wherever the
+// size is cheaply known in advance, immediately after where it is not) and
+// caches whatever [aliasInliner.chargeScan] alone cannot amortize, rather
+// than adding a fifth ad hoc cache for a fifth ad hoc finding.
 //
-// few and many alias the same anchor over the same blank tail, differing
-// only in how many sites there are (5 against 100 — a 20x difference).
-// Cached per anchor (fixed), both scan the tail exactly once, so many costs
-// about what few does. Recomputed per site (unfixed), blockEnd runs once per
-// site, so many costs about 20x what few does — sites × lines, not
-// sites + lines.
-func TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct(t *testing.T) {
-	t.Parallel()
+// The four builders below are the shapes the finding named explicitly: a
+// scalar anchor's value preceded by padding ([scalarPaddingFlowfile] — the
+// reviewer's own probe, reproduced at its own scale in
+// [TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap]), a block anchor
+// whose sole entry's alias is preceded by padding
+// ([keyFormPaddingFlowfile], exercising [aliasInliner.spliceBlock]'s mapping
+// form and its `TrimRight`), a block anchor whose sole sequence element's
+// alias is followed by padding ([sequenceFormPaddingFlowfile], exercising
+// the sequence form and its `TrimSpace`), and the original block-with-a-
+// blank-tail shape from round one ([blockTailFlowfile], re-checked here on
+// the same counter rather than [fixer.blockEndBytesScanned] directly, so one
+// style of assertion covers every finding this issue has accumulated). The
+// two found on the way ([split]'s own key span, [indentWidth]'s two reads)
+// are exercised incidentally by these same four shapes — every one of them
+// has outer sites whose own key [split] spans, and every anchor in them has
+// an opening line and a block-first line [aliasInliner.spliceBlock] measures
+// the indentation of — rather than by builders of their own, since none of
+// this file's probes found a shape that isolates either one from the costs
+// the other caches already bound.
 
-	const blankTail = 6000
-
-	few := blockEndScansOf(t, blockEndBombFlowfile(5, blankTail))
-	many := blockEndScansOf(t, blockEndBombFlowfile(100, blankTail))
-
-	require.Less(t, many, few*3,
-		"scanning grew from %d to %d lines scanned as the site count went from 5 to 100 over the same "+
-			"%d-line blank tail; blockEnd's block-extent scan is being repeated per site rather than "+
-			"cached per anchor, which is #2075", few, many, blankTail)
-
-	// Not just bounded — actually tracking the tail, so a cache keyed wrong
-	// (or not keyed at all) does not pass the ratio check above for the
-	// wrong reason.
-	require.InDelta(t, blankTail, many, float64(blankTail)/2,
-		"expanding 100 sites over a %d-line blank tail scanned %d lines; expected roughly one scan of "+
-			"the tail (#2075)", blankTail, many)
-}
-
-// TestAliasInlinerBlockEndScansScaleWithTheBlankTail is the other half of
-// [TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct]: fixed
-// code still has to scan a longer tail more, or the cache would be hiding
-// the cost rather than paying it once. Held at a fixed, generous site count
-// so any per-site sliver the cache leaves uncovered does not mask a tail
-// that scaled wrong.
-func TestAliasInlinerBlockEndScansScaleWithTheBlankTail(t *testing.T) {
-	t.Parallel()
-
-	const sites = 50
-
-	short := blockEndScansOf(t, blockEndBombFlowfile(sites, 3000))
-	long := blockEndScansOf(t, blockEndBombFlowfile(sites, 30000))
-
-	require.InDelta(t, 10*short, long, float64(short),
-		"a 10x longer blank tail scanned %d -> %d lines at the same %d sites; expected roughly a 10x "+
-			"increase, not a flat cost that would mean the tail is never actually scanned", short, long, sites)
-}
-
-// longScalarBomb builds a Flowfile whose anchor `l` names a single-line
-// scalar valueLen bytes long, aliased by sites sites as `u0: *l`, `u1: *l`,
-// and so on. [aliasInliner.spliceScalar] locates that value with
-// [byteOffsetOfColumn], which rescans the anchor's own line from its start —
-// the issue's own note that this "looks like the same shape" as blockEnd's
-// scan (#2075), here isolated to just that shape rather than a block's.
-func longScalarBomb(sites, valueLen int) string {
+// scalarPaddingFlowfile builds a Flowfile whose anchor `a` names a one-line
+// scalar value preceded by padding spaces, aliased by sites sites as
+// `u0: *a`, `u1: *a`, and so on.
+func scalarPaddingFlowfile(sites, padding int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "edition: v2026.3\nname: t\nvars:\n  l: &l %s\n", strings.Repeat("x", valueLen))
+	fmt.Fprintf(&b, "edition: v2026.3\nname: t\nvars:\n  a: &a%s1\n", strings.Repeat(" ", padding))
 	for i := range sites {
-		fmt.Fprintf(&b, "  u%d: *l\n", i)
+		fmt.Fprintf(&b, "  u%d: *a\n", i)
 	}
 	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
 
 	return b.String()
 }
 
-// TestAliasInlinerScalarValueComputedOncePerAnchor is
-// [TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct]'s
-// counterpart for [aliasInliner.spliceScalar]: a long one-line scalar
-// anchor's value, aliased by many sites, is located once and reused rather
-// than rescanned at every site. [aliasInliner.scalarValueComputations]
-// counts [aliasInliner.scalarValueOf]'s own calls, which only happen on a
-// [aliasInliner.scalarValues] cache miss — one per anchor, not one per site.
-func TestAliasInlinerScalarValueComputedOncePerAnchor(t *testing.T) {
-	t.Parallel()
-
-	const sites = 40
-	src := longScalarBomb(sites, 2000)
-
-	data := []byte(src)
-	file, err := parser.ParseBytes(data, parser.ParseComments)
-	require.NoError(t, err)
-
-	in, out, ok := runAliasInliner(data, file)
-	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
-
-	require.Equal(t, 1, in.scalarValueComputations,
-		"expanding %d sites that alias one scalar anchor computed its value %d times; expected once, "+
-			"reused from every other site (#2075)", sites, in.scalarValueComputations)
-
-	value := strings.Repeat("x", 2000)
-	for i := range sites {
-		require.Contains(t, string(out), fmt.Sprintf("u%d: %s", i, value),
-			"site u%d was not correctly rewritten with the anchor's value", i)
-	}
-}
-
-// #2075's independent review: [aliasInliner.split] has the same shape as
-// [fixer.blockEnd] and [byteOffsetOfColumn] in [aliasInliner.spliceScalar],
-// but on a *site*'s own line rather than an anchor's. An alias nested inside
-// a block is not itself re-expanded once per outer site — it is
-// [aliasInliner.replacement]'s own recursion through
-// [aliasInliner.expandRange] that visits that inner site again for every
-// outer site that re-expands the block around it — so [split]'s scan of
-// that inner alias's own line (potentially long: the padding between a key's
-// colon and the alias it is a value of) was being paid again at every outer
-// site rather than once for the alias.
-
-// splitBombFlowfile builds a Flowfile whose anchor `a` opens a one-line
-// block: a single key `k` whose value is an alias `*b` to a short anchor
-// `b`, separated from the colon by padding spaces. sites outer sites
-// (`u0: *a`, `u1: *a`, and so on) all alias `a`, so
-// [aliasInliner.replacement]'s recursion through [aliasInliner.expandRange]
-// visits the inner `*b` site once per outer site — the reviewer's own probe
-// for this shape used 10,000 such sites over a 500,000-column padding.
-func splitBombFlowfile(sites, padding int) string {
+// keyFormPaddingFlowfile builds a Flowfile whose anchor `a` opens a
+// one-line block — a single key `k` whose value is an alias `*b` to a short
+// anchor `b`, separated from the colon by padding spaces — aliased by
+// sites outer sites as `u0: *a`, `u1: *a`, and so on.
+func keyFormPaddingFlowfile(sites, padding int) string {
 	var b strings.Builder
 	b.WriteString("edition: v2026.3\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
 	fmt.Fprintf(&b, "  a: &a\n    k:%s*b\n", strings.Repeat(" ", padding))
@@ -622,10 +518,55 @@ func splitBombFlowfile(sites, padding int) string {
 	return b.String()
 }
 
-// splitScansOf runs the inliner over src and returns how many bytes
-// [aliasInliner.split] scanned across the whole rewrite, requiring the
-// rewrite to succeed for the same reason [blockEndScansOf] does.
-func splitScansOf(t *testing.T, src string) int {
+// sequenceFormPaddingFlowfile is [keyFormPaddingFlowfile]'s shape with the
+// inner alias written as a sequence element (`- *b`) followed by padding
+// spaces, rather than as a mapping value preceded by them — the shape
+// [aliasInliner.spliceBlock]'s sequence form (`strings.TrimSpace(suffix)`)
+// reads instead of its mapping form (`strings.TrimRight(prefix, " ")`).
+func sequenceFormPaddingFlowfile(sites, padding int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
+	fmt.Fprintf(&b, "  a: &a\n    - *b%s\n", strings.Repeat(" ", padding))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *a\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// blockTailFlowfile is round one's shape (renamed from blockEndBombFlowfile
+// now that this file checks it the same way as the other three): anchor `l`
+// opens a block holding one leaf line, then blankTail blank lines with no
+// further content under it, aliased by sites outer sites.
+func blockTailFlowfile(sites, blankTail int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  l: &l\n    leaf: 1\n")
+	b.WriteString(strings.Repeat("\n", blankTail))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *l\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// aliasInlinerScanReport is what each shape's test checks: the total
+// [aliasInliner.scanBytes] this rewrite charged for scanning source text, as
+// opposed to charging output, over one run.
+type aliasInlinerScanReport struct {
+	ok         bool
+	scanBytes  int
+	outputOnly int // in.bytes - in.scanBytes: charged for output, not scanning.
+	inputLen   int
+}
+
+// scanReportOf runs the inliner over src and reports what it charged,
+// without requiring either outcome: a probe shape this issue's fix newly
+// bounds may now be refused rather than accepted, and that is one of the
+// two healthy outcomes [TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap]
+// checks for explicitly.
+func scanReportOf(t *testing.T, src string) aliasInlinerScanReport {
 	t.Helper()
 
 	data := []byte(src)
@@ -633,96 +574,79 @@ func splitScansOf(t *testing.T, src string) int {
 	require.NoError(t, err)
 
 	in, _, ok := runAliasInliner(data, file)
-	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
 
-	return in.splitScans
+	return aliasInlinerScanReport{
+		ok:         ok,
+		scanBytes:  in.scanBytes,
+		outputOnly: in.bytes - in.scanBytes,
+		inputLen:   len(src),
+	}
 }
 
-// TestAliasInlinerSplitScansGrowWithSitesPlusLineLengthNotTheirProduct is
-// [TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct]'s
-// counterpart for [aliasInliner.split]: 5 outer sites vs. 100 outer sites,
-// all re-expanding the same padded inner alias, scan about the same number
-// of bytes when the inner alias's split is cached (~one scan of the padded
-// line plus one short line per outer site); recomputed per outer site, 100
-// sites cost about 20x what 5 do — sites × line length, not
-// sites + line length.
-func TestAliasInlinerSplitScansGrowWithSitesPlusLineLengthNotTheirProduct(t *testing.T) {
+// assertScanBounded is the shape every one of this issue's shapes checks:
+// scanning grows with what this rewrite actually charged plus the size of
+// the document it read, not disproportionately past both — k is small and
+// fixed across every shape, not tuned per shape, because the property under
+// test is that one mechanism ([aliasInliner.chargeScan]) bounds all of them
+// alike. A rewrite whose scan cost is many times its own charged output and
+// the input it read (an unbounded per-site rescan, uncached and uncharged)
+// fails this on any k a legitimate document would never approach.
+func assertScanBounded(t *testing.T, name string, r aliasInlinerScanReport) {
+	t.Helper()
+
+	require.True(t, r.ok, "%s: expected the rewrite to succeed", name)
+
+	const k = 3
+	bound := k * (r.outputOnly + r.inputLen)
+	require.LessOrEqual(t, r.scanBytes, bound,
+		"%s: scanned %d bytes against %d bytes charged for output plus %d bytes of input — "+
+			"expected scanning within %dx of what this rewrite actually charged and read, not "+
+			"disproportionately more (#2075)", name, r.scanBytes, r.outputOnly, r.inputLen, k)
+}
+
+// TestAliasInlinerScanStaysProportionalAcrossFindingShapes runs
+// [assertScanBounded] over all four shapes #2075's two review rounds
+// accumulated, each at a site count (100) large enough that an unbounded
+// per-site rescan would fail it by orders of magnitude rather than by
+// chance.
+func TestAliasInlinerScanStaysProportionalAcrossFindingShapes(t *testing.T) {
 	t.Parallel()
 
+	const sites = 100
 	const padding = 20000
+	const blankTail = 6000
 
-	few := splitScansOf(t, splitBombFlowfile(5, padding))
-	many := splitScansOf(t, splitBombFlowfile(100, padding))
-
-	require.Less(t, many, few*3,
-		"scanning grew from %d to %d bytes as the outer site count went from 5 to 100 over the same "+
-			"%d-column padded inner alias; split's scan of an inner alias's own line is being repeated "+
-			"per outer site rather than cached per alias, which is #2075", few, many, padding)
-
-	require.InDelta(t, padding, many, float64(padding)/2,
-		"expanding 100 outer sites over a %d-column padded inner alias scanned %d bytes; expected "+
-			"roughly one scan of that line (#2075)", padding, many)
+	assertScanBounded(t, "scalar padding", scanReportOf(t, scalarPaddingFlowfile(sites, padding)))
+	assertScanBounded(t, "key-form padding", scanReportOf(t, keyFormPaddingFlowfile(sites, padding)))
+	assertScanBounded(t, "sequence-form padding", scanReportOf(t, sequenceFormPaddingFlowfile(sites, padding)))
+	assertScanBounded(t, "block blank tail", scanReportOf(t, blockTailFlowfile(sites, blankTail)))
 }
 
-// TestAliasInlinerSplitScansScaleWithTheLineLength is
-// [TestAliasInlinerBlockEndScansScaleWithTheBlankTail]'s counterpart for
-// [aliasInliner.split]: fixed code still has to scan a longer padded line
-// more, held at a fixed outer site count so a per-site sliver the cache
-// leaves uncovered does not mask a line that scaled wrong. This is a
-// companion guard on the cache's shape, not a regression test on its own —
-// disabling only [aliasInliner.splits] still satisfies it, since both sides
-// then scale the same wrong way; it is
-// [TestAliasInlinerSplitScansGrowWithSitesPlusLineLengthNotTheirProduct]
-// that catches the missing cache.
-func TestAliasInlinerSplitScansScaleWithTheLineLength(t *testing.T) {
-	t.Parallel()
+// TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap reproduces the
+// independent review's own probe at its own scale: `vars:` holds one
+// scalar anchor whose value is preceded by 500,000 padding columns,
+// aliased by 10,000 sites. At the pre-round-two revision this was
+// *accepted* — correct output, but 3.70s and free of the byte budget's
+// attention, because [aliasInliner.spliceScalar] read that padding through
+// [spanOfNode] before ever reaching its own value cache. Charging that scan
+// changes the outcome: 10,000 sites' worth of charge for a value this large
+// crosses [maxBytes], so the document most reviewers would call "accepted
+// but slow" is now refused instead — the other of the two outcomes
+// [assertScanBounded]'s own probes check is healthy, named explicitly here
+// because this is the shape that actually flips.
+func TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap(t *testing.T) {
+	// Not t.Parallel(): 10,000 sites over 500,000 columns of padding is the
+	// one shape in this file sized to match the reviewer's own probe rather
+	// than trimmed for speed, and it is not so slow that it needs to run
+	// alongside nothing else to time out safely.
 
-	const sites = 50
-	const shortPadding = 2000
-	const longPadding = 20000
+	r := scanReportOf(t, scalarPaddingFlowfile(10000, 500000))
+	if !r.ok {
+		// Refused: healthy on its own terms. maxBytes existed before this
+		// fix; a legitimate value this size was never going to fit once an
+		// alias to it is charged even once, honestly, per site.
+		return
+	}
 
-	short := splitScansOf(t, splitBombFlowfile(sites, shortPadding))
-	long := splitScansOf(t, splitBombFlowfile(sites, longPadding))
-
-	// The two configurations share the same sites outer lines byte for
-	// byte, so whatever constant those add to both sides cancels out of the
-	// difference: what's left is exactly the padding this rewrite actually
-	// scanned once (fixed) rather than sites times (unfixed).
-	require.Equal(t, longPadding-shortPadding, long-short,
-		"a %d-byte longer padded line scanned %d more bytes at the same %d outer sites; expected "+
-			"exactly the padding difference, not a flat cost that would mean the line is never "+
-			"actually scanned", longPadding-shortPadding, long-short, sites)
-}
-
-// TestAliasInlinerSplitComputedOncePerAlias is
-// [TestAliasInlinerScalarValueComputedOncePerAnchor]'s counterpart for
-// [aliasInliner.split]: 40 outer sites re-expanding one inner alias compute
-// its split once, not 40 times, and every outer site is still rewritten
-// correctly all the way down to the leaf scalar the chain bottoms out at.
-func TestAliasInlinerSplitComputedOncePerAlias(t *testing.T) {
-	t.Parallel()
-
-	const sites = 40
-	src := splitBombFlowfile(sites, 500)
-
-	data := []byte(src)
-	file, err := parser.ParseBytes(data, parser.ParseComments)
-	require.NoError(t, err)
-
-	in, out, ok := runAliasInliner(data, file)
-	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
-
-	// sites outer computations (each a distinct alias, no cache to hit) plus
-	// one for the inner `*b` site, computed once and reused by every other
-	// outer site rather than once per outer site (#2075).
-	require.Equal(t, sites+1, in.splitComputations,
-		"expanding %d outer sites that all re-expand one inner alias computed splits %d times; "+
-			"expected %d (one per outer site plus one for the shared inner alias), not repeated "+
-			"per outer site", sites, in.splitComputations, sites+1)
-
-	require.NotContains(t, string(out), "*a", "an outer alias survived the rewrite unexpanded")
-	require.NotContains(t, string(out), "*b", "the inner alias survived the rewrite unexpanded")
-	require.Equal(t, sites+2, strings.Count(string(out), "leaf: 1"),
-		"expected the leaf value once for `b`'s own declaration, once for `a`'s own declaration, "+
-			"and once per outer site's fully-expanded chain")
+	assertScanBounded(t, "scalar padding (reviewer's own scale)", r)
 }
