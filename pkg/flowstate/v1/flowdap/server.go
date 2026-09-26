@@ -602,8 +602,8 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 // adapter are step ids.
 func (s *Server) setBreakpoints(arguments json.RawMessage) (breakpointsBody, error) {
 	var asked struct {
-		Breakpoints []struct {
-			Name         string  `json:"name"`
+		Breakpoints []*struct {
+			Name         *string `json:"name"`
 			Condition    *string `json:"condition"`
 			HitCondition *string `json:"hitCondition"`
 			LogMessage   *string `json:"logMessage"`
@@ -631,6 +631,9 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) (breakpointsBody, err
 	requested := make([]string, len(asked.Breakpoints))
 	unsupported := make([]string, len(asked.Breakpoints))
 	for i, want := range asked.Breakpoints {
+		if want == nil || want.Name == nil {
+			return breakpointsBody{}, errors.New("invalid function breakpoint arguments")
+		}
 		switch {
 		case want.Condition != nil:
 			unsupported[i] = "conditional function breakpoints are not supported; use break <step-id> if <expr> in the terminal debugger"
@@ -639,7 +642,7 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) (breakpointsBody, err
 		case want.LogMessage != nil:
 			unsupported[i] = "function breakpoint log messages are not supported"
 		default:
-			requested[i] = strings.TrimSpace(want.Name)
+			requested[i] = strings.TrimSpace(*want.Name)
 		}
 	}
 	// Unsupported entries occupy empty notice slots and are not armed. This

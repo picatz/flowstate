@@ -72,6 +72,12 @@ func TestMalformedBreakpointReplacementPreservesInstalledSet(t *testing.T) {
 		"null list":         map[string]any{"breakpoints": nil},
 		"wrong list type":   map[string]any{"breakpoints": "target"},
 		"wrong name type":   map[string]any{"breakpoints": []map[string]any{{"name": 42}}},
+		"null entry":        map[string]any{"breakpoints": []any{nil}},
+		"missing name":      map[string]any{"breakpoints": []map[string]any{{}}},
+		"null name":         map[string]any{"breakpoints": []map[string]any{{"name": nil}}},
+		"valid then null entry": map[string]any{
+			"breakpoints": []any{map[string]any{"name": "ship"}, nil},
+		},
 		"wrong condition type": map[string]any{
 			"breakpoints": []map[string]any{{"name": "target", "condition": 42}},
 		},
