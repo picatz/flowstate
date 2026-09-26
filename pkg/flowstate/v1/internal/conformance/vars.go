@@ -277,7 +277,7 @@ func VarsCases(httpBaseURL string) []Case {
 // anything refuses the one value it must never bind.
 //
 // Refused rather than deferred, and refused at both levels: see
-// [flowstatev1.CheckVarsHoldNoSecretRef] for why a var has no contained place to
+// [v1.CheckVarsHoldNoSecretRef] for why a var has no contained place to
 // resolve one, and `flowfile.notInVarHelp` for the same rule said to an author
 // against a line and a column. Shared, because "refused" is an observable and the
 // local driver exists to predict what production does — a local run that evaluated

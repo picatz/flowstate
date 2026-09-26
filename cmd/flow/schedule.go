@@ -614,7 +614,7 @@ func newScheduleCommand() *cobra.Command {
 	}
 
 	createCmd := &cobra.Command{
-		Use:   "create [file]",
+		Use:   "create <workflow-file>",
 		Short: "Create a schedule from a Flowfile's triggers block",
 		Long: "Create a schedule that runs a Flowfile's workflow on the cadence its `triggers:` " +
 			"block declares. The specification, its arguments and the cadence are all checked here, " +
@@ -661,30 +661,31 @@ flow schedule list
 # Just the names, which every other schedule verb takes:
 flow schedule list -o jsonl | jq -r .name
 
-# Which of them are paused?
+# Which of them are paused:
 flow schedule list -o json | jq -r '.schedules[] | select(.paused) | .name'`,
 	}
 
 	addOutputFlag(listCmd)
 
 	describeCmd := &cobra.Command{
-		Use:   "describe [name]",
+		Use:   "describe <name>",
 		Short: "Show one schedule: its cadence, arguments, next firings and recent runs",
 		Long: "Show one schedule in full: the cadence as the file declared it, the arguments every " +
 			"firing starts its run with, when it next fires, and what it has run lately.",
 		Args: cobra.ExactArgs(1),
 		RunE: runScheduleDescribe,
-		Example: `# What is this schedule going to do, and what has it done?
+		Example: `# What this schedule is going to do, and what it has done:
 flow schedule describe nightly-report
 
-# The run ids it started, which flow get takes:
-flow schedule describe nightly-report -o json | jq -r '.recentRuns[].workflowId'`,
+# The workflow ids it started, which flow get takes:
+flow schedule describe nightly-report -o json \
+  | jq -r '.recentRuns[].workflowId'`,
 	}
 
 	addOutputFlag(describeCmd)
 
 	deleteCmd := &cobra.Command{
-		Use:   "delete [name]",
+		Use:   "delete <name>",
 		Short: "Delete a schedule",
 		Long: "Delete a schedule. Future firings stop; runs it has already started are ordinary " +
 			"workloads and keep going, so stopping one of those is `flow cancel`. Prefer `flow schedule " +
@@ -695,14 +696,14 @@ flow schedule describe nightly-report -o json | jq -r '.recentRuns[].workflowId'
 		Example: `# Delete a schedule:
 flow schedule delete nightly-report
 
-# Delete it from a script, which reads the outcome rather than the exit code alone:
+# From a script, which reads the outcome rather than only the exit code:
 flow schedule delete nightly-report -o json | jq -r '.scheduleName, .result'`,
 	}
 
 	addOutputFlag(deleteCmd)
 
 	pauseCmd := &cobra.Command{
-		Use:   "pause [name]",
+		Use:   "pause <name>",
 		Short: "Stop a schedule firing, without deleting it",
 		Long: "Stop a schedule firing while leaving it in place, which is what an incident wants: " +
 			"the arrangement is still there and still reviewable, and it is not running." +
@@ -714,8 +715,9 @@ flow schedule delete nightly-report -o json | jq -r '.scheduleName, .result'`,
 		Example: `# Pause a schedule, saying why:
 flow schedule pause nightly-report --note "upstream API is down, INC-4471"
 
-# Pause several from a script and record what was acted on:
-flow schedule pause nightly-report --note "INC-4471" -o json | jq -r .scheduleName`,
+# Pause from a script and record which schedule was acted on:
+flow schedule pause nightly-report --note "INC-4471" -o json \
+  | jq -r .scheduleName`,
 	}
 
 	addOutputFlag(pauseCmd)
@@ -725,14 +727,15 @@ flow schedule pause nightly-report --note "INC-4471" -o json | jq -r .scheduleNa
 			"somebody else has no explanation attached unless this is written")
 
 	resumeCmd := &cobra.Command{
-		Use:   "resume [name]",
+		Use:   "resume <name>",
 		Short: "Let a paused schedule fire again",
 		Long: "Let a paused schedule fire again, from its next scheduled time. Firings missed " +
 			"while it was paused are not made up." + mutationFlagHelp +
 			"\n\n`result` is \"applied\": the schedule is live when the server answers.",
 		Args: cobra.ExactArgs(1),
 		RunE: runScheduleResume,
-		Example: `flow schedule resume nightly-report --note "upstream recovered"
+		Example: `# Resume a schedule, saying why:
+flow schedule resume nightly-report --note "upstream recovered"
 
 # Resume from a script, confirming which schedule was acted on:
 flow schedule resume nightly-report -o json | jq -r '.scheduleName, .result'`,
@@ -744,7 +747,7 @@ flow schedule resume nightly-report -o json | jq -r '.scheduleName, .result'`,
 		"replaces the message on the schedule, which is usually still the reason it was paused")
 
 	triggerCmd := &cobra.Command{
-		Use:   "trigger [name]",
+		Use:   "trigger <name>",
 		Short: "Fire a schedule now, without waiting for its cadence",
 		Long: "Fire a schedule now. This is what makes a schedule testable: it exercises the " +
 			"arguments the schedule stored, the tenant it records on the runs it starts and the queue " +
@@ -762,7 +765,8 @@ flow schedule describe nightly-report
 
 # Fire it from a script, then go looking for the run it starts:
 flow schedule trigger nightly-report -o json | jq -r .result
-flow schedule describe nightly-report -o json | jq -r '.recentRuns[0].workflowId'`,
+flow schedule describe nightly-report -o json \
+  | jq -r '.recentRuns[0].workflowId'`,
 	}
 
 	addOutputFlag(triggerCmd)

@@ -201,7 +201,7 @@ const forEachResultsChunkBytes = 64 << 10
 // accumulates the identical [v1.LoopResultsField] and, until this, did so with
 // no size check on either driver.
 //
-// Run by both the local driver ([flowstatev1] eval_test.go's
+// Run by both the local driver (flowstatev1 eval_test.go's
 // TestRunWorkflowForEachResultsBound) and the durable driver (engine
 // workflow_test.go's identically-named test), which is what makes "a for_each
 // whose results cross [v1.MaxLoopResultsBytes] fails, and one just under

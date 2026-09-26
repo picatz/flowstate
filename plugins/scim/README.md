@@ -27,8 +27,12 @@ vendor.
 ## Building
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-scim ./plugins/scim
+$ go -C plugins/scim build -o /path/to/plugins/flowstate-plugin-scim .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/scim`.
 
 ## Tasks
 
@@ -38,8 +42,8 @@ go build -o /path/to/plugins/flowstate-plugin-scim ./plugins/scim
 | `scim.user_list` | reads | yes | always |
 | `scim.user_deactivate` | writes | yes (replacing `active` with false twice leaves one account in one state) | always |
 
-Because the write is idempotent, a lost connection is `Unavailable` - retryable
-- rather than `OutcomeUnknown`. `plugins/slack` has to take the opposite
+Because the write is idempotent, a lost connection is `Unavailable` — retryable —
+rather than `OutcomeUnknown`. `plugins/slack` has to take the opposite
 posture for `post`, and a task here that *created* a user would too, which is
 one more reason there is not one.
 
@@ -106,8 +110,8 @@ one no-op rather than two writes an auditor has to reconcile.
 
 **`expected_version` makes the write a compare-and-swap.** Pass the `version`
 (the provider's ETag) from the read the reviewer's evidence came from, and a
-user modified since then fails as [`sdk.Conflict`](../../pkg/flowstate/v1/plugin/sdk)
-- a classification a Flowfile can `dispatch:` on - rather than overwriting a
+user modified since then fails as [`sdk.Conflict`](../../pkg/flowstate/v1/plugin/sdk) —
+a classification a Flowfile can `dispatch:` on — rather than overwriting a
 change nobody saw. Providers that send no ETag leave only the unconditional
 write available, and the input is optional for that reason.
 

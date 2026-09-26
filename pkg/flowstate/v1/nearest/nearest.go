@@ -66,14 +66,17 @@ import "unicode/utf8"
 // something nobody typed.
 const MaxDistance = 2
 
-// Limit is the largest distance a candidate name accepts: at most a third of
-// the name wrong, and never more than [MaxDistance].
+// Limit is the largest distance a candidate name accepts: one edit for a name
+// of one or two letters, and [MaxDistance] for anything longer.
 //
-// The proportion is what keeps the cap honest at the short end. Two edits into
-// a four-letter name is half of it, which is not a typo but a different word,
-// so a name pays for its own leniency by being long enough to have letters
-// left over. Measured in runes, so a name spelled in a script whose letters
-// take several bytes each gets the same third of itself an ASCII one does.
+// Written as a third of the name plus one, then capped, so the short end is
+// the only place the proportion bites. Two edits into `if` or `id` leave
+// nothing of the word, so a candidate that short is a different word rather
+// than a typo of the one typed; from three letters on, the transposition
+// [MaxDistance] exists to catch (`stpes` for `steps`, `rnu` for `run`) costs
+// two, and a name that short still has a letter left to be recognised by.
+// Measured in runes, so a name spelled in a script whose letters take several
+// bytes each gets the same allowance an ASCII one does.
 func Limit(name string) int {
 	return min(utf8.RuneCountInString(name)/3+1, MaxDistance)
 }

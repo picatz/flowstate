@@ -16,14 +16,14 @@
 //
 // `testing/synctest` removes all of that at once: inside a bubble the same
 // sleep returns the instant every goroutine is blocked, and a wait for a
-// condition becomes [synctest.Wait] followed by the assertions themselves.
+// condition becomes synctest.Wait followed by the assertions themselves.
 // Only a test with a goroutine outside the bubble — a subprocess, a network
 // peer, a dev server — has to keep a real wait, and one of those should say
 // what it is waiting for.
 //
 // This command changes nothing. Its two counts are held by
-// [TestTheRepositoryWallClockSleepsOnlyGoDown] and
-// [TestTheRepositoryPollsOnlyGoDown], ratchets: a wait added to a test fails
+// TestTheRepositoryWallClockSleepsOnlyGoDown and
+// TestTheRepositoryPollsOnlyGoDown, ratchets: a wait added to a test fails
 // one of them until it moves into a bubble or is recorded there with its
 // reason, and a wait removed fails it until the table shrinks to match, so the
 // tables cannot keep stale entries (#1706).

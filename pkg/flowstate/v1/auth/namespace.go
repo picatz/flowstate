@@ -4,7 +4,7 @@ import "fmt"
 
 // MaxNamespaceLen is the longest permitted namespace.
 //
-// It lives here, not only in [secrets.ValidateNamespace], because a namespace
+// It lives here, not only in secrets.ValidateNamespace, because a namespace
 // reaches two places that used to check it two different ways: a signed
 // assertion subject (this package) and a secret provider's path or environment
 // variable name (secrets). One value, one grammar, checked once — see
@@ -14,11 +14,11 @@ const MaxNamespaceLen = 63
 // ValidateNamespace reports whether a namespace is well formed enough to enter
 // a signed assertion subject.
 //
-// This is the canonical namespace grammar. [secrets.ValidateNamespace]
+// This is the canonical namespace grammar. secrets.ValidateNamespace
 // delegates to it rather than checking separately, because a namespace this
-// package rejected reaching a secret provider, or one [secrets.ValidateNamespace]
+// package rejected reaching a secret provider, or one secrets.ValidateNamespace
 // rejected reaching a subject, both used to be possible: this package imports
-// nothing (see the package doc), so [SubjectFor] used to check a namespace
+// nothing (see the package doc), so [WorkloadIdentity.SubjectFor] used to check a namespace
 // claim only for the two characters that could split a subject into extra
 // components — "/" and ":" — while secrets required the full grammar. A
 // namespace of "Prod Team", "..", a control character, or several kilobytes of

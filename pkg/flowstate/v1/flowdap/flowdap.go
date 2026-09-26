@@ -18,7 +18,7 @@
 //
 // # What the seam cannot say, and what that costs
 //
-// [v1.Debugger] is handed a [v1.Node], and a node carries an `id` and no source
+// v1.Debugger is handed a v1.Node, and a node carries an `id` and no source
 // position. Neither does anything else the session sees: it is given steps, not
 // files. Two consequences, both visible to a person in an editor, both stated
 // here rather than discovered:

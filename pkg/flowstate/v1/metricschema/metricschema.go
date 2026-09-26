@@ -447,7 +447,7 @@ const (
 	// Counted once per run, never once per Continue-As-New segment: a long
 	// workload that continues five times started once, and a counter that
 	// incremented on every segment would report five starts for one
-	// submission. See the recording sites — [RecordRunStart] locally,
+	// submission. See the recording sites — RecordRunStart locally,
 	// `engine.recordRunStart` durably — for how each tells a fresh run from a
 	// resumed one.
 	InstrumentRunStarts = "flowstate.run.starts"
@@ -727,7 +727,7 @@ var defaultLimiterPtr = func() *atomic.Pointer[Limiter] {
 // with genuinely bounded cardinality in any real deployment — see
 // [WorkflowName]'s classification — looks unbounded by the time a later test
 // reads it, and collapses to [OverflowValue] for a reason that has nothing to
-// do with what that test is checking. [conformance.RecordMetrics] calls this
+// do with what that test is checking. conformance.RecordMetrics calls this
 // for every test that installs its own meter provider, the identical
 // isolation that swap already gives the OTel global.
 func SwapDefaultLimiterForTest() func() {

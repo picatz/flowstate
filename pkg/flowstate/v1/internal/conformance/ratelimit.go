@@ -127,7 +127,7 @@ func AssertRateLimitRetried(t *testing.T, driver string, attempts int64) {
 //
 // Only the local driver qualifies. The durable driver's retry backoff is a
 // Temporal timer, and the test environment both driver callers use
-// ([testsuite.WorkflowTestSuite]) auto-skips virtual time for timers, so an
+// (testsuite.WorkflowTestSuite) auto-skips virtual time for timers, so an
 // elapsed wall-clock duration there is near zero whether or not the header's
 // delay actually won — the same flakiness this package's other timing-shaped
 // assertions ([AssertTotalTimeoutEndedTheStep]) avoid by counting attempts

@@ -7,7 +7,7 @@ import (
 // ValueCases are the shared cases that hold both drivers to one behaviour for
 // `value:`, a step that names what an expression computes.
 //
-// Run by both the local driver ([flowstatev1] eval_test.go) and the durable
+// Run by both the local driver (flowstatev1 eval_test.go) and the durable
 // driver (engine workflow_test.go), which is what makes "the value is the same,
 // under the same name, and a skipped one leaves nothing behind" something the two
 // cannot disagree about. It is the shape invariant 3 protects most directly: a

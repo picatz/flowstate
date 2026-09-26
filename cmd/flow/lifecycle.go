@@ -400,6 +400,10 @@ func refusedList(server serverFlags, err error) error {
 	}
 }
 
+// runIDUsage is --run-id's help on every verb that addresses a run, so the one
+// meaning is worded once.
+const runIDUsage = "pin to one run of the workload, by run id; unset means whichever run is current"
+
 // lifecycleCommands builds the verbs that list and stop runs.
 //
 // Returned rather than registered here so that main.go keeps one place where the
@@ -411,7 +415,7 @@ func lifecycleCommands() []*cobra.Command {
 		Short: "List your runs",
 		Long: "List the runs belonging to your tenant, newest first. A page can come back " +
 			"short or empty with runs still to find, because the server scans a bounded " +
-			"number of executions per request; pass --all to walk the rest. STARTED is when " +
+			"number of executions per request; pass `--all` to walk the rest. STARTED is when " +
 			"the workload began: a run that continued as new is one row, named by its latest " +
 			"segment's run id and dated from its first segment's start. The JSON forms also " +
 			"carry the listed segment's own start and how many segments the workload has run as.",
@@ -423,42 +427,37 @@ flow list
 # Walk every page rather than stopping at the first:
 flow list --all
 
-# Keep only the workflow ids, which is what get, signal, cancel and terminate take:
+# Keep only the workflow ids, which get, signal, cancel and terminate take:
 flow list -o jsonl | jq -r .workflowId
 
-# Every run that is still going, asked of the server rather than of jq:
+# Runs still going, filtered by the server rather than by jq:
 flow list --filter 'status == "RUNNING"'
 
-# What failed since yesterday:
-flow list --all --filter 'status == "FAILED" && start_time > timestamp("2026-08-02T00:00:00Z")'
+# What failed since a given time:
+flow list --all --filter \
+  'status == "FAILED" && start_time > timestamp("2026-08-02T00:00:00Z")'
 
-# Runs that took longer than an hour. close_time is null until a run finishes, so
-# the guard is not decoration: CEL's && absorbs the error from the side it skips.
-flow list --all --filter 'finished && close_time - start_time > duration("1h")'
+# Runs that took over an hour (close_time is null until a run finishes):
+flow list --all \
+  --filter 'finished && close_time - start_time > duration("1h")'
 
-# Only one workload's runs. WorkflowType can't answer this: every run's is
-# "Run", the one interpreter workflow, so name is the workflow's own declared
-# name instead, and it is empty for a run older than this field.
+# Only one workload's runs, by its declared name:
 flow list --all --filter 'name == "nightly-etl"'
 
-# One team's runs, by the labels the Flowfile declares. A run carrying no labels
-# has no such key, so read it as a key that may be absent: .? yields an optional
-# and orValue fills in the answer for a run without one.
+# One team's runs, by label (an unlabelled run has no such key):
 flow list --all --filter 'labels.?team.orValue("") == "payments"'
 
-# The same question with a guard instead, which still works. A bare
-# labels["team"] errors on every unlabelled run; such a run is then left out
-# rather than failing the listing, and the count of runs left out is reported.
+# The same, with a guard instead of an optional:
 flow list --all --filter '"team" in labels && labels["team"] == "payments"'
 
-# Which runs nobody labelled with an owner. This is why labels binds to an empty
-# map rather than to null: the negative question has to be askable.
+# Runs nobody labelled with a team:
 flow list --all --filter '!("team" in labels)'
 
-# A bad build shipped: everything still running on the version it pinned.
-flow list --all --filter 'worker_version == "flowstate.417" && status == "RUNNING"'
+# A bad build shipped: everything still running on the version it pinned:
+flow list --all \
+  --filter 'worker_version == "flowstate.417" && status == "RUNNING"'
 
-# What one person started, as the qualified issuer#subject the server recorded:
+# What one person started, by issuer and subject:
 flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 	}
 
@@ -468,17 +467,15 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 		"how many runs to return per page; unset takes the server's default")
 
 	listCmd.Flags().String("filter", "",
-		"keep only the runs a CEL expression answers yes about, over `workflow_id`, "+
-			"`run_id`, `status`, `start_time`, `close_time`, `finished`, `name` "+
-			"(the workflow's own declared name, empty for a run older than this field), "+
-			"`labels` (the workflow's declared labels, a map), where a key that may be absent "+
-			`is read with labels.?team.orValue(""); `+"`starter` (the qualified issuer#subject who submitted "+
-			"it), and `worker_version` (the Worker Deployment version the run is pinned "+
-			"to, empty where versioning is off); "+
-			`for example status == "FAILED"`)
+		"keep only the runs a CEL expression is true for, over `workflow_id`, `run_id`, "+
+			"`status`, `start_time`, `close_time`, `finished`, `name` (the workflow's declared "+
+			"name, empty for older runs), `labels` (a map of the workflow's declared labels), "+
+			"`starter` (issuer#subject of whoever submitted it), and `worker_version` (the "+
+			"Temporal Worker Deployment version the run is pinned to, empty where versioning "+
+			`is off); for example status == "FAILED"`)
 	listCmd.Flags().String("page-token", "",
 		"continue a previous listing from where it stopped; opaque, and accepted only by "+
-			"the server that issued it, with the same --filter and --page-size, within a day")
+			"the server that issued it, with the same `--filter` and `--page-size`, within a day")
 	listCmd.Flags().Bool("all", false,
 		"keep asking until the listing is exhausted, rather than returning one page")
 
@@ -487,7 +484,7 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 	// workload finish releasing what it holds and the other does not. A flag
 	// would make the destructive reading the easy typo.
 	cancelCmd := &cobra.Command{
-		Use:   "cancel [workflow-id]",
+		Use:   "cancel <workflow-id>",
 		Short: "Ask a run to stop, letting it clean up",
 		Long: "Ask a run to stop. Cancellation is cooperative: the run is told to stop and " +
 			"gets to finish responding, so a workload that has to release a lock or undo a " +
@@ -513,10 +510,10 @@ flow cancel flowstate-workflow-3f7c -o json | jq -r '.workflowId, .result'`,
 	addOutputFlag(cancelCmd)
 
 	cancelCmd.Flags().String("run-id", "",
-		"pin the request to one run of the workload; unset addresses whichever run is current")
+		runIDUsage)
 
 	terminateCmd := &cobra.Command{
-		Use:   "terminate [workflow-id]",
+		Use:   "terminate <workflow-id>",
 		Short: "Stop a run immediately, without letting it clean up",
 		Long: "Stop a run immediately. No further step runs and nothing the workload would " +
 			"have done on the way out is done, so anything it was responsible for releasing " +
@@ -527,16 +524,18 @@ flow cancel flowstate-workflow-3f7c -o json | jq -r '.workflowId, .result'`,
 		Args: cobra.ExactArgs(1),
 		RunE: runTerminate,
 		Example: `# Stop a wedged run, saying why:
-flow terminate flowstate-workflow-3f7c --reason "stuck on a dependency that is never coming back"
+flow terminate flowstate-workflow-3f7c \
+  --reason "stuck on a dependency that is never coming back"
 
 # The same, with a result document a script can act on:
-flow terminate flowstate-workflow-3f7c --reason "wedged" -o json | jq -r .result`,
+flow terminate flowstate-workflow-3f7c --reason "wedged" -o json \
+  | jq -r .result`,
 	}
 
 	addOutputFlag(terminateCmd)
 
 	terminateCmd.Flags().String("run-id", "",
-		"pin the request to one run of the workload; unset addresses whichever run is current")
+		runIDUsage)
 	terminateCmd.Flags().String("reason", "",
 		"recorded on the terminated run; a terminated run leaves no account of itself, "+
 			"so this is the only explanation anyone will find")

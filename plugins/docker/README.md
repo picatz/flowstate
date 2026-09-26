@@ -65,8 +65,12 @@ cannot hold a call open.
 ## Building and configuring
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-docker ./plugins/docker
+$ go -C plugins/docker build -o /path/to/plugins/flowstate-plugin-docker .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/docker`.
 
 A plugin inherits nothing of the worker's environment, so the grants file is
 named to the worker:

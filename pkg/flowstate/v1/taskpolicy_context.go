@@ -30,7 +30,7 @@ var defaultTaskPolicy atomic.Pointer[TaskPolicy]
 // case: no restriction.
 //
 // Called once, before a worker polls or a local run starts — exactly when
-// [v1.DefaultRegistry] is mutated for egress policy (`egress.go`) — so a
+// v1.DefaultRegistry is mutated for egress policy (`egress.go`) — so a
 // policy that failed to compile refuses the command instead of governing
 // some steps and not others.
 func SetDefaultTaskPolicy(policy *TaskPolicy) {
@@ -89,7 +89,7 @@ func NewContextWithDispatchAttempt(ctx context.Context, attempt int) context.Con
 // The number reaches the record as a uint32, and an int that does not fit one
 // would arrive as something else entirely rather than as an obviously wrong
 // number — the truncation is the problem, not the size. Clamped rather than
-// refused, for the reason [audit.MaxRuleBytes] is: the seam's job is to record
+// refused, for the reason audit.MaxRuleBytes is: the seam's job is to record
 // the decision, and a retry policy with more attempts than this is a
 // configuration to fix, not a reason to fail the dispatch or lose the record.
 //
@@ -198,7 +198,7 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // task and identity. This parameter is set on the resulting error, if any,
 // strictly *after* that decision, so it has no path to become the thing
 // #652 warns about — a value that exists to be informational and ends up
-// load-bearing. See [TestLocalOnlyChangesTheMessageNotTheDecision].
+// load-bearing. See TestLocalOnlyChangesTheMessageNotTheDecision.
 //
 // identity is used twice below, and the second use is under the identical
 // constraint: [TaskPolicy.Check] evaluates the rules against it, and then

@@ -493,8 +493,8 @@ func (x *DiagnosticReport) GetDiagnostics() []*Diagnostic {
 // It exists because `json` and `jsonl` are different shapes rather than different
 // spellings, and this CLI is consistent about which: `json` is one document per
 // invocation, `jsonl` is one per line. Checking three files produces three
-// [DiagnosticReport]s, which is three lines of `jsonl` and, without something to hold
-// them, three documents where `json` promises one. A bare JSON array would do it and
+// [DiagnosticReport] messages, which is three lines of `jsonl` and, without
+// something to hold them, three documents where `json` promises one. A bare JSON array would do it and
 // is not a proto message, so the thing that holds them is a message.
 type ValidationReport struct {
 	state protoimpl.MessageState `protogen:"open.v1"`

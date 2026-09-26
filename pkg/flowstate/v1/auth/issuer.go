@@ -571,7 +571,7 @@ func WithDeclaredClaims(names ...string) IssuerOption {
 // private half, so that assertions signed by a *previous process* keep
 // verifying while they live.
 //
-// # Why this exists beside [Issuer.Rotate]
+// # Why this exists beside Issuer.Rotate
 //
 // Rotate is an in-process rotation: it moves the outgoing key into the
 // published-but-not-signing set and installs a new one, with no restart. It is

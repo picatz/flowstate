@@ -375,3 +375,25 @@ func TestAMissingMemberSaysWhetherItMightHaveBeenCut(t *testing.T) {
 		})
 	}
 }
+
+// TestAFunctionsDocsLeadWithItsSignatureThenItsDescription pins what a
+// completion item says about a function: how it is written, then what it does.
+// `lists.range` is Flowstate's own declaration, so both halves are this
+// repository's to keep true.
+func TestAFunctionsDocsLeadWithItsSignatureThenItsDescription(t *testing.T) {
+	t.Parallel()
+
+	var docs string
+	for _, candidate := range celcomplete.FunctionsAfter(v1.CurrentProfile, "lists") {
+		if candidate.Name == "range" {
+			docs = candidate.Docs
+		}
+	}
+	require.NotEmpty(t, docs, "lists.range is not offered after `lists.`")
+
+	signature := strings.Index(docs, "lists.range(int) -> list(int)")
+	description := strings.Index(docs, "between 0 and 10000")
+	require.GreaterOrEqual(t, signature, 0, "the docs do not carry the signature: %q", docs)
+	require.GreaterOrEqual(t, description, 0, "the docs do not carry the description: %q", docs)
+	assert.Less(t, signature, description, "the signature comes first: %q", docs)
+}

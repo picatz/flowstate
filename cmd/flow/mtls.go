@@ -62,19 +62,17 @@ import (
 func addMTLSFlags(cmd *cobra.Command) {
 	cmd.Flags().String("tls-client-auth", cmp.Or(os.Getenv("FLOWSTATE_TLS_CLIENT_AUTH"), "off"),
 		`whether the public listener requires a client certificate: "off" (the default) or `+
-			`"require". The trusted CAs are the client_ca_file of every kind: mtls entry in `+
-			`--auth-policy — there is no separate CA flag — so "require" needs at least one such `+
-			`entry. Only these two values are offered: this repository never configures `+
-			`tls.VerifyClientCertIfGiven, which would admit a caller with no certificate through `+
-			`whatever bearer-token path remains and hand one who presents a certificate an identity `+
-			`escalation the client itself controls`)
+			`"require". The trusted CAs are the client_ca_file of every kind: mtls entry in the `+
+			"`--auth-policy`"+`, so "require" needs at least one such entry. There is no optional `+
+			`mode: a certificate that is only sometimes required would let the client choose `+
+			`its own identity path`)
 	cmd.Flags().Bool("tls-client-auth-identity",
 		os.Getenv("FLOWSTATE_TLS_CLIENT_AUTH_IDENTITY") != "",
 		"also authenticate the caller from a verified client certificate, through the same kind: "+
-			"mtls trust policy entry that admitted it (overrides FLOWSTATE_TLS_CLIENT_AUTH_IDENTITY). "+
-			"Requires --tls-client-auth require. Without it, a certificate required by "+
-			"--tls-client-auth is a connection-level fence only, and a caller still needs a bearer "+
-			"token this server's --auth-policy accepts")
+			"mtls auth policy entry that admitted it (default from "+
+			"FLOWSTATE_TLS_CLIENT_AUTH_IDENTITY). Requires `--tls-client-auth require`. "+
+			"Without it, a required certificate is a connection-level fence only, and a caller "+
+			"still needs a bearer token the `--auth-policy` accepts")
 }
 
 // mtlsFlags is what an operator asked for, read once before anything binds.

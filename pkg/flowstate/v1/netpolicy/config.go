@@ -206,7 +206,7 @@ func rejectNullAllowlists(data []byte, cfg Config) error {
 	return nil
 }
 
-// Policy builds the policy the file describes, by way of [Options] and [New].
+// Policy builds the policy the file describes, by way of [Config.Options] and [New].
 // Every failure wraps [ErrInvalidPolicy]: a CIDR that does not parse, a port out
 // of range, a TLS version that is not "1.2" or "1.3", and every CEL rule problem
 // [New] reports.

@@ -544,7 +544,7 @@ func (r *Registry) Register(def TaskDef) error {
 
 // Replace overwrites an existing task definition with a new one, or adds it if
 // no definition by that name exists. It validates the definition the same way
-// [Register] does — the only difference is that a name already present is
+// [Registry.Register] does — the only difference is that a name already present is
 // overwritten rather than refused.
 //
 // This is the explicit-intent path the issue (#1431) requires: an embedder that
@@ -662,7 +662,7 @@ var defaultRegistryMu sync.Mutex
 // definition one sequence temporarily installed for compilation cannot be
 // clobbered, or wrongly left behind, by another sequence's restore. Exported
 // so more than one package's registry-swap can share it instead of adding a
-// second, uncoordinated one — see [flowtest]'s per-case stub swap and
+// second, uncoordinated one — see flowtest's per-case stub swap and
 // pkg/flowstate/embed's Tasks.Install.
 func LockDefaultRegistry() func() {
 	defaultRegistryMu.Lock()

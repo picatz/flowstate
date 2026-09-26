@@ -53,12 +53,14 @@ import (
 func newDebugCommand() *cobra.Command {
 	debugCmd := &cobra.Command{
 		Use:   "debug",
-		Short: "Work with a recorded debugging session",
-		Long: "Work with the step debugger's recordings.\n\n" +
+		Short: "Replay a debugging session from a script of its commands",
+		Long: "Work with the step debugger's scripts: the commands a debugging session " +
+			"accepted, one per line.\n\n" +
 			"The debugger itself is reached as `flow run local --debug` (a real run, at a " +
 			"terminal), as `flow test --debug` (one test case), and as `flow dap` (from an " +
-			"editor). Every one of those records the commands it accepted; this is where a " +
-			"recording is played back.",
+			"editor). None of those writes a script to disk; the `flowstate_debug` MCP tool's " +
+			"answer carries one, and a script can be written by hand. This is where a script " +
+			"is played back.",
 	}
 
 	replayCmd := &cobra.Command{
@@ -134,11 +136,12 @@ const debugReplayLong = "Replay a recorded debugging session: read a script of d
 // twice, once trying it and once believing the file they end up with is a
 // recording.
 //
-// So it names the producer that exists. `flowstate_debug`'s answer carries the
-// commands its session accepted (`cmd/flow/mcpdebug.go` renders them), which is
-// today the only thing in this tree that emits one.
+// So it names only what exists: `flowstate_debug`'s answer carries the commands
+// its session accepted (`cmd/flow/mcpdebug.go` renders them), which is today the
+// only thing in this tree that emits one, and the command's own help says so.
 const debugReplayExample = `# Replay the session recorded beside one of the examples:
-flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
+flow debug replay examples/loop-accumulate/debug.script \
+  examples/loop-accumulate/workflow.yaml
 
 # What such a file holds — a comment, then the commands a session accepted:
 #   # why the last term never lands in the sum
@@ -148,12 +151,8 @@ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate
 #   continue
 
 # Replay with the arguments the recorded run was started with:
-flow debug replay session.script examples/computed-outputs/workflow.yaml --input release=2026.9.0
-
-# There is no recorder in the CLI yet. The one producer is the flowstate_debug
-# MCP tool, whose answer carries the commands its session accepted — save those
-# lines to a file and this replays them. A ` + "`flow run local --debug --record`" + ` is
-# the named follow-up.`
+flow debug replay session.script examples/computed-outputs/workflow.yaml \
+  --input release=2026.9.0`
 
 // addLocalSignalFlags declares the flags that answer a workflow's approval
 // gates up front.

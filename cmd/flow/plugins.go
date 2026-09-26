@@ -551,8 +551,8 @@ func addPluginFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("plugin-pin", nil,
 		"pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary "+
 			"answering to that name must match it or is refused before it runs. A name with no "+
-			"pin, here or in --plugin-pins, launches exactly as it always has (#1010) — pinning "+
-			"is adopted one plugin at a time, not all at once")
+			"pin, here or in `--plugin-pins`, launches unpinned, so pinning is adopted one plugin "+
+			"at a time")
 	cmd.Flags().String("plugin-pins", os.Getenv(pluginPinsEnv),
 		"path to a YAML pins file (default $"+pluginPinsEnv+"), the file form of --plugin-pin "+
 			"for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; "+

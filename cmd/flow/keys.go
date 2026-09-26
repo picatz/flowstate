@@ -54,7 +54,7 @@ func newKeysCommand() *cobra.Command {
 		Short: "Generate and inspect signing keys for workload identity",
 		Long: "Generate and inspect the asymmetric keys an issuer signs workload " +
 			"identity assertions with. Only the public half is ever printed; the " +
-			"private key stays on disk at the path given to --out.",
+			"private key stays on disk at the path given to `--out`.",
 	}
 
 	keysCmd.AddCommand(newKeysGenerateCommand())
@@ -67,14 +67,13 @@ func newKeysGenerateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate a new signing key and write it to a file",
-		Long: "Generate a private key, write it PKCS#8-PEM-encoded to --out at " +
+		Long: "Generate a private key, write it PKCS#8-PEM-encoded to `--out` at " +
 			"file mode 0600, and print the public key as a JWK. Refuses to " +
 			"overwrite an existing file: rotating a key is naming a new file, " +
-			"the same convention the server's --identity-key flag uses.",
+			"the same convention the server's `--identity-key` flag uses.",
 		Args: cobra.NoArgs,
 		RunE: runKeysGenerate,
-		Example: `# Generate an ES256 key, the default: smallest and fastest, accepted
-# everywhere:
+		Example: `# Generate an ES256 key, the default: small, fast, and accepted everywhere:
 flow keys generate --out identity/2026-08.pem
 
 # Ed25519, if the relying party prefers it:
@@ -91,7 +90,7 @@ flow keys generate --out identity/key.pem --id 2026-08`,
 		"signing algorithm: "+algorithmNames())
 	cmd.Flags().String("out", "", "path to write the private key PEM to (required)")
 	cmd.Flags().String("id", "", "key id published in the JWK and the JWT \"kid\" header "+
-		"(default: --out's file name, without its extension)")
+		"(default: `--out`'s file name, without its extension)")
 	_ = cmd.MarkFlagRequired("out")
 
 	return cmd
@@ -103,7 +102,7 @@ func newKeysPublicCommand() *cobra.Command {
 		Short: "Print the public JWK for an existing signing key",
 		Args:  cobra.NoArgs,
 		RunE:  runKeysPublic,
-		Example: `# What does this key publish?
+		Example: `# What this key publishes:
 flow keys public --in identity/2026-08.pem`,
 	}
 

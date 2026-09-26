@@ -78,7 +78,7 @@ func LocalSignalSender() *SignalSender {
 // and its siblings.
 //
 // A gate whose `signals:` policy names an approver is, without this,
-// unreachable locally. Every `--signal` delivery carried [LocalSignalSender],
+// unreachable locally. Every `--signal` delivery carried LocalSignalSender,
 // which attests nobody, and no `allow:` rule a real deployment would write can
 // match nobody - so the one workflow shape most worth rehearsing before
 // production, an approval gate with authorization in `signals:` rather than in
@@ -89,7 +89,7 @@ func LocalSignalSender() *SignalSender {
 // rule that admits an approver in production admits them in a rehearsal, and
 // one that refuses them refuses them here too.
 //
-// # The marker is structural, and it is the same one [LocalSignalSender] uses
+// # The marker is structural, and it is the same one LocalSignalSender uses
 //
 // `Local: true` beside a populated `Identity` is a shape the durable path
 // cannot produce. A durable sender is built in exactly two places, both from

@@ -163,9 +163,9 @@ func addMCPServeFlags(cmd *cobra.Command) {
 			"connection that leaves this machine is a credential handed to whatever is in between")
 
 	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to the trust policy whose issuers may mint tokens for this surface "+
-			"(overrides FLOWSTATE_AUTH_POLICY). Required: there is no anonymous variant of "+
-			"this surface, and --insecure-no-auth is refused here")
+		"path to the auth policy (YAML) whose `issuers:` authenticate every caller of this "+
+			"surface. Required: there is no anonymous variant of it, and `--insecure-no-auth` "+
+			"is refused here")
 
 	addProtectedResourceFlags(cmd, "Required on this command: this surface is the protected "+
 		"resource, so without one there is nothing to bind a token's audience to and `flow mcp "+

@@ -326,7 +326,7 @@ func RecordTaskOutcome(span trace.Span, err error) {
 // which is the direction this repository refuses to fail.
 const TemporalSpanErrorDescription = "operation failed"
 
-// SanitizedTemporalSpanStarter is [opentelemetry.TracerOptions.SpanStarter] for
+// SanitizedTemporalSpanStarter is opentelemetry.TracerOptions.SpanStarter for
 // Temporal's tracing interceptor, and it exists because that interceptor is the
 // one span-writing path in this repository that does not already obey
 // [RecordTaskOutcome]'s rule.

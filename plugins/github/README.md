@@ -23,8 +23,12 @@ read/audit tier.
 ## Building
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-github ./plugins/github
+$ go -C plugins/github build -o /path/to/plugins/flowstate-plugin-github .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/github`.
 
 ## Examples, kept honest
 

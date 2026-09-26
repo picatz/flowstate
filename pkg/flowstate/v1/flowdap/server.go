@@ -202,8 +202,8 @@ func (s *Server) Exited(code int) {
 // Finished tells the client the run is over.
 //
 // Called by whoever owns the run when it returns, because the adapter cannot
-// see that for itself: [v1.Debugger] fires before each step and
-// [v1.RunObserver] after each one, and neither says "that was the last".
+// see that for itself: v1.Debugger fires before each step and
+// v1.RunObserver after each one, and neither says "that was the last".
 // Idempotent, since a movement outstanding when the run ends learns the same
 // thing through [flowdebug.ErrRunOver] and a client told twice puts its session
 // away twice.

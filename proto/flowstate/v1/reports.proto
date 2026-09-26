@@ -100,8 +100,8 @@ message FmtReport {
 //
 // The same reason [ValidationReport] exists beside [DiagnosticReport]: `json` is
 // one document per invocation and `jsonl` is one per line, and fixing three files
-// produces three [FixReport]s, which is three lines of `jsonl` and, without
-// something to hold them, three documents where `json` promises one.
+// produces three [FixReport] messages, which is three lines of `jsonl` and,
+// without something to hold them, three documents where `json` promises one.
 message FixReports {
   // Files is one report per file given, in the order they were given.
   repeated FixReport files = 1;
@@ -146,9 +146,9 @@ message TestCase {
   // different question.
   google.protobuf.Duration duration = 5;
 
-  // Warnings are facts worth reading that are not verdicts (#926): the case
+  // Warnings are facts worth reading that are not verdicts: the case
   // passed or failed on Failures and Error alone, and these neither block nor
-  // excuse it. Today's one producer is a stub the case declared and the run
+  // excuse it. The one producer is a stub the case declared and the run
   // never answered through — a task-form stub whose task was never invoked,
   // or a matcher tried and never matched — which is a hole in the case's own
   // account rather than in the run. `flow test --fail-on-warning` promotes
@@ -179,7 +179,7 @@ message TestReport {
   string refused = 3;
 
   // Coverage is one branch-coverage account per workflow the file's cases
-  // targeted (issue #420). A `*.test.yaml` usually tests one workflow and
+  // targeted. A `*.test.yaml` usually tests one workflow and
   // carries exactly one entry, but each case names its own `workflow:`, so a
   // file may target several, and coverage is kept separate per workflow so a
   // step one workflow reaches never masks the same step id left unreached in
@@ -187,11 +187,9 @@ message TestReport {
   // workflow to account for.
   repeated CoverageReport coverage = 4;
 
-  // Schedules is what seeded-schedule exploration found for this file
-  // (issues #800, #931), and is unset when the invocation explored nothing —
-  // the default: `flow test` with no `--seeds` or `--seed` runs each case
-  // once, under written order, and this field stays null exactly as the
-  // command's prose says nothing.
+  // Schedules is what seeded-schedule exploration found for this file, and is
+  // unset when the invocation explored nothing. That is the default: `flow
+  // test` with no `--seeds` or `--seed` runs each case once, in written order.
   //
   // On the machine report for the reason Coverage is: CI reads the account
   // rather than scraping the prose from stderr, and a `--seeds` run whose
@@ -205,7 +203,7 @@ message TestReport {
 
 // ScheduleExploration is what running one `*.test.yaml`'s cases under seeded
 // schedules found, beyond the written-order run the rest of the report
-// describes (issue #800).
+// describes.
 message ScheduleExploration {
   // Schedules is how many seeded schedules each explored case ran under,
   // beyond its written-order run. Counted from what really ran, not from what
@@ -269,7 +267,7 @@ message ScheduleDivergenceReport {
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
 // which of that workflow's steps at least one case ran, and which no case ever
-// reached (issue #420).
+// reached.
 //
 // It rides the machine report so CI reads the sets rather than scraping the
 // prose coverage line. Whether `--coverage-required` was passed is not
@@ -294,7 +292,7 @@ message CoverageReport {
   repeated string reached = 4;
 
   // Unreached is the complement: every step id in the workflow that no case
-  // ran, sorted. This is the line #420 exists to report.
+  // ran, sorted.
   repeated string unreached = 5;
 
   // Gaps is every unreached step the file did not record a reason for: the
@@ -317,7 +315,7 @@ message CoverageReport {
   repeated string stale = 8;
 
   // Arms is every arm of every `switch:` step in the workflow, and whether any
-  // test case took it (issue #801).
+  // test case took it.
   //
   // A second coverage unit beside the step one rather than more entries in it,
   // because an arm is not a step and counting it as one would make StepsTotal a
@@ -334,8 +332,7 @@ message CoverageReport {
 // Read from the transcript rather than inferred from what ran: a switch records
 // which literal matched under `case` (SwitchCaseOutput), so the harness reads the
 // arm that was taken instead of deducing it from the body steps that happened to
-// appear. That is issue #420's own stated measurement rule for switches, and it
-// is what makes an empty arm, and one member of a multi-literal `case: [a, b]`,
+// appear. That is what makes an empty arm, and one member of a multi-literal `case: [a, b]`,
 // measurable at all.
 message SwitchArmCoverage {
   // Arm is the coverage key: `<step>:case[<i>]` for a case holding one literal,

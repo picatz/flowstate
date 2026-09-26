@@ -290,7 +290,7 @@ message Signal {
 // So the honest headline is "fewer workflow tasks and one results entry instead
 // of N", not "fewer signal events".
 //
-// # A separate message from [Signal], rather than a `drain:` flag on it
+// # A separate message from Signal, rather than a drain flag on it
 //
 // By exactly the argument [Signal.outputs] makes for sitting on [Signal] rather
 // than on [Wait]: a drain binds `deliveries` and `count`, and does *not* bind
@@ -369,7 +369,7 @@ message SignalBatch {
 // sender and a run's own caller are the same kind of fact (someone acting,
 // established by authentication rather than self-report), and a run's identity
 // is already this message. Two messages for one shape is exactly the drift
-// invariant 1 (proto-first) exists to prevent.
+// ARCHITECTURE.md invariant 1 (proto-first) exists to prevent.
 //
 // Absent entirely on a signal that predates this field (identity unset,
 // accepted_at unset, local false), which reads as unattested. That is correct,
@@ -413,8 +413,8 @@ message SignalSender {
   //
   // The digest `WebhookDeliveryID` computes over the trigger's evaluated
   // `idempotency_key:`, never the key itself: the usual key is a signature
-  // header, and this value is written into durable run state where invariant 7
-  // says credential-shaped material may not go. A digest is fixed-length,
+  // header, and this value is written into durable run state, where
+  // credential-shaped material may not go (ARCHITECTURE.md invariant 7). A digest is fixed-length,
   // alphabet-safe, and says nothing about the key it names.
   //
   // It is here rather than in [WorkloadIdentity.claims] because it is not a

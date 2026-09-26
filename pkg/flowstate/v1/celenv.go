@@ -200,8 +200,8 @@ type extendedEnvResult struct {
 // embedder can call either with any *cel.Env, so unlike e.envs — whose key
 // space checkLibraries bounds to 2^11 library subsets before a key can even
 // be formed — this cache's key space is caller-controlled and needs its own
-// cap (invariant 5). Past the cap nothing is stored and the call pays the
-// uncached env.Extend cost, the same way envCache in flowfile/celcheck.go
+// cap (AGENTS.md invariant 5, bound work where it is spent). Past the cap
+// nothing is stored and the call pays the uncached env.Extend cost, the same way envCache in flowfile/celcheck.go
 // already fails when it is full.
 //
 // Measured, not guessed: runtime.MemStats around 2,000 extensions of one
@@ -283,7 +283,8 @@ func (c *extendedEnvCache) len() int {
 // e.limits.Cost, building and memoizing the extension at most once per (env,
 // cost) pair — see [extendedEnvKey]. Every caller of env.Extend in this file
 // goes through here; extending it ad hoc anywhere else would reintroduce the
-// per-call rebinding this cache exists to remove (invariant 2).
+// per-call rebinding this cache exists to remove (ARCHITECTURE.md invariant
+// 2, one evaluator).
 func (e *Evaluator) extendedEnvFor(env *cel.Env) (*cel.Env, error) {
 	key := extendedEnvKey{env: env, cost: e.limits.Cost}
 	if res, ok := e.extendedEnvs.get(key); ok {
@@ -823,24 +824,17 @@ func ExtensionLibraries() []string {
 	return names
 }
 
-// A workflow speaks one dialect, and it is the same dialect everywhere in the file.
-//
-// It used to speak two. A `cel` step could name extension libraries with `libs:`,
-// and nothing else in the file could — so `if:`, `items:`, `wait_until:` and every
-// task input were evaluated in an environment without them. Two expressions one
-// line apart, in one document, with different vocabularies, and no way for a
-// reader to infer which was which.
-//
-// The workaround for that already existed, one library at a time: see
-// durationLibrary above, which is unconditional precisely because "a `wait_until:`
-// step has no `libs:` key to enable anything with". That is this problem, solved
-// for the library somebody hit first. A profile generalises it.
+// A workflow speaks one dialect, and it is the same dialect everywhere in the file:
+// `if:`, `items:`, `wait_until:`, a `vars:` binding and every task input are
+// evaluated in the environment the workflow's profile names. No step enables a
+// library for itself.
 //
 // # Why a named set rather than "everything this build has"
 //
 // Because a run has to keep meaning what it meant. Adding a library to a future
-// build must not change how an expression already stored in `RunState` evaluates —
-// invariant 10 — and "all of them" is a set that changes underfoot. A profile
+// build must not change how an expression already stored in `RunState` evaluates
+// (ARCHITECTURE.md invariant 10, RunState is a wire contract between interpreter
+// versions), and "all of them" is a set that changes underfoot. A profile
 // names a fixed membership, the compiler records which one a spec was built for,
 // and a worker resolves that name rather than asking what it happens to have.
 
@@ -954,7 +948,7 @@ func ProfileNames() []string {
 }
 
 // ProfileConfig serializes env — an environment built for the named profile —
-// as a YAML-serializable [env.Config] document.
+// as a YAML-serializable [celconfig.Config] document.
 //
 // google/cel-go v0.31.0's Env.ToConfig reconstructs every registered singleton
 // library on a bare environment to diff its overloads against the configured
@@ -1016,10 +1010,9 @@ func buildEnv(libs []string) (*cel.Env, error) {
 		cel.ValidateRegexLiterals(),
 	))
 
-	// Always present rather than opt-in, unlike the libraries below. A
-	// `wait_until:` step has no `libs:` key to enable anything with — the
-	// expression is the whole of the step — so a unit only reachable through opt-in
-	// would be missing exactly where durations are most written.
+	// Always present, in every profile, rather than part of one: durations are
+	// written most in waits (`sleep:`, `wait_until:`, a signal's `timeout:`), and
+	// a unit missing from some profile would be missing exactly there.
 	//
 	// This also gives the two spellings of a delay the same vocabulary: the
 	// Flowfile's own duration parser already accepts `sleep: 3d`, and without these
@@ -1064,6 +1057,9 @@ func jsonLibrary() cel.EnvOption {
 		return types.DefaultTypeAdapter.NativeToValue(out)
 	}
 	return cel.Function(jsonParseFunction,
+		cel.FunctionDocs("Parses JSON text, as a string or bytes, into a CEL value: an object "+
+			"becomes a map, an array a list, and every number a double, so compare with `1.0` "+
+			"or convert with `int()`. Text that is not valid JSON is an evaluation error."),
 		cel.Overload("json_parse_string",
 			[]*cel.Type{cel.StringType}, cel.DynType,
 			cel.UnaryBinding(func(val ref.Val) ref.Val {
@@ -1104,12 +1100,14 @@ func jsonLibrary() cel.EnvOption {
 var durationUnits = []struct {
 	name string
 	per  time.Duration
+	// doc is the unit's description, as the catalog and editor show it.
+	doc string
 }{
-	{"weeks", 7 * 24 * time.Hour},
-	{"days", 24 * time.Hour},
-	{"hours", time.Hour},
-	{"minutes", time.Minute},
-	{"seconds", time.Second},
+	{"weeks", 7 * 24 * time.Hour, "Returns a duration of n weeks, each exactly 7 days of 24 hours."},
+	{"days", 24 * time.Hour, "Returns a duration of n days, each exactly 24 hours rather than a calendar day."},
+	{"hours", time.Hour, "Returns a duration of n hours."},
+	{"minutes", time.Minute, "Returns a duration of n minutes."},
+	{"seconds", time.Second, "Returns a duration of n seconds."},
 }
 
 // durationLibrary provides the duration constructors, so an author writes
@@ -1123,7 +1121,7 @@ func durationLibrary() []cel.EnvOption {
 
 	for _, unit := range durationUnits {
 		// Captured per iteration so each overload closes over its own unit.
-		name, per := unit.name, unit.per
+		name, per, doc := unit.name, unit.per, unit.doc
 
 		// The largest count this unit can express before int64 nanoseconds wrap.
 		// An author's expression is untrusted input, and without a bound
@@ -1134,6 +1132,8 @@ func durationLibrary() []cel.EnvOption {
 		limit := int64(math.MaxInt64 / int64(per))
 
 		opts = append(opts, cel.Function(name,
+			cel.FunctionDocs(doc+" A count past about 292 years in either direction is an "+
+				"evaluation error."),
 			cel.Overload(name+"_int",
 				[]*cel.Type{cel.IntType}, cel.DurationType,
 				cel.UnaryBinding(func(val ref.Val) ref.Val {

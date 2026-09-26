@@ -574,7 +574,7 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 //
 // Operating on [v1.Workflow_StepOutputs] rather than on a single task's
 // [v1.Node_Outputs] is what lets both drivers call this: it is the type both
-// [v1.Run] and [engine.Run] hand back, so one assertion covers the shape both
+// [v1.Run] and engine.Run hand back, so one assertion covers the shape both
 // produce instead of each driver needing its own rendering of "the result".
 func AssertNoLeak(tb testing.TB, out *v1.Workflow_StepOutputs, material string) {
 	tb.Helper()

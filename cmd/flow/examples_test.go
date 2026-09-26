@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -103,6 +104,31 @@ func TestExamplesArePlausibleInvocations(t *testing.T) {
 				"so the example documents something else; keep the surrounding sequence if it helps, "+
 				"but show this command being run",
 				cmd.CommandPath(), cmd.CommandPath())
+		}
+	})
+}
+
+// exampleWidth is the widest an example line may be: an 80-column terminal less
+// the two-space indent the EXAMPLES block puts it under.
+const exampleWidth = 78
+
+// TestExamplesFitAnEightyColumnTerminal refuses an example line wider than an
+// 80-column terminal can show.
+//
+// The help renderer never wraps an example, because a command broken at an
+// arbitrary column is no longer one to copy: it trims the line to the terminal
+// instead, so an over-long line loses its tail without a mark saying anything
+// is missing. A long invocation is split with a trailing backslash continuation,
+// which a shell reads as one command and a reader can still paste. Measured as
+// a plain surface prints it, with any code-span marks left in.
+func TestExamplesFitAnEightyColumnTerminal(t *testing.T) {
+	walkCommands(t, newRootCommand(), func(t *testing.T, cmd *cobra.Command) {
+		for _, line := range exampleLines(cmd) {
+			if width := lipgloss.Width(line); width > exampleWidth {
+				t.Errorf("%s: Example line is %d columns, over %d, so an 80-column terminal cuts it off; "+
+					"split it with a trailing \\ continuation or shorten it:\n\t%s",
+					cmd.CommandPath(), width, exampleWidth, line)
+			}
 		}
 	})
 }

@@ -28,6 +28,16 @@ the task that needs it. The credential exists in one process for one call.
 test asserts that — minting belongs behind the secret boundary, not in front of
 it.
 
+## Building
+
+```console
+$ go -C plugins/oidc build -o /path/to/plugins/flowstate-plugin-oidc .
+```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/oidc`.
+
 ## Configuring
 
 ```console

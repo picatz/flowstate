@@ -215,18 +215,28 @@ func functionDetail(fn v1.LibraryFunction) string {
 	return fn.Library
 }
 
-// functionDocs says the one thing about a function that is not obvious from its
-// name, which is only ever true of a macro.
+// functionDocs is a function's longer prose: its call forms, what it does, and
+// where it comes from.
 //
-// A signature would be better and is not available: cel-go's declarations carry
-// overloads in a form that would have to be rendered into CEL's own type syntax
-// to be worth reading, and a rendering that is subtly wrong about which
-// overloads exist is worse than none — it is the shape of wrongness this whole
-// area keeps producing. So this says where a name comes from and, for a macro,
-// when it is resolved.
+// The signature first, one overload per line, because it is the answer to
+// "how do I write this": argument order, arity, types, and whether it goes on
+// a namespace or a value. Then the declaration's own description, when it has
+// one. A macro has no signature (see [v1.LibraryFunction.Signature]), so its
+// example stands in for one, and it says when it is resolved.
 func functionDocs(fn v1.LibraryFunction) string {
+	var parts []string
+
+	if len(fn.Signature) > 0 {
+		parts = append(parts, strings.Join(fn.Signature, "\n"))
+	}
+	if fn.Description != "" {
+		parts = append(parts, fn.Description)
+	}
+
 	if !fn.Macro {
-		return "From the " + fn.Library + " library, available to every expression in the file."
+		parts = append(parts, "From the "+fn.Library+" library, available to every expression in the file.")
+
+		return strings.Join(parts, "\n\n")
 	}
 
 	docs := "A macro from the " + fn.Library + " library, expanded when the file compiles, " +
@@ -240,5 +250,5 @@ func functionDocs(fn v1.LibraryFunction) string {
 		docs += " Written: " + fn.Example
 	}
 
-	return docs
+	return strings.Join(append(parts, docs), "\n\n")
 }

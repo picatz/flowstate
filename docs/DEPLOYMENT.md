@@ -950,7 +950,7 @@ There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
 the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:249`,
-reached from `cmd/flow/main.go:254` through `temporalclient.Dial`)
+reached from `cmd/flow/main.go:259` through `temporalclient.Dial`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies

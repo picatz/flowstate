@@ -388,3 +388,23 @@ func TestNewJWTCommandWiresBothSubcommands(t *testing.T) {
 	require.True(t, names["sign"])
 	require.True(t, names["inspect"])
 }
+
+// TestALimitInHelpIsSpokenNotGoFormatted pins how `flow jwt sign` names its
+// cap: "1 hour" reads as a sentence, and "1h0m0s" reads as a Go value.
+func TestALimitInHelpIsSpokenNotGoFormatted(t *testing.T) {
+	t.Parallel()
+
+	for d, want := range map[time.Duration]string{
+		time.Hour:        "1 hour",
+		2 * time.Hour:    "2 hours",
+		time.Minute:      "1 minute",
+		90 * time.Minute: "90 minutes",
+		90 * time.Second: "1m30s",
+	} {
+		require.Equal(t, want, spokenDuration(d))
+	}
+
+	sign := flowCommand(t, "jwt", "sign")
+	require.Contains(t, sign.Long, "capped at 1 hour")
+	require.NotContains(t, sign.Flags().Lookup("ttl").Usage, "1h0m0s")
+}

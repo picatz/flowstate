@@ -5,8 +5,9 @@ security report here is a report about a boundary somebody is depending on.
 This document says how to make one and what happens next.
 
 [THREAT_MODEL.md](THREAT_MODEL.md) is the design document behind this policy:
-what each boundary below is meant to hold against, and — in its "Non-goals and
-honest gaps" section — what it deliberately does not cover yet. Check that
+what each boundary below is meant to hold against, and — in its
+["Non-goals and honest gaps"](THREAT_MODEL.md#8-non-goals-and-honest-gaps)
+section — what it deliberately does not cover yet. Check that
 section before reporting: a gap named there is a documented, accepted
 limitation rather than a new finding. A report showing one of those gaps is
 worse in practice than the model assumed is still very much wanted.
@@ -37,8 +38,9 @@ and therefore most wants to hear about breaking:
   requests from input an outside party chooses.
 - `flow fix` corrupting a valid file, since the whole promise of the command
   is that it is safe to run on anything.
-- Plugin sandbox assumptions: a plugin exceeding what its manifest and the
-  operator's base configuration grant it.
+- Plugin grants: the host giving a plugin more than its manifest and the
+  operator's configuration allow. Plugins themselves are trusted worker-side
+  code, not a sandbox.
 - Prompt-injection-driven agent misuse: the stdio agent surface (`flow mcp`)
   authenticates the process it is talking to, not each individual request, so
   a report showing how untrusted content reaching an agent can make it act
@@ -46,7 +48,9 @@ and therefore most wants to hear about breaking:
 - Issuer-key compromise or workload-assertion forgery: anything that lets a
   caller mint or accept a workload identity assertion the issuer never
   signed, or that widens what an assertion can claim beyond what
-  `THREAT_MODEL.md` §7 ("The issuer as a single point of failure") says is
+  `THREAT_MODEL.md`
+  [§7, "The issuer as a single point of failure,"](THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)
+  says is
   bounded.
 
 Reports about the documented development postures are appreciated but are not
@@ -107,6 +111,7 @@ have to reconstruct it from the workflow files:
 - **Dependabot** (`.github/dependabot.yml`): grouped weekly bumps for Go,
   Actions and npm with cooldowns, and security alerts opened the moment an
   advisory is published.
-- **Releases**: SBOMs and build attestations for every archive
-  (`.github/workflows/release.yml`).
+- **Releases**: none has been cut yet. When one is,
+  `.github/workflows/release.yml` publishes SBOMs and build attestations for
+  every archive.
 

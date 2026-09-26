@@ -147,7 +147,7 @@ func durableDispatchID(info activity.Info) string {
 //
 // identity is the run's own attested [v1.WorkloadIdentity] (or nil, for a
 // local run or a run that predates the field), threaded in from
-// [executor.dispatch]'s `e.identity` the same way [taskActivities.TaskAuthorized]
+// [executor.dispatch]'s `e.identity` the same way taskActivities.TaskAuthorized
 // already receives it — one source, one spelling, for every entry point that
 // can carry identity at all. Added as a parameter rather than read from
 // anywhere ambient, because this activity — unlike [TaskInScope] — never
@@ -164,7 +164,7 @@ func durableDispatchID(info activity.Info) string {
 //
 // stepID is the id of the step this dispatch is for, carried so the task span
 // this activity opens names it — the same fact
-// [taskActivities.TaskAuthorized] has always received, now on this arm too.
+// taskActivities.TaskAuthorized has always received, now on this arm too.
 // It is *last* rather than beside the other identity-ish parameters, and that
 // position is load-bearing: see the appended-parameter rule in versioning.go.
 // An activity task scheduled by an older interpreter carries no payload for it

@@ -32,7 +32,7 @@ const SwitchValueOutput = "value"
 // It holds the case literal that matched, and null when none did — whether the
 // `default:` body ran or nothing did. Null rather than a sentinel string,
 // because any string is a value a case could legitimately match, which is the
-// exact ambiguity [ValidateNamespace]-style sentinels exist to avoid. A
+// exact ambiguity ValidateNamespace-style sentinels exist to avoid. A
 // downstream step dispatches on it as `${steps.<id>.case != null}`.
 const SwitchCaseOutput = "case"
 

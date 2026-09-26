@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -140,4 +141,77 @@ func TestTheAdvertisedSchemasStayWellUnderTheNodeBound(t *testing.T) {
 				method.Name, nodes, schema.direction, maxSchemaNodes)
 		}
 	}
+}
+
+// TestAFieldsSchemaCommentReachesTheToolSchema pins that a request field's
+// description is the schema's own prose, derived rather than written here, and
+// that how much of it travels depends on depth: a model fills in the request's
+// own fields, so those carry their comment; one level down carries a first
+// sentence; below that the shape alone.
+func TestAFieldsSchemaCommentReachesTheToolSchema(t *testing.T) {
+	t.Parallel()
+
+	properties := func(schema map[string]any) map[string]any {
+		t.Helper()
+		out, ok := schema["properties"].(map[string]any)
+		require.True(t, ok, "schema has no properties: %v", schema)
+		return out
+	}
+	field := func(schema map[string]any, name string) map[string]any {
+		t.Helper()
+		out, ok := properties(schema)[name].(map[string]any)
+		require.True(t, ok, "schema has no %q property", name)
+		return out
+	}
+
+	signal := SchemaForMessage((&v1.SignalRequest{}).ProtoReflect().Descriptor())
+	assert.Contains(t, field(signal, "payload")["description"], "${steps.<id>.payload.<key>}",
+		"SignalRequest.payload's comment does not reach flowstate_signal's schema")
+
+	list := SchemaForMessage((&v1.ListRequest{}).ProtoReflect().Descriptor())
+	assert.Contains(t, field(list, "pageSize")["description"], "50",
+		"ListRequest.page_size's default does not reach flowstate_list's schema")
+
+	run := SchemaForMessage((&v1.RunRequest{}).ProtoReflect().Descriptor())
+	workflow := field(run, "workflow")
+	assert.Contains(t, workflow["description"], "Compile",
+		"RunRequest.workflow's comment does not reach flowstate_run's schema")
+
+	// One level down: a first sentence, and only that.
+	name, ok := field(workflow, "name")["description"].(string)
+	require.True(t, ok, "Workflow.name carries no description one level down")
+	assert.NotContains(t, name, "\n\n", "a nested field carries more than its first sentence")
+
+	// Two levels down: nothing, however well documented the field is.
+	steps := field(workflow, "steps")
+	items, ok := steps["items"].(map[string]any)
+	require.True(t, ok, "Workflow.steps has no item schema")
+	assert.NotContains(t, field(items, "id"), "description",
+		"a field two messages down carries prose, which the depth bound exists to prevent")
+}
+
+// TestADurationFieldSaysHowADurationIsSpelled pins the one well-known type
+// whose protojson spelling a model gets wrong: `1h` is refused by the
+// decoder, `3600s` is accepted.
+func TestADurationFieldSaysHowADurationIsSpelled(t *testing.T) {
+	t.Parallel()
+
+	schema := SchemaForMessage((&v1.ScheduleTrigger{}).ProtoReflect().Descriptor())
+	every, ok := schema["properties"].(map[string]any)["every"].(map[string]any)
+	require.True(t, ok, "ScheduleTrigger has no `every` property")
+
+	pattern, ok := every["pattern"].(string)
+	require.True(t, ok, "a Duration field advertises no pattern")
+	re := regexp.MustCompile(pattern)
+	for _, accepted := range []string{"3600s", "1.5s", "-2s", "0.000000001s"} {
+		assert.True(t, re.MatchString(accepted), "the pattern refuses %q, which protojson accepts", accepted)
+	}
+	for _, refused := range []string{"1h", "30m", "3600", "1.0000000001s"} {
+		assert.False(t, re.MatchString(refused), "the pattern accepts %q, which protojson refuses", refused)
+	}
+
+	description, _ := every["description"].(string)
+	assert.Contains(t, description, "Every fires on a fixed interval",
+		"the field's own comment is missing")
+	assert.Contains(t, description, "3600s", "the spelling hint is missing")
 }

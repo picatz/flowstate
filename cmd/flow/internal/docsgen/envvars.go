@@ -186,7 +186,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_TASK_POLICY",
 			value:   "unset",
-			purpose: "Default for `--task-policy`: a YAML task-shape policy (#187) governing which identities may dispatch which tasks. When set it replaces the built-in policy (no restriction) entirely rather than merging with it.",
+			purpose: "Default for `--task-policy`: a YAML task-shape policy governing which identities may dispatch which tasks. When set it replaces the built-in policy (no restriction) entirely rather than merging with it.",
 			read:    "cmd/flow/taskpolicy.go",
 		},
 		{
@@ -252,7 +252,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_PLUGIN_PINS",
 			value:   "unset",
-			purpose: "Default for `--plugin-pins`: a YAML file mapping plugin names to the digest the binary answering to each must have, merged with any --plugin-pin (#1010). Unset means no pins file; a deployment with neither this nor --plugin-pin configures no digest pins, and every plugin name launches exactly as it always has.",
+			purpose: "Default for `--plugin-pins`: a YAML file mapping plugin names to the digest the binary answering to each must have, merged with any `--plugin-pin`. Unset means no pins file; a deployment with neither this nor `--plugin-pin` configures no digest pins, and every plugin launches unpinned.",
 			read:    "cmd/flow/plugins.go",
 		},
 		{
@@ -505,7 +505,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_WORKER_IDENTITY",
 			value:   "unset",
-			purpose: "Default for `--identity`: how this worker identifies itself to Temporal, shown in Event History and a Task Queue's poller list (#752). Unset builds one from `--deployment-name`/`--build-id`, `--tenant` if set, and this process's hostname — more specific than the SDK's own `pid@hostname` default, but a platform-native identifier (a Kubernetes pod name, an ECS task id) is worth setting explicitly.",
+			purpose: "Default for `--identity`: how this worker identifies itself to Temporal, shown in Event History and a task queue's poller list. Unset builds one from `--deployment-name`/`--build-id`, `--tenant` if set, and this process's hostname — more specific than the SDK's own `pid@hostname` default, but a platform-native identifier (a Kubernetes pod name, an ECS task id) is worth setting explicitly.",
 			read:    "cmd/flow/main.go",
 		},
 		{

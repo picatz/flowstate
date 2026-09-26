@@ -40,7 +40,7 @@ import (
 const MaxPendingWaits = 64
 
 // PendingWaits is the set of signal waits a local run is parked on, and the
-// local driver's answer to the question [engine.ProgressQuery] answers durably.
+// local driver's answer to the question engine.ProgressQuery answers durably.
 //
 // Safe for concurrent use, unlike the durable driver's equivalent: workflow
 // coroutines are cooperatively scheduled so only one runs at a time, while a

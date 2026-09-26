@@ -59,7 +59,7 @@ import (
 // newBreakingCommand builds the `flow breaking` command.
 func newBreakingCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "breaking [path...]",
+		Use:   "breaking <path>...",
 		Short: "Report workflows whose declared inputs or outputs broke a contract",
 		Long: "Compile every Flowfile at the working tree and at a git ref, match each workflow to " +
 			"its previous self by path, and report interface breaks: a declared input that a caller must now supply, " +
@@ -73,7 +73,7 @@ func newBreakingCommand() *cobra.Command {
 			"`validate`.\n\n" +
 			"A named file is taken as given; a directory is walked for Flowfiles, the same walk " +
 			"`validate` and `test` use. The `--against` ref must be present in the local git " +
-			"history: fetch the base branch first, exactly as the `buf breaking` check does.\n\n" +
+			"history, so fetch the base branch first.\n\n" +
 			"A workflow is its path: two files declaring one `name:` in different directories are " +
 			"two workflows, each compared against the file at its own path at the ref. A file that " +
 			"moved since the ref is matched with `--moved old=new`; without it the old path reads " +
@@ -84,15 +84,15 @@ func newBreakingCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBreaking(cmd, args)
 		},
-		Example: `# Check every example against the base branch.
-# Fetch it first, the same way the buf breaking check does: git fetch origin main
+		Example: `# Check every example against main (run ` + "`git fetch origin main`" + ` first):
 flow breaking --against origin/main examples/
 
 # Check one workflow against the last commit:
 flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
 
 # A file that moved is compared against its old path, not reported as removed:
-flow breaking --against origin/main --moved shared/notify.yaml=workflows/notify.yaml .`,
+flow breaking --against origin/main \
+  --moved shared/notify.yaml=workflows/notify.yaml .`,
 	}
 
 	cmd.Flags().String("against", "",

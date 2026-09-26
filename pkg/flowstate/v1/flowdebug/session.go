@@ -148,7 +148,7 @@ const (
 // the session the way `flow test` already colours its transcript.
 //
 // Deliberately this package's own vocabulary rather than flowtest's
-// [flowtest.TranscriptTone], and the reason is the member set: a transcript
+// flowtest.TranscriptTone, and the reason is the member set: a transcript
 // has no prompt and no breakpoint, and extending its tones with members no
 // transcript line can carry would muddy what that type means. The consumer
 // (`flow test --debug`) maps both vocabularies onto the one theme, which is
@@ -271,7 +271,7 @@ type Options struct {
 // console's completion callback runs on whichever goroutine is inside Prompt,
 // while the boundary that asked for the line is parked elsewhere.
 //
-// # A console owes [MaxCommandBytes]
+// # A console owes MaxCommandBytes
 //
 // It is the one bound on this surface that moves with the reader. The other
 // four are the session's wherever the line came from — [MaxBreakpoints] and
@@ -1762,7 +1762,7 @@ func (s *Session) printfTone(tone Tone, format string, args ...any) {
 //
 // Evaluation is untouched. A `${...}` in the file still sees the real value,
 // and an inspection still compares against it — only what prints withholds,
-// which is the same split [flowtest]'s transcript already lives by. That makes
+// which is the same split flowtest's transcript already lives by. That makes
 // this a transcript control, not a boundary against the person at the prompt:
 // whoever runs `flow test --debug` or `flowstate_debug` supplied the case's
 // fixtures, so `inspect inputs.token == "guess"` answers truthfully and a

@@ -30,7 +30,7 @@ choice with a cost, and the cost is named.
   same compiled contract through the same step executor as a durable run on
   Temporal. That claim is held by a
   [shared conformance corpus](../pkg/flowstate/v1/internal/conformance) both
-  drivers run, and by [architectural invariant 3](ARCHITECTURE.md); a
+  drivers run, and by [architectural invariant 3](ARCHITECTURE.md#invariants); a
   divergence is a bug, not a caveat.
 - **A test tier with no infrastructure and no waiting.** `flow test` runs a
   `*.test.yaml` beside a workflow under a
@@ -51,7 +51,7 @@ choice with a cost, and the cost is named.
   including the one [`flow server dev`](reference/cli.md#flow-server-dev)
   starts in one process with a server and a worker; a cloud dependency is an
   optional integration, never the only path
-  ([invariant 10](ARCHITECTURE.md)).
+  ([invariant 10](ARCHITECTURE.md#invariants)).
 
 ## The alternatives
 
@@ -79,11 +79,12 @@ Read this before the examples. A tool that lists only fits reads as marketing.
   SDK.
 - **Container-per-step batch on Kubernetes.** Flowstate has no pod, no volume,
   and no artifact store; Argo does.
-- **A managed service with no cluster.** Flowstate is self-hosted on Temporal
-  by design. If nobody will run Temporal, that is the answer.
+- **A managed service with no cluster.** Flowstate's server and workers are
+  self-hosted by design, even against Temporal Cloud. If nobody will operate
+  them, that is the answer.
 - **Builds and tests.** Keep them in CI.
 - **A stable interface today.** Flowstate is super-alpha; editions pin the
-  language and a [rewriter](DSL.md) carries files forward, but the CLI, the
+  language and a [rewriter](DSL.md#no-deprecation-window-one-edition-and-a-rewriter) carries files forward, but the CLI, the
   server API, and the plugin protocol still change.
 
 ## Where to go next

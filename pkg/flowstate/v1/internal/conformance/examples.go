@@ -83,7 +83,7 @@ const ExampleInputsFile = "inputs.json"
 // places, on an unreadable file, a document that is not a JSON object, and a
 // number with a fractional part — for the identical reason [BindExampleInputs]
 // returns rather than requires its own: a caller in a per-example loop (#183's
-// [TestEveryExampleRunsDurably]) means to report one bad fixture and move on to
+// TestEveryExampleRunsDurably) means to report one bad fixture and move on to
 // the next example, and Fatalf is FailNow, which a fatal call three frames below
 // a checked `if err != nil; continue` still is. A malformed inputs.json used to
 // take every alphabetically later example down with it exactly the way an
@@ -756,7 +756,7 @@ func AnyStep(nodes []*v1.Node, pred func(*v1.Node) bool) bool {
 // the refusal names *why*: which expression, on which step, and what this walk
 // could and could not see about it, so an author reads a boundary of the harness
 // rather than suspecting their file. A true line:column would need the file's own
-// [flowfile.Positions], which this function is never handed — it only ever sees
+// flowfile.Positions, which this function is never handed — it only ever sees
 // the compiled node tree — so the expression's own rendered text stands in as its
 // position here.
 func PointAtStandIn(nodes []*v1.Node, base string) []string {

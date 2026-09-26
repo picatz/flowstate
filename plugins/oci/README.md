@@ -17,8 +17,12 @@ want to see it work rather than read about it.
 ## Building
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-oci ./plugins/oci
+$ go -C plugins/oci build -o /path/to/plugins/flowstate-plugin-oci .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/oci`.
 
 ## Tasks
 

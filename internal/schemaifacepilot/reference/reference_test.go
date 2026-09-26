@@ -21,8 +21,14 @@ func TestSourceInfoBehaviorIsExplicit(t *testing.T) {
 	comment, sourceHasComment := protodoc.Comment(linked.FullName())
 	assert.True(t, sourceHasComment)
 	assert.Contains(t, comment, "request message for getting a workflow run")
-	_, fieldHasComment := protodoc.Comment(linked.FullName().Append("run_id"))
-	assert.False(t, fieldHasComment, "the pilot must not invent schema field prose")
+	fieldComment, fieldHasComment := protodoc.Comment(linked.FullName().Append("run_id"))
+	require.True(t, fieldHasComment, "GetRequest.run_id is documented in the schema")
+
+	// The pilot must not invent schema field prose: what it renders is the
+	// schema's own comment, verbatim.
+	var docs bytes.Buffer
+	require.NoError(t, GenerateGet(&docs))
+	assert.Contains(t, docs.String(), fieldComment)
 }
 
 func TestGeneratedReferenceIsCurrentAndHasNoInventedProse(t *testing.T) {
@@ -33,7 +39,8 @@ func TestGeneratedReferenceIsCurrentAndHasNoInventedProse(t *testing.T) {
 	assert.Equal(t, string(committedDocs), docs.String())
 	assert.Contains(t, docs.String(), "UUID")
 	assert.Contains(t, docs.String(), "Command-owned usage")
-	assert.Equal(t, 2, strings.Count(docs.String(), " | — | "))
+	assert.Equal(t, 1, strings.Count(docs.String(), " | — | "),
+		"only workflow_id's schema constraints are empty; both fields' prose comes from the schema")
 }
 
 func TestPresenceLabelSeparatesRequirednessFromProtobufPresence(t *testing.T) {

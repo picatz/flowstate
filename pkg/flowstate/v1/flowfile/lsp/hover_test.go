@@ -916,10 +916,25 @@ steps:
 		notWant []string
 	}{
 		{
+			// The signature is how the name is written: on a value, with no
+			// arguments, returning a string.
 			name: "a bare function",
 			expr: `vars.greeting.upperAscii()`,
 			on:   "upperAscii",
-			want: []string{"upperAscii", "strings"},
+			want: []string{"upperAscii", "strings", "string.upperAscii() -> string"},
+		},
+		{
+			// One of Flowstate's own functions: its signature, then the
+			// description its declaration carries, which is the sentence that
+			// says numbers arrive as doubles.
+			name: "a function with a declared description",
+			expr: `json_parse(vars.greeting)`,
+			on:   "json_parse",
+			want: []string{
+				"json_parse(string) -> dyn",
+				"json_parse(bytes) -> dyn",
+				"every number a double",
+			},
 		},
 		{
 			// The ambiguity that decides the lookup order. `replace` is a function

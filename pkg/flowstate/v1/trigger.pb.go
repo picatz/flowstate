@@ -233,7 +233,7 @@ func (x *Triggers) GetManual() *ManualTrigger {
 //
 // # Where it is enforced, and where it deliberately is not
 //
-// [FlowstateServer.Run] enforces this, against the caller the server itself
+// The server's Run handler enforces this, against the caller the server itself
 // attested, before Temporal sees anything — the same placement [SignalPolicy]
 // has and for the same reason. `flow run local` and `flow test` are never
 // gated: the author's machine is not a deployment, and a workflow that cannot
@@ -699,12 +699,13 @@ type ScheduleTrigger struct {
 	// every time any of the three matches, so a calendar beside a cron expression
 	// adds firings rather than filtering them.
 	Calendars []*ScheduleTrigger_Calendar `protobuf:"bytes,6,rep,name=calendars,proto3" json:"calendars,omitempty"`
-	// StartAt and EndAt bound the window in which firings may occur, inclusively
-	// at both ends. Either may be written alone. A start that is not before its
-	// end is refused at creation, because such a schedule can never fire and would
-	// be created successfully by Temporal all the same.
+	// StartAt is the earliest moment a firing may occur, inclusive. Unset means
+	// no lower bound. A start that is not before `end_at` is refused at
+	// creation, because such a schedule can never fire.
 	StartAt *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"`
-	EndAt   *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`
+	// EndAt is the latest moment a firing may occur, inclusive. Unset means the
+	// schedule fires indefinitely.
+	EndAt *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`
 	// CatchupWindow limits how late a missed firing may still be taken when the
 	// Temporal service returns from an outage.
 	//
@@ -835,9 +836,14 @@ func (x *ScheduleTrigger) GetPauseOnFailure() bool {
 // because a backfill is the one place where a single request decides how many
 // executions a cluster starts at once.
 type ScheduleBackfill struct {
-	state         protoimpl.MessageState  `protogen:"open.v1"`
-	StartAt       *timestamppb.Timestamp  `protobuf:"bytes,1,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"`
-	EndAt         *timestamppb.Timestamp  `protobuf:"bytes,2,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// StartAt begins the interval, exclusive: a firing due exactly at this
+	// moment is not taken. Required.
+	StartAt *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"`
+	// EndAt ends the interval, inclusive. Required.
+	EndAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`
+	// Overlap is what happens when a backfilled firing comes due while an
+	// earlier run is still going. Unset takes the schedule's own `overlap`.
 	Overlap       ScheduleTrigger_Overlap `protobuf:"varint,3,opt,name=overlap,proto3,enum=flowstate.v1.ScheduleTrigger_Overlap" json:"overlap,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1026,15 +1032,26 @@ func (x *WebhookTrigger_Signal) GetArguments() map[string]*Value {
 // than compiled: it means 00:00:00 every day, and nobody writes that by
 // meaning it.
 type ScheduleTrigger_Calendar struct {
-	state         protoimpl.MessageState            `protogen:"open.v1"`
-	Second        []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,1,rep,name=second,proto3" json:"second,omitempty"`
-	Minute        []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,2,rep,name=minute,proto3" json:"minute,omitempty"`
-	Hour          []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,3,rep,name=hour,proto3" json:"hour,omitempty"`
-	DayOfMonth    []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,4,rep,name=day_of_month,json=dayOfMonth,proto3" json:"day_of_month,omitempty"`
-	Month         []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,5,rep,name=month,proto3" json:"month,omitempty"`
-	Year          []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,6,rep,name=year,proto3" json:"year,omitempty"`
-	DayOfWeek     []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,7,rep,name=day_of_week,json=dayOfWeek,proto3" json:"day_of_week,omitempty"`
-	Comment       string                            `protobuf:"bytes,8,opt,name=comment,proto3" json:"comment,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Second matches seconds, 0 to 59. Empty means 0.
+	Second []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,1,rep,name=second,proto3" json:"second,omitempty"`
+	// Minute matches minutes, 0 to 59. Empty means 0.
+	Minute []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,2,rep,name=minute,proto3" json:"minute,omitempty"`
+	// Hour matches hours, 0 to 23, in the schedule's `time_zone`. Empty means
+	// 0.
+	Hour []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,3,rep,name=hour,proto3" json:"hour,omitempty"`
+	// DayOfMonth matches days of the month, 1 to 31. Empty matches every day.
+	DayOfMonth []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,4,rep,name=day_of_month,json=dayOfMonth,proto3" json:"day_of_month,omitempty"`
+	// Month matches months, 1 (January) to 12. Empty matches every month.
+	Month []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,5,rep,name=month,proto3" json:"month,omitempty"`
+	// Year matches years, 1970 to 3000. Empty matches every year.
+	Year []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,6,rep,name=year,proto3" json:"year,omitempty"`
+	// DayOfWeek matches days of the week, 0 to 6, where 0 is Sunday. Empty
+	// matches every day.
+	DayOfWeek []*ScheduleTrigger_Calendar_Range `protobuf:"bytes,7,rep,name=day_of_week,json=dayOfWeek,proto3" json:"day_of_week,omitempty"`
+	// Comment is a note describing this calendar, at most 256 characters. It
+	// does not affect when the schedule fires.
+	Comment       string `protobuf:"bytes,8,opt,name=comment,proto3" json:"comment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1129,7 +1146,8 @@ func (x *ScheduleTrigger_Calendar) GetComment() string {
 // number, a list of them, or `{start: 9, end: 17, step: 2}`.
 type ScheduleTrigger_Calendar_Range struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Start is the first value the range matches, and the only required one.
+	// Start is the first value the range matches. Required in a Flowfile's
+	// long form, because zero is a real value in several fields.
 	Start int32 `protobuf:"varint,1,opt,name=start,proto3" json:"start,omitempty"`
 	// End is the last value, inclusive. Zero means no end was written, which
 	// matches the start alone. The schema cannot distinguish an unwritten end

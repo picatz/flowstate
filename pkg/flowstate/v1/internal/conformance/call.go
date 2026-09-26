@@ -39,6 +39,8 @@ func callNode(id string, callee *v1.Workflow, arguments map[string]*v1.Value) *v
 	}
 }
 
+// CallCases are the shared `call:` cases. Both drivers run every one of them;
+// the comment at the top of this file says what they pin.
 func CallCases() []Case {
 	return []Case{
 		{

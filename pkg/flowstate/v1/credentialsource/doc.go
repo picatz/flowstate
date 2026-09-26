@@ -14,7 +14,7 @@
 //
 // A [Source] is the fix: a named, pluggable thing a client asks for a token,
 // which knows how to reach one ambient identity and re-mints it before it expires.
-// [flowstate/v1/auth.Broker] already has this shape on the outbound side — mint,
+// [github.com/picatz/flowstate/pkg/flowstate/v1/auth.Broker] already has this shape on the outbound side — mint,
 // cache, refresh shortly before expiry — and this package is the same idea
 // pointed inward, at acquiring the credential a caller presents to Flowstate
 // itself rather than one Flowstate presents onward.
@@ -61,10 +61,10 @@
 //
 // # Secrets never leave through the front door
 //
-// [Token] holds its bearer value in an [flowstate/v1/auth.Material], the same
+// [Token] holds its bearer value in an [github.com/picatz/flowstate/pkg/flowstate/v1/auth.Material], the same
 // closure-backed type every other secret-carrying value in this codebase uses,
 // so it renders as "[redacted]" under every fmt verb, through any container, at
 // any depth, and drops the value entirely when serialized. See
-// [flowstate/v1/auth.Material] for why a closure and not a field is what makes
+// auth.Material for why a closure and not a field is what makes
 // that hold through reflection.
 package credentialsource

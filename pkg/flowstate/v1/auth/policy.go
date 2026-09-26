@@ -355,9 +355,9 @@ func (m *NamespaceMap) UnmarshalJSON(data []byte) error {
 // class: [encoding/json.Marshal] never omits a key's quotes, so none of
 // those nine shapes, or the merge-key shape #1949 found, changes identity
 // through this type's own Marshal/Unmarshal pair, in either format, isolated
-// or embedded in a whole [Policy] — see [TestNamespaceMapYAMLRoundTrips],
-// [TestNamespaceMapJSONRoundTrips] and
-// [TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey].
+// or embedded in a whole [Policy] — see TestNamespaceMapYAMLRoundTrips,
+// TestNamespaceMapJSONRoundTrips and
+// TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey.
 //
 // This fix closes the class #1949 reported and the wider one review found
 // beside it: every way an *unquoted* round trip through goccy's own Marshal
@@ -401,7 +401,7 @@ func marshalCompactJSON(v any) ([]byte, error) {
 
 // IsZero reports whether m is nil — never whether it is empty. Both
 // encoding/json's `omitzero` and goccy/go-yaml's `omitempty` (which treats an
-// [IsZeroer] as authoritative over its own default reflection-based check;
+// IsZeroer as authoritative over its own default reflection-based check;
 // see that package's yaml.go doc) call this instead of measuring len(m)
 // before deciding whether to omit the field, which is what lets
 // [TrustedIssuer.NamespaceMap]'s struct tags tell "never configured" (nil)

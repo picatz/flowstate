@@ -22,7 +22,7 @@ const forEachTripCeiling = v1.MaxForEachItems
 // reaches the byte bound however many times it runs, which is exactly the shape
 // the body below has.
 //
-// Run by both the local driver ([flowstatev1] eval_test.go's
+// Run by both the local driver (flowstatev1 eval_test.go's
 // TestRunWorkflowForEachTripCount) and the durable driver (engine
 // workflow_test.go's identically-named test), which is what makes "a list at the
 // ceiling runs and a list one past it is refused" something the two cannot

@@ -8,7 +8,7 @@ import (
 // `loop:` primitive — a bounded loop that carries state between iterations until a
 // condition holds or its ceiling is reached.
 //
-// Run by both the local driver ([flowstatev1] eval_test.go) and the durable driver
+// Run by both the local driver (flowstatev1 eval_test.go) and the durable driver
 // (engine workflow_test.go), which is what makes "the loop counts down to the same
 // three iterations, carries the same final state, and fails at the same ceiling"
 // something the two cannot disagree about. A loop whose iteration count or state

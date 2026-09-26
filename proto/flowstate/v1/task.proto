@@ -140,7 +140,8 @@ message Task {
   // HTTP is a task that performs an HTTP request to a specified URL with optional method, headers, and body.
   // It returns the HTTP response status code, headers, and body as outputs.
   //
-  // This is obviously useful, but also dangerous since it's just SSRF (Server-Side Request Forgery) in disguise.
+  // Every request is subject to the deployment's egress policy; a workflow
+  // reaches only hosts that policy allows.
   message HTTP {
     // Inputs describes the outbound request and how its response is accepted and
     // shaped. Secret references remain unresolved until worker-side use; absent
@@ -171,19 +172,11 @@ message Task {
         max_len: 6
         pattern: '^(?i)(GET|POST|PUT|PATCH|DELETE)$'
       }];
-      // Request headers.
+      // Request headers, by name.
       //
-      // Strings, because a header is text on the wire, and a secret reference is
-      // not a string, so a `headers:` mapping carrying one never reaches this
-      // field at all. It arrives as a [Value.Structure] among the task's inputs
-      // and is applied entry by entry, each reference resolved as its header is
-      // set. Both paths end on the same [http.Header]; only one of them can hold
-      // a reference, and it holds it as a reference right up to the last moment.
-      //
-      // Resolving into this field instead would be the mistake worth naming: a
-      // proto struct field is exactly what `fmt` reflects into, so a header
-      // resolved here would print under `%+v` of the inputs, of the task, and of
-      // anything holding either.
+      // A header value may be a secret reference; such a mapping is carried as
+      // a structure among the task's inputs instead of this field, and each
+      // reference is resolved inside the activity only as its header is set.
       map<string, string> headers = 3;
 
       // A raw request body, sent as written.
@@ -228,15 +221,16 @@ message Task {
         max_len: 128
         pattern: "^[a-z][a-z0-9-]*$"
       }];
-      // Optional outputs shaping: when provided, the HTTP task will return only
-      // the named outputs defined by this map instead of the default outputs.
-      // Values are evaluated as CEL expressions (or used as literals) with the
-      // following variables available:
+      // Outputs selects what the step returns. When set, the step's outputs are
+      // exactly these named values instead of `status_code`, `body`, `headers`
+      // and `json`, so a large response is not carried into the run's history.
+      //
+      // Each value is a literal or a CEL expression over the response:
       //   - status_code (int)
       //   - body (string)
       //   - headers (map<string,string>)
       //   - json (the parsed body, when `parse_json` asked for it)
-      // This enables payload minimization by selecting just the fields needed.
+      // An expression that fails to evaluate fails the step without a retry.
       map<string, Value> outputs = 5;
 
       // Query parameters, escaped and appended to the URL.
@@ -254,16 +248,13 @@ message Task {
       // `valueToQueryString` for a specification that never met the compiler.
       map<string, Value> query = 6;
 
-      // A structured request body, serialized as JSON with a matching Content-Type.
+      // A structured request body, serialized as JSON and sent with
+      // `Content-Type: application/json` unless `headers` sets one. Mutually
+      // exclusive with `body` and `form`.
       //
-      // The common case, and until now the most laborious: sending an object meant
-      // building the JSON by hand in a CEL expression and remembering the header.
-      // Mutually exclusive with `body` and `form`: three ways to say what to send
-      // is a request whose meaning depends on field order.
-      //
-      // A field of the body may be a secret reference, at any depth: the task
-      // serializes the body itself, inside the activity, so the reference is read
-      // as the bytes are written and nowhere earlier.
+      // Fields may hold secret references at any depth: the task serializes the
+      // body inside the activity, so a reference is resolved only as the bytes
+      // are written.
       Value json = 7;
 
       // A form body, url-encoded with a matching Content-Type. Mutually exclusive

@@ -22,6 +22,9 @@ func digestLibrary() cel.EnvOption {
 	}
 
 	return cel.Function(digestSHA256Function,
+		cel.FunctionDocs("Returns the SHA-256 digest of a string's UTF-8 bytes or of a bytes "+
+			"value, spelled `sha256:<lower-case hex>`. For checksums, content identity and "+
+			"idempotency keys; it is not a signature, a MAC or a password hash."),
 		cel.Overload("digest_sha256_string",
 			[]*cel.Type{cel.StringType}, cel.StringType,
 			cel.UnaryBinding(func(val ref.Val) ref.Val {

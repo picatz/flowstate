@@ -147,9 +147,10 @@ func addEgressPolicyFlag(cmd *cobra.Command) {
 			"(default $"+egressPolicyEnv+"); the first-party git, github, slack, sql and vcs plugins enforce the "+
 			"grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network "+
 			"from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; "+
-			"with no file every plugin is granted the same default policy built-in HTTP runs under, which sql "+
-			"refuses to reach a database under; when set it replaces the default policy entirely, and "+
-			v1.AllowLoopbackEgressEnv+" is ignored; a file that wants loopback says allow_loopback: true")
+			"with no file, plugins are granted the default policy built-in HTTP runs under, which sql "+
+			"refuses to reach a database under; a file replaces that default entirely and "+
+			v1.AllowLoopbackEgressEnv+" is then ignored, so a file that wants loopback says "+
+			"`allow_loopback: true`")
 }
 
 // applyEgressPolicy loads the configured policy file and registers the http task

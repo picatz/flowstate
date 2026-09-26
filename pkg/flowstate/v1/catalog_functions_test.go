@@ -312,3 +312,44 @@ func TestEveryOrdinaryFunctionHasASignature(t *testing.T) {
 	}
 	assert.Positive(t, checked, "no ordinary functions were checked, so this proves nothing")
 }
+
+// TestFlowstatesOwnFunctionsCarryTheirDescriptions pins the path a function's
+// documentation takes: declared with cel.FunctionDocs beside its overloads,
+// read back off the profile's environment by [ProfileFunctions], and carried
+// into the machine-readable catalog GetCatalog returns. A description that
+// reached one and not the other would leave an agent reading the catalog with
+// less than the editor shows.
+//
+// Each sentence checked is a fact the function's code enforces, so a
+// description drifting from the behavior it documents fails here by name.
+func TestFlowstatesOwnFunctionsCarryTheirDescriptions(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]string{
+		"json_parse":    "every number a double",
+		"digest.sha256": "`sha256:<lower-case hex>`",
+		"lists.range":   "between 0 and 10000",
+	}
+
+	listed := map[string]string{}
+	for _, fn := range ProfileFunctions(CurrentProfile) {
+		listed[fn.Name] = fn.Description
+	}
+
+	cataloged := map[string]string{}
+	for _, fn := range Catalog().GetCelFunctions() {
+		cataloged[fn.GetName()] = fn.GetDescription()
+	}
+
+	for name, fact := range want {
+		assert.Contains(t, listed[name], fact,
+			"%s's declaration does not describe it through ProfileFunctions", name)
+		assert.Equal(t, listed[name], cataloged[name],
+			"%s's description does not reach the catalog GetCatalog returns", name)
+	}
+
+	// The negative direction: a function whose declaration documents nothing
+	// is listed with no description rather than an invented one.
+	assert.Empty(t, listed["upperAscii"],
+		"upperAscii's declaration carries no documentation, so nothing should describe it")
+}

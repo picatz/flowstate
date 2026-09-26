@@ -78,14 +78,35 @@ func TestApprovalGateHelpExamplesActuallyRun(t *testing.T) {
 func approvalGateExampleLine(t *testing.T, example string) string {
 	t.Helper()
 
-	for line := range strings.SplitSeq(example, "\n") {
-		trimmed := strings.TrimSpace(line)
+	for _, trimmed := range exampleCommands(example) {
 		if strings.Contains(trimmed, "examples/expense-approval/workflow.yaml") {
 			return trimmed
 		}
 	}
 	t.Fatalf("no line in this Example: runs examples/expense-approval/workflow.yaml:\n%s", example)
 	return ""
+}
+
+// exampleCommands is an Example's lines with each backslash continuation joined
+// onto the line it continues, so a command split to fit a terminal is run as the
+// one command a shell would read.
+func exampleCommands(example string) []string {
+	var commands []string
+	var cur strings.Builder
+	for line := range strings.SplitSeq(example, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if body, continued := strings.CutSuffix(trimmed, `\`); continued {
+			cur.WriteString(body)
+			continue
+		}
+		cur.WriteString(trimmed)
+		commands = append(commands, cur.String())
+		cur.Reset()
+	}
+	if cur.Len() > 0 {
+		commands = append(commands, cur.String())
+	}
+	return commands
 }
 
 // splitShellish is a minimal, single-quote-aware word splitter — enough for
@@ -142,8 +163,7 @@ func TestPolicedGateExampleRehearsesLocally(t *testing.T) {
 	cmd := findCommand(t, "run local")
 
 	var line string
-	for candidate := range strings.SplitSeq(cmd.Example, "\n") {
-		trimmed := strings.TrimSpace(candidate)
+	for _, trimmed := range exampleCommands(cmd.Example) {
 		if strings.Contains(trimmed, "examples/approval-gate/workflow.yaml") {
 			line = trimmed
 			break

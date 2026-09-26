@@ -69,14 +69,10 @@ func addTLSFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("tls-terminated-upstream",
 		os.Getenv("FLOWSTATE_TLS_TERMINATED_UPSTREAM") != "",
 		"allow the public listener to serve plain HTTP on a non-loopback address with no "+
-			"certificate configured (overrides FLOWSTATE_TLS_TERMINATED_UPSTREAM). Set this "+
-			"when, and only when, something in front of this process already terminates TLS or "+
-			"otherwise bounds who can reach this address — a reverse proxy, a Kubernetes Ingress, "+
-			"a load balancer, a container's published-port binding — so the plaintext this "+
-			"process serves never actually reaches an open network. Do NOT set it to ship "+
-			"plaintext to the internet: if nothing in front of this process terminates TLS, "+
-			"configure --tls-cert-file/--tls-key-file instead, or bind loopback for local "+
-			"development")
+			"certificate configured (default from FLOWSTATE_TLS_TERMINATED_UPSTREAM). Set it only when something in front of this process "+
+			"terminates TLS or bounds who can reach it (a reverse proxy, an Ingress, a load "+
+			"balancer); otherwise configure `--tls-cert-file` and `--tls-key-file`, or bind "+
+			"loopback for local development")
 }
 
 // tlsFlags is what an operator asked for, read once before anything binds.

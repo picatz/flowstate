@@ -28,7 +28,7 @@ const (
 	// way — the ceiling is a guess about how slow a runner may be, and the
 	// answer when it is wrong is a red test rather than a slow one.
 	//
-	// [synctest.Wait] is the replacement, and it is not a faster poll: it
+	// synctest.Wait is the replacement, and it is not a faster poll: it
 	// returns when every goroutine in the bubble is durably blocked, which is
 	// a fact the runtime knows rather than a duration anyone has to choose.
 	// The assertion then runs once, and says what was wrong rather than
@@ -83,13 +83,13 @@ var pollNames = []string{
 // It parses rather than builds, for the reason tools/vacuity does: a plugin
 // module's tests are outside this module's build graph, and a syntax tree
 // needs no build. The cost is that only a wait *lexically* inside the function
-// literal handed to [synctest.Test] is known to be bubbled; one in a helper the
+// literal handed to synctest.Test is known to be bubbled; one in a helper the
 // bubble calls is counted, and belongs in the table with that said beside it.
 //
 // Lexical is not the same as "runs there", and the gap has both signs. A helper
 // the bubble calls is counted though it is bubbled at runtime — over-counting,
 // and the table says so per entry. A closure written inside the bubble but
-// hoisted out and invoked after [synctest.Test] returns is *not* counted though
+// hoisted out and invoked after synctest.Test returns is *not* counted though
 // it spends real time. Deciding that would take escape analysis rather than a
 // parse, and the alternative — counting every wait in a nested closure — would
 // mis-flag `go func() { time.Sleep(d) }()` inside a bubble, which is the

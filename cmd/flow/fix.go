@@ -55,7 +55,7 @@ func newFixCommand() *cobra.Command {
 	var opts fixOptions
 
 	cmd := &cobra.Command{
-		Use:   "fix [path...]",
+		Use:   "fix <path>...",
 		Short: "Rewrite Flowfiles into the current edition",
 		Long: "Rewrite Flowfiles written in an older edition of the language into the current one, " +
 			"preserving comments, formatting, and everything the change does not touch. " +
@@ -72,7 +72,7 @@ func newFixCommand() *cobra.Command {
 			"instead of scrapes: what changed or would change, what was refused, and what pins the " +
 			"run invalidated, per file. CI that wants structured data rather than stderr text asks " +
 			"for one of those.\n\n" +
-			"--plugin-dir launches the plugins there first, and a file whose steps name a " +
+			"`--plugin-dir` launches the plugins there first, and a file whose steps name a " +
 			"plugin's tasks wants it: what this rewriter may do to a step depends on what the " +
 			"task declares — which of its inputs it evaluates itself, and whether it shapes its " +
 			"own outputs — and for a plugin's task those facts arrive with the plugin. Without " +

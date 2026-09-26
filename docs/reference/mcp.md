@@ -51,33 +51,23 @@ contracts and do not advertise a schema-owned result message.
 
 Validate checks Flowfiles and returns their diagnostics, executing nothing.
 
-`flow validate` does this offline and must keep doing so: a validator that needs a server is one that stops working on an aeroplane, and invariant 8 says a first run needs no infrastructure. This is not a replacement for that. It is the same check for a caller who has no filesystem to point the command at (a browser, a CI service, an agent writing a file it has not saved), and it answers with the very same `ValidationReport` message the command prints, from the very same code, so there is no second validator to disagree with the first.
-
-Pure by construction, which is what makes it the useful one to hand an agent: it reads nothing, writes nothing, and starts nothing, so it can be looped on unattended in a way none of the verbs above can.
-
-Authenticated like everything else here, because checking a file is work somebody's CPU does. Bounded like everything else that takes input somebody else chose: see ValidateRequest.
+The same checks and the same `ValidationReport` as `flow validate`: one entry per file, clean files included. Send 1 to 64 files; each file's `source` is its bytes, at most 1 MiB, base64-encoded in JSON. It reads, writes and starts nothing, so it is safe to call repeatedly while editing.
 
 Answers locally, in this process. No server and no Temporal needed.
 
 ## `flowstate_compile`
 
-Compile turns Flowfile source into the specification Run takes, executing nothing.
+Compile turns one Flowfile into the workflow specification that `Run` takes, executing nothing.
 
-It exists because Validate alone left a caller one step short: an agent could check a file and could submit a compiled specification, and nothing on the wire connected the two, because the compiler lived only in the CLI, so a caller with no `flow` binary could author a correct file it had no way to run. Same terms as Validate: the same compiler the CLI uses, pure, bounded by the schema, authenticated like everything else.
-
-A file that does not compile answers with its diagnostics rather than an RPC error, because "your file has a problem at line 12" is an answer, not a failure to answer.
+`file.source` is the Flowfile's bytes, at most 1 MiB, base64-encoded in JSON. A file that does not compile is not an RPC error: the answer carries its diagnostics in `report` and no `workflow`. On success, pass `workflow` unchanged to `Run` or `CreateSchedule`. The same compiler as the CLI.
 
 Answers locally, in this process. No server and no Temporal needed.
 
 ## `flowstate_get_catalog`
 
-GetCatalog returns what this deployment can execute: every task with its typed inputs and outputs, and every CEL function an expression may call.
+GetCatalog returns what this deployment can execute: every task with its typed inputs and outputs, and the CEL functions its language profile's extension libraries add.
 
-Read it before writing a workflow. What it lists is the whole of what a step may name and what an expression may call, so a file checked against it is a file this deployment can actually run.
-
-The registry is the single source of truth for capability, and until this existed the only way to ask it was to run `flow tasks` on a machine with the same build, which is not the same question. A worker that loaded plugins can run tasks this binary has never heard of, so "what tasks exist" is a property of a deployment, and a caller writing a workflow for it needs the deployment's answer rather than their laptop's.
-
-`TaskCatalog`'s own comment anticipated this RPC, and returning that message unchanged is the point: an editor, an agent, a documentation generator and `flow tasks --output json` all read one shape.
+Read it before writing a workflow. A step may name only a task listed here, including tasks from plugins the deployment loaded, so the answer can differ from a local `flow tasks`. Expressions may call the listed functions plus CEL's standard functions and macros (`size`, `has`, `filter`, and so on) and the duration constructors (`days(3)`), which are not listed.
 
 Without --address (and without FLOWSTATE_ADDRESS) this answers locally: this binary's own build (its task registry and any plugins this process started), no server or Temporal needed. With --address or FLOWSTATE_ADDRESS explicitly naming a deployment, this dispatches to that deployment's own GetCatalog instead — the deployment is what will actually run a submitted workflow, and may have plugins or a version this binary does not. If that deployment cannot be reached, the call is refused rather than silently answering from this binary's build.
 
@@ -85,9 +75,9 @@ Without --address (and without FLOWSTATE_ADDRESS) this answers locally: this bin
 
 Run submits a compiled workflow specification and starts it running durably.
 
-It answers with the ids to watch the run by, and it does not wait. A workload may take a week; a caller made to hold a connection open for one is a caller that cannot survive its own restart. Follow the run with `Get`, using the ids this returns.
+It answers with the ids to follow the run by and does not wait for the run to finish; a workload may take a week. Follow the run with `Get`, using the `workflow_id` this returns.
 
-What it takes is the specification `Compile` produces, not Flowfile source. The path from a file somebody wrote is therefore `Validate`, `Compile`, Run, and each step answers with something a caller can act on: diagnostics, then a specification, then a running workload.
+`workflow` is the specification `Compile` returns, not Flowfile source, so the path from a file is `Validate`, `Compile`, then Run. `inputs` are literal values for the workflow's declared inputs. Set `request_id` when a submission may be retried, so a retry cannot start the workload twice.
 
 ## `flowstate_get`
 
@@ -105,19 +95,17 @@ Over stdio the signal is delivered as this process's own identity, not as the id
 
 GetTimeline reports what a run did, event by event, read back from its own durable history.
 
-`Get` answers what a run *is* — its status, where it has reached, what is mid-retry, what it is parked on. None of that survives the moment somebody most wants it: a run that has already failed has no now left to describe, and "which step, on which attempt, with what sentence, and what was it waiting for before that" is a question about the past. Locally the debugger answers it. For a run on a worker somewhere else this is the answer, and before it there was none through this service at all — an operator had to leave the tenancy boundary and ask the temporal CLI, exactly as they did for `GetResponse.pending_activities` before that field existed.
+`Get` answers what a run is now; this answers what happened, which is what to read for a run that has already failed: which step, on which attempt, with what error, and what it was waiting for before that. It starts, signals and changes nothing. Authorized like every other verb addressing a run.
 
-Read-only in the strongest sense available: it starts nothing, signals nothing and changes nothing, so it is the one verb about a live workload that an agent can be pointed at unattended, as `Validate` is for a file.
-
-Authorized like every other verb addressing a run, and refused the same way — see `GetRequest`. A history is the whole account of a workload, so a timeline readable by whoever guessed an id would be a larger disclosure than `Get`'s, not a smaller one.
-
-Bounded, and it says when a bound was reached rather than letting a short answer read as a complete one — see `GetTimelineResponse.truncated`.
+`max_entries` defaults to 500 and is at most 5000. When `truncated` is set, call again with `run_id` set to the answer's `run_id` and `after_event_id` set to the last entry's `event_id`; repeat until `truncated` is false. A workload that continued as new has one timeline per segment: start at `first_run_id` and follow `next_run_id`, or walk back with `previous_run_id`.
 
 ## `flowstate_signal`
 
 Signal delivers a signal to a run waiting for one, which is how a human approval reaches a workload.
 
-This addresses a durable run. A local run is a process with nobody to signal it once it has started, so `flow run local` answers its gates from flags instead. What the two drivers share is the payload and everything downstream of it: the same signal name, the same outputs, the same expressions reading them. That is the part that has to match for a local run to tell an author what production will do.
+`name` is the signal name the waiting `wait_for_signal:` step declared, which `Get` reports for each open gate. `payload` is a map of named values the waiting step reads as `${steps.<id>.payload.<key>}`; an approval is typically `approved` set to a boolean literal. Leave `run_id` unset so the signal reaches whichever run of the workload is current.
+
+This addresses a durable run. `flow run local` answers its gates from flags instead, with the same signal names and payload shape.
 
 `SignalResponse` is empty: it says the signal was accepted, not what the run did with it. Call `Get` afterward to see whether a waiting step consumed it.
 
@@ -125,25 +113,33 @@ This addresses a durable run. A local run is a process with nobody to signal it 
 
 SignalWithStart delivers a signal to the entity holding a business key, an order id or a subscription id, creating that entity if this is the first event for the key.
 
-Use this rather than `Run` whenever the key, and not a run id, is what a caller has. It is atomic, so two callers racing on the same key produce one entity rather than two. The entity is created from `SignalWithStartRequest.workflow` and `SignalWithStartRequest.inputs` when nothing is running under `SignalWithStartRequest.entity_key` yet. See `SignalWithStartRequest` for the two authorization questions this decides separately and the race this closes that Run-then-Signal cannot.
+Use this rather than `Run` whenever the key, and not a run id, is what a caller has. It is atomic, so two callers racing on the same key produce one entity rather than two. The entity is created from `workflow` and `inputs` when nothing is running under `entity_key` yet; otherwise those are ignored and only the signal is delivered. `created` in the answer says which happened.
 
 ## `flowstate_list`
 
 List returns a page of the runs belonging to the caller's tenant.
 
-The filtering is done here rather than by Temporal, and that follows from how Run records a tenant: as a memo, because a memo needs no cluster-side registration and a first run therefore needs nothing but `temporal server start-dev`. Temporal cannot query a memo. A search attribute could be queried, but it would make listing your own runs fail until an operator had registered the attribute, and a basic verb that does not work out of the box is worse than one that scans.
+`filter` is an optional CEL expression over each run's `workflow_id`, `run_id`, `status` (short names such as `FAILED`), `name`, `labels`, `starter`, `start_time`, `close_time`, `finished` and `worker_version`, such as `status == "FAILED" && name == "nightly-etl"`. `page_size` defaults to 50 and is at most 1000.
 
-So the scan is bounded instead, and the bound is on how many executions the server reads rather than on how many it returns: a caller asking for ten runs in a namespace holding a hundred thousand must not be able to make the server walk all of them. See ListResponse.next_page_token for what that means for a caller: a short or empty page is not the end of the listing.
+Keep calling with `page_token` set to the previous `next_page_token` until `next_page_token` comes back empty. A short or even empty page with a token set is not the end of the listing.
+
+# Why pages can be short
+
+A run's tenant is recorded as a memo, which works against a stock `temporal server start-dev` with nothing registered but cannot be queried by Temporal. So the server reads a bounded number of runs per call and keeps the caller's, and a caller cannot make one call walk a whole namespace.
 
 ## `flowstate_cancel`
 
 Cancel asks a run to stop and lets it clean up on the way out.
 
+Prefer Cancel to `Terminate`: a cancelled run still releases what it holds, rolls back, or reports that it gave up. A run blocked on something that never returns may not stop; that is when to terminate it.
+
 `CancelResponse` is empty: it says the stop request was accepted, not that the run has stopped. Call `Get` afterward to see the run's final status.
 
 ## `flowstate_terminate`
 
-Terminate stops a run immediately, running none of its cleanup. Prefer Cancel; see CancelRequest for when this is the right answer anyway.
+Terminate stops a run immediately, running none of its cleanup.
+
+Use it only when a run must stop now or `Cancel` has not stopped it: nothing the workload would do on the way out is done, so any resource it was responsible for releasing is leaked. Give a `reason`; it is the only record of why the run stopped.
 
 `TerminateResponse` is empty: the run is already stopped by the time this returns, so a follow-up call to `Get` confirms status rather than awaiting it.
 
@@ -151,17 +147,17 @@ Terminate stops a run immediately, running none of its cleanup. Prefer Cancel; s
 
 CreateSchedule arranges for a workflow to run on a cadence.
 
-The act a `triggers:` block does not perform. A file may declare that it is meant to run nightly, and that declaration does nothing until this is called. A file that starts running on its own when it merges is a surprise, and one whose first firing is indistinguishable from somebody having meant it.
+The cadence is the workflow's own `triggers.schedule` block (`cron:`, `every:` or `calendars:`); a workflow without one is refused. Declaring it in a Flowfile does nothing until this is called. `workflow` is a compiled specification, as for `Run`.
 
-Everything that can be refused is refused here, where a person is present: the specification is validated and size-checked exactly as `Run` does it, the arguments are bound against the workflow's declarations through the very same `BindRunInputs`, and the cadence must say when it fires. What fires at three in the morning has already been checked.
+Everything is checked now, while the caller is present: the specification is validated and size-checked as Run does, and `inputs` are checked against the workflow's declared inputs and stored for every firing.
 
-Create it paused when the cadence is the part in doubt. A paused schedule reports the times it would fire without taking one of them, which is the cheapest way to find out that "every Monday" meant something other than what was intended.
+Create it paused when the cadence is the part in doubt: a paused schedule reports the times it would fire without taking any of them.
 
 ## `flowstate_list_schedules`
 
 ListSchedules returns the schedules belonging to the caller's tenant, each with whether it is live and when it next fires.
 
-A bounded scan filtered by the tenant recorded on each schedule, for the reason `List` scans runs: the tenant is a memo, which Temporal cannot query, and a memo is what keeps this working against `temporal server start-dev` with nothing registered. Unlike runs there is no paging; see `ListSchedulesRequest` for why, and for what the response says instead.
+Not paged. The scan is bounded, and `truncated` in the answer says when the bound stopped it with schedules unexamined.
 
 ## `flowstate_describe_schedule`
 
@@ -177,23 +173,21 @@ Runs it already started are unaffected. They are ordinary workloads, and stoppin
 
 PauseSchedule stops a schedule firing without removing it, which is what an incident wants: the arrangement is still there, still reviewable, and not running.
 
-The note it records is what the next person to find it paused will read, so it is worth writing for them rather than for the person pausing it.
+The `note` it records is what the next person to find it paused will read.
 
 ## `flowstate_resume_schedule`
 
 ResumeSchedule lets a paused schedule fire again.
 
-Firings missed while it was paused are not made up. Resuming is the schedule starting from now, not the schedule catching up, which is the behavior an incident wants: an arrangement paused for six hours must not answer being resumed with six hours of backlog.
+Firings missed while it was paused are not made up: resuming starts the schedule from now.
 
 ## `flowstate_trigger_schedule`
 
 TriggerSchedule fires a schedule now, without waiting for its cadence.
 
-The verb that makes a schedule testable. Creating one and waiting until Tuesday to find out whether it works is not a development loop, and the alternative, running the workflow by hand, proves the workflow rather than the schedule: it does not exercise the arguments the schedule stored, the tenant it records on the runs it starts, or the queue it puts them on.
+It uses the schedule's stored arguments, tenant and queue, so it tests the schedule rather than only the workflow. It fires even a paused schedule: create paused, trigger once to see what happens, then resume.
 
-It fires even a paused schedule, which is Temporal's behavior and the useful one: create paused, trigger once to see what happens, then resume.
-
-It answers with no run id. The cluster takes the action after answering, so what the firing started is read back with `DescribeSchedule` rather than returned here.
+It answers with no run id. The cluster takes the action after answering, so what the firing started is read back with `DescribeSchedule`.
 
 ## `flowstate_run_local`
 

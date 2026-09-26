@@ -8,7 +8,7 @@ import (
 // Clock is a clock a test moves by hand.
 //
 // Token lifetimes are the part of an authentication policy that a test cannot
-// wait for: a ten minute maximum token age is ten minutes. Pass a Clock's [Now]
+// wait for: a ten minute maximum token age is ten minutes. Pass a Clock's [Clock.Now]
 // to both the issuer ([WithClock]) and the verifier under test, and the same
 // question becomes a call to [Clock.Advance].
 //

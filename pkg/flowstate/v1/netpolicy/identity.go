@@ -7,7 +7,7 @@ import "context"
 // It is the same identity the other two operator-authored policy surfaces reason
 // over — secret access (`auth`'s `workload`) and task shape (`v1`'s task-policy
 // `identity`) — so a deployment can gate all three on one notion of who is
-// running. The value comes from the run's single attested [WorkloadIdentity]; a
+// running. The value comes from the run's single attested WorkloadIdentity; a
 // caller renders it into this shape from that one source rather than deriving it a
 // second way, which is what keeps the three surfaces from disagreeing about who is
 // calling. netpolicy declares no dependency on the identity's origin, so the
@@ -58,7 +58,7 @@ type identityKey struct{}
 // evaluated against the run's attested caller.
 //
 // It is the one seam by which identity enters this package: the value is rendered
-// from the run's [WorkloadIdentity] by the caller, keeping this package free of any
+// from the run's WorkloadIdentity by the caller, keeping this package free of any
 // dependency on how identity is established.
 func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, identityKey{}, id)

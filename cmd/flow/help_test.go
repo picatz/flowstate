@@ -65,8 +65,33 @@ func TestTheUsageLineIsInTheOrderSomebodyTypes(t *testing.T) {
 	assert.Contains(t, helpOf(t), "flow [command] [flags]",
 		"the root usage line puts the flags before the command")
 
-	assert.Contains(t, helpOf(t, "get"), "flow get [workflow-id] [flags]",
+	assert.Contains(t, helpOf(t, "get"), "flow get <workflow-id> [flags]",
 		"a subcommand's usage line is not what somebody types")
+}
+
+// TestARequiredArgumentIsNotShownAsOptional walks the tree and holds each usage
+// line to the convention it draws arguments in: `<name>` is required,
+// `<name>...` is one or more, and brackets mean optional. A command that
+// refuses to run with no arguments and still shows `[name]` tells a reader
+// they may leave out the one thing it cannot do without.
+func TestARequiredArgumentIsNotShownAsOptional(t *testing.T) {
+	walkCommands(t, newRootCommand(), func(t *testing.T, cmd *cobra.Command) {
+		_, args, found := strings.Cut(cmd.Use, " ")
+		if !found || cmd.Args == nil {
+			return
+		}
+
+		if cmd.Args(cmd, nil) != nil {
+			assert.False(t, strings.HasPrefix(args, "["),
+				"%s: refuses to run with no arguments, but its usage %q shows the first as optional; "+
+					"write a required argument as <name> and one or more as <name>...",
+				cmd.CommandPath(), cmd.Use)
+		} else {
+			assert.False(t, strings.HasPrefix(args, "<"),
+				"%s: runs with no arguments, but its usage %q shows the first as required",
+				cmd.CommandPath(), cmd.Use)
+		}
+	})
 }
 
 // TestEveryHeadingSurvivesLosingItsColour is the package's own rule, applied to the
@@ -149,12 +174,27 @@ func TestExamplesKeepTheirParagraphs(t *testing.T) {
 		"example paragraphs are either run together or spaced out as the source happened to be")
 }
 
+// TestAContinuedExampleStaysOneCommand pins the indent under a backslash
+// continuation, which is what a long invocation is split with to fit a
+// terminal: flush left, its second half reads as a separate command.
+func TestAContinuedExampleStaysOneCommand(t *testing.T) {
+	t.Parallel()
+
+	c := &cobra.Command{
+		Use:     "x",
+		Example: "# long:\nx one \\\n\t--flag value\n\n# short:\nx two",
+	}
+
+	assert.Equal(t, []string{"# long:", `x one \`, "  --flag value", "", "# short:", "x two"}, exampleLines(c),
+		"a continuation line lost its indent under the command it continues")
+}
+
 // TestTheHelpPageHasOneNameColumn keeps the sections reading as one page.
 //
 // Each list is the same kind of thing — a name and what it does — and aligning them
 // separately puts the descriptions at three different depths, which reads as three
 // unrelated tables rather than one page. `lsp` is the shortest command name and
-// `signal [workflow-id] [signal-name]` the longest, so if the columns are computed
+// `signal <workflow-id> <signal-name>` the longest, so if the columns are computed
 // per section these two land in different places.
 func TestTheHelpPageHasOneNameColumn(t *testing.T) {
 	t.Parallel()

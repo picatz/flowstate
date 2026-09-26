@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Author, validate, and rehearse reliable workflows on your machine—then submit
-the same workflow for governed, durable execution on Temporal.**
+the same workflow for governed, durable execution on [Temporal].**
 
 Flowstate is a durable, policy-governed workload engine. It is not a CI system.
 The target is any workload that must finish correctly despite crashes, network
@@ -22,9 +22,9 @@ domain work; Temporal supplies durable execution. Flowstate owns the declarative
 coordination between them, so work can start as one developer's local automation
 and move to a team-operated durable run without a second workflow definition.
 
-The mechanism is a readable `Flowfile`: YAML for structure and cost-bounded CEL
+The mechanism is a readable `Flowfile`: [YAML] for structure and cost-bounded [CEL]
 for data flow and policy. Flowstate validates and compiles it into a typed,
-versioned Protobuf contract. The local and Temporal drivers execute that same
+versioned [Protobuf] contract. The local and Temporal drivers execute that same
 contract through the same step executor; Temporal adds persistence, recovery,
 durable waits, and signals.
 
@@ -88,11 +88,8 @@ Save it as `workflow.yaml`, then:
 ```console
 $ flow validate workflow.yaml
 $ flow compile workflow.yaml | jq -r '.steps[].id'
-$ flow run local workflow.yaml -o json | jq .runOutputs
-{
-  "deployed": 3,
-  "targets": ["api", "worker", "scheduler"]
-}
+$ flow run local workflow.yaml -o json | jq -c .runOutputs
+{"deployed":3,"targets":["api","worker","scheduler"]}
 ```
 
 `inputs.targets` is the run's typed argument. `plan` and `deploy` are stable step
@@ -295,8 +292,8 @@ $ go run ./tools/gate   # checks reachable from the current diff
 $ make check            # full CI-parity suite
 ```
 
-Read [CLAUDE.md](CLAUDE.md) and the [architecture invariants](docs/ARCHITECTURE.md#invariants)
-before changing the engine.
+Read the [architecture invariants](docs/ARCHITECTURE.md#invariants) before changing
+the engine.
 
 ## License
 

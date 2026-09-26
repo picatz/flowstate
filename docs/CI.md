@@ -4,6 +4,10 @@ This document exists because half of the design lives in repository *settings*
 rather than in files, and a design half of which nobody can read is a design
 that gets undone by the next person to look at the settings page.
 
+In short: every change runs one diff-scoped computation, `go run ./tools/gate`, at
+[three tiers](#one-computation-three-tiers). The rest of this page is why, and the
+repository settings it depends on.
+
 ## The problem, observed rather than theorised
 
 On 2026-08-15, pull request #659 changed one markdown file — `CLAUDE.md` — and

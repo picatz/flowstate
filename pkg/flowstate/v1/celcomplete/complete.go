@@ -28,8 +28,8 @@ const MaxCandidates = 512
 // terminal.
 //
 // Deliberately this package's own small vocabulary rather than the protocol's
-// [lsp.CompletionItemKind], for the reason [flowdebug.Tone] is not
-// [flowtest.TranscriptTone]: the protocol has twenty-five members, twenty-one
+// lsp.CompletionItemKind, for the reason flowdebug.Tone is not
+// flowtest.TranscriptTone: the protocol has twenty-five members, twenty-one
 // of which no expression can ever be, and a shared type would invite a caller
 // to reach for one.
 type Kind int

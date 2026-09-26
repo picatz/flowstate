@@ -41,7 +41,7 @@ import (
 // newTestCommand builds the `flow test` command.
 func newTestCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "test [path...]",
+		Use:   "test <path>...",
 		Short: "Run a workflow's own *.test.yaml files",
 		Long: "Discover and run *.test.yaml files, each declaring a workflow, arguments to run it " +
 			"with, task responses to stub in place of the real registry, scripted signals, and what " +
