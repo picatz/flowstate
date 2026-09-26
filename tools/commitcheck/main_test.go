@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,15 +96,20 @@ func TestTheEventPayloadIsReadAsAPullRequestBody(t *testing.T) {
 		"and the same text in a commit message still is, so the surface is what decides")
 }
 
-// TestARatchetDateMakesTheCheckStrictOnItsOwn pins both sides of
-// [ratchetDate]: nothing in the workflow has to flip a flag, because the
-// comparison itself is what #2024 found missing.
-func TestARatchetDateMakesTheCheckStrictOnItsOwn(t *testing.T) {
+// TestTheExitDecisionChecksBothStrictAndFindings pins main's real
+// exit-status choice directly: a test that only exercised report or the
+// flag's default would stay green if a future edit dropped either half of
+// [decision]'s condition, and only fail once CI happened to run a case that
+// combination mishandled (Copilot, #2085).
+func TestTheExitDecisionChecksBothStrictAndFindings(t *testing.T) {
 	t.Parallel()
 
-	assert.False(t, ratchetPassed(ratchetDate.Add(-time.Second)), "a moment before the ratchet date is still warning-only")
-	assert.True(t, ratchetPassed(ratchetDate), "the ratchet date itself is strict")
-	assert.True(t, ratchetPassed(ratchetDate.Add(time.Second)), "a moment after the ratchet date is strict")
+	finding := []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "x", Skill: "s"}}
+
+	assert.Equal(t, 0, decision(false, nil), "not strict, clean: never a failure")
+	assert.Equal(t, 0, decision(false, finding), "not strict: a finding still exits 0")
+	assert.Equal(t, 0, decision(true, nil), "strict but clean: exits 0")
+	assert.Equal(t, 1, decision(true, finding), "strict and dirty: the one case that must fail")
 }
 
 // TestADependabotPullRequestIsExempt pins the one exemption #2024 added:

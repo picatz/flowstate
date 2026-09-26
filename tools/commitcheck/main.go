@@ -7,14 +7,13 @@
 //
 // Under GitHub Actions each finding is a `::warning` annotation naming the
 // rule and the skill that explains it; elsewhere it is a line on stderr. The
-// exit status is zero unless a run is strict and reports a finding: with
-// -strict, or on its own once [ratchetDate] has passed. The date lives here,
-// beside the rules it ratchets, rather than as a flag someone would have had
-// to add to .github/workflows/commitcheck.yml on the day — that workflow
-// calls this command with no flags and stays correct as the date moves
-// (#2024). commitcheck is its own workflow rather than a step of ci.yml's
-// plan job, because it must re-run on an edited pull request, which the plan
-// job does not.
+// exit status is zero unless -strict is given and there is a finding: a bare
+// run, of the kind above, only ever reports. commitcheck.yml is what makes
+// the check enforced, by passing -strict in its one step (#2024); it is its
+// own workflow rather than a step of ci.yml's plan job, because it must
+// re-run on an edited pull request, which the plan job does not. #1728's
+// ratchet — this check ran warning-only everywhere, including in CI, until
+// 2026-09-21 — is complete: nothing dated is left to flip.
 //
 // A pull request opened by [dependabotActor] is exempt from every rule: its
 // title and body are Dependabot's own template, not text its nominal author
@@ -28,23 +27,9 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/picatz/flowstate/internal/commitcheck"
 )
-
-// ratchetDate is when this check starts failing a strict run on its own,
-// without -strict. #1728 set the ratchet warning-only so the mechanism was
-// visible before it could reject anything; #2024 moved the flip from a
-// workflow edit nobody made into this comparison, which cannot be forgotten
-// the way an edit can.
-var ratchetDate = time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
-
-// ratchetPassed is whether now is on or past [ratchetDate], pulled out of
-// main so a test can pin both sides of the date without waiting for it.
-func ratchetPassed(now time.Time) bool {
-	return !now.Before(ratchetDate)
-}
 
 // dependabotActor is the one automated pull request author this repository's
 // dependabot.yml configures (#2024). Named rather than matched by a `[bot]`
@@ -53,11 +38,24 @@ func ratchetPassed(now time.Time) bool {
 // specific known author, not a pattern any account could satisfy.
 const dependabotActor = "dependabot[bot]"
 
-// exempt is whether where's message owes these conventions nothing: only a
-// pull request opened by [dependabotActor], whose title and body Dependabot
+// exempt is whether the message owes these conventions nothing: only a pull
+// request opened by [dependabotActor], whose title and body Dependabot
 // generates and its human maintainer never chooses.
 func exempt(where commitcheck.Surface, actor string) bool {
 	return where == commitcheck.SurfacePullRequest && actor == dependabotActor
+}
+
+// decision is the exit status a finding earns: 1 when the run is strict and
+// there is one, 0 otherwise. Pulled out of main, and the only place that
+// reads -strict, so a test can call it directly rather than forking a
+// process to observe os.Exit — and so it fails at once if a future edit
+// stops checking either half of the condition, not only once CI happens to
+// run a case that combination would mishandle.
+func decision(strict bool, findings []commitcheck.Finding) int {
+	if strict && len(findings) > 0 {
+		return 1
+	}
+	return 0
 }
 
 func main() {
@@ -85,9 +83,7 @@ func main() {
 	findings := commitcheck.Check(subject, body, where)
 	report(os.Stderr, findings, os.Getenv("GITHUB_ACTIONS") == "true")
 
-	if (*strict || ratchetPassed(time.Now())) && len(findings) > 0 {
-		os.Exit(1)
-	}
+	os.Exit(decision(*strict, findings))
 }
 
 // message picks the subject and body from wherever this invocation carries

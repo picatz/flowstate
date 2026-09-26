@@ -121,11 +121,11 @@ func main() {
 	// The squash message the merge would write, held to the conventions
 	// before the merge rather than found wanting in `git log` afterwards
 	// (#1728). A note rather than a denial — this hook never blocks a merge
-	// on the conventions alone, independent of how strict
-	// tools/commitcheck's own ratchet is (#2024) — and folded into whichever
-	// single document this hook ends with: a PreToolUse hook answers with
-	// one JSON object, so a warning written here and a denial written below
-	// would be two, and the second would be the one ignored (Codex, #1848).
+	// on the conventions alone, independent of whether tools/commitcheck's
+	// own CLI runs -strict (#2024) — and folded into whichever single
+	// document this hook ends with: a PreToolUse hook answers with one JSON
+	// object, so a warning written here and a denial written below would be
+	// two, and the second would be the one ignored (Codex, #1848).
 	conventions := conventionNote(in, owner, repo, number)
 
 	tokCtx, tokCancel := context.WithTimeout(context.Background(), tokenLookupTimeout)
