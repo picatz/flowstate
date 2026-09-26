@@ -302,6 +302,142 @@ tests:
 		"a 5h sleep with a signal landing inside it took %s", elapsed)
 }
 
+// TestTwoSignalsScriptedForTheSameMomentDeliverInDeclarationOrder pins #2103,
+// found by the weekly seeded schedule sweep over examples/ (`flow test --seed
+// 8000016 -- examples/webhook-approval-bridge/workflow.test.yaml`).
+//
+// Two scripts naming the same `at` — most commonly the shared default, no
+// `at:` at all — are each their own goroutine in [scriptSignals], and the
+// clock only orders *distinct* deadlines: it is silent about which of two
+// ties reaches [v1.LocalSignals.DeliverFrom] first. Nothing here is the
+// seeded scheduler's doing — the local driver never reaches a `parallel:` or
+// `async:` junction running this workflow, so it makes zero scheduling
+// decisions either way — this was a genuine, unsynchronized race between two
+// real goroutines. Left alone, a click scripted for the loop's *second* gate
+// could answer its *first*, and the `final` a bare `payload.?final` defaults
+// to then ends the loop one iteration early: exactly the shape that dropped
+// an approval in the corpus example this pins.
+//
+// One pass proves nothing either way, so this repeats: an unfixed build
+// fails within a handful of iterations under the default (multi-core)
+// GOMAXPROCS, and a fixed one — which chains ties to declaration order —
+// never does.
+func TestTwoSignalsScriptedForTheSameMomentDeliverInDeclarationOrder(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: tied-signals
+steps:
+  - id: rollout
+    loop:
+      until: ${steps.stage.final}
+      max_iterations: 3
+      steps:
+        - id: stage
+          wait_for_signal:
+            name: go
+            timeout: 1h
+            outputs:
+              final: ${payload.?final.orValue(true)}
+outputs:
+  attempted:
+    value: ${steps.rollout.results.size()}
+`)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: two clicks scripted with no at answer two stages, in order
+    workflow: ./workflow.yaml
+    signals:
+      # Declared first, and saying explicitly that a second stage follows —
+      # the one this case means to answer the loop's first gate.
+      - name: go
+        payload:
+          final: false
+      # Declared second, with no at: either — a tie with the signal above,
+      # and no final: at all, so a wait that reads this one first sees the
+      # loop's own default and stops after a single stage.
+      - name: go
+    expect:
+      outputs:
+        attempted: 2
+`)
+
+	const iterations = 200
+	for i := range iterations {
+		report := flowtest.RunFile(dir + "/x.test.yaml")
+		require.Empty(t, report.GetRefused())
+		require.Len(t, report.GetCases(), 1)
+		c := report.GetCases()[0]
+		require.True(t, c.GetPassed(),
+			"iteration %d: the signal declared first did not answer the loop's first gate: %v / %v",
+			i, c.GetError(), c.GetFailures())
+	}
+}
+
+// TestANegativeAtTiesWithTheSharedEmptyDefault is the other half of #2103: a
+// negative `at` — accepted since before the tie chain existed, and delivered
+// at once by [v1.VirtualClock.After] exactly like zero — has to land in the
+// *same* tie group as a script that names no `at` at all, not its own,
+// unmatched one. Keying the chain on the raw, unclamped duration passed this
+// review's own fixture: "-1s" and "" produced two different map keys, so
+// neither chained the other and the two raced exactly as they did before
+// #2103's fix, just one iteration in a hundred rather than one in five.
+func TestANegativeAtTiesWithTheSharedEmptyDefault(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: tied-signals-negative
+steps:
+  - id: rollout
+    loop:
+      until: ${steps.stage.final}
+      max_iterations: 3
+      steps:
+        - id: stage
+          wait_for_signal:
+            name: go
+            timeout: 1h
+            outputs:
+              final: ${payload.?final.orValue(true)}
+outputs:
+  attempted:
+    value: ${steps.rollout.results.size()}
+`)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: a negative at ties with the shared empty default, in order
+    workflow: ./workflow.yaml
+    signals:
+      # Declared first, at a negative offset — still "immediately", and
+      # saying explicitly that a second stage follows.
+      - name: go
+        at: "-1s"
+        payload:
+          final: false
+      # Declared second, with no at: at all — a tie with the signal above
+      # once both clamp to the epoch, and no final: either.
+      - name: go
+    expect:
+      outputs:
+        attempted: 2
+`)
+
+	const iterations = 200
+	for i := range iterations {
+		report := flowtest.RunFile(dir + "/x.test.yaml")
+		require.Empty(t, report.GetRefused())
+		require.Len(t, report.GetCases(), 1)
+		c := report.GetCases()[0]
+		require.True(t, c.GetPassed(),
+			"iteration %d: a negative at did not tie with the shared empty default: %v / %v",
+			i, c.GetError(), c.GetFailures())
+	}
+}
+
 // TestAGateAnsweredBeforeItBlocksDoesNotSpendItsTimeout is the delivery that
 // arrived first, and it is a statement about the clock rather than about the
 // answer.
