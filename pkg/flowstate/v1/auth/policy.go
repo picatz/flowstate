@@ -1449,15 +1449,24 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 //
 // The exemption is structural rather than a matter of trusting the caller:
 // base itself passes [ValidateHTTPSURL] in full, so it names its host with no
-// delimiter anywhere after its `//`; rawURL must be base followed by a "/", so
-// the authority rawURL parses to is base's own and ends no later than that
-// slash; and what follows base may not open a query, a fragment or an empty
-// path segment, so the appended text is path content under base and nothing
-// else. Every other check [ValidateHTTPSURL] runs — literal userinfo, a host,
-// the https-or-loopback scheme rule — still runs on rawURL.
+// delimiter anywhere after its `//`, and carries no query or fragment, so it
+// ends in its path; rawURL must be base followed by a "/", so the authority
+// rawURL parses to is base's own and ends no later than that slash; and what
+// follows base may not open a query, a fragment or an empty path segment, so
+// the appended text is path content under base and nothing else. Every other
+// check [ValidateHTTPSURL] runs — literal userinfo, a host, the
+// https-or-loopback scheme rule — still runs on rawURL.
 func validateComposedHTTPSURL(rawURL, base, field string) (*url.URL, error) {
-	if _, err := ValidateHTTPSURL(base, field); err != nil {
+	parsedBase, err := ValidateHTTPSURL(base, field)
+	if err != nil {
 		return nil, err
+	}
+
+	// A base ending in a query or fragment — even a bare trailing `?`, which
+	// sets only ForceQuery — would put the appended text there instead of in
+	// the path.
+	if parsedBase.RawQuery != "" || parsedBase.Fragment != "" || parsedBase.ForceQuery || strings.ContainsAny(base, "?#") {
+		return nil, fmt.Errorf("%s %q must not include a query string or fragment", field, base)
 	}
 
 	rest, ok := strings.CutPrefix(rawURL, base)

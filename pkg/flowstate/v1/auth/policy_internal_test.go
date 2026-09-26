@@ -80,6 +80,26 @@ func TestValidateComposedHTTPSURL(t *testing.T) {
 				base: "https://iam.corp.example/a%40b",
 			},
 			{
+				// The base ends in a query, so the appended text lands in
+				// that query rather than the path; the remainder itself
+				// carries no `?` for the check on it to find.
+				name: "the base carries a query",
+				url:  base + "?x=1/projects/-/serviceAccounts/sa@p",
+				base: base + "?x=1",
+			},
+			{
+				name: "the base carries a fragment",
+				url:  base + "#f/projects/-/serviceAccounts/sa@p",
+				base: base + "#f",
+			},
+			{
+				// A bare trailing `?` sets only url.URL.ForceQuery: RawQuery
+				// and Fragment are both empty.
+				name: "the base ends in a bare question mark",
+				url:  base + "?/projects/-/serviceAccounts/sa@p",
+				base: base + "?",
+			},
+			{
 				name: "the remainder opens a query",
 				url:  base + "/projects/-/serviceAccounts/sa?x=a@b",
 				base: base,
