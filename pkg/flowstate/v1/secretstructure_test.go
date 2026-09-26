@@ -167,9 +167,12 @@ func TestNestedSecretIsNotInAnyRenderingOfTheInputs(t *testing.T) {
 // A reference nested past the walk's depth bound must still answer true from
 // ValueHoldsSecretRef: every caller of that answer is a refusal or authority
 // gate (the registry's authority gate, the plugin input and output refusals,
-// flow test's resolver gate), and the compiler admits nesting deeper than the
-// walk inspects, so a silent cutoff was a fail-open at depth 33 for all of
-// them at once. "Too deep to scan" reads as "may hold one".
+// flow test's resolver gate), and a plugin's own outputs can arrive nested
+// deeper than the walk inspects: unlike a Flowfile, which [v1.MaxStructureDepth]
+// and [v1.CheckStructureDepth] refuse past that bound, nothing bounds a peer's
+// response to the walk's reach before the walk runs — so a silent cutoff was a
+// fail-open at depth 33 for all of them at once. "Too deep to scan" reads as
+// "may hold one".
 func TestASecretRefBelowTheDepthBoundStillAnswersTrue(t *testing.T) {
 	t.Parallel()
 

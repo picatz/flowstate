@@ -345,10 +345,13 @@ func SecretRefsIn(task *Task) []string {
 // A plugin's outputs are the shape that does arrive without passing either.
 // `plugin`'s scrubPluginOutputs asks [ValueHoldsSecretRef] of every value an
 // out-of-process task returned, before it can become a step output in workflow
-// history, and nothing bounds how deeply that party nested what it sent. So the
-// depth here is a number the peer chooses, not one an author could write, and
-// the conservative answer is what keeps that refusal from failing open — which
-// is the same reasoning as the walk's own bound rather than a second one.
+// history, and nothing bounds that nesting to this walk's reach before the walk
+// runs: [plugin.DefaultMaxResponseBytes] and protobuf's own recursion limit
+// bound the peer's response absolutely, but neither keeps it within
+// [MaxStructureDepth]. So the depth here is a number the peer chooses, not one
+// an author could write, and the conservative answer is what keeps that
+// refusal from failing open — which is the same reasoning as the walk's own
+// bound rather than a second one.
 //
 // A sequence rather than the `visit func(*SecretRef) bool` this was, for the
 // reason the fail-open history above makes sharp: both consumers below decide a
