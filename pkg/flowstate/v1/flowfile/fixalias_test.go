@@ -928,6 +928,24 @@ steps:
 			message: "not written where it was read",
 		},
 		{
+			// The copied value ends in the inner `]`, so a suffix-only check
+			// mistakes it for the outer `]` that goccy's column omitted.
+			name: "a tag in a nested flow sequence with a clipped outer delimiter",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p [[!!str 1]]
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
 			name: "a tag before a flow mapping's own value",
 			src: `edition: v2026.3
 name: t

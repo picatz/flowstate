@@ -1148,12 +1148,12 @@ func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, sp
 	// collection, independent of this file's own delimiter-widening logic.
 	// Checked here, against the tokens' own decoded text rather than their
 	// positions, because a value's *bytes* are the one thing this function
-	// exists to get right: `strings.HasPrefix`/`HasSuffix` catch a value
-	// this rewrite is about to splice in without its own closing (or,
-	// rarely, opening) delimiter, which every caller upstream of here
-	// already believed was correctly spanned.
+	// exists to get right. A nested collection can end with the same delimiter
+	// as its parent: if the closing token is immediately after the copied
+	// span, its inner delimiter must not stand in for the missing outer one.
 	if start, end, isFlow := flowDelimiters(anchor.Value); isFlow &&
-		!(strings.HasPrefix(value, start.Value) && strings.HasSuffix(value, end.Value)) {
+		(!strings.HasPrefix(value, start.Value) || !strings.HasSuffix(value, end.Value) ||
+			strings.HasPrefix(text[through:], end.Value)) {
 		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
 
 		return "", false
