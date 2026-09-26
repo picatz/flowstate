@@ -237,3 +237,77 @@ func TestAsyncHandlerBoundsInFlightMessagesPerConnectionForOneURI(t *testing.T) 
 		}
 	})
 }
+
+// TestRequestShapedCancelRequestDoesNotBypassInFlightLimit is the regression
+// test for the review round that found [bypassesInFlightLimit] checking only
+// req.Method: a client sending "$/cancelRequest" (or "exit") *with an id* —
+// request-shaped, not the notification the LSP spec calls for, but nothing
+// in the wire protocol or jsonrpc2 forbids it — still drew the exemption.
+// The resulting goroutine skipped the token entirely and went straight to
+// [FlowfileServer.Handle], which for a request ends in conn.Reply: a write
+// that blocks against a peer that does not read it. A client sending an
+// unbounded stream of id-bearing "$/cancelRequest"s while never reading
+// replies would then park one unbounded, token-free, blocked-on-write
+// goroutine per message — the exact growth [maxInFlightPerConnection] exists
+// to stop, reopened through the escape hatch meant to avoid it.
+//
+// A request-shaped cancel sent while the window is already full must
+// therefore behave like any other non-exempt message: it takes a token, and
+// since none is free, its send blocks rather than returning the nil result
+// [FlowfileServer.dispatch] gives every $/cancelRequest. Only once a token
+// frees up does it proceed and return.
+func TestRequestShapedCancelRequestDoesNotBypassInFlightLimit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const limit = 2
+
+		server := &FlowfileServer{Logger: discardLogger()}
+
+		// Holds every dispatched didChange's parse open, so the window is
+		// still full when the request-shaped cancel is sent.
+		release := make(chan struct{})
+		server.docs.setParseGate(func(lsp.DocumentURI) { <-release })
+
+		h := newHandlerWithLimit(server, limit, nil)
+		c := newClientWithHandler(t, server, h)
+		c.initialize()
+
+		// Fill the window with ordinary, distinct-URI didChanges, sent
+		// sequentially so neither send itself blocks.
+		for i := range limit {
+			c.changeNoWait(fmt.Sprintf("file:///cancel-request-shaped-%02d.yaml", i), "name: n\n", 1)
+		}
+		synctest.Wait()
+		if got := len(h.inFlight); got != limit {
+			t.Fatalf("tokens held = %d once the window filled, want the limit (%d)", got, limit)
+		}
+
+		// A $/cancelRequest sent as a request — with an id, via Call rather
+		// than Notify — the way a non-conforming or hostile client could
+		// send it.
+		done := make(chan error, 1)
+		go func() {
+			var result any
+			done <- c.conn.Call(t.Context(), "$/cancelRequest", struct{}{}, &result)
+		}()
+		synctest.Wait()
+
+		select {
+		case err := <-done:
+			t.Fatalf("a request-shaped $/cancelRequest returned (err=%v) while the window was already full: it bypassed the in-flight limit instead of taking a token", err)
+		default:
+		}
+		if got := len(h.inFlight); got != limit {
+			t.Fatalf("tokens held = %d while the request-shaped cancel was blocked acquiring one, want the limit (%d) unchanged", got, limit)
+		}
+
+		close(release)
+		synctest.Wait()
+
+		select {
+		case err := <-done:
+			require.NoError(t, err, "a request-shaped $/cancelRequest should still be answered, once its turn comes, with the nil result every $/cancelRequest gets")
+		default:
+			t.Fatal("the request-shaped cancel never returned after a token freed up")
+		}
+	})
+}

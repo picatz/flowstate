@@ -110,7 +110,7 @@ type asyncHandler struct {
 	dispatchTrace func(bounded, entering bool)
 }
 
-// bypassesInFlightLimit reports whether method should be dispatched without
+// bypassesInFlightLimit reports whether req should be dispatched without
 // waiting for, or holding, one of the connection's [asyncHandler.inFlight]
 // tokens.
 //
@@ -118,19 +118,26 @@ type asyncHandler struct {
 // cancelling a request or stopping the server — and must still be answered
 // promptly when the window is full of everything else, or a client trying to
 // get out of a stalled connection would have to wait behind exactly the
-// backlog it is trying to escape. Both are notifications: dispatching one
-// exempt costs a goroutine that runs to completion on its own.
+// backlog it is trying to escape. The LSP spec sends both as notifications,
+// and the exemption enforces that shape rather than assuming it: req.Notif
+// must be true, so a message merely named $/cancelRequest or exit but sent
+// with an id — request-shaped, so its goroutine ends by replying rather than
+// returning — never bypasses the bound. Without that check a client could
+// send an unbounded stream of id-bearing "$/cancelRequest"s, each exempted
+// from the token and each then blocked forever in conn.Reply against a peer
+// that never reads, which is the same unbounded-goroutine growth this bound
+// exists to stop, reopened through the escape hatch meant to avoid it.
 //
 // shutdown is deliberately not exempt despite reading like the same kind of
-// escape hatch: it is a request, so its goroutine ends by replying, a write
-// that blocks until the client reads it (see [FlowfileServer.Handle]'s
-// deadlock-freedom argument for what that means against a client that
-// does not). Exempting a request from the bound would let a client that
-// keeps sending shutdown while never reading its replies park one
-// unbounded, blocked-on-write goroutine per shutdown — the exact growth
-// this bound exists to stop, reopened through the one door meant to close
-// it. A shutdown queued normally still answers as soon as its turn comes;
-// it is not on the escape path the way a cancel or an exit is.
+// escape hatch: as a request it always ends by replying, a write that blocks
+// until the client reads it (see [FlowfileServer.Handle]'s deadlock-freedom
+// argument for what that means against a client that does not), and the
+// req.Notif check above cannot help it the way it helps $/cancelRequest and
+// exit, since shutdown has no valid notification form to require. Exempting
+// it regardless would let a client that keeps sending shutdown while never
+// reading its replies park one unbounded, blocked-on-write goroutine per
+// shutdown. A shutdown queued normally still answers as soon as its turn
+// comes; it is not on the escape path the way a cancel or an exit is.
 //
 // Nothing else is exempt: every other method's own cost is what the bound
 // exists to cover.
@@ -141,12 +148,15 @@ type asyncHandler struct {
 // already blocked the read loop acquiring its own token is queued behind
 // that message on the wire like anything else, and cannot be read — let
 // alone dispatched — until that earlier acquire succeeds. What this
-// exemption guarantees is that a $/cancelRequest or exit never becomes the
-// message blocking the read loop, so sending one before the window's next
-// non-exempt message is what reaches the server always gets through
-// immediately, however full the window already is.
-func bypassesInFlightLimit(method string) bool {
-	switch method {
+// exemption guarantees is that a notification-shaped $/cancelRequest or exit
+// never becomes the message blocking the read loop, so sending one before
+// the window's next non-exempt message is what reaches the server always
+// gets through immediately, however full the window already is.
+func bypassesInFlightLimit(req *jsonrpc2.Request) bool {
+	if !req.Notif {
+		return false
+	}
+	switch req.Method {
 	case "$/cancelRequest", "exit":
 		return true
 	default:
@@ -166,12 +176,13 @@ func bypassesInFlightLimit(method string) bool {
 //     wait for a build, and that is bounded twice over — [documentBuildTimeout]
 //     and the connection dropping — so it always releases its token in
 //     bounded time rather than holding it forever.
-//   - [bypassesInFlightLimit] exempts $/cancelRequest and exit from the
-//     acquire entirely, so neither ever becomes the message a full window
-//     leaves the read loop stuck on — see that function's own doc comment
-//     for the one thing this does not reach: a message already queued
-//     behind an earlier, non-exempt one that got stuck first, and for why
-//     shutdown is deliberately not on this list.
+//   - [bypassesInFlightLimit] exempts a notification-shaped $/cancelRequest
+//     or exit from the acquire entirely, so neither ever becomes the
+//     message a full window leaves the read loop stuck on — see that
+//     function's own doc comment for the one thing this does not reach: a
+//     message already queued behind an earlier, non-exempt one that got
+//     stuck first, why a request-shaped $/cancelRequest or exit does not
+//     qualify, and why shutdown is deliberately not on this list at all.
 //   - The per-URI queue's wait channel (below) is always a predecessor that
 //     already holds, or already released, its own token: [documentStore.enqueue]
 //     is called from inside this same acquire-then-announce sequence, in wire
@@ -193,7 +204,7 @@ func bypassesInFlightLimit(method string) bool {
 // writes fail rather than hanging, and every blocked holder's acquire (or
 // the wait it was itself blocking) releases in turn.
 func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-	if bypassesInFlightLimit(req.Method) {
+	if bypassesInFlightLimit(req) {
 		go func() {
 			if h.dispatchTrace != nil {
 				h.dispatchTrace(false, true)

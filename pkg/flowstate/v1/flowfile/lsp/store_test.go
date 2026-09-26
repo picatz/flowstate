@@ -267,8 +267,17 @@ func TestChangeDropsAnIncrementalEditWhoseBaseDocumentWasReplacedDuringItsParse(
 
 	uri := lsp.DocumentURI("file:///replaced-during-parse.yaml")
 
-	gatedIncrementalChange := func(store *documentStore) (entered, proceed chan struct{}, done chan struct{}) {
-		entered = make(chan struct{})
+	// gatedIncrementalChange starts apply's store.change on its own
+	// goroutine with the store's parse gate held, and returns once that
+	// goroutine has reached the gate — before releasing it. t must be the
+	// calling subtest's own *testing.T: this runs from inside a parallel
+	// t.Run, and by the time that runs, this function's own enclosing test
+	// body has already returned, so a t.Fatal here against that outer,
+	// already-returned t (rather than the subtest's) would be invalid.
+	gatedIncrementalChange := func(t *testing.T, store *documentStore, apply func(store *documentStore)) (proceed, done chan struct{}) {
+		t.Helper()
+
+		entered := make(chan struct{})
 		proceed = make(chan struct{})
 		store.setParseGate(func(u lsp.DocumentURI) {
 			if u == uri {
@@ -279,6 +288,23 @@ func TestChangeDropsAnIncrementalEditWhoseBaseDocumentWasReplacedDuringItsParse(
 		done = make(chan struct{})
 		go func() {
 			defer close(done)
+			apply(store)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the gated change never reached the unlocked splice and parse")
+		}
+		return proceed, done
+	}
+
+	t.Run("incremental change is dropped", func(t *testing.T) {
+		t.Parallel()
+
+		var store documentStore
+		store.open(uri, 1, "name: one\n", nil)
+
+		proceed, done := gatedIncrementalChange(t, &store, func(store *documentStore) {
 			// An incremental edit computed against "name: one\n": replaces
 			// "one" (columns 6-9) with "two".
 			store.change(uri, 5, []lsp.TextDocumentContentChangeEvent{{
@@ -288,22 +314,7 @@ func TestChangeDropsAnIncrementalEditWhoseBaseDocumentWasReplacedDuringItsParse(
 				},
 				Text: "two",
 			}}, nil)
-		}()
-		select {
-		case <-entered:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the gated incremental change never reached the unlocked splice and parse")
-		}
-		return entered, proceed, done
-	}
-
-	t.Run("incremental change is dropped", func(t *testing.T) {
-		t.Parallel()
-
-		var store documentStore
-		store.open(uri, 1, "name: one\n", nil)
-
-		_, proceed, done := gatedIncrementalChange(&store)
+		})
 
 		// Closed and reopened with different content — a new *document —
 		// while the incremental change above is parked, unlocked, at the
@@ -331,24 +342,9 @@ func TestChangeDropsAnIncrementalEditWhoseBaseDocumentWasReplacedDuringItsParse(
 		var store documentStore
 		store.open(uri, 1, "name: one\n", nil)
 
-		entered := make(chan struct{})
-		proceed := make(chan struct{})
-		store.setParseGate(func(u lsp.DocumentURI) {
-			if u == uri {
-				close(entered)
-				<-proceed
-			}
-		})
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
+		proceed, done := gatedIncrementalChange(t, &store, func(store *documentStore) {
 			store.change(uri, 5, []lsp.TextDocumentContentChangeEvent{{Text: "name: full-sync\n"}}, nil)
-		}()
-		select {
-		case <-entered:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the gated full-sync change never reached the unlocked splice and parse")
-		}
+		})
 
 		store.close(uri)
 		store.open(uri, 1, "name: reopened\n", nil)
