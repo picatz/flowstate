@@ -110,16 +110,13 @@ func FuzzLSPFrames(f *testing.F) {
 			requireFrameRoundTrips(t, &req)
 
 			// The read-loop half of dispatch, which no recover covers.
-			_, release, coalesced := server.announceInbound(&req)
-			if !coalesced {
-				release()
-			}
+			_, release := server.announceInbound(&req)
+			release()
 		}
 
 		server.docs.mu.Lock()
 		building := len(server.docs.building)
 		tail := len(server.docs.tail)
-		coalesced := len(server.docs.coalesced)
 		server.docs.mu.Unlock()
 		require.Zerof(t, building,
 			"%d document build registrations were left behind; an unretired registration "+
@@ -127,9 +124,6 @@ func FuzzLSPFrames(f *testing.F) {
 		require.Zerof(t, tail,
 			"%d per-URI queue entries were left behind; an unretired one holds every "+
 				"same-URI document notification behind it forever", tail)
-		require.Zerof(t, coalesced,
-			"%d coalesced full-sync didChange slots were left behind; an unretired one "+
-				"holds its content forever with nothing left to claim it", coalesced)
 	})
 }
 

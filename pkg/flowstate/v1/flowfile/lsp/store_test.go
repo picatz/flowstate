@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
@@ -172,4 +173,55 @@ func TestConcurrentChangesSettleOnTheHigherVersionRegardlessOfParseOrder(t *test
 	}
 	require.Zero(t, bad,
 		"a slower, lower-versioned parse overwrote a faster, higher-versioned one that had already committed")
+}
+
+// TestChangeDropsAStaleResultWhenTheDocumentWasClosedDuringItsParse is the
+// regression test for O1 of the independent review of #2089: the commit-time
+// re-check [documentStore.change] added for the TOCTOU above only compared
+// versions when a document was still present, so a document closed while an
+// in-flight change's splice and parse ran unlocked — the exact window that
+// re-check exists for — was silently resurrected by that change's stale
+// result once it finally committed, rather than staying closed.
+func TestChangeDropsAStaleResultWhenTheDocumentWasClosedDuringItsParse(t *testing.T) {
+	t.Parallel()
+
+	var store documentStore
+	uri := lsp.DocumentURI("file:///closed-during-parse.yaml")
+	store.open(uri, 1, "name: one\n", nil)
+
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	store.setParseGate(func(u lsp.DocumentURI) {
+		if u == uri {
+			close(entered)
+			<-proceed
+		}
+	})
+
+	changeDone := make(chan struct{})
+	go func() {
+		defer close(changeDone)
+		store.change(uri, 2, []lsp.TextDocumentContentChangeEvent{{Text: "name: two\n"}}, nil)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gated change never reached the unlocked splice and parse")
+	}
+
+	// The document is closed while the change above is parked, unlocked, at
+	// the parse gate — exactly the window the commit-time re-check covers.
+	store.close(uri)
+
+	close(proceed)
+	select {
+	case <-changeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gated change never finished after its gate was released")
+	}
+
+	if _, ok := store.get(uri); ok {
+		t.Fatal("a document closed during a change's unlocked parse was resurrected by that change's stale result")
+	}
 }
