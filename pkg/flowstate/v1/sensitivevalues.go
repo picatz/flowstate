@@ -266,22 +266,33 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				// the marker between every rune of the rendered line.
 				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
 					out.substrings = append(out.substrings, value)
+				}
 
-					// And the spelling a `%q` rendering produces, when it
-					// differs: a check witness and a stub diagnostic both
-					// render a string this way, and `%q` rewrites a tab, a
-					// newline, a quote or a backslash before this set's
-					// substring backstop ever reads the rendered line — so a
-					// descendant holding one, reached through whatever
-					// position a step or a task put it in, printed escaped
-					// in the clear (Copilot, on #2079's own root-only first
-					// pass at this). Root and descendant alike: `%q`
-					// transforms either the same way, and a map key goes
-					// through this identical case once it is popped off the
-					// queue below.
-					if escaped, ok := quotedSpelling(value); ok {
-						out.substrings = append(out.substrings, escaped)
-					}
+				// And the spelling a `%q` rendering produces, when it
+				// differs: a check witness and a stub diagnostic both
+				// render a string this way, and `%q` rewrites a tab, a
+				// newline, a quote or a backslash before this set's
+				// substring backstop ever reads the rendered line — so a
+				// descendant holding one, reached through whatever
+				// position a step or a task put it in, printed escaped
+				// in the clear (Copilot, on #2079's own root-only first
+				// pass at this). Root and descendant alike: `%q`
+				// transforms either the same way, and a map key goes
+				// through this identical case once it is popped off the
+				// queue below.
+				//
+				// The floor applies to the escaped spelling on its own
+				// length, not gated behind the raw value's (Codex, on that
+				// same fix): a one-rune raw descendant such as "\t" fails
+				// the floor above and adds nothing, but %q's rendering of
+				// it — two characters, a backslash and a t — clears the
+				// floor by itself and shreds nothing by being redacted, so
+				// tying it to the raw spelling's own floor left exactly the
+				// one-rune case protected nowhere unescaped and unprotected
+				// escaped.
+				if escaped, ok := quotedSpelling(value); ok &&
+					(n.root || utf8.RuneCountInString(escaped) >= minSensitiveSubstringRunes) {
+					out.substrings = append(out.substrings, escaped)
 				}
 			case int64, uint64, float64, bool:
 				// A non-string scalar's canonical text joins the backstop:

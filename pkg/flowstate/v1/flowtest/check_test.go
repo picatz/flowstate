@@ -563,6 +563,58 @@ outputs: {}
 		"the positive control: the substring backstop must still have fired")
 }
 
+// TestASensitiveInputsOneRuneDescendantSurvivesEscapedInARunTimeCheckWitness
+// is Codex's finding on the previous test's own fix: a one-rune raw
+// descendant such as "\t" fails [minSensitiveSubstringRunes]' own floor and
+// contributes no raw substring — correctly, since redacting one rune
+// everywhere it occurs would shred the diagnostic — but its `%q` spelling is
+// two characters, a backslash and a `t`, which clears that same floor on its
+// own and shreds nothing by being redacted. Gating the escaped spelling
+// behind the *raw* value's own floor check left this one-rune case
+// unprotected in both spellings: too short to redact raw, and never reached
+// to redact escaped either.
+func TestASensitiveInputsOneRuneDescendantSurvivesEscapedInARunTimeCheckWitness(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: guarded
+inputs:
+  creds:
+    type: struct
+    sensitive: true
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.creds.token}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n"+
+		"  - name: a one-rune descendant field concatenates into a step output\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    inputs:\n"+
+		"      creds:\n"+
+		"        token: \"\\t\"\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.echo.value == 'nope'\n"+
+		"          because: false on purpose, so the run-time witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	message := c.GetFailures()[0].GetMessage()
+	assert.NotContains(t, message, `prefix-\t`,
+		"a one-rune descendant's %q-escaped spelling reached a run-time check witness unredacted")
+	assert.Contains(t, message, `prefix-[redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
 // TestManyWitnessesAreBounded at [flowtest.MaxCheckWitnesses], the residual
 // named rather than silently dropped.
 func TestManyWitnessesAreBounded(t *testing.T) {
