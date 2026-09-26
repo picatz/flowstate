@@ -758,7 +758,7 @@ func assertScanBounded(t *testing.T, name string, r aliasInlinerScanReport) {
 // each at a site count (100) large enough that an unbounded per-site rescan
 // would fail it by orders of magnitude rather than by chance. Checking
 // [aliasInlinerScanReport.trueScanned] — [aliasInliner.rawScannedBytes] plus
-// [fixer.blockEndBytesScanned], incremented at each scan itself — rather
+// [fixer.blockEndBytesScanned], incremented in the scanning wrappers and in [fixer.blockEnd]'s own loop — rather
 // than [aliasInlinerScanReport.scanned] (fed only by
 // [aliasInliner.chargeScan]) is what makes this catch an uncached scan even
 // where nothing charged it: a mutant that keeps every charge but skips a

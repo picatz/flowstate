@@ -216,12 +216,16 @@ type aliasInliner struct {
 	// [aliasInliner.appendLine] charges for output.
 	scanned int
 
-	// rawScannedBytes is incremented at the point of every actual scan this
-	// rewrite performs — [spanOfNode]/[tokenText] on an anchor's value (via
-	// [aliasInliner.spanOf]), [byteOffsetOfColumn] (via
+	// rawScannedBytes is incremented in the wrappers that perform this
+	// rewrite's per-anchor and per-alias scans — [spanOfNode]/[tokenText] on
+	// an anchor's value (in [aliasInliner.spanOf]), [byteOffsetOfColumn] (in
 	// [aliasInliner.scalarValueOf] and [split]), and [indentWidth] (in
-	// [aliasInliner.spliceBlock]) — never by [aliasInliner.chargeScan]
-	// itself. [fixer.blockEndBytesScanned] is this field's counterpart for
+	// [aliasInliner.spliceBlock]'s [aliasInliner.blockBases] block) — never
+	// by [aliasInliner.chargeScan] itself. A call that bypasses its wrapper
+	// is not counted here; the cache-population test is what catches that.
+	// Reads bounded by the output charge instead (the shifting loop's
+	// trims, [indentWidth] on a site's prefix, [dropMarker]'s once-per-anchor
+	// scan) are not counted either. [fixer.blockEndBytesScanned] is this field's counterpart for
 	// [fixer.blockEnd]: incremented inside the scan's own loop, so neither
 	// counter can be satisfied by charging without actually scanning, the
 	// way reading only [aliasInliner.scanned] could be (#2075's own review:
@@ -836,8 +840,8 @@ func maxScanned(inputLen int) int {
 // [aliasInliner.spliceBlock]'s [aliasInliner.blockBases] block (wrapping
 // two [indentWidth] calls), and [aliasInliner.spliceBlock]'s own read of
 // [fixer.blockEndBytesScanned] — so a read added later that forgets to
-// charge is still bounded by [maxScanned], not bounded only by whichever
-// cache someone remembered to write for it. Two reads in
+// cache its answer is still bounded by [maxScanned], not bounded only by
+// whichever cache someone remembered to write for it. Two reads in
 // [aliasInliner.spliceBlock] are not routed here at all: `indentWidth(prefix)`,
 // computing where the shifted block goes, and the shifting loop's own
 // `strings.TrimSpace`/[indentWidth] over each line of the range
