@@ -191,6 +191,19 @@ func (s *Session) BacktraceLabels() ([]string, error) {
 // this way is no more entitled to a secret than one at a terminal: the front
 // changes and the withholding does not.
 //
+// Redacted is what the answer *carries*, not what the expression sees. This
+// method does not redact the bindings it evaluates against — the run's scope,
+// plus whatever extra bindings an autopsy's caller supplied — so `inputs.token
+// == "guess"` answers truthfully and a breakpoint condition can name a sensitive
+// value. This is a transcript control, not a boundary against the caller:
+// whoever runs `flow test --debug` or `flowstate_debug` supplied the case's
+// fixtures, and redaction keeps the value out of the transcript without
+// stopping the session's owner from asking about it. Evaluating against
+// redacted bindings instead was tried (#2011) and every review round found
+// another oracle — a map's membership test, an iterated key, an escaped leaf —
+// because every operation CEL offers over a binding is one more way to ask
+// about it.
+//
 // The first draft returned the raw [ref.Val] beside the redacted text, on the
 // reasoning that redaction is a property of what is *displayed*. That is wrong
 // here, and wrong in the one direction that matters. `flow test` installs
@@ -276,12 +289,22 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	// straight through. See [redactedNative].
 	native, converted := redactedNative(out, subject.redactValue)
 	if !converted {
-		// Nothing structured to offer for a value the conversion cannot read,
-		// and the text redactor still covers what comes back as prose.
-		return capRunes(applyText(subject.redactText, fmt.Sprint(out.Value())), MaxInspectRunes), nil, nil
+		// Nothing structured to offer for a value the conversion cannot read.
+		// See [unrenderedText] for why the prose is only its type while this
+		// pause withholds anything.
+		withholding := subject.redactText != nil || subject.redactValue != nil
+		return capRunes(applyText(subject.redactText, unrenderedText(out, withholding)), MaxInspectRunes), nil, nil
 	}
 
-	text := capRunes(applyText(subject.redactText, nativeText(native)), MaxInspectRunes)
+	// Leaves are withheld before the tree is rendered, not after. The text
+	// redactor matches plaintext substrings, and [nativeText] is JSON: a secret
+	// holding a quote, a backslash, `<`, `>`, `&` or a control character
+	// renders escaped, and a `bytes` leaf renders as base64 — either way the
+	// plaintext is no longer in the line for the redactor to find. Applied to
+	// the raw leaves, it sees the value as it is; the pass over the rendered
+	// line stays as the backstop for anything a leaf walk cannot reach.
+	withheldNative := withheldLeaves(subject.redactText, native)
+	text := capRunes(applyText(subject.redactText, nativeText(withheldNative)), MaxInspectRunes)
 
 	// The structured half is withheld entirely when this session cannot redact
 	// one. Told there is something to withhold, with no way to withhold it
@@ -305,11 +328,12 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	//
 	// Both seams, then, exactly as [Session.SetValueRedactor] says there are
 	// two questions: is this the value, and does this text contain it.
-	return text, v1.TypeAdapter.NativeToValue(withheldLeaves(subject.redactText, native)), nil
+	return text, v1.TypeAdapter.NativeToValue(withheldNative), nil
 }
 
-// withheldLeaves is native with the text redactor applied to every string in
-// it, keys included.
+// withheldLeaves is native with the text redactor applied to every string and
+// byte string in it, keys included — before anything renders it, which is what
+// lets a secret that JSON would escape or encode be recognised at all.
 //
 // The traversal mirrors `flowtest`'s `redactSensitiveTree` and is deliberately
 // not shared with it: that one asks whether a value *is* the secret, this one
@@ -333,6 +357,14 @@ func withheldLeaves(redact func(string) string, native any) any {
 	switch value := native.(type) {
 	case string:
 		return redact(value)
+
+	case []byte:
+		// The other native shape a CEL string's bytes take, and the one JSON
+		// hides most completely: [nativeText] renders a []byte as base64, so a
+		// `bytes(inputs.token)` output never contains the plaintext a
+		// rendered-line redactor looks for. Redacted over the raw bytes, and
+		// kept as bytes so the structured half keeps its type.
+		return []byte(redact(string(value)))
 
 	case map[string]any:
 		withheld := make(map[string]any, len(value))

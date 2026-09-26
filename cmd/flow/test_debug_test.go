@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -253,15 +254,75 @@ tests:
 		"the autopsy scope listing should still name the bindings")
 
 	// The disagreement is stated rather than left to be discovered (Codex,
-	// #1109). The binding is withheld, so a comparison against the real value
-	// is false here while the same expression in `expect.check` saw the real
-	// one — which is worth knowing before an author concludes their check is
-	// wrong. Handing CEL the raw value instead would agree, and would answer
-	// `startsWith`, `size()` and a slice truthfully about a secret one call
-	// at a time.
+	// #1109). `flow test` binds the file's vars already redacted, so a
+	// comparison against the real value is false here while the same
+	// expression in `expect.check` saw the real one — which is worth knowing
+	// before an author concludes their check is wrong.
 	out := unwrapped(res.Stdout)
 	assert.Contains(t, out, "this case withholds sensitive values")
 	assert.Contains(t, out, "answers false here even where the same check was true")
+}
+
+// TestDebugAutopsyNoteSaysWhichBindingsAreWithheld pins the autopsy's note to
+// what its evaluation does. Only the bindings `flow test` supplies redacted —
+// the file's vars — compare false against a real value; a sensitive input is
+// the run's own and compares truthfully, because redaction is a transcript
+// control. The note once said every comparison answered false, directly above
+// an `inputs` comparison that answered true.
+func TestDebugAutopsyNoteSaysWhichBindingsAreWithheld(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: secretive
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: first
+    log:
+      message: one
+outputs: {}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+vars:
+  token: hunter2-swordfish
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: fails with a sensitive input
+    inputs:
+      token: ${vars.token}
+    expect:
+      ran: [first]
+      check:
+        - 1 == 2
+`), 0o600))
+
+	res := runFlowStdin(t,
+		"continue\ninspect inputs.token == 'hunter2-swordfish'\ninspect vars.token == 'hunter2-swordfish'\nquit\n",
+		"test", "--debug", "--run", "fails with", dir)
+	require.Error(t, res.Err, "the case is red")
+
+	assert.NotContains(t, res.Stdout+res.Stderr, "hunter2-swordfish")
+
+	// The two answers, in the order asked: the input compares against its
+	// real value, the var against its redacted one.
+	var answers []string
+	for _, match := range regexp.MustCompile(`(?m)^debug> (true|false)$`).FindAllStringSubmatch(res.Stdout, -1) {
+		answers = append(answers, match[1])
+	}
+	assert.Equal(t, []string{"true", "false"}, answers,
+		"the inputs comparison should see the real value and the vars one the redacted binding")
+
+	out := unwrapped(res.Stdout)
+	assert.Contains(t, out, "the file's `vars` and `run.error` are bound here already redacted",
+		"the note should name the bindings that compare false")
+	assert.Contains(t, out, "`inputs` and `steps` are the run's own and compare against real values",
+		"the note should say what the inputs comparison above it actually did")
 }
 
 // TestDebugWithholdsASensitiveInput is the CLI half of the same leak (Codex,
