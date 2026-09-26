@@ -1395,10 +1395,14 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 //
 // So a tie is broken the one way a file can state at all: declaration order.
 // turnDone/waitFor below chain every job to the nearest earlier one sharing
-// its exact `at`, so job i's delivery happens strictly after the job before
-// it in the same tie group has already delivered (or given up because the
-// run ended first) — while two jobs at *different* deadlines are left exactly
-// as unsynchronized as before, since the clock already orders those.
+// its `at`, clamped to zero first, so job i's delivery happens strictly
+// after the job before it in the same tie group has already delivered (or
+// given up because the run ended first) — while two jobs at *different*
+// deadlines are left exactly as unsynchronized as before, since the clock
+// already orders those. The clamp is what keeps a negative `at` — accepted
+// since before this existed, and delivered at once by [v1.VirtualClock.After]
+// exactly like zero — in the same tie group as the shared empty default
+// rather than racing it under a raw-duration key the two would never match.
 func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
@@ -1434,7 +1438,14 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			if err != nil {
 				return func() {}, fmt.Errorf("signal %q: invalid `at` duration %q: %w", s.Name, s.At, err)
 			}
-			at = d
+			// Clamped, not refused: a negative `at` was accepted before this
+			// existed and [v1.VirtualClock.After] already answers it exactly
+			// like zero, delivering at once rather than parking. Keying the
+			// tie below on the raw duration would leave a negative `at` out
+			// of every group it actually races with — "-1s" and the shared
+			// empty default both fire immediately, so both belong to the one
+			// tie group everything at-or-before the epoch resolves into.
+			at = max(d, 0)
 		}
 		subject := ""
 		if s.Sender != nil {
