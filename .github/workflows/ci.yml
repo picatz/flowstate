@@ -170,24 +170,51 @@ jobs:
       # while fetching an even newer `origin/main`.
       #
       # The fix is to name the base the triggering event itself recorded,
-      # rather than asking the ref what it currently points to. Each event this
-      # workflow runs on carries exactly one: a pull_request's checkout is the
-      # PR merged with `base.sha`; a merge_group's is the prospective merge
-      # against `base_sha`; a push to main is main advancing from `before`. All
-      # three are commit ids the event fixed when it fired, so they read the
-      # same on a rerun as they did on the first attempt. Computed once, here,
-      # rather than re-derived in each consuming job, so a fix to the rule is
-      # one edit and the two breaking checks cannot answer this differently.
+      # rather than asking the ref what it currently points to — except that
+      # for `pull_request`, the event's own recorded base is the wrong ref: an
+      # independent review of #2086 found `pull_request.base.sha` is not
+      # updated on `synchronize`, so live runs (#2083's 36206392548, and #2061,
+      # #2063, #2085) checked out a merge ref built against a newer main than
+      # `base.sha` still named. Comparing against that stale `base.sha` instead
+      # of the merge ref's real base can *miss* a break: main loosens a
+      # contract between A and B, the PR tightens it, and diffing against A
+      # shows nothing. This job checks out `github.sha` with `fetch-depth: 0`
+      # — the same merge commit `test` and `proto` check out by default — so
+      # `HEAD^1` is that merge ref's actual base, present locally without a
+      # further fetch, and reads the same on a rerun as on the first attempt
+      # because the merge ref itself does not change underneath one. `HEAD^2`
+      # is asserted against `pull_request.head.sha` first: a mismatch means
+      # this checkout is not the two-parent merge ref the rule assumes, and
+      # the step fails closed rather than naming the wrong parent as the base.
+      #
+      # `merge_group` and `push` keep their event-recorded fields (`base_sha`,
+      # `before`): both are ordinary fields, always current, with no
+      # `synchronize`-shaped staleness. Computed once, here, rather than
+      # re-derived in each consuming job, so a fix to the rule is one edit and
+      # the two breaking checks cannot answer this differently.
       - name: Which commit the breaking checks compare against
         id: breaking_base
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           case "$EVENT_NAME" in
-            pull_request) sha=$PR_BASE_SHA ;;
+            pull_request)
+              head2=$(git rev-parse --verify HEAD^2) || {
+                echo "::error::pull_request checkout has no HEAD^2; this is not the two-parent merge ref the rule assumes" >&2
+                exit 1
+              }
+              if [ "$head2" != "$PR_HEAD_SHA" ]; then
+                echo "::error::HEAD^2 ($head2) does not match pull_request.head.sha ($PR_HEAD_SHA); refusing to guess which parent is the base" >&2
+                exit 1
+              fi
+              sha=$(git rev-parse --verify HEAD^1) || {
+                echo "::error::pull_request checkout has no HEAD^1; this is not the two-parent merge ref the rule assumes" >&2
+                exit 1
+              }
+              ;;
             merge_group) sha=$MERGE_GROUP_BASE_SHA ;;
             push) sha=$PUSH_BEFORE_SHA ;;
             *)
@@ -425,15 +452,20 @@ jobs:
       # in between made an unrelated PR read as tightening it. Fetching the
       # plan's fixed commit id and forcing it onto the local `origin/main`
       # pointer gives `--against origin/main` below the same answer on every
-      # attempt, including a rerun. `+` still matters: it forces the local ref
-      # onto that commit rather than rejecting the write as non-fast-forward if
-      # this step ever runs twice in one job. A break fails the same way
-      # validate does.
+      # attempt, including a rerun. `+` always matters, not only on a rerun: a
+      # push's base is `before`, behind the checkout's own tip, and an unforced
+      # fetch would reject moving `origin/main` backward to it as
+      # non-fast-forward. `:?` refuses an empty `$BASE_SHA` outright — the plan
+      # output name or the step id drifting apart would otherwise fetch the
+      # remote's current HEAD by default and silently reintroduce #2074 while
+      # staying green. A break fails the same way validate does.
       - name: Fetch the breaking check's base commit
         if: matrix.lane == 'rest'
         env:
           BASE_SHA: ${{ needs.plan.outputs.breaking_base_sha }}
-        run: git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
+        run: |
+          : "${BASE_SHA:?no breaking-check base from plan}"
+          git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
       - name: Example workflow contracts did not shrink against main
         if: matrix.lane == 'rest'
         run: go run ./cmd/flow breaking --against origin/main examples/
@@ -620,11 +652,15 @@ jobs:
       # `.git#branch=origin/main` resolves against this checkout's own local
       # `refs/remotes/origin/main`, which the step below points at the plan's
       # fixed base commit rather than leaving it to float — see the fetch
-      # step's comment on the test job's rest lane and #2074.
+      # step's comment on the test job's rest lane and #2074. `:?` refuses an
+      # empty `$BASE_SHA` outright, the same way — an unset variable there
+      # would otherwise fetch the remote's current HEAD by default.
       - name: Fetch the breaking check's base commit
         env:
           BASE_SHA: ${{ needs.plan.outputs.breaking_base_sha }}
-        run: git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
+        run: |
+          : "${BASE_SHA:?no breaking-check base from plan}"
+          git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
 
       # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
       # nothing ran them.

@@ -508,7 +508,11 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 // breaking` can inspect anything. Both the test job's rest lane (`flow
 // breaking`) and the proto job (`buf breaking`) fetch the identical base, by
 // id, from the plan's breaking_base_sha output — the mechanism #2074 exists to
-// keep from drifting into two answers.
+// keep from drifting into two answers — and each fetch refuses to run with an
+// empty base: the independent review of #2086 found that a drift between the
+// plan's output name and the step's `id` would otherwise leave `$BASE_SHA`
+// empty and fetch the remote's current HEAD by default, reintroducing #2074
+// while every check still passed.
 func TestCIFetchesTheBreakingCheckBaseWithAForcedRefUpdate(t *testing.T) {
 	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
 	for _, job := range []string{"test", "proto"} {
@@ -521,6 +525,9 @@ func TestCIFetchesTheBreakingCheckBaseWithAForcedRefUpdate(t *testing.T) {
 			if !strings.Contains(step.Run, "+$BASE_SHA:refs/remotes/origin/main") {
 				t.Errorf("%s job's breaking-check base fetch must force the remote-tracking ref update; got %q", job, step.Run)
 			}
+			if !strings.Contains(step.Run, `${BASE_SHA:?`) {
+				t.Errorf("%s job's breaking-check base fetch must refuse an empty $BASE_SHA rather than fetch the remote's default HEAD; got %q", job, step.Run)
+			}
 			if want, got := "${{ needs.plan.outputs.breaking_base_sha }}", step.Env["BASE_SHA"]; got != want {
 				t.Errorf("%s job's breaking-check base fetch reads BASE_SHA from %q, want %q", job, got, want)
 			}
@@ -529,14 +536,23 @@ func TestCIFetchesTheBreakingCheckBaseWithAForcedRefUpdate(t *testing.T) {
 			t.Errorf("the %s job has no base fetch for the breaking check", job)
 		}
 	}
+
+	// The plan job's own outputs: block must forward the exact step id and
+	// output name the two fetches above read through needs.plan.outputs — see
+	// TestTheWorkflowAndThePlanDecideTheSameJobs on why an output the block
+	// does not name is invisible to needs.plan.outputs, which then reads as
+	// the empty string.
+	if want, got := "${{ steps.breaking_base.outputs.sha }}", wf.Jobs["plan"].Outputs["breaking_base_sha"]; got != want {
+		t.Errorf("the plan job forwards breaking_base_sha as %q, want %q", got, want)
+	}
 }
 
-// TestCIBreakingChecksCompareAgainstTheirOwnCheckout pins the other half of
+// TestCIBreakingChecksPinTheAgainstOriginMainArguments pins the other half of
 // #2074's fix: `flow breaking` and `buf breaking` must still read
-// `origin/main` (via the ref that step above just pinned to the fixed base),
+// `origin/main` (via the ref the step above just pinned to the fixed base),
 // not some other ref — a reviewer changing one without the other would leave
 // the fetch pinning a commit that the breaking command then ignores.
-func TestCIBreakingChecksCompareAgainstTheirOwnCheckout(t *testing.T) {
+func TestCIBreakingChecksPinTheAgainstOriginMainArguments(t *testing.T) {
 	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
 	for _, step := range wf.Jobs["test"].Steps {
 		if step.Name == "Example workflow contracts did not shrink against main" {
@@ -565,9 +581,19 @@ proto:
 // so a future edit to the script itself is caught here rather than first
 // misdiagnosing a PR in production. This is the regression for #2074: main
 // moving between a stale checkout and a later `git fetch origin main` made an
-// unrelated PR read as tightening a contract main itself had just loosened, and
-// a rerun did not clear it because it reused the same checkout while fetching
-// an even newer main.
+// unrelated PR read as tightening a contract main itself had just loosened,
+// and a rerun did not clear it because it reused the same checkout while
+// fetching an even newer main.
+//
+// The pull_request cases run against a real git fixture rather than asserting
+// on an env var, because the mechanism itself is git plumbing (HEAD^1/HEAD^2
+// on the checked-out merge ref), not a value the event handed over: the
+// independent review of #2086 found that `pull_request.base.sha` — this
+// step's first attempt at "the base the triggering event recorded" — is not
+// updated on `synchronize`, so a live merge ref can be built against a newer
+// main than that field still names. Comparing against the stale field instead
+// of the merge ref's real base can miss a break: main loosens a contract, the
+// PR tightens it, and diffing against the older main shows nothing.
 func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
 	var script string
@@ -584,14 +610,19 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	const validSHA = "1111111111111111111111111111111111111111"
 	const zeroSHA = "0000000000000000000000000000000000000000"
 
-	run := func(t *testing.T, env map[string]string) (sha string, ok bool) {
+	// run executes the script exactly as ci.yml stores it, in dir (empty for
+	// the merge_group/push cases, which never touch git), and reports the
+	// $GITHUB_OUTPUT sha= line, or ok=false if the script exited nonzero.
+	run := func(t *testing.T, dir string, env map[string]string) (sha string, ok bool) {
 		t.Helper()
 		outFile := filepath.Join(t.TempDir(), "github_output")
 		if err := os.WriteFile(outFile, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cmd := exec.Command("bash", "-c", script)
-		cmd.Env = []string{"GITHUB_OUTPUT=" + outFile}
+		cmd.Dir = dir
+		// PATH: the pull_request cases below shell out to `git`.
+		cmd.Env = []string{"GITHUB_OUTPUT=" + outFile, "PATH=" + os.Getenv("PATH")}
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
@@ -613,22 +644,49 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 		return sha, true
 	}
 
-	t.Run("pull_request uses the PR's base sha", func(t *testing.T) {
-		sha, ok := run(t, map[string]string{
+	t.Run("pull_request uses HEAD^1 of the checked-out merge ref", func(t *testing.T) {
+		dir, baseSHA, headSHA := newMergeRefFixture(t)
+		sha, ok := run(t, dir, map[string]string{
 			"EVENT_NAME":           "pull_request",
-			"PR_BASE_SHA":          validSHA,
+			"PR_HEAD_SHA":          headSHA,
 			"MERGE_GROUP_BASE_SHA": "",
 			"PUSH_BEFORE_SHA":      "",
 		})
-		if !ok || sha != validSHA {
-			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
+		if !ok || sha != baseSHA {
+			t.Fatalf("got sha=%q ok=%v, want HEAD^1 = %q", sha, ok, baseSHA)
+		}
+	})
+
+	t.Run("pull_request fails closed when HEAD^2 does not match the PR's head sha", func(t *testing.T) {
+		dir, _, _ := newMergeRefFixture(t)
+		_, ok := run(t, dir, map[string]string{
+			"EVENT_NAME":           "pull_request",
+			"PR_HEAD_SHA":          validSHA, // not this checkout's actual HEAD^2
+			"MERGE_GROUP_BASE_SHA": "",
+			"PUSH_BEFORE_SHA":      "",
+		})
+		if ok {
+			t.Fatal("a HEAD^2 mismatch must fail rather than name the wrong parent as the base")
+		}
+	})
+
+	t.Run("pull_request fails closed on a checkout that is not a two-parent merge ref", func(t *testing.T) {
+		dir, headSHA := newSingleParentFixture(t)
+		_, ok := run(t, dir, map[string]string{
+			"EVENT_NAME":           "pull_request",
+			"PR_HEAD_SHA":          headSHA,
+			"MERGE_GROUP_BASE_SHA": "",
+			"PUSH_BEFORE_SHA":      "",
+		})
+		if ok {
+			t.Fatal("a checkout with no HEAD^2 must fail rather than guess a base")
 		}
 	})
 
 	t.Run("merge_group uses the queue's base sha", func(t *testing.T) {
-		sha, ok := run(t, map[string]string{
+		sha, ok := run(t, "", map[string]string{
 			"EVENT_NAME":           "merge_group",
-			"PR_BASE_SHA":          "",
+			"PR_HEAD_SHA":          "",
 			"MERGE_GROUP_BASE_SHA": validSHA,
 			"PUSH_BEFORE_SHA":      "",
 		})
@@ -638,9 +696,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	})
 
 	t.Run("push to main uses the sha before the push", func(t *testing.T) {
-		sha, ok := run(t, map[string]string{
+		sha, ok := run(t, "", map[string]string{
 			"EVENT_NAME":           "push",
-			"PR_BASE_SHA":          "",
+			"PR_HEAD_SHA":          "",
 			"MERGE_GROUP_BASE_SHA": "",
 			"PUSH_BEFORE_SHA":      validSHA,
 		})
@@ -650,9 +708,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	})
 
 	t.Run("a push whose before is all zeroes fails closed", func(t *testing.T) {
-		_, ok := run(t, map[string]string{
+		_, ok := run(t, "", map[string]string{
 			"EVENT_NAME":           "push",
-			"PR_BASE_SHA":          "",
+			"PR_HEAD_SHA":          "",
 			"MERGE_GROUP_BASE_SHA": "",
 			"PUSH_BEFORE_SHA":      zeroSHA,
 		})
@@ -662,9 +720,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	})
 
 	t.Run("an event this workflow does not otherwise trigger on fails closed", func(t *testing.T) {
-		_, ok := run(t, map[string]string{
+		_, ok := run(t, "", map[string]string{
 			"EVENT_NAME":           "workflow_dispatch",
-			"PR_BASE_SHA":          "",
+			"PR_HEAD_SHA":          "",
 			"MERGE_GROUP_BASE_SHA": "",
 			"PUSH_BEFORE_SHA":      "",
 		})
@@ -672,6 +730,64 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 			t.Fatal("an unhandled event must fail rather than silently pick an empty base")
 		}
 	})
+}
+
+// runGit runs a git command in dir with a fixed, throwaway identity, failing
+// the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.com",
+		"GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// gitRevParse resolves rev inside dir, failing the test on error.
+func gitRevParse(t *testing.T, dir, rev string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--verify", rev)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse %s: %v", rev, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// newMergeRefFixture builds a repo shaped like the merge ref a pull_request
+// event's default checkout produces: a base commit on main, a head commit on
+// a feature branch, and a two-parent merge of the feature branch onto main —
+// HEAD^1 the base, HEAD^2 the PR's own head, exactly as GitHub builds
+// refs/pull/N/merge by merging the PR's head into the base branch. It returns
+// the repo directory and the base and head commits' ids.
+func newMergeRefFixture(t *testing.T) (dir, baseSHA, headSHA string) {
+	t.Helper()
+	dir = t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "base")
+	baseSHA = gitRevParse(t, dir, "HEAD")
+	runGit(t, dir, "checkout", "-q", "-b", "feature")
+	runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "head")
+	headSHA = gitRevParse(t, dir, "HEAD")
+	runGit(t, dir, "checkout", "-q", "main")
+	runGit(t, dir, "merge", "-q", "--no-ff", "-m", "merge", "feature")
+	return dir, baseSHA, headSHA
+}
+
+// newSingleParentFixture builds a repo with one ordinary commit and no merge
+// — the shape a push or a checkout of a plain branch tip has, and the shape
+// the pull_request rule must refuse rather than mistake for a merge ref.
+func newSingleParentFixture(t *testing.T) (dir, headSHA string) {
+	t.Helper()
+	dir = t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	runGit(t, dir, "commit", "-q", "--allow-empty", "-m", "only")
+	return dir, gitRevParse(t, dir, "HEAD")
 }
 
 // TestGo127LeakCheckDoesNotRequestTheDeletedExperiment pins the toolchain
