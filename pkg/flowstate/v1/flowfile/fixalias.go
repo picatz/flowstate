@@ -1141,6 +1141,24 @@ func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, sp
 		return "", false
 	}
 
+	// [span.End]'s column already came from [widenForFlowDelimiters], which
+	// widens to wherever goccy itself reports the closing token — and goccy
+	// reports that column one short of where it is actually written when a
+	// tag (`!!str`, `!foo`) or a literal tab sits inside the flow
+	// collection, independent of this file's own delimiter-widening logic.
+	// Checked here, against the tokens' own decoded text rather than their
+	// positions, because a value's *bytes* are the one thing this function
+	// exists to get right: `strings.HasPrefix`/`HasSuffix` catch a value
+	// this rewrite is about to splice in without its own closing (or,
+	// rarely, opening) delimiter, which every caller upstream of here
+	// already believed was correctly spanned.
+	if start, end, isFlow := flowDelimiters(anchor.Value); isFlow &&
+		!(strings.HasPrefix(value, start.Value) && strings.HasSuffix(value, end.Value)) {
+		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
+
+		return "", false
+	}
+
 	return value, true
 }
 

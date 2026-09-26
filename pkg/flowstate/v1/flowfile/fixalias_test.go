@@ -903,6 +903,92 @@ steps:
 			column:  6,
 			message: "written inside an outer flow collection",
 		},
+		{
+			// #2102, F2: goccy reports the column of the token after a tag
+			// or a literal tab inside a flow collection one short of where
+			// it is actually written, independent of this rewrite's own
+			// delimiter-widening logic — so the span this rewrite trusted
+			// stopped one byte short of the value's own closing `]`, and
+			// [aliasInliner.scalarValueOf]'s own check that the copied
+			// bytes actually start and end with the delimiter tokens they
+			// should is what catches it.
+			name: "a tag before a flow sequence's own element",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p [!!str 1]
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name: "a tag before a flow mapping's own value",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p {c: !!str 1}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name: "a tag inside a flow sequence nested in a flow mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p {a: [!!str 1]}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name: "a local tag before a flow sequence's own element",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p [!foo x]
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name:    "a literal tab as a flow sequence's own leading whitespace",
+			src:     "edition: v2026.3\nname: t\nvars:\n  o: &p [\ta]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name:    "a literal tab between a flow sequence's own elements",
+			src:     "edition: v2026.3\nname: t\nvars:\n  o: &p [a,\tb]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
 	}
 
 	for _, tt := range tests {
