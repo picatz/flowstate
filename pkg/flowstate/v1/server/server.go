@@ -2577,8 +2577,12 @@ func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 		return ""
 	}
 
+	// The whole payload, metadata included, and measured as the codec
+	// contract measures it (proto.Size), so an oversized Metadata map cannot
+	// carry work past the bound that Data alone would not (Codex review of
+	// #2067).
 	payload := details.GetPayloads()[0]
-	if len(payload.GetData()) > maxHeartbeatDetailBytes {
+	if proto.Size(payload) > maxHeartbeatDetailBytes {
 		return ""
 	}
 

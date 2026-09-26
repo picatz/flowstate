@@ -333,4 +333,13 @@ func TestHeartbeatPhaseSkipsDecodingAnOversizedPayload(t *testing.T) {
 	require.Equal(t, 1, spy.fromPayloadCalls,
 		"an oversized heartbeat detail reached FromPayload anyway: the bound only "+
 			"trimmed what this function returned, not the work of getting there")
+
+	// Small Data, oversized Metadata: the bound is on the whole payload, as
+	// the codec contract measures it, so metadata cannot carry the decode
+	// past it either.
+	padded := payloadOf(t, v1.PhaseRequesting.String())
+	padded.Payloads[0].Metadata["padding"] = []byte(strings.Repeat("m", maxHeartbeatDetailBytes))
+	require.Equal(t, "", s.heartbeatPhase(padded))
+	require.Equal(t, 1, spy.fromPayloadCalls,
+		"a payload whose metadata exceeds the bound reached FromPayload anyway")
 }
