@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sourcegraph/go-lsp"
@@ -122,4 +124,52 @@ func TestChangeCanInitializeTheLocalPathIndexBeforeOpen(t *testing.T) {
 	indexed, ok = store.getByFilesystemPath("/tmp/opened.test.yaml")
 	require.True(t, ok)
 	assert.Same(t, opened, indexed)
+}
+
+// TestConcurrentChangesSettleOnTheHigherVersionRegardlessOfParseOrder is the
+// regression test for the TOCTOU an independent review of #2089 found in the
+// mutex-release fix for #2071: [documentStore.change] read the version guard
+// under its first lock and committed under its second with no re-check, so
+// two concurrent calls for the same URI — which [NewHandler]'s own doc
+// comment says a bare jsonrpc2.AsyncHandler, or this package's own tests,
+// can produce without the connection's per-URI queue in the way — could both
+// pass the guard against the same base version and then commit in whichever
+// order their unlocked parses happened to finish, letting a slower,
+// lower-versioned parse overwrite a faster, higher-versioned one that had
+// already landed.
+//
+// One change's text is large enough that its parse reliably takes longer
+// than the other's, so the two are not a coin flip: the failure mode is a
+// scheduling race, not a 50/50 one, and repeating it drives the odds of
+// never observing it on a fixed build to negligible while keeping a broken
+// one's failure rate visible well within a short run.
+func TestConcurrentChangesSettleOnTheHigherVersionRegardlessOfParseOrder(t *testing.T) {
+	t.Parallel()
+
+	slow := raceSource + strings.Repeat("#padding\n", 15000)
+	uri := lsp.DocumentURI("file:///concurrent-change-toctou.yaml")
+
+	bad := 0
+	for range 200 {
+		var s documentStore
+		s.open(uri, 1, raceSource, nil)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			s.change(uri, 2, []lsp.TextDocumentContentChangeEvent{{Text: slow}}, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			s.change(uri, 3, []lsp.TextDocumentContentChangeEvent{{Text: raceSource}}, nil)
+		}()
+		wg.Wait()
+
+		if d, ok := s.get(uri); !ok || d.version != 3 {
+			bad++
+		}
+	}
+	require.Zero(t, bad,
+		"a slower, lower-versioned parse overwrote a faster, higher-versioned one that had already committed")
 }

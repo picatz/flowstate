@@ -319,19 +319,53 @@ type documentStore struct {
 	// show every one of them still folded into the one slot before the gate
 	// is released. Nil in production, where the call costs nothing.
 	changeGate func(uri lsp.DocumentURI)
+
+	// parseGate, when set, is called by [documentStore.change] with uri right
+	// after s.mu is released and before the unlocked splice and
+	// [newDocument]'s parse run, and blocks until told to proceed. It exists
+	// for a test that needs a slow parse for one URI provably not holding
+	// s.mu while it runs, rather than hoping a concurrent enqueue/beginBuild
+	// for a different URI never contends with it by coincidence: hold this
+	// URI's change here, show the other URI's enqueue/beginBuild still
+	// completes, and only then release it (#2071 review, F3). Nil in
+	// production, where the call costs nothing.
+	parseGate func(uri lsp.DocumentURI)
 }
 
 // A coalescedChange is the most recent full-sync didChange queued for a URI
 // and not yet claimed. version and text are overwritten in place by every
-// later full-sync didChange that arrives before claimed is set; claimed is
-// set exactly once, by [documentStore.claimChange], which freezes the two
-// fields for the goroutine about to apply them and tells every later
-// full-sync didChange for the URI that this slot is spoken for, so it starts
-// a new one rather than coalescing into a slot already being read.
+// later full-sync didChange that both arrives before claimed is set and
+// wins against version under [changeVersionWins]; claimed is set exactly
+// once, by [documentStore.claimChange], which freezes the two fields for the
+// goroutine about to apply them and tells every later full-sync didChange
+// for the URI that this slot is spoken for, so it starts a new one rather
+// than coalescing into a slot already being read.
 type coalescedChange struct {
 	version int
 	text    string
 	claimed bool
+
+	// mine is the queue position [documentStore.enqueueLocked] installed as
+	// s.tail[uri] when this slot's own message was queued. Coalescing is
+	// only sound while this is still s.tail[uri]: once a didOpen, didClose,
+	// or incremental didChange enqueues behind it, tail moves past mine, and
+	// this slot's eventual claim no longer sits at this URI's true place in
+	// wire-arrival order — folding a later full-sync didChange into it would
+	// apply that later content ahead of whatever now queues between them
+	// (#2071 review, F1).
+	mine chan struct{}
+}
+
+// changeVersionWins reports whether version supersedes prev under the rule
+// [documentStore.change] applies before committing an edit: a version of
+// zero on either side means that side is not tracked against, in which case
+// there is nothing to compare and last-write-wins is all that is on offer;
+// otherwise the newer one must be strictly greater. [documentStore.enqueueChange]
+// applies the identical rule when a later full-sync didChange arrives before
+// an earlier one is claimed, so a burst that coalesces settles on the same
+// version a strictly ordered application would have (#2071 review, F2).
+func changeVersionWins(version, prev int) bool {
+	return version <= 0 || prev <= 0 || version > prev
 }
 
 // isFullSyncChange reports whether changes is the single full-text
@@ -365,15 +399,28 @@ func isFullSyncChange(changes []lsp.TextDocumentContentChangeEvent) bool {
 func (s *documentStore) enqueue(uri lsp.DocumentURI) (wait <-chan struct{}, done func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	wait, _, done = s.enqueueLocked(uri)
+	return wait, done
+}
 
+// enqueueLocked is [documentStore.enqueue]'s body for a caller that already
+// holds s.mu. It exists so [documentStore.enqueueChange] can decide whether
+// to coalesce and, if not, claim a queue position, in one critical section —
+// otherwise a full-sync didChange could coalesce into a slot between this
+// method's own lock and unlock, one this call's queue position was never
+// compared against (#2071 review, F1). mine is the channel installed as
+// s.tail[uri]; a caller that needs to tell later whether anything has
+// enqueued behind this position compares s.tail[uri] against it, since
+// nothing else changes what that map entry holds.
+func (s *documentStore) enqueueLocked(uri lsp.DocumentURI) (wait <-chan struct{}, mine chan struct{}, done func()) {
 	wait = s.tail[uri]
-	mine := make(chan struct{})
+	mine = make(chan struct{})
 	if s.tail == nil {
 		s.tail = make(map[lsp.DocumentURI]chan struct{})
 	}
 	s.tail[uri] = mine
 
-	return wait, func() {
+	return wait, mine, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		close(mine)
@@ -390,19 +437,41 @@ func (s *documentStore) enqueue(uri lsp.DocumentURI) (wait <-chan struct{}, done
 // for — see [documentStore.coalesced].
 //
 // The first full-sync didChange queued for a URI installs the slot and
-// queues exactly as [documentStore.enqueue] would. A second one arriving
-// before the first is claimed overwrites that slot's version and text in
-// place and returns coalesced=true: there is nothing for it to wait on or
-// release, because the goroutine already queued for the first will apply
-// this call's content instead, read through [documentStore.claimChange].
-// That is what keeps a burst of N full-sync didChanges for one URI down to
-// at most one queued goroutine and one retained set of params, however
-// large N is (#2071).
+// queues exactly as [documentStore.enqueue] would. A second one, arriving
+// before the first is claimed and while the slot's own queue position is
+// still this URI's tail — nothing else has enqueued behind it — folds into
+// that slot instead of queuing one of its own: coalesced is true, and there
+// is nothing for the caller to wait on or release, because the goroutine
+// already queued for the first will apply this call's content instead, read
+// through [documentStore.claimChange]. The tail check is what keeps a
+// same-URI didOpen, didClose, or incremental didChange queued after the slot
+// from being silently skipped over by a later full-sync didChange folding
+// past it (#2071 review, F1); the version check that follows keeps a lower
+// version arriving later from overwriting a higher one already waiting in
+// the slot ([changeVersionWins], #2071 review, F2) — when it loses, the
+// message still reports coalesced (its content was superseded, not queued),
+// but the slot itself is left exactly as it was.
+//
+// Per URI this bounds a burst of N full-sync didChanges to at most one
+// goroutine claimed and parsing plus one more queued behind it — whose own
+// raw request params stay alive until its turn comes, same as any queued
+// notification's do — rather than the N queued, N-parsing goroutines, each
+// holding its own params, that the burst cost before this fix (#2071).
+// ("One queued goroutine and one retained set of params," this comment's
+// original wording, undercounted the second concurrent one and the queued
+// one's own params; #2071 review, F4.)
 func (s *documentStore) enqueueChange(uri lsp.DocumentURI, version int, text string) (wait <-chan struct{}, done func(), coalesced bool) {
 	s.mu.Lock()
 	trace := s.coalesceTrace
 
-	if c, ok := s.coalesced[uri]; ok && !c.claimed {
+	if c, ok := s.coalesced[uri]; ok && !c.claimed && s.tail[uri] == c.mine {
+		if !changeVersionWins(version, c.version) {
+			s.mu.Unlock()
+			if trace != nil {
+				trace(true)
+			}
+			return nil, func() {}, true
+		}
 		c.version = version
 		c.text = text
 		s.mu.Unlock()
@@ -412,10 +481,11 @@ func (s *documentStore) enqueueChange(uri lsp.DocumentURI, version int, text str
 		return nil, func() {}, true
 	}
 
+	wait, mine, retire := s.enqueueLocked(uri)
+	slot := &coalescedChange{version: version, text: text, mine: mine}
 	if s.coalesced == nil {
 		s.coalesced = make(map[lsp.DocumentURI]*coalescedChange)
 	}
-	slot := &coalescedChange{version: version, text: text}
 	s.coalesced[uri] = slot
 	s.mu.Unlock()
 
@@ -423,7 +493,6 @@ func (s *documentStore) enqueueChange(uri lsp.DocumentURI, version int, text str
 		trace(false)
 	}
 
-	wait, retire := s.enqueue(uri)
 	done = func() {
 		s.mu.Lock()
 		// Only retire this slot if nothing has claimed it and moved on since —
@@ -482,6 +551,15 @@ func (s *documentStore) setChangeGate(f func(uri lsp.DocumentURI)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.changeGate = f
+}
+
+// setParseGate installs the test hook described on
+// [documentStore.parseGate]. Locked because it is set from a different
+// goroutine than the one that will read it inside [documentStore.change].
+func (s *documentStore) setParseGate(f func(uri lsp.DocumentURI)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.parseGate = f
 }
 
 // setAwaitTrace installs the test hook described on [documentStore.awaitTrace].
@@ -713,10 +791,19 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 // [FlowfileServer.announceInbound]) — holding s.mu through a parse, the slow
 // part and unbounded up to maxDocumentBytes, would stall that read loop for
 // every URI on the connection, not just this one, until this one finished
-// (#2071). Nothing else can mutate this URI's document while it is
-// unlocked: every didOpen, didChange and didClose the connection actually
-// serves is serialized per URI by that same queue, so the base text read
-// here is still current when the result below is stored.
+// (#2071).
+//
+// Nothing serializes two calls for the same URI while this is unlocked: the
+// connection's own per-URI queue keeps its own callers from overlapping, but
+// this method does not enforce that itself, and both this package's tests
+// and a server wired with bare jsonrpc2.AsyncHandler (see [NewHandler]'s doc
+// comment) call it directly and can race. So the commit below re-applies
+// [changeVersionWins] against whatever s.docs[uri] holds right now, under
+// the second lock, rather than trusting the base text read above still to be
+// current — without that re-check, two concurrent calls could both parse
+// against the same base text and then commit in either order, letting a
+// slower, lower-versioned parse overwrite a faster, higher-versioned one
+// that had already landed (#2071 review, F3).
 func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.TextDocumentContentChangeEvent, tasks *v1.Registry) *document {
 	// See [documentStore.open]. Registered before s.mu is taken and retired after
 	// it is released: deferred calls run last-in-first-out, so the unlock below
@@ -727,9 +814,7 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 	s.mu.Lock()
 	text := ""
 	if prev, ok := s.docs[uri]; ok {
-		// A version of zero means the client does not track them, in which case
-		// there is nothing to compare and last-write-wins is all that is on offer.
-		if version > 0 && prev.version > 0 && version <= prev.version {
+		if !changeVersionWins(version, prev.version) {
 			s.mu.Unlock()
 			return nil
 		}
@@ -764,7 +849,12 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 			return nil
 		}
 	}
+	gate := s.parseGate
 	s.mu.Unlock()
+
+	if gate != nil {
+		gate(uri)
+	}
 
 	for _, c := range changes {
 		if c.Range == nil {
@@ -784,6 +874,11 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Re-checked against whatever is current now, not against the base text
+	// read above: see the doc comment above this method (#2071 review, F3).
+	if cur, ok := s.docs[uri]; ok && !changeVersionWins(version, cur.version) {
+		return nil
+	}
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}

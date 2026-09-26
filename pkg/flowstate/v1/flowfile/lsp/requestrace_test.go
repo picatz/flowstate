@@ -319,6 +319,217 @@ func testFullSyncDidChangeBurstCoalesces(t *testing.T) {
 	require.Equal(t, latest, doc.text, "the document did not settle on the newest text")
 }
 
+// TestCoalescingEndsWhenADidCloseOrDidOpenQueuesBehindTheSlot is the
+// regression test for F1 of the independent review of #2089: coalescing
+// checked only whether a slot existed and was unclaimed, not whether the
+// slot's own queue position was still this URI's tail. A didClose and a
+// reopen queued behind a gated full-sync didChange's slot, followed by one
+// more full-sync didChange, folded that last message straight into the
+// gated slot — skipping over the close and reopen entirely rather than
+// queuing behind them — so releasing the gate applied the last message's
+// text first, and the close-then-reopen that followed it in wire order
+// landed on top, leaving the store on the reopen's text while the editor
+// believed its last edit had been applied.
+func TestCoalescingEndsWhenADidCloseOrDidOpenQueuesBehindTheSlot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+
+		uri := "file:///coalesce-close-reopen.yaml"
+		c.openNoWait(uri, raceSource)
+		synctest.Wait()
+
+		// Gates the slot's own goroutine at the point it would claim the
+		// slot, holding it queued and unclaimed for as long as the sequence
+		// below takes to announce — the shape a slow predecessor produces.
+		proceed := make(chan struct{})
+		c.server.docs.setChangeGate(func(u lsp.DocumentURI) {
+			if u == lsp.DocumentURI(uri) {
+				<-proceed
+			}
+		})
+
+		textB := raceSource + "#bbb\n"
+		textC := raceSource + "#ccc\n"
+		textD := raceSource + "#ddd\n"
+
+		// The first full-sync didChange installs the gated slot; a didClose,
+		// a reopen, and one more full-sync didChange all arrive and are
+		// announced while it is still queued and unclaimed.
+		c.changeNoWait(uri, textB, 2)
+		synctest.Wait()
+		c.closeNoWait(uri)
+		c.openVersionNoWait(uri, textC, 1)
+		c.changeNoWait(uri, textD, 2)
+		synctest.Wait()
+
+		close(proceed)
+		synctest.Wait()
+
+		doc, ok := c.server.docs.await(t.Context(), make(chan struct{}), lsp.DocumentURI(uri))
+		require.True(t, ok, "the document is gone")
+		require.Equal(t, textD, doc.text,
+			"the didChange queued after a didClose/didOpen folded past them into the gated slot instead of queuing behind them")
+	})
+}
+
+// TestCoalescingEndsWhenAnUnversionedIncrementalChangeQueuesBehindTheSlot is
+// F1's unversioned variant: the same failure with version 0 throughout,
+// where every change is otherwise accepted last-write-wins and so the only
+// thing standing between a correct and a corrupted document is whether an
+// incremental change's splice runs against the text that was actually
+// current when its queue turn came, rather than against text a later
+// full-sync change already replaced out from under it.
+func TestCoalescingEndsWhenAnUnversionedIncrementalChangeQueuesBehindTheSlot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+
+		uri := "file:///coalesce-incremental-unversioned.yaml"
+		c.openVersionNoWait(uri, raceSource, 0)
+		synctest.Wait()
+
+		proceed := make(chan struct{})
+		c.server.docs.setChangeGate(func(u lsp.DocumentURI) {
+			if u == lsp.DocumentURI(uri) {
+				<-proceed
+			}
+		})
+
+		// The first full-sync didChange installs the gated slot; an
+		// unversioned incremental change (a range-carrying entry, never
+		// coalescable on its own) queues behind it, and one more full-sync
+		// didChange arrives after that.
+		c.changeNoWait(uri, "#bbb\n", 0)
+		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didChange", lsp.DidChangeTextDocumentParams{
+			TextDocument:   lsp.VersionedTextDocumentIdentifier{TextDocumentIdentifier: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)}, Version: 0},
+			ContentChanges: []lsp.TextDocumentContentChangeEvent{{Range: &lsp.Range{}, Text: "X"}},
+		}))
+		c.changeNoWait(uri, "#ddd\n", 0)
+		synctest.Wait()
+
+		close(proceed)
+		synctest.Wait()
+
+		doc, ok := c.server.docs.await(t.Context(), make(chan struct{}), lsp.DocumentURI(uri))
+		require.True(t, ok, "the document is gone")
+		require.Equal(t, "#ddd\n", doc.text,
+			"the last full-sync didChange folded past the incremental change queued behind the slot instead of queuing after it")
+	})
+}
+
+// TestCoalescingKeepsTheHigherVersionWhenALowerOneArrivesLater is the
+// regression test for F2 of the independent review of #2089: a second
+// full-sync didChange folding into an already-queued slot overwrote its
+// version and text unconditionally, so a lower version arriving after a
+// higher one — which the protocol never promises will not happen, since a
+// client resending an earlier edit is exactly the case
+// [documentStore.change]'s own version guard exists for — silently replaced
+// the higher one still waiting to be applied instead of being the one
+// dropped.
+func TestCoalescingKeepsTheHigherVersionWhenALowerOneArrivesLater(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+
+		uri := "file:///coalesce-version-order.yaml"
+		c.openNoWait(uri, raceSource)
+		synctest.Wait()
+
+		proceed := make(chan struct{})
+		c.server.docs.setChangeGate(func(u lsp.DocumentURI) {
+			if u == lsp.DocumentURI(uri) {
+				<-proceed
+			}
+		})
+
+		textB := raceSource + "#bbb\n"
+		textC := raceSource + "#ccc\n"
+		c.changeNoWait(uri, textB, 5)
+		c.changeNoWait(uri, textC, 3)
+		synctest.Wait()
+
+		close(proceed)
+		synctest.Wait()
+
+		doc, ok := c.server.docs.await(t.Context(), make(chan struct{}), lsp.DocumentURI(uri))
+		require.True(t, ok, "the document is gone")
+		require.Equal(t, 5, doc.version,
+			"a lower version that arrived later overwrote a higher one already waiting in the coalesced slot")
+		require.Equal(t, textB, doc.text)
+	})
+}
+
+// TestChangeParseDoesNotBlockEnqueueForAnotherURI is the regression test for
+// the read-loop-stall half of #2071: [documentStore.change] must not hold
+// s.mu across [newDocument]'s parse, because [documentStore.enqueue] and
+// [documentStore.beginBuild] take the same mutex from the connection's read
+// loop before a notification's handler even starts. Holding it through a
+// parse for one URI would stall every other URI's enqueue/beginBuild behind
+// it, turning one slow document into a stall for the whole connection.
+//
+// [documentStore.parseGate] holds a change for uriA at the exact point s.mu
+// has just been released and the unlocked splice/parse are about to run, so
+// this shows enqueue/beginBuild for a completely unrelated uriB completing
+// promptly rather than merely finishing before a race gets a chance to
+// matter.
+func TestChangeParseDoesNotBlockEnqueueForAnotherURI(t *testing.T) {
+	t.Parallel()
+
+	var store documentStore
+	uriA := lsp.DocumentURI("file:///parse-gate-a.yaml")
+	uriB := lsp.DocumentURI("file:///parse-gate-b.yaml")
+
+	store.open(uriA, 1, "name: a\n", nil)
+
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	store.setParseGate(func(uri lsp.DocumentURI) {
+		if uri == uriA {
+			close(entered)
+			<-proceed
+		}
+	})
+
+	changeDone := make(chan struct{})
+	go func() {
+		defer close(changeDone)
+		store.change(uriA, 2, []lsp.TextDocumentContentChangeEvent{{Text: "name: a2\n"}}, nil)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gated change for uriA never reached the unlocked parse")
+	}
+
+	// uriA's change is now parked, unlocked, at the parse gate. A completely
+	// unrelated uriB's enqueue and beginBuild — exactly what the read loop
+	// does for every notification before dispatch — must complete promptly
+	// rather than blocking on s.mu.
+	unblocked := make(chan struct{})
+	go func() {
+		defer close(unblocked)
+		_, done := store.enqueue(uriB)
+		store.beginBuild(uriB)
+		store.endBuild(uriB)
+		done()
+	}()
+
+	select {
+	case <-unblocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("enqueue/beginBuild for an unrelated URI blocked behind uriA's in-flight, unlocked parse")
+	}
+
+	close(proceed)
+	select {
+	case <-changeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gated change for uriA never finished after its gate was released")
+	}
+}
+
 // TestDidOpenWaitsForAnInFlightDidCloseOnTheSameURI is the wire-level
 // regression test for #1986 itself: a same-URI didClose and didOpen sent back
 // to back must have their handlers run in that order, because the connection
