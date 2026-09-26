@@ -66,18 +66,28 @@ func newClient(t *testing.T) *client {
 
 // newClientFor connects a client to a specific server, for tests that need to
 // inspect or preload it.
+//
+// The server is wrapped in NewHandler exactly as the command does, so the
+// tests run against the same concurrency the real server sees.
 func newClientFor(t *testing.T, server *FlowfileServer) *client {
+	t.Helper()
+	return newClientWithHandler(t, server, NewHandler(server))
+}
+
+// newClientWithHandler is [newClientFor] for a test that needs a different
+// [jsonrpc2.Handler] than [NewHandler] would build — [asyncHandler] itself,
+// constructed through [newHandlerWithLimit] with a limit small enough to
+// fill deterministically and a trace hook, say.
+func newClientWithHandler(t *testing.T, server *FlowfileServer, handler jsonrpc2.Handler) *client {
 	t.Helper()
 
 	serverSide, clientSide := net.Pipe()
 	c := &client{t: t, notified: map[string]int{}, server: server}
 
-	// The server is wrapped in NewHandler exactly as the command does, so the
-	// tests run against the same concurrency the real server sees.
 	serverConn := jsonrpc2.NewConn(
 		context.Background(),
 		jsonrpc2.NewBufferedStream(serverSide, jsonrpc2.VSCodeObjectCodec{}),
-		NewHandler(server),
+		handler,
 	)
 
 	c.conn = jsonrpc2.NewConn(
