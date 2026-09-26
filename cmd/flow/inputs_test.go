@@ -434,7 +434,7 @@ func TestCoercionReadsTheDeclarationRatherThanTheCharacters(t *testing.T) {
 				declaration = nil
 			}
 
-			value, err := coerceInput("x", test.raw, declaration)
+			value, err := coerceInput("x", test.raw, declaration, false)
 			require.NoError(t, err)
 
 			encoded, err := v1.MarshalSchemaJSON(value.GetLiteral(), false)
@@ -453,7 +453,7 @@ func TestANestedNumberIsReadAsWritten(t *testing.T) {
 	t.Parallel()
 
 	value, err := coerceInput("x", `{"count": 2, "ratio": 0.5, "deep": {"n": 7}}`,
-		&v1.InputDeclaration{Name: "x", Type: v1.InputDeclaration_TYPE_STRUCT})
+		&v1.InputDeclaration{Name: "x", Type: v1.InputDeclaration_TYPE_STRUCT}, false)
 	require.NoError(t, err)
 
 	encoded, err := v1.MarshalSchemaJSON(value.GetLiteral(), false)

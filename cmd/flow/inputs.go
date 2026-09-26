@@ -87,9 +87,16 @@ func collectInputs(cmd *cobra.Command, declared map[string]*v1.InputDeclaration)
 		maps.Copy(inputs, fromFile)
 	}
 
+	// Read once and threaded down to the one refusal that would otherwise
+	// have no way to honor it: [inputCoercionError] never produces a
+	// [*v1.Value], so it cannot go through [refusedRunSensitiveValues]'s own
+	// reveal check the way every other refusal on this path does, and must
+	// ask directly instead.
+	reveal := revealSensitiveRequested(cmd)
+
 	flags, _ := cmd.Flags().GetStringArray("input")
 	for _, flag := range flags {
-		name, value, err := parseInputFlag(flag, declared)
+		name, value, err := parseInputFlag(flag, declared, reveal)
 		if err != nil {
 			return nil, err
 		}
@@ -132,7 +139,7 @@ func checkRunInputs(workflow *v1.Workflow, inputs map[string]*v1.Value) error {
 }
 
 // parseInputFlag reads one --input name=value flag.
-func parseInputFlag(flag string, declared map[string]*v1.InputDeclaration) (string, *v1.Value, error) {
+func parseInputFlag(flag string, declared map[string]*v1.InputDeclaration, reveal bool) (string, *v1.Value, error) {
 	name, raw, found := strings.Cut(flag, "=")
 	if !found {
 		return "", nil, fmt.Errorf(
@@ -144,7 +151,7 @@ func parseInputFlag(flag string, declared map[string]*v1.InputDeclaration) (stri
 		return "", nil, fmt.Errorf("--input %q names no input", flag)
 	}
 
-	value, err := coerceInput(name, raw, declared[name])
+	value, err := coerceInput(name, raw, declared[name], reveal)
 	if err != nil {
 		return "", nil, err
 	}
@@ -165,12 +172,12 @@ func parseInputFlag(flag string, declared map[string]*v1.InputDeclaration) (stri
 // refusal it earns names the workflow and lists what it does declare, which is a
 // better answer than anything this function could invent about a name it knows
 // nothing about — and it is the same refusal the server gives.
-func coerceInput(name, raw string, declaration *v1.InputDeclaration) (*v1.Value, error) {
+func coerceInput(name, raw string, declaration *v1.InputDeclaration, reveal bool) (*v1.Value, error) {
 	switch declaration.GetType() {
 	case v1.InputDeclaration_TYPE_INT:
 		number, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 		if err != nil {
-			return nil, inputCoercionError(name, raw, declaration, "a whole number, e.g. 3")
+			return nil, inputCoercionError(name, raw, declaration, "a whole number, e.g. 3", reveal)
 		}
 
 		return v1.NewLiteral(number), nil
@@ -178,7 +185,7 @@ func coerceInput(name, raw string, declaration *v1.InputDeclaration) (*v1.Value,
 	case v1.InputDeclaration_TYPE_FLOAT:
 		number, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 		if err != nil {
-			return nil, inputCoercionError(name, raw, declaration, "a number, e.g. 1.5")
+			return nil, inputCoercionError(name, raw, declaration, "a number, e.g. 1.5", reveal)
 		}
 
 		return v1.NewLiteral(number), nil
@@ -186,7 +193,7 @@ func coerceInput(name, raw string, declaration *v1.InputDeclaration) (*v1.Value,
 	case v1.InputDeclaration_TYPE_BOOL:
 		yes, err := strconv.ParseBool(strings.TrimSpace(raw))
 		if err != nil {
-			return nil, inputCoercionError(name, raw, declaration, "true or false")
+			return nil, inputCoercionError(name, raw, declaration, "true or false", reveal)
 		}
 
 		return v1.NewLiteral(yes), nil
@@ -198,7 +205,7 @@ func coerceInput(name, raw string, declaration *v1.InputDeclaration) (*v1.Value,
 		// express a value containing that separator anyway.
 		decoded, err := decodeInputJSON(raw)
 		if err != nil {
-			return nil, inputCoercionError(name, raw, declaration, exampleJSONFor(declaration.GetType()))
+			return nil, inputCoercionError(name, raw, declaration, exampleJSONFor(declaration.GetType()), reveal)
 		}
 
 		return valueFromJSON(name, decoded, declaration)
@@ -211,7 +218,38 @@ func coerceInput(name, raw string, declaration *v1.InputDeclaration) (*v1.Value,
 
 // inputCoercionError says what was given, what the file declared, and what the
 // declared type looks like written down.
-func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, wants string) error {
+//
+// # Why a sensitive word is never quoted here, at any length
+//
+// This is the one refusal a redaction set built afterward cannot reach
+// completely: raw never becomes a [*v1.Value], so [sensitiveInputWords] can
+// only offer it to [v1.SensitiveValues.WithValues] as a bare plaintext, which
+// takes [minSensitiveSubstringRunes]'s floor like every other non-root
+// descendant — a one-rune word (`--input pin=x` against a sensitive `int`)
+// is short enough to survive it, in the clear, on both the JSON document and
+// stderr (#2073). Lowering that floor is not this function's call to make:
+// it is argued once, globally, in sensitivevalues.go, for every other
+// diagnostic in this binary that quotes a short string.
+//
+// So the check is made here instead, directly against the declaration this
+// function already holds, the same way [runArgumentFlags] decides whether to
+// redact a retry suggestion and [redactedIfSensitive] decides whether to
+// redact an output's own `must:` violation: ask the declaration, do not wait
+// for a set built from values to notice. [v1.SensitiveMarker] is what a
+// redaction pass would have produced for a longer word past the floor, so a
+// one-rune and a ten-rune sensitive word now read identically regardless of
+// which path caught them.
+//
+// reveal is `--reveal-sensitive`, threaded in rather than read from a set
+// downstream: this refusal produces no [*v1.Value], so it never reaches
+// [refusedRunSensitiveValues]'s own reveal check, and would otherwise defeat
+// the one escape hatch every other refusal on this path already honors.
+func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, wants string, reveal bool) error {
+	shown := raw
+	if declaration.GetSensitive() && !reveal {
+		shown = v1.SensitiveMarker
+	}
+
 	// A [v1.InputError] for the same reason the binder's own refusals are one:
 	// this is the caller's argument being refused, and an unclassified refusal
 	// is reported by [v1.ClassifyError] as Internal — a defect in Flowstate
@@ -226,7 +264,7 @@ func inputCoercionError(name, raw string, declaration *v1.InputDeclaration, want
 		Input:    name,
 		Declared: v1.DeclaredTypeName(declaration.GetType()),
 		Err: fmt.Errorf("--input %s=%s: %q is declared %s, which is written as %s%s",
-			name, raw, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration)),
+			name, shown, name, v1.DeclaredTypeName(declaration.GetType()), wants, describedAs(declaration)),
 	}
 }
 
