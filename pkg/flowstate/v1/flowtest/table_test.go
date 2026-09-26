@@ -1,7 +1,9 @@
 package flowtest_test
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -423,6 +425,38 @@ tests:
 `+rows))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "once its `cases:` rows are counted")
+}
+
+// TestATableEntrysOwnSecretsAreBoundedEvenWhenEveryRowOverrides drives
+// Codex's review finding on #2041: the per-test `MaxSecretsPerTest` check
+// runs on each row's *effective* Secrets, and Secrets stays whole-or-nothing
+// (a row that names even one secret of its own replaces the entry's map
+// entirely), so an entry whose own `secrets:` is over the limit escaped that
+// check whenever every row named at least one secret of its own — nothing
+// ever asked how many the entry itself declared.
+func TestATableEntrysOwnSecretsAreBoundedEvenWhenEveryRowOverrides(t *testing.T) {
+	t.Parallel()
+
+	var secretsBlock strings.Builder
+	for i := 0; i <= flowtest.MaxSecretsPerTest; i++ {
+		fmt.Fprintf(&secretsBlock, "      env:TOKEN_%d: value-%d\n", i, i)
+	}
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+tests:
+  - name: entry
+    workflow: ./workflow.yaml
+    secrets:
+`+secretsBlock.String()+`    cases:
+      - name: row
+        secrets:
+          env:OWN: row-value
+        expect:
+          outputs: {}
+`))
+	require.Error(t, err, "an entry over the secrets limit must be refused even though every row replaces it")
+	require.Contains(t, err.Error(), fmt.Sprintf("declares %d secrets", flowtest.MaxSecretsPerTest+1))
+	require.Contains(t, err.Error(), fmt.Sprintf("limit of %d", flowtest.MaxSecretsPerTest))
 }
 
 // TestAGoBuiltTableExpandsItsRows: the Go door ([flowtest.Run]) expands

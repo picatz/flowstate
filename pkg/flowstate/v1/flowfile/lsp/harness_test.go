@@ -204,11 +204,22 @@ func (c *client) open(uri, text string) lsp.PublishDiagnosticsParams {
 // the build behind it, which is the whole of #317.
 func (c *client) openNoWait(uri, text string) {
 	c.t.Helper()
+	c.openVersionNoWait(uri, text, 1)
+}
+
+// openVersionNoWait is [client.openNoWait] with an explicit version, for a
+// test that opens the same URI more than once and needs a reopen's version to
+// say so rather than default to 1 — a reopen still at 1 would leave a
+// still-present incumbent read as the newer of the two by
+// [documentStore.open]'s own version guard, which is a different mechanism
+// than the one under test.
+func (c *client) openVersionNoWait(uri, text string, version int) {
+	c.t.Helper()
 	require.NoError(c.t, c.conn.Notify(c.t.Context(), "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
 		TextDocument: lsp.TextDocumentItem{
 			URI:        lsp.DocumentURI(uri),
 			LanguageID: "flowfile",
-			Version:    1,
+			Version:    version,
 			Text:       text,
 		},
 	}))
@@ -224,8 +235,29 @@ func (c *client) changeNoWait(uri, text string, version int) {
 	}))
 }
 
-// serverDoc returns the document the server currently holds for a URI.
-func (c *client) serverDoc(uri string) (*document, bool) {
+// closeNoWait sends didClose and returns as soon as the notification is on
+// the wire, with no wait of any kind — what an editor does, and what a
+// didOpen sent right behind it needs in order to race the close rather than
+// wait politely behind it.
+func (c *client) closeNoWait(uri string) {
+	c.t.Helper()
+	require.NoError(c.t, c.conn.Notify(c.t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: lsp.DocumentURI(uri)},
+	}))
+}
+
+// rawServerDoc returns the document the server currently holds for a URI,
+// without waiting for a build in flight to settle.
+//
+// Most tests want [documentStore.await] instead — the same settle signal
+// every real position request waits behind — and #1980 is the reason: an
+// unguarded read taken only because synctest.Wait() reported the bubble idle
+// is trusting that idleness implies a write landed, which is not this
+// package's guarantee to make. This is for the opposite case, a test that
+// deliberately wants the answer *before* an in-flight build settles — proving
+// a same-URI notification is still queued behind one that has not finished,
+// rather than proving what either eventually settles to.
+func (c *client) rawServerDoc(uri string) (*document, bool) {
 	return c.server.docs.get(lsp.DocumentURI(uri))
 }
 

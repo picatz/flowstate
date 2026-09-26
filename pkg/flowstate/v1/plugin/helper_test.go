@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -114,6 +115,48 @@ func runFakePlugin() int {
 	go exitWhenHostExits()
 
 	switch mode {
+	case "exit-with-child":
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := os.WriteFile(os.Getenv("FLOWSTATE_TEST_CHILD_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 3
+
+	case "exit-with-stubborn-child":
+		// Ignoring SIGTERM here, in the leader, before forking is what makes
+		// this race-free: fork duplicates the parent's signal disposition
+		// table atomically, so the child is born with SIGTERM already
+		// ignored, with no window during its own startup where the default
+		// disposition (terminate) could apply — unlike a child that has to
+		// run a `trap` statement of its own after starting, which loses
+		// exactly that race against a signal sent this soon after Start
+		// returns. POSIX keeps an ignored disposition across exec too (only
+		// a caught signal resets to default), so it survives into
+		// /bin/sleep. One process, one pid throughout, that a plain SIGTERM
+		// cannot end — which is what proves escalation to SIGKILL actually
+		// runs rather than only being reachable in principle.
+		//
+		// ignoreSIGTERM is unix-only (see helper_unix_test.go /
+		// helper_other_test.go): this whole mode is only ever launched by
+		// launch_linux_test.go, but the case has to compile everywhere this
+		// package builds.
+		ignoreSIGTERM()
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := os.WriteFile(os.Getenv("FLOWSTATE_TEST_CHILD_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 3
+
 	case "exit-now", "crash-loop":
 		fmt.Fprintln(os.Stderr, "this plugin exits immediately")
 		return 3
@@ -179,6 +222,34 @@ func runFakePlugin() int {
 		}
 		fakeAnnounce()
 		return 0
+
+	case "with-stubborn-child":
+		// Spawns the same SIGTERM-ignoring straggler as
+		// "exit-with-stubborn-child", but unlike that mode, does not return
+		// here — it falls through to handshake and serve normally, so
+		// launch actually succeeds. That matters because the other mode's
+		// leader never gets past its own handshake, so launch's own
+		// error-handling defer always calls [instance.stop] itself,
+		// synchronously, before a test can ever call it — leaving no
+		// separate, later call for a test to catch racing the waiter
+		// goroutine's own escalation. Here the leader only leaves this
+		// process once a test acts on it directly (killing the leader pid,
+		// not the plugin exiting on its own initiative), which is what
+		// lets a test recreate [instance.stop]'s third-round finding: the
+		// leader already gone by the time anything calls stop, so stop's
+		// own SIGTERM branch has nothing to do, and only the waiter
+		// goroutine's [escalateAbandonedGroup] call ever signals the
+		// straggler.
+		ignoreSIGTERM()
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := os.WriteFile(os.Getenv("FLOWSTATE_TEST_CHILD_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
 
 	case "record-run":
 		// Touches the file its env names the instant it runs, then exits

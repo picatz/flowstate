@@ -500,12 +500,13 @@ func TestAContainersShapeIsWhatSurvivesLeafRedaction(t *testing.T) {
 	assert.Equal(t, "a map", kind)
 }
 
-// TestWithheldMaterialKeepsEveryTaintedVarButALiteralSeed is the one narrowing
-// that survives: a literal var named by `secrets:` is already that case's own
-// secret, and withholding it file-wide would change what a case that never
-// named it redacts. Everything else the closure reaches is withheld, computed
-// or not — a literal can only be tainted by standing between expressions.
-func TestWithheldMaterialKeepsEveryTaintedVarButALiteralSeed(t *testing.T) {
+// TestWithheldMaterialKeepsEveryTaintedVarIncludingALiteralSeed drives #2041:
+// a literal var named straight from `secrets:` used to be left out of the
+// withheld set on the reasoning that its plaintext already reaches the case
+// that declared the secret. That assumed one reader; any case's fixture may
+// substitute `${vars.x}`, so the seed must be in the file-wide set exactly
+// like a computed or derived var.
+func TestWithheldMaterialKeepsEveryTaintedVarIncludingALiteralSeed(t *testing.T) {
 	t.Parallel()
 
 	declared := map[string]*varDeclaration{"header": {deps: []string{"token", "prefix"}}}
@@ -528,15 +529,17 @@ func TestWithheldMaterialKeepsEveryTaintedVarButALiteralSeed(t *testing.T) {
 	assert.Equal(t, []string{"Authorization", "Bearer", "Bearer s3cr3t", "s3cr3t"}, withheld.text,
 		"a map's keys carry material as readily as its values")
 
-	// And the exclusion, driven where it applies: a *literal* seed.
+	// A *literal* seed — no `vars:` entry computes it, `secrets:` names it
+	// directly — is withheld exactly like the computed case above.
 	p = newProblems(nil)
 	literalSeed := withheldMaterial(p, at("vars"), map[string]*varDeclaration{},
 		taintedVars(nil, map[string]string{"token": `tests[0].secrets["auth"]`}),
 		map[string]bool{"token": true}, map[string]any{"token": "s3cr3t"})
 
 	require.Nil(t, p.err())
-	assert.Empty(t, literalSeed.names,
-		"a literal named straight from `secrets:` is already that case's own secret")
+	assert.Equal(t, []string{"token"}, literalSeed.names,
+		"a literal named straight from `secrets:` is withheld file-wide, not just for its own case (#2041)")
+	assert.Equal(t, []string{"s3cr3t"}, literalSeed.text)
 }
 
 // TestWithheldMaterialRefusesAValueItCannotAffordToProtect: over the bound the

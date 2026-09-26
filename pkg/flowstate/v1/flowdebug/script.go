@@ -324,7 +324,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known, candidates)
+			checkStepArgument(report, number, line, id, known, candidates, len(problems) < MaxScriptProblems)
 
 		case "break":
 			id, condition, conditional, err := splitCondition(rest, grammarBreak)
@@ -351,7 +351,7 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 
 				continue
 			}
-			checkStepArgument(report, number, line, id, known, candidates)
+			checkStepArgument(report, number, line, id, known, candidates, len(problems) < MaxScriptProblems)
 
 		case "inspect":
 			if strings.TrimSpace(rest) == "" {
@@ -373,6 +373,14 @@ func CheckScript(lines []string, steps []string) (problems []ScriptProblem, tota
 // at.
 // names is [CheckScript]'s sorted candidate list, built once for the whole
 // script: see there for why it is sorted and why it is not rebuilt here.
+//
+// detail is false once the report has already reached [MaxScriptProblems]. A
+// refused id past the cap is still counted — [CheckScript]'s report closure
+// does that regardless — but the suggestion search below is [nearest.Name]
+// scanning every candidate, and the fallback is [stepList] rendering the same
+// list: work sized to the workflow's inventory that a script may trigger once
+// per refused line, up to [MaxScriptCommands] of them, for a diagnostic the
+// report cannot retain past the cap (Codex, #2003).
 func checkStepArgument(
 	report func(line, column int, format string, args ...any),
 	number int,
@@ -380,6 +388,7 @@ func checkStepArgument(
 	id string,
 	known map[string]struct{},
 	names []string,
+	detail bool,
 ) {
 	if len(known) == 0 {
 		return
@@ -389,6 +398,11 @@ func checkStepArgument(
 	}
 
 	column := columnOf(line, argumentOffset(line))
+	if !detail {
+		report(number, column, "no step named %q", id)
+
+		return
+	}
 
 	if suggestion, found := nearest.Name(id, names); found {
 		report(number, column, "no step named %q: did you mean %q?", id, suggestion)

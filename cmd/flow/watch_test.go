@@ -964,6 +964,12 @@ func TestWatchDrawsNoViewWhenAFormatWasAskedFor(t *testing.T) {
 			poller := &scriptedPoller{answers: []pollAnswer{finishedPoll("greet")}}
 			surface, out, _ := plainSurface()
 			surface.ErrCaps.TTY = true
+			// Both TTY gates claim a terminal, so this test can only be
+			// about the format flag: with InputTTY left false, watchRun's
+			// `|| !surface.InputTTY` clause would send every case to the
+			// plain path on its own, and a broken format check would go
+			// unnoticed.
+			surface.InputTTY = true
 
 			require.NoError(t, watchRun(t.Context(), surface, renderingOf(format), poller, time.Millisecond, false,
 				"flowstate-workflow-3f7c", nil))
@@ -999,6 +1005,11 @@ func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
 	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
 	surface, out, errOut := plainSurface()
 	surface.ErrCaps.TTY = true
+	// Both TTY gates claim a terminal, so this test can only be about
+	// --plain: with InputTTY left false, watchRun's `|| !surface.InputTTY`
+	// clause would choose the plain path on its own, and a broken --plain
+	// check would go unnoticed.
+	surface.InputTTY = true
 
 	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, true,
 		"flowstate-workflow-3f7c", nil))
@@ -1007,6 +1018,46 @@ func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
 		"--plain did not produce one line per change:\n%s", errOut.String())
 	require.NotContains(t, errOut.String(), "q stops watching",
 		"a live view was drawn despite --plain")
+	require.Contains(t, out.String(), `"steps"`)
+}
+
+// TestWatchUsesLinesWhenOnlyOutputIsATerminal prevents redirected input from
+// controlling the live view. stderr commonly remains attached to a terminal in a
+// pipeline, but bytes from that pipeline are data rather than q/escape commands.
+func TestWatchUsesLinesWhenOnlyOutputIsATerminal(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
+	surface, out, errOut := plainSurface()
+	surface.ErrCaps.TTY = true
+	surface.InputTTY = false
+
+	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, false,
+		"flowstate-workflow-3f7c", nil))
+
+	require.Len(t, reportedLines(errOut.String()), 2,
+		"redirected input entered a live view instead of producing lines:\n%s", errOut.String())
+	require.NotContains(t, errOut.String(), "q stops watching",
+		"a live view accepted commands from redirected stdin")
+	require.Contains(t, out.String(), `"steps"`)
+}
+
+// TestWatchUsesLinesWhenOnlyInputIsATerminal is the mirror of the test above:
+// an interactive shell whose stderr is redirected (`flow watch 2>log`) must not
+// draw the live view into the file. Every other surface a test builds leaves
+// InputTTY false too, so without this case the stderr half of the gate would be
+// covered by nothing once the stdin half was added beside it.
+func TestWatchUsesLinesWhenOnlyInputIsATerminal(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
+	surface, out, errOut := plainSurface()
+	surface.ErrCaps.TTY = false
+	surface.InputTTY = true
+
+	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, false,
+		"flowstate-workflow-3f7c", nil))
+
+	require.Len(t, reportedLines(errOut.String()), 2,
+		"a redirected stderr got a live view instead of lines:\n%s", errOut.String())
+	require.NotContains(t, errOut.String(), "q stops watching",
+		"a live view was drawn into a redirected stderr")
 	require.Contains(t, out.String(), `"steps"`)
 }
 
@@ -1539,6 +1590,33 @@ func TestAWatchReportsEveryChangeItWouldRender(t *testing.T) {
 			name:   "retries stop being partial",
 			before: running(func(r *v1.GetResponse) { r.PendingActivitiesTruncated = true }),
 			after:  running(func(*v1.GetResponse) {}),
+		},
+		{
+			name: "retry starts running",
+			before: running(func(r *v1.GetResponse) {
+				r.PendingActivities[0].NextAttemptScheduledTime = timestamppb.New(observed)
+			}),
+			after: running(func(*v1.GetResponse) {}),
+		},
+		{
+			name:   "running attempt starts waiting to retry",
+			before: running(func(*v1.GetResponse) {}),
+			after: running(func(r *v1.GetResponse) {
+				r.PendingActivities[0].NextAttemptScheduledTime = timestamppb.New(observed)
+			}),
+		},
+		{
+			// pendingActivityLines appends the phase whenever one is reported;
+			// an identity that leaves it out suppresses a heartbeat moving from
+			// "requesting" to "reading the response".
+			name:   "running attempt's phase changes",
+			before: running(func(r *v1.GetResponse) { r.PendingActivities[0].Phase = "requesting" }),
+			after:  running(func(r *v1.GetResponse) { r.PendingActivities[0].Phase = "reading the response" }),
+		},
+		{
+			name:   "running attempt starts reporting a phase",
+			before: running(func(*v1.GetResponse) {}),
+			after:  running(func(r *v1.GetResponse) { r.PendingActivities[0].Phase = "requesting" }),
 		},
 		{
 			// The same hole one field over, which predates the retries' one.

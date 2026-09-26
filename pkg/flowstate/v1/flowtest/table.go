@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 )
 
@@ -15,7 +16,24 @@ import (
 // that could come to disagree with them (#416's answers, inherited verbatim
 // rather than re-decided). Only the fields `defaults:` has no opinion about
 // are merged here, and all of them take the same one direction: the row's own
-// value wins, and the entry's is what a row that stated none inherits.
+// value wins, and the entry's is what a row that stated none inherits —
+// including Secrets, which docs/CLI.md documents as inherited or replaced
+// whole exactly like Trigger, Starter and Signals: a row that names its own
+// secret is deliberately choosing not to bind the entry's, which is how a row
+// exercises the "no matching secrets entry" refusal for a secret its entry
+// declares.
+//
+// That whole-replace rule is about the *secret backend* [Test.Secrets] binds
+// — what a stubbed task's `${secret(...)}` resolves to. It says nothing about
+// what a row's rendered text may print: the entry's plaintext is a fact about
+// the file whether or not this row bound it, so [expandTableEntries] also
+// carries it into every row's `entrySecretMaterial`, a redaction-only value
+// [casePosture] reads alongside [Test.Secrets] (#2041 — a row that replaced
+// its `secrets:` used to lose the entry's material from its posture too, not
+// only from its bindings). Computed once per entry and shared by every row
+// under it rather than copied: the two concerns cost what they need to and no
+// more, an unbound map for the first and one small read-only slice for the
+// second.
 
 // expandTableEntries turns every entry that declares `cases:` into its rows,
 // leaving entries that declare none exactly as they were.
@@ -99,6 +117,21 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 
 			continue
 		}
+		// Bound here rather than left to the per-test check every expanded
+		// row gets below: that check reads each row's own effective
+		// Secrets, and a row that names even one secret of its own replaces
+		// the entry's map entirely (Secrets stays whole-or-nothing), so an
+		// entry over the limit whose every row overrides would never trip
+		// it there. Below this point the entry's plaintext is also about to
+		// be read into entrySecretMaterial and shared by every row for
+		// redaction, so bounding it first bounds that too (Codex).
+		if len(entry.Secrets) > MaxSecretsPerTest {
+			p.report(site{test: entry.Name, at: where.field("secrets")},
+				"test %q table entry declares %d secrets, more than the limit of %d",
+				entry.Name, len(entry.Secrets), MaxSecretsPerTest)
+
+			continue
+		}
 		// Judge the expectation fields the entry wrote once, while both its
 		// source path and its identity are still available. mergeExpectation
 		// marks the copies each row inherits, so the ordinary case pass below
@@ -111,6 +144,16 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 		checkOthers(p, entrySite, &entry)
 		checkCheckClaims(p, entrySite.in(where.field("expect").field("check")),
 			fmt.Sprintf("test %q expect", entry.Name), entry.Expect.Check, len(entry.Expect.Check), "")
+
+		// The entry's own secret plaintext, read once regardless of how many
+		// rows it has: every row under this entry shares this same slice for
+		// redaction (see this file's own doc comment), so the cost of an
+		// entry with many secrets and many rows is paid once, not once per
+		// row.
+		var entrySecretMaterial []string
+		if len(entry.Secrets) > 0 {
+			entrySecretMaterial = slices.Collect(maps.Values(entry.Secrets))
+		}
 
 		for i, row := range entry.Cases {
 			rowWhere := where.field("cases").item(i)
@@ -140,7 +183,9 @@ func expandTableEntries(p *problems, tests []Test) ([]Test, []caseSource) {
 
 				continue
 			}
-			expanded = append(expanded, mergeRow(entry, row))
+			merged := mergeRow(entry, row)
+			merged.entrySecretMaterial = entrySecretMaterial
+			expanded = append(expanded, merged)
 			// Counted before the merge below folds the entry's stubs and
 			// claims in: what the row wrote itself is what this document can
 			// point at, and the rest belongs to the entry or to `defaults:`.

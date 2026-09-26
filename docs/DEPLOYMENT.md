@@ -53,15 +53,48 @@ tenant it serves — not just the tenant whose run happened to launch it.
 
 **What the host isolates, stated plainly (#1010):** a plugin runs as the same
 user as the worker, with the worker's full filesystem, network and kernel
-reach. The host guarantees which bytes run when pinned, that the plugin
-cannot read the worker's memory or its environment-borne credentials, cannot
-impersonate the host on its socket, and cannot outlive it. It does not
-constrain what the plugin does with the worker's own privileges — resource
-limits, filesystem visibility and syscall filtering are the deployment's job,
-exactly as they are for the worker itself. The host isolates **by process,
-not by privilege**, and no schema vocabulary claims otherwise; see [the
-four-tier isolation model](#the-four-tier-isolation-model) for where that
-kind of control actually lives.
+reach. The host guarantees which bytes run when pinned, and that the plugin
+does not directly inherit the worker's environment. The clean launch
+environment is not a confidentiality boundary: where the OS permits
+same-user process inspection, a plugin may still read the worker's
+environment and memory. It does not constrain what the plugin does with the
+worker's own privileges — resource limits, filesystem visibility and syscall
+filtering are the deployment's job, exactly as they are for the worker
+itself. The host isolates **by process, not by privilege**, and no schema
+vocabulary claims otherwise; see [the four-tier isolation
+model](#the-four-tier-isolation-model) for where that kind of control
+actually lives.
+
+Two more claims are true only within narrower limits than they first sound,
+for the same reason as above: same-user process inspection. A plugin's
+socket rejects a caller that never received the per-launch token, but that
+token sits in the worker's own memory before launch and moves into the
+plugin's own memory afterward — over a pipe on an inherited descriptor
+rather than the environment, so it is not one more thing `pluginEnv` has to
+guard, but memory inspection does not care which path a value arrived by
+(`launch.go`'s `tokenPipe`, `transport.go`'s `authInterceptor`). The
+guarantee is against a stranger that was never handed the token, not
+against the plugin itself or a same-user process that can read either
+process's memory. And group termination reaches every descendant left in
+the plugin's process group whether the host stops it while the leader is
+still alive (`instance.stop`) or the leader exits or crashes on its own
+first — the launch goroutine that reaps it signals the group immediately,
+then polls and escalates to SIGKILL (`launch.go`'s
+`escalateAbandonedGroup`) — but only a descendant that stayed in the
+group; one a plugin deliberately forked into a session of its own is
+unreached either way, and neither path is containment against a plugin
+actively working to evade it, which the opening paragraph already says
+plainly. `instance.stop` waits for that escalation to finish before it
+returns. If the caller's context ends first, the escalation is cut short
+and sends its SIGKILL at once (bounded by a further second for it to
+land), the same rule `instance.stop` applies to a leader that outlives
+its context. So a caller winding a plugin or the whole host down
+(`Host.Close`) does not return, and the worker process does not exit,
+leaving a stubborn descendant that nothing will kill. Run the worker under
+an init process (`docker run --init`, tini) rather than as PID 1: orphaned
+helpers reparent to PID 1, and one that never reaps them leaves zombies
+that keep the group looking alive, so every plugin stop waits out its full
+grace period (#2078).
 
 ### Pinning which bytes a plugin name may run
 
@@ -127,15 +160,19 @@ for them — that is the open half of #146, and it is not what this answers.
 `pluginEnv` builds a plugin's environment from nothing, not by inheriting the
 worker's own (`pkg/flowstate/v1/plugin/launch.go`, `pluginEnv`). The worker's
 environment is where its own credentials live — a Temporal API key, a cloud
-role, whatever the deployment set as `FLOWSTATE_SECRET_*` — and a plugin
-process does not see any of it unless an operator names it explicitly in
-`Config.Env`. So the blast radius above is real, but it is *not* "a plugin can
-read `$FLOWSTATE_SECRET_DB_PASSWORD` off the worker's environment just by
-existing" — it has to be handed a secret through the sanctioned path
+role, whatever the deployment set as `FLOWSTATE_SECRET_*` — and a plugin's
+*own* environment block does not carry any of it unless an operator names it
+explicitly in `Config.Env`: that is non-inheritance, the narrower claim the
+caveat above already draws the line around, not immunity from the same-user
+process inspection that caveat names. So the blast radius above is real, but
+it is *not* "a plugin can read `$FLOWSTATE_SECRET_DB_PASSWORD` off the
+worker's environment just by existing, with no OS-level access beyond its
+own process" — it has to be handed a secret through the sanctioned path
 (`TaskManifest.secret_inputs`, resolved worker-side and passed over the
-socket) or reach it some other way. Know this before either over-trusting a
-plugin ("it's sandboxed, right?") or over-building a containment layer that
-duplicates a property the worker already has.
+socket), find it through the inspection the caveat above admits, or reach it
+some other way. Know this before either over-trusting a plugin ("it's
+sandboxed, right?") or over-building a containment layer that duplicates a
+property the worker already has.
 
 ### SQL plugin deployment and migration
 
@@ -1563,6 +1600,21 @@ resolved operation decision. That is deliberate, not an oversight — see
 `pkg/flowstate/v1/audit`'s package doc and `proto/flowstate/v1/audit.proto`'s
 file comment for why a scrubber was rejected in favor of a record with nothing
 in it for a scrubber to catch.
+
+**A second decision on the same RPC.** `Run`'s and `SignalWithStart`'s
+admission ALLOW answers one question — may this caller start work in their
+own namespace — and is written before either can reach a further question the
+target workflow itself declares an opinion on: whether its `manual:` block
+permits this caller to start it at all, and, for `SignalWithStart` delivering
+to an entity that already exists, whether the entity's own `signals:` policy
+permits this sender's delivery. Each is a second, independent decision, so a
+refusal there writes a second record under the same `rpc` name, coded
+`POLICY_DENIED` and scoped to the run (`RUN`, keyed by the workflow id), rather
+than leaving the admission ALLOW as the only trace of a request that was in
+fact turned away (picatz/flowstate#1889; the delivery half is #1883). The two
+records do not always name the same resource: `SignalWithStart`'s admission
+ALLOW is already scoped to that run, while `Run`'s is scoped to the caller's
+`NAMESPACE`, so correlate a refused `Run` by request rather than by resource.
 
 **What `flow worker` records.** The same record, in the same sinks, for the
 four decisions a worker makes about a workload already running: whether a task
