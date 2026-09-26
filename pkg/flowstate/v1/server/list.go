@@ -133,17 +133,27 @@ const (
 	maxListPositionBytes = 2048
 )
 
-// scanSegment is what one List scan currently knows about a continued
-// workload's most recently met segment: when it started, and where its
-// summary lives in the page, when it has a place there at all.
+// scanSegment is what one List scan currently knows about a workflow id's
+// most recently met execution: when it started, what its own chain start
+// says (see [FlowstateServer.chainOf]), and where its summary lives in the
+// page, when it has a place there at all.
 //
-// index is -1 for a segment this scan already decided against — an earlier
-// segment skipped by status, or a current one the filter excluded — so a
-// duplicate older than it is skipped too rather than filling a page's slot
-// the current segment itself did not earn. See [FlowstateServer.List]'s use.
+// chainStart is what decides whether a second execution sharing this id is
+// really this segment's chain rather than a distinct workload that happens
+// to reuse the id — concurrency's default reuse policy
+// ([v1.ConcurrencyWorkflowID]) lets a fresh run start under an id a finished
+// one already used, and that run is not this one's earlier or later segment
+// merely for sharing it.
+//
+// index is -1 for an execution this scan already decided against — an
+// earlier segment skipped by status, or a current one the filter excluded —
+// so a duplicate of the same chain, older still, is skipped too rather than
+// filling a page's slot the current segment itself did not earn. See
+// [FlowstateServer.List]'s use.
 type scanSegment struct {
-	start time.Time
-	index int
+	start      time.Time
+	chainStart time.Time
+	index      int
 }
 
 // List returns a page of the runs belonging to the caller's tenant.
@@ -211,13 +221,13 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	scanned := 0
 	requests := 0
 
-	// The scan's own account of each continued workload's most recent segment
-	// so far, so a workflow id met more than once in this scan is settled by
-	// which execution started later rather than by the status the visibility
-	// store currently reports for the other one — see the comment at its use
-	// below (#2104). Bounded by the scan itself: it holds at most one entry
-	// per unique workflow id among the executions read, never more than
-	// scanned.
+	// The scan's own account of each workflow id's most recently met
+	// execution so far, so an id met more than once in this scan is settled
+	// by its chain memo and start time rather than by the status the
+	// visibility store currently reports for the other one — see the
+	// comment at its use below (#2104, #2112 review). Bounded by the scan
+	// itself: it holds at most one entry per unique workflow id among the
+	// executions read, never more than scanned.
 	segments := make(map[string]scanSegment, pageSize)
 
 	// The filter's account of this page: how many of the caller's runs it was
@@ -307,23 +317,73 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// become visible itself; a scan that landed inside that window showed
 			// the workload as two rows, which is the soak failure #2104
 			// reproduces. A segment's own start time does not have that lag — it
-			// is set once, at the start, and a later segment's is always after an
-			// earlier one's — so it is what decides between two executions sharing
-			// a workflow id, whichever order this scan happens to meet them in.
+			// is set once, at the start — so it replaces status as the tiebreak
+			// between two executions sharing a workflow id.
+			//
+			// But sharing an id is not by itself sharing a chain: concurrency's
+			// default reuse policy ([v1.ConcurrencyWorkflowID]) lets a fresh run
+			// start under an id a finished, unrelated run already used, and
+			// deciding by start time alone merged that finished run into whichever
+			// one this scan met last — hiding it outright behind a status filter,
+			// among other things (#2112 review, F1). What tells the two apart is
+			// the chain memo [FlowstateServer.chainOf] already reads: a genuine
+			// successor's own chain start — its memo's, when it wrote one, or its
+			// own start otherwise — is never after the segment it continues from,
+			// while a fresh run under a reused id writes no memo at all, so its
+			// chain start is its own and always after the previous run's.
 			workflowID := execution.GetExecution().GetWorkflowId()
 			startTime := execution.GetStartTime().AsTime()
+			chainStart := s.chainOf(execution, execution.GetStartTime()).started.AsTime()
 
 			prior, known := segments[workflowID]
-			if known && !startTime.After(prior.start) {
-				// A segment of this workload already decided about, started no
-				// later than this one: an earlier segment, skipped whatever status
-				// it happens to report, without spending a filter evaluation on an
-				// execution that cannot change the page.
+			isOlder := known && !startTime.After(prior.start)
+
+			var sameChain bool
+			switch {
+			case !known:
+				// Nothing to compare against yet.
+			case isOlder:
+				sameChain = !prior.chainStart.After(startTime)
+			default:
+				sameChain = !chainStart.After(prior.start)
+			}
+
+			if isOlder && sameChain {
+				// A genuine earlier segment of the workload already decided
+				// about: skipped whatever status it happens to report, without
+				// spending a filter evaluation on an execution that cannot
+				// change the page.
 				continue
 			}
 
+			// A later execution that turns out not to be this chain — or any
+			// execution when nothing is known about its id yet — is evaluated
+			// entirely on its own, below, exactly as if it were the first
+			// thing this scan had met under the id. Only when it is a genuine,
+			// later segment of the chain already decided about does it
+			// supersede that decision's slot in the page rather than take a
+			// new one.
+			supersedes := sameChain && !isOlder && prior.index >= 0
+
+			// Whether this execution's own account should become what the next
+			// one sharing the id is compared against. Not when it is an
+			// older, unrelated run under a reused id: the newer one already on
+			// record stays on record, since it is the more recent thing this
+			// scan has met under the id, and there is only ever room here to
+			// track one.
+			trackable := !known || !isOlder
+
 			if execution.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW {
-				segments[workflowID] = scanSegment{start: startTime, index: -1}
+				if supersedes {
+					// The chain's current segment turned out to itself be one
+					// this listing has moved past (a later one continued again
+					// since); the row it was about to take the place of is
+					// stale until whatever comes next is met (#2112 review, F2).
+					runs[prior.index] = nil
+				}
+				if trackable {
+					segments[workflowID] = scanSegment{start: startTime, chainStart: chainStart, index: -1}
+				}
 				continue
 			}
 
@@ -361,26 +421,42 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 				if firstErr == nil {
 					firstErr = err
 				}
-				segments[workflowID] = scanSegment{start: startTime, index: -1}
+				if supersedes {
+					// The chain's current segment does not answer for the
+					// filter; the slot its predecessor was about to keep is
+					// stale, not a second-best answer (#2112 review, F2).
+					runs[prior.index] = nil
+				}
+				if trackable {
+					segments[workflowID] = scanSegment{start: startTime, chainStart: chainStart, index: -1}
+				}
 				continue
 			}
 			if !matched {
-				segments[workflowID] = scanSegment{start: startTime, index: -1}
+				if supersedes {
+					runs[prior.index] = nil
+				}
+				if trackable {
+					segments[workflowID] = scanSegment{start: startTime, chainStart: chainStart, index: -1}
+				}
 				continue
 			}
 
-			if known && prior.index >= 0 {
-				// This execution supersedes a segment of the same workload
-				// already placed in the page: the same slot, so a workload that
-				// continued as new never costs the page two while this scan is
-				// still catching up to which segment is current (#2104).
+			if supersedes {
+				// This execution is a later segment of the same chain as the
+				// one already placed in the page: the same slot, so a
+				// workload that continued as new never costs the page two
+				// while this scan is still catching up to which segment is
+				// current (#2104).
 				runs[prior.index] = run
-				segments[workflowID] = scanSegment{start: startTime, index: prior.index}
+				segments[workflowID] = scanSegment{start: startTime, chainStart: chainStart, index: prior.index}
 				continue
 			}
 
 			runs = append(runs, run)
-			segments[workflowID] = scanSegment{start: startTime, index: len(runs) - 1}
+			if trackable {
+				segments[workflowID] = scanSegment{start: startTime, chainStart: chainStart, index: len(runs) - 1}
+			}
 			if len(runs) == pageSize {
 				break
 			}
@@ -393,6 +469,19 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			break
 		}
 	}
+
+	// A slot a later segment's own exclusion emptied (#2112 review, F2) is
+	// compacted out here rather than reclaimed during the scan: the page
+	// coming back short by that many is the honest answer, and reclaiming it
+	// would mean either scanning further than the budget above already
+	// decided or shifting every index this loop is still comparing against.
+	kept := runs[:0]
+	for _, run := range runs {
+		if run != nil {
+			kept = append(kept, run)
+		}
+	}
+	runs = kept
 
 	// Set whenever Temporal has more to give, including when this page came
 	// back short because the scan budget ran out first. A caller that stops on

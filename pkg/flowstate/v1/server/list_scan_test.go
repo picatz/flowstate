@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	common "go.temporal.io/api/common/v1"
+	deployment "go.temporal.io/api/deployment/v1"
 	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
@@ -21,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1types "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
 // The scan is the part of List that can be made expensive by someone else.
@@ -74,6 +76,28 @@ func mineMemo(t *testing.T) *common.Memo {
 	require.NoError(t, err)
 
 	return &common.Memo{Fields: map[string]*common.Payload{namespaceMemoKey: payload}}
+}
+
+// chainMemo is [mineMemo]'s memo with a continued segment's chain fields
+// added exactly as [engine.recordChain] writes them: the workload's start,
+// and how many segments it has run as. What ties two executions sharing a
+// workflow id together as one chain rather than two unrelated runs that
+// merely reuse the id (#2112 review, F1) — see [FlowstateServer.chainOf].
+func chainMemo(t *testing.T, workloadStarted time.Time, segments uint32) *common.Memo {
+	t.Helper()
+
+	memo := mineMemo(t)
+
+	startedPayload, err := converter.GetDefaultDataConverter().ToPayload(
+		workloadStarted.UTC().Format(time.RFC3339Nano))
+	require.NoError(t, err)
+	segmentsPayload, err := converter.GetDefaultDataConverter().ToPayload(segments)
+	require.NoError(t, err)
+
+	memo.Fields[engine.WorkloadStartedMemoKey] = startedPayload
+	memo.Fields[engine.SegmentsMemoKey] = segmentsPayload
+
+	return memo
 }
 
 // runOwnedByWithName is an execution belonging to owner (empty means the
@@ -182,10 +206,10 @@ func TestListStopsOnceThePageIsFull(t *testing.T) {
 
 	temporal := &mocks.Client{}
 
-	// Distinct ids, not a repeated "mine": these represent separate workloads,
-	// and a real namespace could no more repeat a workflow id across them than
-	// this listing may collapse them into one — the same identity the dedup
-	// below now cares about for a continued workload's own segments (#2104).
+	// Distinct ids, not a repeated "mine": the dedup below (#2104, and F1 of
+	// #2112's review) decides identity by workflow id, so a repeated id here
+	// would no longer count as the several separate workloads this test
+	// means to build, whatever the dedup made of it.
 	scanned := 0
 	minted := 0
 	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
@@ -610,25 +634,28 @@ func TestListDedupesAContinuedWorkloadWhileVisibilityLagsBehind(t *testing.T) {
 	t.Parallel()
 
 	base := time.Now()
-	memo := mineMemo(t)
 	segments := []*workflow.WorkflowExecutionInfo{
 		{
 			// The segment it continued from, met first. Its visibility record
 			// has not caught up to CONTINUED_AS_NEW yet, and still reads
-			// RUNNING.
+			// RUNNING. A first segment, so it wrote no chain memo of its own —
+			// engine.recordChain never runs on one.
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
 			StartTime: timestamppb.New(base),
-			Memo:      memo,
+			Memo:      mineMemo(t),
 		},
 		{
 			// The current segment, met second, and started after the one
 			// above — the fact the fix goes on, whatever order the scan met
-			// them in.
+			// them in. Its own chain memo already names run-1's start: what
+			// [engine.recordChain] wrote when this segment began, which is
+			// what tells this pair apart from two unrelated runs that merely
+			// share the id (#2112 review, F1).
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
 			StartTime: timestamppb.New(base.Add(time.Minute)),
-			Memo:      memo,
+			Memo:      chainMemo(t, base, 1),
 		},
 	}
 
@@ -643,6 +670,171 @@ func TestListDedupesAContinuedWorkloadWhileVisibilityLagsBehind(t *testing.T) {
 		"a workload was listed twice while its earlier segment's status had not yet caught up")
 	require.Equal(t, "run-2", response.Msg.GetRuns()[0].GetRunId(),
 		"the listing named the workload's earlier segment instead of its current one")
+}
+
+// reusedIDExecutions is two distinct, unrelated executions sharing one
+// workflow id the way concurrency's default reuse policy
+// ([v1types.ConcurrencyWorkflowID]) produces it: a finished run, and a fresh
+// one started under the same id once the first released it. Neither carries
+// the other's chain memo, because neither continued from the other.
+func reusedIDExecutions(t *testing.T, base time.Time, olderStatus enums.WorkflowExecutionStatus) []*workflow.WorkflowExecutionInfo {
+	t.Helper()
+
+	return []*workflow.WorkflowExecutionInfo{
+		{
+			Execution: &common.WorkflowExecution{WorkflowId: "fs-concurrency-x", RunId: "old"},
+			Status:    olderStatus,
+			StartTime: timestamppb.New(base),
+			CloseTime: timestamppb.New(base.Add(time.Minute)),
+			Memo:      mineMemo(t),
+		},
+		{
+			Execution: &common.WorkflowExecution{WorkflowId: "fs-concurrency-x", RunId: "new"},
+			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			StartTime: timestamppb.New(base.Add(time.Hour)),
+			Memo:      mineMemo(t),
+		},
+	}
+}
+
+// TestListDoesNotMergeDistinctRunsSharingAReusedWorkflowId is #2112's review
+// finding F1: deciding by start time alone, as the #2104 fix first did,
+// merged any two executions sharing a workflow id — including two that are
+// not a chain at all. Concurrency's default reuse policy
+// (server.go, [v1types.ConcurrencyWorkflowID]) lets a fresh run start under
+// an id a finished, unrelated run already used
+// ([TestConcurrencyReleasesTheKeyWhenTheRunEnds]), and merging that pair hid
+// the finished run behind whichever one this scan met last.
+func TestListDoesNotMergeDistinctRunsSharingAReusedWorkflowId(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	runs := reviewList(t, "", reusedIDExecutions(t, base, enums.WORKFLOW_EXECUTION_STATUS_COMPLETED)...)
+	require.Len(t, runs, 2, "a finished run under a reused id was hidden behind the fresh one that reused it")
+}
+
+// reviewList runs [FlowstateServer.List] with the given filter over exactly
+// the executions given, in the order given — the scan order a caller cannot
+// control and this dedup must not depend on.
+func reviewList(t *testing.T, filter string, executions ...*workflow.WorkflowExecutionInfo) []*v1types.RunSummary {
+	t.Helper()
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{Executions: executions}, nil)
+
+	resp, err := mustNew(t, temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{Filter: filter}))
+	require.NoError(t, err)
+
+	return resp.Msg.GetRuns()
+}
+
+// TestListReusedIdFilterFindsTheOlderRunRegardlessOfScanOrder is F1's other
+// direction: not only must the finished run stay listed, a filter that only
+// it answers for must still reach it — whichever of the two this scan meets
+// first, since a caller's filter never sees the one this dedup silently
+// dropped for looking like an earlier segment.
+func TestListReusedIdFilterFindsTheOlderRunRegardlessOfScanOrder(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	const filter = `status == "FAILED"`
+
+	older, newer := reusedIDExecutions(t, base, enums.WORKFLOW_EXECUTION_STATUS_FAILED)[0],
+		reusedIDExecutions(t, base, enums.WORKFLOW_EXECUTION_STATUS_FAILED)[1]
+
+	for name, executions := range map[string][]*workflow.WorkflowExecutionInfo{
+		"older met first": {older, newer},
+		"newer met first": {newer, older},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runs := reviewList(t, filter, executions...)
+			require.Len(t, runs, 1, "the failed run under a reused id was not found")
+			require.Equal(t, "old", runs[0].GetRunId(),
+				"the filter reached a run other than the one it asked about")
+		})
+	}
+}
+
+// chainedVersionedSegment is a continued segment carrying a real chain memo
+// ([chainMemo]) and a worker deployment version — a field that legitimately
+// changes across Continue-As-New, so a filter naming it is exactly the case
+// #2112's review finding F2 is about.
+func chainedVersionedSegment(t *testing.T, run string, workloadStarted, ownStart time.Time, segments uint32, build string) *workflow.WorkflowExecutionInfo {
+	t.Helper()
+
+	return &workflow.WorkflowExecutionInfo{
+		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: run},
+		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		StartTime: timestamppb.New(ownStart),
+		Memo:      chainMemo(t, workloadStarted, segments),
+		VersioningInfo: &workflow.WorkflowExecutionVersioningInfo{
+			DeploymentVersion: &deployment.WorkerDeploymentVersion{DeploymentName: "dep", BuildId: build},
+		},
+	}
+}
+
+// TestListFilterExcludingTheCurrentSegmentDropsTheWholeChain is F2: a filter
+// answers about the workload's current state, so when the current segment
+// does not match, the workload does not either — not "whichever of its
+// segments the scan happened to place first". Before this, the answer
+// depended on scan order: the stale predecessor's row, placed before the
+// current segment's own exclusion was known, was never retracted.
+func TestListFilterExcludingTheCurrentSegmentDropsTheWholeChain(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	const filter = `worker_version == "dep.v1"`
+
+	older := chainedVersionedSegment(t, "run-1", base, base, 0, "v1")
+	newer := chainedVersionedSegment(t, "run-2", base, base.Add(time.Minute), 1, "v2")
+
+	for name, executions := range map[string][]*workflow.WorkflowExecutionInfo{
+		"older met first": {older, newer},
+		"newer met first": {newer, older},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runs := reviewList(t, filter, executions...)
+			require.Empty(t, runs,
+				"the workload was listed by a filter its current segment does not answer for")
+		})
+	}
+}
+
+// TestListFilterOrderIndependenceAcrossAContinuedWorkload is the same
+// question with neither segment carrying a chain memo — the visibility-lag
+// window itself, where this dedup cannot tell the pair from two unrelated
+// runs sharing a reused id and, per F1, must not guess that they are one
+// chain. Both segments are then judged independently, and the answer must
+// still not depend on which one the scan meets first.
+func TestListFilterOrderIndependenceAcrossAContinuedWorkload(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	const filter = `worker_version == "dep.v1"`
+
+	older := &workflow.WorkflowExecutionInfo{
+		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
+		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		StartTime: timestamppb.New(base),
+		Memo:      mineMemo(t),
+		VersioningInfo: &workflow.WorkflowExecutionVersioningInfo{
+			DeploymentVersion: &deployment.WorkerDeploymentVersion{DeploymentName: "dep", BuildId: "v1"},
+		},
+	}
+	newer := &workflow.WorkflowExecutionInfo{
+		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
+		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		StartTime: timestamppb.New(base.Add(time.Minute)),
+		Memo:      mineMemo(t),
+		VersioningInfo: &workflow.WorkflowExecutionVersioningInfo{
+			DeploymentVersion: &deployment.WorkerDeploymentVersion{DeploymentName: "dep", BuildId: "v2"},
+		},
+	}
+
+	olderFirst := reviewList(t, filter, older, newer)
+	newerFirst := reviewList(t, filter, newer, older)
+	require.Equal(t, len(olderFirst), len(newerFirst), "the listing depends on scan order")
 }
 
 // And asked about directly, a segment reports the workload's state rather than
