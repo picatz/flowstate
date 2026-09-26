@@ -443,3 +443,151 @@ func TestEveryDepthOfTheBlankLineBombCostsTheSame(t *testing.T) {
 		"refusal cost grows with the bomb's depth (%d bytes at depth 10, %d at depth 16), so the expansion "+
 			"is still being materialized before it is refused", costs[10], costs[16])
 }
+
+// #2075: [fixer.blockEnd] walks forward from a block's key past every
+// trailing blank line and dedented comment to find where the block ends.
+// [aliasInliner.spliceBlock] asked it for the same answer on every site that
+// aliases one anchor, before this file's own fix cached it — so an anchor
+// with a long blank tail, referenced by many sites, paid for that walk
+// sites × lines rather than sites + lines. Neither of #2072's budgets sees
+// it: the byte charge prices what a site's replacement actually contains
+// (here, one short leaf line — a blank tail past the block's last piece of
+// real content extends nothing to charge for), and the node budget never
+// looks at blank lines at all. The scan itself is the whole uncharged cost,
+// and it allocates nothing a MemStats comparison (this file's alias-bomb
+// tests) could see, so the tests below check it on a plain counter instead —
+// see [fixer.blockEndScans].
+
+// blockEndBombFlowfile builds a Flowfile whose anchor `l` opens a block
+// holding one leaf line, then blankTail blank lines with no further content
+// under it, then sites aliases of `l` as `u0: *l`, `u1: *l`, and so on. Every
+// one of those sites expands the same anchor, so [aliasInliner.spliceBlock]
+// asks [fixer.blockEnd] for that anchor's block extent once per site.
+func blockEndBombFlowfile(sites, blankTail int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  l: &l\n    leaf: 1\n")
+	b.WriteString(strings.Repeat("\n", blankTail))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *l\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// blockEndScansOf runs the inliner over src and returns how many lines
+// [fixer.blockEnd] scanned across the whole rewrite, requiring the rewrite to
+// succeed: a refused rewrite stops expanding sites partway through, which
+// would understate the count on either side of the fix and make the two
+// harder to tell apart rather than easier.
+func blockEndScansOf(t *testing.T, src string) int {
+	t.Helper()
+
+	data := []byte(src)
+	file, err := parser.ParseBytes(data, parser.ParseComments)
+	require.NoError(t, err)
+
+	in, _, ok := runAliasInliner(data, file)
+	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
+
+	return in.f.blockEndScans
+}
+
+// TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct is
+// #2075's acceptance criterion: scanning one anchor's block extent for many
+// sites costs about what scanning it once does, not what scanning it once
+// per site does.
+//
+// few and many alias the same anchor over the same blank tail, differing
+// only in how many sites there are (5 against 100 — a 20x difference).
+// Cached per anchor (fixed), both scan the tail exactly once, so many costs
+// about what few does. Recomputed per site (unfixed), blockEnd runs once per
+// site, so many costs about 20x what few does — sites × lines, not
+// sites + lines.
+func TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct(t *testing.T) {
+	t.Parallel()
+
+	const blankTail = 6000
+
+	few := blockEndScansOf(t, blockEndBombFlowfile(5, blankTail))
+	many := blockEndScansOf(t, blockEndBombFlowfile(100, blankTail))
+
+	require.Less(t, many, few*3,
+		"scanning grew from %d to %d lines scanned as the site count went from 5 to 100 over the same "+
+			"%d-line blank tail; blockEnd's block-extent scan is being repeated per site rather than "+
+			"cached per anchor, which is #2075", few, many, blankTail)
+
+	// Not just bounded — actually tracking the tail, so a cache keyed wrong
+	// (or not keyed at all) does not pass the ratio check above for the
+	// wrong reason.
+	require.InDelta(t, blankTail, many, float64(blankTail)/2,
+		"expanding 100 sites over a %d-line blank tail scanned %d lines; expected roughly one scan of "+
+			"the tail (#2075)", blankTail, many)
+}
+
+// TestAliasInlinerBlockEndScansScaleWithTheBlankTail is the other half of
+// [TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct]: fixed
+// code still has to scan a longer tail more, or the cache would be hiding
+// the cost rather than paying it once. Held at a fixed, generous site count
+// so any per-site sliver the cache leaves uncovered does not mask a tail
+// that scaled wrong.
+func TestAliasInlinerBlockEndScansScaleWithTheBlankTail(t *testing.T) {
+	t.Parallel()
+
+	const sites = 50
+
+	short := blockEndScansOf(t, blockEndBombFlowfile(sites, 3000))
+	long := blockEndScansOf(t, blockEndBombFlowfile(sites, 30000))
+
+	require.InDelta(t, 10*short, long, float64(short),
+		"a 10x longer blank tail scanned %d -> %d lines at the same %d sites; expected roughly a 10x "+
+			"increase, not a flat cost that would mean the tail is never actually scanned", short, long, sites)
+}
+
+// longScalarBomb builds a Flowfile whose anchor `l` names a single-line
+// scalar valueLen bytes long, aliased by sites sites as `u0: *l`, `u1: *l`,
+// and so on. [aliasInliner.spliceScalar] locates that value with
+// [byteOffsetOfColumn], which rescans the anchor's own line from its start —
+// the issue's own note that this "looks like the same shape" as blockEnd's
+// scan (#2075), here isolated to just that shape rather than a block's.
+func longScalarBomb(sites, valueLen int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "edition: v2026.3\nname: t\nvars:\n  l: &l %s\n", strings.Repeat("x", valueLen))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *l\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// TestAliasInlinerScalarValueComputedOncePerAnchor is
+// [TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct]'s
+// counterpart for [aliasInliner.spliceScalar]: a long one-line scalar
+// anchor's value, aliased by many sites, is located once and reused rather
+// than rescanned at every site. [aliasInliner.scalarValueComputations]
+// counts [aliasInliner.scalarValueOf]'s own calls, which only happen on a
+// [aliasInliner.scalarValues] cache miss — one per anchor, not one per site.
+func TestAliasInlinerScalarValueComputedOncePerAnchor(t *testing.T) {
+	t.Parallel()
+
+	const sites = 40
+	src := longScalarBomb(sites, 2000)
+
+	data := []byte(src)
+	file, err := parser.ParseBytes(data, parser.ParseComments)
+	require.NoError(t, err)
+
+	in, out, ok := runAliasInliner(data, file)
+	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
+
+	require.Equal(t, 1, in.scalarValueComputations,
+		"expanding %d sites that alias one scalar anchor computed its value %d times; expected once, "+
+			"reused from every other site (#2075)", sites, in.scalarValueComputations)
+
+	value := strings.Repeat("x", 2000)
+	for i := range sites {
+		require.Contains(t, string(out), fmt.Sprintf("u%d: %s", i, value),
+			"site u%d was not correctly rewritten with the anchor's value", i)
+	}
+}

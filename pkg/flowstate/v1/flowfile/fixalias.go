@@ -191,6 +191,29 @@ type aliasInliner struct {
 	// the growth would let a large file's last few bytes of headroom be spent
 	// on an expansion this rewrite never priced.
 	bytes int
+
+	// blockEnds caches [fixer.blockEnd]'s answer for an anchor's block
+	// extent, keyed by the anchor itself, so an anchor many sites alias is
+	// scanned once rather than once per site (#2075). Nothing moves the
+	// lines a cached answer was computed from while sites are still being
+	// expanded — [aliasInliner.rewrite] only ever edits [fixer.lines] itself
+	// in [aliasInliner.dropMarker], after every site's replacement is
+	// already recorded — so the same [first, last] line range answers every
+	// site that opens on this anchor.
+	blockEnds map[*ast.AnchorNode]int
+
+	// scalarValues caches the source text [aliasInliner.spliceScalar] reads
+	// off an anchor's own line, for the same reason [blockEnds] does:
+	// [byteOffsetOfColumn] rescans that line from its start on every call,
+	// and a scalar anchor many sites alias would otherwise pay that rescan
+	// again at every site rather than once (#2075).
+	scalarValues map[*ast.AnchorNode]string
+
+	// scalarValueComputations counts [aliasInliner.scalarValueOf]'s own
+	// calls — one per anchor that misses [scalarValues], never one per
+	// site — the counter a test checks to prove that caching, the same way
+	// [fixer.blockEndScans] proves [blockEnds] (#2075).
+	scalarValueComputations int
 }
 
 // collectAnchors records every anchor in the document, walking with [ast.Walk] so
@@ -617,18 +640,48 @@ func (in *aliasInliner) spliceScalar(site aliasSite, prefix, suffix string, anch
 		return nil, false
 	}
 
+	value, ok := in.scalarValues[anchor]
+	if !ok {
+		var found bool
+		value, found = in.scalarValueOf(site, anchor, span)
+		if !found {
+			return nil, false
+		}
+		if in.scalarValues == nil {
+			in.scalarValues = map[*ast.AnchorNode]string{}
+		}
+		in.scalarValues[anchor] = value
+	}
+
+	// The whole rebuilt line, not just value: prefix carries this site's own
+	// indentation and key, which #2045 found could dwarf a tiny aliased value
+	// once nested deep enough — appendLine charges what this function is
+	// actually about to hand back, not one ingredient of it.
+	return in.appendLine(site.alias, nil, prefix+value+suffix)
+}
+
+// scalarValueOf reads the source text of an anchor's one-line value, span
+// already validated by [aliasInliner.spliceScalar]. It exists to be called
+// once per anchor and cached in [aliasInliner.scalarValues]: [byteOffsetOfColumn]
+// rescans the anchor's own line from its start every time it is called, and a
+// scalar anchor many sites alias would otherwise pay that rescan again at
+// every site rather than once — the same shape [aliasInliner.blockEnds]
+// caches for a block value (#2075).
+func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, span Span) (string, bool) {
+	in.scalarValueComputations++
+
 	text := in.f.line(span.Start.Line)
 	from, located := byteOffsetOfColumn(text, span.Start.Column)
 	if !located {
 		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
 
-		return nil, false
+		return "", false
 	}
 	through, ended := byteOffsetOfColumn(text, span.End.Column)
 	if !ended || through < from {
 		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
 
-		return nil, false
+		return "", false
 	}
 
 	value := text[from:through]
@@ -637,14 +690,10 @@ func (in *aliasInliner) spliceScalar(site aliasSite, prefix, suffix string, anch
 			"the anchor `&%s` names no value, so there is nothing to write in this alias's place; write the value out by hand",
 			anchorName(anchor))
 
-		return nil, false
+		return "", false
 	}
 
-	// The whole rebuilt line, not just value: prefix carries this site's own
-	// indentation and key, which #2045 found could dwarf a tiny aliased value
-	// once nested deep enough — appendLine charges what this function is
-	// actually about to hand back, not one ingredient of it.
-	return in.appendLine(site.alias, nil, prefix+value+suffix)
+	return value, true
 }
 
 // spliceBlock replaces an alias with a value written as a block: a mapping or a
@@ -680,7 +729,15 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 		return nil, false
 	}
 
-	last := in.f.blockEnd(first-1, base-1)
+	last, cached := in.blockEnds[anchor]
+	if !cached {
+		last = in.f.blockEnd(first-1, base-1)
+		if in.blockEnds == nil {
+			in.blockEnds = map[*ast.AnchorNode]int{}
+		}
+		in.blockEnds[anchor] = last
+	}
+
 	raw, ok := in.expandRange(site.alias, first, last, stack)
 	if !ok {
 		return nil, false
