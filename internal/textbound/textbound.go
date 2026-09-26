@@ -19,30 +19,24 @@ package textbound
 
 import (
 	"strings"
-	"unicode/utf8"
 )
 
-// Cut bounds s to at most limit bytes without splitting a rune and drops any
-// bytes that are not valid UTF-8, so the result is always valid. It carries no
-// marker: a caller that states the cut in its own words appends its own.
+// Cut bounds s to at most limit bytes and drops any bytes that are not valid
+// UTF-8, so the result is always valid. It carries no marker: a caller that
+// states the cut in its own words appends its own.
 //
-// Only the bounded prefix is examined, so the work is proportional to limit
-// rather than to len(s). A limit below zero is treated as zero.
+// The byte limit alone can leave a multi-byte rune split at its edge. That
+// split leaves an incomplete encoding, which is invalid UTF-8, so
+// [strings.ToValidUTF8] removes it along with any bytes that were already
+// invalid; the guarantee that no result ever splits a rune rests on that
+// call, not on where the limit falls. Only the bounded prefix is examined, so
+// the work is proportional to limit rather than to len(s). A limit below zero
+// is treated as zero.
 func Cut(s string, limit int) string {
 	if limit < 0 {
 		limit = 0
 	}
 	if len(s) > limit {
-		start := limit
-		for start > 0 && !utf8.RuneStart(s[start]) {
-			start--
-		}
-		// Only a rune that begins before the limit and ends past it straddles
-		// the cut. Continuation bytes that do not complete one are already
-		// invalid, and the sanitizing pass below drops them either way.
-		if _, size := utf8.DecodeRuneInString(s[start:]); start+size > limit {
-			limit = start
-		}
 		s = s[:limit]
 	}
 	return strings.ToValidUTF8(s, "")
