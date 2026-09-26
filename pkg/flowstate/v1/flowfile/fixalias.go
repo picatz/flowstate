@@ -214,6 +214,37 @@ type aliasInliner struct {
 	// site — the counter a test checks to prove that caching, the same way
 	// [fixer.blockEndScans] proves [blockEnds] (#2075).
 	scalarValueComputations int
+
+	// splits caches [aliasInliner.split]'s answer for one alias, keyed by
+	// the alias node itself. A site nested inside a block that many outer
+	// sites re-expand is not itself re-expanded once per outer site — it is
+	// [aliasInliner.replacement]'s own recursion through
+	// [aliasInliner.expandRange] that visits it again for every outer
+	// site — so without this cache, [split] rescans that inner alias's own
+	// line (byte offset, trailing comment, key-colon checks) once per
+	// outer site rather than once for the alias, the same shape [blockEnds]
+	// and [scalarValues] close for an anchor's own line (#2075).
+	splits map[*ast.AliasNode]splitResult
+
+	// splitComputations counts [aliasInliner.split]'s own calls — one per
+	// alias that misses [splits], never one per outer site that happens to
+	// re-expand it — the counter a test checks to prove that caching, the
+	// same way [scalarValueComputations] proves [scalarValues] (#2075).
+	splitComputations int
+
+	// splitScans counts the bytes of the alias's own line [split] reads on
+	// each of its own calls (never on a [splits] cache hit): unlike
+	// [scalarValueComputations], which only has to show the call count stay
+	// flat, this has to show the same shape [fixer.blockEndScans] does —
+	// that the *work* per call still scales with the line, not just that
+	// the call count stayed low — since [byteOffsetOfColumn] scans the
+	// alias's own line up to its column, which is O(line length) (#2075).
+	splitScans int
+}
+
+// splitResult is one alias's cached [aliasInliner.split] answer.
+type splitResult struct {
+	prefix, suffix string
 }
 
 // collectAnchors records every anchor in the document, walking with [ast.Walk] so
@@ -467,7 +498,7 @@ func (in *aliasInliner) replacement(site aliasSite, stack []string) ([]string, b
 		return nil, false
 	}
 
-	prefix, suffix, ok := in.split(site)
+	prefix, suffix, ok := in.splitOf(site)
 	if !ok {
 		return nil, false
 	}
@@ -500,6 +531,31 @@ func (in *aliasInliner) replacement(site aliasSite, stack []string) ([]string, b
 	}
 }
 
+// splitOf returns [aliasInliner.split]'s answer for site, computed once per
+// alias and cached in [aliasInliner.splits]: a site nested inside a block
+// is re-split every time [aliasInliner.replacement]'s own recursion through
+// [aliasInliner.expandRange] visits it again for another outer site, and
+// without this cache that repeats [split]'s scan of the alias's own line —
+// potentially long — once per outer site rather than once for the alias
+// itself (#2075).
+func (in *aliasInliner) splitOf(site aliasSite) (prefix, suffix string, ok bool) {
+	if cached, hit := in.splits[site.alias]; hit {
+		return cached.prefix, cached.suffix, true
+	}
+
+	prefix, suffix, ok = in.split(site)
+	if !ok {
+		return "", "", false
+	}
+
+	if in.splits == nil {
+		in.splits = map[*ast.AliasNode]splitResult{}
+	}
+	in.splits[site.alias] = splitResult{prefix, suffix}
+
+	return prefix, suffix, true
+}
+
 // split returns the text of a site's line before and after the alias, and checks
 // that both are shapes the replacement can be built around.
 //
@@ -508,8 +564,11 @@ func (in *aliasInliner) replacement(site aliasSite, stack []string) ([]string, b
 // else there means the line holds more than this one value, and a whole-line edit
 // would lose it.
 func (in *aliasInliner) split(site aliasSite) (prefix, suffix string, ok bool) {
+	in.splitComputations++
+
 	pos := site.alias.Start.Position
 	text := in.f.line(pos.Line)
+	in.splitScans += len(text)
 
 	at, located := byteOffsetOfColumn(text, pos.Column)
 	if !located {

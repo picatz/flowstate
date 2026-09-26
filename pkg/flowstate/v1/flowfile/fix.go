@@ -449,11 +449,11 @@ type fixer struct {
 	// call a fix makes to it over this document. Nothing bounds this walk by
 	// itself — [fixer.blockEnd]'s own doc comment says why a block's extent
 	// takes a full scan to find — so a caller that asks for the same range
-	// more than once pays for the scan again each time. [aliasInliner] caches
-	// its own calls against this counter growing per anchor rather than per
-	// site (#2075); kept as a plain counter, not a benchmark, because the
-	// scan itself performs no allocation a `-bench`/MemStats comparison could
-	// see.
+	// more than once pays for the scan again each time. A test reads this
+	// counter to prove that [aliasInliner]'s own cache keeps its scans
+	// growing per anchor, not per site (#2075); kept as a plain counter, not
+	// a benchmark, because the scan itself performs no allocation a
+	// `-bench`/MemStats comparison could see.
 	blockEndScans int
 }
 

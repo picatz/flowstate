@@ -591,3 +591,138 @@ func TestAliasInlinerScalarValueComputedOncePerAnchor(t *testing.T) {
 			"site u%d was not correctly rewritten with the anchor's value", i)
 	}
 }
+
+// #2075's independent review: [aliasInliner.split] has the same shape as
+// [fixer.blockEnd] and [byteOffsetOfColumn] in [aliasInliner.spliceScalar],
+// but on a *site*'s own line rather than an anchor's. An alias nested inside
+// a block is not itself re-expanded once per outer site — it is
+// [aliasInliner.replacement]'s own recursion through
+// [aliasInliner.expandRange] that visits that inner site again for every
+// outer site that re-expands the block around it — so [split]'s scan of
+// that inner alias's own line (potentially long: the padding between a key's
+// colon and the alias it is a value of) was being paid again at every outer
+// site rather than once for the alias.
+
+// splitBombFlowfile builds a Flowfile whose anchor `a` opens a one-line
+// block: a single key `k` whose value is an alias `*b` to a short anchor
+// `b`, separated from the colon by padding spaces. sites outer sites
+// (`u0: *a`, `u1: *a`, and so on) all alias `a`, so
+// [aliasInliner.replacement]'s recursion through [aliasInliner.expandRange]
+// visits the inner `*b` site once per outer site — the reviewer's own probe
+// for this shape used 10,000 such sites over a 500,000-column padding.
+func splitBombFlowfile(sites, padding int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
+	fmt.Fprintf(&b, "  a: &a\n    k:%s*b\n", strings.Repeat(" ", padding))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *a\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// splitScansOf runs the inliner over src and returns how many bytes
+// [aliasInliner.split] scanned across the whole rewrite, requiring the
+// rewrite to succeed for the same reason [blockEndScansOf] does.
+func splitScansOf(t *testing.T, src string) int {
+	t.Helper()
+
+	data := []byte(src)
+	file, err := parser.ParseBytes(data, parser.ParseComments)
+	require.NoError(t, err)
+
+	in, _, ok := runAliasInliner(data, file)
+	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
+
+	return in.splitScans
+}
+
+// TestAliasInlinerSplitScansGrowWithSitesPlusLineLengthNotTheirProduct is
+// [TestAliasInlinerBlockEndScansGrowWithSitesPlusLinesNotTheirProduct]'s
+// counterpart for [aliasInliner.split]: 5 outer sites vs. 100 outer sites,
+// all re-expanding the same padded inner alias, scan about the same number
+// of bytes when the inner alias's split is cached (~one scan of the padded
+// line plus one short line per outer site); recomputed per outer site, 100
+// sites cost about 20x what 5 do — sites × line length, not
+// sites + line length.
+func TestAliasInlinerSplitScansGrowWithSitesPlusLineLengthNotTheirProduct(t *testing.T) {
+	t.Parallel()
+
+	const padding = 20000
+
+	few := splitScansOf(t, splitBombFlowfile(5, padding))
+	many := splitScansOf(t, splitBombFlowfile(100, padding))
+
+	require.Less(t, many, few*3,
+		"scanning grew from %d to %d bytes as the outer site count went from 5 to 100 over the same "+
+			"%d-column padded inner alias; split's scan of an inner alias's own line is being repeated "+
+			"per outer site rather than cached per alias, which is #2075", few, many, padding)
+
+	require.InDelta(t, padding, many, float64(padding)/2,
+		"expanding 100 outer sites over a %d-column padded inner alias scanned %d bytes; expected "+
+			"roughly one scan of that line (#2075)", padding, many)
+}
+
+// TestAliasInlinerSplitScansScaleWithTheLineLength is
+// [TestAliasInlinerBlockEndScansScaleWithTheBlankTail]'s counterpart for
+// [aliasInliner.split]: fixed code still has to scan a longer padded line
+// more, held at a fixed outer site count so a per-site sliver the cache
+// leaves uncovered does not mask a line that scaled wrong. This is a
+// companion guard on the cache's shape, not a regression test on its own —
+// disabling only [aliasInliner.splits] still satisfies it, since both sides
+// then scale the same wrong way; it is
+// [TestAliasInlinerSplitScansGrowWithSitesPlusLineLengthNotTheirProduct]
+// that catches the missing cache.
+func TestAliasInlinerSplitScansScaleWithTheLineLength(t *testing.T) {
+	t.Parallel()
+
+	const sites = 50
+	const shortPadding = 2000
+	const longPadding = 20000
+
+	short := splitScansOf(t, splitBombFlowfile(sites, shortPadding))
+	long := splitScansOf(t, splitBombFlowfile(sites, longPadding))
+
+	// The two configurations share the same sites outer lines byte for
+	// byte, so whatever constant those add to both sides cancels out of the
+	// difference: what's left is exactly the padding this rewrite actually
+	// scanned once (fixed) rather than sites times (unfixed).
+	require.Equal(t, longPadding-shortPadding, long-short,
+		"a %d-byte longer padded line scanned %d more bytes at the same %d outer sites; expected "+
+			"exactly the padding difference, not a flat cost that would mean the line is never "+
+			"actually scanned", longPadding-shortPadding, long-short, sites)
+}
+
+// TestAliasInlinerSplitComputedOncePerAlias is
+// [TestAliasInlinerScalarValueComputedOncePerAnchor]'s counterpart for
+// [aliasInliner.split]: 40 outer sites re-expanding one inner alias compute
+// its split once, not 40 times, and every outer site is still rewritten
+// correctly all the way down to the leaf scalar the chain bottoms out at.
+func TestAliasInlinerSplitComputedOncePerAlias(t *testing.T) {
+	t.Parallel()
+
+	const sites = 40
+	src := splitBombFlowfile(sites, 500)
+
+	data := []byte(src)
+	file, err := parser.ParseBytes(data, parser.ParseComments)
+	require.NoError(t, err)
+
+	in, out, ok := runAliasInliner(data, file)
+	require.True(t, ok, "expected the rewrite to succeed; refusals: %v", in.refusals)
+
+	// sites outer computations (each a distinct alias, no cache to hit) plus
+	// one for the inner `*b` site, computed once and reused by every other
+	// outer site rather than once per outer site (#2075).
+	require.Equal(t, sites+1, in.splitComputations,
+		"expanding %d outer sites that all re-expand one inner alias computed splits %d times; "+
+			"expected %d (one per outer site plus one for the shared inner alias), not repeated "+
+			"per outer site", sites, in.splitComputations, sites+1)
+
+	require.NotContains(t, string(out), "*a", "an outer alias survived the rewrite unexpanded")
+	require.NotContains(t, string(out), "*b", "the inner alias survived the rewrite unexpanded")
+	require.Equal(t, sites+2, strings.Count(string(out), "leaf: 1"),
+		"expected the leaf value once for `b`'s own declaration, once for `a`'s own declaration, "+
+			"and once per outer site's fully-expanded chain")
+}
