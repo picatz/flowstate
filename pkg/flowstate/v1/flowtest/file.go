@@ -1383,10 +1383,23 @@ func parseSourceWith(data []byte, dd *dirDefaults, selfPath string, requireWorkf
 	// names directly is already knowable now, syntactically, with no
 	// evaluation needed ([secretHoldingVars]), so its raw text is withheld
 	// before checkVars can quote it (Copilot, #2080's own review: the mixed
-	// fence's literal text was echoed verbatim from exactly this gap). The
-	// full taint closure — aliases, siblings, backward edges through a
-	// derived var — still waits for evaluateVars, which widens this same set
-	// again once it exists, additively, never replacing it.
+	// fence's literal text was echoed verbatim from exactly this gap).
+	//
+	// Deliberately the direct names only, not evaluateVars' own full
+	// [taintedVars] closure: a var reachable only through another var's
+	// alias — Codex's finding on an earlier pass at this — can be a
+	// structured literal whose own descendants (map keys among them) then
+	// join the set this early, and [scrubbedVarError] quotes a *dependency's
+	// name* in an otherwise-safe sentence — "this expression reads
+	// vars.request.token" — that a descendant string coincidentally equal to
+	// part of that name then redacts wrongly
+	// ([TestRefusedDynamicLeafIndexKeepsItsStaticTaintBase] pins the
+	// invariant this would break). The full closure still runs, correctly
+	// timed after that sentence is already rendered, in evaluateVars itself;
+	// widening the early pass to match it is this fix's own accepted
+	// residual — a mixed-fence bug on a var reachable only through another
+	// var's alias, within this same file, before evaluateVars has run — not
+	// a claim that no gap of that shape remains anywhere.
 	var earlyWithheld []string
 	for name := range secretHoldingVars(file.Tests) {
 		collectVarStrings(file.Vars[name], 0, &earlyWithheld)

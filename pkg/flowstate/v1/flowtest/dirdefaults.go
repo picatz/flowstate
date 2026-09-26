@@ -401,6 +401,22 @@ func siblingTaintedVarNames(dd *dirDefaults, selfPath string) (holding map[strin
 	holding = map[string]string{}
 	for _, name := range candidates {
 		path := filepath.Join(dir, name)
+
+		// Stat before Open, and skip anything Open would block on rather
+		// than refuse (Codex): [readBounded] refuses whatever is not a
+		// regular file, but it does that by asking the *open* descriptor,
+		// and opening a FIFO with nobody writing to it — or a symlink to
+		// one, named `*.test.yaml` in this same directory — blocks there
+		// before that refusal is ever reached. The suite this load was
+		// asked to open has always accepted that risk on the one path an
+		// author named; a sibling this scan discovered on its own, and
+		// that author never named, has not, so it is checked first and
+		// skipped without ever calling Open on it. [os.Stat] follows a
+		// symlink to ask what it names without opening either end.
+		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+
 		data, err := readBounded(path, MaxTestFileBytes, "test file")
 		if err != nil {
 			continue
