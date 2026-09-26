@@ -46,9 +46,10 @@ FuzzLoadSource               pkg/flowstate/v1/flowtest      smoke,deep
 # case for a tier there is, and it is why the target exists.
 #
 # The engine package does not boot its Temporal dev server for a fuzzing
-# process — see `fuzzing` in engine/main_test.go — because the tiers run one
-# command per target with no per-target flags and there would otherwise be
-# nowhere to put the `-short` that boot needs.
+# process — see `fuzzing` in engine/main_test.go. Both tiers now pass `-short`
+# on the command line itself (tools/fuzzrun's fuzzCommand for smoke, deep.yml's
+# own loop for deep — #2098), which already skips the boot; `fuzzing` remains
+# for a developer who fuzzes this package by hand without `-short`.
 FuzzSignalDeliveryDecode     pkg/flowstate/v1/engine        deep
 
 # The two interpolation-scanner targets have never been in either tier: they
