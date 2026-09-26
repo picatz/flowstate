@@ -826,19 +826,33 @@ func maxScanned(inputLen int) int {
 // review found it refused legitimate documents nowhere near [maxBytes] on
 // their own — see [scanBudgetMultiple]'s comment).
 //
-// It is the one accounting path every per-expansion read of line or token
-// text in this file goes through — [split], [spanOfNode]/[tokenText] on an
-// anchor's value (via [aliasInliner.spanOf]), the derived trims
-// [splitResult] precomputes, [fixer.blockEnd], [byteOffsetOfColumn], and
-// [indentWidth] — so a read added later that forgets to memoize its own
-// answer is still bounded by [maxScanned] rather than bounded only by
-// whichever cache someone remembered to write for it. That bound on its own
-// does not prove a read is actually cached, only that it cannot run away
-// unbounded either way — [aliasInliner.rawScannedBytes] is what a test
-// checks for the caching itself, incremented at each scan directly rather
-// than through this function, so a mutant that kept this charge but
-// reverted a cache still shows up there even though this function alone
-// cannot tell the difference.
+// Every per-expansion read this file's own caches exist for goes through
+// this, from the wrapper that owns the cache rather than from the scanning
+// call itself: [split]'s own line-charge (wrapping [byteOffsetOfColumn]
+// and every `strings.Trim*` that reads the same line) and its key-charge
+// (wrapping [spanOfNode] on the site's own key), [aliasInliner.spanOf]
+// (wrapping [spanOfNode]/[tokenText] on an anchor's whole value),
+// [aliasInliner.scalarValueOf] (wrapping two [byteOffsetOfColumn] calls),
+// [aliasInliner.spliceBlock]'s [aliasInliner.blockBases] block (wrapping
+// two [indentWidth] calls), and [aliasInliner.spliceBlock]'s own read of
+// [fixer.blockEndBytesScanned] — so a read added later that forgets to
+// charge is still bounded by [maxScanned], not bounded only by whichever
+// cache someone remembered to write for it. Two reads in
+// [aliasInliner.spliceBlock] are not routed here at all: `indentWidth(prefix)`,
+// computing where the shifted block goes, and the shifting loop's own
+// `strings.TrimSpace`/[indentWidth] over each line of the range
+// [aliasInliner.blockEnds] already bounded. Both read text
+// [aliasInliner.appendLine] already charges as output on the same call —
+// prefix is the current site's own line, already charged in [split]; the
+// range's lines are charged as they are copied into the replacement — so
+// their size is bounded by [aliasInliner.bytes] rather than needing a
+// second charge here.
+//
+// This bound alone does not prove a read is actually cached, only that it
+// cannot run away unbounded either way — a wrapper that charges through
+// this function on every call, cache or not, still passes. See
+// [aliasInliner.rawScannedBytes], which a test reads instead, for the
+// cache itself.
 func (in *aliasInliner) chargeScan(alias *ast.AliasNode, n int) bool {
 	in.scanned += n
 	if limit := maxScanned(in.inputLen); in.scanned > limit {
@@ -1051,8 +1065,9 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 		// cost immediately after, before the range is used to build a
 		// replacement, into the same budget every other scan in this file
 		// charges before running. A document with many anchors each
-		// opening a large block is still bounded by [maxBytes] the same
-		// way one anchor aliased by many sites already is (#2075).
+		// opening a large block is still bounded by [maxScanned], not
+		// [maxBytes] — this is a scan, not output — the same way one
+		// anchor aliased by many sites already is (#2075).
 		if !in.chargeScan(site.alias, in.f.blockEndBytesScanned-before) {
 			return nil, false
 		}
