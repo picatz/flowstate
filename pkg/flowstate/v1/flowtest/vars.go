@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -936,7 +937,12 @@ type fileVars struct {
 // own diagnostic is the one an author acts on, and a cascade would report one
 // mistake once per reader of it — the rule [problems] already states for a
 // value whose kind is already wrong.
-func (f *File) evaluateVars(p *problems) {
+// dd is the directory's shared fixture this file loaded with, or nil, and
+// selfPath is this file's own path, or "" for a door with no path
+// ([LoadSource]) — both exist only to widen the secret-holding seed below
+// across the directory's other suite files (#2080); nothing else here reads
+// either.
+func (f *File) evaluateVars(p *problems, dd *dirDefaults, selfPath string) {
 	block := at(v1.VarsRoot)
 
 	nodes := collectVarNodes(f.Vars)
@@ -952,7 +958,23 @@ func (f *File) evaluateVars(p *problems) {
 	// means in #1072's record: the seed is a syntactic fact about the document
 	// and the closure is a fact about the dependency graph, so a refusal below
 	// knows what it may not print before there is a value to print.
-	taint := taintedVars(declared, expandSecretHolding(secretHoldingVars(f.Tests), nodes))
+	//
+	// Widened to every other suite file in the directory when one states a
+	// shared testdefaults.yaml (#2080): [secretHoldingVars] alone only ever
+	// sees this document, so a var seeded by one file's `secrets:` and merely
+	// *read* by this one under the identical name — because the value both
+	// files see came from the directory's shared vars, not from either
+	// suite's own — went untainted here. See [siblingSecretHoldingVars]'s own
+	// doc for why this is gated on dd rather than run unconditionally.
+	holding := secretHoldingVars(f.Tests)
+	if dd != nil {
+		for name, where := range siblingSecretHoldingVars(filepath.Dir(dd.path), selfPath) {
+			if _, seen := holding[name]; !seen {
+				holding[name] = where
+			}
+		}
+	}
+	taint := taintedVars(declared, expandSecretHolding(holding, nodes))
 
 	resolved := make(map[string]bool, len(nodes))
 	for _, name := range slices.Sorted(maps.Keys(nodes)) {
@@ -1042,6 +1064,15 @@ func (f *File) evaluateVars(p *problems) {
 		values[id] = node.value
 	}
 	f.varsWithheld = withheldMaterial(p, block, declared, taint, resolved, values)
+
+	// From here on, every problem this load reports may have had a withheld
+	// var substituted into the fixture position it is about — [File.resolveVars]
+	// runs next — so every one of them is cleared through what this file
+	// withholds, in both spellings, the pair every other rendering in this
+	// package already carries (#2080). A problem reported above this line
+	// cannot yet quote var-derived material: nothing has substituted a var
+	// into anything yet.
+	p.withholdText(f.varsWithheld.text)
 }
 
 func expandSecretHolding(holding map[string]string, nodes map[string]varNode) map[string]string {

@@ -364,6 +364,24 @@ type problems struct {
 	// the collector pays nothing for a line most reports never print.
 	sole  string
 	spans bool
+
+	// sensitive is what a problem's own message may not print, installed once
+	// [File.evaluateVars] has computed what the file's `vars:` withhold
+	// (#2080's [problems.withholdText]) — the zero value beforehand, which
+	// redacts nothing and costs one nil check per problem. `problems.report`
+	// in this package quotes a fixture value the way every other rendering
+	// here does — `%q` — and a value substituted from a withheld var is run
+	// data by the time it reaches one of those positions exactly as it is
+	// once a case binds it, so it needs the identical pair of spellings.
+	sensitive sensitiveInputs
+}
+
+// withholdText widens what a problem's message may not print with text, in
+// both plain and `%q` spellings — the pair [bothSpellings] gives every other
+// rendering in this package. Called once, by [File.evaluateVars], right after
+// it computes what the file's vars withhold.
+func (p *problems) withholdText(text []string) {
+	p.sensitive = p.sensitive.WithValues(bothSpellings(text)...)
 }
 
 // newProblems collects against a parsed document, or against none — the Go
@@ -421,6 +439,15 @@ func (p *problems) reportKey(r site, format string, args ...any) {
 
 // record appends one problem, up to both bounds, counting every one.
 func (p *problems) record(r site, atKey bool, message string) {
+	// Cleared before either bound reads its length, so both are bounds on
+	// what a reader would actually see (#2080): a problem quoting a fixture
+	// value substituted from a withheld var must not print it any more than a
+	// case's own check witness does, once [File.evaluateVars] has installed
+	// what this load withholds ([problems.withholdText]). The zero value
+	// beforehand redacts nothing, so a problem reported before vars are known
+	// costs the one nil check [SensitiveValues.RedactSubstrings] already pays.
+	message = p.sensitive.RedactSubstrings(message)
+
 	p.total++
 
 	// Which document the problem is about is decided for every problem found,

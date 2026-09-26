@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/goccy/go-yaml/parser"
 )
@@ -356,4 +358,92 @@ func (dd *dirDefaults) combineInto(file *File) contribution {
 	moved.paths = contributed
 
 	return moved
+}
+
+// siblingSecretHoldingVars widens [secretHoldingVars] to every other suite
+// file in dir, so a var seeded by one file's `secrets:` is tainted in a
+// sibling that only ever reads the value [DirDefaultsName] gave it, rather
+// than in the one file that happened to name the var itself (#2080).
+//
+// Scoped to directories that actually state a shared fixture — a suite with
+// no [DirDefaultsName] beside it shares no var *value* with any other file,
+// coincidence of name aside, so its own [secretHoldingVars] is already the
+// whole answer and nothing here is worth the extra directory read. See
+// [File.evaluateVars]'s call, which applies that gate.
+//
+// Best-effort and bounded, on the same posture [missingWorkflowRemedy] already
+// takes reading the same directory: a sibling this cannot read, parse, or
+// decode contributes nothing rather than refusing the file that is actually
+// loading, and at most [maxSiblingCandidates] are opened. Each is decoded
+// through the identical expansion bound every suite's own load applies
+// ([decodeSiblingTests]), so a hostile sibling cannot cost more here than it
+// could by being the file that loads.
+//
+// selfPath is excluded so the file being loaded is never also read back as
+// its own sibling — its own `secrets:` already seed [secretHoldingVars]
+// directly, from the value this load itself decoded rather than a second,
+// possibly stale copy read off disk.
+func siblingSecretHoldingVars(dir, selfPath string) map[string]string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	holding := map[string]string{}
+	opened := 0
+	for _, entry := range entries {
+		if opened >= maxSiblingCandidates {
+			break
+		}
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".test.yaml") && !strings.HasSuffix(name, ".test.yml") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if path == selfPath {
+			continue
+		}
+		opened++
+
+		data, err := readBounded(path, MaxTestFileBytes, "test file")
+		if err != nil {
+			continue
+		}
+		tests, err := decodeSiblingTests(data)
+		if err != nil {
+			continue
+		}
+		for varName, where := range secretHoldingVars(tests) {
+			if _, seen := holding[varName]; !seen {
+				holding[varName] = where + " (" + name + ")"
+			}
+		}
+	}
+
+	return holding
+}
+
+// decodeSiblingTests is [decodeStrict] applied through the same expansion
+// bound every suite file's own load applies ([checkExpansionBoundsIn], #877),
+// for a caller that needs only the syntactic shape [secretHoldingVars] walks —
+// each test's and row's `secrets:` — and none of what a full load resolves,
+// evaluates, or validates.
+func decodeSiblingTests(data []byte) ([]Test, error) {
+	parsed, err := parser.ParseBytes(data, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkExpansionBoundsIn(parsed); err != nil {
+		return nil, err
+	}
+
+	var sibling File
+	if err := decodeStrict(data, &sibling); err != nil {
+		return nil, err
+	}
+
+	return sibling.Tests, nil
 }

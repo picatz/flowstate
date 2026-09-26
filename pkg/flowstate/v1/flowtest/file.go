@@ -1202,7 +1202,7 @@ func LoadSourceAtWithDefaults(data []byte, path string, defaults []byte) (*File,
 // bytes differs; folding and every semantic check remain shared.
 func loadSourceAt(data []byte, path string, dd *dirDefaults) (*File, error) {
 
-	file, refused := parseSourceWith(data, dd, true)
+	file, refused := parseSourceWith(data, dd, path, true)
 	if refused != nil {
 		// The path is stamped on every problem rather than prefixed onto the
 		// rendered text once, so a report of several problems names the file on
@@ -1249,7 +1249,7 @@ func LoadSource(data []byte) (*File, error) {
 // and no path runs the identical checks rather than a second copy of them.
 // requireWorkflow is false only for [LoadSource]; see its doc for why.
 func parseSource(data []byte, requireWorkflow bool) (*File, *Diagnostics) {
-	return parseSourceWith(data, nil, requireWorkflow)
+	return parseSourceWith(data, nil, "", requireWorkflow)
 }
 
 // parseSourceWith is [parseSource] with a directory's contribution folded in
@@ -1266,7 +1266,12 @@ func parseSource(data []byte, requireWorkflow bool) (*File, *Diagnostics) {
 // rather than discarded after the bound, which is the one cost this adds to a
 // suite that loads cleanly: a tree and the value decoded from it, both bounded
 // by [MaxTestFileBytes], live at once instead of one after the other.
-func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, *Diagnostics) {
+//
+// selfPath is this file's own path — "" for a door with no path
+// ([LoadSource], [parseSource]) — passed on to [File.evaluateVars] so it can
+// widen its secret-holding seed across the directory's other suite files
+// without reading this one back off disk as if it were one of them (#2080).
+func parseSourceWith(data []byte, dd *dirDefaults, selfPath string, requireWorkflow bool) (*File, *Diagnostics) {
 	// Parsed to the AST and no further. Unmarshal resolves every alias into
 	// the destination value as it decodes, which means a billion-laughs
 	// document is already fully expanded in memory by the time any bound
@@ -1374,7 +1379,7 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 	if !checkVars(p, file.Vars) {
 		return nil, p.err()
 	}
-	file.evaluateVars(p)
+	file.evaluateVars(p, dd, selfPath)
 	file.resolveVars(p)
 
 	// Rows are expanded before defaults are merged, which is what makes the
