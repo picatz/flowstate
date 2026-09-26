@@ -3,7 +3,7 @@
 One task, `codex.exec`: a single bounded run of OpenAI Codex, over
 [github.com/picatz/openai/codex](https://github.com/picatz/openai) - a Go
 wrapper around the real `codex` CLI, not a client of any codex network
-protocol. This is the demonstration issue #162 asks for: flowstate
+protocol. It demonstrates Flowstate
 orchestrating an AI agent as a durable workload, with the same bounds,
 secret handling, and failure classification every other task in this
 repository has to earn.
@@ -38,8 +38,12 @@ covers under "Defensive parsing."
 ## Building
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-codex ./plugins/codex
+$ go -C plugins/codex build -o /path/to/plugins/flowstate-plugin-codex .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/codex`.
 
 ## Configuration
 
@@ -274,8 +278,8 @@ here.
 
 ## Bounds
 
-Every one of these exists because the resource it bounds is one an attacker
-- a Flowfile author, a prompt, or the model's own output - controls (see
+Every one of these exists because the resource it bounds is one an attacker —
+a Flowfile author, a prompt, or the model's own output — controls (see
 `bounds.go` for the full list and reasoning on each):
 
 | Bound | What it limits |

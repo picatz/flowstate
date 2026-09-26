@@ -16,6 +16,14 @@ doors, so a habit learned at one carries to the others:
 | a person, debugging a real local run | `flow run local --debug <workflow>` | the same prompt, over a real run |
 | an agent | the `flowstate_debug` MCP tool | the same session, driven by a script |
 
+To try it, step through a loop yourself, or replay a recorded session over the
+same file:
+
+```console
+$ flow run local --debug examples/loop-accumulate/workflow.yaml
+$ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
+```
+
 These are local surfaces. The architecture's [driver parity
 boundary](ARCHITECTURE.md#execution-model) names what they prove and what still needs
 a durable or integration run. Inspect a durable run with [`flow get` and `flow
@@ -75,9 +83,11 @@ reachable only by a person with a keyboard, while a scripted session — the
 `flowstate_debug` tool's whole shape — could not ask at all. It answers like
 `inspect`: a question about where the run is standing, which does not move it.
 
-    (flow) complete inspect steps.
-    build   a step that has run
-    test    a step that has run
+```text
+debug> complete inspect steps.
+build   a step that has run
+test    a step that has run
+```
 
 ## The prompt
 
@@ -87,7 +97,7 @@ up and down walk the commands you have already typed in this session.
 
 Tab completes over the *paused run's own scope*, which is the point:
 
-```
+```text
 debug> inspect <TAB>
 steps.        step outputs
 vars.         workflow variables
@@ -143,7 +153,7 @@ printed and the finished run still questionable. This is where most debugging
 actually happens: you do not know which step to break on until you know which
 expectation broke.
 
-```
+```text
 autopsy: the case failed 1 expectation(s); the run is over, but its scope is still here
   expect.ran: expected step "discount" to have run, but it produced no recorded outputs
 (`inspect` questions the finished run; `quit` or `continue` leaves — the verdict is already in)
@@ -158,7 +168,7 @@ scope too — the file's `vars`, and a `run` root carrying `failed` and `error` 
 so a claim that failed can be taken apart with the same names it was written
 with. `scope` lists them, and `complete` answers here as well:
 
-```
+```text
 debug> complete inspect run.
 error    bound for this autopsy
 failed   bound for this autopsy
@@ -191,7 +201,7 @@ the `tone` a terminal would have coloured it — `break`, `warning`, `danger`), 
 `script` the session accepted, and the `report` — the ordinary `flow test`
 verdict, because a debugged run is the run.
 
-```
+```text
 [break  ] break at price (value)
 [info   ]   price -> value: 4000
 [info   ]   discount skipped (`if:` was false)
@@ -280,7 +290,7 @@ the state it is carrying.
 `flow timeline <id>` answers what it **did**, which is the question left when a
 run has already finished and there is no present to report:
 
-```
+```text
 TIME      WHAT     STEP                        DETAIL
 10:14:02  step     `request`
 10:14:02  done     `request`
@@ -299,7 +309,7 @@ A step that retried appears once per attempt as a `failed` row, which is what
 makes a stuck run legible: the same step failing five times the same way is a
 different fact from five steps failing once.
 
-```
+```text
 TIME      WHAT     STEP        DETAIL
 10:14:02  step     `charge`    attempt 1
 10:14:04  failed   `charge`    attempt 1: connection refused
@@ -340,7 +350,7 @@ because a per-message cap times an entry ceiling is still several megabytes.
 infer from a short answer. Continue it with `--run-id` and `--after-event-id`,
 which the command prints for you:
 
-```
+```text
 this is not the whole of this run's account — continue with --run-id 0198f1e2-… --after-event-id 4821
 ```
 
@@ -418,9 +428,8 @@ cannot park a production run forever, and a policy for who may attach — and it
 is [#928](https://github.com/picatz/flowstate/issues/928)'s slice 2. Today the
 debugger is a local-driver instrument, which is where authoring happens.
 
-DAP landed: `flow dap` serves the same session to an editor's own debug UI over
-stdio, with function breakpoints on step ids — see
+An editor's own debug UI can drive the same session through `flow dap` — see
 [EDITORS.md](EDITORS.md#stepping-a-run-flow-dap). The VS Code extension does not
-yet contribute a debug type for it (#585).
+yet contribute a debug type for it.
 
 [`DefaultCostLimit`]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#DefaultCostLimit

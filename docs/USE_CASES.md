@@ -1,20 +1,14 @@
 # Use cases: the enterprise portfolio
 
-The example portfolio under `examples/` skews toward CI and deploy shapes -
-useful, but not what a business reader means by "can this run our operations."
-This is the index for the four examples under `examples/enterprise-*/` that
-compose the DSL's primitives into the shapes a business actually recognizes:
-moving money, reviewing access, responding to an incident, onboarding a
-customer. Each links to its workflow, states which primitives it composes and
-why those are the right ones, and names one thing it honestly does not yet do
-- some are edges named plainly in the workflow's own comments; two are gaps
-found *while building this portfolio*, not known in advance, and are worth
-reading regardless of which example brought you here.
+The index to the four examples under `examples/enterprise-*/`: moving money,
+reviewing access, responding to an incident, onboarding a customer. Each entry
+links its workflow, names the primitives it composes and why those are the right
+ones, and states what it does not do.
 
-Every example has a `*.test.yaml` beside it, runs under `flow test
-examples/`, and includes at least one refusal-path case - a rejection, a
-timeout, an unattested signal, or a failure that triggers saga compensation -
-not only the happy path. Run them all with `flow test examples/`.
+Every example has a `*.test.yaml` beside it with at least one refusal-path case —
+a rejection, a timeout, an unattested signal, or a failure that triggers saga
+compensation — not only the happy path. Run them all with
+`flow test examples/enterprise-*`.
 
 ## Not a fit
 
@@ -71,7 +65,7 @@ the workflow's own header comment says so at length, because reaching for it
 as if it were encryption or an access-control boundary is the natural
 mistake. A grantee's email travels through Temporal history in the clear
 exactly like any other output; marking it `sensitive:` only makes `flow get`
-and the TUI redact it by default in a terminal someone happens to be looking
+and `flow watch` redact it by default in a terminal someone happens to be looking
 at. It does not restrict who may fetch the run.
 
 ## [Incident response runbook](../examples/enterprise-incident-response/workflow.yaml)
@@ -111,24 +105,14 @@ billing, then database) across each `call:` boundary when `activate` fails -
 and `wait_until: ${now + hours(inputs.activation_grace_hours)}` for a
 grace-period timer sized per plan rather than hardcoded.
 
-**A gap that closed underneath this file:** the first draft put `undo:` on
-each `provision_*` callee's own task step - the natural place to compensate
-"provisioning a database," and syntactically identical to
-[`saga-provisioning`](../examples/saga-provisioning/workflow.yaml)'s own
-pattern one level up - and `flow validate` refused it on both ends of the
-`call:` boundary, so that draft's actually-compensable effects had to be
-moved out to plain top-level steps instead. #225 closed that gap: a callee's
-own task step may now carry `undo:`, and what it registers joins the same
-run-level undo stack a top-level step's would, undone in reverse across the
-boundary exactly as within one level (docs/DSL.md's "Compensation composes
-through a call"). This file is that change's house-gate example - it shipped
-with the top-level-step workaround, described the gap honestly rather than
-hiding it, and has since been refactored to the composed shape the workaround
-existed only because #225 hadn't landed yet: each provisioner is now a
-self-contained unit, provisioning its own resource and knowing how to take it
-back, reusable by any caller regardless of what else that caller compensates.
+**Compensation across `call:`:** each provisioner carries `undo:` on its own
+task step, and what it registers joins the run-level undo stack, reversed across
+the `call:` boundary exactly as within one level
+([Compensation composes through a call](DSL.md#compensation-composes-through-a-call)).
+Each provisioner is a self-contained unit: it provisions one resource and knows
+how to take it back.
 
-**A second, smaller finding:** `check-quota.yaml`'s `expect:` line is real
+**What its test cannot prove:** `check-quota.yaml`'s `expect:` line is real
 production behavior - a task fails closed on an out-of-quota answer, exactly
 like a 4xx - but `flow test`'s stub boundary cannot exercise it directly. A
 stub replaces the whole `http` task, including its own `expect:`

@@ -1,4 +1,4 @@
-# Slack outbound notification plugin
+# flowstate-plugin-slack
 
 `slack.post` sends one accessible text message through Slack's
 `chat.postMessage`. It exists to notify a human that a durable approval or other
@@ -73,10 +73,10 @@ unknown future values, and a missing caller all fail closed without credentials.
 From the repository root:
 
 ```console
-go -C plugins/slack build -o ../../bin/flowstate-plugin-slack .
-flow plugins --plugin-dir ./bin
-flow validate --plugin-dir ./bin examples/plugins/slack/approval.yaml
-flow worker --plugin-dir ./bin --plugin slack \
+$ go -C plugins/slack build -o ../../bin/flowstate-plugin-slack .
+$ flow plugins --plugin-dir ./bin
+$ flow validate --plugin-dir ./bin examples/plugins/slack/approval.yaml
+$ flow worker --plugin-dir ./bin --plugin slack \
   --egress-policy examples/plugins/slack/egress-policy.yaml \
   --task-policy /path/to/task-policy.yaml
 ```

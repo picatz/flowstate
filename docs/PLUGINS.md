@@ -25,11 +25,13 @@ sentence names, so a reference here is one the tree still agrees with.
 - [Chapter two: the schema is the contract](#chapter-two-the-schema-is-the-contract)
 - [Five places the contract is implicit](#five-places-the-contract-is-implicit)
 - [The rest of the manifest](#the-rest-of-the-manifest)
+- [Distinguishing a rehearsal from production](#distinguishing-a-rehearsal-from-production)
 - [Being configured by an operator](#being-configured-by-an-operator)
 - [Reaching the network](#reaching-the-network)
 - [Classifying failures](#classifying-failures)
 - [Writing one in another language](#writing-one-in-another-language)
 - [Known limitations](#known-limitations)
+- [See also](#see-also)
 
 ## The shape of the thing
 
@@ -152,7 +154,8 @@ to be named flowstate-plugin-hello — and configure the worker to look there.
 
 That is chapter one, and it took one file you wrote. It is also, as printed above, a task
 that documents nothing and validates nothing. Chapter two is the part that
-matters.
+matters. Do not ship it as written:
+[why](#1-declaring-no-schema-is-a-silent-opt-out-of-the-whole-contract).
 
 ## Chapter two: the schema is the contract
 
@@ -1005,6 +1008,9 @@ validation catalog but does not put them in the portable reviewed artifact.
 - [`pkg/flowstate/v1/plugin/examples/flowstate-plugin-example`](../pkg/flowstate/v1/plugin/examples/flowstate-plugin-example)
   — the worked in-tree plugin: both capabilities, namespace-scoped secret
   resolution, and a task consuming a host secret.
+- [`plugins/`](../plugins) — the first-party plugins; each
+  `plugins/<name>/README.md` covers one plugin's tasks, bounds, and how to
+  build it.
 - [ARCHITECTURE.md](ARCHITECTURE.md#plugins) — why plugins are processes, what a
   plugin cannot do, and where the trust boundary is.
 - [EMBEDDING.md](EMBEDDING.md) — the other way to add a task: in your own Go

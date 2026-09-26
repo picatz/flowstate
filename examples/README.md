@@ -152,7 +152,7 @@ says otherwise.
 | [command-secret](command-secret) | `command:` — the escape hatch that reaches any external tool (`sops`, `age`, `aws kms`, `doppler`, …) with no shell involved | yes |
 | [http-federated](http-federated) | Exchanging the workload identity for a short-lived API credential inside the task | yes |
 | [federation-flow-to-flow](federation-flow-to-flow) | The `assertion` target — presenting the minted assertion itself to a relying party that verifies OIDC, here another Flowstate deployment, with no exchange and no shared secret | yes |
-| [task-shape-policy](task-shape-policy) | A deployment-side `--task-policy` refusing a step whose own `if:` and `signals:` have already been stripped out — #187, the author-proof complement to `approval-gate`'s in-file gate | no |
+| [task-shape-policy](task-shape-policy) | A deployment-side `--task-policy` refusing a step whose own `if:` and `signals:` have already been stripped out — the author-proof complement to `approval-gate`'s in-file gate | no |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
 | [parameterized-deploy](parameterized-deploy) | `inputs:` — typed arguments with defaults and a required one, read from an `if:`, a step's `vars:`, and a task input | yes |
@@ -195,7 +195,7 @@ says otherwise.
 | [enterprise-fund-transfer](enterprise-fund-transfer) | A role-authorized `signals:` approval gate over a threshold, an idempotency key carried into every ledger call, and `undo:` reversing credit then debit if settlement fails after both applied | yes |
 | [enterprise-access-review](enterprise-access-review) | Bounded `for_each` fan-out gathering evidence per access grant, tolerating one bad grant, closed only by a `compliance-reviewer` signal — with the grantee PII output `sensitive:` and the header naming what that does and does not do | yes |
 | [enterprise-incident-response](enterprise-incident-response) | A `wait_for_signal:` page with an escalation on timeout, `parallel:` evidence gathering while it waits, and two distinct `signals:` claims separating who may claim an incident from who may authorize remediation | yes |
-| [enterprise-customer-onboarding](enterprise-customer-onboarding) | `call:` into four reusable per-resource sub-workflows, each provisioner's own task step carrying `undo:` that composes back onto the run's undo stack across the `call:` boundary, a `wait_until:` grace period sized per plan, and an account-manager `signals:` confirmation gate — see [docs/USE_CASES.md](../docs/USE_CASES.md) for the composition gap this file found and, once #225 closed it, the composed shape it now demonstrates | yes |
+| [enterprise-customer-onboarding](enterprise-customer-onboarding) | `call:` into four reusable per-resource sub-workflows, each provisioner's own task step carrying `undo:` that composes back onto the run's undo stack across the `call:` boundary, a `wait_until:` grace period sized per plan, and an account-manager `signals:` confirmation gate — see [docs/USE_CASES.md](../docs/USE_CASES.md) for how the compensation composes | yes |
 
 A directory that holds more than a `workflow.yaml` carries a `README.md` saying what
 the rest of it is for. The reasons a directory needs one are few, and they are the
@@ -203,7 +203,7 @@ thing worth knowing rather than the membership: a secret- or credential-using ex
 ships the policy that authorizes what its step does; `task-shape-policy` ships the
 deployment-side policy that refuses one; anything under `plugins/` needs a plugin
 built and a worker told where to find it; `observability` is a whole docker-compose
-lab; the examples charter (#165) asks a few to name the one durability property they
+lab; a few name the one durability property they
 demonstrate alongside the two-command local-then-durable contrast;
 `approval-escalation` has a hazard its own grammar cannot name — `max_iterations:` is
 the engine's whole-loop ceiling and reads exactly like the reminder budget beside it,
@@ -221,15 +221,10 @@ repeating them would be one more thing to leave stale. Which is also why
 called by the first, and its own comments are exactly as much documentation as any
 other example's.
 
-This paragraph used to prove its own point. It opened "Sixteen of these", went on to
-list seventeen, and by then twenty directories on disk actually had one — so it was
-wrong in three different ways at once about a fact anybody could have counted. It no
-longer counts or enumerates, for exactly the reason it gives.
-
-`plugins/greet`, `plugins/vcs`, `plugins/github`, and `plugins/git` also sit a directory
-deeper than the rest, which is deliberate: everything matching `examples/*/workflow.yaml`
-is checked with the built-in task registry, and a file naming a plugin's task is meant to
-be refused by a process that has not loaded that plugin. Their READMEs say more.
+Everything under `plugins/` sits a directory deeper than the rest, which is
+deliberate: everything matching `examples/*/workflow.yaml` is checked with the
+built-in task registry, and a file naming a plugin's task is meant to be refused
+by a process that has not loaded that plugin. Their READMEs say more.
 `embedding/flowfile/workflow.yaml` follows the same convention for the same reason: it
 names `greet`, a task only `examples/embedding`'s own program registers, so it sits at
 `embedding/flowfile/workflow.yaml` rather than `embedding/workflow.yaml` to stay out of

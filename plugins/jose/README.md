@@ -29,6 +29,16 @@ Both refusals hold here. What is left when they do is this:
 | key refresh | the engine's verifier: cache TTL, refresh floor, bounded fetches |
 | signing | **not here at all** — no key custody, no bearer output |
 
+## Building
+
+```console
+$ go -C plugins/jose build -o /path/to/plugins/flowstate-plugin-jose .
+```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/jose`.
+
 ## Configuring
 
 ```console

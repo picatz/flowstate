@@ -7,7 +7,7 @@ owns, and register the program's own Go functions as tasks a workflow can
 call.
 
 [docs/ARCHITECTURE.md](ARCHITECTURE.md) describes what the system is.
-[CLAUDE.md](../CLAUDE.md) describes how to change it. This describes what an
+[AGENTS.md](../AGENTS.md) describes how to change it. This describes what an
 embedder meets. [examples/embedding](../examples/embedding) is the runnable
 version of everything below.
 
@@ -85,7 +85,7 @@ with both filled in.
 
 ## Compile vs. validate
 
-`embed.Compile` wraps [`flowfile.Parse`](reference/tasks.md) — the same
+`embed.Compile` wraps [`flowfile.Parse`](../pkg/flowstate/v1/flowfile/parse.go) — the same
 compile boundary `flow validate` starts from. It does **not** check whether a
 step's task is one this build knows: that question is
 [`flowfile.Validate`](../pkg/flowstate/v1/flowfile/validate.go)'s, which
@@ -123,16 +123,17 @@ uninstall, when a task in the set names something a *different*,
 still-installed `Tasks` set already claims. Two embedders (or an embedder
 and a plugin) legitimately can both want to call a task `log`; refusing the
 second Install rather than silently layering it over the first is what
-keeps a later `uninstall` call from ever restoring the wrong thing. `embed.
-RunOptions.Tasks` is read fresh by every `RunLocal` call to build a
+keeps a later `uninstall` call from ever restoring the wrong thing.
+`embed.RunOptions.Tasks` is read fresh by every `RunLocal` call to build a
 run-scoped registry, independent of whether `Install` was ever called —
 which is what makes it safe for two goroutines to call `RunLocal` with two
 different `Tasks` sets, against two different workflows, at the same time,
-and never see each other's tasks (issue #195's lesson).
+and never see each other's tasks.
 
 When an embedder *means* to overwrite an existing task — installing a custom
 `http` task with a different egress policy, or swapping a task in a
-conformance test — it calls `Registry.Replace` instead of `Register`.
+conformance test — it calls `v1.DefaultRegistry().Replace` instead — a `pkg/flowstate/v1` API
+outside this package's curated surface.
 `Replace` validates the definition the same way `Register` does (grammar,
 non-nil function, input coherence) but writes unconditionally. The
 distinction is the audit trail: a `Register` call that silently succeeds
@@ -237,7 +238,7 @@ exactly when the CLI would: on a failing case, and under `-v` for every case.
   resolve one against.
 - **The Flowstate server and RPC surface.** A curation problem of its own.
 - **Schedules, plugin-process hosting.** Real capabilities of the system;
-  neither is part of this slice.
+  neither is exposed by this package.
 - **Schema version skew between an embedder and the Flowstate build it
   links against.** The `edition:` mechanism covers the DSL layer; there is
   no Go-layer answer yet. Pin your `go.mod` dependency the way you would any

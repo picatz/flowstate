@@ -5,8 +5,8 @@ One task, `ssh.run`: run an **operator-defined command** on an
 placeholders; it cannot name an address, a user, a port, a key, or a program,
 because none of those are inputs.
 
-Built on [`golang.org/x/crypto/ssh`](https://pkg.go.dev/golang.org/x/crypto/ssh)
-- no `ssh` binary, no `known_hosts`, no agent.
+Built on [`golang.org/x/crypto/ssh`](https://pkg.go.dev/golang.org/x/crypto/ssh) —
+no `ssh` binary, no `known_hosts`, no agent.
 
 An example lives at [`examples/plugins/ssh`](../../examples/plugins/ssh),
 including the operator's own
@@ -35,8 +35,12 @@ never interpolated into SQL text).
 ## Building and configuring
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-ssh ./plugins/ssh
+$ go -C plugins/ssh build -o /path/to/plugins/flowstate-plugin-ssh .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/ssh`.
 
 A plugin inherits nothing of the worker's environment, so the grants file is
 named to the worker:

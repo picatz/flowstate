@@ -8,8 +8,8 @@ history and one file's content, each a fresh clone per call), and
 [go-gitdiff](https://github.com/bluekeyes/go-gitdiff) - two pure-Go
 dependencies, chosen so this plugin never execs a `git` binary, a hook, or
 any other subprocess. See [`doc.go`](doc.go) for the full argument, including
-where this plugin's design departs from issue #149's own write-operations
-comment, and why.
+where this plugin's design departs from the original write-operations
+proposal, and why.
 
 This is the rich, git-specific half of the factoring issue #149 settled;
 [`plugins/vcs`](../vcs) (this repository's sibling) stays the small,
@@ -32,8 +32,12 @@ and cannot run by accident.
 ## Building
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-git ./plugins/git
+$ go -C plugins/git build -o /path/to/plugins/flowstate-plugin-git .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/git`.
 
 ## Tasks
 
@@ -125,7 +129,7 @@ by upcasing it and turning every hyphen into an underscore. The namespace's
 between the two halves. The default namespace encodes to the empty string, so
 its length is zero and the segment between the separators is empty:
 
-```
+```text
 GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME>=<https-password>
 # ${secret('git:deploy-token')}, run in the default namespace:
 GIT_SECRET_0__DEPLOY_TOKEN=<https-password>
@@ -277,8 +281,8 @@ blocklist that does not know about the next such scheme admits it by
 omission.
 
 **Path checks cover the traversal, not just one path.** Absolute paths, `..`
-segments, and any `.git` path segment are refused outright (`validateTreePath`)
-- and, independently, go-git's own `object.Tree.Encode` calls
+segments, and any `.git` path segment are refused outright (`validateTreePath`) —
+and, independently, go-git's own `object.Tree.Encode` calls
 `internal/pathutil.ValidTreePath` on every entry it writes, refusing the same
 shapes again, one layer lower. That second layer was found while testing
 this plugin, not assumed: `validate_test.go`'s escape-refusal check was
@@ -377,8 +381,8 @@ depend on.
 
 **`git.read_file` refuses a traversal path outright, the same check
 `git.commit_push` writes through.** `path` is validated with the same
-`validateTreePath` `git.commit_push`'s own `files`/`patch` paths go through
-- no absolute path, no `..` segment, nothing under a `.git` path segment -
+`validateTreePath` `git.commit_push`'s own `files`/`patch` paths go through —
+no absolute path, no `..` segment, nothing under a `.git` path segment —
 refused with a positioned diagnostic rather than sanitised, for the same
 reason `validateTreePath`'s own doc comment gives: a path from a workflow or
 a coding agent is attacker-adjacent input this plugin does not get to guess
@@ -443,8 +447,8 @@ deliberately (re-fetch, recompute, retry on purpose) - rather than an
 ordinary failure or, worse, a forced overwrite. See `doc.go`'s "Concurrency"
 section for exactly where this plugin's design departs from the write-ops
 design comment's own wording: go-git's `Force`/`ForceWithLease` pairing is
-not the CLI's single `--force-with-lease` flag, and this plugin uses neither
-- `RequireRemoteRefs` is what actually gives a non-force compare-and-swap.
+not the CLI's single `--force-with-lease` flag, and this plugin uses neither —
+`RequireRemoteRefs` is what actually gives a non-force compare-and-swap.
 
 **`git.ls_remote` is `git.commit_push`'s own probe, exposed.** Resolving a
 remote's current refs without a clone is cheap, and the write task's

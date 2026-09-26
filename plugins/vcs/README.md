@@ -13,8 +13,12 @@ want to see it work rather than read about it.
 ## Building
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-vcs ./plugins/vcs
+$ go -C plugins/vcs build -o /path/to/plugins/flowstate-plugin-vcs .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/vcs`.
 
 ## Tasks
 
@@ -50,7 +54,7 @@ by upcasing it and turning every hyphen into an underscore. The namespace's
 between the two halves. The default namespace encodes to the empty string, so
 its length is zero and the segment between the separators is empty:
 
-```
+```text
 VCS_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME>=<https-password>
 # ${secret('vcs:acme-org')}, run in the default namespace:
 VCS_SECRET_0__ACME_ORG=<https-password>

@@ -4,6 +4,10 @@ Flowstate ships a language server for the `Flowfile` DSL. It gives you diagnosti
 as you type, hover documentation generated from the task registry, and completion
 that only ever offers things the engine will accept.
 
+**Setting up?** [Install the binary](#install-the-binary), wire up your editor —
+[Neovim](#neovim), [Visual Studio Code](#visual-studio-code), [Helix](#helix),
+[Zed](#zed), [Emacs](#emacs-eglot) — then [check it works](#checking-it-works).
+
 ## What the server provides
 
 | Feature | What you get |
@@ -64,8 +68,6 @@ validator refuses it because a task input is resolved inside an activity that ha
 no clock surviving a retry. The set matches what validates: all three of a wait's
 expressions (`wait_until:`, a computed `sleep:`, and a signal's `timeout:`)
 plus the signal's `outputs:` shaping, which is evaluated in the wait's own scope.
-Completion and hover used to stop at `wait_until:`, which was
-[#319](https://github.com/picatz/flowstate/issues/319).
 
 And a bare qualifier gets nothing: `${item.` could only be a binding, whose element
 type is not statically known, or a step reference written the retired way — and
@@ -79,7 +81,7 @@ Completion, hover, and go-to-definition follow the engine's scoping rules, so a
 name the editor offers is always one the workflow can resolve:
 
 - Inside a `for_each` body, the current item is in scope under the loop's
-  `iterator:` name (`item` by default), written bare because it is a binding rather
+  `as:` name (`item` by default), written bare because it is a binding rather
   than a step; earlier body steps are in scope within the iteration, under `steps.`.
   The two are separate namespaces, so an iterator may share a step's id and the
   editor still offers both.
@@ -172,7 +174,8 @@ value — one name per line, the same shape a `wait_for_signal:` shapes its resu
 $ go install github.com/picatz/flowstate/cmd/flow@latest
 ```
 
-That puts `flow` in `$(go env GOPATH)/bin`. Confirm it is on your `PATH`:
+That puts `flow` in `$(go env GOBIN)` when set, otherwise `$(go env GOPATH)/bin`.
+Confirm it is on your `PATH`:
 
 ```console
 $ flow lsp --help
@@ -215,7 +218,7 @@ at all. What they get instead:
 
 | Feature | What you get |
 | --- | --- |
-| **Diagnostics** | Everything the flowtest loader — the same one `flow test` runs — checks: a misspelled key, a malformed stub or `starter:`/`sender:`, an over-limit `check:` list, and the rest. Syntax, strict-key, and semantic problems use the loader's own positions; there is no case-name/prose heuristic. A problem in an included `testdefaults.yaml` is published on that file's URI and line, including from an unsaved defaults buffer, rather than mapped onto the suite that included it. Live defaults edits revalidate at most 32 open suites; another suite is checked against saved defaults and gets an explicit warning instead of silently creating unbounded per-keystroke work. Up to 32 overflow suites are retained as bounded promotion candidates when tracked suites close. If the saved-defaults fallback finds a suite-specific refusal, it reports the refusal at the overflow suite's start and labels it as a fallback rather than putting disk coordinates on a newer live defaults buffer. A task name absent from the catalog is not diagnosed merely for being absent: tests may provide synthetic tasks, so doing so would be false. |
+| **Diagnostics** | Everything `flow test`'s loader checks — misspelled keys, malformed stubs, `starter:`/`sender:`, over-limit `check:` lists — at the loader's own positions; a problem in an included `testdefaults.yaml` is reported on that file. Unknown task names are not flagged, since tests may stub synthetic tasks. |
 | **Completion** | The document's own keys at every level — a suite's `edition`/`vars`/`defaults`/`tests`/`coverage`, a case's `name`/`workflow`/`inputs`/`stubs`/`expect`/…, `expect:`'s own keys (`outputs`, `failed`, `ran`, `check`, …), and the rest of the shape (`defaults:`, a stub's `fails:`, a `signals:` entry, `starter:`/`sender:`, a `check:` claim, a `cases:` row) — plus a stub's `task:` value, completed from the same task registry a workflow step's task name is. `testdefaults.yaml`'s own top level is narrower, since `tests:` and `coverage:` are not legal there. |
 | **Document symbols** | An outline naming every runnable case: an entry with no `cases:` rows by its own `name:`, and an entry that declares rows by `<entry name>/<row name>` for each row — the same identity `flow test`'s own report uses, since an entry with rows is a template the rows are merged over and does not itself run. |
 | **Hover** | Every real test-language key, using the same guarded key table completion reads, including `cases:`, `expect:`, `stubs:`, `vars:`, and `testdefaults.yaml`'s narrower root. A stub's `task:` value shows the same registry-derived documentation a workflow step's task name shows; an unknown or synthetic task stays silent rather than inventing documentation. |
@@ -652,7 +655,7 @@ The `evaluate` request is wired to the same CEL evaluator the terminal debugger'
 `inspect` uses, against the scope the run is actually paused in — so the debug
 console is a REPL over the paused run:
 
-```
+```text
 > steps.build.value
 "web.tar.gz"
 > steps.build.value.endsWith('.tar.gz')

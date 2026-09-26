@@ -48,6 +48,18 @@ it.
 | [CI.md](CI.md) | What the three verification tiers run, what decides it, and the repository settings the design depends on. |
 | [agents/README.md](agents/README.md) | The shared Claude Code, Codex, and Amp configuration layers, where guidance lives, and the structural checks that keep them aligned. |
 
+## Outside this directory
+
+A few documents live beside what they describe rather than here.
+
+| Document | What it covers |
+| --- | --- |
+| [examples/README.md](../examples/README.md) | Every example workflow, what each one demonstrates, and the first commands to run. |
+| [plugins/](../plugins/) | One `plugins/<name>/README.md` per first-party plugin: its tasks, bounds, and how to build it. |
+| [THREAT_MODEL.md](../THREAT_MODEL.md) | The trust boundaries, what enforces each, and the gaps the design does not cover yet. |
+| [SECURITY.md](../SECURITY.md) | How to report a vulnerability, what to expect, and the analysis that runs on every change. |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | How to propose and land a change: issues, pull requests, and the gate they pass. |
+
 ## Internal
 
 [plans/](plans/) is agent-orchestration process, not product documentation: how a
@@ -73,7 +85,7 @@ Editing [DSL.md](DSL.md) requires the second command too — `flow mcp` serves a
 copy compiled into the binary, and a test fails on drift.
 
 **Diagrams where structure is the point.** Mermaid, rendered by GitHub with no
-build step, in the style [the root README](../README.md#how-it-fits-together)
+build step, in the style [the root README](../README.md#from-file-to-durable-run)
 established: a `flowchart`, short node labels, and `classDef` to mark the one
 element the picture is about. A diagram earns its place by showing a shape prose
 has to spend a paragraph on — layers and what derives from what

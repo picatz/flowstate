@@ -7,7 +7,7 @@ every defect in this area comes from serving one of them in a way that breaks th
 other.
 
 [docs/ARCHITECTURE.md](ARCHITECTURE.md) describes what the system is.
-[CLAUDE.md](../CLAUDE.md) describes how to change it. This describes what a person
+[AGENTS.md](../AGENTS.md) describes how to change it. This describes what a person
 meets.
 
 It is the reasoning and not the enumeration. Every command and flag `flow` has —

@@ -1,10 +1,10 @@
 # The Flowstate language: decisions
 
-A design proposal for the DSL exists and is largely right. This is the response to
-it: what is accepted, what is changed, and what is refused — with the reasoning, so
-that a decision can be revisited on its merits rather than rediscovered.
+The Flowfile grammar as a record of decisions: what each construct is, what was
+accepted, changed, or refused, and why. New to Flowfiles? Start with
+[the examples](../examples/README.md) and come back here to look a construct up.
 
-[docs/ARCHITECTURE.md](ARCHITECTURE.md) is what the system is. [CLAUDE.md](../CLAUDE.md)
+[docs/ARCHITECTURE.md](ARCHITECTURE.md) is what the system is. [AGENTS.md](../AGENTS.md)
 is how to change it. This is what the language should become and in what order.
 
 **See also.** This document is the grammar: what a Flowfile may contain, and why,

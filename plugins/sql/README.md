@@ -26,8 +26,12 @@ by accident.
 ## Building
 
 ```console
-go build -o /path/to/plugins/flowstate-plugin-sql ./plugins/sql
+$ go -C plugins/sql build -o /path/to/plugins/flowstate-plugin-sql .
 ```
+
+Run it from the repository root. The plugin is its own Go module, so `go -C`
+builds it in its own directory, and the `-o` path must be absolute: a relative
+one resolves against `plugins/sql`.
 
 ## Tasks
 
