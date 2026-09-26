@@ -509,6 +509,60 @@ outputs: {}
 		"the positive control: the substring backstop must still have fired")
 }
 
+// TestASensitiveInputsStructuredDescendantSurvivesEscapedInARunTimeCheckWitness
+// is the descendant half of the previous test's fix, on Copilot's own finding
+// against its first, root-only pass: [v1.SensitiveInputValues] walks into a
+// declared `sensitive:` input's own structure, and a string descendant it
+// finds there needs the identical `%q`-escaped spelling a root string does —
+// concatenated into a step's output through a selector (`inputs.creds.token`)
+// rather than passed through whole, `RedactTree`'s value comparison cannot
+// catch it either.
+func TestASensitiveInputsStructuredDescendantSurvivesEscapedInARunTimeCheckWitness(t *testing.T) {
+	t.Parallel()
+
+	// A tab, for the same reason the root-string test above uses one.
+	const token = "sk-live\tdescendant-2266"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: guarded
+inputs:
+  creds:
+    type: struct
+    sensitive: true
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.creds.token}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n"+
+		"  - name: a descendant field concatenates into a step output\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    inputs:\n"+
+		"      creds:\n"+
+		"        token: \"sk-live\\tdescendant-2266\"\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.echo.value == 'nope'\n"+
+		"          because: false on purpose, so the run-time witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	message := c.GetFailures()[0].GetMessage()
+	assert.NotContains(t, message, token, "the raw plaintext reached a run-time check witness")
+	assert.NotContains(t, message, `sk-live\tdescendant-2266`,
+		"a sensitive input's structured descendant's %q-escaped spelling reached a run-time check witness")
+	assert.Contains(t, message, `prefix-[redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
 // TestManyWitnessesAreBounded at [flowtest.MaxCheckWitnesses], the residual
 // named rather than silently dropped.
 func TestManyWitnessesAreBounded(t *testing.T) {

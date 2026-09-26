@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -265,6 +266,22 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				// the marker between every rune of the rendered line.
 				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
 					out.substrings = append(out.substrings, value)
+
+					// And the spelling a `%q` rendering produces, when it
+					// differs: a check witness and a stub diagnostic both
+					// render a string this way, and `%q` rewrites a tab, a
+					// newline, a quote or a backslash before this set's
+					// substring backstop ever reads the rendered line — so a
+					// descendant holding one, reached through whatever
+					// position a step or a task put it in, printed escaped
+					// in the clear (Copilot, on #2079's own root-only first
+					// pass at this). Root and descendant alike: `%q`
+					// transforms either the same way, and a map key goes
+					// through this identical case once it is popped off the
+					// queue below.
+					if escaped, ok := quotedSpelling(value); ok {
+						out.substrings = append(out.substrings, escaped)
+					}
 				}
 			case int64, uint64, float64, bool:
 				// A non-string scalar's canonical text joins the backstop:
@@ -300,6 +317,29 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 	}
 
 	return sensitiveValuesOf(out)
+}
+
+// quotedSpelling is the body of Go's `%q` rendering of value — what
+// [strconv.Quote] adds between the quotes it puts around it — when that
+// differs from value itself: value holds a rune `%q` escapes (a tab, a
+// newline, a quote, a backslash, or a non-printable byte). Empty and false
+// when `%q` would render value unchanged, since a second, identical
+// substring protects nothing it did not already.
+//
+// [SensitiveInputValues]'s own walk is the one caller: a check witness, a
+// stub diagnostic, and flowtest's transcript all render a sensitive string
+// with `%q` before this set's substring backstop ever reads the line, so
+// the raw spelling that walk collects on its own is not what a reader ever
+// actually sees rendered — for a declared input's own root value or for any
+// string descendant of one alike (Copilot, on this walk's own first pass at
+// the root alone).
+func quotedSpelling(value string) (string, bool) {
+	quoted := strconv.Quote(value)
+	if quoted == `"`+value+`"` {
+		return "", false
+	}
+
+	return quoted[1 : len(quoted)-1], true
 }
 
 // WithValues returns a set holding everything this one holds plus each given

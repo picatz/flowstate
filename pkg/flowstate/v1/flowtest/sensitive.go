@@ -25,53 +25,12 @@ type sensitiveInputs = v1.SensitiveValues
 const sensitiveMarker = v1.SensitiveMarker
 
 // sensitiveNativeValues builds the redaction set for a run from the scope its
-// inputs were bound into. See [v1.SensitiveInputValues].
-//
-// A declared input's own root value gets [bothSpellings]'s escaped spelling
-// too, which [v1.SensitiveInputValues]'s own substring backstop does not add:
-// it holds the value exactly as bound, so a `sensitive:` input holding a tab,
-// a newline, a quote or a backslash — concatenated into a step's output, say
-// — prints escaped from a `%q`-rendered witness such as [checkWitnesses]'
-// (Codex, #2079's issue comment). The validate-time path
-// ([File.CheckSignalNames]) has carried both spellings of its own input
-// material since #2041; this is the run-time counterpart, the one seam
-// [sensitiveNativeValues] itself is, rather than each of its two callers
-// adding the escaping on its own.
+// inputs were bound into. See [v1.SensitiveInputValues], which now carries a
+// `%q`-escaped spelling of every string it collects — root or descendant —
+// alongside the raw one, so a `sensitive:` input holding a tab, a newline, a
+// quote or a backslash prints redacted from a `%q`-rendered witness such as
+// [checkWitnesses]'s the same way it already does from a plain one (Codex,
+// #2079's issue comment; Copilot, on this fix's own first, root-only pass).
 func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sensitiveInputs {
-	set := v1.SensitiveInputValues(scope.GetInputs(), sensitiveNames)
-
-	return set.WithValues(bothSpellings(sensitiveInputRootStrings(scope.GetInputs(), sensitiveNames))...)
-}
-
-// sensitiveInputRootStrings is the string form of each declared `sensitive:`
-// input's own root value — not its descendants, which [v1.SensitiveInputValues]
-// already walks into its value set and which escaping a second time here
-// would gain nothing: a descendant's raw spelling is caught the identical way
-// a root's is, and [bothSpellings] exists to add the one spelling a %q
-// rendering produces instead. Only a root has that spelling to add through
-// this path, and only a string root has one at all — a numeric or boolean
-// root's text ([fmt.Sprint]) holds none of the runes %q escapes.
-//
-// An input this cannot read is silently skipped rather than failing closed on
-// its own: [v1.SensitiveInputValues], asked with the same inputs and the same
-// names right above, already answers [v1.WithheldSensitiveValues] for that
-// case, and [sensitiveInputs.WithValues] carries a withholding set's
-// withholdAll through untouched, so the run's actual redaction set still
-// withholds everything regardless of what this collects.
-func sensitiveInputRootStrings(inputs map[string]*v1.Value, sensitiveNames map[string]bool) []string {
-	var roots []string
-	for name, value := range inputs {
-		if !sensitiveNames[name] {
-			continue
-		}
-		native, err := v1.LiteralToGo(value.GetLiteral())
-		if err != nil {
-			continue
-		}
-		if s, ok := native.(string); ok {
-			roots = append(roots, s)
-		}
-	}
-
-	return roots
+	return v1.SensitiveInputValues(scope.GetInputs(), sensitiveNames)
 }
