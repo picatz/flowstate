@@ -191,9 +191,10 @@ func (s *Session) BacktraceLabels() ([]string, error) {
 // this way is no more entitled to a secret than one at a terminal: the front
 // changes and the withholding does not.
 //
-// Redacted is what the answer *carries*, not what the expression sees. The
-// expression evaluates against the pause's real bindings, so `inputs.token ==
-// "guess"` answers truthfully and a breakpoint condition can name a sensitive
+// Redacted is what the answer *carries*, not what the expression sees. This
+// method does not redact the bindings it evaluates against — the run's scope,
+// plus whatever extra bindings an autopsy's caller supplied — so `inputs.token
+// == "guess"` answers truthfully and a breakpoint condition can name a sensitive
 // value. This is a transcript control, not a boundary against the caller:
 // whoever runs `flow test --debug` or `flowstate_debug` supplied the case's
 // fixtures, and redaction keeps the value out of the transcript without
