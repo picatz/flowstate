@@ -822,6 +822,12 @@ type SignalScript struct {
 	// anything else happens is indistinguishable from an early-arriving
 	// signal in production: [v1.LocalSignals] buffers it until something
 	// asks.
+	//
+	// Two scripts naming the same At — most often two both left empty — are
+	// delivered in the order they are declared here, never in whichever order
+	// their goroutines happen to run in (#2103). Two at different moments
+	// keep being ordered by the clock, earliest first, whatever order they
+	// are declared in.
 	At string `yaml:"at"`
 
 	// Payload is what the signal carries, read back under `${<step>.payload}`
