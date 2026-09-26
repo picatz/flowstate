@@ -654,14 +654,10 @@ func (in *aliasInliner) dropMarkersOnLine(line int, anchors []*ast.AnchorNode) b
 // asked to have added. "Nothing follows" depends on what the rest of the
 // *rewritten* line looks like once every marker to the right is already
 // gone — not on the original text, which still has every marker's own bytes
-// in it. blank[i] answers that for marker i without re-scanning the line
-// once per marker: computed right to left, it folds in whether the gap to
-// the next marker (or to the line's end, for the last one) is blank with
-// whatever was already true of the marker to its right — a marker's own
-// bytes are always fully removed regardless of blank[i], so they never
-// count against blankness, and the two adjacent markers sharing a line this
-// rewrite exists to handle are always separated by the value or punctuation
-// between them, which does.
+// in it. blank[i] answers whether the rest consists only of literal spaces
+// and markers, without re-scanning the line once per marker: computed right
+// to left, it folds in the gap to the next marker (or the line's end).
+// Tabs and other whitespace are not spaces the old rewrite removed.
 func dropMarkersFromLine(text string, columns []int, names []string) (rewritten string, badIndex int, notLocated bool, steps int, ok bool) {
 	offsets, bad, steps := byteOffsetsOfColumns(text, columns)
 	if bad >= 0 {
@@ -692,15 +688,17 @@ func dropMarkersFromLine(text string, columns []int, names []string) (rewritten 
 	}
 
 	blank := make([]bool, len(markers))
-	tailBlank := true
+	tailSpaces := true
 	for i := len(markers) - 1; i >= 0; i-- {
 		next := len(text)
 		if i+1 < len(markers) {
 			next = markers[i+1].at
 		}
 		gap := text[markers[i].at+markers[i].w : next]
-		tailBlank = tailBlank && strings.TrimSpace(gap) == ""
-		blank[i] = tailBlank
+		// A tab is blank to TrimSpace, but the old per-marker rewrite only
+		// trimmed literal spaces. Keep it rather than skipping the whole gap.
+		tailSpaces = tailSpaces && strings.Trim(gap, " ") == ""
+		blank[i] = tailSpaces
 	}
 
 	out := make([]byte, 0, len(text))
@@ -719,8 +717,8 @@ func dropMarkersFromLine(text string, columns []int, names []string) (rewritten 
 			// the prefix and skipping straight to next matches what
 			// sequentially trimming `text[:at]+rest` down to its last
 			// non-space character would leave, for the same reason
-			// [dropMarkersFromLine]'s own doc comment gives: whitespace
-			// contributes nothing either way, and every marker's own bytes
+			// [dropMarkersFromLine]'s own doc comment gives: literal spaces
+			// contribute nothing either way, and every marker's own bytes
 			// in the gap are already excluded from it.
 			out = bytes.TrimRight(out, " ")
 			pos = next
@@ -731,6 +729,12 @@ func dropMarkersFromLine(text string, columns []int, names []string) (rewritten 
 		}
 	}
 	out = append(out, text[pos:]...)
+	// The last marker's old rewrite trimmed trailing spaces even if its
+	// otherwise blank tail contained tabs; preserve the tabs themselves.
+	last := markers[len(markers)-1]
+	if strings.TrimSpace(text[last.at+last.w:]) == "" {
+		out = bytes.TrimRight(out, " ")
+	}
 
 	return string(out), -1, false, steps, true
 }

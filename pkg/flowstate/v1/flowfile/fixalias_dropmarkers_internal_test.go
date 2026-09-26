@@ -143,11 +143,25 @@ func TestDropMarkersFromLineMatchesTheOldSequentialAnswer(t *testing.T) {
 			want:    "http:",
 		},
 		{
+			name:    "a terminal tab and spaces survive except trailing spaces",
+			text:    "http: &request \t  ",
+			columns: []int{7},
+			names:   []string{"request"},
+			want:    "http: \t",
+		},
+		{
 			name:    "a value between the marker and the end still survives",
 			text:    "message: &greeting hello",
 			columns: []int{10},
 			names:   []string{"greeting"},
 			want:    "message: hello",
+		},
+		{
+			name:    "a tab between two markers survives",
+			text:    "a: &x \t &y  ",
+			columns: []int{4, 9},
+			names:   []string{"x", "y"},
+			want:    "a: \t",
 		},
 		{
 			// Not YAML this package would ever hand these two functions from a
@@ -173,6 +187,36 @@ func TestDropMarkersFromLineMatchesTheOldSequentialAnswer(t *testing.T) {
 			require.True(t, ok, "refused at index %d (notLocated=%v)", badIndex, notLocated)
 			require.Equal(t, tt.want, got)
 		})
+	}
+}
+
+func TestDropMarkersFromLineMatchesSequentialWhitespace(t *testing.T) {
+	t.Parallel()
+
+	// The former right-to-left rewrite removes only literal spaces. Compare
+	// the batch against that independent rule with tabs on either side of
+	// each marker, including a trailing tab followed by spaces.
+	gaps := []string{"", " ", "  ", "\t", " \t", "\t ", " \t  "}
+	for _, gap := range gaps {
+		for _, tail := range gaps {
+			text := "a: &x" + gap + "&y" + tail
+			second := len("a: &x") + len(gap)
+			want := text
+			for _, at := range []int{second, len("a: ")} {
+				name := "&x"
+				if at == second {
+					name = "&y"
+				}
+				rest := strings.TrimPrefix(want[at+len(name):], " ")
+				want = want[:at] + rest
+				if strings.TrimSpace(rest) == "" {
+					want = strings.TrimRight(want, " ")
+				}
+			}
+			got, _, _, _, ok := dropMarkersFromLine(text, []int{4, second + 1}, []string{"x", "y"})
+			require.True(t, ok)
+			require.Equal(t, want, got, "gap=%q tail=%q", gap, tail)
+		}
 	}
 }
 

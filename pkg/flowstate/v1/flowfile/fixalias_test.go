@@ -882,3 +882,16 @@ steps:
 			"the quoted value \"&b\" must survive removing &aa's marker on the same line")
 	})
 }
+
+func TestFixPreservesTabAfterTerminalAnchorMarker(t *testing.T) {
+	t.Parallel()
+
+	src := "edition: v2026.3\nname: t\nvars:\n  x: &request\t\n    url: https://example.com\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	want := "edition: v2026.3\nname: t\nvars:\n  x: \t\n    url: https://example.com\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+
+	result, err := flowfile.Fix([]byte(src))
+	require.NoError(t, err)
+	require.Empty(t, result.Refusals)
+	require.True(t, result.Complete())
+	assert.Equal(t, want, string(result.Source), "the marker's removal must not consume the tab")
+}
