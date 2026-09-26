@@ -6,7 +6,7 @@
 // those formats. goccy/go-yaml v1.19.2 dereferences a nil iterator when a tag
 // precedes a value of the wrong shape where a slice (or a map) is expected:
 // `deny: ! ` is enough, and `audiences: !x` with a scalar beneath it is the
-// same panic through [ast.TagNode.ArrayRange], which answers nil for a tagged
+// same panic through ast.TagNode.ArrayRange, which answers nil for a tagged
 // value that is not a sequence and whose caller in `decodeSlice` asks the nil
 // for its length. FuzzLoadSource found the shape first (#877); FuzzParseConfig
 // and FuzzParsePolicy found it again at two more boundaries (#1721), which is

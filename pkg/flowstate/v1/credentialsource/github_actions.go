@@ -31,7 +31,7 @@ const maxTokenResponseBytes = 64 << 10
 
 // DefaultGitHubActionsRefreshMargin is how long before its "exp" claim a
 // cached token is re-minted, mirroring
-// [flowstate/v1/auth.DefaultRefreshMargin] on the outbound side of the same
+// [github.com/picatz/flowstate/pkg/flowstate/v1/auth.DefaultRefreshMargin] on the outbound side of the same
 // idea: refresh shortly before expiry rather than exactly at it, so a request
 // already in flight when the margin is crossed still completes against a
 // token that has not yet died.
@@ -86,7 +86,7 @@ func WithGitHubActionsRefreshMargin(margin time.Duration) GitHubActionsOption {
 //
 // audience is required: a token minted with no specific relying party in mind
 // is one any relying party would accept, which is the same reason
-// [flowstate/v1/auth.Issuer.Mint] refuses an empty audience on the outbound
+// [github.com/picatz/flowstate/pkg/flowstate/v1/auth.Issuer.Mint] refuses an empty audience on the outbound
 // side.
 func NewGitHubActionsSource(audience string, opts ...GitHubActionsOption) (Source, error) {
 	if audience == "" {

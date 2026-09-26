@@ -21,7 +21,7 @@ import (
 //
 // The inventory is not a capability, and naming it here widens what this type is
 // about. That is the cost being paid, deliberately: the alternative is a second
-// per-worker vehicle beside this one, and the whole defect [WithPluginCatalog]
+// per-worker vehicle beside this one, and the whole defect [TaskRuntimeConfig.WithPluginCatalog]
 // closes (#777) is that the catalog had a second vehicle — a process global —
 // which the last worker to be constructed won. One thing carrying everything one
 // worker owns cannot disagree with itself about which worker it belongs to.

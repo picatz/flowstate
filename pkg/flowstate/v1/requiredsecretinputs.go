@@ -34,7 +34,7 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // durable in workflow history and readable by anyone with substrate access to
 // the namespace. The sentence that refusal produces names the harm as already
 // done. A specification built by hand and submitted straight to [Run],
-// [SignalWithStart] or [CreateSchedule] arrives with no compiler in front of
+// SignalWithStart or CreateSchedule arrives with no compiler in front of
 // it, so without this check that is the only refusal it meets, and by then
 // invariant 7 has already been broken.
 //

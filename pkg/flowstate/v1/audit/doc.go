@@ -40,7 +40,7 @@
 // one the same way, with the same --audit-required posture.
 //
 // The seams themselves are in the schema's own package, which cannot import
-// this one — see [flowstatev1.EnforcementAuditor], the interface this
+// this one — see [v1.EnforcementAuditor], the interface this
 // [Recorder] satisfies.
 //
 // # The zero case, extended
@@ -62,7 +62,7 @@
 //
 // # The record
 //
-// [flowstatev1.AuditRecord] and the reasoning behind every field of it live in
+// [v1.AuditRecord] and the reasoning behind every field of it live in
 // proto/flowstate/v1/audit.proto. The short version, because it is what stops
 // a well-meant addition here: the record is redacted structurally rather than
 // scrubbed. It has no field a payload, an error message or a specification

@@ -141,7 +141,7 @@
 // neither `--task-policy` nor `--egress-policy` — while every verb that runs a
 // real dispatch still declares the first, so the assertion means "deliberately
 // absent here" rather than "absent everywhere" — and
-// [TestACaseCannotDeclareADeploymentPolicy] asserts a case file cannot smuggle
+// TestACaseCannotDeclareADeploymentPolicy asserts a case file cannot smuggle
 // one in through a key of its own. A paragraph of prose beside a one-line flag
 // registration is the same value written down twice, and only one of the two
 // is what the program does.
@@ -1231,7 +1231,7 @@ func loadSourceAt(data []byte, path string, dd *dirDefaults) (*File, error) {
 // The one difference bytes force: a case's `workflow:` is not required. [Load]
 // requires it because [RunFile] resolves each case's workflow relative to the
 // *.test.yaml's own directory ([WorkflowPath]), and there is no directory for
-// bytes with no path — the same reason [Parse], unlike [ParseFile], refuses a
+// bytes with no path — the same reason Parse, unlike ParseFile, refuses a
 // `call:` step. [RunSource] is given the workflow directly instead, once, for
 // every case in the file, so nothing here needs a name for it.
 func LoadSource(data []byte) (*File, error) {

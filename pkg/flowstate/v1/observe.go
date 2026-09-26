@@ -31,7 +31,7 @@ import (
 // callback that blocks forever is a bug in the observer that a silent timeout
 // would hide, and this driver has no clock of its own to bound it against.
 //
-// # Local driver only, like [Scheduler]
+// # Local driver only, like Scheduler
 //
 // Nothing here runs under the durable driver, and that is a boundary rather
 // than a gap: a durable run's account of record is Temporal history, written

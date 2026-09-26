@@ -10,7 +10,7 @@ import (
 // Caller is who invoked the task a plugin is executing, and which tenant that
 // workload belongs to.
 //
-// The wire already carries both — [ExecuteRequest] names an identity and a
+// The wire already carries both — [pluginv1.ExecuteRequest] names an identity and a
 // namespace — so a plugin task always *could* see them. What was missing was a
 // way to read them without widening [Task.Fn]'s signature, which every task in
 // every plugin would then have had to accept whether it needed this or not.

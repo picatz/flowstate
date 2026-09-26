@@ -17,7 +17,7 @@
 // generator's to make.
 //
 // This command changes nothing. Its findings are held by
-// [TestTheRepositoryDuplicateBodiesOnlyGoDown], a ratchet: a body that
+// TestTheRepositoryDuplicateBodiesOnlyGoDown, a ratchet: a body that
 // appears twice fails it until the copy is shared or recorded there with its
 // reason, and a copy removed fails it until the table shrinks, so the table
 // cannot keep stale entries.

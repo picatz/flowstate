@@ -688,7 +688,7 @@ func (l StepList) RedactText(text string) string { return applyText(l.redactText
 //
 // The workflow is what disambiguates, and it may be empty. An empty one matches
 // by id alone and is the honest answer for a run whose position carries no
-// workflow ([v1.TaskWorkflowFromContext] reports none) — but where the id it
+// workflow (v1.TaskWorkflowFromContext reports none) — but where the id it
 // names is declared by more than one workflow, this reports -1 rather than the
 // first match. Pointing at a step the run is not at is the one thing a debugger
 // must never do, and "I cannot tell which" is an answer a renderer can draw.

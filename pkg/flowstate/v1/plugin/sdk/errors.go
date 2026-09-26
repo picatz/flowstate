@@ -168,7 +168,7 @@ func hasCode(err error, code connect.Code, unknownOutcome bool) bool {
 // UnavailableAfter is [Unavailable] with a preferred delay before the next
 // attempt, for a backend that named one — a 429 or a 503 carrying a
 // Retry-After, the same reason the engine's own http task honors that header
-// rather than guessing. The host maps it onto the step's [TaskError.RetryAfter],
+// rather than guessing. The host maps it onto the step's [flowstatev1.TaskError.RetryAfter],
 // the same field a built-in task's own retry hint travels through.
 //
 // A non-positive retryAfter is the same as calling [Unavailable]: a delay of

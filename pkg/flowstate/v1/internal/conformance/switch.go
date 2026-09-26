@@ -6,10 +6,16 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
+// uintLiteral builds the Uint64Value literal [v1.NewLiteral] has no spelling
+// for: a magnitude no int64 holds, which CEL writes as a `u` literal.
+func uintLiteral(v uint64) *expr.Value {
+	return &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: v}}
+}
+
 // SwitchCases are the shared cases that hold both drivers to one behaviour for
 // `switch:`, a dispatch on one value.
 //
-// Run by both the local driver ([flowstatev1] eval_test.go) and the durable
+// Run by both the local driver (flowstatev1 eval_test.go) and the durable
 // driver (engine workflow_test.go). One [v1.SelectSwitchCase] is what keeps the
 // two together; these are what prove it is what both of them reach. Which branch
 // a value takes, what the record says, and what an unresolvable discriminant
@@ -21,12 +27,6 @@ import (
 // constants that produce them — for the reason ValueCases spells
 // `steps.over.value` out: the constant keeps the drivers agreeing, and only a
 // literal can pin what the constant has to be.
-// uintLiteral builds the Uint64Value literal [v1.NewLiteral] has no spelling
-// for: a magnitude no int64 holds, which CEL writes as a `u` literal.
-func uintLiteral(v uint64) *expr.Value {
-	return &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: v}}
-}
-
 func SwitchCases() []Case {
 	return []Case{
 		{

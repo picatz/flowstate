@@ -42,7 +42,7 @@ const RunTaskQueueName = "flowstate-run-task-queue"
 // legal in a prefix was also legal in a name, so the boundary between them was
 // a convention rather than a fact. No separator fixes that.
 //
-// This is fixed the way [auth.SubjectFor]'s `_default` is, and it is a
+// This is fixed the way auth.SubjectFor's `_default` is, and it is a
 // structural argument rather than a careful one:
 //
 //   - A namespace is [auth.ValidateNamespace]'s grammar — lowercase letters,
@@ -159,7 +159,7 @@ func (q TaskQueues) Validate() error {
 // Configured, it fails closed. A namespace outside the grammar cannot be
 // composed into a queue name whose boundary is trustworthy, and the answer to
 // "which queue does this un-namespaceable tenant use" is not "the one everybody
-// else uses" — that is the fallback [temporalclient.Pool.For] already refuses to
+// else uses" — that is the fallback temporalclient.Pool.For already refuses to
 // make, for the same reason.
 func (q TaskQueues) For(namespace string) (string, error) {
 	if !q.Enabled() {

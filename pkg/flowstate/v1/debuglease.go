@@ -101,7 +101,7 @@ const (
 	// asked it to stop.
 	//
 	// Nothing about a selector fixes that, which is worth writing down because
-	// it is the obvious repair: [workflow.Selector.Select] iterates the cases in
+	// it is the obvious repair: workflow.Selector.Select iterates the cases in
 	// the order they were *added* and takes the first that is ready
 	// (go.temporal.io/sdk@v1.47.0 internal/internal_workflow.go:1427-1461), so
 	// a two-channel selector reorders exactly as a two-channel drain does.
@@ -127,7 +127,7 @@ const (
 
 	// DebugVerbResume releases a lease its own holder took, and nobody else's.
 	//
-	// It is [DebugCommandVerb.DEBUG_COMMAND_VERB_CONTINUE] spelled for a run
+	// It is DebugCommandVerb.DEBUG_COMMAND_VERB_CONTINUE spelled for a run
 	// that is not in this process: run on, to the next breakpoint or to the
 	// end, and stage 2 has no breakpoints.
 	//
@@ -312,7 +312,7 @@ func NewDebugAsk(verb string, lease time.Duration) *Node_Outputs {
 // # The zero case fails closed, which is the opposite of a signal's
 //
 // A nil policy — a workflow with no `debug:` stanza — authorizes nobody, and
-// that is the whole difference between this and [SignalPolicyCheck]. An
+// that is the whole difference between this and SignalPolicyCheck. An
 // ordinary signal name with no policy is unconstrained because authorization
 // there is opt-in and failing closed would have denied every existing
 // workflow's next delivery for a policy nobody wrote ([SignalPolicyAllows]
@@ -321,7 +321,7 @@ func NewDebugAsk(verb string, lease time.Duration) *Node_Outputs {
 // fail-closed one: #928's "no policy, no pause, no inspect", recorded
 // 2026-08-23.
 //
-// # It is [SignalPolicyCheck] once the policy exists
+// # It is SignalPolicyCheck once the policy exists
 //
 // Everything after the zero case — which rules authorize, how claims are
 // compared, `distinct_from_starter` — is that function, called, not a second

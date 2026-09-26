@@ -233,7 +233,7 @@ func describePolicyIdentity(identity *WorkloadIdentity) string {
 // worse than a missing one, so the clause names the process rather than a
 // flag only some of these commands take.
 //
-// [Identity] is the other half, and the one this message was missing
+// Identity is the other half, and the one this message was missing
 // entirely: see that field's own doc for why a denial that does not say what
 // it evaluated leaves an author unable to tell an empty rehearsal identity
 // from a rule that matched them.

@@ -11,7 +11,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// ErrRunFailed is the failure a durable run's workflow reports. Before the
+// run returns, it is rewrapped as a Temporal application error whose type is
+// Kind's name, so a client reads the same classification [v1.ClassifyError]
+// gives the same failure in a local run, not a Go type name.
 type ErrRunFailed struct {
+	// Message describes the whole failure, for the person reading the run.
 	Message string
 
 	// Recorded is the driver-independent text this failure records as the step's

@@ -104,7 +104,7 @@ type UndoLog struct {
 //
 // The carried entries come first and stay first: they were registered earlier in
 // wall-clock and in dependency order, so they must be undone last. That ordering
-// is the whole content of [UndoLog.Results]'s reversal, and getting it from the
+// is the whole content of UndoLog.Results's reversal, and getting it from the
 // slice rather than from a timestamp is what makes it replay-safe.
 func NewUndoLog(carried []*PendingUndo) *UndoLog {
 	return &UndoLog{pending: carried}

@@ -73,7 +73,7 @@ const (
 //
 // A megabyte is far past any legitimate webhook — Stripe, GitHub and Shopify all
 // document payloads two orders of magnitude smaller — and far short of anything
-// that costs a worker. It matches [flowfile]'s own bound on a Flowfile and
+// that costs a worker. It matches flowfile's own bound on a Flowfile and
 // flowtest's on a test file, deliberately: they are all "a document somebody else
 // wrote, read whole before it can be parsed", and one number for that class is one
 // number to reason about.
@@ -740,6 +740,9 @@ func checkWebhookBodyDepth(webhook string, event *Value) error {
 	return nil
 }
 
+// NewWebhookEvent builds the `event` value a webhook binding's expressions
+// read: a map of the delivery's headers, with names lowercased, under
+// [EventHeadersField], and its decoded body under [EventBodyField].
 func NewWebhookEvent(headers map[string]string, body any) *Value {
 	lowered := make(map[string]any, len(headers))
 	for name, value := range headers {

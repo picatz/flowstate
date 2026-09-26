@@ -136,7 +136,7 @@ func (i *Issuer) WrongAudienceToken(audience string, claims map[string]any, opti
 // issuer left on the wall clock timestamps its token against a different
 // "now" than the verifier's, and if the two disagree by more than the
 // verifier's leeway the token carries a latent lifetime defect too. The
-// verifier reports [auth.ErrUntrustedIssuer] either way — issuer lookup
+// verifier reports auth.ErrUntrustedIssuer either way — issuer lookup
 // happens before lifetime validation — so the second defect hides behind the
 // first rather than failing the test that fed it.
 //

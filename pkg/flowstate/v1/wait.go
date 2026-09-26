@@ -31,7 +31,7 @@ const TimedOutOutput = "timed_out"
 // MaxPendingSignals names how many early-arriving signals a well-behaved run
 // should ever be carrying across Continue-As-New at once.
 //
-// It is not a hard cap: [engine]'s drainSignals carries every acknowledged
+// It is not a hard cap: engine's drainSignals carries every acknowledged
 // delivery unconditionally, however many accumulate, because a sender who was
 // told a signal was delivered must never find out later that it silently
 // wasn't (#1013). Beyond this many, the honest reading is not "too many to
@@ -48,7 +48,7 @@ const MaxPendingSignals = 128
 // MaxSignalBatch is the ceiling on how many deliveries one `wait_for_signals:`
 // takes, and the value a [SignalBatch] with no `max_batch:` of its own uses.
 //
-// # It is a real cap, where [MaxPendingSignals] is a threshold
+// # It is a real cap, where MaxPendingSignals is a threshold
 //
 // The two are the same number and they are not the same kind of thing, which is
 // worth stating because the number being shared invites reading them as one

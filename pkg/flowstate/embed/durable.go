@@ -15,7 +15,7 @@ import (
 //
 // It is [engine.Register] under this package's name, with one precondition
 // this package checks rather than silently satisfies on an embedder's
-// behalf: every task in tasks must already be [Tasks.Install]ed — as
+// behalf: every task in tasks must already be installed with [Tasks.Install] — as
 // *this exact Tasks set*, not merely as a task of the same name existing in
 // [v1.DefaultRegistry] under someone else's ownership. Checking a bare name
 // would pass for a program that overrides a built-in task (its own "log",

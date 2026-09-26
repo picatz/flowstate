@@ -93,7 +93,7 @@ type Option func(*FlowstateServer) error
 // which it was previously documented as: Temporal routing is the client's own
 // configuration, or [WithNamespacePool] when tenants map to separate namespaces.
 // The distinction matters because this value ends up in
-// [flowstatev1.WorkloadIdentity.Namespace], which every authorization decision
+// [v1.WorkloadIdentity.Namespace], which every authorization decision
 // about a run compares against.
 //
 // # The namespace is checked here, once, for everything that derives from it
@@ -320,7 +320,7 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 // changing policy after the server has started.
 //
 // namespace is required to be explicit — never derived from a prior
-// [WithNamespace] option — because [Option]s apply in the order given and a
+// [WithNamespace] option — because each [Option] applies in the order given and a
 // value read from options that may not have run yet would make this entry's
 // tenant depend on argument order rather than say what it means. A
 // deployment using a non-empty default namespace passes it here the same way

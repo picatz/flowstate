@@ -64,7 +64,7 @@ func WithFailureObserver(observe func(ctx context.Context, req *http.Request, er
 
 // WithPeerVerifier registers a [PeerVerifier] consulted for a request whose
 // client certificate crypto/tls has already verified — see
-// [http.Request.TLS.VerifiedChains]. Its absence (the default) means a client
+// http.Request.TLS.VerifiedChains. Its absence (the default) means a client
 // certificate, however the listener's tls.Config treated it at the connection
 // level, is never turned into a Principal: mTLS behaves purely as a transport
 // fence, and a caller still needs a bearer token this Authenticator's

@@ -25,7 +25,7 @@ var ErrDebugSessionEnded = errors.New("the debug session ended this run")
 // a time.
 //
 // It is the control seam the step debugger (issue #928) runs through, and the
-// deliberate counterpart to [RunObserver]: an observer is handed an account of
+// deliberate counterpart to RunObserver: an observer is handed an account of
 // what already happened and can change nothing, while a debugger is asked
 // before anything happens and can hold the run there for as long as it likes.
 // Every interactive verb slice 1 names — break, step, continue, until — is
@@ -53,7 +53,7 @@ var ErrDebugSessionEnded = errors.New("the debug session ended this run")
 // an interface called Debugger is harder to quietly grow into one than an
 // interface called Hook.
 //
-// # Local driver only, like [Scheduler] and [RunObserver]
+// # Local driver only, like Scheduler and RunObserver
 //
 // Pausing a durable run is a different mechanism for a different reason — the
 // durable interpreter suspends against its step budget and resumes from
@@ -66,7 +66,7 @@ var ErrDebugSessionEnded = errors.New("the debug session ended this run")
 // It may block, and it may refuse: returning a non-nil error from BeforeStep
 // stops the run there, which is how a session quits without running the rest
 // of the workflow. What it must not do is edit the scope it is handed. That is
-// a contract rather than a structure, and the difference from [RunObserver] —
+// a contract rather than a structure, and the difference from RunObserver —
 // which clones what it hands out — is a cost stated rather than an oversight:
 //
 //   - `inspect <expr>` has to answer about *this* run, so it evaluates against

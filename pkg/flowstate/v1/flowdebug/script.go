@@ -103,7 +103,7 @@ const MaxScriptProblems = 20
 //
 // A position, what is wrong, and what to do instead: the standard
 // `flowfile/validate.go` sets and CLAUDE.md restates. The type is this
-// package's own rather than [flowfile.Diagnostic] because that type is shaped
+// package's own rather than flowfile.Diagnostic because that type is shaped
 // by the language it reports on — it carries a step, a field, a kind key — and
 // none of those are things a line of a debugging script has.
 type ScriptProblem struct {

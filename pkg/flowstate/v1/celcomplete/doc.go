@@ -6,7 +6,7 @@
 // bindings are bare and steps are rooted, a root is offered with the dot that
 // continues it, `steps.<id>.<output>` has three levels and nothing has four,
 // functions come last because there are sixty of them and two bindings — was
-// written for `flow lsp` and lived in [flowfile/lsp]'s completion.go as
+// written for `flow lsp` and lived in flowfile/lsp's completion.go as
 // `refScope`, `refCandidate` and `completeInExpression`. What made it worth
 // moving is that the *scope* those rules run over need not come from a
 // document: the debugger has a better one, because a paused run knows which

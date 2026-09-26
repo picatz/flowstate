@@ -66,7 +66,7 @@ const (
 	// than the run is a worse lie than a long list — and this is the surface
 	// that turns each of them into a rendered value, which costs one CEL
 	// evaluation apiece. That is the same bound and the same reasoning as
-	// [flowdap.MaxScopeVariables], set lower because the two spend it on
+	// flowdap.MaxScopeVariables, set lower because the two spend it on
 	// different things: an editor's variables pane is scrolled through
 	// hundreds of rows, and a terminal pane shows a couple of dozen and says
 	// how many it did not.
@@ -90,14 +90,14 @@ const (
 	//
 	// The panes are printed above the prompt rather than into a region of
 	// their own, so every row costs a row of the transcript above them. Twelve
-	// is `watch`'s own answer to the same question ([watch.MaxVisibleSteps]),
+	// is `watch`'s own answer to the same question (watch.MaxVisibleSteps),
 	// reached the same way: past a dozen rows a list has stopped being a
 	// glance and the count says more than the rows do.
 	MaxPaneRows = 12
 
 	// MinPaneRows is the floor a short terminal still gets.
 	//
-	// Three rather than zero, for [watch.Model.VisibleSteps]'s reason: a
+	// Three rather than zero, for watch.Model.VisibleSteps's reason: a
 	// terminal too short for the panes is better served by panes that scroll
 	// the transcript than by a debugger that silently stops saying where it
 	// is.
@@ -106,7 +106,7 @@ const (
 
 // Binding is one name in the paused run's scope, with the value it holds.
 //
-// The value is a string rather than a [ref.Val] because it has been through
+// The value is a string rather than a ref.Val because it has been through
 // [flowdebug.Session.Evaluate], which is the redacting door: a caller reaching a
 // session through a pane is no more entitled to a secret than one at a
 // terminal, and rendering here from anything else would open on a new surface

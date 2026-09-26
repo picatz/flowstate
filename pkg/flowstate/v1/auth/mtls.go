@@ -84,7 +84,7 @@ const maxClientCABytes = 1 << 20 // 1 MiB
 // verified against a listener's ClientCAs into the same [Principal] a
 // [Verifier] produces from a bearer token.
 //
-// chains is exactly [tls.ConnectionState.VerifiedChains]: each element is one
+// chains is exactly tls.ConnectionState.VerifiedChains: each element is one
 // verified path from the peer's leaf certificate to a root crypto/tls trusted
 // it against. Implementations must not re-verify or rebuild a chain — that is
 // the standard library's job, already done by the time this is called — and

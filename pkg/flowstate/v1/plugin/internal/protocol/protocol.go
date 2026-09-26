@@ -30,7 +30,7 @@
 // them, and they are here because they are *granted* alongside the policy rather
 // than inherited: a plugin's environment is built from nothing, so a policy that
 // says "proxy from the environment" would find no environment to proxy from.
-// See [ProxyEnv].
+// See ProxyEnv.
 //
 // The egress grant is set whenever the deployment configured a policy, and is
 // present-but-empty when that policy is an empty document — which is a policy,

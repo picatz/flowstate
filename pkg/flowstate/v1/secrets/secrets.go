@@ -201,7 +201,7 @@ func RefString(r Ref) string {
 }
 
 // ValidateRef reports whether a reference is well formed. It is applied by
-// [ParseRef] and again by [Store.Resolve], so a reference decoded from a message is
+// [ParseRef] and again by Store.Resolve, so a reference decoded from a message is
 // checked too, whether or not it ever existed as text.
 //
 // The returned error wraps [ErrInvalidRef].

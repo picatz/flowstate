@@ -34,7 +34,7 @@ import (
 // The resource is the refusal and the ratio is the file's: a suite at
 // [MaxTestsPerFile] cases whose every case is malformed is five hundred
 // diagnostics, which is a message nobody reads and a slice sized by whoever
-// wrote the file. Twenty is what fits on a screen — [flowdebug.MaxScriptProblems]
+// wrote the file. Twenty is what fits on a screen — flowdebug.MaxScriptProblems
 // bounds a recorded script for the identical reason and lands on the identical
 // number — and the count of what was found travels beside them
 // ([Diagnostics.Total]), so a bounded report never reads as a short one.

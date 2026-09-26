@@ -372,7 +372,7 @@ func ValidateResourceAudience(resource string, policy *Policy) error {
 // [MCPTokenVerifier] checks it against.
 //
 // The empty string for a nil receiver, so an unconfigured deployment reads as
-// "no resource" rather than panicking — the same shape [MetadataURL] takes.
+// "no resource" rather than panicking — the same shape [ProtectedResource.MetadataURL] takes.
 func (p *ProtectedResource) Resource() string {
 	if p == nil {
 		return ""
@@ -380,7 +380,7 @@ func (p *ProtectedResource) Resource() string {
 	return p.resource
 }
 
-// ResourcePath is the path component of [Resource] — where a surface serving
+// ResourcePath is the path component of [ProtectedResource.Resource] — where a surface serving
 // this resource mounts itself, so that the URI a client was handed in the
 // metadata document is the URI it can actually reach. "/" when the resource
 // names a bare origin.
@@ -393,7 +393,7 @@ func (p *ProtectedResource) ResourcePath() string {
 
 // MetadataURL is where this deployment serves its RFC 9728 document — always
 // derived from the configured resource, never from a request. It is what
-// cmd/flow mounts [Handler] at. A challenge should use
+// cmd/flow mounts [ProtectedResource.Handler] at. A challenge should use
 // [ProtectedResource.ChallengeMetadataURL] instead, so it cannot direct a
 // client to mint a token for a different resource than the rejecting surface
 // accepts.
@@ -422,8 +422,8 @@ func (p *ProtectedResource) ChallengeMetadataURL(resource string) string {
 	return p.metadataURL
 }
 
-// Path is the path component of [MetadataURL] — what cmd/flow's
-// serverHandler mounts [Handler] at. Always the request path RFC 9728
+// Path is the path component of [ProtectedResource.MetadataURL] — what cmd/flow's
+// serverHandler mounts [ProtectedResource.Handler] at. Always the request path RFC 9728
 // section 3.1 constructs for the configured resource, never derived from an
 // incoming request.
 func (p *ProtectedResource) Path() string {

@@ -30,7 +30,7 @@ const describeNamespaceTimeout = 10 * time.Second
 //
 // It is an interface rather than a concrete type so this package does not depend on
 // the one that parses trust policies, and so a test can describe a mapping without
-// building a policy. [auth.Tenancy] satisfies it.
+// building a policy. auth.Tenancy satisfies it.
 type NamespaceMapper interface {
 	// TemporalNamespace returns the Temporal namespace for a Flowstate namespace.
 	//

@@ -284,7 +284,7 @@ func PolicyCaseFailedSteps() map[string]string {
 // (there was nothing to record), so `has()` on that field has to answer `false`
 // rather than fail the expression outright. That distinction — a step present
 // with an absent field versus a step genuinely missing — is exactly what
-// [v1.EvalIdent]-style resolution decides once a name reaches `has()`, and the
+// v1.EvalIdent-style resolution decides once a name reaches `has()`, and the
 // durable driver additionally routes every field reference through
 // Continue-As-New compaction on its way there. This set pins the *value* both
 // drivers must agree on before any handover is involved at all; the seam-specific

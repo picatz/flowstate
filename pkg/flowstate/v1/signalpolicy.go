@@ -249,7 +249,7 @@ func ruleMatchesEverySender(rule *SignalPolicyRule) bool {
 // policy that will be frozen into one particular run's memo.
 //
 // Called once, by the server's `signalPolicyMemoEntry` — the one function
-// [FlowstateServer.Run] and [FlowstateServer.CreateSchedule] both use to
+// FlowstateServer.Run and FlowstateServer.CreateSchedule both use to
 // turn a workflow's declared policy into the memo entry that governs that
 // run — after [BindRunInputs] has established the inputs both submit paths
 // bind through. That "one function, two callers" shape is what keeps a

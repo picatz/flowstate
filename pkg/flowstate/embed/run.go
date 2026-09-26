@@ -113,7 +113,7 @@ type RunOptions struct {
 // Every call builds a fresh [v1.Registry], seeded from
 // [v1.DefaultRegistry]'s current contents — this build's own tasks, plus
 // anything else installed globally in this process, such as another
-// embedder's already-[Tasks.Install]ed set — and then layers the http task
+// embedder's set already installed with [Tasks.Install] — and then layers the http task
 // (opts.EgressPolicy's, or [v1.DefaultEgressPolicy]'s when nil) and
 // opts.Tasks on top, before installing the result on the run's context with
 // [v1.NewContextWithRegistry]. Three consequences follow:

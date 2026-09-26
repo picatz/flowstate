@@ -663,10 +663,14 @@ func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 	}
 }
 
+// Parent returns nil: a StepsOutputActivation is always the outermost
+// activation.
 func (e *StepsOutputActivation) Parent() interpreter.Activation {
 	return nil
 }
 
+// NewLiteralList returns a literal list whose elements are converted with
+// [NewValue], so an element may itself be a list or map.
 func NewLiteralList(vals ...any) *Value {
 	literals := make([]*expr.Value, 0, len(vals))
 	for _, v := range vals {
@@ -689,6 +693,9 @@ func NewLiteralList(vals ...any) *Value {
 	}
 }
 
+// NewLiteralMap returns a literal map whose values are converted with
+// [NewValue]. Entries are sorted by key, so equal maps encode identically. A
+// nil map yields a null literal.
 func NewLiteralMap(m map[string]any) *Value {
 	if m == nil {
 		return &Value{Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_NullValue{}}}}
@@ -750,6 +757,10 @@ func newLiteralFromUint64(v uint64) *Value {
 	return NewLiteral(int64(v))
 }
 
+// NewLiteral returns a scalar literal: a string, bool, float, or any Go
+// integer type (as a CEL int), or an [expr.Value] as given. An unsigned value
+// above [math.MaxInt64], or any other type, yields an error value rather than
+// a literal. Use [NewValue] for lists, maps, and bytes.
 func NewLiteral(val any) *Value {
 	switch v := val.(type) {
 	case string:
@@ -855,6 +866,9 @@ func NewLiteral(val any) *Value {
 	}
 }
 
+// NewExpr parses exprStr as a CEL expression in this build's current profile
+// and returns it unevaluated. A parse failure yields an error value rather
+// than an error, so the failure surfaces where the value is evaluated.
 func NewExpr(exprStr string) *Value {
 	v, err := newValueExprWithErr(exprStr)
 	if err != nil {
@@ -1106,6 +1120,11 @@ func literalToGo(v *expr.Value, depth int) (any, error) {
 	}
 }
 
+// NewValue converts a Go value into a literal [Value]: nil becomes null, a
+// *Value is returned as is, scalars go through [NewLiteral], []byte becomes
+// bytes, map[string]any goes through [NewLiteralMap], and any slice goes
+// through [NewLiteralList]. An error, or an unsupported type, yields an error
+// value.
 func NewValue(v any) *Value {
 	if v == nil {
 		return &Value{
@@ -1178,6 +1197,8 @@ func NewValue(v any) *Value {
 	}
 }
 
+// NewNamedValues converts each entry of a Go map with [NewValue], keeping its
+// name. A nil map yields nil.
 func NewNamedValues(inputValues map[string]any) map[string]*Value {
 	if inputValues == nil {
 		return nil
@@ -1197,6 +1218,8 @@ func (v *Value) Error() error {
 	return nil
 }
 
+// Run runs a workflow locally with no inputs; it is [RunWithInputs] with nil
+// arguments, so declared inputs take their defaults.
 func Run(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 	return RunWithInputs(ctx, w, nil)
 }

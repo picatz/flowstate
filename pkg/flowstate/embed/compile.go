@@ -51,7 +51,7 @@ type Diagnostics = flowfile.Diagnostics
 // wants the earlier, richer diagnostic — the one `flow validate` gives,
 // naming the line and column — calls [flowfile.Validate] on the result, or
 // [flowfile.ValidateSource] directly on data. Either way, a workflow naming a
-// custom task needs that task [Tasks.Install]ed first for the check to see
+// custom task needs that task installed with [Tasks.Install] first for the check to see
 // it: validation asks what this *build* knows a task is, which is a question
 // [v1.DefaultRegistry] answers, not anything [RunOptions.Tasks] configures
 // for one run — see [Tasks]'s doc for why the two questions are answered by

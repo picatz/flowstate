@@ -79,7 +79,7 @@ type ResolveError struct {
 // Error implements the error interface.
 //
 // The reference is quoted rather than interpolated raw. A Ref built directly from a
-// protobuf message has not necessarily been through [Ref.Validate], so its name may
+// protobuf message has not necessarily been through Ref.Validate, so its name may
 // hold a control character, and this message is bound for logs and workflow
 // history where a raw newline would let it forge a line.
 func (e *ResolveError) Error() string {
