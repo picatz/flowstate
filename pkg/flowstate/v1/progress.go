@@ -1,6 +1,10 @@
 package flowstatev1
 
-import "context"
+import (
+	"context"
+	"iter"
+	"slices"
+)
 
 // What a task is doing while it is doing it.
 //
@@ -45,24 +49,52 @@ type Phase struct {
 // String returns the phase's name, which is what a driver records.
 func (p Phase) String() string { return p.name }
 
-// The phases a task can report. Adding one is deliberately a change to this file,
-// reviewed here, where the reason the vocabulary is closed is written down.
+// phases is the vocabulary: every value [Phase] can hold, and the one place
+// its members are spelled as string literals.
+//
+// The named constants below are indices into this rather than a second
+// literal declaration of the same three names, so there is one canonical
+// list rather than two that could drift — the first version of this had the
+// list built *from* the constants, which is the identical duplication the
+// other direction and just as able to fall out of step the day a fourth one
+// is added to only one of them (Codex review of #2067). An unexported array,
+// not an exported slice, so no importer can reorder, truncate or overwrite
+// the vocabulary a decoder checks against (Codex review of #2067); [Phases]
+// is the read-only view.
+var phases = [...]Phase{
+	{"requesting"},
+	{"reading the response"},
+	{"calling the plugin"},
+}
+
+// Phases yields every value [Phase] can hold, in declaration order.
+//
+// Code that must recognize the vocabulary rather than construct a member of
+// it — a decoder reading a phase back off a heartbeat, say, where the value
+// came from outside this process and has to be checked against the closed set
+// rather than assumed to be one of it — ranges over this.
+func Phases() iter.Seq[Phase] { return slices.Values(phases[:]) }
+
+// The phases a task can report, named for reading rather than for reaching
+// [phases] by position. Adding one is deliberately a change to this file,
+// reviewed here, where the reason the vocabulary is closed is written down:
+// a literal in [phases], and a name for it here, in the same order.
 var (
 	// PhaseRequesting is set once a request has been built and authorized and is
 	// about to leave the worker. A step sitting here is waiting on somebody else.
-	PhaseRequesting = Phase{"requesting"}
+	PhaseRequesting = phases[0]
 
 	// PhaseReadingResponse is set once a response's headers have arrived and its
 	// body is being read. Distinct from the above because they fail differently
 	// and because the difference is the whole diagnosis: a step stuck requesting
 	// is waiting for a peer that has said nothing, and a step stuck reading has a
 	// peer that answered and then stopped talking.
-	PhaseReadingResponse = Phase{"reading the response"}
+	PhaseReadingResponse = phases[1]
 
 	// PhaseCallingPlugin is set around a call into a plugin process, which is the
 	// other place a step spends real time and the one whose duration is decided by
 	// code this repository did not write.
-	PhaseCallingPlugin = Phase{"calling the plugin"}
+	PhaseCallingPlugin = phases[2]
 )
 
 // progressKey carries the reporter a driver installed.

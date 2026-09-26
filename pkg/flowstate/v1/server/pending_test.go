@@ -7,11 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The Describe response carried the answer and the server read only the status
@@ -191,4 +195,151 @@ func TestAStuckFanOutIsReportedWithoutBeingWholeOfIt(t *testing.T) {
 	require.Len(t, few, 1)
 	assert.Equal(t, "connection refused", few[0].GetLastFailure())
 	assert.False(t, fewTruncated)
+}
+
+// TestHeartbeatPhaseIsBoundedAndRestrictedToTheVocabulary is heartbeatPhase's own
+// coverage of #2067: a heartbeat detail is written by whatever process ran the
+// activity attempt, not necessarily this repository's own worker, which
+// heartbeats only [v1.Phase]'s three constants (engine/heartbeat.go). A phase
+// outside that vocabulary, or one long enough to make the answer as large as the
+// attempt chose, gets the same silence heartbeatPhase already gives an
+// undecodable payload.
+func TestHeartbeatPhaseIsBoundedAndRestrictedToTheVocabulary(t *testing.T) {
+	t.Parallel()
+
+	s := mustNew(t, nil)
+
+	payloadOf := func(t *testing.T, value string) *commonpb.Payloads {
+		t.Helper()
+
+		payload, err := converter.GetDefaultDataConverter().ToPayload(value)
+		require.NoError(t, err)
+
+		return &commonpb.Payloads{Payloads: []*commonpb.Payload{payload}}
+	}
+
+	// The positive direction, so the vocabulary check is not mistaken for a
+	// blanket refusal: a phase Flowstate's own worker can actually heartbeat
+	// still reaches the caller.
+	require.Equal(t, v1.PhaseRequesting.String(), s.heartbeatPhase(payloadOf(t, v1.PhaseRequesting.String())),
+		"a phase this repository's own worker can heartbeat was withheld")
+
+	// A worker on a modified tree, or one polling a task queue this deployment
+	// never intended to serve, controls these bytes with nothing to stop it.
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, "uploading")),
+		"a phase outside v1.Phase's vocabulary reached the caller unverified")
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, "requesting\x1b[31mCLEARED\x1b[0m")),
+		"a control sequence riding along with an otherwise-real phase name reached "+
+			"the caller unverified")
+
+	// Past maxHeartbeatDetailBytes, not merely past the vocabulary — a string
+	// short enough to clear the size gate but wrong would already be caught by
+	// the vocabulary check above, and would say nothing about the bound.
+	long := strings.Repeat("x", maxHeartbeatDetailBytes+1)
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, long)),
+		"one heartbeat made this answer as long as whatever the attempt heartbeated")
+}
+
+// heavyCodecOverheadBytes stands in for a payload codec whose per-payload
+// cost is far more than a nonce and a tag — an envelope scheme wrapping a
+// per-payload data key, a long key identifier, additional authenticated
+// context — without inventing a second [payloadcodec.Codec] to prove it.
+//
+// Fixed and independent of [maxHeartbeatDetailBytes] deliberately, so this
+// number cannot silently shrink to fit whatever the bound happens to be: it is
+// the evidence [TestHeartbeatPhaseToleratesGenerousCodecExpansion] measures
+// the bound against, not a fraction of the bound itself. Comfortably below
+// [v1.MaxCodecExpansionBytes] (56 KiB) and comfortably above both rejected
+// predecessors of this bound (256, then 4096 bytes), so a regression to
+// either reintroduces a failure this catches.
+const heavyCodecOverheadBytes = 10_000
+
+// TestHeartbeatPhaseToleratesGenerousCodecExpansion is the Codex review's
+// codec-expansion case, evidenced rather than argued: a real phase's own
+// encoded bytes, padded with the JSON whitespace a decoder already accepts
+// around any value, out to [heavyCodecOverheadBytes]. The first two versions
+// of this bound (256, then 4096) would both refuse this payload before
+// decoding it, silencing a real phase exactly as if it were the unbounded
+// text the bound exists to refuse.
+func TestHeartbeatPhaseToleratesGenerousCodecExpansion(t *testing.T) {
+	t.Parallel()
+
+	s := mustNew(t, nil)
+
+	real, err := converter.GetDefaultDataConverter().ToPayload(v1.PhaseRequesting.String())
+	require.NoError(t, err)
+	require.Less(t, len(real.GetData()), heavyCodecOverheadBytes,
+		"the fixture must pad the real payload, not already exceed the target size on its own")
+
+	padded := append([]byte{}, real.GetData()...)
+	padded = append(padded, []byte(strings.Repeat(" ", heavyCodecOverheadBytes-len(padded)))...)
+	require.LessOrEqual(t, len(padded), maxHeartbeatDetailBytes,
+		"heavyCodecOverheadBytes must itself stay under the bound this test exists to exercise")
+
+	payload := &commonpb.Payloads{Payloads: []*commonpb.Payload{
+		{Metadata: real.GetMetadata(), Data: padded},
+	}}
+
+	require.Equal(t, v1.PhaseRequesting.String(), s.heartbeatPhase(payload),
+		"a real phase padded out to a plausible codec's own per-payload overhead was "+
+			"silenced as if it were unbounded nonsense")
+}
+
+// countingDataConverter wraps a DataConverter and counts FromPayload calls, so
+// a test can tell "decoded, then discarded" from "never decoded" — the two
+// are indistinguishable from heartbeatPhase's return value alone.
+type countingDataConverter struct {
+	converter.DataConverter
+	fromPayloadCalls int
+}
+
+func (c *countingDataConverter) FromPayload(payload *commonpb.Payload, valuePtr any) error {
+	c.fromPayloadCalls++
+	return c.DataConverter.FromPayload(payload, valuePtr)
+}
+
+// TestHeartbeatPhaseSkipsDecodingAnOversizedPayload is the regression the
+// Copilot review of #2067 asked for: the earlier version of this bound ran
+// [textbound.Cut] on the string [FlowstateServer.heartbeatPhase] had already
+// decoded, so a worker-controlled heartbeat detail was still fully decoded —
+// the converter's own work, and for a codec-configured deployment a decrypt
+// underneath it — on every `flow get`/`flow watch` poll, once per pending
+// activity a run reports, no matter how large the detail was. The bound now
+// checked is on the payload's encoded bytes, before FromPayload ever runs,
+// so an oversized detail costs nothing but a length comparison.
+func TestHeartbeatPhaseSkipsDecodingAnOversizedPayload(t *testing.T) {
+	t.Parallel()
+
+	spy := &countingDataConverter{DataConverter: converter.GetDefaultDataConverter()}
+	s := mustNew(t, nil, WithDataConverter(spy))
+
+	payloadOf := func(t *testing.T, value string) *commonpb.Payloads {
+		t.Helper()
+
+		payload, err := converter.GetDefaultDataConverter().ToPayload(value)
+		require.NoError(t, err)
+
+		return &commonpb.Payloads{Payloads: []*commonpb.Payload{payload}}
+	}
+
+	// A real phase decodes normally, which is what proves the spy is wired
+	// into this server rather than merely constructed and set aside.
+	require.Equal(t, v1.PhaseRequesting.String(), s.heartbeatPhase(payloadOf(t, v1.PhaseRequesting.String())))
+	require.Equal(t, 1, spy.fromPayloadCalls,
+		"a phase within the bound was not decoded through the configured converter")
+
+	long := strings.Repeat("x", maxHeartbeatDetailBytes+1)
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, long)))
+	require.Equal(t, 1, spy.fromPayloadCalls,
+		"an oversized heartbeat detail reached FromPayload anyway: the bound only "+
+			"trimmed what this function returned, not the work of getting there")
+
+	// Small Data, oversized Metadata: the bound is on the whole payload, as
+	// the codec contract measures it, so metadata cannot carry the decode
+	// past it either.
+	padded := payloadOf(t, v1.PhaseRequesting.String())
+	padded.Payloads[0].Metadata["padding"] = []byte(strings.Repeat("m", maxHeartbeatDetailBytes))
+	require.Equal(t, "", s.heartbeatPhase(padded))
+	require.Equal(t, 1, spy.fromPayloadCalls,
+		"a payload whose metadata exceeds the bound reached FromPayload anyway")
 }

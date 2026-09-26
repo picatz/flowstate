@@ -585,6 +585,13 @@ func (s *State) OutageSince() time.Time { return s.outageSince }
 // `requesting` to `reading the response` is exactly the kind of change this
 // identity exists to catch, not the kind [State.Absorb] means to filter out.
 //
+// The phase goes in through [ui.RenderedPhase], the same treatment the line
+// itself gets, rather than the raw field: an identity keyed on the raw value
+// could disagree with what is on screen in either direction — moving on a
+// tail [ui.RenderedPhase] cuts off, or holding still while a control
+// character the render escapes changes the line a reader actually sees
+// (#2067).
+//
 // The truncation flag is news too, and that is the part this had wrong. When
 // more steps start retrying than the server projects, the reported prefix can
 // be identical attempt for attempt and failure for failure while the answer
@@ -607,7 +614,7 @@ func pendingActivityKeys(response *v1.GetResponse) []string {
 	keys := make([]string, 0, len(pending)+1)
 	for _, activity := range pending {
 		keys = append(keys, fmt.Sprintf("%d\x00%s\x00%t\x00%s", activity.GetAttempt(), activity.GetLastFailure(),
-			activity.GetNextAttemptScheduledTime() != nil, activity.GetPhase()))
+			activity.GetNextAttemptScheduledTime() != nil, ui.RenderedPhase(activity.GetPhase())))
 	}
 
 	// Last, and shaped so it cannot collide with an activity's key: this is a

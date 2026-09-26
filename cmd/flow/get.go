@@ -414,7 +414,13 @@ func pendingActivityLines(msg *v1.GetResponse, now time.Time) []string {
 		// when it has not reported yet, or when the worker predates the field —
 		// none of which is "doing nothing", so nothing is printed rather than a
 		// word that would claim one of them.
-		if phase := activity.GetPhase(); phase != "" {
+		//
+		// Through [ui.RenderedPhase] rather than bare, for the same reason the
+		// failure two lines up goes through EscapeControl: this is text the
+		// attempt's own process chose, not this command's, and it used to reach
+		// the terminal unescaped and unbounded beside a failure that was neither
+		// (#2067).
+		if phase := ui.RenderedPhase(activity.GetPhase()); phase != "" {
 			line += ", " + phase
 		}
 

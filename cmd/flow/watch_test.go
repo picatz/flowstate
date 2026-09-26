@@ -340,6 +340,52 @@ func TestWatchCountsARetryAsAChangeButNotItsCountdown(t *testing.T) {
 		state.Pending())
 }
 
+// TestWatchPhaseIdentityAgreesWithWhatItRenders is the consistency #2067 asked
+// for: the change-detection identity keys on the same escaped, bounded phase
+// [pendingActivityLines] renders, rather than the raw field, so the two answers
+// cannot drift apart in either direction.
+//
+// This is not `flow get`'s escaping test again. That one (in get_test.go) shows
+// the render is safe for one phase; this shows the *identity* tracks that render
+// exactly, across a change to the raw field that the bound in [ui.RenderedPhase]
+// erases before it ever reaches the screen — the direction a naive identity keyed
+// on the raw phase gets wrong: it would report a change nobody watching the
+// terminal could see.
+func TestWatchPhaseIdentityAgreesWithWhatItRenders(t *testing.T) {
+	state := newWatchState("flowstate-workflow-3f7c", nil)
+
+	phased := func(phase string) *v1.GetResponse {
+		answer := runningAt("deploy")
+		answer.response.PendingActivities = []*v1.PendingActivity{{Attempt: 1, Phase: phase}}
+		return answer.response
+	}
+
+	// Two different raw phases, agreeing on every byte [ui.RenderedPhase] keeps
+	// and differing only past its bound — the same tail a reader would never see
+	// on either poll.
+	before := strings.Repeat("a", 300)
+	after := strings.Repeat("a", 256) + strings.Repeat("b", 50)
+	require.NotEqual(t, before, after, "the fixture needs two genuinely different raw phases")
+
+	state.Absorb(observed, phased(before), nil)
+	was := state.Pending()
+
+	progress := state.Absorb(observed, phased(after), nil)
+	now := state.Pending()
+
+	require.Equal(t, was, now,
+		"two phases identical up to the render bound produced different lines")
+	require.False(t, progress.Changed,
+		"the identity moved on a raw-phase byte the render already cuts off, so a reader "+
+			"following this watch would be told something changed while the screen stayed "+
+			"exactly the same")
+
+	// The positive direction, so this is not a test that the identity ignores the
+	// phase outright: two phases that render differently must still be reported.
+	require.True(t, state.Absorb(observed, phased("reading the response"), nil).Changed,
+		"a phase that renders differently was not reported as a change")
+}
+
 // TestWatchPlainLinesSayWhereTheRunIsAndWhatFailed is requirement three's half of the
 // feature: a script, a CI job and a screen reader get the same account, one line per
 // change, on stderr.

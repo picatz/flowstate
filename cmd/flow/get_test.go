@@ -542,6 +542,46 @@ func TestAPendingActivityLineCannotBeSplitByItsOwnFailure(t *testing.T) {
 	assert.Contains(t, lines[0], "running, attempt 2")
 }
 
+// TestAPendingActivityLinesPhaseIsEscapedAndBounded is the render half of the gap
+// the failure text on the same line closed earlier: a heartbeat's phase reached
+// the line verbatim, with no escaping and no bound, while `last_failure` beside it
+// got both — found by the independent review of #2004, which keys watch change
+// detection on the phase without ever rendering it (#2067).
+//
+// Both `flow get` and `flow watch` render through [pendingActivityLines], which
+// is why there is one test rather than two, exactly as
+// [TestAPendingActivityLineCannotBeSplitByItsOwnFailure] already argues for the
+// failure beside it.
+func TestAPendingActivityLinesPhaseIsEscapedAndBounded(t *testing.T) {
+	t.Parallel()
+
+	lines := pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
+		Attempt: 1,
+		Phase:   "requesting\nrunning, attempt 9: totally fine\x1b[31m",
+	}}}, time.Now())
+
+	require.Len(t, lines, 1, "one pending activity produced more than one line")
+
+	assert.NotContains(t, lines[0], "\n",
+		"a phase's own newline invented a line that reads as another retrying step")
+	assert.NotContains(t, lines[0], "\x1b",
+		"a phase's own escape sequence chose how the reader's terminal looks")
+
+	// Escaping is not redaction: the diagnosis still has to be readable.
+	assert.Contains(t, lines[0], "requesting")
+
+	long := strings.Repeat("x", 10_000)
+	lines = pendingActivityLines(&v1.GetResponse{PendingActivities: []*v1.PendingActivity{{
+		Attempt: 1,
+		Phase:   long,
+	}}}, time.Now())
+
+	require.Len(t, lines, 1)
+	assert.Less(t, len(lines[0]), len(long),
+		"one heartbeat's phase made the line as long as whatever the attempt chose to "+
+			"heartbeat, with nothing bounding it")
+}
+
 // TestAPendingActivityListSaysWhenItIsPartial is the notice that existed on the
 // wire and reached nobody.
 //

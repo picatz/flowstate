@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -210,4 +211,17 @@ func TestAnInstalledReporterHearsEveryPhase(t *testing.T) {
 	v1.ReportProgress(ctx, v1.PhaseReadingResponse)
 
 	require.Equal(t, []string{"requesting", "reading the response"}, heard)
+}
+
+// TestPhasesYieldsTheNamedPhasesInOrder pins that [v1.Phases] is the
+// vocabulary the named phases index into, in declaration order. That no
+// importer can alter it is structural, an unexported array behind an
+// iterator, rather than something a test here could mutate (Codex review of
+// #2067).
+func TestPhasesYieldsTheNamedPhasesInOrder(t *testing.T) {
+	t.Parallel()
+
+	want := []v1.Phase{v1.PhaseRequesting, v1.PhaseReadingResponse, v1.PhaseCallingPlugin}
+
+	require.Equal(t, want, slices.Collect(v1.Phases()))
 }
