@@ -321,6 +321,100 @@ forwards every output the plan publishes, and that the `fuzz-smoke` step reads
 `fuzz_targets` — because the Makefile's default is the whole tier, and a step
 that dropped the variable would stay green at the old cost.
 
+### The breaking checks compare against a fixed base, not a moving one
+
+`flow breaking` (`test`'s `rest` lane, over `examples/`) and `buf breaking`
+(the `proto` job, over the schema) each need a git ref holding the old
+contract. Before #2074 both fetched `origin/main` by *name*, right before
+running: `git fetch --no-tags --depth=1 origin +main:refs/remotes/origin/main`
+then `flow breaking --against origin/main examples/`, and the proto job took
+`fetch-depth: 0` on its checkout so a plain `.git#branch=origin/main` had
+`origin/main` to read.
+
+That fetch runs minutes after checkout, and a pull request's checkout is a
+merge ref GitHub built by merging the PR onto whatever `main` was *at the
+triggering event*, not at fetch time. If `main` advanced in between — landing
+an ordinary merge, unrelated to the PR — the two jobs compared the PR's
+checkout against a *newer* `main` than the one it was actually built from. On
+2026-09-25, #2010 loosened an example's contract by merging to `main`; two PRs
+that touched no example failed `test (rest)` within the next few minutes with
+`flow breaking` reporting they had *tightened* it — main's own loosening,
+read backwards, because the PR's checkout still held the tighter shape and the
+fetch pulled main after it moved. A rerun did not clear it: a rerun reuses the
+same merge-ref checkout, so it observed the same problem against whatever
+`main` had moved to by the time it fetched again. Only a new push — a fresh
+merge ref — cleared it.
+
+The fix compares against the commit id the *triggering event itself* recorded,
+not against a branch pointer asked for again later — except that for
+`pull_request`, the event's own field is not that id. An independent review of
+the first attempt at this fix (#2086, at commit `0865494a`) found that
+`github.event.pull_request.base.sha` is not updated on `synchronize`: live runs
+(#2083's run `36206392548`, and #2061, #2063, #2085) checked out a merge ref
+built against a newer `main` than `base.sha` still named. Comparing against
+that stale field instead of the merge ref's real base can *miss* a break, the
+opposite direction from #2074's false positive: `main` loosens a contract
+between two workflows, the PR tightens it, and diffing against the older
+`main` `base.sha` names shows nothing, so the tightening ships.
+
+Every event this workflow runs on carries a base id that either is fixed the
+moment the event fired, or — for `pull_request` — is derived from the
+checkout itself rather than read from a field that can go stale:
+
+| Event | Base commit |
+| --- | --- |
+| `pull_request` | `HEAD^1` of the checked-out merge ref — the actual base that ref was built against, verified by checking `HEAD^2` against `github.event.pull_request.head.sha` first |
+| `merge_group` | `github.event.merge_group.base_sha` — main as of the prospective merge this run tests |
+| `push` (to `main`) | `github.event.before` — main immediately before this push, so the diff is exactly what the push just landed |
+
+The `plan` job resolves this once, in a "Which commit the breaking checks
+compare against" step (`id: breaking_base`), and publishes it as the
+`breaking_base_sha` output beside the job booleans — one mechanism, so the
+`test` and `proto` jobs cannot answer the question differently. It checks out
+`github.sha` with `fetch-depth: 0`, the same merge commit `test` and `proto`
+check out by default, so for `pull_request` the commit's own parents are
+already present locally with no further fetch: `HEAD^1` is the base, unaffected
+by anything `main` does afterward, because the merge ref itself is what fixed
+it, not a field this step reads again later. `HEAD^2` is checked against
+`pull_request.head.sha` before trusting `HEAD^1` at all — a mismatch means this
+checkout is not the two-parent merge ref the rule assumes, and the step fails
+closed rather than naming the wrong parent as the base. The `merge_group` and
+`push` fields need no such check: neither is `synchronize`-shaped, so both stay
+current for the run they describe. The event fields are read through `env:`
+rather than interpolated into `run:`, and an event this workflow does not
+otherwise trigger on, or a recorded base that reads as empty or the all-zero
+SHA (a push creating a ref from nothing), fails the step rather than silently
+comparing against nothing.
+
+Each consuming job fetches that fixed commit and forces it onto its own local
+`refs/remotes/origin/main` — `git fetch --no-tags --depth=1 origin
+"+$BASE_SHA:refs/remotes/origin/main"` — so the existing `flow breaking
+--against origin/main` and `buf breaking --against '.git#branch=origin/main'`
+invocations need no change: both already read whatever `origin/main` locally
+points to, and that pointer is now pinned to the base the plan named rather
+than left to float. `+` matters unconditionally, not only on a rerun: a
+push's base is `before`, behind the checkout's own tip, so moving
+`origin/main` back to it is a non-fast-forward write on every run, not just a
+repeated one. Each fetch also refuses to run with an empty `$BASE_SHA`
+(`: "${BASE_SHA:?...}"`) — the same review found that a future drift between
+the plan's output name and the step's `id` would otherwise leave the variable
+empty, and an unforced `git fetch origin ":refs/remotes/origin/main"` fetches
+the remote's default HEAD, reintroducing #2074 while every check stays green.
+The proto job's checkout dropped `fetch-depth: 0` accordingly — it no longer
+needs the whole repository's history, only the one base commit, fetched by id
+the same way the `rest` lane's does.
+
+`tools/gate/ci_test.go`'s `TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent`
+runs the plan step's own script against each event shape, so a future edit to
+the case statement is caught here instead of first misdiagnosing a PR in
+production — the `pull_request` cases run it against a real git fixture built
+to look like a merge ref, including the HEAD^2 mismatch and the
+no-second-parent boundaries, rather than asserting on a value the step no
+longer trusts. `TestCIFetchesTheBreakingCheckBaseWithAForcedRefUpdate` pins the
+forced fetch, the empty-`$BASE_SHA` guard, and that the plan job's `outputs:`
+block forwards `breaking_base_sha`; `TestCIBreakingChecksPinTheAgainstOriginMainArguments`
+pins that the breaking commands still read `origin/main`.
+
 ### The fuzz tier was slower than the fuzzing it did
 
 Narrowing the tier to what a diff reaches left the other half of `fuzz-smoke`
