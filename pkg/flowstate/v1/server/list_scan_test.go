@@ -857,6 +857,59 @@ func TestListDedupeSurvivesAVisibilityPrecisionMismatch(t *testing.T) {
 	}
 }
 
+// TestListRetractsFilterAccountingWithARetractedRow is the second review of
+// #2112, P2 (Codex): retracting a superseded segment's row (F2) left its
+// filter accounting behind. The predecessor here carries the label the
+// filter asks about and matches; the successor carries none, which
+// `labels["team"]` errors on rather than simply failing to match — #1689's
+// own case. Before this, retraction removed the only matched row but the
+// predecessor's `evaluated++` stayed counted, so the page came back empty
+// with excluded_by_error set and no diagnostic in the order that places the
+// predecessor first, while the other order — where the predecessor is
+// skipped outright and never evaluated at all — correctly produced one.
+func TestListRetractsFilterAccountingWithARetractedRow(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	const filter = `labels["team"] == "payments"`
+
+	labelled, err := converter.GetDefaultDataConverter().ToPayload(map[string]string{"team": "payments"})
+	require.NoError(t, err)
+	predecessorMemo := mineMemo(t)
+	predecessorMemo.Fields[labelsMemoKey] = labelled
+
+	predecessor := &workflow.WorkflowExecutionInfo{
+		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
+		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		StartTime: timestamppb.New(base),
+		Memo:      predecessorMemo,
+	}
+	successor := &workflow.WorkflowExecutionInfo{
+		// No labels at all: what the current segment must answer for, and
+		// what it cannot.
+		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
+		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		StartTime: timestamppb.New(base.Add(time.Minute)),
+		Memo:      mineMemo(t),
+	}
+
+	for name, executions := range map[string][]*workflow.WorkflowExecutionInfo{
+		"predecessor met first": {predecessor, successor},
+		"successor met first":   {successor, predecessor},
+	} {
+		t.Run(name, func(t *testing.T) {
+			page := filteredListing(t, executions, filter)
+
+			require.Empty(t, page.GetRuns(),
+				"the current segment does not answer for the filter, so the workload should not be listed")
+			require.Equal(t, uint32(1), page.GetExcludedByError(),
+				"the retracted predecessor's earlier match should not still be counted")
+			require.NotEmpty(t, page.GetFilterDiagnostic(),
+				"a filter wrong about the only segment this scan settled on should say so, in either scan order")
+		})
+	}
+}
+
 // And asked about directly, a segment reports the workload's state rather than
 // falling through to UNSPECIFIED — which Get rejects as an unknown status, so
 // asking about an earlier segment by run id used to return an internal error.

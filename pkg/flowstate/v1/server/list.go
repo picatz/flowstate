@@ -377,8 +377,20 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 				// exists. Whatever slot it was given is stale too, and is
 				// retracted rather than left as a second-best answer
 				// (#2112 review, F2), compacted out once after the scan.
+				//
+				// Its filter accounting is retracted with it. The only way a
+				// slot exists to retract is that this id's predecessor once
+				// matched the filter and was counted evaluated for it
+				// (below); leaving that count standing after removing the
+				// row it produced answered "how many did the filter meet"
+				// with one more than "how many are in this page" for no
+				// caller-visible reason, and could leave an empty page with
+				// excluded_by_error set but no diagnostic, depending on
+				// nothing but which of the two this scan happened to meet
+				// first (second review of #2112, P2).
 				if prior.index >= 0 {
 					runs[prior.index] = nil
+					evaluated--
 				}
 			}
 
