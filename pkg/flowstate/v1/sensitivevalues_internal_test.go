@@ -535,3 +535,48 @@ func TestABackwardOverlapRedactsTheWholeSecret(t *testing.T) {
 	reversed := SensitiveValues{}.WithValues("topsecret-aaa", "aa")
 	require.Equal(t, "failure: [redacted]", reversed.RedactSubstrings(text))
 }
+
+// TestMergeExtendsRatherThanReplaces is #2079's mechanism, pinned directly:
+// two sets built independently — the shape a caller has before a run's
+// inputs bind and the shape built from binding them — each hold a value the
+// other does not, and [SensitiveValues.Merge] must hold both afterward. A
+// caller that instead assigned one set over the other, the pattern #2079
+// tracks, would lose whichever side it discarded; this fails against that
+// shape and passes against Merge's.
+func TestMergeExtendsRatherThanReplaces(t *testing.T) {
+	t.Parallel()
+
+	preBind := SensitiveValues{}.WithValues("pre-bind-only-secret")
+	postBind := SensitiveValues{}.WithValues("post-bind-only-secret")
+
+	merged := preBind.Merge(postBind)
+
+	require.True(t, merged.IsSensitive("pre-bind-only-secret"),
+		"a value only the pre-bind set held must survive the merge")
+	require.True(t, merged.IsSensitive("post-bind-only-secret"),
+		"and a value only the post-bind set held")
+
+	require.Equal(t, "[redacted] and [redacted]",
+		merged.RedactSubstrings("pre-bind-only-secret and post-bind-only-secret"),
+		"the substring backstop must hold both sides too, not only the value comparison")
+
+	// Order must not matter: extending in either direction reaches the same
+	// answer, since a caller with two independently built sets has no reason
+	// to prefer one side as the base.
+	require.True(t, postBind.Merge(preBind).IsSensitive("pre-bind-only-secret"))
+}
+
+// TestMergeWithholdsWhenEitherSideDoes is Merge's fail-closed half
+// (CLAUDE.md, "fail closed at trust boundaries"): a set that could not be
+// built completely must still withhold everything after merging with one
+// that could, whichever side of the call it is on — a caller has no reason
+// to know which side is the one that could not decide.
+func TestMergeWithholdsWhenEitherSideDoes(t *testing.T) {
+	t.Parallel()
+
+	held := SensitiveValues{}.WithValues("built-fine")
+	withheld := WithheldSensitiveValues()
+
+	require.True(t, held.Merge(withheld).WithholdAll())
+	require.True(t, withheld.Merge(held).WithholdAll())
+}

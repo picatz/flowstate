@@ -696,12 +696,10 @@ tests:
 // TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening drives Codex's
 // review finding on #2041: `runCase` establishes its posture from
 // [casePosture] — which includes a table row's [Test.entrySecretMaterial] —
-// before anything can fail, but then *replaces* it wholesale with a freshly
-// built `sensitive` set once the run's inputs bind, rather than extending it
-// (see run.go's own comment on that assignment). Without also adding
-// entrySecretMaterial to that rebuilt set, a row that replaced its entry's
-// `secrets:` would withhold the entry's plaintext only until bind and print
-// it in the clear in every witness after — a check's, in particular, since a
+// before anything can fail, and now widens it with the run's own bound-input
+// material ([sensitiveInputs.Merge]) once the inputs bind (#2079). A row that
+// replaced its entry's `secrets:` must still have the entry's plaintext
+// withheld in every witness after bind — a check's, in particular, since a
 // check is judged after the run completes.
 func TestATableRowsEntrySecretSurvivesTheRuntimePostureWidening(t *testing.T) {
 	t.Parallel()
@@ -882,10 +880,11 @@ outputs: {}
 // TestACasesOwnSecretSurvivesEscapedInThePostBindPosture is the same gap one
 // level down from the two table tests above, for the plainest case there is:
 // an ordinary case's own inline `secrets:`, no table and no `vars:` at all.
-// `test.Secrets` joins the run-time posture too (line 863's own comment), and
-// it had the identical missing-bothSpellings gap independent reviewers found
-// on entrySecretMaterial and vars.withheld.text, since all three are rebuilt
-// in the same three-line stretch.
+// `test.Secrets` joins the run-time posture too, through [casePosture] and
+// the same [sensitiveInputs.Merge] widening as entrySecretMaterial and
+// vars.withheld.text (#2079) — all three used to be rebuilt by hand in the
+// same three-line stretch, each with the identical missing-bothSpellings gap
+// independent reviewers found on it in turn.
 func TestACasesOwnSecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
 	t.Parallel()
 
@@ -931,6 +930,80 @@ outputs: {}
 	assert.NotContains(t, rendered, `sk-live\tstubsec-5512`,
 		"the case's own `secrets:` printed its %q-escaped spelling in the clear once the stub echoed it into a step's output")
 	assert.Contains(t, rendered, `Bearer [redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
+// TestAPreBindOnlyPostureValueSurvivesThePostBindWidening is #2079's own
+// acceptance test, on the mechanism rather than on any one of the three
+// values the three tests above already pin: `runCase` now widens its pre-bind
+// [casePosture] with the run's own bound-input material
+// ([sensitiveInputs.Merge]) instead of replacing it with a freshly rebuilt
+// set, so nothing casePosture already carries needs a matching line in the
+// post-bind rebuild to survive it.
+//
+// The value here reaches casePosture the same way the cross-case test above's
+// does — a var seeded from one case's `secrets:` and read by a second case
+// that names no secret of its own — because that is the one existing route
+// onto `casePosture` a `flowtest_test` fixture can drive without reaching
+// into the package's own state. What this test is actually about is not that
+// route: it is that the post-bind rebuild carries the value forward by
+// widening rather than by a hand-written case for it, which is exactly the
+// shape [SensitiveValues.Merge]'s own unit tests
+// (TestMergeExtendsRatherThanReplaces) pin directly against a naive
+// replacement.
+func TestAPreBindOnlyPostureValueSurvivesThePostBindWidening(t *testing.T) {
+	t.Parallel()
+
+	// A tab, for the same reason every escaping test in this file uses one:
+	// %q rewrites it to a different byte sequence than the raw material, so
+	// asserting both spellings are absent is the only way to know the
+	// substring backstop, not merely the value comparison, carried it.
+	const token = "sk-live\tprebindwiden-7734"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: forwarder
+inputs:
+  tag:
+    type: string
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.tag}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "vars:\n"+
+		"  token: \"sk-live\\tprebindwiden-7734\"\n"+
+		"tests:\n"+
+		"  - name: the case that holds the secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:VENDOR_TOKEN: ${vars.token}\n"+
+		"    expect:\n"+
+		"      outputs: {}\n"+
+		"  - name: the case that never named the secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    inputs:\n"+
+		"      tag: ${vars.token}\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.echo.value == 'nope'\n"+
+		"          because: false on purpose, so the post-bind witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+	c := report.GetCases()[1]
+	require.Equal(t, "the case that never named the secret", c.GetName())
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	rendered := fmt.Sprintf("%v %+v %#v %s", c.GetFailures(), c.GetFailures(), c.GetFailures(), c.GetFailures())
+	assert.NotContains(t, rendered, token, "the raw plaintext reached a post-bind witness")
+	assert.NotContains(t, rendered, `sk-live\tprebindwiden-7734`,
+		"the %q-escaped spelling reached a post-bind witness")
+	assert.Contains(t, rendered, `prefix-[redacted]`,
 		"the positive control: the substring backstop must still have fired")
 }
 

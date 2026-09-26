@@ -359,6 +359,35 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 	return sensitiveValuesOf(state)
 }
 
+// Merge returns a set holding everything both this set and other hold: their
+// value sets and their substring sets combined, and withheld whenever either
+// side is.
+//
+// It exists for combining two sets built independently over the same run —
+// one from what is known before its inputs bind, one from what binding
+// itself adds — so widening the first with the second is one call rather
+// than a second construction of whatever the first already carries under a
+// different name. flowtest's runCase used to rebuild three of its pre-bind
+// posture's own values by hand once inputs bound, and missed one of them on
+// three separate review rounds before the pattern — not any one of the three
+// values — moved here (#2079).
+//
+// Not simply appending: a set that could not be built completely withholds
+// everything it is asked about regardless of what a caller's own values would
+// otherwise permit, so a caller merging in a set it never checked can trust
+// merge is not one line where it forgot to check.
+func (s SensitiveValues) Merge(other SensitiveValues) SensitiveValues {
+	a, b := s.held(), other.held()
+	if a.withholdAll || b.withholdAll {
+		return WithheldSensitiveValues()
+	}
+
+	return sensitiveValuesOf(sensitiveState{
+		values:     append(append([]any(nil), a.values...), b.values...),
+		substrings: append(append([]string(nil), a.substrings...), b.substrings...),
+	})
+}
+
 // WithholdAll reports the fail-closed case: the set could not be built
 // completely, so nothing can be shown to be safe.
 func (s SensitiveValues) WithholdAll() bool {

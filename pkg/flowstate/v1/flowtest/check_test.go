@@ -445,6 +445,70 @@ tests:
 	assert.Contains(t, message, "[redacted]")
 }
 
+// TestASensitiveInputHoldingATabSurvivesEscapedInARunTimeCheckWitness is
+// #2079's issue comment: a check witness renders a string with Go's `%q`,
+// which rewrites a tab, a newline, a quote or a backslash before the
+// redaction set ever reads the line ([bothSpellings]'s whole reason to
+// exist). [v1.SensitiveInputValues]' own substring backstop holds a
+// `sensitive:` input's root value exactly as bound, with no escaped
+// spelling — the validate-time path ([File.CheckSignalNames]) has carried
+// both spellings of its own input material since #2041, but the run-time one
+// ([sensitiveNativeValues]) did not, so this concatenated onto a step's
+// output printed its `\t`-escaped spelling in the clear.
+//
+// The workflow concatenates a prefix onto the input rather than passing it
+// through whole, deliberately: a witness value *equal* to a sensitive value
+// is caught by [v1.SensitiveValues.RedactTree]'s value comparison before %q
+// ever runs, which would pass this test even without the escaped spelling.
+// Only a composite string exercises the substring backstop the escaping
+// actually bears on.
+func TestASensitiveInputHoldingATabSurvivesEscapedInARunTimeCheckWitness(t *testing.T) {
+	t.Parallel()
+
+	// A tab: YAML carries one inside a double-quoted scalar, and %q renders
+	// it `\t` — a different byte sequence than the raw material, so only the
+	// escaped spelling ever appears in the rendered witness.
+	const token = "sk-live\trtcheck-4471"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: guarded
+inputs:
+  token:
+    type: string
+    sensitive: true
+steps:
+  - id: echo
+    value: ${'prefix-' + inputs.token}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, "tests:\n"+
+		"  - name: the token concatenates into a step output\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    inputs:\n"+
+		"      token: \"sk-live\\trtcheck-4471\"\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - that: steps.echo.value == 'nope'\n"+
+		"          because: false on purpose, so the run-time witness renders\n")
+
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
+	require.NotEmpty(t, c.GetFailures())
+
+	message := c.GetFailures()[0].GetMessage()
+	assert.NotContains(t, message, token, "the raw plaintext reached a run-time check witness")
+	assert.NotContains(t, message, `sk-live\trtcheck-4471`,
+		"a sensitive input's %q-escaped spelling reached a run-time check witness")
+	assert.Contains(t, message, `prefix-[redacted]`,
+		"the positive control: the substring backstop must still have fired")
+}
+
 // TestManyWitnessesAreBounded at [flowtest.MaxCheckWitnesses], the residual
 // named rather than silently dropped.
 func TestManyWitnessesAreBounded(t *testing.T) {
