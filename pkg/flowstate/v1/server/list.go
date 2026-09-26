@@ -133,6 +133,19 @@ const (
 	maxListPositionBytes = 2048
 )
 
+// scanSegment is what one List scan currently knows about a continued
+// workload's most recently met segment: when it started, and where its
+// summary lives in the page, when it has a place there at all.
+//
+// index is -1 for a segment this scan already decided against — an earlier
+// segment skipped by status, or a current one the filter excluded — so a
+// duplicate older than it is skipped too rather than filling a page's slot
+// the current segment itself did not earn. See [FlowstateServer.List]'s use.
+type scanSegment struct {
+	start time.Time
+	index int
+}
+
 // List returns a page of the runs belonging to the caller's tenant.
 func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
@@ -197,6 +210,15 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	runs := make([]*v1.RunSummary, 0, pageSize)
 	scanned := 0
 	requests := 0
+
+	// The scan's own account of each continued workload's most recent segment
+	// so far, so a workflow id met more than once in this scan is settled by
+	// which execution started later rather than by the status the visibility
+	// store currently reports for the other one — see the comment at its use
+	// below (#2104). Bounded by the scan itself: it holds at most one entry
+	// per unique workflow id among the executions read, never more than
+	// scanned.
+	segments := make(map[string]scanSegment, pageSize)
 
 	// The filter's account of this page: how many of the caller's runs it was
 	// asked about, how many it could not answer for, and the first reason.
@@ -275,10 +297,33 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// workflow id, and a listing is about workloads. Left in, a long
 			// workload would appear once per segment — the same id repeated, most
 			// of them closed — and the more work it had done the more of the page
-			// it would occupy. The current segment carries the workload's real
-			// status, so the earlier ones are skipped rather than deduplicated
-			// afterwards, which would need the whole listing in hand to do.
+			// it would occupy.
+			//
+			// The status Temporal records against an earlier segment used to be
+			// enough on its own — an execution reading CONTINUED_AS_NEW is one this
+			// listing has already moved past. But that status is written to
+			// visibility asynchronously, and an earlier segment can still read
+			// RUNNING for a window after its successor has already started and
+			// become visible itself; a scan that landed inside that window showed
+			// the workload as two rows, which is the soak failure #2104
+			// reproduces. A segment's own start time does not have that lag — it
+			// is set once, at the start, and a later segment's is always after an
+			// earlier one's — so it is what decides between two executions sharing
+			// a workflow id, whichever order this scan happens to meet them in.
+			workflowID := execution.GetExecution().GetWorkflowId()
+			startTime := execution.GetStartTime().AsTime()
+
+			prior, known := segments[workflowID]
+			if known && !startTime.After(prior.start) {
+				// A segment of this workload already decided about, started no
+				// later than this one: an earlier segment, skipped whatever status
+				// it happens to report, without spending a filter evaluation on an
+				// execution that cannot change the page.
+				continue
+			}
+
 			if execution.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW {
+				segments[workflowID] = scanSegment{start: startTime, index: -1}
 				continue
 			}
 
@@ -316,13 +361,26 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 				if firstErr == nil {
 					firstErr = err
 				}
+				segments[workflowID] = scanSegment{start: startTime, index: -1}
 				continue
 			}
 			if !matched {
+				segments[workflowID] = scanSegment{start: startTime, index: -1}
+				continue
+			}
+
+			if known && prior.index >= 0 {
+				// This execution supersedes a segment of the same workload
+				// already placed in the page: the same slot, so a workload that
+				// continued as new never costs the page two while this scan is
+				// still catching up to which segment is current (#2104).
+				runs[prior.index] = run
+				segments[workflowID] = scanSegment{start: startTime, index: prior.index}
 				continue
 			}
 
 			runs = append(runs, run)
+			segments[workflowID] = scanSegment{start: startTime, index: len(runs) - 1}
 			if len(runs) == pageSize {
 				break
 			}

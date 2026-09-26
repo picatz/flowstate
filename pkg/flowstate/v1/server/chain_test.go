@@ -41,24 +41,44 @@ func TestAContinuedWorkloadIsReportedFromWhereItBegan(t *testing.T) {
 	workflowID := started.Msg.GetWorkflowId()
 	firstRunID := started.Msg.GetRunId()
 
+	// EventuallyWithT, not Eventually: the poll needs more than one boolean out
+	// of a tick, including whether the workload showed up as more than one
+	// row (#2104's own soak failure). Eventually's condition runs on its own
+	// goroutine and reports the result over a channel the function itself
+	// must write to; calling t.Fatalf from inside it invokes runtime.Goexit
+	// before that write, which orphans the goroutine and starves the poll of
+	// every tick from then on — the loop then only ever times out, on the
+	// generic "condition never satisfied" rather than on what the tick
+	// actually found. CollectT's FailNow calls runtime.Goexit the same way,
+	// but the deferred write it leaves behind still runs during that unwind,
+	// so a tick's real assertion failures reach the timeout's report intact.
 	var listed *v1.RunSummary
-	require.Eventually(t, func() bool {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		resp, lerr := flowstate.List(t.Context(), connect.NewRequest(&v1.ListRequest{}))
-		if lerr != nil {
-			return false
+		if !assert.NoError(c, lerr) {
+			return
 		}
-		listed = nil
+
+		var found *v1.RunSummary
 		for _, run := range resp.Msg.GetRuns() {
 			if run.GetWorkflowId() != workflowID {
 				continue
 			}
-			if listed != nil {
-				t.Fatalf("one workload is listed as %d rows", 2)
+			if !assert.Nil(c, found, "one workload is listed as more than one row") {
+				return
 			}
-			listed = run
+			found = run
 		}
 
-		return listed != nil && listed.GetStatus() == v1.RunResponse_STATUS_COMPLETED
+		if !assert.NotNil(c, found, "the run has not appeared in a listing yet") {
+			return
+		}
+		if !assert.Equal(c, v1.RunResponse_STATUS_COMPLETED, found.GetStatus(),
+			"the listed run has not reached STATUS_COMPLETED yet") {
+			return
+		}
+
+		listed = found
 	}, 60*time.Second, 200*time.Millisecond, "the run never appeared in a listing as finished")
 
 	// The first segment's own start, as Temporal recorded it: what the listing

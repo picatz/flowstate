@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"testing"
+	"time"
 
 	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	"connectrpc.com/connect"
@@ -17,6 +18,7 @@ import (
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/mocks"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1types "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -180,14 +182,20 @@ func TestListStopsOnceThePageIsFull(t *testing.T) {
 
 	temporal := &mocks.Client{}
 
+	// Distinct ids, not a repeated "mine": these represent separate workloads,
+	// and a real namespace could no more repeat a workflow id across them than
+	// this listing may collapse them into one — the same identity the dedup
+	// below now cares about for a continued workload's own segments (#2104).
 	scanned := 0
+	minted := 0
 	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
 		func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
 			executions := make([]*workflow.WorkflowExecutionInfo, 0, request.GetPageSize())
 			for range int(request.GetPageSize()) {
 				// Owned by the caller: New with no namespace option resolves the
 				// empty tenant, and mineExecution positively records it.
-				executions = append(executions, mineExecution(t, "mine"))
+				minted++
+				executions = append(executions, mineExecution(t, fmt.Sprintf("mine-%d", minted)))
 			}
 			scanned += len(executions)
 
@@ -453,11 +461,14 @@ func TestListPageSizeIsDefaultedAndBounded(t *testing.T) {
 	// what decides the answer's length rather than the supply.
 	newServer := func() *FlowstateServer {
 		temporal := &mocks.Client{}
+		// Distinct ids, not a repeated "mine": see TestListStopsOnceThePageIsFull.
+		minted := 0
 		temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
 			func(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) *workflowservice.ListWorkflowExecutionsResponse {
 				executions := make([]*workflow.WorkflowExecutionInfo, 0, request.GetPageSize())
 				for range int(request.GetPageSize()) {
-					executions = append(executions, mineExecution(t, "mine"))
+					minted++
+					executions = append(executions, mineExecution(t, fmt.Sprintf("mine-%d", minted)))
 				}
 				return &workflowservice.ListWorkflowExecutionsResponse{
 					Executions:    executions,
@@ -541,21 +552,27 @@ func TestListShowsAContinuedWorkloadOnce(t *testing.T) {
 	t.Parallel()
 
 	// One workload: two segments it has already left, and the one it is in.
+	// Started a minute apart, oldest to newest, exactly as Temporal's own
+	// clock would have recorded them.
+	base := time.Now()
 	memo := mineMemo(t)
 	segments := []*workflow.WorkflowExecutionInfo{
 		{
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW,
+			StartTime: timestamppb.New(base),
 			Memo:      memo,
 		},
 		{
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW,
+			StartTime: timestamppb.New(base.Add(time.Minute)),
 			Memo:      memo,
 		},
 		{
 			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-3"},
 			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			StartTime: timestamppb.New(base.Add(2 * time.Minute)),
 			Memo:      memo,
 		},
 	}
@@ -573,6 +590,59 @@ func TestListShowsAContinuedWorkloadOnce(t *testing.T) {
 	require.Equal(t, "run-3", response.Msg.GetRuns()[0].GetRunId(),
 		"the listing named a segment the workload has already left")
 	require.Equal(t, v1types.RunResponse_STATUS_RUNNING, response.Msg.GetRuns()[0].GetStatus())
+}
+
+// TestListDedupesAContinuedWorkloadWhileVisibilityLagsBehind is #2104: the
+// dedup above reads an earlier segment's own status, but Temporal updates
+// that status asynchronously and can leave it reading RUNNING for a window
+// after its successor has already started and is visible itself. A listing
+// inside that window used to show the workload as two rows — the soak job's
+// "one workload is listed as 2 rows" — because neither execution here was
+// CONTINUED_AS_NEW yet.
+//
+// The earlier segment is listed first — the harder order for a fix that
+// decided by scan position rather than by start time, and exactly the order
+// [TestListShowsAContinuedWorkloadOnce] uses for the ordinary case — so this
+// also pins that the current segment wins the page's one slot for this
+// workload whichever order the two are met in, not only when it happens to
+// be first.
+func TestListDedupesAContinuedWorkloadWhileVisibilityLagsBehind(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	memo := mineMemo(t)
+	segments := []*workflow.WorkflowExecutionInfo{
+		{
+			// The segment it continued from, met first. Its visibility record
+			// has not caught up to CONTINUED_AS_NEW yet, and still reads
+			// RUNNING.
+			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
+			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			StartTime: timestamppb.New(base),
+			Memo:      memo,
+		},
+		{
+			// The current segment, met second, and started after the one
+			// above — the fact the fix goes on, whatever order the scan met
+			// them in.
+			Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
+			Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			StartTime: timestamppb.New(base.Add(time.Minute)),
+			Memo:      memo,
+		},
+	}
+
+	temporal := &mocks.Client{}
+	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
+		&workflowservice.ListWorkflowExecutionsResponse{Executions: segments}, nil)
+
+	response, err := mustNew(t, temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
+	require.NoError(t, err)
+
+	require.Len(t, response.Msg.GetRuns(), 1,
+		"a workload was listed twice while its earlier segment's status had not yet caught up")
+	require.Equal(t, "run-2", response.Msg.GetRuns()[0].GetRunId(),
+		"the listing named the workload's earlier segment instead of its current one")
 }
 
 // And asked about directly, a segment reports the workload's state rather than
