@@ -1,10 +1,18 @@
 package server
 
 import (
+	"errors"
+	"maps"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	commonpb "go.temporal.io/api/common/v1"
+	enumspb "go.temporal.io/api/enums/v1"
+	workflowpb "go.temporal.io/api/workflow/v1"
+	"go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/converter"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -98,4 +106,101 @@ func TestDigestWorkflowIDJoinsUnambiguously(t *testing.T) {
 		webhookWorkflowID("ns", "wf", "trigger", "key"),
 		digestWorkflowID(requestWorkflowIDPrefix, "ns", "wf", "trigger", "key"))
 	require.True(t, strings.HasPrefix(webhookWorkflowID("ns", "wf", "trigger", "key"), "flowstate-webhook-"))
+}
+
+// TestStartRequestIDIsTheSubmissionAndNeverTheRequestID is #1966's key: every
+// attempt at one submission reissues under one Temporal request id, a
+// different submission under the same request id does not, and the caller's
+// own value never reaches Temporal.
+func TestStartRequestIDIsTheSubmissionAndNeverTheRequestID(t *testing.T) {
+	t.Parallel()
+
+	inputs := map[string]*v1.Value{"cluster": v1.NewLiteral("checkout")}
+	one := submissionFor(t, "team-a", "deploy-4711", inputs)
+	again := submissionFor(t, "team-a", "deploy-4711", inputs)
+	require.Equal(t, one.startRequestID(), again.startRequestID(), "a retry must reissue under the same request id")
+	require.True(t, strings.HasPrefix(one.startRequestID(), startRequestIDPrefix))
+	require.NotContains(t, one.startRequestID(), "deploy-4711")
+
+	edited := submissionFor(t, "team-a", "deploy-4711", map[string]*v1.Value{"cluster": v1.NewLiteral("billing")})
+	require.NotEqual(t, one.startRequestID(), edited.startRequestID(),
+		"a different submission under the same request id must not be folded onto the first")
+
+	otherTenant := submissionFor(t, "team-b", "deploy-4711", inputs)
+	require.NotEqual(t, one.startRequestID(), otherTenant.startRequestID(), "the tenant is inside the digest")
+}
+
+// TestReissueStartedReadsTheNonceAndFailsClosed covers what the race tests
+// cannot reach: a run that answered this submission's start request id but
+// does not carry what this server writes on one.
+func TestReissueStartedReadsTheNonceAndFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	key := submissionFor(t, "", "deploy-4711", nil)
+
+	run := func(t *testing.T, fields map[string]string) *workflowservice.DescribeWorkflowExecutionResponse {
+		t.Helper()
+		memo := mineMemo(t)
+		for name, value := range fields {
+			payload, err := converter.GetDefaultDataConverter().ToPayload(value)
+			require.NoError(t, err)
+			memo.Fields[name] = payload
+		}
+		return &workflowservice.DescribeWorkflowExecutionResponse{
+			WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
+				Execution: &commonpb.WorkflowExecution{WorkflowId: key.workflowID, RunId: "r-1"},
+				Type:      &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
+				Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+				Memo:      memo,
+			},
+		}
+	}
+	ours := map[string]string{requestMemoKey: key.request, submissionMemoKey: key.submission}
+
+	for _, tc := range []struct {
+		name    string
+		fields  map[string]string
+		started bool
+		code    connect.Code
+	}{
+		{name: "this call's nonce", fields: withField(ours, startMemoKey, "mine"), started: true},
+		{name: "another call's nonce", fields: withField(ours, startMemoKey, "theirs")},
+		{name: "no nonce", fields: ours, code: connect.CodeInternal},
+		{name: "another submission", fields: withField(withField(ours, submissionMemoKey, "other"), startMemoKey, "mine"), code: connect.CodeInternal},
+		{name: "another request", fields: withField(withField(ours, requestMemoKey, "other"), startMemoKey, "mine"), code: connect.CodeInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := mustNew(t, &fakeRunClient{describe: run(t, tc.fields)})
+			resp, started, err := s.reissueStarted(t.Context(), key.workflowID, "r-1", key, "mine")
+			if tc.code != 0 {
+				require.Equal(t, tc.code, connect.CodeOf(err), "%v", err)
+				require.Nil(t, resp)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.started, started)
+			require.Equal(t, "r-1", resp.GetWorkflowExecutionInfo().GetExecution().GetRunId())
+		})
+	}
+
+	// A run the cluster just reported running is not "not found" because
+	// reading it back failed.
+	t.Run("the describe fails", func(t *testing.T) {
+		t.Parallel()
+
+		s := mustNew(t, &fakeRunClient{describeErr: errors.New("frontend unavailable")})
+		resp, _, err := s.reissueStarted(t.Context(), key.workflowID, "r-1", key, "mine")
+		require.Equal(t, connect.CodeUnavailable, connect.CodeOf(err), "%v", err)
+		require.ErrorContains(t, err, "run r-1 ")
+		require.Nil(t, resp)
+	})
+}
+
+// withField is fields with one more, leaving fields itself as it was.
+func withField(fields map[string]string, name, value string) map[string]string {
+	out := maps.Clone(fields)
+	out[name] = value
+	return out
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"maps"
@@ -40,6 +41,13 @@ import (
 // about — see [WithNamespace] for the assumption that made this necessary.
 // `netpolicy.New` and `secrets/vault.NewProvider` are the same shape, for the
 // same reason.
+//
+// temporalClient, and every client a [WithNamespacePool] pool holds, should be
+// dialed with [temporalclient.Config.Options] or have
+// [temporalclient.StartInterceptor] installed. A `terminate_other` replacement
+// under a request id depends on it to keep identical racing submissions from
+// terminating each other's runs, and on a client without it such a
+// replacement is refused `FailedPrecondition` before anything is terminated.
 func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error) {
 	s := &FlowstateServer{
 		temporalClient: temporalClient,
@@ -1568,7 +1576,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 	}
 
-	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+	// No request id of its own (the SDK's stands): this is here so the
+	// `terminate_other` reissue below can tell, before it destroys anything,
+	// whether this client applies one at all.
+	probe := &temporalclient.StartRequest{}
+	run, err := temporal.ExecuteWorkflow(temporalclient.WithStartRequest(ctx, probe), options, engine.Run, state)
 	if err != nil {
 		// A conflict on the id, which is the one failure here that is not this
 		// server failing. Every arm that can produce it is answered from the
@@ -1632,11 +1644,60 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 				// an exact retry returned the incumbent above — so this
 				// collision is a genuinely different submission, and
 				// `on_conflict:` says it replaces what it found.
+				//
+				// Refused, before anything is terminated, on a client the
+				// start above did not pass [temporalclient.StartInterceptor]
+				// on: such a client sends the SDK's random request id in
+				// place of the one below, and two identical submissions
+				// could then each terminate the other's run (#1966).
+				if !probe.Applied() {
+					return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(
+						"refusing a terminate_other replacement under a request_id: this server's Temporal client "+
+							"does not apply start request ids, so identical submissions could terminate each other's runs; "+
+							"dial it with temporalclient.Config.Options or install temporalclient.StartInterceptor"))
+				}
 				options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
 
-				run, err = temporal.ExecuteWorkflow(ctx, options, engine.Run, state)
+				// Sent with a request id derived from the submission (#1966).
+				// Two identical submissions can both have probed the same
+				// stale incumbent and both be here; Temporal answers a start
+				// whose request id the current run already carries with that
+				// run, before it consults the conflict policy, so whichever
+				// reissue lands second is handed the first one's run rather
+				// than terminating it. Terminate-and-start is one call and one
+				// persistence transaction, so there is no window between them
+				// to race.
+				//
+				// Temporal's reply to the folded call is byte-identical to the
+				// one that started the run, `Started` included, so which call
+				// started it is read back from the run: each reissue records a
+				// nonce of its own, and only the start that created the run
+				// had its memo written.
+				nonce := rand.Text()
+				options.Memo[startMemoKey] = nonce
+				run, err = temporal.ExecuteWorkflow(temporalclient.WithStartRequest(ctx, &temporalclient.StartRequest{ID: submission.startRequestID()}), options, engine.Run, state)
 				if err != nil {
 					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
+				}
+
+				resp, startedHere, err := s.reissueStarted(ctx, workflowID, run.GetRunID(), submission, nonce)
+				if err != nil {
+					return nil, err
+				}
+				if !startedHere {
+					// Folded onto the run an identical submission's reissue
+					// started: the retry arm's answer and its second record,
+					// for the retry arm's reasons.
+					if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+						return nil, err
+					}
+					return connect.NewResponse(&v1.RunResponse{
+						WorkflowId:               workflowID,
+						RunId:                    resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+						Status:                   getWorkflowExecutionStatus(resp),
+						Reused:                   true,
+						SpecificationAsSubmitted: proto.Bool(false),
+					}), nil
 				}
 
 				return connect.NewResponse(&v1.RunResponse{
@@ -2507,29 +2568,97 @@ func timeoutKindText(kind enums.TimeoutType) string {
 	}
 }
 
+// maxHeartbeatPlaintextBytes is generous headroom over the longest of
+// [v1.Phase]'s three constants ("reading the response", 20 bytes) plain JSON
+// encoding: quotes, and room for a phase this build predates but a future one
+// declares. Not itself a security bound — [maxHeartbeatDetailBytes] is — this
+// is only the "a real phase" half of that bound's arithmetic.
+const maxHeartbeatPlaintextBytes = 256
+
+// maxHeartbeatDetailBytes bounds the wire payload [FlowstateServer.heartbeatPhase]
+// will decode looking for a phase.
+//
+// Flowstate's own worker never approaches [maxHeartbeatPlaintextBytes], let
+// alone this. What heartbeats this activity is not necessarily that worker: a
+// worker on a modified tree, or one polling a task queue this deployment
+// never intended to serve, chooses these bytes with nothing stopping it, and
+// this field is read on every `flow get` and `flow watch` poll of a run with
+// a retrying step (AGENTS.md invariant 5).
+//
+// Checked against the payload's *encoded* bytes before FromPayload ever runs,
+// which is what makes this a bound on the decode rather than on its answer —
+// the decode is the cost this exists to avoid paying on a value that gets
+// discarded regardless, on every poll, for every pending activity a run
+// reports (Copilot review of #2067).
+//
+// [v1.MaxCodecExpansionBytes] rather than a second guess at what a codec may
+// add: it is this repository's own answer to that question. It is an
+// assumption, not a guarantee, at this size: `payloadcodec.Config.Validate`
+// checks a codec's expansion only at the maximal run-state size, and the
+// codec contract requires `MaxEncodedSize` to be monotone, not its additive
+// overhead to stay under this constant at every smaller size. A codec that
+// adds more than this to a phase-sized payload is refused here, and the phase
+// reads as silence: the documented "nothing to say", never a wrong phase and
+// never an error. Every codec this repository ships adds far less. A bound
+// smaller than [v1.MaxCodecExpansionBytes] plus a real phase's plaintext
+// could reject a codec-configured deployment's own heartbeat, silencing a
+// real phase exactly as if it were the unbounded text this exists to refuse
+// — measured evidence, not merely a smaller number, being why the first
+// attempt at this bound (256, then 4096) was wrong twice (Codex review of
+// #2067).
+const maxHeartbeatDetailBytes = maxHeartbeatPlaintextBytes + v1.MaxCodecExpansionBytes
+
 // heartbeatPhase reads the phase a running attempt last heartbeated.
 //
 // Empty for every shape of "nothing to say": an attempt that has not reported
 // yet, an attempt waiting to be retried and therefore not running at all, a
-// worker older than the field, or details this cannot decode. Those are different
-// facts, and none of them is "the step is doing nothing" — which is why the schema
-// says so on the field rather than leaving a renderer to guess.
+// worker older than the field, a heartbeat detail too large to plausibly hold
+// one of [v1.Phase]'s constants, details this cannot decode, or a decoded
+// value outside that vocabulary. Those are different facts, and none of them
+// is "the step is doing nothing" — which is why the schema says so on the
+// field rather than leaving a renderer to guess.
 //
 // A decode failure is silence rather than an error, deliberately. This is an aside
 // about a running attempt on a response whose subject is the run: a `flow get`
 // that failed because a heartbeat payload was written by something encoding
-// differently would be refusing to answer a question it can answer.
+// differently would be refusing to answer a question it can answer. The size
+// check ahead of the decode, and the vocabulary check the value gets
+// afterward, are the same rule applied earlier and one step further: a
+// payload too large to plausibly hold one of [v1.Phase]'s constants, or a
+// string that decoded cleanly but is not one of them, was not written by this
+// repository's own worker either, and there is nothing to say about it rather
+// than something to pass along unverified (#2067).
+//
+// The vocabulary check ranges over [v1.Phases] rather than naming the three
+// constants again, so a fourth phase added there is recognized here without a
+// matching edit — the same reason the vocabulary has one list (Codex review of
+// #2067).
 func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 	if details == nil || len(details.GetPayloads()) == 0 {
 		return ""
 	}
 
-	var phase string
-	if err := s.dataConverter.FromPayload(details.GetPayloads()[0], &phase); err != nil {
+	// The whole payload, metadata included, and measured as the codec
+	// contract measures it (proto.Size), so an oversized Metadata map cannot
+	// carry work past the bound that Data alone would not (Codex review of
+	// #2067).
+	payload := details.GetPayloads()[0]
+	if proto.Size(payload) > maxHeartbeatDetailBytes {
 		return ""
 	}
 
-	return phase
+	var phase string
+	if err := s.dataConverter.FromPayload(payload, &phase); err != nil {
+		return ""
+	}
+
+	for known := range v1.Phases() {
+		if phase == known.String() {
+			return phase
+		}
+	}
+
+	return ""
 }
 
 // getWorkflowExecutionStatus maps the Temporal workflow execution status to Flowstate's run response status.

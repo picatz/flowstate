@@ -40,9 +40,13 @@ const requestWorkflowIDPrefix = "flowstate-request-"
 // [submissionKey.submission] — which is what a retry is checked against. Both
 // are absent on a run started without a request id, and absence fails closed:
 // a run that recorded no request can never be reused by one.
+//
+// startMemoKey records the nonce of the one `terminate_other` reissue whose
+// start created the run; see [FlowstateServer.reissueStarted].
 const (
 	requestMemoKey    = "flowstate.request"
 	submissionMemoKey = "flowstate.submission"
+	startMemoKey      = "flowstate.start"
 )
 
 // submissionKey is what one request id establishes about one submission.
@@ -104,6 +108,25 @@ func (k *submissionKey) memo() map[string]any {
 		submissionMemoKey: k.submission,
 	}
 }
+
+// startRequestID is the Temporal request id a `terminate_other` reissue of
+// this submission is sent with (#1966): stable across every attempt at this
+// submission, different for a different submission under the same request id,
+// and derived from the key's digests rather than carrying the caller's request
+// id itself, for the reason [requestMemoKey] gives.
+//
+// Temporal answers a start whose request id the current run already carries
+// with that run instead of applying the conflict policy, so two identical
+// submissions racing the reissue converge on one run, while a different
+// submission's reissue, carrying a different id, still terminates it.
+func (k *submissionKey) startRequestID() string {
+	return startRequestIDPrefix + digestOf(k.request, k.submission)
+}
+
+// startRequestIDPrefix marks a [submissionKey.startRequestID] as Flowstate's,
+// so one read in Temporal's own tooling is not mistaken for the SDK's random
+// request ids.
+const startRequestIDPrefix = "flowstate-submission-"
 
 // digestWorkflowID derives a workflow id from parts that together name one
 // thing — a tenant and a key, a tenant, a workflow, a trigger and a key.
@@ -198,6 +221,54 @@ func (s *FlowstateServer) reusedSubmission(ctx context.Context, workflowID, runI
 	}
 
 	return resp, true, nil
+}
+
+// reissueStarted decides whether the run a `terminate_other` reissue under
+// [submissionKey.startRequestID] was answered with is the one this call
+// started, or one an identical submission's reissue started and the cluster
+// folded this call onto (#1966).
+//
+// Temporal's reply cannot say: it answers the folded start exactly as it
+// answers the one that created the run, `Started` included. So each reissue
+// records a nonce under [startMemoKey], only the start that created the run
+// had its memo written, and the run is described through [reusedSubmission]'s
+// own path and its nonce compared with this call's.
+//
+// A run that answered this submission's start request id but does not record
+// this submission, or records no nonce, is not one this server could have
+// produced, and is refused as an internal fault rather than named to the
+// caller as theirs.
+func (s *FlowstateServer) reissueStarted(ctx context.Context, workflowID, runID string, key *submissionKey, nonce string) (*workflowservice.DescribeWorkflowExecutionResponse, bool, error) {
+	resp, retry, err := s.reusedSubmission(ctx, workflowID, runID, key)
+	if connect.CodeOf(err) == connect.CodeAlreadyExists || (err == nil && !retry) {
+		return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf(
+			"run %s of workflow %s answered this submission's start request id but records a different submission",
+			runID, workflowID))
+	}
+	if connect.CodeOf(err) == connect.CodeNotFound {
+		// [FlowstateServer.authorizeRunDecision] answers every failed lookup
+		// NotFound, which is the right answer for a run a caller named and the
+		// wrong one for a run the cluster just told this call is running: the
+		// run exists, and what failed is reading it back. Retrying the request
+		// finds it through the retry arm.
+		return nil, false, connect.NewError(connect.CodeUnavailable, fmt.Errorf(
+			"run %s of workflow %s was started but could not be read back; retry the request to be answered with it",
+			runID, workflowID))
+	}
+	if err != nil {
+		return nil, false, err
+	}
+
+	recorded, ok, err := s.memoString(resp.GetWorkflowExecutionInfo().GetMemo(), startMemoKey)
+	if err != nil {
+		return nil, false, connect.NewError(connect.CodeInternal, err)
+	}
+	if !ok {
+		return nil, false, connect.NewError(connect.CodeInternal, fmt.Errorf(
+			"run %s of workflow %s answered this submission's start request id but records no start", runID, workflowID))
+	}
+
+	return resp, recorded == nonce, nil
 }
 
 // memoString reads one string-valued memo field the way [memoStarter] reads

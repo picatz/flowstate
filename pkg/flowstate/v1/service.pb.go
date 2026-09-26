@@ -233,6 +233,22 @@ type RunRequest struct {
 	// payload with "done" would be worse than no key at all. Choose a new value
 	// for a new submission.
 	//
+	// # Concurrent submissions under `terminate_other`
+	//
+	// Two identical submissions racing a `terminate_other` reissue are
+	// deduplicated by the cluster itself. The reissue carries a Temporal
+	// request id derived from the submission, and Temporal answers a start
+	// whose request id the current run already carries with that run, before
+	// the conflict policy is consulted, so neither can terminate the other's
+	// run: both are answered with one run id, and the one whose start was
+	// folded onto the other's is told `reused`. A genuinely different
+	// submission carries a different request id and still replaces what it
+	// found. This relies on Temporal Server 1.24 or later, the same floor
+	// `terminate_other`'s conflict policy already needs, and requires a server
+	// whose Temporal client was dialed with temporalclient's options or has
+	// temporalclient.StartInterceptor installed; otherwise such a replacement
+	// is refused `FailedPrecondition` before anything is terminated.
+	//
 	// # Grammar
 	//
 	// A UUID or a caller-chosen string of 1 to 128 ASCII letters, digits and

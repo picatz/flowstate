@@ -851,12 +851,20 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 }
 
 // refusedRunSensitiveValues is the redaction set for `flow run local`, `flow
-// run` and `flow schedule create` when the command line is refused before a
-// run starts: a word the shell handed over that cannot be the declared type,
-// a JSON number too large for it, or arguments the binder refuses. All three
-// verbs read the same `inputs:` declarations the same way and refuse the
-// same two calls — [runInputs] and [checkRunInputs] — so one set serves all
-// three refusals rather than one per caller.
+// run`, `flow schedule create` and the MCP `run_local` tool when the run's
+// arguments are refused before the run starts: a word the shell handed over
+// that cannot be the declared type, a JSON number too large for it, or
+// arguments the binder refuses. All four surfaces read the same `inputs:`
+// declarations the same way and refuse the same two calls — [runInputs] (or
+// the tool's own [runLocalToolInputs]) and [checkRunInputs] (or
+// [checkToolRunInputs]) — so one set serves every refusal rather than one per
+// caller (#2076).
+//
+// cmd carries [sensitiveInputWords]'s one CLI-specific source, `--input
+// name=value` flags, which the MCP tool never has: its arguments arrive as
+// JSON, not flags, so [sensitiveInputWords] reads an empty flag set for it
+// and contributes nothing — correctly, since there is no shell word to have
+// quoted in the first place.
 //
 // [runSensitiveValues] cannot answer here, and its fail-closed answer is the
 // reason. It binds, and on this path the bind is the thing that failed, so it
@@ -919,9 +927,18 @@ func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submit
 //
 // This exists for the one refusal a value set cannot otherwise reach: the
 // coercion's. `--input pin=hunter2` against `type: int` never produces a
-// [v1.Value] to put in a set, and the refusal quotes the word — so the word
-// itself joins the set as a plaintext, which is what [v1.SensitiveValues.WithValues]
-// is for.
+// [v1.Value] to put in a set, so the word had nowhere else to join it —
+// which is what [v1.SensitiveValues.WithValues] is for.
+//
+// [inputCoercionError] itself no longer needs this backstop for a
+// `sensitive:` declaration: it now refuses to quote the word at all in that
+// case, at construction (#2073), rather than print it and trust WithValues's
+// substring floor to catch it afterward — a floor that a word shorter than
+// [minSensitiveSubstringRunes] survives regardless of what reads this
+// function's answer. This function is kept anyway, reading every declared
+// `--input` word whether or not its own coercion failed: a plaintext added
+// here costs nothing when nothing else quotes it, and stands ready for
+// whatever this refusal's chain still carries that does.
 //
 // It reads only where the name ends, never what the value means. inputs.go's
 // header is emphatic that a second reader of --input is how one grammar

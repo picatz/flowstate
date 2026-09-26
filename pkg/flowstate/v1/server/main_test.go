@@ -18,12 +18,14 @@ import (
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/picatz/flowstate/internal/temporaltest"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 
 	"github.com/picatz/flowstate/internal/testkit"
 )
@@ -145,6 +147,11 @@ func newTemporalNamespace(t *testing.T) (client.Client, string) {
 		HostPort:  devServer.FrontendHostPort(),
 		Namespace: namespace,
 		Logger:    newTestingLogger(t),
+		// As [temporalclient.Config.Options] dials every deployment's client,
+		// so the `terminate_other` reissue runs here as it does there.
+		ConnectionOptions: client.ConnectionOptions{
+			DialOptions: []grpc.DialOption{grpc.WithChainUnaryInterceptor(temporalclient.StartInterceptor())},
+		},
 	})
 	require.NoError(t, err)
 	t.Cleanup(temporal.Close)

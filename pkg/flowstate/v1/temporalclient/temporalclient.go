@@ -37,10 +37,13 @@ package temporalclient
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/interceptor"
+	"google.golang.org/grpc"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 )
@@ -155,6 +158,12 @@ func (c Config) Options() (client.Options, error) {
 	// silently dropped by this package.
 	opts.Interceptors = append(opts.Interceptors, c.Interceptors...)
 
+	// Appended for the same reason, and here rather than in dial so that a
+	// caller dialing from these options itself gets it too: [WithStartRequest]
+	// is inert on a client without it.
+	opts.ConnectionOptions.DialOptions = append(opts.ConnectionOptions.DialOptions,
+		grpc.WithChainUnaryInterceptor(StartInterceptor()))
+
 	// Checked here rather than at the first payload, and applied last so that
 	// nothing above can leave a client half-configured: a data converter with
 	// the codec and a failure converter without it is the fail-open pairing
@@ -263,4 +272,66 @@ func Describe(opts client.Options) string {
 		}
 	}
 	return fmt.Sprintf("%s namespace=%s (%s)", opts.HostPort, opts.Namespace, security)
+}
+
+// StartRequest is one caller's say over the StartWorkflowExecution calls
+// made under a context carrying it; see [WithStartRequest].
+type StartRequest struct {
+	// ID is the request id those calls are sent with, in place of the SDK's
+	// per-call random one. Empty keeps the SDK's.
+	//
+	// Temporal answers a start whose request id the current run already
+	// carries with that run, before it consults the conflict policy, which
+	// makes a deterministic request id the deduplication key for a start.
+	ID string
+
+	// applied is set by [StartInterceptor] when a start passes through it.
+	applied atomic.Bool
+}
+
+// Applied reports whether a StartWorkflowExecution call made under a context
+// carrying r has passed through [StartInterceptor]. False after such a call
+// returned means the client was not dialed with the interceptor, and so an
+// ID set on r would not have been sent either: the one signal a caller that
+// depends on the ID has, before it depends on it.
+func (r *StartRequest) Applied() bool {
+	return r.applied.Load()
+}
+
+// startRequestKey is [WithStartRequest]'s context key.
+type startRequestKey struct{}
+
+// WithStartRequest returns ctx carrying r, which a client dialed with
+// [StartInterceptor] applies to every StartWorkflowExecution call it makes
+// under the returned context.
+//
+// The SDK keeps [client.StartWorkflowOptions]' own request id unexported,
+// and it derives the gRPC call's context from the one given to
+// ExecuteWorkflow, so the context is the one seam from a caller to that
+// field.
+func WithStartRequest(ctx context.Context, r *StartRequest) context.Context {
+	return context.WithValue(ctx, startRequestKey{}, r)
+}
+
+// StartInterceptor returns the gRPC interceptor that makes
+// [WithStartRequest] effective. A call whose context carries no
+// [StartRequest], or that is not a StartWorkflowExecution, passes through
+// untouched.
+//
+// [Config.Options] installs it on every client this package dials. A client
+// dialed some other way (an embedder's own, or a test's) installs it through
+// [client.ConnectionOptions.DialOptions]; without it, every start keeps the
+// SDK's random request id, and [StartRequest.Applied] stays false.
+func StartInterceptor() grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		start, isStart := req.(*workflowservice.StartWorkflowExecutionRequest)
+		r, _ := ctx.Value(startRequestKey{}).(*StartRequest)
+		if isStart && r != nil {
+			if r.ID != "" {
+				start.RequestId = r.ID
+			}
+			r.applied.Store(true)
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
 }

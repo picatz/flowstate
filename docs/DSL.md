@@ -5598,6 +5598,21 @@ implemented as a refusal caught rather than as Temporal's `USE_EXISTING`, becaus
 started the run it is reporting. Every fact this server states is one it established;
 `SignalWithStart` decides its own `created` from the same error.
 
+`terminate_other` is the one arm two concurrent submissions carrying a
+`request_id` can race, since replacing what is there is the one thing this
+key does that is not simply "answer from what is already there." Two
+identical submissions racing its reissue are deduplicated by the cluster
+itself: the reissue carries a Temporal request id derived from the
+submission, and Temporal answers a start whose request id the current run
+already carries with that run, before the conflict policy is consulted. So
+neither can terminate the other's run; both are answered with one run id, and
+the one whose start was folded onto the other's is told `reused`. A genuinely
+different submission carries a different request id and still replaces the
+incumbent (#1966). An embedded server whose Temporal client was not dialed
+with `temporalclient`'s options, or with `temporalclient.StartInterceptor`
+installed, cannot send that request id, so it refuses such a replacement
+`FailedPrecondition` before terminating anything.
+
 ### Submit-time, which is why both drivers agree
 
 Nothing inside a run reads this block. It is consumed once, by the server choosing

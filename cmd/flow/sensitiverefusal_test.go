@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // This file is #2044: three refusal surfaces the redaction set #2042 built
@@ -245,6 +247,16 @@ func TestARemoteRunRefusalDoesNotPrintASensitiveArgument(t *testing.T) {
 			args:  []string{"--input", "pin=hunter2"},
 			value: "hunter2",
 		},
+		// #2073: a one-rune coercion word is short enough to survive
+		// [v1.SensitiveValues.WithValues]'s two-rune substring floor, so the
+		// fix has to keep this refusal from quoting the word at construction
+		// rather than rely on that backstop to catch it afterward. Covered
+		// here too since `flow run` reaches [inputCoercionError] through the
+		// identical [runInputs] this table already exercises.
+		"a one-rune word the flag cannot coerce to the declared type": {
+			args:  []string{"--input", "pin=x"},
+			value: "x",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -278,6 +290,14 @@ func TestAScheduleCreateRefusalDoesNotPrintASensitiveArgument(t *testing.T) {
 		"a word the flag cannot coerce to the declared type": {
 			args:  []string{"--input", "pin=hunter2"},
 			value: "hunter2",
+		},
+		// #2073, the same reason TestARemoteRunRefusalDoesNotPrintASensitiveArgument
+		// carries it: a one-rune coercion word is below WithValues's substring
+		// floor, so `flow schedule create` needs the same construction-site
+		// fix, not a wider backstop.
+		"a one-rune word the flag cannot coerce to the declared type": {
+			args:  []string{"--input", "pin=x"},
+			value: "x",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -374,4 +394,81 @@ func TestAScheduleCreateRefusalStillPrintsAnOrdinaryArgument(t *testing.T) {
 
 	assert.Contains(t, res.Output(), ordinaryMustValue,
 		"an ordinary field's own must: refusal withheld the value it quotes, not only a sensitive one's")
+}
+
+// TestInputCoercionErrorNeverQuotesASensitiveWord is #2073, unit-tested
+// directly against [inputCoercionError] rather than through a full run.
+//
+// [v1.SensitiveValues.WithValues]'s substring backstop — the only thing
+// [sensitiveInputWords] can offer this refusal's word to — floors matching
+// at [minSensitiveSubstringRunes] (two runes) by documented design, and this
+// is the one refusal whose word never becomes a [*v1.Value], so no set built
+// afterward can redact it at any length: a one-rune word used to survive in
+// the clear where a longer one did not. The fix has to be made here, at
+// construction, against the declaration this function already holds — the
+// same standing [runArgumentFlags] and [redactedIfSensitive] already give a
+// declaration elsewhere in this binary.
+//
+// Two spellings of the same length, for the reason the integration tests
+// above carry both: a plain rune and one that needs `%q`/JSON escaping to
+// render at all, so the fix is proven independent of whether the word is one
+// this binary's own quoting would have had to escape.
+func TestInputCoercionErrorNeverQuotesASensitiveWord(t *testing.T) {
+	t.Parallel()
+
+	sensitive := &v1.InputDeclaration{Name: "pin", Type: v1.InputDeclaration_TYPE_INT, Sensitive: true}
+	ordinary := &v1.InputDeclaration{Name: "region", Type: v1.InputDeclaration_TYPE_INT}
+
+	words := map[string]string{
+		"a plain one-rune word":                   "x",
+		"a one-rune word needing %q-style escape": `\`,
+	}
+
+	for name, word := range words {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := inputCoercionError("pin", word, sensitive, "a whole number, e.g. 3", false)
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), word,
+				"a sensitive input's raw word reached the refusal's own text")
+			assert.Contains(t, err.Error(), v1.SensitiveMarker,
+				"the word's place in the sentence was not marked as redacted")
+			assert.Contains(t, err.Error(), "pin",
+				"the refusal no longer says which input it is about")
+		})
+	}
+
+	// The direction the fix must not take with it: an ordinary declaration's
+	// word still prints, at the same lengths that a sensitive one no longer
+	// does, or the fix has widened into a withholding nobody asked for.
+	for name, word := range words {
+		t.Run(name+" (an ordinary declaration)", func(t *testing.T) {
+			t.Parallel()
+
+			err := inputCoercionError("region", word, ordinary, "a whole number, e.g. 3", false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), word,
+				"an ordinary input's own word was withheld too")
+		})
+	}
+}
+
+// TestInputCoercionErrorHonorsRevealSensitive is the direction the fix must
+// not take with it either: [inputCoercionError] produces no [*v1.Value], so
+// it never reaches [refusedRunSensitiveValues]'s own reveal check the way
+// every other refusal on this path does — the escape hatch has to be asked
+// for here directly, or `--reveal-sensitive` stops working for exactly the
+// refusal this issue is about.
+func TestInputCoercionErrorHonorsRevealSensitive(t *testing.T) {
+	t.Parallel()
+
+	sensitive := &v1.InputDeclaration{Name: "pin", Type: v1.InputDeclaration_TYPE_INT, Sensitive: true}
+
+	err := inputCoercionError("pin", "x", sensitive, "a whole number, e.g. 3", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "x",
+		"--reveal-sensitive did not reveal the word an operator asked to see")
+	assert.NotContains(t, err.Error(), v1.SensitiveMarker,
+		"a revealed word was marked as redacted anyway")
 }

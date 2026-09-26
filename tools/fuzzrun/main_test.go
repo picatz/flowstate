@@ -184,6 +184,7 @@ func TestFuzzCommandCarriesTheTiersBounds(t *testing.T) {
 
 	args := strings.Join(cmd.Args, " ")
 	for _, want := range []string{
+		"-short",            // no dev server for a target that never touches one (#2098)
 		"-parallel 1",       // one fuzzing worker: a crash stays attributable
 		"-run=XXX",          // the package's ordinary tests are not the budget
 		"-fuzz FuzzThing",   // this target and no other

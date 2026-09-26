@@ -130,9 +130,13 @@ func TestCodecMemosAreReadThroughTheConfiguredConverter(t *testing.T) {
 	})
 
 	t.Run("the configured converter reads a heartbeat phase", func(t *testing.T) {
-		details := &common.Payloads{Payloads: []*common.Payload{encode("uploading")}}
+		// A real [v1.Phase] name rather than an arbitrary word: heartbeatPhase
+		// now reads a decoded value against that vocabulary and this test's
+		// job is the codec seam, not that check, so it has to hand over
+		// something the check lets through (#2067).
+		details := &common.Payloads{Payloads: []*common.Payload{encode(v1.PhaseRequesting.String())}}
 
-		require.Equal(t, "uploading", s.heartbeatPhase(details))
+		require.Equal(t, v1.PhaseRequesting.String(), s.heartbeatPhase(details))
 		require.Equal(t, "", plainServer.heartbeatPhase(details),
 			"the default converter decoded a codec-written heartbeat detail")
 	})

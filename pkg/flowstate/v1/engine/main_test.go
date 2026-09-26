@@ -88,11 +88,13 @@ func withoutDevServer() bool {
 // decodes bytes. What makes it worth detecting rather than leaving to whoever
 // writes the command is that a fuzz run is *several* processes — the
 // coordinator, plus a worker it may restart — and every one of them would pay
-// the boot. The fuzz tiers run one command per target from
-// tools/fuzztargets/targets.txt with no per-target flags (#857), by design, so
-// there is nowhere to put a `-short` for this package alone; and the deep
-// tier's 10m of fuzzing under a 900s test timeout leaves no room to spend two
-// minutes per process on a server nothing asks a question of.
+// the boot. Both fuzz tiers now pass `-short` themselves — tools/fuzzrun's
+// fuzzCommand for smoke, deep.yml's own loop for deep (#2098) — so this
+// detection is redundant for either tier: the command line already skips the
+// boot before this function is asked. It still earns its place for a
+// developer fuzzing this package by hand without `-short`, who gets the
+// fuzzing they asked for and skips the boot too, without needing to know to
+// pass it.
 //
 // The flags are read rather than declared: the testing package registers
 // `test.fuzz` and `test.fuzzworker` itself, and [flag.Parse] above has already
