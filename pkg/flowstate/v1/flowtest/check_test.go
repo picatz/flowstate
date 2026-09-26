@@ -449,12 +449,13 @@ tests:
 // #2079's issue comment: a check witness renders a string with Go's `%q`,
 // which rewrites a tab, a newline, a quote or a backslash before the
 // redaction set ever reads the line ([bothSpellings]'s whole reason to
-// exist). [v1.SensitiveInputValues]' own substring backstop holds a
+// exist). [v1.SensitiveInputValues]' own substring backstop used to hold a
 // `sensitive:` input's root value exactly as bound, with no escaped
 // spelling — the validate-time path ([File.CheckSignalNames]) has carried
 // both spellings of its own input material since #2041, but the run-time one
 // ([sensitiveNativeValues]) did not, so this concatenated onto a step's
-// output printed its `\t`-escaped spelling in the clear.
+// output printed its `\t`-escaped spelling in the clear before that gap
+// closed.
 //
 // The workflow concatenates a prefix onto the input rather than passing it
 // through whole, deliberately: a witness value *equal* to a sensitive value
@@ -563,17 +564,22 @@ outputs: {}
 		"the positive control: the substring backstop must still have fired")
 }
 
-// TestASensitiveInputsOneRuneDescendantSurvivesEscapedInARunTimeCheckWitness
-// is Codex's finding on the previous test's own fix: a one-rune raw
-// descendant such as "\t" fails [minSensitiveSubstringRunes]' own floor and
-// contributes no raw substring — correctly, since redacting one rune
-// everywhere it occurs would shred the diagnostic — but its `%q` spelling is
-// two characters, a backslash and a `t`, which clears that same floor on its
-// own and shreds nothing by being redacted. Gating the escaped spelling
-// behind the *raw* value's own floor check left this one-rune case
-// unprotected in both spellings: too short to redact raw, and never reached
-// to redact escaped either.
-func TestASensitiveInputsOneRuneDescendantSurvivesEscapedInARunTimeCheckWitness(t *testing.T) {
+// TestASensitiveInputsOneRuneDescendantAddsNoEscapedSpelling pins the floor
+// [minSensitiveSubstringRunes] argues the other way from a pass this repo
+// briefly carried: gating a descendant's `%q`-escaped spelling behind the
+// *escaped* spelling's own length, rather than the raw value's, let a
+// one-rune raw descendant such as "\n" clear the floor once escaped — two
+// characters, a backslash and an `n` — and join the substring backstop. That
+// backstop redacts wherever the substring occurs, not only where the
+// sensitive value itself concatenated in, so an entirely unrelated value
+// that happens to render with the identical two-character escape — any
+// ordinary string holding its own newline — was shredded by it: independent
+// review of #2079 reproduced `line1\nline2` printing as
+// `line1[redacted]line2` this way. Gating the escaped spelling behind the raw
+// value's own floor again, as it was before that pass, keeps a one-rune
+// descendant from adding either spelling — the same standing every
+// non-root descendant already has, applied to the escaped half too.
+func TestASensitiveInputsOneRuneDescendantAddsNoEscapedSpelling(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -584,22 +590,27 @@ inputs:
   creds:
     type: struct
     sensitive: true
+  other:
+    type: string
 steps:
   - id: echo
     value: ${'prefix-' + inputs.creds.token}
+  - id: mirror
+    value: ${inputs.other}
 outputs: {}
 `)
 	path := filepath.Join(dir, "workflow.test.yaml")
 	writeFile(t, path, "tests:\n"+
-		"  - name: a one-rune descendant field concatenates into a step output\n"+
+		"  - name: an unrelated value shares a one-rune descendant's own escape sequence\n"+
 		"    workflow: ./workflow.yaml\n"+
 		"    inputs:\n"+
 		"      creds:\n"+
-		"        token: \"\\t\"\n"+
+		"        token: \"\\n\"\n"+
+		"      other: \"line1\\nline2\"\n"+
 		"    expect:\n"+
 		"      check:\n"+
-		"        - that: steps.echo.value == 'nope'\n"+
-		"          because: false on purpose, so the run-time witness renders\n")
+		"        - that: steps.echo.value == 'nope' && steps.mirror.value == 'nope'\n"+
+		"          because: false on purpose, so both run-time witnesses render\n")
 
 	report := flowtest.RunFile(path)
 	require.Empty(t, report.GetRefused())
@@ -609,10 +620,12 @@ outputs: {}
 	require.NotEmpty(t, c.GetFailures())
 
 	message := c.GetFailures()[0].GetMessage()
-	assert.NotContains(t, message, `prefix-\t`,
-		"a one-rune descendant's %q-escaped spelling reached a run-time check witness unredacted")
-	assert.Contains(t, message, `prefix-[redacted]`,
-		"the positive control: the substring backstop must still have fired")
+	assert.Contains(t, message, `steps.mirror.value = "line1\nline2"`,
+		"an unrelated value's own newline was redacted by a one-rune sensitive descendant's escaped spelling")
+	assert.NotContains(t, message, "[redacted]",
+		"a one-rune descendant embedded in a composite string is the floor's own documented, accepted cost "+
+			"(prints in the clear, exactly as any other non-root descendant below the floor already does) — "+
+			"nothing here should fire the marker")
 }
 
 // TestManyWitnessesAreBounded at [flowtest.MaxCheckWitnesses], the residual

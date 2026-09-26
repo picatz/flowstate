@@ -59,6 +59,15 @@ const SensitiveMarker = "[redacted]"
 // on its own. A declared input's own value is exempt from this floor — it is
 // the thing `sensitive:` names, and `"Bearer " + inputs.token` is precisely
 // the shape the backstop exists for.
+//
+// The floor is checked against the *raw* descendant, and a `%q`-escaped
+// spelling of one that fails it is not added either, even though escaping can
+// itself lengthen a one-rune value past two characters: "\n" is one rune raw
+// and two escaped, but the material it carries is still that one rune, and
+// redacting its escaped spelling shreds every unrelated `\n` in every
+// rendered line exactly as redacting the raw rune would have shredded every
+// unrelated `\n` byte. The floor is a property of the material, not of which
+// spelling of it happens to clear two characters.
 const minSensitiveSubstringRunes = 2
 
 // maxSensitiveSubstringRedactionWork bounds one rendered value and
@@ -281,17 +290,28 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				// through this identical case once it is popped off the
 				// queue below.
 				//
-				// The floor applies to the escaped spelling on its own
-				// length, not gated behind the raw value's (Codex, on that
-				// same fix): a one-rune raw descendant such as "\t" fails
-				// the floor above and adds nothing, but %q's rendering of
-				// it — two characters, a backslash and a t — clears the
-				// floor by itself and shreds nothing by being redacted, so
-				// tying it to the raw spelling's own floor left exactly the
-				// one-rune case protected nowhere unescaped and unprotected
-				// escaped.
+				// Gated behind the *raw* value's own floor, not the escaped
+				// spelling's: a one-rune raw descendant such as "\n" is
+				// exactly the shredder the floor above exists to stop, and
+				// escaping it does not change that — "\n"'s `%q` spelling
+				// carries the identical one rune, so adding it to the
+				// backstop redacts that same rune, still, everywhere it
+				// occurs, escaped or not. A prior pass here applied the
+				// floor to the escaped spelling's own length instead,
+				// reasoning that a two-character escape "shreds nothing by
+				// being redacted" — which is only true of the two characters
+				// themselves; it is not true of the one rune of real
+				// material they spell, or of an unrelated value that
+				// happens to render with the identical two-character escape
+				// (an ordinary tab or newline elsewhere in the same line).
+				// Independent review of #2079 (2e24cbf8) reproduced exactly
+				// that: a one-rune sensitive descendant turned every `\n` in
+				// every rendered line into the marker. This is the
+				// documented floor (#2073) doing its job at the escaped
+				// spelling too, and #2081 tracks the general shape of
+				// escaped-spelling redaction past this one case.
 				if escaped, ok := quotedSpelling(value); ok &&
-					(n.root || utf8.RuneCountInString(escaped) >= minSensitiveSubstringRunes) {
+					(n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
 					out.substrings = append(out.substrings, escaped)
 				}
 			case int64, uint64, float64, bool:
@@ -436,9 +456,22 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 // everything it is asked about regardless of what a caller's own values would
 // otherwise permit, so a caller merging in a set it never checked can trust
 // merge is not one line where it forgot to check.
+//
+// [maxSensitiveDescendants] bounds the combined values too, for the same
+// reason [SensitiveInputValues] bounds it while building either side: two
+// sets each valid on their own — a maximum-size structured input's own set,
+// say, merged with a run's pre-bind secrets — can still combine past the
+// bound [SensitiveValues.RedactTree] was sized against, and every merge
+// afterward would grow it further (Codex). Blowing it here withholds
+// everything exactly as blowing it while building a set does, rather than
+// quietly handing every later caller a set larger than the one bound this
+// package has for how much comparison work a single redaction may cost.
 func (s SensitiveValues) Merge(other SensitiveValues) SensitiveValues {
 	a, b := s.held(), other.held()
 	if a.withholdAll || b.withholdAll {
+		return WithheldSensitiveValues()
+	}
+	if len(a.values)+len(b.values) > maxSensitiveDescendants {
 		return WithheldSensitiveValues()
 	}
 

@@ -580,3 +580,36 @@ func TestMergeWithholdsWhenEitherSideDoes(t *testing.T) {
 	require.True(t, held.Merge(withheld).WithholdAll())
 	require.True(t, withheld.Merge(held).WithholdAll())
 }
+
+// TestMergeWithholdsPastTheCombinedDescendantBound is Codex's finding that
+// Merge appended both sides' values with no bound of its own: two sets each
+// valid on their own — a maximum-size structured input's own set, say,
+// merged with a run's pre-bind secrets — combine into one larger than
+// [maxSensitiveDescendants], the bound [SensitiveInputValues] enforces while
+// building either side so that [SensitiveValues.RedactTree] never costs more
+// per node than that many [reflect.DeepEqual] comparisons. Merge must answer
+// the identical bound on the combined count, not only on each side alone,
+// or a chain of otherwise-valid merges grows the excess further with every
+// call.
+func TestMergeWithholdsPastTheCombinedDescendantBound(t *testing.T) {
+	t.Parallel()
+
+	half := maxSensitiveDescendants/2 + 1 // each side alone stays under the bound; combined, over it
+
+	distinct := func(prefix string, n int) []string {
+		values := make([]string, n)
+		for i := range values {
+			values[i] = fmt.Sprintf("%s-%04d", prefix, i)
+		}
+		return values
+	}
+
+	a := SensitiveValues{}.WithValues(distinct("a", half)...)
+	b := SensitiveValues{}.WithValues(distinct("b", half)...)
+	require.False(t, a.WithholdAll(), "one side alone must stay under the bound")
+	require.False(t, b.WithholdAll(), "and the other")
+
+	require.True(t, a.Merge(b).WithholdAll(),
+		"two sets each under the bound combined past it and Merge did not fail closed")
+	require.True(t, b.Merge(a).WithholdAll(), "order must not matter")
+}

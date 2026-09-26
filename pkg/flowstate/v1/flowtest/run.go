@@ -881,12 +881,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// currently returns is also one of the three sources the pre-#2079
 	// implementation re-added by hand right above this comment's old
 	// location, so a fixture built from any of them renders identically
-	// either way — confirmed directly by running this package's entire suite
-	// with `go test -overlay` pointing this file at that pre-#2079 body
-	// (bb021edda~1): every test still passes, this one included. What this
-	// line actually buys is a source `casePosture` does not have *yet* —
-	// "whatever `casePosture` is given to carry next", four paragraphs up —
-	// surviving without a matching line here, which is exactly the property
+	// either way — confirmed directly with `go test -overlay`, swapping this
+	// file for its pre-#2079 body against this package's whole suite: every
+	// test still passed. What this line actually buys is a source
+	// `casePosture` does not have *yet* — "whatever `casePosture` is given
+	// to carry next", in this same comment above — surviving without a
+	// matching line here, which is exactly the property
 	// [SensitiveValues.Merge]'s own unit tests
 	// (TestMergeExtendsRatherThanReplaces, TestMergeWithholdsWhenEitherSideDoes)
 	// pin directly. A test built to fail on this line alone would have to
