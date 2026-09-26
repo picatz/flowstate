@@ -76,14 +76,25 @@ guard, but memory inspection does not care which path a value arrived by
 guarantee is against a stranger that was never handed the token, not
 against the plugin itself or a same-user process that can read either
 process's memory. And group termination reaches every descendant left in
-the plugin's process group, but only when the host signals the group while
-the leader is still alive: `stop` is what sends that signal, gated on
-exactly that condition (`launch.go`'s `instance.stop`), so a plugin that
-exits or crashes on its own first — before anything calls `stop` — leaves
-its group unsignalled regardless of who stayed in it. Neither guarantee is
-containment against a plugin actively working to evade it, which the
-opening paragraph already says plainly; the second is not yet reliable
-cleanup for one that quietly does nothing evasive at all.
+the plugin's process group whether the host stops it while the leader is
+still alive (`instance.stop`) or the leader exits or crashes on its own
+first — the launch goroutine that reaps it signals the group immediately,
+then polls and escalates to SIGKILL (`launch.go`'s
+`escalateAbandonedGroup`) — but only a descendant that stayed in the
+group; one a plugin deliberately forked into a session of its own is
+unreached either way, and neither path is containment against a plugin
+actively working to evade it, which the opening paragraph already says
+plainly. `instance.stop` waits for that escalation to finish before it
+returns. If the caller's context ends first, the escalation is cut short
+and sends its SIGKILL at once (bounded by a further second for it to
+land), the same rule `instance.stop` applies to a leader that outlives
+its context. So a caller winding a plugin or the whole host down
+(`Host.Close`) does not return, and the worker process does not exit,
+leaving a stubborn descendant that nothing will kill. Run the worker under
+an init process (`docker run --init`, tini) rather than as PID 1: orphaned
+helpers reparent to PID 1, and one that never reaps them leaves zombies
+that keep the group looking alive, so every plugin stop waits out its full
+grace period (#2078).
 
 ### Pinning which bytes a plugin name may run
 
