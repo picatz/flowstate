@@ -401,6 +401,150 @@ steps:
       message: hello
 `,
 		},
+		{
+			// #2102: the anchor's value is a flow-style mapping, `{…}`. spliceScalar
+			// used to copy the span spanOfNode computed for it, and eachToken never
+			// visits a MappingNode's own tokens at all — so that span ran from the
+			// first entry to the last, missing both `{` and `}`.
+			name: "a whole-value alias to a flow-style mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a {x: 1}
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: {x: 1}
+  u: {x: 1}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: {x: 1}
+  u: {x: 1}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			// #2102's other shape: a flow-style sequence, `[…]`. eachToken visits a
+			// SequenceNode's opening token but never a matching closing one, so the
+			// computed span kept the `[` and dropped the `]`.
+			name: "a whole-value alias to a flow-style sequence",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a [1, 2]
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: [1, 2]
+  u: [1, 2]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: [1, 2]
+  u: [1, 2]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			// #2102's acceptance criteria asks for a nested case too, since the gap
+			// is structural rather than shape-specific: the outer mapping's own
+			// delimiters are what this fix widens the span to, and the nested flow
+			// mapping's `{`/`}` come along for free as bytes already inside that
+			// range, with no second walk needed to find them.
+			name: "a whole-value alias to a nested flow-style mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a {x: {y: 1}}
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: {x: {y: 1}}
+  u: {x: {y: 1}}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: {x: {y: 1}}
+  u: {x: {y: 1}}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			name: "a whole-value alias to a nested flow-style sequence",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a [[1, 2], 3]
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: [[1, 2], 3]
+  u: [[1, 2], 3]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: [[1, 2], 3]
+  u: [[1, 2], 3]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
 	}
 }
 

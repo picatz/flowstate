@@ -746,7 +746,8 @@ func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Sp
 		return span, true
 	}
 
-	size := originLen(anchor.Value)
+	start, end, isFlow := flowDelimiters(anchor.Value)
+	size := originLen(anchor.Value) + tokenOriginLen(start) + tokenOriginLen(end)
 	if !in.chargeScan(alias, size) {
 		return Span{}, false
 	}
@@ -760,6 +761,13 @@ func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Sp
 	// (#2075).
 	in.rawScannedBytes += size
 	span := spanOfNode(anchor.Value)
+	if isFlow {
+		// [spanOfNode]'s walk never reaches these two tokens itself — see
+		// [flowDelimiters] — so the span it returns for a flow-style value
+		// is widened here, once per anchor, to the actual delimiters an
+		// author wrote (#2102).
+		span = widenForFlowDelimiters(span, start, end)
+	}
 	if in.anchorSpans == nil {
 		in.anchorSpans = map[*ast.AnchorNode]Span{}
 	}
@@ -768,27 +776,92 @@ func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Sp
 	return span, true
 }
 
+// flowDelimiters returns the opening and closing tokens of a flow-style
+// mapping or sequence value, or ok false for anything else — including a
+// *block* mapping or sequence, which the parser never gives such tokens to
+// begin with.
+//
+// This is the gap [eachToken] leaves (#2102): its switch never visits a
+// [ast.MappingNode]'s own `Start`/`End` tokens at all, and for a
+// [ast.SequenceNode] visits only `Start`, never the matching `End`. For a
+// *block* mapping or sequence that gap is invisible, because the parser
+// never sets either token there — a block value has no `{`/`}` or trailing
+// `]` to visit. A *flow* mapping's `{`/`}` and a flow sequence's closing `]`
+// are real tokens with real positions the parser does set, so [spanOfNode]'s
+// answer for one stops one or two columns short of what the author actually
+// wrote, and [spliceScalar] — the one caller that copies those columns
+// straight into another line — copies a value missing its own delimiters.
+//
+// Fixed here, in [aliasInliner.spanOf], rather than in [eachToken] or
+// [spanOfNode] themselves: those two are called from well over a hundred
+// other sites across this package, almost all of them positioning a
+// diagnostic rather than copying bytes, and a span that lands one or two
+// columns short of a flow value's own close is not new outside this file —
+// widening every one of those callers' answers at once is a change this
+// issue has not audited them for. This is the one caller that turns the gap
+// into invalid output, so the fix stays local to it.
+func flowDelimiters(n ast.Node) (start, end *token.Token, ok bool) {
+	switch v := n.(type) {
+	case *ast.MappingNode:
+		if v.IsFlowStyle {
+			return v.Start, v.End, true
+		}
+	case *ast.SequenceNode:
+		if v.IsFlowStyle {
+			return v.Start, v.End, true
+		}
+	}
+	return nil, nil, false
+}
+
+// widenForFlowDelimiters extends span to cover a flow-style value's own
+// opening and closing tokens, when [spanOfNode]'s walk did not already
+// reach them (#2102, see [flowDelimiters]).
+//
+// Only the outermost pair matters here: [spliceScalar] copies the raw bytes
+// between span's two positions on one line, so a nested flow value's own
+// delimiters — `{y: 1}` inside `{x: {y: 1}}`, say — are already inside that
+// range once the outer pair is right, the same way any other byte between
+// them is. Nothing needs to walk the subtree a second time to find them.
+func widenForFlowDelimiters(span Span, start, end *token.Token) Span {
+	if s := spanOfToken(start); s.IsValid() && before(s.Start, span.Start) {
+		span.Start = s.Start
+	}
+	if e := spanOfToken(end); e.IsValid() && before(span.End, e.End) {
+		span.End = e.End
+	}
+	return span
+}
+
 // originLen returns the total length of every token's `Origin` in a
 // subtree — the same total [tokenText] would scan with [strings.TrimSpace]
 // on each one — without doing that scan: a string's own length is O(1) to
-// read, so walking the tokens with [eachToken] and summing `len(tok.Origin)`
-// (or `len(tok.Value)`, [tokenText]'s own fallback when a token carries no
-// `Origin`) costs one [len] per token rather than one scan per token's
-// worth of source bytes.
+// read, so walking the tokens with [eachToken] and summing each one's
+// [tokenOriginLen] costs one [len] per token rather than one scan per
+// token's worth of source bytes.
 func originLen(n ast.Node) int {
 	total := 0
 	eachToken(n, func(tok *token.Token) {
-		if tok == nil {
-			return
-		}
-		if tok.Origin != "" {
-			total += len(tok.Origin)
-			return
-		}
-		total += len(tok.Value)
+		total += tokenOriginLen(tok)
 	})
 
 	return total
+}
+
+// tokenOriginLen returns the length [tokenText] would scan for one token
+// with [strings.TrimSpace] — a token's `Origin` when it carries one, or its
+// `Value` otherwise ([tokenText]'s own fallback) — without doing that scan.
+// nil answers zero, so a caller need not check before calling: [spanOf]
+// reads this for [flowDelimiters]'s two tokens, either of which is nil for
+// a value that is not flow-style.
+func tokenOriginLen(tok *token.Token) int {
+	if tok == nil {
+		return 0
+	}
+	if tok.Origin != "" {
+		return len(tok.Origin)
+	}
+	return len(tok.Value)
 }
 
 // charge adds n to the bytes an expansion has spent on *output* and refuses
