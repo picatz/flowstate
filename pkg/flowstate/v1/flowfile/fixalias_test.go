@@ -799,11 +799,11 @@ steps:
 
 // TestFixDropsSeveralAnchorMarkersOnOneLine is #2106's two reproductions.
 //
-// [aliasInliner.dropMarker] removes each anchor's `&name` marker in the order
-// [aliasInliner.anchorNodes] holds them, which follows the document — left to
-// right on a line two anchors share. Every removal edits the line it is on in
-// place, so a second anchor further right is then located by the *original*
-// column the parser read, which the first removal has already shifted left.
+// A left-to-right removal of each anchor's `&name` marker — the order
+// [aliasInliner.anchorNodes] holds them in, which follows the document — edits
+// the line it is on in place, so a second anchor further right is then
+// located by the *original* column the parser read, which the first removal
+// has already shifted left.
 //
 // The first case is the shape that used to fail safe: the shifted offset does
 // not hold "&b", so the rewrite refused rather than guessed. It is included

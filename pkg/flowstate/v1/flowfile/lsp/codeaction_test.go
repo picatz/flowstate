@@ -406,19 +406,35 @@ func TestCodeActionQuotesAnUnquotedTernaryInADocumentThatDoesNotParse(t *testing
 		"asked for anything but a quickfix, an unparsable document offers nothing")
 }
 
-// TestCodeActionDropsSeveralAnchorMarkersOnOneLine is #2106 reached through the
-// editor rather than the command: two anchors sharing one line, with no alias to
-// either. Before #2106's fix, [aliasInliner.dropMarker] located the second one by a
-// column the first removal had already shifted, so [flowfile.Fix] refused the
-// document and this handler offered nothing for a file with nothing else wrong with
-// it. The fix makes the migration reachable here the same way it does from the
-// command line, so this checks the editor's own entry point and not just Fix's.
+// TestCodeActionDropsSeveralAnchorMarkersOnOneLine is #2106's bad case —
+// `&b`'s value is the quoted string `"&b"`, chosen so that removing `&aa`'s
+// marker first shifts `&b`'s stale column onto that quoted text — reached
+// through the editor rather than the command.
+//
+// Before #2106's fix, [aliasInliner] (as it stood on `dropMarker`'s single-
+// anchor form) located the second marker by a column the first removal had
+// already shifted, matched the quoted text `&b` by coincidence, and deleted
+// it instead of the real marker — silently, with `ok=true` and no refusal.
+// The expected output is written out literally here rather than compared
+// against [fixedSource], which only calls [flowfile.Fix] again: that would
+// make the command's own answer the oracle for the command's own defect,
+// passing even if both sides on it were wrong the same way. This asserts
+// the editor's actual bytes against the one true answer, `x: [1, "&b"]`,
+// and checks the editor's own entry point rather than only `Fix`'s.
 func TestCodeActionDropsSeveralAnchorMarkersOnOneLine(t *testing.T) {
 	t.Parallel()
 
 	const src = `edition: v2026.3
 name: t
-x: [&a 1, &b 2]
+x: [&aa 1, &b "&b"]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+	const want = `edition: v2026.3
+name: t
+x: [1, "&b"]
 steps:
   - id: a
     log:
@@ -434,5 +450,5 @@ steps:
 	require.NotEmpty(t, actions, "no action offered for a document flow fix can migrate")
 
 	migrate := actionOfKind(t, actions, codeActionKindSourceFixAll)
-	assert.Equal(t, fixedSource(t, src), applyEdit(t, uri, src, migrate.Edit))
+	assert.Equal(t, want, applyEdit(t, uri, src, migrate.Edit))
 }
