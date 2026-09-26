@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -58,6 +59,15 @@ const SensitiveMarker = "[redacted]"
 // on its own. A declared input's own value is exempt from this floor — it is
 // the thing `sensitive:` names, and `"Bearer " + inputs.token` is precisely
 // the shape the backstop exists for.
+//
+// The floor is checked against the *raw* descendant, and a `%q`-escaped
+// spelling of one that fails it is not added either, even though escaping can
+// itself lengthen a one-rune value past two characters: "\n" is one rune raw
+// and two escaped, but the material it carries is still that one rune, and
+// redacting its escaped spelling shreds every unrelated `\n` in every
+// rendered line exactly as redacting the raw rune would have shredded every
+// unrelated `\n` byte. The floor is a property of the material, not of which
+// spelling of it happens to clear two characters.
 const minSensitiveSubstringRunes = 2
 
 // maxSensitiveSubstringRedactionWork bounds one rendered value and
@@ -266,6 +276,44 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
 					out.substrings = append(out.substrings, value)
 				}
+
+				// And the spelling a `%q` rendering produces, when it
+				// differs: a check witness and a stub diagnostic both
+				// render a string this way, and `%q` rewrites a tab, a
+				// newline, a quote or a backslash before this set's
+				// substring backstop ever reads the rendered line — so a
+				// descendant holding one, reached through whatever
+				// position a step or a task put it in, printed escaped
+				// in the clear (Copilot, on #2079's own root-only first
+				// pass at this). Root and descendant alike: `%q`
+				// transforms either the same way, and a map key goes
+				// through this identical case once it is popped off the
+				// queue below.
+				//
+				// Gated behind the *raw* value's own floor, not the escaped
+				// spelling's: a one-rune raw descendant such as "\n" is
+				// exactly the shredder the floor above exists to stop, and
+				// escaping it does not change that — "\n"'s `%q` spelling
+				// carries the identical one rune, so adding it to the
+				// backstop redacts that same rune, still, everywhere it
+				// occurs, escaped or not. A prior pass here applied the
+				// floor to the escaped spelling's own length instead,
+				// reasoning that a two-character escape "shreds nothing by
+				// being redacted" — which is only true of the two characters
+				// themselves; it is not true of the one rune of real
+				// material they spell, or of an unrelated value that
+				// happens to render with the identical two-character escape
+				// (an ordinary tab or newline elsewhere in the same line).
+				// Independent review of #2079 (2e24cbf8) reproduced exactly
+				// that: a one-rune sensitive descendant turned every `\n` in
+				// every rendered line into the marker. This is the
+				// documented floor (#2073) doing its job at the escaped
+				// spelling too, and #2081 tracks the general shape of
+				// escaped-spelling redaction past this one case.
+				if escaped, ok := quotedSpelling(value); ok &&
+					(n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
+					out.substrings = append(out.substrings, escaped)
+				}
 			case int64, uint64, float64, bool:
 				// A non-string scalar's canonical text joins the backstop:
 				// `${string(inputs.pin)}` turns the number into a string the
@@ -300,6 +348,38 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 	}
 
 	return sensitiveValuesOf(out)
+}
+
+// quotedSpelling is the body of Go's `%q` rendering of value — what
+// [strconv.Quote] adds between the quotes it puts around it — when that
+// differs from value itself: value holds a rune `%q` escapes (a tab, a
+// newline, a quote, a backslash, or a non-printable byte). Empty and false
+// when `%q` would render value unchanged, since a second, identical
+// substring protects nothing it did not already.
+//
+// Unchanged is a length comparison rather than a rebuilt `"`+value+`"` to
+// compare against: [strconv.Quote] never removes a byte — every escape it
+// performs adds at least one — so quoted is exactly value's own length plus
+// the two bounding quotes precisely when nothing inside it was escaped, and
+// longer otherwise. A hand-quoted comparison string built by concatenating a
+// literal `"` around an arbitrary value is the shape a scanner reads as
+// "unescaped quoting" on sight, whatever it is actually used for here — a
+// length check answers the identical question without giving it that shape.
+//
+// [SensitiveInputValues]'s own walk is the one caller: a check witness, a
+// stub diagnostic, and flowtest's transcript all render a sensitive string
+// with `%q` before this set's substring backstop ever reads the line, so
+// the raw spelling that walk collects on its own is not what a reader ever
+// actually sees rendered — for a declared input's own root value or for any
+// string descendant of one alike (Copilot, on this walk's own first pass at
+// the root alone).
+func quotedSpelling(value string) (string, bool) {
+	quoted := strconv.Quote(value)
+	if len(quoted) == len(value)+2 {
+		return "", false
+	}
+
+	return quoted[1 : len(quoted)-1], true
 }
 
 // WithValues returns a set holding everything this one holds plus each given
@@ -357,6 +437,48 @@ func (s SensitiveValues) WithValues(plaintexts ...string) SensitiveValues {
 	}
 
 	return sensitiveValuesOf(state)
+}
+
+// Merge returns a set holding everything both this set and other hold: their
+// value sets and their substring sets combined, and withheld whenever either
+// side is.
+//
+// It exists for combining two sets built independently over the same run —
+// one from what is known before its inputs bind, one from what binding
+// itself adds — so widening the first with the second is one call rather
+// than a second construction of whatever the first already carries under a
+// different name. flowtest's runCase used to rebuild three of its pre-bind
+// posture's own values by hand once inputs bound, and missed one of them on
+// three separate review rounds before the pattern — not any one of the three
+// values — moved here (#2079).
+//
+// Not simply appending: a set that could not be built completely withholds
+// everything it is asked about regardless of what a caller's own values would
+// otherwise permit, so a caller merging in a set it never checked can trust
+// merge is not one line where it forgot to check.
+//
+// [maxSensitiveDescendants] bounds the combined values too, for the same
+// reason [SensitiveInputValues] bounds it while building either side: two
+// sets each valid on their own — a maximum-size structured input's own set,
+// say, merged with a run's pre-bind secrets — can still combine past the
+// bound [SensitiveValues.RedactTree] was sized against, and every merge
+// afterward would grow it further (Codex). Blowing it here withholds
+// everything exactly as blowing it while building a set does, rather than
+// quietly handing every later caller a set larger than the one bound this
+// package has for how much comparison work a single redaction may cost.
+func (s SensitiveValues) Merge(other SensitiveValues) SensitiveValues {
+	a, b := s.held(), other.held()
+	if a.withholdAll || b.withholdAll {
+		return WithheldSensitiveValues()
+	}
+	if len(a.values)+len(b.values) > maxSensitiveDescendants {
+		return WithheldSensitiveValues()
+	}
+
+	return sensitiveValuesOf(sensitiveState{
+		values:     append(append([]any(nil), a.values...), b.values...),
+		substrings: append(append([]string(nil), a.substrings...), b.substrings...),
+	})
 }
 
 // WithholdAll reports the fail-closed case: the set could not be built

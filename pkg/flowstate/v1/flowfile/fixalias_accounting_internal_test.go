@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"github.com/stretchr/testify/require"
 )
@@ -442,4 +443,457 @@ func TestEveryDepthOfTheBlankLineBombCostsTheSame(t *testing.T) {
 	require.Less(t, costs[16], costs[10]*10,
 		"refusal cost grows with the bomb's depth (%d bytes at depth 10, %d at depth 16), so the expansion "+
 			"is still being materialized before it is refused", costs[10], costs[16])
+}
+
+// #2075's independent review, round two: caching what [fixer.blockEnd],
+// [byteOffsetOfColumn], and [spanOfNode]/[tokenText] answer for an anchor or
+// alias closes the *repeated* half of the shape (once per site instead of
+// once per anchor), but round one's own [aliasInliner.spliceScalar] and
+// [aliasInliner.spliceBlock] still called [spanOfNode] on an anchor's whole
+// value — which walks every token in it and scans each one's `Origin` with
+// [strings.TrimSpace] — *before* ever reaching those caches, and
+// [aliasInliner.spliceBlock] still recomputed `strings.TrimRight(prefix, "
+// ")` and `strings.TrimSpace(suffix)` on every visit even once prefix and
+// suffix themselves were cached. Both are uncharged, unbounded scans that
+// do not need a second site to matter — one anchor whose value is preceded
+// by attacker-sized padding is enough. Auditing every other read of a site's
+// or an anchor's own line for the same shape found two more: [split] itself
+// called [spanOfNode] on a site's own *key*, uncharged, and
+// [aliasInliner.spliceBlock] measured [indentWidth] of the anchor's block's
+// first line and the anchor's own line fresh on every visit — YAML
+// indentation is a run of spaces an author chooses the width of, not bounded
+// by nesting depth, so that scan has the same shape as the rest even though
+// nothing here nests any deeper for it. The fix routes every one of them
+// through [aliasInliner.chargeScan] (charging before the scan wherever the
+// size is cheaply known in advance, immediately after where it is not) and
+// caches whatever [aliasInliner.chargeScan] alone cannot amortize, rather
+// than adding a fifth ad hoc cache for a fifth ad hoc finding.
+//
+// The four builders below are the shapes the finding named explicitly: a
+// scalar anchor's value preceded by padding ([scalarPaddingFlowfile] — the
+// reviewer's own probe, reproduced at its own scale in
+// [TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap]), a block anchor
+// whose sole entry's alias is preceded by padding
+// ([keyFormPaddingFlowfile], exercising [aliasInliner.spliceBlock]'s mapping
+// form and its `TrimRight`), a block anchor whose sole sequence element's
+// alias is followed by padding ([sequenceFormPaddingFlowfile], exercising
+// the sequence form and its `TrimSpace`), and the original block-with-a-
+// blank-tail shape from round one ([blockTailFlowfile], re-checked here on
+// the same counter rather than [fixer.blockEndBytesScanned] directly, so one
+// style of assertion covers every finding this issue has accumulated). The
+// two found on the way ([split]'s own key span, [indentWidth]'s two reads)
+// are exercised incidentally by these same four shapes — every one of them
+// has outer sites whose own key [split] spans, and every anchor in them has
+// an opening line and a block-first line [aliasInliner.spliceBlock] measures
+// the indentation of — rather than by builders of their own, since none of
+// this file's probes found a shape that isolates either one from the costs
+// the other caches already bound.
+
+// scalarPaddingFlowfile builds a Flowfile whose anchor `a` names a one-line
+// scalar value preceded by padding spaces, aliased by sites sites as
+// `u0: *a`, `u1: *a`, and so on.
+func scalarPaddingFlowfile(sites, padding int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "edition: v2026.3\nname: t\nvars:\n  a: &a%s1\n", strings.Repeat(" ", padding))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *a\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// keyFormPaddingFlowfile builds a Flowfile whose anchor `a` opens a
+// one-line block — a single key `k` whose value is an alias `*b` to a short
+// anchor `b`, separated from the colon by padding spaces — aliased by
+// sites outer sites as `u0: *a`, `u1: *a`, and so on.
+func keyFormPaddingFlowfile(sites, padding int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
+	fmt.Fprintf(&b, "  a: &a\n    k:%s*b\n", strings.Repeat(" ", padding))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *a\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// sequenceFormPaddingFlowfile is [keyFormPaddingFlowfile]'s shape with the
+// inner alias written as a sequence element (`- *b`) followed by padding
+// spaces, rather than as a mapping value preceded by them — the shape
+// [aliasInliner.spliceBlock]'s sequence form (`strings.TrimSpace(suffix)`)
+// reads instead of its mapping form (`strings.TrimRight(prefix, " ")`).
+func sequenceFormPaddingFlowfile(sites, padding int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  b: &b\n    leaf: 1\n")
+	fmt.Fprintf(&b, "  a: &a\n    - *b%s\n", strings.Repeat(" ", padding))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *a\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// blockTailFlowfile is round one's shape (renamed from blockEndBombFlowfile
+// now that this file checks it the same way as the other three): anchor `l`
+// opens a block holding one leaf line, then blankTail blank lines with no
+// further content under it, aliased by sites outer sites.
+func blockTailFlowfile(sites, blankTail int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  l: &l\n    leaf: 1\n")
+	b.WriteString(strings.Repeat("\n", blankTail))
+	for i := range sites {
+		fmt.Fprintf(&b, "  u%d: *l\n", i)
+	}
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// #2075's independent review, round three: folding [aliasInliner.chargeScan]
+// into [aliasInliner.bytes] — the fix the round above this one made — priced
+// the same bytes twice for any legitimate document large enough to notice.
+// [aliasInliner.bytes] starts seeded at the document's own length; a scan of
+// an anchor's value or a block's extent then charged largely those same
+// bytes again, before the eventual output priced them a third time. A
+// 5,000-line block aliased once (259 KB in, ~518 KB correctly out) and a
+// 3,000-line block aliased twice (155 KB in, ~465 KB out) — both ordinary,
+// both accepted before that round — were refused with "would copy more
+// than 1048576 bytes", a message about output size that was not actually
+// about output at all.
+//
+// Separately, this file's own tests read [aliasInliner.scanBytes] (that
+// round's name for what [aliasInliner.scanned] is now), which only
+// [aliasInliner.chargeScan] itself incremented. Three mutants that each
+// reverted one round's original defect — spanOf uncached and uncharged,
+// blockEnd's charge point removed, split uncached with no charge — all
+// still passed every test in this file, because an uncharged scan never
+// touched the one counter being read.
+//
+// Both are fixed the same way this issue's every other round has been:
+// [aliasInliner.chargeScan] now charges against [aliasInliner.scanned] and
+// [maxScanned], a budget separate from [aliasInliner.bytes] and [maxBytes]
+// (so a scan can no longer inflate what a document's *output* is judged
+// against), and [aliasInliner.rawScannedBytes] is incremented in the
+// wrapper that owns each cache — [aliasInliner.spanOf] (around
+// [spanOfNode]/[tokenText]), [aliasInliner.scalarValueOf] and [split]
+// (around [byteOffsetOfColumn]), [aliasInliner.spliceBlock]'s
+// [aliasInliner.blockBases] block (around [indentWidth]) — as a statement
+// separate from [aliasInliner.chargeScan] rather than inside it, plus
+// [fixer.blockEndBytesScanned] for [fixer.blockEnd], incremented inside
+// its own loop rather than by any caller. That closes the mutants named
+// above: each still calls the same wrapper, cache or not, so the wrapper's
+// own counter keeps growing per site.
+//
+// It does not close a mutant one layer further out, one this issue's own
+// review found next: a caller that stops calling the wrapper at all and
+// reaches the scanning function directly — `span, ok :=
+// spanOfNode(anchor.Value), true` in place of `in.spanOf(...)` — skips the
+// wrapper's counter along with its cache and its charge, and every test
+// that only reads [aliasInliner.rawScannedBytes]/[aliasInliner.scanned]
+// passes regardless, since nothing charged or counted a scan that did not
+// happen through the wrapper. [assertCachesPopulated] is what catches
+// that instead: it checks the *cache* each wrapper is supposed to have
+// filled — [aliasInliner.anchorSpans], [aliasInliner.scalarValues],
+// [aliasInliner.blockBases], [aliasInliner.blockEnds] — which is empty
+// when the wrapper that owns it was never called, independent of whatever
+// [aliasInliner.rawScannedBytes] does or does not say.
+
+// largeBlockOneAliasFlowfile and largeBlockTwoAliasFlowfile are the two
+// documents review measured directly: an ordinary, large block aliased
+// once or twice, with no padding and no attacker-shaped anything — the
+// legitimate side of the class this issue's fix has to stay usable for.
+func largeBlockOneAliasFlowfile(lines int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  a: &a\n")
+	for i := range lines {
+		fmt.Fprintf(&b, "    k%d: %s\n", i, strings.Repeat("x", 40))
+	}
+	b.WriteString("  u0: *a\n")
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+func largeBlockTwoAliasFlowfile(lines int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  a: &a\n")
+	for i := range lines {
+		fmt.Fprintf(&b, "    k%d: %s\n", i, strings.Repeat("x", 40))
+	}
+	b.WriteString("  u0: *a\n  u1: *a\n")
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// TestAliasInlinerAcceptsLargeLegitimateDocuments is #2075's round-three
+// regression: both documents were accepted before [aliasInliner.chargeScan]
+// existed, and both must be accepted with it too, since neither is anywhere
+// near [maxBytes] on its own — 259 KB and 155 KB in, a few hundred KB out.
+// Fails against a mutant that folds scan charges back into
+// [aliasInliner.bytes] (this file's own history, aa1d3302): both were
+// refused there with "would copy more than 1048576 bytes", a message about
+// output that was never actually about output.
+func TestAliasInlinerAcceptsLargeLegitimateDocuments(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"5,000-line block, 1 alias", largeBlockOneAliasFlowfile(5000)},
+		{"3,000-line block, 2 aliases", largeBlockTwoAliasFlowfile(3000)},
+	} {
+		data := []byte(tc.src)
+		file, err := parser.ParseBytes(data, parser.ParseComments)
+		require.NoError(t, err)
+
+		in, _, ok := runAliasInliner(data, file)
+		require.True(t, ok, "%s (%d bytes in): expected to be accepted; refusals: %v", tc.name, len(data), in.refusals)
+	}
+}
+
+// aliasInlinerScanReport is what each shape's test checks: how much this
+// rewrite actually scanned against how much it charged for output and how
+// large the input was, plus the outcome.
+type aliasInlinerScanReport struct {
+	ok bool
+
+	// trueScanned is [aliasInliner.rawScannedBytes] plus
+	// [fixer.blockEndBytesScanned] — every scan this rewrite actually ran,
+	// counted in the wrapper that owns each cache rather than at
+	// [aliasInliner.chargeScan] (#2075).
+	trueScanned int
+
+	// scanned is [aliasInliner.scanned]: what was charged against
+	// [maxScanned], the value a refusal is actually decided on.
+	scanned int
+
+	// outputBytes is [aliasInliner.bytes]: seeded at the input's own
+	// length, grown only by what [aliasInliner.appendLine] charges for
+	// output — no longer inflated by scanning (#2075).
+	outputBytes int
+
+	inputLen int
+
+	// anchorSpans, scalarValues, blockBases, and blockEnds are
+	// len(aliasInliner.<field>) after the run: how many anchors each
+	// wrapper actually cached an answer for. [assertCachesPopulated]
+	// checks these directly, since [trueScanned] and [scanned] both go
+	// through the wrapper too and cannot tell a wrapper that ran from one
+	// a caller stopped calling (#2075).
+	anchorSpans, scalarValues, blockBases, blockEnds int
+}
+
+// scanReportOf runs the inliner over src and reports what it charged and
+// scanned, without requiring either outcome: a probe shape may be refused
+// rather than accepted, and either can be healthy depending on which shape
+// it is — [assertScanBounded] requires acceptance, but a caller checking a
+// shape that is expected to sit near a budget reads the report directly.
+func scanReportOf(t *testing.T, src string) aliasInlinerScanReport {
+	t.Helper()
+
+	data := []byte(src)
+	file, err := parser.ParseBytes(data, parser.ParseComments)
+	require.NoError(t, err)
+
+	in, _, ok := runAliasInliner(data, file)
+
+	return aliasInlinerScanReport{
+		ok:           ok,
+		trueScanned:  in.rawScannedBytes + in.f.blockEndBytesScanned,
+		scanned:      in.scanned,
+		outputBytes:  in.bytes,
+		inputLen:     len(src),
+		anchorSpans:  len(in.anchorSpans),
+		scalarValues: len(in.scalarValues),
+		blockBases:   len(in.blockBases),
+		blockEnds:    len(in.blockEnds),
+	}
+}
+
+// assertCachesPopulated is [assertScanBounded]'s companion: it does not
+// look at how much was scanned or charged at all, only at whether the
+// wrapper that owns each cache actually ran — the check
+// [TestAliasInlinerCachesArePopulatedThroughTheWrappers]'s own doc comment
+// explains the need for. want* is the number of distinct anchors each
+// cache is expected to hold for this shape; a shape with no anchor of
+// that kind passes 0 for it.
+func assertCachesPopulated(t *testing.T, name string, r aliasInlinerScanReport, wantAnchorSpans, wantScalarValues, wantBlockBases, wantBlockEnds int) {
+	t.Helper()
+
+	require.Equal(t, wantAnchorSpans, r.anchorSpans, "%s: len(anchorSpans)", name)
+	require.Equal(t, wantScalarValues, r.scalarValues, "%s: len(scalarValues)", name)
+	require.Equal(t, wantBlockBases, r.blockBases, "%s: len(blockBases)", name)
+	require.Equal(t, wantBlockEnds, r.blockEnds, "%s: len(blockEnds)", name)
+}
+
+// assertScanBounded is the shape every one of this issue's shapes checks:
+// true scanning grows with what this rewrite actually charged for output
+// (which is seeded at the input's own length, so that is counted once, not
+// added again), not disproportionately past it — k is small and fixed
+// across every shape, not tuned per shape, because the property under test
+// is that one mechanism ([aliasInliner.chargeScan] plus caching) bounds all
+// of them alike. A rewrite whose true scan cost is many times its own
+// charged output (an unbounded per-site rescan, uncached) fails this on any
+// k a legitimate document would never approach.
+func assertScanBounded(t *testing.T, name string, r aliasInlinerScanReport) {
+	t.Helper()
+
+	require.True(t, r.ok, "%s: expected the rewrite to succeed", name)
+
+	const k = 3
+	bound := k * r.outputBytes
+	require.LessOrEqual(t, r.trueScanned, bound,
+		"%s: truly scanned %d bytes against %d bytes charged for output (already seeded at the "+
+			"input's own length) — expected scanning within %dx of that, not disproportionately "+
+			"more (#2075)", name, r.trueScanned, r.outputBytes, k)
+}
+
+// TestAliasInlinerScanStaysProportionalAcrossFindingShapes runs
+// [assertScanBounded] over all four shapes #2075's review has accumulated,
+// each at a site count (100) large enough that an unbounded per-site rescan
+// would fail it by orders of magnitude rather than by chance. Checking
+// [aliasInlinerScanReport.trueScanned] — [aliasInliner.rawScannedBytes] plus
+// [fixer.blockEndBytesScanned], incremented in the scanning wrappers and in [fixer.blockEnd]'s own loop — rather
+// than [aliasInlinerScanReport.scanned] (fed only by
+// [aliasInliner.chargeScan]) is what makes this catch an uncached scan even
+// where nothing charged it: a mutant that keeps every charge but skips a
+// cache still shows the true count growing per site here, which reading
+// only what was charged cannot (#2075's own review: three such mutants each
+// passed every test in an earlier push, because that push's tests read only
+// the charge).
+func TestAliasInlinerScanStaysProportionalAcrossFindingShapes(t *testing.T) {
+	t.Parallel()
+
+	const sites = 100
+	const padding = 20000
+	const blankTail = 6000
+
+	assertScanBounded(t, "scalar padding", scanReportOf(t, scalarPaddingFlowfile(sites, padding)))
+	assertScanBounded(t, "key-form padding", scanReportOf(t, keyFormPaddingFlowfile(sites, padding)))
+	assertScanBounded(t, "sequence-form padding", scanReportOf(t, sequenceFormPaddingFlowfile(sites, padding)))
+	assertScanBounded(t, "block blank tail", scanReportOf(t, blockTailFlowfile(sites, blankTail)))
+}
+
+// TestAliasInlinerCachesArePopulatedThroughTheWrappers is what actually
+// catches a caller that stops calling a wrapper and reaches its scanning
+// function directly — the shape independent review named M1b
+// (`spliceScalar`/`spliceBlock` calling `spanOfNode(anchor.Value)` in
+// place of [aliasInliner.spanOf]) and M4 (`spliceBlock` calling
+// [indentWidth] directly in place of its [aliasInliner.blockBases]
+// block). Neither mutant touches [aliasInliner.chargeScan],
+// [aliasInliner.rawScannedBytes], or any cache-population statement — it
+// removes the call to the wrapper that would have run any of them — so
+// [assertScanBounded] alone cannot see it: the scan that would have grown
+// [aliasInliner.rawScannedBytes] per site simply does not happen through
+// this path any more, and neither does the one that would have refused
+// through [aliasInliner.scanned]. What is still true, and false under
+// either mutant, is that each anchor's cache holds exactly the entries
+// its own wrapper would have filled — one per distinct anchor the shape
+// aliases (never one per site, whether or not the wrapper ran), zero for
+// a cache the shape's anchors never reach.
+//
+// Each shape here exercises the caches its own anchors are shaped to
+// reach: the scalar shape's one anchor is a scalar, so only
+// [aliasInliner.anchorSpans] and [aliasInliner.scalarValues] fill, at one
+// entry each; the key-form and sequence-form shapes each hold two block
+// anchors (the outer one sites alias, and the inner one it aliases in
+// turn), so [aliasInliner.anchorSpans], [aliasInliner.blockBases], and
+// [aliasInliner.blockEnds] each fill at two; the block-tail shape holds
+// one block anchor, so those three fill at one.
+func TestAliasInlinerCachesArePopulatedThroughTheWrappers(t *testing.T) {
+	t.Parallel()
+
+	const sites = 100
+	const padding = 20000
+	const blankTail = 6000
+
+	assertCachesPopulated(t, "scalar padding", scanReportOf(t, scalarPaddingFlowfile(sites, padding)),
+		1, 1, 0, 0)
+	assertCachesPopulated(t, "key-form padding", scanReportOf(t, keyFormPaddingFlowfile(sites, padding)),
+		2, 0, 2, 2)
+	assertCachesPopulated(t, "sequence-form padding", scanReportOf(t, sequenceFormPaddingFlowfile(sites, padding)),
+		2, 0, 2, 2)
+	assertCachesPopulated(t, "block blank tail", scanReportOf(t, blockTailFlowfile(sites, blankTail)),
+		1, 0, 1, 1)
+}
+
+// TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap reproduces the
+// independent review's own probe at its own scale: `vars:` holds one
+// scalar anchor whose value is preceded by 500,000 padding columns,
+// aliased by 10,000 sites. Before any of this issue's caching existed, this
+// was *accepted* — correct output, but 3.70s, because
+// [aliasInliner.spliceScalar] read that padding through [spanOfNode] before
+// ever reaching its own value cache, once per site rather than once for the
+// anchor. Caching closes the repeat; charging what is scanned is what makes
+// that closure provable rather than merely observed. Named explicitly
+// because it is the shape the independent review's own probe used, not
+// because its outcome is expected to differ from
+// [TestAliasInlinerScanStaysProportionalAcrossFindingShapes]'s other three
+// shapes — at this scale it does not: cached, the anchor's value is scanned
+// once regardless of site count, comfortably inside both budgets, so this
+// is accepted and cheap, the same as the others.
+func TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap(t *testing.T) {
+	// Not t.Parallel(): 10,000 sites over 500,000 columns of padding is the
+	// one shape in this file sized to match the reviewer's own probe rather
+	// than trimmed for speed, and it is not so slow that it needs to run
+	// alongside nothing else to time out safely.
+
+	r := scanReportOf(t, scalarPaddingFlowfile(10000, 500000))
+	if !r.ok {
+		// Refused: healthy on its own terms too, and was this file's own
+		// prior expectation — kept as a branch rather than removed, in
+		// case a future, tighter choice of [scanBudgetMultiple] revisits
+		// where this shape sits relative to [maxScanned].
+		return
+	}
+
+	assertScanBounded(t, "scalar padding (reviewer's own scale)", r)
+}
+
+// TestChargeScanRefusesPastMaxScanned is the one test in this file that
+// reaches [aliasInliner.chargeScan]'s own refusal branch directly, rather
+// than through a probe large enough to cross [maxScanned] incidentally —
+// every shape above stays comfortably under it by design, so nothing else
+// here pins the refusal message [aliasInliner.chargeScan] actually writes.
+func TestChargeScanRefusesPastMaxScanned(t *testing.T) {
+	t.Parallel()
+
+	src := "edition: v2026.3\nname: t\nvars:\n  a: &a 1\n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	data := []byte(src)
+	file, err := parser.ParseBytes(data, parser.ParseComments)
+	require.NoError(t, err)
+
+	in := &aliasInliner{
+		f: &fixer{
+			lines:      splitLines(data),
+			terminator: lineTerminator(data),
+		},
+		anchors:  map[string]*ast.AnchorNode{},
+		byLine:   map[int]aliasSite{},
+		bytes:    len(data),
+		inputLen: len(data),
+	}
+	in.collectAnchors(file.Docs[0].Body)
+	in.collect(file.Docs[0].Body, false)
+	require.Len(t, in.sites, 1, "expected exactly one alias site in the fixture")
+
+	limit := maxScanned(in.inputLen)
+	require.Greater(t, limit, 0)
+
+	ok := in.chargeScan(in.sites[0].alias, limit+1)
+	require.False(t, ok, "expected a charge of limit+1 to refuse")
+	require.Len(t, in.refusals, 1)
+	require.Contains(t, in.refusals[0].Message,
+		fmt.Sprintf("writing these aliases out would scan more than %d bytes", limit),
+		"refusal message: %q", in.refusals[0].Message)
+
+	// A charge that lands exactly on the limit is still accepted — the
+	// refusal is "more than", not "at least".
+	in2 := &aliasInliner{inputLen: in.inputLen}
+	require.True(t, in2.chargeScan(in.sites[0].alias, limit))
 }

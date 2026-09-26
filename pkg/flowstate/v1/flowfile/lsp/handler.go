@@ -8,20 +8,53 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 )
 
+// maxInFlightPerConnection bounds how many notifications and requests one
+// connection may have dispatched to their own goroutine and not yet
+// finished, at once, across every URI and method.
+//
+// This is the general shape #2071 asked for: work a client can queue is
+// bounded where it is spent (AGENTS.md invariant 5). An earlier attempt
+// bounded only a same-URI full-sync didChange burst by coalescing it, and a
+// second round of review found the coalescing mechanism itself introduced
+// ordering defects twice over — see the history on #2071 and #2089. This
+// bound instead covers every shape at the read loop's own granularity: a
+// burst of incremental changes, a burst spread across many URIs, a pile of
+// slow requests, and anything else all draw from the same budget.
+//
+// 64 matches this repository's other per-connection concurrency bound, the
+// webhook receiver's DefaultWebhookConcurrency: an ordinary editor never has
+// this many keystrokes, opens, or requests genuinely in flight at once, and
+// a connection that does is either a pathological client or one already
+// backed up on something slower than this server — either way, blocking its
+// read loop rather than growing this connection's outstanding goroutines
+// without bound is the correct answer.
+//
+// The retained state this bounds is the raw params a message's goroutine
+// holds until it finishes, one frame's worth each, and the effective
+// ceiling is one token more than the limit: the read loop itself, stuck
+// acquiring the (limit+1)th token, is holding that message's own decoded
+// request the whole time it waits. 64 tokens plus that one message bounds
+// retained params to roughly 65 × [MaxFrameBytes] (16 MiB), a little over a
+// gigabyte, not the unbounded pile a goroutine-per-message server with no
+// cap at all would let a fast sender build up.
+const maxInFlightPerConnection = 64
+
 // NewHandler wraps s the way a connection should serve it: each message is
 // handled in its own goroutine, as jsonrpc2.AsyncHandler would arrange, after
-// the work that must happen in arrival order has happened.
+// the work that must happen in arrival order has happened, and behind a
+// connection-wide bound on how many may be in flight at once
+// ([maxInFlightPerConnection]).
 //
-// That work is announcing a document build, and — for every one of didOpen,
-// didChange and didClose — queuing the message behind whatever a same-URI
-// document notification before it has not yet finished handling. The read
-// loop is the only place arrival order still exists — an async handler starts
-// a goroutine per message and from then on the scheduler decides — so a build
-// announced from inside the spawned didOpen goroutine can be registered after
-// a request goroutine spawned behind it has already looked, and two
-// same-URI notifications can run in the opposite order from the one they
-// arrived in. [documentStore.await] papers over the first with a grace
-// period, which covers the ordinary case and not a stalled scheduler: a
+// The arrival-order work is announcing a document build, and — for every one
+// of didOpen, didChange and didClose — queuing the message behind whatever a
+// same-URI document notification before it has not yet finished handling.
+// The read loop is the only place arrival order still exists — an async
+// handler starts a goroutine per message and from then on the scheduler
+// decides — so a build announced from inside the spawned didOpen goroutine
+// can be registered after a request goroutine spawned behind it has already
+// looked, and two same-URI notifications can run in the opposite order from
+// the one they arrived in. [documentStore.await] papers over the first with a
+// grace period, which covers the ordinary case and not a stalled scheduler: a
 // handler goroutine delayed past the grace leaves the request answering null
 // for a document the editor did open. Announcing the build here, before
 // dispatch, makes that guarantee ordering rather than timing: any request the
@@ -36,20 +69,166 @@ import (
 // Wrapping s in jsonrpc2.AsyncHandler directly still works and still answers
 // correctly for open, change and hover; it just falls back to the grace
 // period for the window this closes, and the three document notifications
-// lose the ordering this file gives them — see [documentStore.enqueue].
+// lose the ordering this file gives them — see [documentStore.enqueue]. It
+// also loses the in-flight bound below.
 func NewHandler(s *FlowfileServer) jsonrpc2.Handler {
-	return asyncHandler{server: s}
+	return newHandlerWithLimit(s, maxInFlightPerConnection, nil)
+}
+
+// newHandlerWithLimit is [NewHandler] with the connection-wide limit and the
+// trace hook both exposed, for a test that needs a limit small enough to
+// fill deterministically and a way to count what is in flight without
+// depending on wall-clock timing to catch a peak. NewHandler always passes
+// [maxInFlightPerConnection] and a nil trace.
+func newHandlerWithLimit(s *FlowfileServer, limit int, trace func(bounded, entering bool)) asyncHandler {
+	return asyncHandler{server: s, inFlight: make(chan struct{}, limit), dispatchTrace: trace}
 }
 
 type asyncHandler struct {
 	server *FlowfileServer
+
+	// inFlight is the connection's concurrency bound, as a buffered channel:
+	// a token per message dispatched to its own goroutine and not yet
+	// finished. Unlike a shed-not-queue limiter (this repository's webhook
+	// receiver, for one), the acquire below blocks rather than refuses: an
+	// LSP connection has no retry semantics to shed onto, so a full window
+	// makes the read loop itself apply backpressure, which is what leaves a
+	// slow or malicious client's own transport buffer holding the backlog
+	// instead of this process's heap.
+	inFlight chan struct{}
+
+	// dispatchTrace, when set, is called by the goroutine [asyncHandler.Handle]
+	// spawns for every message, bounded or exempt: once with entering = true
+	// immediately before it calls [FlowfileServer.Handle], and once with
+	// entering = false immediately after that call returns. bounded reports
+	// whether the message held one of [asyncHandler.inFlight]'s tokens. It
+	// exists for a test that needs to count, deterministically, how many
+	// bounded goroutines are between those two points at once — the peak
+	// [maxInFlightPerConnection] bounds — and to confirm an exempt message's
+	// goroutine ran at all, rather than inferring either from wall-clock
+	// timing. Nil in production, where the call costs nothing.
+	dispatchTrace func(bounded, entering bool)
+}
+
+// bypassesInFlightLimit reports whether req should be dispatched without
+// waiting for, or holding, one of the connection's [asyncHandler.inFlight]
+// tokens.
+//
+// $/cancelRequest and exit are the connection's own escape hatches —
+// cancelling a request or stopping the server — and must still be answered
+// promptly when the window is full of everything else, or a client trying to
+// get out of a stalled connection would have to wait behind exactly the
+// backlog it is trying to escape. The LSP spec sends both as notifications,
+// and the exemption enforces that shape rather than assuming it: req.Notif
+// must be true, so a message merely named $/cancelRequest or exit but sent
+// with an id — request-shaped, so its goroutine ends by replying rather than
+// returning — never bypasses the bound. Without that check a client could
+// send an unbounded stream of id-bearing "$/cancelRequest"s, each exempted
+// from the token and each then blocked forever in conn.Reply against a peer
+// that never reads, which is the same unbounded-goroutine growth this bound
+// exists to stop, reopened through the escape hatch meant to avoid it.
+//
+// shutdown is deliberately not exempt despite reading like the same kind of
+// escape hatch: as a request it always ends by replying, a write that blocks
+// until the client reads it (see [FlowfileServer.Handle]'s deadlock-freedom
+// argument for what that means against a client that does not), and the
+// req.Notif check above cannot help it the way it helps $/cancelRequest and
+// exit, since shutdown has no valid notification form to require. Exempting
+// it regardless would let a client that keeps sending shutdown while never
+// reading its replies park one unbounded, blocked-on-write goroutine per
+// shutdown. A shutdown queued normally still answers as soon as its turn
+// comes; it is not on the escape path the way a cancel or an exit is.
+//
+// Nothing else is exempt: every other method's own cost is what the bound
+// exists to cover.
+//
+// This exemption's guarantee is about the message itself, not about
+// anything already ahead of it: the read loop dispatches strictly in wire
+// order, so a $/cancelRequest sent once an earlier, non-exempt message has
+// already blocked the read loop acquiring its own token is queued behind
+// that message on the wire like anything else, and cannot be read — let
+// alone dispatched — until that earlier acquire succeeds. What this
+// exemption guarantees is that a notification-shaped $/cancelRequest or exit
+// never becomes the message blocking the read loop, so sending one before
+// the window's next non-exempt message is what reaches the server always
+// gets through immediately, however full the window already is.
+func bypassesInFlightLimit(req *jsonrpc2.Request) bool {
+	if !req.Notif {
+		return false
+	}
+	switch req.Method {
+	case "$/cancelRequest", "exit":
+		return true
+	default:
+		return false
+	}
 }
 
 // Handle implements [jsonrpc2.Handler]. It runs on the connection's read loop,
 // so everything before the `go` below happens in the order messages arrived.
+//
+// # Why the acquire below cannot deadlock
+//
+// A token holder never waits on anything that itself needs a token it does
+// not have and cannot get:
+//
+//   - A request's only indefinite-seeming wait is [FlowfileServer.awaitDoc]'s
+//     wait for a build, and that is bounded twice over — [documentBuildTimeout]
+//     and the connection dropping — so it always releases its token in
+//     bounded time rather than holding it forever.
+//   - [bypassesInFlightLimit] exempts a notification-shaped $/cancelRequest
+//     or exit from the acquire entirely, so neither ever becomes the
+//     message a full window leaves the read loop stuck on — see that
+//     function's own doc comment for the one thing this does not reach: a
+//     message already queued behind an earlier, non-exempt one that got
+//     stuck first, why a request-shaped $/cancelRequest or exit does not
+//     qualify, and why shutdown is deliberately not on this list at all.
+//   - The per-URI queue's wait channel (below) is always a predecessor that
+//     already holds, or already released, its own token: [documentStore.enqueue]
+//     is called from inside this same acquire-then-announce sequence, in wire
+//     order, on the read loop, so a message cannot be announced — and so
+//     cannot become something a later message's wait channel points at —
+//     until its own acquire above has already returned. A wait channel here
+//     therefore never points at a message still stuck trying to acquire.
+//
+// What this does not rule out is a token holder blocking on a write to a
+// client that has stopped reading: every path out of [FlowfileServer.Handle]
+// ends in a `conn.Reply` or a notification send, and jsonrpc2 blocks a
+// writer until the peer's read keeps up. A client that stops reading while
+// every token is held by a goroutine blocked writing to it fills the window
+// and, from then on, the read loop blocks too — a two-sided pipe deadlock
+// main did not have, because main's read loop never blocked on anything.
+// This design accepts that as the shape backpressure takes against a client
+// that is not participating: the alternative is not bounding memory at all
+// against exactly that client. When the connection actually closes, pending
+// writes fail rather than hanging, and every blocked holder's acquire (or
+// the wait it was itself blocking) releases in turn.
 func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+	if bypassesInFlightLimit(req) {
+		go func() {
+			if h.dispatchTrace != nil {
+				h.dispatchTrace(false, true)
+				defer h.dispatchTrace(false, false)
+			}
+			h.server.Handle(ctx, conn, req)
+		}()
+		return
+	}
+
+	// Acquired here, on the read loop, before this message's goroutine even
+	// exists, and blocking: see #2071's rationale in
+	// [maxInFlightPerConnection]. A message already queued behind another
+	// same-URI notification has not reached this point yet when that
+	// notification is dispatched — the read loop dispatches in wire order,
+	// one message at a time, so whatever a same-URI wait channel below
+	// chains behind has already acquired its own token by the time this
+	// call could be waiting on it. No token holder ever waits on a message
+	// that has not been able to acquire one.
+	h.inFlight <- struct{}{}
+
 	wait, release := h.server.announceInbound(req)
 	go func() {
+		defer func() { <-h.inFlight }()
 		defer release()
 		if wait != nil {
 			// Blocks this goroutine, not the read loop: the wait was claimed
@@ -57,6 +236,10 @@ func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *json
 			// which one of two same-URI notifications reaches this point
 			// first no longer decides which one's handler runs first.
 			<-wait
+		}
+		if h.dispatchTrace != nil {
+			h.dispatchTrace(true, true)
+			defer h.dispatchTrace(true, false)
 		}
 		h.server.Handle(ctx, conn, req)
 	}()

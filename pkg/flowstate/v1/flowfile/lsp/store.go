@@ -287,6 +287,26 @@ type documentStore struct {
 	// connection's memory is bounded by URIs currently in flight rather than
 	// by every URI it has ever seen.
 	tail map[lsp.DocumentURI]chan struct{}
+
+	// parseGate, when set, is called by [documentStore.change] with uri right
+	// after s.mu is released and before the unlocked splice and
+	// [newDocument]'s parse run, and blocks until told to proceed. It exists
+	// for a test that needs a slow parse for one URI provably not holding
+	// s.mu while it runs, rather than hoping a concurrent enqueue/beginBuild
+	// for a different URI never contends with it by coincidence: hold this
+	// URI's change here, show the other URI's enqueue/beginBuild still
+	// completes, and only then release it (#2071 review, F3). Nil in
+	// production, where the call costs nothing.
+	parseGate func(uri lsp.DocumentURI)
+}
+
+// changeVersionWins reports whether version supersedes prev under the rule
+// [documentStore.change] applies before committing an edit: a version of
+// zero on either side means that side is not tracked against, in which case
+// there is nothing to compare and last-write-wins is all that is on offer;
+// otherwise the newer one must be strictly greater.
+func changeVersionWins(version, prev int) bool {
+	return version <= 0 || prev <= 0 || version > prev
 }
 
 // enqueue returns the channel uri's next document notification must wait on
@@ -327,6 +347,15 @@ func (s *documentStore) enqueue(uri lsp.DocumentURI) (wait <-chan struct{}, done
 			delete(s.tail, uri)
 		}
 	}
+}
+
+// setParseGate installs the test hook described on
+// [documentStore.parseGate]. Locked because it is set from a different
+// goroutine than the one that will read it inside [documentStore.change].
+func (s *documentStore) setParseGate(f func(uri lsp.DocumentURI)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.parseGate = f
 }
 
 // setAwaitTrace installs the test hook described on [documentStore.awaitTrace].
@@ -550,6 +579,45 @@ func (s *documentStore) open(uri lsp.DocumentURI, version int, text string, task
 // change, applying a range computed against text the store never had would corrupt
 // it outright. Document versions are monotonic per the spec, so comparing them
 // restores the ordering the wrapper discarded.
+//
+// s.mu is released between reading the base text and storing the result: the
+// splice and [newDocument]'s parse both run unlocked. [documentStore.enqueue]
+// and [documentStore.beginBuild] take s.mu too, and both are called from the
+// connection's read loop before a notification's handler even starts (see
+// [FlowfileServer.announceInbound]) — holding s.mu through a parse, the slow
+// part and unbounded up to maxDocumentBytes, would stall that read loop for
+// every URI on the connection, not just this one, until this one finished
+// (#2071).
+//
+// Nothing serializes two calls for the same URI while this is unlocked: the
+// connection's own per-URI queue keeps its own callers from overlapping, but
+// this method does not enforce that itself, and both this package's tests
+// and a server wired with bare jsonrpc2.AsyncHandler (see [NewHandler]'s doc
+// comment) call it directly and can race. So the commit below re-applies
+// [changeVersionWins] against whatever s.docs[uri] holds right now, under
+// the second lock, rather than trusting the base text read above still to be
+// current — without that re-check, two concurrent calls could both parse
+// against the same base text and then commit in either order, letting a
+// slower, lower-versioned parse overwrite a faster, higher-versioned one
+// that had already landed (#2071 review, F3).
+//
+// Two more checks at commit time cover what a version comparison alone does
+// not, both about the document this call actually read rather than the one
+// now current:
+//
+//   - If a document existed when the base text was read but none exists by
+//     commit time — closed while the splice and parse ran unlocked — the
+//     result is dropped rather than resurrecting what the close removed
+//     (#2089 review, O1).
+//   - If a document existed both times but is not the *same* one — a
+//     close-then-reopen, or another change landing in between, either of
+//     which installs a new [*document] rather than mutating the old one in
+//     place — an incremental change's splice is dropped too: it was computed
+//     against text that is no longer this URI's history, and applying it
+//     would corrupt whatever the replacement established. A full-sync
+//     change is exempt from this one check, because it never depended on
+//     that text in the first place; the version comparison above is all it
+//     needs (#2089 review, second round, item a).
 func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.TextDocumentContentChangeEvent, tasks *v1.Registry) *document {
 	// See [documentStore.open]. Registered before s.mu is taken and retired after
 	// it is released: deferred calls run last-in-first-out, so the unlock below
@@ -557,22 +625,39 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 	s.beginBuild(uri)
 	defer s.endBuild(uri)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Computed once, unconditionally: whether prev exists decides if this is
+	// needed to proceed at all (below), and the commit re-check needs it
+	// regardless of which branch ran, to tell an incremental change — whose
+	// splice depends on a specific predecessor — from a full-sync one, which
+	// does not.
+	//
+	// At least one entry carrying no range replaces everything and makes
+	// whatever preceded it irrelevant, which is the sync kind this server
+	// advertises. The test is "does a full replacement arrive", not "does a
+	// range arrive": an empty set carries no range and still establishes
+	// nothing, and a set ending in a full replacement carries one and
+	// establishes everything.
+	establishesText := false
+	for _, c := range changes {
+		if c.Range == nil {
+			establishesText = true
+			break
+		}
+	}
 
+	s.mu.Lock()
 	text := ""
+	var prevDoc *document
 	if prev, ok := s.docs[uri]; ok {
-		// A version of zero means the client does not track them, in which case
-		// there is nothing to compare and last-write-wins is all that is on offer.
-		if version > 0 && prev.version > 0 && version <= prev.version {
+		prevDoc = prev
+		if !changeVersionWins(version, prev.version) {
+			s.mu.Unlock()
 			return nil
 		}
 		text = prev.text
 	} else {
-		// No document to splice into, so this change set is applied only if it
-		// establishes the whole text by itself: at least one entry carrying no
-		// range, which replaces everything and makes whatever preceded it
-		// irrelevant. That is the sync kind this server advertises.
+		// No document to splice into, so this change set is applied only if
+		// it establishes the whole text by itself.
 		//
 		// Anything else would fabricate a document out of nothing — a range
 		// spliced into an empty string leaves the replacement alone, and an
@@ -581,22 +666,18 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 		// The guard in open would keep it, and the buffer would stay wrong for
 		// good. Ignoring the change instead leaves the open to land the real
 		// text, and the client's next edit applies to that.
-		//
-		// The test is "does a full replacement arrive", not "does a range
-		// arrive": an empty set carries no range and still establishes
-		// nothing, and a set ending in a full replacement carries one and
-		// establishes everything.
-		establishesText := false
-		for _, c := range changes {
-			if c.Range == nil {
-				establishesText = true
-				break
-			}
-		}
 		if !establishesText {
+			s.mu.Unlock()
 			return nil
 		}
 	}
+	gate := s.parseGate
+	s.mu.Unlock()
+
+	if gate != nil {
+		gate(uri)
+	}
+
 	for _, c := range changes {
 		if c.Range == nil {
 			text = c.Text
@@ -612,6 +693,31 @@ func (s *documentStore) change(uri lsp.DocumentURI, version int, changes []lsp.T
 	}
 
 	doc := newDocument(uri, version, text, tasks)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Re-checked against whatever is current now, not against the base text
+	// read above: see the doc comment above this method (#2071 review, F3;
+	// #2089 review, O1 and second round item a).
+	cur, ok := s.docs[uri]
+	switch {
+	case prevDoc != nil && !ok:
+		// The document this call read a base text from was closed while the
+		// splice and parse ran unlocked. Writing the parsed result now would
+		// resurrect a document the client believes is closed.
+		return nil
+	case ok && !changeVersionWins(version, cur.version):
+		return nil
+	case prevDoc != nil && cur != prevDoc && !establishesText:
+		// A different document now occupies this URI than the one this
+		// incremental change's splice was computed against — a
+		// close-then-reopen, or another change, landed while this one's
+		// parse ran unlocked. The version comparison above cannot catch
+		// this: the replacement may carry a lower version this change's own
+		// version still numerically wins against, but the splice's offsets
+		// were never computed against the replacement's text.
+		return nil
+	}
 	if s.docs == nil {
 		s.docs = make(map[lsp.DocumentURI]*document)
 	}

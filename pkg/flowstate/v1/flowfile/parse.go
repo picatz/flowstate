@@ -48,6 +48,22 @@ const (
 	maxDepth = 64
 	maxNodes = 100_000
 	maxBytes = 1 << 20
+
+	// scanBudgetMultiple bounds, as a multiple of maxBytes, how much source
+	// text the alias inliner (fixalias.go) may scan while resolving every
+	// alias in one document — a second, independent budget from maxBytes
+	// itself. Charging a scan into maxBytes double-counted the same bytes
+	// for any legitimate document large enough to notice: maxBytes's own
+	// seed already prices the document once, and a scan of an anchor's
+	// value or a block's extent prices largely the same bytes again before
+	// the eventual output prices them a third time — three readings of one
+	// resource crossing maxBytes for a document nowhere near that large on
+	// its own (#2075). Eight is generous headroom over the worst overlap
+	// this package's own tests measure (a handful of independent scans —
+	// spanOf, blockEnd, split, indentWidth — each touching much of the same
+	// region), while still refusing an expansion whose scanning would
+	// genuinely run away rather than merely overlap. See [maxScanned].
+	scanBudgetMultiple = 8
 )
 
 // stepsKey is the one key a step list is ever written under.

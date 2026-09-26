@@ -231,6 +231,76 @@ func testHoverThroughAChangeStorm(t *testing.T) {
 	require.Contains(t, hoverText(c.hover(uri, at.Line, at.Character)), "final_marker", "hover kept answering from a version older than the last change")
 }
 
+// TestChangeParseDoesNotBlockEnqueueForAnotherURI is the regression test for
+// the read-loop-stall half of #2071: [documentStore.change] must not hold
+// s.mu across [newDocument]'s parse, because [documentStore.enqueue] and
+// [documentStore.beginBuild] take the same mutex from the connection's read
+// loop before a notification's handler even starts. Holding it through a
+// parse for one URI would stall every other URI's enqueue/beginBuild behind
+// it, turning one slow document into a stall for the whole connection.
+//
+// [documentStore.parseGate] holds a change for uriA at the exact point s.mu
+// has just been released and the unlocked splice/parse are about to run, so
+// this shows enqueue/beginBuild for a completely unrelated uriB completing
+// promptly rather than merely finishing before a race gets a chance to
+// matter.
+func TestChangeParseDoesNotBlockEnqueueForAnotherURI(t *testing.T) {
+	t.Parallel()
+
+	var store documentStore
+	uriA := lsp.DocumentURI("file:///parse-gate-a.yaml")
+	uriB := lsp.DocumentURI("file:///parse-gate-b.yaml")
+
+	store.open(uriA, 1, "name: a\n", nil)
+
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	store.setParseGate(func(uri lsp.DocumentURI) {
+		if uri == uriA {
+			close(entered)
+			<-proceed
+		}
+	})
+
+	changeDone := make(chan struct{})
+	go func() {
+		defer close(changeDone)
+		store.change(uriA, 2, []lsp.TextDocumentContentChangeEvent{{Text: "name: a2\n"}}, nil)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gated change for uriA never reached the unlocked parse")
+	}
+
+	// uriA's change is now parked, unlocked, at the parse gate. A completely
+	// unrelated uriB's enqueue and beginBuild — exactly what the read loop
+	// does for every notification before dispatch — must complete promptly
+	// rather than blocking on s.mu.
+	unblocked := make(chan struct{})
+	go func() {
+		defer close(unblocked)
+		_, done := store.enqueue(uriB)
+		store.beginBuild(uriB)
+		store.endBuild(uriB)
+		done()
+	}()
+
+	select {
+	case <-unblocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("enqueue/beginBuild for an unrelated URI blocked behind uriA's in-flight, unlocked parse")
+	}
+
+	close(proceed)
+	select {
+	case <-changeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gated change for uriA never finished after its gate was released")
+	}
+}
+
 // TestDidOpenWaitsForAnInFlightDidCloseOnTheSameURI is the wire-level
 // regression test for #1986 itself: a same-URI didClose and didOpen sent back
 // to back must have their handlers run in that order, because the connection
