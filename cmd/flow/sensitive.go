@@ -851,12 +851,20 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 }
 
 // refusedRunSensitiveValues is the redaction set for `flow run local`, `flow
-// run` and `flow schedule create` when the command line is refused before a
-// run starts: a word the shell handed over that cannot be the declared type,
-// a JSON number too large for it, or arguments the binder refuses. All three
-// verbs read the same `inputs:` declarations the same way and refuse the
-// same two calls — [runInputs] and [checkRunInputs] — so one set serves all
-// three refusals rather than one per caller.
+// run`, `flow schedule create` and the MCP `run_local` tool when the run's
+// arguments are refused before the run starts: a word the shell handed over
+// that cannot be the declared type, a JSON number too large for it, or
+// arguments the binder refuses. All four surfaces read the same `inputs:`
+// declarations the same way and refuse the same two calls — [runInputs] (or
+// the tool's own [runLocalToolInputs]) and [checkRunInputs] (or
+// [checkToolRunInputs]) — so one set serves every refusal rather than one per
+// caller (#2076).
+//
+// cmd carries [sensitiveInputWords]'s one CLI-specific source, `--input
+// name=value` flags, which the MCP tool never has: its arguments arrive as
+// JSON, not flags, so [sensitiveInputWords] reads an empty flag set for it
+// and contributes nothing — correctly, since there is no shell word to have
+// quoted in the first place.
 //
 // [runSensitiveValues] cannot answer here, and its fail-closed answer is the
 // reason. It binds, and on this path the bind is the thing that failed, so it

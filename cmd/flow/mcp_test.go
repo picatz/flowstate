@@ -976,6 +976,98 @@ steps:
 	}
 }
 
+// TestTheRunLocalToolRedactsANumericOverflowRefusal is the MCP half of #2076:
+// runLocalToolInputs binds the tool's inputs through the identical
+// [inputsFromJSON] `flow run local`'s own `--input-file` reads, whose
+// numeric-overflow refusal quotes the raw JSON number verbatim (#2044) — but
+// this surface returned that refusal's bare text through
+// [flowmcp.ToolError] rather than through the redaction seam #2070 gave the
+// CLI, so a `sensitive: true` input's out-of-range number reached the tool
+// result, the machine-readable record an agent carries forward, in the
+// clear.
+func TestTheRunLocalToolRedactsANumericOverflowRefusal(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, _ := callRunLocal(t, session, map[string]any{
+		"source": overflowInputFileWorkflow,
+		"inputs": json.RawMessage(`{"pin": ` + overflowNumber + `}`),
+	})
+	require.True(t, result.IsError, "an out-of-range number for a sensitive input is refused")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.NotContains(t, text, overflowNumber,
+		"the raw value reached the tool result")
+	assert.Contains(t, text, v1.SensitiveMarker,
+		"a redaction, not a withholding: the tool result must say the value was removed")
+	assert.Contains(t, text, "pin", "the refusal no longer says which input it is about")
+}
+
+// TestTheRunLocalToolNumericOverflowLeavesAnOrdinaryFieldInTheClear is the
+// direction the fix must not take with it: a field the workflow never
+// declared sensitive keeps its value in the refusal, mirroring
+// TestInputFileNumericOverflowLeavesAnOrdinaryFieldInTheClear's CLI case for
+// this surface.
+func TestTheRunLocalToolNumericOverflowLeavesAnOrdinaryFieldInTheClear(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, _ := callRunLocal(t, session, map[string]any{
+		"source": overflowInputFileWorkflow,
+		"inputs": json.RawMessage(`{"region": ` + overflowNumber + `}`),
+	})
+	require.True(t, result.IsError, "an out-of-range number is refused")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, overflowNumber,
+		"an ordinary field's overflow value was withheld, not only a sensitive one's")
+}
+
+// TestTheRunLocalToolRedactsAMustFailureOnASensitiveInput is #2076's other
+// required case: a submitted value that binds to its declared type cleanly
+// and then fails its own `must:`, which is checkToolRunInputs' refusal
+// (v1.BindRunInputs) rather than inputsFromJSON's.
+func TestTheRunLocalToolRedactsAMustFailureOnASensitiveInput(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, _ := callRunLocal(t, session, map[string]any{
+		"source": sensitiveRefusalWorkflow,
+		"inputs": map[string]any{"pin": 4321},
+	})
+	require.True(t, result.IsError, "a must: failure is refused")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.NotContains(t, text, "4321", "the sensitive input's own refused value reached the tool result")
+	assert.Contains(t, text, v1.SensitiveMarker,
+		"a redaction, not a withholding: the tool result must say the value was removed")
+	assert.Contains(t, text, "pin", "the refusal no longer says which input it is about")
+}
+
+// TestTheRunLocalToolMustFailureStillPrintsAnOrdinaryArgument is the negative
+// direction: a workflow declaring one sensitive input must still quote an
+// ordinary one's own refused value, not only report that it was refused —
+// mirroring TestARemoteRunRefusalStillPrintsAnOrdinaryArgument's CLI case for
+// this surface.
+func TestTheRunLocalToolMustFailureStillPrintsAnOrdinaryArgument(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, _ := callRunLocal(t, session, map[string]any{
+		"source": sensitiveWithOrdinaryMustWorkflow,
+		"inputs": map[string]any{"pin": 10000, "region": ordinaryMustValue},
+	})
+	require.True(t, result.IsError, "a must: failure is refused")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, ordinaryMustValue,
+		"an ordinary field's own must: refusal withheld the value it quotes, not only a sensitive one's")
+}
+
 // TestTheRunToolCarriesInputsThroughItsDerivedSchema is the *other* run tool, and
 // the claim being checked is that nothing had to be written for it.
 //
