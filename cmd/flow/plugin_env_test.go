@@ -51,6 +51,16 @@ func TestPluginEnvNameNoPluginCouldAnswerToIsRefusedAtStartup(t *testing.T) {
 	assert.Contains(t, res.Err.Error(), "not a valid plugin name")
 }
 
+// TestPluginEnvNameEmptyIsRefusedAtStartup: "=A=b" cuts to an empty plugin
+// name before the first "=", the same empty key a crafted YAML document can
+// produce (picatz/flowstate#2105). No discovery could ever answer to it
+// either, so it is refused the same way "OCI" above is, not silently dropped.
+func TestPluginEnvNameEmptyIsRefusedAtStartup(t *testing.T) {
+	res := runFlow(t, "plugins", "--plugin-dir", t.TempDir(), "--plugin-env", "=A=b")
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "not a valid plugin name")
+}
+
 // TestPluginEnvFileMergesWithTheFlag: the file is the base and the flag extends
 // it, proved by giving the file a well-formed entry and the flag one that is
 // refused for its own reason — so only the flag's entry can be what failed.
