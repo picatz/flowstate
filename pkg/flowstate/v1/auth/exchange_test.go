@@ -889,14 +889,13 @@ func TestGCPExchanger(t *testing.T) {
 }
 
 // TestGCPExchangerImpersonatesThroughANonLoopbackPortedIAMEndpoint is
-// picatz/flowstate#2038's finding 2: every other GCP test reaches its relying
-// party through a plain httptest.Server on 127.0.0.1, which
-// auth.ValidateHTTPSURL's loopback exemption accepts on its own — reverting
-// gcpExchanger.impersonate to auth.postJSON, undoing the fix that shape needs,
-// fails none of them. This test routes the impersonation request through a
-// hostname that is not loopback (iam.corp.example, with a real port) so it
-// exercises the ambiguous-authority skip that fix depends on, not the
-// loopback exemption sitting beside it.
+// picatz/flowstate#2038's finding 2: an iam_endpoint on a named, non-loopback
+// host with a port must still impersonate. Every other GCP test reaches its
+// relying party through a plain httptest.Server on 127.0.0.1; since
+// auth.ValidateHTTPSURL refuses an `@` on loopback too, those also fail if
+// gcpExchanger.impersonate is reverted to postJSON, and this one pins that
+// the composed exemption holds for the production shape, a hostname with a
+// port, rather than only for a loopback address.
 //
 // The hostname is never resolved: a custom Transport.DialContext redirects it
 // to an in-process TLS server, which is what lets the test name a host that

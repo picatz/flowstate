@@ -628,6 +628,19 @@ rotate keys; retain old public keys in the set for the overlap during which
 already-minted tokens remain valid. A relative path is resolved from the server
 process's working directory, so deployment units should prefer an absolute path.
 
+Every URL the trust policy or a credential exchanger is configured with —
+`issuer`, `jwks_url`, a token or IAM endpoint, a protected resource — is refused
+if it carries an `@`, or its percent-encoded `%40`, anywhere after the scheme's
+`//`: in the path, the query or the fragment as much as before the host, on a
+loopback host as much as a public one. Such a URL is refused as carrying
+credentials, because a password whose leading characters are digits parses as a
+port and leaves the rest of it, and the real host, in what looks like a path
+([#2038](https://github.com/picatz/flowstate/issues/2038)). No issuer, key set,
+token, resource or metadata URL that Google, Okta, Auth0, Entra ID, Keycloak,
+GitHub Actions or AWS and GCP STS publish carries one; the service account email
+in GCP's impersonation request is a path this server composes itself under a
+validated `iam_endpoint`, not one an operator writes.
+
 ### Bearer-token audiences are per surface
 
 A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical

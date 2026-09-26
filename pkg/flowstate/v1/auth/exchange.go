@@ -637,15 +637,16 @@ func (e *exchangeClient) postJSON(ctx context.Context, provider, endpoint string
 }
 
 // postJSONComposed is [exchangeClient.postJSON] for an endpoint this package
-// built itself by appending an operator-supplied, [url.PathEscape]'d field to
-// a base URL that already passed [ValidateHTTPSURL] in full — gcpExchanger's
-// impersonation request is the one caller. See the comment on
-// [validateComposedHTTPSURL] for why that endpoint does not need
-// [ValidateHTTPSURL]'s ambiguous-authority credential search run on it a
-// second time, and why skipping it here rather than widening what that
-// search accepts is the safer place to draw the line.
-func (e *exchangeClient) postJSONComposed(ctx context.Context, provider, endpoint string, body any, bearer string) ([]byte, error) {
-	return e.postJSONValidated(ctx, provider, endpoint, body, bearer, validateComposedHTTPSURL)
+// composed by appending path text to base, an operator-configured URL:
+// gcpExchanger's impersonation request is the one caller. The endpoint is held
+// to [validateComposedHTTPSURL] rather than [ValidateHTTPSURL], because the
+// service account email it carries in its path is the one `@` this package
+// sends; see that function for what makes the exemption structural.
+func (e *exchangeClient) postJSONComposed(ctx context.Context, provider, base, endpoint string, body any, bearer string) ([]byte, error) {
+	validate := func(rawURL, field string) (*url.URL, error) {
+		return validateComposedHTTPSURL(rawURL, base, field)
+	}
+	return e.postJSONValidated(ctx, provider, endpoint, body, bearer, validate)
 }
 
 func (e *exchangeClient) postJSONValidated(ctx context.Context, provider, endpoint string, body any, bearer string, validate func(string, string) (*url.URL, error)) ([]byte, error) {

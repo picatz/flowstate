@@ -286,10 +286,8 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 		},
 		// A password whose leading run is all digits parses as a *port*, so
 		// the URL is well formed and carries no userinfo by url.Parse's
-		// reading. Past picatz/flowstate#2038, auth.ValidateHTTPSURL's own
-		// credentials check catches this directly — the authority is
-		// ambiguous (a colon that could introduce a port is present) and an
-		// `@` survives in the query — rather than deferring to
+		// reading. Past picatz/flowstate#2038, auth.ValidateHTTPSURL refuses
+		// the `@` in the query directly rather than deferring to
 		// validateIssuerURL, which used to be the refusal an operator saw
 		// here and carried the whole credential doing it (flowstate-reviewer).
 		"a credential url.Parse reads as a port": {
@@ -309,10 +307,8 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 		// The delimiters mixed: the slash keeps the URL parseable, so nothing
 		// upstream calls it malformed, and it puts the rest of the credential
 		// past where a before-first-slash read used to stop. Past
-		// picatz/flowstate#2038, auth.ValidateHTTPSURL's own credentials
-		// check searches the whole of the path, query and fragment together
-		// once the authority is ambiguous, so this reaches it directly too —
-		// see the comment on that check.
+		// picatz/flowstate#2038, auth.ValidateHTTPSURL refuses an `@` in the
+		// path, query and fragment alike, so this reaches it directly too.
 		"a port misread whose credential spans a slash and a query": {
 			issuer:  "https://acct9:2024/s3c?" + password + "@issuer.example.com",
 			wantErr: "must not include credentials",
@@ -325,10 +321,8 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 		},
 		// A colon with nothing after it: url.Parse reads Host as `acct9:`
 		// and Port() as "", the empty string being a valid (if useless)
-		// port — a shape url.Parse's own Port() cannot distinguish from a
-		// host with no port at all, so auth.ValidateHTTPSURL keys on the
-		// colon itself rather than on Port() != "" (flowstate-reviewer,
-		// urlprobe).
+		// port — a shape a rule keyed on Port() != "" let through
+		// (flowstate-reviewer, urlprobe).
 		"a port misread behind an empty port": {
 			issuer:  "https://acct9:/" + password + "@issuer.example.com",
 			wantErr: "must not include credentials",
@@ -364,16 +358,15 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 }
 
 // TestAuthCheckRedactsAQueryBearingIssuerEvenWithoutACredential records the
-// cost of reading a query- or fragment-bearing issuer greedily, so that the
-// choice is a decision rather than something a later reader discovers.
+// cost of refusing every `@` after `//` in an issuer, so that the choice is a
+// decision rather than something a later reader discovers.
 //
-// An issuer carrying a query is not a usable issuer whatever else is right
-// about it, so validateIssuerURL has no well-formed reading to protect and
-// takes the wider one. The price is this: a path `@` in such an issuer takes
-// the host with it, and the operator reads `[redacted]@handler` where no
-// credential was. That is the same trade the redaction makes everywhere it
-// cannot tell which `@` a person meant, and the entry is still addressed by
-// the `issuers[0]:` frame the loader wraps around it.
+// Past picatz/flowstate#2038 a path `@` is refused as a credential whether or
+// not one is there, and the refusal reads the URL greedily. The price is
+// this: the host goes with it, and the operator reads `[redacted]@handler`
+// where no credential was. That is the same trade the redaction makes
+// everywhere it cannot tell which `@` a person meant, and the entry is still
+// addressed by the `issuers[0]:` frame the loader wraps around it.
 func TestAuthCheckRedactsAQueryBearingIssuerEvenWithoutACredential(t *testing.T) {
 	t.Parallel()
 
@@ -386,7 +379,7 @@ func TestAuthCheckRedactsAQueryBearingIssuerEvenWithoutACredential(t *testing.T)
 	assert.Equal(t, exitCodeFailure, res.ExitCode)
 
 	unwrapped := strings.Join(strings.Fields(res.Stderr), " ")
-	assert.Contains(t, unwrapped, "must not include a query string or fragment")
+	assert.Contains(t, unwrapped, "must not include credentials")
 	assert.Contains(t, unwrapped, "[redacted]@handler",
 		"the greedy read stopped somewhere else")
 	assert.Contains(t, unwrapped, "issuers[0]",
