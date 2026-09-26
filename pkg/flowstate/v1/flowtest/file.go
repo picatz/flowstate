@@ -1376,6 +1376,23 @@ func parseSourceWith(data []byte, dd *dirDefaults, selfPath string, requireWorkf
 	// actually see. That ordering is the reason evaluation is at load rather
 	// than per case — the substitution contract this comment states would
 	// otherwise have nothing to substitute.
+	//
+	// checkVars' own diagnostics can quote a var's raw, pre-evaluation text —
+	// the mixed-fence refusal in particular — and it runs before evaluateVars
+	// has decided what this file withholds. A var this file's own `secrets:`
+	// names directly is already knowable now, syntactically, with no
+	// evaluation needed ([secretHoldingVars]), so its raw text is withheld
+	// before checkVars can quote it (Copilot, #2080's own review: the mixed
+	// fence's literal text was echoed verbatim from exactly this gap). The
+	// full taint closure — aliases, siblings, backward edges through a
+	// derived var — still waits for evaluateVars, which widens this same set
+	// again once it exists, additively, never replacing it.
+	var earlyWithheld []string
+	for name := range secretHoldingVars(file.Tests) {
+		collectVarStrings(file.Vars[name], 0, &earlyWithheld)
+	}
+	p.withholdText(earlyWithheld)
+
 	if !checkVars(p, file.Vars) {
 		return nil, p.err()
 	}

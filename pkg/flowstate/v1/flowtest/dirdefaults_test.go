@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -267,4 +268,124 @@ func mkdir(t *testing.T, dir string) string {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	return dir
+}
+
+// gatedSiblingWorkflow waits on one signal, so a scripted signal naming
+// anything else is refused by checkSignalNames — the mismatch every test
+// below drives, so its own error text has something to quote.
+const gatedSiblingWorkflow = `edition: v2026.3
+name: gated
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approve
+      timeout: 10s
+outputs: {}
+`
+
+// TestASiblingsLocalAliasOfASharedVarIsTaintedToo is Codex's finding on this
+// fix's own first pass: a directory scan seeded only from a sibling's
+// *direct* `secrets:` references (secretHoldingVars alone) missed a shared
+// var read only through the sibling's own local alias of it.
+// `a.test.yaml` never names `vars.token` directly — it names `vars.alias`,
+// its own computed var reading the directory's shared `token` — so a scan
+// that read only `a.test.yaml`'s `secrets:` text found `alias` and never
+// learned that `alias`, in turn, reads the shared `token` every sibling's
+// own `vars:` carries the identical value of.
+func TestASiblingsLocalAliasOfASharedVarIsTaintedToo(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-transitivealias-6631"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
+	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: "+secret+"\n")
+	writeFile(t, filepath.Join(dir, "a.test.yaml"), "vars:\n"+
+		"  alias: ${vars.token}\n"+
+		"tests:\n"+
+		"  - name: holds the secret through a local alias\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:TOKEN: ${vars.alias}\n")
+	bPath := filepath.Join(dir, "b.test.yaml")
+	writeFile(t, bPath, "tests:\n"+
+		"  - name: the gate is signalled by the wrong name\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    signals:\n"+
+		"      - name: ${vars.token}\n"+
+		"        at: 1s\n"+
+		"        payload: {}\n"+
+		"    expect:\n"+
+		"      ran: [gate]\n")
+
+	report := flowtest.RunFile(bPath)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the scripted signal names no gate this workflow waits on")
+
+	rendered := c.GetError()
+	assert.NotContains(t, rendered, secret,
+		"a shared var reached through a sibling's own local alias of it printed in full (#2080)")
+	assert.Contains(t, rendered, "matches no gate",
+		"the positive control: the mismatch itself must still be reported")
+}
+
+// TestATruncatedSiblingScanFailsClosedOnSharedVars is Codex's second finding:
+// a directory scan that cannot visit every suite file in it must not answer
+// as though it had. This directory holds one more sibling than the scan's
+// own bound — 256, [maxSiblingCandidates]' own value, spelled out here since
+// this file cannot import an unexported constant — which makes the scan
+// incomplete deterministically, by count alone, whatever order the
+// directory's own entries come back in.
+//
+// None of the 257 siblings actually references `token` in a `secrets:` of
+// its own — the fail-closed answer this test pins does not depend on any one
+// of them being the file that really would have leaked it, only on the scan
+// being unable to certify that none of them is, the same standing an
+// unreadable sensitive input already gets (CLAUDE.md, "fail closed"): every
+// var the directory's shared vars: states is tainted once a scan of its
+// siblings cannot be shown to be complete, not only the ones a scan that
+// happened to finish would have found.
+func TestATruncatedSiblingScanFailsClosedOnSharedVars(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-truncatedscan-7742"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
+	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: "+secret+"\n")
+
+	// One more sibling than the scan's own bound. Each is a minimal,
+	// otherwise-unrelated loadable suite: the scan has to actually open and
+	// decode a candidate to tell it apart from a real secret-holding one, so
+	// a syntactically invalid filler would prove nothing about the bound
+	// this test is about.
+	for i := range 257 {
+		writeFile(t, filepath.Join(dir, fmt.Sprintf("sibling%03d.test.yaml", i)),
+			"tests:\n  - name: filler\n    workflow: ./workflow.yaml\n    expect: {failed: true}\n")
+	}
+
+	targetPath := filepath.Join(dir, "target.test.yaml")
+	writeFile(t, targetPath, "tests:\n"+
+		"  - name: the gate is signalled by the wrong name\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    signals:\n"+
+		"      - name: ${vars.token}\n"+
+		"        at: 1s\n"+
+		"        payload: {}\n"+
+		"    expect:\n"+
+		"      ran: [gate]\n")
+
+	report := flowtest.RunFile(targetPath)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the scripted signal names no gate this workflow waits on")
+
+	rendered := c.GetError()
+	assert.NotContains(t, rendered, secret,
+		"a shared var tainted only by a sibling past the scan's own bound printed in full (#2080)")
+	assert.Contains(t, rendered, "matches no gate",
+		"the positive control: the mismatch itself must still be reported")
 }

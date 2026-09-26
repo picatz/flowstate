@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -961,16 +960,33 @@ func (f *File) evaluateVars(p *problems, dd *dirDefaults, selfPath string) {
 	//
 	// Widened to every other suite file in the directory when one states a
 	// shared testdefaults.yaml (#2080): [secretHoldingVars] alone only ever
-	// sees this document, so a var seeded by one file's `secrets:` and merely
-	// *read* by this one under the identical name — because the value both
-	// files see came from the directory's shared vars, not from either
-	// suite's own — went untainted here. See [siblingSecretHoldingVars]'s own
-	// doc for why this is gated on dd rather than run unconditionally.
+	// sees this document, so a var seeded by one file's `secrets:` — or by a
+	// local alias of a shared var, which [siblingTaintedVarNames] traces back
+	// on its own — and merely *read* by this one under the identical name
+	// went untainted here, because the value both files see came from the
+	// directory's shared vars, not from either suite's own. See
+	// [siblingTaintedVarNames]'s own doc for why this is gated on dd rather
+	// than run unconditionally.
 	holding := secretHoldingVars(f.Tests)
 	if dd != nil {
-		for name, where := range siblingSecretHoldingVars(filepath.Dir(dd.path), selfPath) {
+		sibling, complete := siblingTaintedVarNames(dd, selfPath)
+		for name, where := range sibling {
 			if _, seen := holding[name]; !seen {
 				holding[name] = where
+			}
+		}
+
+		// An incomplete scan cannot answer "no sibling taints this shared
+		// var" for any var the directory states, so every one of them is
+		// tainted here rather than only the ones the scan actually reached
+		// (CLAUDE.md, "fail closed" — Codex's finding on this fix's own
+		// first pass, which let a scan truncated at [maxSiblingCandidates]
+		// read as a complete one).
+		if !complete {
+			for name := range dd.Vars {
+				if _, seen := holding[name]; !seen {
+					holding[name] = "the directory's shared vars could not be fully scanned for secret-holding siblings"
+				}
 			}
 		}
 	}

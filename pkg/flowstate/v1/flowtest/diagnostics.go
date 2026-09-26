@@ -445,8 +445,17 @@ func (p *problems) record(r site, atKey bool, message string) {
 	// case's own check witness does, once [File.evaluateVars] has installed
 	// what this load withholds ([problems.withholdText]). The zero value
 	// beforehand redacts nothing, so a problem reported before vars are known
-	// costs the one nil check [SensitiveValues.RedactSubstrings] already pays.
-	message = p.sensitive.RedactSubstrings(message)
+	// costs the one nil check [SensitiveValues.RedactText] already pays.
+	//
+	// Through RedactText rather than RedactSubstrings directly (Copilot): a
+	// set too large to enumerate withholds by answering [SensitiveValues.WithholdAll],
+	// and RedactSubstrings deliberately does not consult that flag on its
+	// own — every other rendering in this package checks it first and
+	// substitutes a marker; calling the substring half alone here was the
+	// one seam that did not, so a withheld set printed this message
+	// unredacted rather than as the marker every other surface would have
+	// shown for it.
+	message = p.sensitive.RedactText(message, "[withheld]")
 
 	p.total++
 

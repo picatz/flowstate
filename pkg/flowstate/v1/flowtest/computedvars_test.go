@@ -1388,6 +1388,72 @@ tests:
 	assert.NotContains(t, err.Error(), "index out of bounds")
 }
 
+// TestAMixedFenceLiteralIsWithheldBeforeCheckVarsQuotesIt is Copilot's finding
+// on #2080's load-time redaction fix: checkVars' own mixed-fence refusal —
+// "holds the expression %q" — quotes a var's raw, pre-evaluation text, and it
+// runs before evaluateVars has decided what this file withholds. A var a
+// case's own `secrets:` names *directly* is knowable before either runs,
+// syntactically, with no evaluation needed, so its raw text must already be
+// withheld by the time checkVars can quote it.
+func TestAMixedFenceLiteralIsWithheldBeforeCheckVarsQuotesIt(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-earlyleak-8834"
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: "`+secret+`-${bad}"
+tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "holds the expression",
+		"the positive control: the mixed-fence refusal itself must still be reported")
+	assert.NotContains(t, err.Error(), secret,
+		"a var a case's own secrets: names directly had its raw text quoted before evaluateVars had decided what this file withholds (#2080)")
+}
+
+// TestALoadTimeDiagnosticIsWithheldWhenTheRedactionSetOverflows is Copilot's
+// other finding on #2080's load-time redaction fix: a redaction set too
+// large to enumerate answers [v1.SensitiveValues.WithholdAll], and
+// RedactSubstrings deliberately does not consult that flag on its own — every
+// other rendering in this package checks it first and substitutes a marker
+// for the whole message, which problems.record's first pass at this did not.
+// A single withheld var past [v1.SensitiveValues]'s own substring-matcher
+// byte bound forces exactly that overflow, and the second case's trigger
+// diagnostic — which names neither the huge var nor anything derived from
+// it — must still come back withheld whole rather than printed in the clear
+// just because it was reported after the set could no longer be built.
+func TestALoadTimeDiagnosticIsWithheldWhenTheRedactionSetOverflows(t *testing.T) {
+	t.Parallel()
+
+	huge := strings.Repeat("x", 70_000)
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: "`+huge+`"
+tests:
+  - name: holds the secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+    expect: {failed: true}
+  - name: a trigger stated both ways
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: somewebhook
+      kind: manual
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "[withheld]",
+		"a load-time diagnostic reported while the redaction set could not be fully enumerated must be withheld whole (#2080)")
+	assert.NotContains(t, err.Error(), "names both a webhook",
+		"the diagnostic's own text leaked instead of being withheld whole")
+}
+
 // TestACheckErrorQuotingAWithheldValueIsWithheld is Codex's sixth P1: a check
 // that *errors* rather than answering false was the third rendering in
 // check.go, and the one going through neither redaction — it formatted cel-go's

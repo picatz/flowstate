@@ -3,6 +3,7 @@ package flowtest
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -360,78 +361,139 @@ func (dd *dirDefaults) combineInto(file *File) contribution {
 	return moved
 }
 
-// siblingSecretHoldingVars widens [secretHoldingVars] to every other suite
-// file in dir, so a var seeded by one file's `secrets:` is tainted in a
-// sibling that only ever reads the value [DirDefaultsName] gave it, rather
-// than in the one file that happened to name the var itself (#2080).
+// siblingTaintedVarNames widens the taint this file's own vars: may carry
+// with every other suite file in dir: not merely a sibling's own *direct*
+// `secrets:` references ([secretHoldingVars] alone), but its own full
+// dependency closure over them ([taintedVars]), so a sibling that gives a
+// shared var a *local* alias — `vars.alias: ${vars.token}`, then
+// `secrets: {env:TOKEN: ${vars.alias}}` — still taints `token` here even
+// though nothing in that sibling names `token` directly (Codex, on this
+// fix's own first pass, which read only a sibling's `secrets:` text and
+// missed exactly this).
 //
 // Scoped to directories that actually state a shared fixture — a suite with
 // no [DirDefaultsName] beside it shares no var *value* with any other file,
-// coincidence of name aside, so its own [secretHoldingVars] is already the
-// whole answer and nothing here is worth the extra directory read. See
-// [File.evaluateVars]'s call, which applies that gate.
+// coincidence of name aside, so this file's own [secretHoldingVars] is
+// already the whole answer and nothing here is worth the extra directory
+// read. See [File.evaluateVars]'s call, which applies that gate.
 //
-// Best-effort and bounded, on the same posture [missingWorkflowRemedy] already
-// takes reading the same directory: a sibling this cannot read, parse, or
-// decode contributes nothing rather than refusing the file that is actually
-// loading, and at most [maxSiblingCandidates] are opened. Each is decoded
-// through the identical expansion bound every suite's own load applies
-// ([decodeSiblingTests]), so a hostile sibling cannot cost more here than it
-// could by being the file that loads.
+// complete is false when the directory could not be listed at all, or holds
+// more candidate suite files than [maxSiblingCandidates] — the caller's
+// answer to an incomplete scan is not silence: see evaluateVars's own use
+// of it, which is the fail-closed half of this fix (Codex's second finding:
+// a truncated scan that kept quiet about it left exactly the var this
+// mechanism exists to catch unprotected in the file that hit the bound).
 //
-// selfPath is excluded so the file being loaded is never also read back as
-// its own sibling — its own `secrets:` already seed [secretHoldingVars]
-// directly, from the value this load itself decoded rather than a second,
-// possibly stale copy read off disk.
-func siblingSecretHoldingVars(dir, selfPath string) map[string]string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
+// Best-effort per sibling rather than best-effort about completeness: a
+// sibling this cannot read, parse, or decode contributes nothing on its own
+// (it cannot refuse the file that is actually loading over a fixture
+// mistake in a document that is not the one being loaded), but it does not
+// make the scan incomplete either — completeness here is about the
+// directory listing, not about any one candidate's own readability.
+func siblingTaintedVarNames(dd *dirDefaults, selfPath string) (holding map[string]string, complete bool) {
+	if dd == nil {
+		return nil, true
 	}
+	dir := filepath.Dir(dd.path)
 
-	holding := map[string]string{}
-	opened := 0
-	for _, entry := range entries {
-		if opened >= maxSiblingCandidates {
-			break
-		}
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".test.yaml") && !strings.HasSuffix(name, ".test.yml") {
-			continue
-		}
+	candidates, complete := suiteFileCandidates(dir, selfPath)
+
+	holding = map[string]string{}
+	for _, name := range candidates {
 		path := filepath.Join(dir, name)
-		if path == selfPath {
-			continue
-		}
-		opened++
-
 		data, err := readBounded(path, MaxTestFileBytes, "test file")
 		if err != nil {
 			continue
 		}
-		tests, err := decodeSiblingTests(data)
+		sibling, err := decodeSiblingFile(data)
 		if err != nil {
 			continue
 		}
-		for varName, where := range secretHoldingVars(tests) {
+
+		// The same merge [dirDefaults.combineInto] performs for a real load
+		// of this sibling: the directory's own vars, filled in under
+		// whatever name the sibling did not state itself — the one way a
+		// sibling's local alias and the shared name it reads can appear in
+		// the same dependency graph at all.
+		merged := make(map[string]any, len(dd.Vars)+len(sibling.Vars))
+		maps.Copy(merged, dd.Vars)
+		maps.Copy(merged, sibling.Vars)
+		sibling.Vars = merged
+
+		// A throwaway collector: this decode's own mistakes are not this
+		// file's to report, and declareVars' bounds already answer for
+		// themselves — a sibling past them contributes nothing, the
+		// identical posture an unreadable one gets.
+		declared := sibling.declareVars(newProblems(nil))
+		nodes := collectVarNodes(sibling.Vars)
+		taint := taintedVars(declared, expandSecretHolding(secretHoldingVars(sibling.Tests), nodes))
+
+		for _, varName := range taint.names() {
 			if _, seen := holding[varName]; !seen {
-				holding[varName] = where + " (" + name + ")"
+				holding[varName] = taint.path(varName) + " (" + name + ")"
 			}
 		}
 	}
 
-	return holding
+	return holding, complete
 }
 
-// decodeSiblingTests is [decodeStrict] applied through the same expansion
+// suiteFileCandidates lists dir's own suite files other than selfPath, sorted
+// for the same reason [secretHoldingVars] sorts its own keys: a file whose
+// answer depended on directory iteration order would answer differently run
+// to run.
+//
+// Streamed in batches ([os.File.ReadDir]) rather than through [os.ReadDir],
+// which reads and sorts the whole directory before anything here could apply
+// a bound: a directory holding far more than [maxSiblingCandidates] entries —
+// suite files or not — otherwise costs a sort proportional to its size on
+// every suite that loads beside it, for a result this bound then throws most
+// of away (Codex, #2080's own review). Reading stops, and complete reports
+// false, the moment the candidate count would exceed the bound; the batch
+// size (64) is an ordinary syscall-count/allocation trade with nothing riding
+// on the exact number.
+func suiteFileCandidates(dir, selfPath string) (names []string, complete bool) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+
+	for {
+		entries, readErr := f.ReadDir(64)
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if !strings.HasSuffix(name, ".test.yaml") && !strings.HasSuffix(name, ".test.yml") {
+				continue
+			}
+			if filepath.Join(dir, name) == selfPath {
+				continue
+			}
+			if len(names) >= maxSiblingCandidates {
+				return names, false
+			}
+			names = append(names, name)
+		}
+		if readErr != nil {
+			// io.EOF ends the directory cleanly; any other error leaves this
+			// listing unable to say what the rest of the directory held,
+			// which is exactly what an incomplete scan means here too.
+			slices.Sort(names)
+
+			return names, readErr == io.EOF
+		}
+	}
+}
+
+// decodeSiblingFile is [decodeStrict] applied through the same expansion
 // bound every suite file's own load applies ([checkExpansionBoundsIn], #877),
-// for a caller that needs only the syntactic shape [secretHoldingVars] walks —
-// each test's and row's `secrets:` — and none of what a full load resolves,
+// for a caller that needs only a sibling's `vars:` and `tests:` — the shapes
+// [siblingTaintedVarNames] reads — and none of what a full load resolves,
 // evaluates, or validates.
-func decodeSiblingTests(data []byte) ([]Test, error) {
+func decodeSiblingFile(data []byte) (*File, error) {
 	parsed, err := parser.ParseBytes(data, 0)
 	if err != nil {
 		return nil, err
@@ -445,5 +507,5 @@ func decodeSiblingTests(data []byte) ([]Test, error) {
 		return nil, err
 	}
 
-	return sibling.Tests, nil
+	return &sibling, nil
 }
