@@ -2570,7 +2570,7 @@ const maxHeartbeatDetailBytes = maxHeartbeatPlaintextBytes + v1.MaxCodecExpansio
 //
 // The vocabulary check ranges over [v1.Phases] rather than naming the three
 // constants again, so a fourth phase added there is recognized here without a
-// matching edit — the same reason [v1.Phases] itself exists (Codex review of
+// matching edit — the same reason the vocabulary has one list (Codex review of
 // #2067).
 func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 	if details == nil || len(details.GetPayloads()) == 0 {
@@ -2591,7 +2591,7 @@ func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 		return ""
 	}
 
-	for _, known := range v1.Phases {
+	for known := range v1.Phases() {
 		if phase == known.String() {
 			return phase
 		}

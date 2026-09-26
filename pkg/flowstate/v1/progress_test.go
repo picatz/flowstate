@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -210,4 +211,23 @@ func TestAnInstalledReporterHearsEveryPhase(t *testing.T) {
 	v1.ReportProgress(ctx, v1.PhaseReadingResponse)
 
 	require.Equal(t, []string{"requesting", "reading the response"}, heard)
+}
+
+// TestPhasesYieldsTheNamedPhasesInOrder pins that [v1.Phases] is the
+// vocabulary the named phases index into, in declaration order, and that a
+// caller cannot change what a later call sees: a range over it yields values,
+// and truncating or overwriting what one call collected leaves the next call's
+// answer intact (Codex review of #2067).
+func TestPhasesYieldsTheNamedPhasesInOrder(t *testing.T) {
+	t.Parallel()
+
+	want := []v1.Phase{v1.PhaseRequesting, v1.PhaseReadingResponse, v1.PhaseCallingPlugin}
+
+	got := slices.Collect(v1.Phases())
+	require.Equal(t, want, got)
+
+	got[0] = v1.PhaseCallingPlugin
+	got = got[1:]
+	require.Equal(t, want, slices.Collect(v1.Phases()),
+		"mutating one caller's copy changed the vocabulary another call sees")
 }
