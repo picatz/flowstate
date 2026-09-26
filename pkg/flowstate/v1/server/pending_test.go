@@ -232,9 +232,57 @@ func TestHeartbeatPhaseIsBoundedAndRestrictedToTheVocabulary(t *testing.T) {
 		"a control sequence riding along with an otherwise-real phase name reached "+
 			"the caller unverified")
 
-	long := strings.Repeat("x", 10_000)
+	// Past maxHeartbeatDetailBytes, not merely past the vocabulary — a string
+	// short enough to clear the size gate but wrong would already be caught by
+	// the vocabulary check above, and would say nothing about the bound.
+	long := strings.Repeat("x", maxHeartbeatDetailBytes+1)
 	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, long)),
 		"one heartbeat made this answer as long as whatever the attempt heartbeated")
+}
+
+// heavyCodecOverheadBytes stands in for a payload codec whose per-payload
+// cost is far more than a nonce and a tag — an envelope scheme wrapping a
+// per-payload data key, a long key identifier, additional authenticated
+// context — without inventing a second [payloadcodec.Codec] to prove it.
+//
+// Fixed and independent of [maxHeartbeatDetailBytes] deliberately, so this
+// number cannot silently shrink to fit whatever the bound happens to be: it is
+// the evidence [TestHeartbeatPhaseToleratesGenerousCodecExpansion] measures
+// the bound against, not a fraction of the bound itself. Comfortably below
+// [v1.MaxCodecExpansionBytes] (56 KiB) and comfortably above both rejected
+// predecessors of this bound (256, then 4096 bytes), so a regression to
+// either reintroduces a failure this catches.
+const heavyCodecOverheadBytes = 10_000
+
+// TestHeartbeatPhaseToleratesGenerousCodecExpansion is the Codex review's
+// codec-expansion case, evidenced rather than argued: a real phase's own
+// encoded bytes, padded with the JSON whitespace a decoder already accepts
+// around any value, out to [heavyCodecOverheadBytes]. The first two versions
+// of this bound (256, then 4096) would both refuse this payload before
+// decoding it, silencing a real phase exactly as if it were the unbounded
+// text the bound exists to refuse.
+func TestHeartbeatPhaseToleratesGenerousCodecExpansion(t *testing.T) {
+	t.Parallel()
+
+	s := mustNew(t, nil)
+
+	real, err := converter.GetDefaultDataConverter().ToPayload(v1.PhaseRequesting.String())
+	require.NoError(t, err)
+	require.Less(t, len(real.GetData()), heavyCodecOverheadBytes,
+		"the fixture must pad the real payload, not already exceed the target size on its own")
+
+	padded := append([]byte{}, real.GetData()...)
+	padded = append(padded, []byte(strings.Repeat(" ", heavyCodecOverheadBytes-len(padded)))...)
+	require.LessOrEqual(t, len(padded), maxHeartbeatDetailBytes,
+		"heavyCodecOverheadBytes must itself stay under the bound this test exists to exercise")
+
+	payload := &commonpb.Payloads{Payloads: []*commonpb.Payload{
+		{Metadata: real.GetMetadata(), Data: padded},
+	}}
+
+	require.Equal(t, v1.PhaseRequesting.String(), s.heartbeatPhase(payload),
+		"a real phase padded out to a plausible codec's own per-payload overhead was "+
+			"silenced as if it were unbounded nonsense")
 }
 
 // countingDataConverter wraps a DataConverter and counts FromPayload calls, so
@@ -280,7 +328,7 @@ func TestHeartbeatPhaseSkipsDecodingAnOversizedPayload(t *testing.T) {
 	require.Equal(t, 1, spy.fromPayloadCalls,
 		"a phase within the bound was not decoded through the configured converter")
 
-	long := strings.Repeat("x", 10_000)
+	long := strings.Repeat("x", maxHeartbeatDetailBytes+1)
 	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, long)))
 	require.Equal(t, 1, spy.fromPayloadCalls,
 		"an oversized heartbeat detail reached FromPayload anyway: the bound only "+

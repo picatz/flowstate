@@ -2507,34 +2507,40 @@ func timeoutKindText(kind enums.TimeoutType) string {
 	}
 }
 
+// maxHeartbeatPlaintextBytes is generous headroom over the longest of
+// [v1.Phase]'s three constants ("reading the response", 20 bytes) plain JSON
+// encoding: quotes, and room for a phase this build predates but a future one
+// declares. Not itself a security bound — [maxHeartbeatDetailBytes] is — this
+// is only the "a real phase" half of that bound's arithmetic.
+const maxHeartbeatPlaintextBytes = 256
+
 // maxHeartbeatDetailBytes bounds the wire payload [FlowstateServer.heartbeatPhase]
 // will decode looking for a phase.
 //
-// [v1.Phase]'s vocabulary is three short constants — "reading the response" is
-// the longest, at 20 bytes — so Flowstate's own worker never approaches this.
-// What heartbeats this activity is not necessarily that worker: a worker on a
-// modified tree, or one polling a task queue this deployment never intended
-// to serve, chooses these bytes with nothing stopping it, and this field is
-// read on every `flow get` and `flow watch` poll of a run with a retrying
-// step (AGENTS.md invariant 5).
+// Flowstate's own worker never approaches [maxHeartbeatPlaintextBytes], let
+// alone this. What heartbeats this activity is not necessarily that worker: a
+// worker on a modified tree, or one polling a task queue this deployment
+// never intended to serve, chooses these bytes with nothing stopping it, and
+// this field is read on every `flow get` and `flow watch` poll of a run with
+// a retrying step (AGENTS.md invariant 5).
 //
 // Checked against the payload's *encoded* bytes before FromPayload ever runs,
 // which is what makes this a bound on the decode rather than on its answer —
 // the decode is the cost this exists to avoid paying on a value that gets
 // discarded regardless, on every poll, for every pending activity a run
-// reports (Copilot review of #2067). Sized well past any of the three
-// constants' plain JSON encoding (measured at 66-76 bytes through the toy
-// AES-GCM codec this package's own tests configure — a nonce, a tag, and two
-// metadata entries) rather than pinned to their length, because the codec
-// contract this repository's [Option]s accept bounds expansion against
-// Temporal's own blob ceiling and nothing smaller: an envelope scheme this
-// deployment configures — a wrapped per-payload key, a longer key identifier,
-// additional authenticated context — can plausibly cost more than a plain
-// nonce and tag without approaching this bound, and a bound tight enough to
-// reject that would silence a real phase from a codec-configured deployment
-// exactly as if it were the unbounded text this exists to refuse (Codex
-// review of #2067).
-const maxHeartbeatDetailBytes = 4096
+// reports (Copilot review of #2067).
+//
+// [v1.MaxCodecExpansionBytes] rather than a second guess at what a codec may
+// add: it is this repository's own answer to exactly that question, enforced
+// by `payloadcodec.Config.Validate` at startup, so anything a configured
+// codec is allowed to run with already fits under it by construction. A bound
+// smaller than [v1.MaxCodecExpansionBytes] plus a real phase's plaintext
+// could reject a codec-configured deployment's own heartbeat, silencing a
+// real phase exactly as if it were the unbounded text this exists to refuse
+// — measured evidence, not merely a smaller number, being why the first
+// attempt at this bound (256, then 4096) was wrong twice (Codex review of
+// #2067).
+const maxHeartbeatDetailBytes = maxHeartbeatPlaintextBytes + v1.MaxCodecExpansionBytes
 
 // heartbeatPhase reads the phase a running attempt last heartbeated.
 //
