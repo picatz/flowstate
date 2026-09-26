@@ -1,8 +1,6 @@
 package lsp
 
 import (
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -139,40 +137,64 @@ func TestChangeCanInitializeTheLocalPathIndexBeforeOpen(t *testing.T) {
 // lower-versioned parse overwrite a faster, higher-versioned one that had
 // already landed.
 //
-// One change's text is large enough that its parse reliably takes longer
-// than the other's, so the two are not a coin flip: the failure mode is a
-// scheduling race, not a 50/50 one, and repeating it drives the odds of
-// never observing it on a fixed build to negligible while keeping a broken
-// one's failure rate visible well within a short run.
+// [documentStore.parseGate] forces the order this test needs rather than
+// hoping a slow parse reliably outruns a fast one across many iterations:
+// the lower-versioned change is held at the gate until the higher-versioned
+// one has already committed, so releasing it exercises exactly the window
+// the commit-time re-check exists for, every run, deterministically (#2089
+// review, second round, item b).
 func TestConcurrentChangesSettleOnTheHigherVersionRegardlessOfParseOrder(t *testing.T) {
 	t.Parallel()
 
-	slow := raceSource + strings.Repeat("#padding\n", 15000)
+	var store documentStore
 	uri := lsp.DocumentURI("file:///concurrent-change-toctou.yaml")
+	store.open(uri, 1, raceSource, nil)
 
-	bad := 0
-	for range 200 {
-		var s documentStore
-		s.open(uri, 1, raceSource, nil)
-
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			s.change(uri, 2, []lsp.TextDocumentContentChangeEvent{{Text: slow}}, nil)
-		}()
-		go func() {
-			defer wg.Done()
-			s.change(uri, 3, []lsp.TextDocumentContentChangeEvent{{Text: raceSource}}, nil)
-		}()
-		wg.Wait()
-
-		if d, ok := s.get(uri); !ok || d.version != 3 {
-			bad++
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	store.setParseGate(func(u lsp.DocumentURI) {
+		if u == uri {
+			close(entered)
+			<-proceed
 		}
+	})
+
+	slowDone := make(chan struct{})
+	go func() {
+		defer close(slowDone)
+		store.change(uri, 2, []lsp.TextDocumentContentChangeEvent{{Text: raceSource + "#slow\n"}}, nil)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lower-versioned change never reached the unlocked parse")
 	}
-	require.Zero(t, bad,
-		"a slower, lower-versioned parse overwrote a faster, higher-versioned one that had already committed")
+
+	// The higher-versioned change commits next, unimpeded: clearing the
+	// gate only affects a call that reads s.parseGate from here on, not the
+	// lower-versioned goroutine already parked inside the closure it read
+	// earlier.
+	store.setParseGate(nil)
+	got := store.change(uri, 3, []lsp.TextDocumentContentChangeEvent{{Text: raceSource + "#fast\n"}}, nil)
+	require.NotNil(t, got, "the higher-versioned change was itself dropped")
+	require.Equal(t, 3, got.version)
+
+	// Release the lower-versioned change now that the higher-versioned one
+	// has committed; the commit-time re-check must drop it rather than
+	// overwrite what already landed.
+	close(proceed)
+	select {
+	case <-slowDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the lower-versioned change never finished after its gate was released")
+	}
+
+	d, ok := store.get(uri)
+	require.True(t, ok, "the document is gone")
+	require.Equal(t, 3, d.version,
+		"a lower-versioned change released after a higher-versioned one had already committed overwrote it")
+	require.Equal(t, raceSource+"#fast\n", d.text)
 }
 
 // TestChangeDropsAStaleResultWhenTheDocumentWasClosedDuringItsParse is the
@@ -224,4 +246,124 @@ func TestChangeDropsAStaleResultWhenTheDocumentWasClosedDuringItsParse(t *testin
 	if _, ok := store.get(uri); ok {
 		t.Fatal("a document closed during a change's unlocked parse was resurrected by that change's stale result")
 	}
+}
+
+// TestChangeDropsAnIncrementalEditWhoseBaseDocumentWasReplacedDuringItsParse
+// is the regression test for item (a) of the second round of independent
+// review of #2089: the commit-time re-check compared versions but never the
+// document's identity, so an incremental change whose splice was computed
+// against one *document could still land after a close-then-reopen (or any
+// other change) installed a different one in its place, corrupting the
+// replacement with offsets computed against text that was no longer
+// current — for a caller outside the connection's per-URI queue, the same
+// caller the TOCTOU test above already covers for versions.
+//
+// A full-sync change in the same position is exempt, and settles on its own
+// text rather than being dropped: it never depended on the replaced
+// document's text to begin with, so there is nothing stale in it to guard
+// against.
+func TestChangeDropsAnIncrementalEditWhoseBaseDocumentWasReplacedDuringItsParse(t *testing.T) {
+	t.Parallel()
+
+	uri := lsp.DocumentURI("file:///replaced-during-parse.yaml")
+
+	gatedIncrementalChange := func(store *documentStore) (entered, proceed chan struct{}, done chan struct{}) {
+		entered = make(chan struct{})
+		proceed = make(chan struct{})
+		store.setParseGate(func(u lsp.DocumentURI) {
+			if u == uri {
+				close(entered)
+				<-proceed
+			}
+		})
+		done = make(chan struct{})
+		go func() {
+			defer close(done)
+			// An incremental edit computed against "name: one\n": replaces
+			// "one" (columns 6-9) with "two".
+			store.change(uri, 5, []lsp.TextDocumentContentChangeEvent{{
+				Range: &lsp.Range{
+					Start: lsp.Position{Line: 0, Character: 6},
+					End:   lsp.Position{Line: 0, Character: 9},
+				},
+				Text: "two",
+			}}, nil)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the gated incremental change never reached the unlocked splice and parse")
+		}
+		return entered, proceed, done
+	}
+
+	t.Run("incremental change is dropped", func(t *testing.T) {
+		t.Parallel()
+
+		var store documentStore
+		store.open(uri, 1, "name: one\n", nil)
+
+		_, proceed, done := gatedIncrementalChange(&store)
+
+		// Closed and reopened with different content — a new *document —
+		// while the incremental change above is parked, unlocked, at the
+		// parse gate.
+		store.close(uri)
+		reopened := store.open(uri, 1, "name: reopened\n", nil)
+
+		close(proceed)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the gated incremental change never finished after its gate was released")
+		}
+
+		current, ok := store.get(uri)
+		require.True(t, ok, "the reopened document is gone")
+		assert.Same(t, reopened, current,
+			"an incremental change computed against a since-replaced document overwrote the reopened one")
+		assert.Equal(t, "name: reopened\n", current.text)
+	})
+
+	t.Run("full-sync change is not dropped", func(t *testing.T) {
+		t.Parallel()
+
+		var store documentStore
+		store.open(uri, 1, "name: one\n", nil)
+
+		entered := make(chan struct{})
+		proceed := make(chan struct{})
+		store.setParseGate(func(u lsp.DocumentURI) {
+			if u == uri {
+				close(entered)
+				<-proceed
+			}
+		})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			store.change(uri, 5, []lsp.TextDocumentContentChangeEvent{{Text: "name: full-sync\n"}}, nil)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the gated full-sync change never reached the unlocked splice and parse")
+		}
+
+		store.close(uri)
+		store.open(uri, 1, "name: reopened\n", nil)
+
+		close(proceed)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the gated full-sync change never finished after its gate was released")
+		}
+
+		current, ok := store.get(uri)
+		require.True(t, ok, "the document is gone")
+		assert.Equal(t, "name: full-sync\n", current.text,
+			"a full-sync change was dropped even though it never depended on the document it was computed alongside")
+		assert.Equal(t, 5, current.version)
+	})
 }

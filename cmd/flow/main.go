@@ -2050,7 +2050,11 @@ func runLSP(cmd *cobra.Command, args []string) error {
 		// lsp.NewHandler rather than jsonrpc2.AsyncHandler: same
 		// goroutine-per-message serving, with document builds announced in
 		// arrival order first, which is what keeps a request behind a didOpen
-		// from answering before the open lands.
+		// from answering before the open lands, and with a bound on how many
+		// messages this connection may have dispatched to their own
+		// goroutine and not yet finished at once — a client sending faster
+		// than this process can keep up gets its read loop blocked rather
+		// than an unbounded pile of goroutines.
 		lsp.NewHandler(&lsp.FlowfileServer{Tasks: v1.DefaultRegistry()}),
 	)
 

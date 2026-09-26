@@ -13,7 +13,7 @@ import (
 // finished, at once, across every URI and method.
 //
 // This is the general shape #2071 asked for: work a client can queue is
-// bounded where it is spent (CLAUDE.md invariant 5). An earlier attempt
+// bounded where it is spent (AGENTS.md invariant 5). An earlier attempt
 // bounded only a same-URI full-sync didChange burst by coalescing it, and a
 // second round of review found the coalescing mechanism itself introduced
 // ordering defects twice over — see the history on #2071 and #2089. This
@@ -28,6 +28,15 @@ import (
 // backed up on something slower than this server — either way, blocking its
 // read loop rather than growing this connection's outstanding goroutines
 // without bound is the correct answer.
+//
+// The retained state this bounds is the raw params a message's goroutine
+// holds until it finishes, one frame's worth each, and the effective
+// ceiling is one token more than the limit: the read loop itself, stuck
+// acquiring the (limit+1)th token, is holding that message's own decoded
+// request the whole time it waits. 64 tokens plus that one message bounds
+// retained params to roughly 65 × [MaxFrameBytes] (16 MiB), a little over a
+// gigabyte, not the unbounded pile a goroutine-per-message server with no
+// cap at all would let a fast sender build up.
 const maxInFlightPerConnection = 64
 
 // NewHandler wraps s the way a connection should serve it: each message is
@@ -105,12 +114,26 @@ type asyncHandler struct {
 // waiting for, or holding, one of the connection's [asyncHandler.inFlight]
 // tokens.
 //
-// $/cancelRequest, shutdown and exit are the connection's own escape
-// hatches — cancelling a request or stopping the server — and must still be
-// answered promptly when the window is full of everything else, or a client
-// trying to get out of a stalled connection would have to wait behind
-// exactly the backlog it is trying to escape. Nothing else is exempt: every
-// other method's own cost is what the bound exists to cover.
+// $/cancelRequest and exit are the connection's own escape hatches —
+// cancelling a request or stopping the server — and must still be answered
+// promptly when the window is full of everything else, or a client trying to
+// get out of a stalled connection would have to wait behind exactly the
+// backlog it is trying to escape. Both are notifications: dispatching one
+// exempt costs a goroutine that runs to completion on its own.
+//
+// shutdown is deliberately not exempt despite reading like the same kind of
+// escape hatch: it is a request, so its goroutine ends by replying, a write
+// that blocks until the client reads it (see [FlowfileServer.Handle]'s
+// deadlock-freedom argument for what that means against a client that
+// does not). Exempting a request from the bound would let a client that
+// keeps sending shutdown while never reading its replies park one
+// unbounded, blocked-on-write goroutine per shutdown — the exact growth
+// this bound exists to stop, reopened through the one door meant to close
+// it. A shutdown queued normally still answers as soon as its turn comes;
+// it is not on the escape path the way a cancel or an exit is.
+//
+// Nothing else is exempt: every other method's own cost is what the bound
+// exists to cover.
 //
 // This exemption's guarantee is about the message itself, not about
 // anything already ahead of it: the read loop dispatches strictly in wire
@@ -118,13 +141,13 @@ type asyncHandler struct {
 // already blocked the read loop acquiring its own token is queued behind
 // that message on the wire like anything else, and cannot be read — let
 // alone dispatched — until that earlier acquire succeeds. What this
-// exemption guarantees is that a $/cancelRequest never becomes the message
-// blocking the read loop, so sending one before the window's next
+// exemption guarantees is that a $/cancelRequest or exit never becomes the
+// message blocking the read loop, so sending one before the window's next
 // non-exempt message is what reaches the server always gets through
 // immediately, however full the window already is.
 func bypassesInFlightLimit(method string) bool {
 	switch method {
-	case "$/cancelRequest", "shutdown", "exit":
+	case "$/cancelRequest", "exit":
 		return true
 	default:
 		return false
@@ -143,11 +166,12 @@ func bypassesInFlightLimit(method string) bool {
 //     wait for a build, and that is bounded twice over — [documentBuildTimeout]
 //     and the connection dropping — so it always releases its token in
 //     bounded time rather than holding it forever.
-//   - [bypassesInFlightLimit] exempts $/cancelRequest, shutdown and exit from
-//     the acquire entirely, so none of the three ever becomes the message a
-//     full window leaves the read loop stuck on — see that function's own
-//     doc comment for the one thing this does not reach: a message already
-//     queued behind an earlier, non-exempt one that got stuck first.
+//   - [bypassesInFlightLimit] exempts $/cancelRequest and exit from the
+//     acquire entirely, so neither ever becomes the message a full window
+//     leaves the read loop stuck on — see that function's own doc comment
+//     for the one thing this does not reach: a message already queued
+//     behind an earlier, non-exempt one that got stuck first, and for why
+//     shutdown is deliberately not on this list.
 //   - The per-URI queue's wait channel (below) is always a predecessor that
 //     already holds, or already released, its own token: [documentStore.enqueue]
 //     is called from inside this same acquire-then-announce sequence, in wire
@@ -155,6 +179,19 @@ func bypassesInFlightLimit(method string) bool {
 //     cannot become something a later message's wait channel points at —
 //     until its own acquire above has already returned. A wait channel here
 //     therefore never points at a message still stuck trying to acquire.
+//
+// What this does not rule out is a token holder blocking on a write to a
+// client that has stopped reading: every path out of [FlowfileServer.Handle]
+// ends in a `conn.Reply` or a notification send, and jsonrpc2 blocks a
+// writer until the peer's read keeps up. A client that stops reading while
+// every token is held by a goroutine blocked writing to it fills the window
+// and, from then on, the read loop blocks too — a two-sided pipe deadlock
+// main did not have, because main's read loop never blocked on anything.
+// This design accepts that as the shape backpressure takes against a client
+// that is not participating: the alternative is not bounding memory at all
+// against exactly that client. When the connection actually closes, pending
+// writes fail rather than hanging, and every blocked holder's acquire (or
+// the wait it was itself blocking) releases in turn.
 func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
 	if bypassesInFlightLimit(req.Method) {
 		go func() {
@@ -168,7 +205,7 @@ func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *json
 	}
 
 	// Acquired here, on the read loop, before this message's goroutine even
-	// exists, and blocking: seeing #2071's rationale in
+	// exists, and blocking: see #2071's rationale in
 	// [maxInFlightPerConnection]. A message already queued behind another
 	// same-URI notification has not reached this point yet when that
 	// notification is dispatched — the read loop dispatches in wire order,
