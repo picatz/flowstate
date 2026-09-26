@@ -857,56 +857,113 @@ func TestListDedupeSurvivesAVisibilityPrecisionMismatch(t *testing.T) {
 	}
 }
 
-// TestListRetractsFilterAccountingWithARetractedRow is the second review of
-// #2112, P2 (Codex): retracting a superseded segment's row (F2) left its
-// filter accounting behind. The predecessor here carries the label the
-// filter asks about and matches; the successor carries none, which
-// `labels["team"]` errors on rather than simply failing to match — #1689's
-// own case. Before this, retraction removed the only matched row but the
-// predecessor's `evaluated++` stayed counted, so the page came back empty
-// with excluded_by_error set and no diagnostic in the order that places the
-// predecessor first, while the other order — where the predecessor is
-// skipped outright and never evaluated at all — correctly produced one.
+// filterOutcome is one of the three ways `labels["team"] == "payments"` can
+// answer for an execution — matched, answered no, or could not answer at all
+// — named rather than left as a bare label string, since the memo each one
+// needs differs and a caller of [outcomeExecution] should not have to know
+// how.
+type filterOutcome string
+
+const (
+	outcomeMatch   filterOutcome = "match"   // labels["team"] == "payments" is true.
+	outcomeNoMatch filterOutcome = "nomatch" // present, but answers false rather than erroring.
+	outcomeError   filterOutcome = "error"   // absent: `labels["team"]` has no such key.
+)
+
+// outcomeExecution is a RUNNING execution built to answer a fixed filter,
+// `labels["team"] == "payments"`, exactly one of the three ways.
+func outcomeExecution(t *testing.T, run string, start time.Time, outcome filterOutcome) *workflow.WorkflowExecutionInfo {
+	t.Helper()
+
+	memo := mineMemo(t)
+	switch outcome {
+	case outcomeMatch:
+		payload, err := converter.GetDefaultDataConverter().ToPayload(map[string]string{"team": "payments"})
+		require.NoError(t, err)
+		memo.Fields[labelsMemoKey] = payload
+	case outcomeNoMatch:
+		payload, err := converter.GetDefaultDataConverter().ToPayload(map[string]string{"team": "search"})
+		require.NoError(t, err)
+		memo.Fields[labelsMemoKey] = payload
+	case outcomeError:
+		// No `team` label at all: mineMemo's own fields are enough.
+	default:
+		t.Fatalf("outcomeExecution: unknown outcome %q", outcome)
+	}
+
+	return &workflow.WorkflowExecutionInfo{
+		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: run},
+		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		StartTime: timestamppb.New(start),
+		Memo:      memo,
+	}
+}
+
+// TestListRetractsFilterAccountingWithARetractedRow is the third review of
+// #2112, F1: retracting a superseded segment's row (F2) has to retract its
+// filter accounting with it in full, not only the case a match happened to
+// leave behind. Both executions here are RUNNING under one workflow id, so
+// whichever started earlier is always stale once the later one is met — and
+// what the listing reports is exactly the current (later) segment's own
+// answer, whatever the stale one's would have been, in either scan order.
+//
+// The nine combinations of the older and newer segment's own answer to
+// `labels["team"] == "payments"` (matched, answered no, or could not answer)
+// each collapse to one of three outcomes, decided by the newer segment
+// alone: `evaluated` and `excluded_by_error` before this fix disagreed with
+// that in four of the nine — matched-then-errored (P2, already fixed by
+// d372c959) is the fifth, and is included here as the case both fixes must
+// still agree on.
 func TestListRetractsFilterAccountingWithARetractedRow(t *testing.T) {
 	t.Parallel()
 
-	base := time.Now()
 	const filter = `labels["team"] == "payments"`
 
-	labelled, err := converter.GetDefaultDataConverter().ToPayload(map[string]string{"team": "payments"})
-	require.NoError(t, err)
-	predecessorMemo := mineMemo(t)
-	predecessorMemo.Fields[labelsMemoKey] = labelled
-
-	predecessor := &workflow.WorkflowExecutionInfo{
-		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-1"},
-		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
-		StartTime: timestamppb.New(base),
-		Memo:      predecessorMemo,
-	}
-	successor := &workflow.WorkflowExecutionInfo{
-		// No labels at all: what the current segment must answer for, and
-		// what it cannot.
-		Execution: &common.WorkflowExecution{WorkflowId: "long-runner", RunId: "run-2"},
-		Status:    enums.WORKFLOW_EXECUTION_STATUS_RUNNING,
-		StartTime: timestamppb.New(base.Add(time.Minute)),
-		Memo:      mineMemo(t),
+	// What the page reports depends only on the newer segment's own answer:
+	// an older, superseded segment's is retracted whichever it was.
+	expected := map[filterOutcome]struct {
+		rows       int
+		excluded   uint32
+		diagnostic bool
+	}{
+		outcomeMatch:   {rows: 1, excluded: 0, diagnostic: false},
+		outcomeNoMatch: {rows: 0, excluded: 0, diagnostic: false},
+		outcomeError:   {rows: 0, excluded: 1, diagnostic: true},
 	}
 
-	for name, executions := range map[string][]*workflow.WorkflowExecutionInfo{
-		"predecessor met first": {predecessor, successor},
-		"successor met first":   {successor, predecessor},
-	} {
-		t.Run(name, func(t *testing.T) {
-			page := filteredListing(t, executions, filter)
+	for _, older := range []filterOutcome{outcomeMatch, outcomeNoMatch, outcomeError} {
+		for _, newer := range []filterOutcome{outcomeMatch, outcomeNoMatch, outcomeError} {
+			want := expected[newer]
 
-			require.Empty(t, page.GetRuns(),
-				"the current segment does not answer for the filter, so the workload should not be listed")
-			require.Equal(t, uint32(1), page.GetExcludedByError(),
-				"the retracted predecessor's earlier match should not still be counted")
-			require.NotEmpty(t, page.GetFilterDiagnostic(),
-				"a filter wrong about the only segment this scan settled on should say so, in either scan order")
-		})
+			base := time.Now()
+			olderExecution := outcomeExecution(t, "run-older", base, older)
+			newerExecution := outcomeExecution(t, "run-newer", base.Add(time.Minute), newer)
+
+			for orderName, executions := range map[string][]*workflow.WorkflowExecutionInfo{
+				"older met first": {olderExecution, newerExecution},
+				"newer met first": {newerExecution, olderExecution},
+			} {
+				t.Run(fmt.Sprintf("older=%s newer=%s %s", older, newer, orderName), func(t *testing.T) {
+					page := filteredListing(t, executions, filter)
+
+					require.Len(t, page.GetRuns(), want.rows,
+						"the page's rows should reflect the current (newer) segment's own answer alone")
+					require.Equal(t, want.excluded, page.GetExcludedByError(),
+						"excluded_by_error should count the current segment's own error, retracting a stale older one's")
+					if want.diagnostic {
+						require.NotEmpty(t, page.GetFilterDiagnostic(),
+							"the current segment's own error should be explained, in either scan order")
+					} else {
+						require.Empty(t, page.GetFilterDiagnostic(),
+							"nothing here should still be excluded_by_error, so there is nothing to explain")
+					}
+					if want.rows == 1 {
+						require.Equal(t, "run-newer", page.GetRuns()[0].GetRunId(),
+							"the one row, if any, names the current segment's own run")
+					}
+				})
+			}
+		}
 	}
 }
 

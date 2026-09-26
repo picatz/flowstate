@@ -135,13 +135,21 @@ const (
 
 // scanSegment is what one List scan currently knows about a workflow id's
 // most recently met execution: when it started, whether it read as still
-// open, and where its summary lives in the page, when it has a place there
-// at all.
+// open, the filter error it produced (nil if it matched or was never
+// excluded that way), a sequence fixing its place in the scan regardless of
+// map order, and where its summary lives in the page, when it has a place
+// there at all.
 //
 // open is what a later execution sharing this id is judged against — see the
 // comment at [FlowstateServer.List]'s use for why an open execution older
 // than another one under the same id is always stale, and a closed one never
 // is.
+//
+// err and seq exist for one purpose: once the scan ends, recovering the
+// filter diagnostic's example error from whichever executions are still
+// standing rather than from whichever one the scan happened to meet first —
+// see the recomputation at the end of [FlowstateServer.List] (#2112 review,
+// third pass, F1).
 //
 // index is -1 for an execution this scan already decided against — an
 // earlier execution proven stale, or a current one the filter excluded — so
@@ -150,6 +158,8 @@ const (
 type scanSegment struct {
 	start time.Time
 	open  bool
+	err   error
+	seq   int
 	index int
 }
 
@@ -227,11 +237,14 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	segments := make(map[string]scanSegment, pageSize)
 
 	// The filter's account of this page: how many of the caller's runs it was
-	// asked about, how many it could not answer for, and the first reason.
-	var (
-		evaluated, excluded int
-		firstErr            error
-	)
+	// asked about and how many it could not answer for. Both retreat when a
+	// segment they counted is later retracted (below) — the only accounting
+	// this scan owes an execution it decided, on fuller information, was
+	// never really a candidate. The example error the diagnostic quotes is
+	// not tracked here at all; recovering it from a retraction-proof source
+	// is what each scanSegment's own err and seq are for, once the scan ends.
+	var evaluated, excluded int
+	evalSeq := 0
 
 	for len(runs) < pageSize && scanned < maxListScan && requests < maxListRequests {
 		requests++
@@ -392,19 +405,24 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 				// retracted rather than left as a second-best answer
 				// (#2112 review, F2), compacted out once after the scan.
 				//
-				// Its filter accounting is retracted with it. The only way a
-				// slot exists to retract is that this id's predecessor once
-				// matched the filter and was counted evaluated for it
-				// (below); leaving that count standing after removing the
-				// row it produced answered "how many did the filter meet"
-				// with one more than "how many are in this page" for no
-				// caller-visible reason, and could leave an empty page with
-				// excluded_by_error set but no diagnostic, depending on
-				// nothing but which of the two this scan happened to meet
-				// first (second review of #2112, P2).
+				// Its filter accounting is retracted with it, in full — not
+				// only the row a match earned. Every write to segments below
+				// follows an evaluated++ for that same execution, whatever the
+				// filter went on to say about it, so decrementing here can
+				// never go negative; and a prior that errored had its own
+				// excluded++ to give back too. Retracting only the matched
+				// case (second review of #2112, P2) still let an errored or
+				// non-matching predecessor's counts stand after its status
+				// was proven stale, which could leave an empty page reporting
+				// excluded_by_error with no diagnostic in one scan order and a
+				// diagnostic in the other for the identical two executions
+				// (third review of #2112, F1).
+				evaluated--
+				if prior.err != nil {
+					excluded--
+				}
 				if prior.index >= 0 {
 					runs[prior.index] = nil
-					evaluated--
 				}
 			}
 
@@ -438,6 +456,7 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// left out. A filter wrong about *every* run it met is still told so,
 			// once, through the diagnostic below.
 			evaluated++
+			evalSeq++
 			matched, err := filter.Match(ctx, run)
 			if err != nil {
 				// A request that was cancelled or timed out is not a run the
@@ -448,28 +467,25 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 					return nil, connect.NewError(contextCode(ctx.Err()), ctx.Err())
 				}
 				excluded++
-				if firstErr == nil {
-					firstErr = err
-				}
 				if trackable {
 					// This execution does not answer for the filter — see the
 					// retraction above when it superseded an open one, which
 					// already made sure a stale predecessor never stands in
 					// as a second-best answer (#2112 review, F2).
-					segments[workflowID] = scanSegment{start: startTime, open: open, index: -1}
+					segments[workflowID] = scanSegment{start: startTime, open: open, err: err, seq: evalSeq, index: -1}
 				}
 				continue
 			}
 			if !matched {
 				if trackable {
-					segments[workflowID] = scanSegment{start: startTime, open: open, index: -1}
+					segments[workflowID] = scanSegment{start: startTime, open: open, seq: evalSeq, index: -1}
 				}
 				continue
 			}
 
 			runs = append(runs, run)
 			if trackable {
-				segments[workflowID] = scanSegment{start: startTime, open: open, index: len(runs) - 1}
+				segments[workflowID] = scanSegment{start: startTime, open: open, seq: evalSeq, index: len(runs) - 1}
 			}
 			if len(runs) == pageSize {
 				break
@@ -514,6 +530,25 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	// met: that is what a typo looks like, where a filter wrong about some runs
 	// is the ordinary case the exclusion count already reports.
 	if excluded > 0 && excluded == evaluated {
+		// The example error, recovered from segments rather than tracked as
+		// the scan went — because by now segments holds exactly one entry per
+		// workflow id, its most recent, and an id whose predecessor errored
+		// and was later retracted is not that entry any more. Picking by the
+		// lowest seq among the ones that still errored is what makes the
+		// choice the same regardless of the map's own (randomized) iteration
+		// order, and regardless of which of two executions sharing an id this
+		// scan happened to meet first (#2112 review, third pass, F1).
+		var firstErr error
+		firstSeq := -1
+		for _, seg := range segments {
+			if seg.err == nil {
+				continue
+			}
+			if firstSeq == -1 || seg.seq < firstSeq {
+				firstSeq = seg.seq
+				firstErr = seg.err
+			}
+		}
 		response.FilterDiagnostic = filter.Diagnostic(firstErr)
 	}
 
