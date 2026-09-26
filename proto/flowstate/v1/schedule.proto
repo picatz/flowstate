@@ -133,7 +133,7 @@ message ScheduleDescription {
   // already passed.
   //
   // A non-zero value is the signal to widen `catchup_window` on the trigger or
-  // to backfill the missed range; see [CreateScheduleRequest.backfill]. It answers
+  // to backfill the missed range; see [CreateScheduleRequest.Backfill]. It answers
   // the question `num_actions` alone cannot: a schedule can report a healthy
   // `RUNS TAKEN` and still be silently missing every firing since an outage
   // longer than its window.
@@ -164,19 +164,13 @@ message CreateScheduleRequest {
     (google.api.field_behavior) = REQUIRED
   ];
 
-  // Inputs are the arguments every firing starts its run with.
+  // Inputs are the arguments every firing starts its run with, at most 64.
   //
-  // Bound and type-checked *here*, once, while whoever is creating the schedule
-  // is still present to be told (invariant 6). The alternative, checking at each
-  // firing, puts the refusal at three in the morning in a worker's log, for a
-  // mistake made at a keyboard weeks earlier, which is the failure this whole
-  // repository's fail-closed rule is about.
-  //
-  // Same contract as [RunRequest.inputs] and through the same
-  // `v1.BindRunInputs`: values and never expressions, no undeclared name, every
-  // required input present, defaults filled in. What is stored is the bound map,
-  // so a declaration edited later does not change what a schedule already created
-  // passes.
+  // Checked here, once, against the workflow's declared inputs, with the same
+  // rules as [RunRequest.inputs]: literal values only, no undeclared name,
+  // every required input present, defaults filled in. A mistake is refused
+  // now rather than at the first firing. What is stored is the checked map,
+  // so a declaration edited later does not change what this schedule passes.
   map<string, Value> inputs = 2 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).map = {
@@ -208,11 +202,12 @@ message CreateScheduleRequest {
   // resume when the next firing time is one somebody meant.
   bool paused = 4 [(google.api.field_behavior) = OPTIONAL];
 
-  // Backfill is deliberately creation-only: it is an operator request, not a
-  // perpetual property of the workload, which is why it is here and not in the
-  // Flowfile's `triggers.schedule` block. At most 10 intervals spanning no more
-  // than 31 days in total are accepted, and both bounds are enforced by
-  // `v1.CheckScheduleBackfill` on every path that can create a schedule.
+  // Backfill asks creation to take, now, the firings the workflow's cadence
+  // would have taken over past intervals. At most 10 intervals, spanning no
+  // more than 31 days in total.
+  //
+  // Creation-only: it is an operator request, not a property of the workload,
+  // which is why it is here and not in the Flowfile's `triggers.schedule`.
   repeated ScheduleBackfill backfill = 5 [(buf.validate.field).repeated = {max_items: 10}];
 }
 
@@ -225,43 +220,21 @@ message CreateScheduleResponse {
   ScheduleDescription schedule = 1;
 
   // SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
-  // this RPC: the same question, the same three answers, and deliberately the
-  // same name rather than a second vocabulary for one fact.
+  // this RPC: the same question and the same three answers, about the
+  // specification frozen into the schedule.
   //
-  // Creating a schedule goes through the same trusted lookup `Run` does — a
-  // caller must not be able to take a trusted `manual: denied` workflow, add a
-  // `schedule:` trigger to their own copy, and have this handler fire *that*
-  // copy under the trusted name — and through the same plugin pin, which the
-  // schedule then freezes into every firing. So the specification a caller holds
-  // may not be the one that will run at 03:00, and this says which. Read
-  // [RunResponse.specification_as_submitted] for the whole argument, including
-  // why *unset* is not `false` and why neither may be read as assent.
-  //
-  // Answered once, here, about the specification frozen into the schedule —
-  // which is the only moment it can be answered, because every firing afterwards
-  // happens with no caller present to be told anything. It is a claim about the
-  // creation, not a standing property of the schedule: a deployment that
-  // registers a trusted copy tomorrow changes nothing about the specification
-  // this schedule already carries, and a caller reading a schedule back later
-  // asks `DescribeSchedule`, which makes no attestation at all.
+  // Creating a schedule goes through the same trusted-workflow substitution and
+  // plugin pinning as Run, so the specification a caller holds may not be the
+  // one every firing runs. Answered once, at creation; DescribeSchedule makes
+  // no such attestation.
   optional bool specification_as_submitted = 2;
 }
 
-// ListSchedulesRequest asks for the caller's schedules. It takes nothing today.
+// ListSchedulesRequest asks for the caller's schedules. It has no fields.
 //
-// # No paging, deliberately, and what that costs
-//
-// `List` pages runs because a namespace holds them by the hundred thousand and
-// the tenant filter is a memo Temporal cannot query, so an unbounded listing is a
-// denial of service waiting to be written. Schedules are not that: they are
-// created one at a time by people, and a deployment with a thousand of them has a
-// different problem.
-//
-// The scan is still bounded (see `maxScheduleScan`) and when the bound stops it
-// the response says so rather than presenting a partial listing as the whole of
-// it. That is a smaller promise than `List` makes, and it is stated instead of
-// implied. A `page_token` is a field 1 and 2 away on either message the day a
-// deployment needs it, with nothing existing to break.
+// Not paged: schedules are created one at a time by people, not by the hundred
+// thousand. The scan is still bounded, and [ListSchedulesResponse.truncated]
+// says when the bound stopped it.
 message ListSchedulesRequest {}
 
 // ListSchedulesResponse returns the caller's schedules.
@@ -281,6 +254,9 @@ message ListSchedulesResponse {
 
 // DescribeScheduleRequest asks about one of the caller's schedules by name.
 message DescribeScheduleRequest {
+  // Name is the schedule's name within the caller's tenant, as
+  // CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+  // 1 to 128 characters.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
@@ -299,6 +275,9 @@ message DescribeScheduleResponse {
 
 // DeleteScheduleRequest removes one of the caller's schedules.
 message DeleteScheduleRequest {
+  // Name is the schedule's name within the caller's tenant, as
+  // CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+  // 1 to 128 characters.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
@@ -315,6 +294,9 @@ message DeleteScheduleResponse {}
 
 // PauseScheduleRequest stops a schedule firing without removing it.
 message PauseScheduleRequest {
+  // Name is the schedule's name within the caller's tenant, as
+  // CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+  // 1 to 128 characters.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
@@ -341,6 +323,9 @@ message PauseScheduleResponse {}
 
 // ResumeScheduleRequest lets a paused schedule fire again.
 message ResumeScheduleRequest {
+  // Name is the schedule's name within the caller's tenant, as
+  // CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+  // 1 to 128 characters.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
@@ -364,6 +349,9 @@ message ResumeScheduleResponse {}
 
 // TriggerScheduleRequest fires a schedule now, without waiting for its cadence.
 message TriggerScheduleRequest {
+  // Name is the schedule's name within the caller's tenant, as
+  // CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+  // 1 to 128 characters.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,

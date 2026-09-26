@@ -717,11 +717,12 @@ func catalogFunctions() []*CELFunction {
 	out := make([]*CELFunction, 0, len(functions))
 	for _, fn := range functions {
 		out = append(out, &CELFunction{
-			Name:      fn.Name,
-			Library:   fn.Library,
-			Macro:     fn.Macro,
-			Example:   fn.Example,
-			Signature: fn.Signature,
+			Name:        fn.Name,
+			Library:     fn.Library,
+			Macro:       fn.Macro,
+			Example:     fn.Example,
+			Signature:   fn.Signature,
+			Description: fn.Description,
 		})
 	}
 

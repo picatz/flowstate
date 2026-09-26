@@ -6,5 +6,5 @@ GetRequest is the request message for getting a workflow run.
 
 | CLI input | Request field | Presence | Schema constraints | Schema field prose | Command-owned usage |
 |---|---|---|---|---|---|
-| `[workflow-id]` | `workflow_id` | required | — | — | workflow whose run should be reported |
-| `--run-id` | `run_id` | optional; unset stays absent | a UUID | — | ask about one attempt of the workload; unset asks about whichever is current |
+| `[workflow-id]` | `workflow_id` | required | — | WorkflowId identifies the workload, as Run's `workflow_id` reports it. The caller may read only runs in its own tenant. | workflow whose run should be reported |
+| `--run-id` | `run_id` | optional; unset stays absent | a UUID | RunId optionally pins the read to one run of the workload, as a UUID. Unset reads the latest run, which is what a caller holding only a workflow id wants. | ask about one attempt of the workload; unset asks about whichever is current |

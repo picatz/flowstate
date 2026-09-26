@@ -208,6 +208,11 @@ func styleExample(theme ui.Theme, line string, width int) string {
 // docsURL is where help points a reader for a document the binary does not
 // carry: the published copy, since a person holding only `flow` has no checkout
 // to find a relative path in.
+//
+// `main` rather than the build's own commit: there are no releases to pin to,
+// a plain `go build` records a commit that may be unpushed or dirty, and these
+// strings are rendered into docs/reference/cli.md, which has to come out the
+// same from every build.
 const docsURL = "https://github.com/picatz/flowstate/blob/main/docs/"
 
 // column is one row of a two-column list: a name and what it does.

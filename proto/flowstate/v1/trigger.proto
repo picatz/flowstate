@@ -81,7 +81,7 @@ message Triggers {
 //
 // # Where it is enforced, and where it deliberately is not
 //
-// [FlowstateServer.Run] enforces this, against the caller the server itself
+// The server's Run handler enforces this, against the caller the server itself
 // attested, before Temporal sees anything — the same placement [SignalPolicy]
 // has and for the same reason. `flow run local` and `flow test` are never
 // gated: the author's machine is not a deployment, and a workflow that cannot
@@ -476,7 +476,8 @@ message ScheduleTrigger {
     // Range is a low-to-high span of one field, written in a Flowfile as a whole
     // number, a list of them, or `{start: 9, end: 17, step: 2}`.
     message Range {
-      // Start is the first value the range matches, and the only required one.
+      // Start is the first value the range matches. Required in a Flowfile's
+      // long form, because zero is a real value in several fields.
       int32 start = 1;
 
       // End is the last value, inclusive. Zero means no end was written, which
@@ -490,13 +491,32 @@ message ScheduleTrigger {
       // written, which takes every value in the range.
       int32 step = 3;
     }
+
+    // Second matches seconds, 0 to 59. Empty means 0.
     repeated Range second = 1;
+
+    // Minute matches minutes, 0 to 59. Empty means 0.
     repeated Range minute = 2;
+
+    // Hour matches hours, 0 to 23, in the schedule's `time_zone`. Empty means
+    // 0.
     repeated Range hour = 3;
+
+    // DayOfMonth matches days of the month, 1 to 31. Empty matches every day.
     repeated Range day_of_month = 4;
+
+    // Month matches months, 1 (January) to 12. Empty matches every month.
     repeated Range month = 5;
+
+    // Year matches years, 1970 to 3000. Empty matches every year.
     repeated Range year = 6;
+
+    // DayOfWeek matches days of the week, 0 to 6, where 0 is Sunday. Empty
+    // matches every day.
     repeated Range day_of_week = 7;
+
+    // Comment is a note describing this calendar, at most 256 characters. It
+    // does not affect when the schedule fires.
     string comment = 8 [(buf.validate.field).string = {max_len: 256}];
   }
   // Overlap says what happens when a firing comes due while the previous run is
@@ -621,11 +641,13 @@ message ScheduleTrigger {
   // adds firings rather than filtering them.
   repeated Calendar calendars = 6 [(buf.validate.field).repeated = {max_items: 32}];
 
-  // StartAt and EndAt bound the window in which firings may occur, inclusively
-  // at both ends. Either may be written alone. A start that is not before its
-  // end is refused at creation, because such a schedule can never fire and would
-  // be created successfully by Temporal all the same.
+  // StartAt is the earliest moment a firing may occur, inclusive. Unset means
+  // no lower bound. A start that is not before `end_at` is refused at
+  // creation, because such a schedule can never fire.
   google.protobuf.Timestamp start_at = 7 [(google.api.field_behavior) = OPTIONAL];
+
+  // EndAt is the latest moment a firing may occur, inclusive. Unset means the
+  // schedule fires indefinitely.
   google.protobuf.Timestamp end_at = 8 [(google.api.field_behavior) = OPTIONAL];
 
   // CatchupWindow limits how late a missed firing may still be taken when the
@@ -660,7 +682,14 @@ message ScheduleTrigger {
 // because a backfill is the one place where a single request decides how many
 // executions a cluster starts at once.
 message ScheduleBackfill {
+  // StartAt begins the interval, exclusive: a firing due exactly at this
+  // moment is not taken. Required.
   google.protobuf.Timestamp start_at = 1 [(buf.validate.field).required = true];
+
+  // EndAt ends the interval, inclusive. Required.
   google.protobuf.Timestamp end_at = 2 [(buf.validate.field).required = true];
+
+  // Overlap is what happens when a backfilled firing comes due while an
+  // earlier run is still going. Unset takes the schedule's own `overlap`.
   ScheduleTrigger.Overlap overlap = 3 [(buf.validate.field).enum = {defined_only: true}];
 }

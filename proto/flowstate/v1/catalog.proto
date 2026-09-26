@@ -9,25 +9,17 @@ option go_package = "flowstatev1";
 // TaskCatalog is what this build can execute, described so that something other
 // than a person can read it.
 //
-// The task registry is the single source of truth for capability (the engine
-// dispatches from it, the validator checks against it, the editor completes from
-// it), and until this existed the only way out of the process was a table meant
-// for a terminal. An agent driving the CLI as a tool, a generator producing
-// documentation, or an editor that is not this project's language server all had
-// to parse columns, which is not a contract.
-//
-// It is a schema type rather than a shape invented in the CLI because it
-// describes the system, which is what this file is for: a field added to it
-// appears in every consumer without any of them changing, and it is already
-// versioned and wire-stable, which is what let GetCatalog return it unchanged
-// the day that RPC arrived.
+// The task registry is the single source of truth for capability: the engine
+// dispatches from it, the validator checks against it and the editor completes
+// from it. This is that registry's machine-readable form, the same document
+// `flow tasks --output json` prints and GetCatalog returns.
 message TaskCatalog {
   // Tasks is every task this build can run, sorted by name.
   repeated TaskDescription tasks = 1;
 
   // CelLibraries are the CEL extension libraries every expression in a workflow
   // reaches. Not opt-in: a workflow speaks one dialect, so this is the vocabulary
-  // of `if:`, `items:`, `wait_until:`, a task input and a `cel` step alike.
+  // of `if:`, `items:`, `wait_until:`, a `vars:` binding and a task input alike.
   repeated string cel_libraries = 2;
 
   // DurationUnits are the duration constructors available to *every* expression
@@ -57,20 +49,11 @@ message TaskCatalog {
   repeated string value_roots = 5;
 
   // CelFunctions is every name the profile's libraries add, sorted by library and
-  // then by name.
+  // then by name, with each one's call form and description.
   //
-  // cel_libraries above says which libraries are switched on and nothing about what
-  // is in any of them, which is the difference between a fact and an answer: a
-  // reader who wants to sort a list learns that `lists` is enabled and still has to
-  // go and find cel-go's documentation to discover `sortBy`. That was survivable
-  // while the answer was "everything cel-go has"; it stopped being survivable when a
-  // profile became a *membership*, because a subset nobody can enumerate is a subset
-  // nobody can write against.
-  //
-  // Both fields, rather than replacing one with the other. A library name is what
-  // groups these and what docs/DSL.md and the profile definition talk in, so a
-  // consumer that only wants to know the shape of the dialect should not have to
-  // derive it from ninety names.
+  // Not listed: CEL's standard functions and macros (`size`, `has`, `filter`
+  // and the rest), which every expression has, and the duration constructors,
+  // which are in `duration_units`.
   repeated CELFunction cel_functions = 6;
 
   // ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
@@ -138,31 +121,11 @@ message CELFunction {
   // Example is a complete expression calling this, set only where `name` is not
   // enough to construct one, which is exactly the macros.
   //
-  // A macro's own parser API will not say whether its `name` is written on a
-  // namespace or on a value, and that is the gap this fills: `Macro` exposes
-  // `Function`, `ArgCount`, `IsReceiverStyle` and `MacroKey`, and none of them
-  // names the *receiver*. So `greatest` is reported for something written
-  // `math.greatest(1, 2)` and `sortBy` for something written
-  // `[3,1,2].sortBy(v, v)`: a namespace in one case and a value in the other,
-  // indistinguishable from the outside. An ordinary function does not have
-  // this problem — its overloads answer the same question, which is what
-  // `signature` below carries, along with the arity and argument order this
-  // field does not give either kind.
-  //
-  // Which means this cannot be derived, and a consumer told "do not render `name`
-  // as a call" and given nothing else has been handed a catalogue of things it
-  // cannot use. It is a written table, kept honest the way this repo keeps the
-  // things that cannot be derived: a test asks the environment for its macros and
-  // fails on any that has no example, and every example is *evaluated* rather than
-  // inspected, so an entry that stops working stops passing.
-  //
-  // Deriving it was tried and rejected rather than skipped. A library's macros can
-  // be paired with the internal `@` names it declares (`math.@max` alongside
-  // `greatest` gives `math`), and that is right for `math` and `bindings` and
-  // silently wrong for `comprehensions`, which declares `cel.@mapInsert` while
-  // `transformList` is written on a value. A derivation that is wrong for one
-  // library in five is worse than a table somebody has to keep, because nothing
-  // about it says which one.
+  // cel-go does not say whether a macro's `name` is written on a namespace or
+  // on a value: `greatest` is written `math.greatest(1, 2)` and `sortBy` is
+  // written `[3,1,2].sortBy(v, v)`. This fills that gap. An ordinary function
+  // does not need it, because `signature` carries its call form. Every example
+  // is evaluated by a test, so one that stops working fails the build.
   string example = 4;
 
   // Signature is this function's call form, one entry per overload: argument
@@ -171,15 +134,15 @@ message CELFunction {
   // function, `math.abs(double) -> double` for a namespaced one. Empty for a
   // macro, where `example` carries the call form instead.
   //
-  // Where `example` above had to become a written table because cel-go's macro
-  // API cannot say which style a name is written in, an ordinary function's own
-  // overload does answer that exact question — `OverloadDecl.IsMemberFunction`
-  // names the receiver where `Macro.IsReceiverStyle` alone does not. So this is
-  // derived from the profile's compiled environment
-  // (`FunctionDecl.Documentation`) rather than hand-maintained, and a function
-  // added to a library brings its signature with it the same day rather than
-  // waiting for somebody to write one down (#702).
+  // Derived from the profile's compiled CEL environment, so a function added to
+  // a library brings its signature with it.
   repeated string signature = 5;
+
+  // Description says what the function does, in a sentence or two: its
+  // result, and any bound or failure an author should know about. Empty when
+  // the function's declaration carries no documentation, which is true of
+  // most functions from cel-go's extension libraries.
+  string description = 6;
 }
 
 // TaskDescription is one task's name and shape.

@@ -106,8 +106,10 @@ func renderCELFunctionTable(b *strings.Builder) {
 	b.WriteString("one entry per overload. It is not written down the way `Example` is; cel-go's\n")
 	b.WriteString("own compiled environment answers this for a function even though it cannot for\n")
 	b.WriteString("a macro, so this column is derived from it directly.\n\n")
+	b.WriteString("`Description` is the declaration's own documentation, where it has any:\n")
+	b.WriteString("Flowstate documents the functions it adds, and cel-go documents some of its own.\n\n")
 
-	b.WriteString("| Library | Name | Kind | Example | Signature |\n|---|---|---|---|---|\n")
+	b.WriteString("| Library | Name | Kind | Example | Signature | Description |\n|---|---|---|---|---|---|\n")
 	for _, fn := range functions {
 		kind := "function"
 		example := ""
@@ -115,8 +117,9 @@ func renderCELFunctionTable(b *strings.Builder) {
 			kind = "macro"
 			example = codeOrEmpty(fn.Example)
 		}
-		fmt.Fprintf(b, "| `%s` | `%s` | %s | %s | %s |\n",
-			cell(fn.Library), cell(fn.Name), kind, orDash(example), orDash(signatureCell(fn.Signature)))
+		fmt.Fprintf(b, "| `%s` | `%s` | %s | %s | %s | %s |\n",
+			cell(fn.Library), cell(fn.Name), kind, orDash(example), orDash(signatureCell(fn.Signature)),
+			orDash(cell(fn.Description)))
 	}
 	b.WriteString("\n")
 }
@@ -158,7 +161,7 @@ func renderCELLimits(b *strings.Builder) {
 	b.WriteString("abstract units roughly proportional to the work performed rather than\n")
 	b.WriteString("wall-clock time or bytes read. This is what stands between a workflow\n")
 	b.WriteString("author and a pathological expression, so it applies to a `vars:` binding, a\n")
-	b.WriteString("task input, an `if:` — anywhere on this page — and not only to a `cel` step.\n\n")
+	b.WriteString("task input, an `if:`, a `wait_until:` — every expression on this page.\n\n")
 	b.WriteString("It matters most for the Idioms section below. A `.filter().map()` chain\n")
 	b.WriteString("costs nothing beyond the work it does per element, and is still charged per\n")
 	b.WriteString("element: run over a response whose size this build does not bound, it\n")
@@ -195,15 +198,21 @@ func groupThousands(n uint64) string {
 // `timeout:`, and anywhere else a duration belongs.
 func renderCELDurations(b *strings.Builder) {
 	b.WriteString("## Durations and `now`\n\n")
-	b.WriteString("Unconditional rather than opt-in: `weeks(n)`, `days(n)`, `hours(n)`,\n")
-	b.WriteString("`minutes(n)` and `seconds(n)` build a duration from a count, and every\n")
-	b.WriteString("expression has them because a `wait_until:` step has no `libs:` key to enable\n")
-	b.WriteString("anything with — the expression is the whole of the step. `duration('72h')`,\n")
-	b.WriteString("CEL's own constructor, means exactly the same thing as `days(3)`; the named\n")
-	b.WriteString("units exist so a reader can scan `days(3) + hours(12)` without doing\n")
-	b.WriteString("arithmetic on a string.\n\n")
+	b.WriteString("Every expression, in every profile, can build a duration from a count with\n")
+	b.WriteString("`weeks(n)`, `days(n)`, `hours(n)`, `minutes(n)` and `seconds(n)`; no library\n")
+	b.WriteString("enables them. `duration('72h')`, CEL's own constructor, means exactly the same\n")
+	b.WriteString("thing as `days(3)`; the named units exist so a reader can scan\n")
+	b.WriteString("`days(3) + hours(12)` without doing arithmetic on a string. A day is exactly\n")
+	b.WriteString("24 hours, never a calendar day, and a count past about 292 years is an\n")
+	b.WriteString("evaluation error.\n\n")
 
-	fmt.Fprintf(b, "Units, largest first: %s.\n\n", codeList(v1.DurationUnits()))
+	// In the declared order, not codeList's sorted one: "largest first" is the
+	// order the units are declared in, and an alphabetical list puts `weeks` last.
+	units := make([]string, 0, len(v1.DurationUnits()))
+	for _, unit := range v1.DurationUnits() {
+		units = append(units, "`"+cell(unit)+"`")
+	}
+	fmt.Fprintf(b, "Units, largest first: %s.\n\n", strings.Join(units, ", "))
 
 	fmt.Fprintf(b, "Inside a wait (`sleep:`, `wait_until:`, a signal's `timeout:`), `%s` is the\n",
 		v1.NowIdentifier)

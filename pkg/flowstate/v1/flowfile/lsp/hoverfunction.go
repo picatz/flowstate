@@ -69,19 +69,42 @@ func hoverFunction(doc *document, v *value, f fence, cursor int) *lsp.Hover {
 		}
 
 		return markdownHover(fmt.Sprintf(
-			"**`%s`** — a macro from the `%s` library.\n\n%s"+
+			"**`%s`** — a macro from the `%s` library.\n\n%s%s"+
 				" (a value or a namespace) and is expanded when the file *compiles*, so what a "+
 				"run carries is the expansion rather than this spelling. That is why a macro's "+
 				"meaning is frozen by the spec where a function's is resolved by whichever worker "+
 				"evaluates the run.",
-			fn.Name, fn.Library, written), rng)
+			fn.Name, fn.Library, functionDescription(fn), written), rng)
 	}
 
 	return markdownHover(fmt.Sprintf(
-		"**`%s`** — from the `%s` library.\n\n"+
+		"**`%s`** — from the `%s` library.\n\n%s%s"+
 			"Available to every expression in the file: an `if:`, a `vars:` value, a task input, "+
 			"a loop's `items:`, a `wait_until:`. One profile, one dialect.",
-		fn.Name, fn.Library), rng)
+		fn.Name, fn.Library, functionSignatureBlock(fn), functionDescription(fn)), rng)
+}
+
+// functionSignatureBlock renders a function's call forms as a code block, one
+// overload per line, followed by a paragraph break; empty when it has none.
+//
+// First, because it answers "how do I write this": argument order, arity,
+// types, and whether it goes on a namespace or a value.
+func functionSignatureBlock(fn v1.LibraryFunction) string {
+	if len(fn.Signature) == 0 {
+		return ""
+	}
+
+	return "```cel\n" + strings.Join(fn.Signature, "\n") + "\n```\n\n"
+}
+
+// functionDescription is the declaration's own description followed by a
+// paragraph break, or empty when the declaration carries none.
+func functionDescription(fn v1.LibraryFunction) string {
+	if fn.Description == "" {
+		return ""
+	}
+
+	return fn.Description + "\n\n"
 }
 
 // functionAt returns the function named at the cursor, and the span of the name as

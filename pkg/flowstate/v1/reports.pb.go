@@ -283,8 +283,8 @@ func (x *FmtReport) GetRefusals() []*Diagnostic {
 //
 // The same reason [ValidationReport] exists beside [DiagnosticReport]: `json` is
 // one document per invocation and `jsonl` is one per line, and fixing three files
-// produces three [FixReport]s, which is three lines of `jsonl` and, without
-// something to hold them, three documents where `json` promises one.
+// produces three [FixReport] messages, which is three lines of `jsonl` and,
+// without something to hold them, three documents where `json` promises one.
 type FixReports struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Files is one report per file given, in the order they were given.
@@ -405,9 +405,9 @@ type TestCase struct {
 	// is still fast wants to know, and virtual time inside the run answers a
 	// different question.
 	Duration *durationpb.Duration `protobuf:"bytes,5,opt,name=duration,proto3" json:"duration,omitempty"`
-	// Warnings are facts worth reading that are not verdicts (#926): the case
+	// Warnings are facts worth reading that are not verdicts: the case
 	// passed or failed on Failures and Error alone, and these neither block nor
-	// excuse it. Today's one producer is a stub the case declared and the run
+	// excuse it. The one producer is a stub the case declared and the run
 	// never answered through — a task-form stub whose task was never invoked,
 	// or a matcher tried and never matched — which is a hole in the case's own
 	// account rather than in the run. `flow test --fail-on-warning` promotes
@@ -510,18 +510,16 @@ type TestReport struct {
 	// reported once for the file rather than once per case.
 	Refused string `protobuf:"bytes,3,opt,name=refused,proto3" json:"refused,omitempty"`
 	// Coverage is one branch-coverage account per workflow the file's cases
-	// targeted (issue #420). A `*.test.yaml` usually tests one workflow and
+	// targeted. A `*.test.yaml` usually tests one workflow and
 	// carries exactly one entry, but each case names its own `workflow:`, so a
 	// file may target several, and coverage is kept separate per workflow so a
 	// step one workflow reaches never masks the same step id left unreached in
 	// another. Empty when the file was refused, or when no case compiled a
 	// workflow to account for.
 	Coverage []*CoverageReport `protobuf:"bytes,4,rep,name=coverage,proto3" json:"coverage,omitempty"`
-	// Schedules is what seeded-schedule exploration found for this file
-	// (issues #800, #931), and is unset when the invocation explored nothing —
-	// the default: `flow test` with no `--seeds` or `--seed` runs each case
-	// once, under written order, and this field stays null exactly as the
-	// command's prose says nothing.
+	// Schedules is what seeded-schedule exploration found for this file, and is
+	// unset when the invocation explored nothing. That is the default: `flow
+	// test` with no `--seeds` or `--seed` runs each case once, in written order.
 	//
 	// On the machine report for the reason Coverage is: CI reads the account
 	// rather than scraping the prose from stderr, and a `--seeds` run whose
@@ -602,7 +600,7 @@ func (x *TestReport) GetSchedules() *ScheduleExploration {
 
 // ScheduleExploration is what running one `*.test.yaml`'s cases under seeded
 // schedules found, beyond the written-order run the rest of the report
-// describes (issue #800).
+// describes.
 type ScheduleExploration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Schedules is how many seeded schedules each explored case ran under,
@@ -800,7 +798,7 @@ func (x *ScheduleDivergenceReport) GetSeeded() string {
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:
 // which of that workflow's steps at least one case ran, and which no case ever
-// reached (issue #420).
+// reached.
 //
 // It rides the machine report so CI reads the sets rather than scraping the
 // prose coverage line. Whether `--coverage-required` was passed is not
@@ -822,7 +820,7 @@ type CoverageReport struct {
 	// Reached is every step id that ran in at least one case, sorted.
 	Reached []string `protobuf:"bytes,4,rep,name=reached,proto3" json:"reached,omitempty"`
 	// Unreached is the complement: every step id in the workflow that no case
-	// ran, sorted. This is the line #420 exists to report.
+	// ran, sorted.
 	Unreached []string `protobuf:"bytes,5,rep,name=unreached,proto3" json:"unreached,omitempty"`
 	// Gaps is every unreached step the file did not record a reason for: the
 	// holes in the suite, as opposed to the residuals it accepted. This is what
@@ -841,7 +839,7 @@ type CoverageReport struct {
 	// is wrong.
 	Stale []string `protobuf:"bytes,8,rep,name=stale,proto3" json:"stale,omitempty"`
 	// Arms is every arm of every `switch:` step in the workflow, and whether any
-	// test case took it (issue #801).
+	// test case took it.
 	//
 	// A second coverage unit beside the step one rather than more entries in it,
 	// because an arm is not a step and counting it as one would make StepsTotal a
@@ -953,8 +951,7 @@ func (x *CoverageReport) GetArms() []*SwitchArmCoverage {
 // Read from the transcript rather than inferred from what ran: a switch records
 // which literal matched under `case` (SwitchCaseOutput), so the harness reads the
 // arm that was taken instead of deducing it from the body steps that happened to
-// appear. That is issue #420's own stated measurement rule for switches, and it
-// is what makes an empty arm, and one member of a multi-literal `case: [a, b]`,
+// appear. That is what makes an empty arm, and one member of a multi-literal `case: [a, b]`,
 // measurable at all.
 type SwitchArmCoverage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`

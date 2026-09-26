@@ -583,7 +583,7 @@ func (x *AttemptOutcome) GetRetryAfter() *durationpb.Duration {
 //     specification that never changed. A resolved value references nothing.
 //   - Determinism. Running a compensation schedules an activity and evaluates
 //     nothing, so nothing about compensating is new workflow-side work
-//     (ARCHITECTURE.md invariant 4).
+//     (ARCHITECTURE.md invariant 4, workflow-side code is pure and frozen).
 //   - Meaning. `${steps.provision.id}` inside an undo means the id that step
 //     produced, at the moment it produced it. Resolving later would let it mean
 //     whatever the scope held after some other step overwrote things.
@@ -593,9 +593,10 @@ func (x *AttemptOutcome) GetRetryAfter() *durationpb.Duration {
 // because at registration time the failure has not happened. That is a deliberate
 // narrowing and DSL.md argues it as one.
 //
-// # Size (ARCHITECTURE.md invariant 9)
+// # Size
 //
-// These ride in [RunState], so `CheckRunStateSize` weighs them at every
+// A run that grows past what Temporal can store must fail rather than hang
+// (ARCHITECTURE.md invariant 9). These ride in [RunState], so `CheckRunStateSize` weighs them at every
 // Continue-As-New along with everything else: it calls `proto.Size` on the whole
 // message rather than summing the fields it knows about, so this field was bounded
 // on the day it was added and nobody has to remember to count it. A run with an
@@ -914,7 +915,8 @@ type Scope struct {
 	//
 	// Not carried in [RunState]: each driver derives it where it is, from a source
 	// that is stable for the whole run (see [RunAddress]), so there is no value
-	// crossing the Continue-As-New seam and nothing for invariant 10 to protect.
+	// crossing the Continue-As-New seam and nothing for the RunState wire
+	// contract (ARCHITECTURE.md invariant 10) to protect.
 	Address *RunAddress `protobuf:"bytes,8,opt,name=address,proto3" json:"address,omitempty"`
 	// Trigger is how this run started, read under the `trigger` root. See
 	// [TriggerContext].
@@ -1261,7 +1263,8 @@ type PendingActivity struct {
 	// The vocabulary is closed on purpose, and that is a security property rather
 	// than a style. This is projected from an activity heartbeat, heartbeats are
 	// written into workflow history, and history is durable and broadly readable,
-	// so a phase built from a task's inputs would be invariant 7's exact failure.
+	// so a phase built from a task's inputs could put a secret into workflow
+	// history (ARCHITECTURE.md invariant 7).
 	// The worker enforces it with a type that has no constructor; see
 	// `v1.Phase` and the AST check beside it.
 	Phase         string `protobuf:"bytes,4,opt,name=phase,proto3" json:"phase,omitempty"`
@@ -1699,7 +1702,8 @@ type Frame struct {
 	// the same reason: the state exists nowhere in [RunState.outputs].
 	//
 	// A resolved value, never an expression: [Loop.update] is evaluated in workflow
-	// code at the end of each iteration (invariant 4 permits it, as it does a loop's
+	// code at the end of each iteration (ARCHITECTURE.md invariant 4, workflow-side
+	// code is pure and frozen, permits it, as it does a loop's
 	// `items:` and a step's `vars:`) and what is stored here is the result. So a
 	// resumed segment binds the carried value directly and evaluates nothing to get
 	// it, the same discipline [PendingUndo] follows, and for the same determinism
@@ -1710,7 +1714,8 @@ type Frame struct {
 	// retry-until loop binds no name, so there is nothing for a resumed segment to
 	// rebind.
 	//
-	// Weighed by `CheckRunStateSize` along with the rest of [RunState] (invariant 9),
+	// Weighed by `CheckRunStateSize` along with the rest of [RunState]
+	// (ARCHITECTURE.md invariant 9, a run that cannot continue must fail),
 	// which is the bound a *finite* loop's state needs: it is one value, carried
 	// across at most the loop's bounded iteration count. The unbounded entity loop
 	// that would need a byte bound of its own is deferred; see [Loop].
@@ -1725,10 +1730,9 @@ type Frame struct {
 	// because an `async:` step nothing after it reads is heard at the scope-end
 	// join, and the steps written between its failure and that join still run.
 	// Propagating early skips exactly those, so whether a side-effecting step ran
-	// would depend on whether somebody was debugging (#1119). The failure is
-	// therefore carried to the join that owed it — and this is what carries it
-	// across a Continue-As-New, so that the obligation outlives the segment that
-	// heard it rather than being refused a seam until the scope ends (#1968).
+	// would depend on whether somebody was debugging. The failure is therefore
+	// carried to the join that owed it, and this field carries it across a
+	// Continue-As-New so the obligation outlives the segment that heard it.
 	//
 	// Present only on a frame at the depth of a scope that was holding one, which
 	// is a run's own top level or a callee's, never a `for_each` body or a
@@ -2010,7 +2014,7 @@ type RunState struct {
 	//
 	// Carried rather than recomputed, so that "evaluated once at the start of the run"
 	// means once for the whole run and not once per Continue-As-New segment. The
-	// difference is not academic: invariant 10 has a continued run pick up whichever
+	// difference is not academic: a continued run picks up whichever
 	// interpreter version is current, so a segment that re-evaluated its vars could
 	// compute a different answer from the one earlier steps saw: a value changing
 	// under a workload halfway through, for no cause visible in the file.
@@ -2025,7 +2029,8 @@ type RunState struct {
 	// and the defaulting happen once, at submit, and a later segment must see the
 	// same values the first one did. Re-applying a default in a later segment would
 	// mean a declaration edited between deploys could change an argument underneath
-	// a run in flight, which is the class of thing invariant 10 exists to stop.
+	// a run in flight, which the RunState wire contract (ARCHITECTURE.md
+	// invariant 10) exists to stop.
 	//
 	// Add-only and absent-tolerant, like everything else here. A run started before
 	// this field existed reads back with it empty, which is exactly right (that run
@@ -2057,7 +2062,7 @@ type RunState struct {
 	//
 	// Absent on a run started before this field existed, which reads as "nothing to
 	// undo": the truth for such a run, since no specification it could be executing
-	// had an `undo:` to register (invariant 10, with no compatibility arm needed).
+	// had an `undo:` to register, so no compatibility arm is needed.
 	PendingUndo []*PendingUndo `protobuf:"bytes,11,rep,name=pending_undo,json=pendingUndo,proto3" json:"pending_undo,omitempty"`
 	// Trigger is how this run was started, established once at the boundary that
 	// admitted it and read by every step under the `trigger` root. See

@@ -301,7 +301,15 @@ func TestRPCToolsAdvertiseTheirResponseSchemas(t *testing.T) {
 	successfulCompileWorkflow := make(map[string]any, len(compileWorkflow))
 	maps.Copy(successfulCompileWorkflow, compileWorkflow)
 	successfulCompileWorkflow["type"] = "object"
-	assert.Equal(t, successfulCompileWorkflow, runProperties["workflow"],
+	runWorkflow, ok := runProperties["workflow"].(map[string]any)
+	require.True(t, ok, "Run workflow input arrived as %T", runProperties["workflow"])
+	acceptedWorkflow := make(map[string]any, len(runWorkflow))
+	maps.Copy(acceptedWorkflow, runWorkflow)
+	// Each side describes the field from its own message's comment, which is
+	// prose about the field rather than its shape; the shape is what must agree.
+	delete(successfulCompileWorkflow, "description")
+	delete(acceptedWorkflow, "description")
+	assert.Equal(t, successfulCompileWorkflow, acceptedWorkflow,
 		"a successful Compile workflow result is not structurally accepted by Run")
 }
 

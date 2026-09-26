@@ -348,10 +348,10 @@ func TestRealCommentIsNormalized(t *testing.T) {
 	if !ok {
 		t.Fatal("SignalWithStart has no comment")
 	}
-	if strings.Contains(got, "[SignalWithStartRequest]") {
+	if strings.Contains(got, "[Run]") {
 		t.Errorf("godoc link left untranslated in %q", got)
 	}
-	if !strings.Contains(got, "`SignalWithStartRequest`") {
+	if !strings.Contains(got, "`Run`") {
 		t.Errorf("godoc link not translated to a backticked name in %q", got)
 	}
 	if strings.HasPrefix(got, " ") {

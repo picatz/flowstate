@@ -1,9 +1,12 @@
 package mcp
 
 import (
+	"strings"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 )
 
 // The MCP tool schemas are derived, not written.
@@ -171,10 +174,13 @@ func testInputSchema() map[string]any {
 const maxSchemaNodes = 50_000
 
 // schemaBudget carries what the walk must remember: the messages on the current
-// path, and how many more schema objects the whole projection may emit.
+// path, how many more schema objects the whole projection may emit, and how
+// deep the walk is, which decides how much of each field's prose it carries
+// (see [fieldDescription]).
 type schemaBudget struct {
 	visiting map[protoreflect.FullName]bool
 	left     int
+	depth    int
 }
 
 // take reserves n nodes, reporting whether there were n to reserve. Every map
@@ -225,6 +231,10 @@ func messageSchema(md protoreflect.MessageDescriptor, budget *schemaBudget) map[
 	visiting[md.FullName()] = true
 	defer delete(visiting, md.FullName())
 
+	depth := budget.depth
+	budget.depth++
+	defer func() { budget.depth-- }()
+
 	fields := md.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
@@ -236,6 +246,15 @@ func messageSchema(md protoreflect.MessageDescriptor, budget *schemaBudget) map[
 			// turns this into an honest, permissive schema.
 			truncated = true
 			break
+		}
+		if description := fieldDescription(fd, depth); description != "" {
+			// Ahead of any description the value's own type carried (a
+			// Duration's spelling), which qualifies this one rather than
+			// replacing it.
+			if own, ok := value["description"].(string); ok && own != "" {
+				description += " " + own
+			}
+			value["description"] = description
 		}
 		properties[fd.JSONName()] = value
 
@@ -408,7 +427,14 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 			case "google.protobuf.Timestamp":
 				return map[string]any{"type": "string", "format": "date-time"}
 			case "google.protobuf.Duration":
-				return map[string]any{"type": "string"}
+				// protojson's spelling: seconds, up to nine fractional
+				// digits, and an `s`. `1h` is refused by the decoder, so the
+				// schema says so rather than leaving a model to guess.
+				return map[string]any{
+					"type":        "string",
+					"pattern":     durationPattern,
+					"description": "A duration in seconds with an `s` suffix, such as `3600s` or `1.5s`.",
+				}
 			}
 
 			// The schema graph is genuinely cyclic — a Value holds Values — and
@@ -424,6 +450,89 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 	default:
 		return map[string]any{}
 	}
+}
+
+// durationPattern is the protojson spelling of a google.protobuf.Duration.
+const durationPattern = `^-?[0-9]+(\.[0-9]{1,9})?s$`
+
+// Bounds on how much of the schema's prose a field description carries.
+//
+// A tool schema is read by a model on every call it considers, so its prose is
+// spent where it decides something: a request's own fields, which are what the
+// model fills in, carry their comment's leading paragraphs; the fields one
+// message below carry only a first sentence; deeper fields carry none, because
+// a Workflow alone has hundreds of them and their shape is already derived.
+const (
+	// maxTopFieldDescription bounds a depth-zero field's description, in
+	// bytes. Whole paragraphs are taken until the next would pass it, so a
+	// description never ends mid-sentence; the first paragraph is always
+	// taken, cut at a sentence if it alone is longer.
+	maxTopFieldDescription = 1200
+
+	// maxNestedFieldDescription bounds a depth-one field's first sentence.
+	maxNestedFieldDescription = 300
+)
+
+// fieldDescription returns the prose a field's schema carries at the given
+// depth: zero for the fields of the message the schema describes, one for
+// the fields of a message it holds directly. Empty past that, and empty for a
+// field the schema does not document, such as a descriptor this binary did
+// not compile from proto/flowstate.
+//
+// Read through [protodoc], because the descriptors linked into this binary
+// carry no comments: the same source the tool descriptions and the editor's
+// hover read.
+func fieldDescription(fd protoreflect.FieldDescriptor, depth int) string {
+	if depth > 1 {
+		return ""
+	}
+
+	comment, ok := protodoc.CommentOf(fd)
+	if !ok {
+		comment, ok = protodoc.Comment(fd.FullName())
+	}
+	if !ok {
+		return ""
+	}
+
+	if depth == 1 {
+		return clip(protodoc.FirstSentence(comment), maxNestedFieldDescription)
+	}
+
+	paragraphs := strings.Split(comment, "\n\n")
+	taken := clip(strings.TrimSpace(paragraphs[0]), maxTopFieldDescription)
+	for _, paragraph := range paragraphs[1:] {
+		paragraph = strings.TrimSpace(paragraph)
+		// A heading opens a section of rationale rather than contract; the
+		// comments written for this surface put what a caller needs first.
+		if strings.HasPrefix(paragraph, "# ") {
+			break
+		}
+		if len(taken)+2+len(paragraph) > maxTopFieldDescription {
+			break
+		}
+		taken += "\n\n" + paragraph
+	}
+
+	return taken
+}
+
+// clip shortens text to at most limit bytes, at the last sentence end that
+// fits, or at the last space with an ellipsis when no sentence end does.
+func clip(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+
+	cut := text[:limit]
+	if end := strings.LastIndex(cut, ". "); end > 0 {
+		return cut[:end+1]
+	}
+	if space := strings.LastIndexByte(cut, ' '); space > 0 {
+		cut = cut[:space]
+	}
+
+	return strings.TrimRight(cut, " ,;:") + "…"
 }
 
 // debugInputSchema is the debug tool's input surface: the same two documents

@@ -33,7 +33,7 @@ const (
 	// The producer did not say. An inventory a caller built by hand carries no
 	// outcomes, and a peer older than this enum has no value to send.
 	//
-	// Distinct from [DEBUG_STEP_STATE_PENDING], which is a session saying it
+	// Distinct from `DEBUG_STEP_STATE_PENDING`, which is a session saying it
 	// watched nothing happen here — an answer, rather than the absence of one.
 	// The Go vocabulary this is derived from has no member for "not said",
 	// because in-process there is always a session to have watched; the wire
@@ -51,7 +51,7 @@ const (
 	// A step that failed and whose failure the run absorbed
 	// (`continue_on_error`).
 	//
-	// Distinct from [DEBUG_STEP_STATE_DONE] because a run that carried on is not
+	// Distinct from `DEBUG_STEP_STATE_DONE` because a run that carried on is not
 	// a step that worked, and that is usually the thing somebody opened a
 	// debugger to find.
 	DebugStepState_DEBUG_STEP_STATE_TOLERATED DebugStepState = 4
@@ -638,7 +638,7 @@ type DebugStepWindow struct {
 	// the inventory, so a consumer paging through the list would otherwise see it
 	// rise and fall for reasons that are about its own paging.
 	//
-	// Those rows report [DEBUG_STEP_STATE_PENDING] rather than one workflow's
+	// Those rows report `DEBUG_STEP_STATE_PENDING` rather than one workflow's
 	// outcome painted onto another's row. Fail closed: under-claiming is a gap a
 	// reader can see, and mis-claiming is a debugger pointing at the wrong step.
 	Unattributed int32 `protobuf:"varint,4,opt,name=unattributed,proto3" json:"unattributed,omitempty"`

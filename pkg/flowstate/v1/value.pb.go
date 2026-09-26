@@ -91,6 +91,7 @@ func (Value_Type) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1, 0}
 }
 
+// Code classifies the error.
 type Value_Error_Code int32
 
 const (
@@ -231,10 +232,15 @@ func (x *SecretRef) GetName() string {
 	return ""
 }
 
-// Value represents a value that can be used in expressions or as inputs/outputs in tasks.
-// It can be a primitive type (like string, int, float, or bool), a structured type
-// (like a struct or list), an expression (ParsedExpr), or an error. The Value type is used
-// to encapsulate different kinds of data that can be used within the workflow.
+// Value is one value in a workflow: a task input, a step output, a variable or
+// a run argument.
+//
+// Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a
+// parsed CEL expression evaluated when the value is needed; a `secret_ref`
+// names a secret resolved only by the worker that uses it; a `structure` is a
+// list or map of Values, the only shape that can hold a secret reference below
+// the top level; and an `error` records a value that could not be produced.
+// Values a caller submits, such as [RunRequest.inputs], must be literals.
 type Value struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Kind:
@@ -336,14 +342,20 @@ type isValue_Kind interface {
 }
 
 type Value_Expr struct {
+	// Expr is a CEL expression, parsed when the Flowfile was compiled and
+	// evaluated when the value is needed, against the scope at that point.
 	Expr *v1alpha1.ParsedExpr `protobuf:"bytes,1,opt,name=expr,proto3,oneof"`
 }
 
 type Value_Literal struct {
+	// Literal is a concrete value in CEL's value representation: a string,
+	// number, bool, bytes, null, list or map.
 	Literal *v1alpha1.Value `protobuf:"bytes,2,opt,name=literal,proto3,oneof"`
 }
 
 type Value_Error_ struct {
+	// Error records a value that could not be produced, with a message and a
+	// code saying why.
 	Error *Value_Error `protobuf:"bytes,3,opt,name=error,proto3,oneof"`
 }
 
@@ -375,10 +387,13 @@ func (*Value_SecretRef) isValue_Kind() {}
 
 func (*Value_Structure_) isValue_Kind() {}
 
+// Error is why a value could not be produced.
 type Value_Error struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	Code          Value_Error_Code       `protobuf:"varint,2,opt,name=code,proto3,enum=flowstate.v1.Value_Error_Code" json:"code,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Message describes the error for a person. Required.
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// Code classifies the error. Required, and never CODE_UNSPECIFIED.
+	Code          Value_Error_Code `protobuf:"varint,2,opt,name=code,proto3,enum=flowstate.v1.Value_Error_Code" json:"code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

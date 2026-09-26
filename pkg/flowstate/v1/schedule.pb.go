@@ -231,7 +231,7 @@ type ScheduleDescription struct {
 	// already passed.
 	//
 	// A non-zero value is the signal to widen `catchup_window` on the trigger or
-	// to backfill the missed range; see [CreateScheduleRequest.backfill]. It answers
+	// to backfill the missed range; see [CreateScheduleRequest.Backfill]. It answers
 	// the question `num_actions` alone cannot: a schedule can report a healthy
 	// `RUNS TAKEN` and still be silently missing every firing since an outage
 	// longer than its window.
@@ -367,19 +367,13 @@ type CreateScheduleRequest struct {
 	// moves it. What fires a year from now is what was created, which is also what
 	// makes a schedule reviewable.
 	Workflow *Workflow `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
-	// Inputs are the arguments every firing starts its run with.
+	// Inputs are the arguments every firing starts its run with, at most 64.
 	//
-	// Bound and type-checked *here*, once, while whoever is creating the schedule
-	// is still present to be told (invariant 6). The alternative, checking at each
-	// firing, puts the refusal at three in the morning in a worker's log, for a
-	// mistake made at a keyboard weeks earlier, which is the failure this whole
-	// repository's fail-closed rule is about.
-	//
-	// Same contract as [RunRequest.inputs] and through the same
-	// `v1.BindRunInputs`: values and never expressions, no undeclared name, every
-	// required input present, defaults filled in. What is stored is the bound map,
-	// so a declaration edited later does not change what a schedule already created
-	// passes.
+	// Checked here, once, against the workflow's declared inputs, with the same
+	// rules as [RunRequest.inputs]: literal values only, no undeclared name,
+	// every required input present, defaults filled in. A mistake is refused
+	// now rather than at the first firing. What is stored is the checked map,
+	// so a declaration edited later does not change what this schedule passes.
 	Inputs map[string]*Value `protobuf:"bytes,2,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Name is what this tenant will call the schedule. Empty takes the workflow's
 	// own name, which is the right default and usually the only name anybody wants.
@@ -396,11 +390,12 @@ type CreateScheduleRequest struct {
 	// what makes creating one safe to rehearse: create paused, describe it, and
 	// resume when the next firing time is one somebody meant.
 	Paused bool `protobuf:"varint,4,opt,name=paused,proto3" json:"paused,omitempty"`
-	// Backfill is deliberately creation-only: it is an operator request, not a
-	// perpetual property of the workload, which is why it is here and not in the
-	// Flowfile's `triggers.schedule` block. At most 10 intervals spanning no more
-	// than 31 days in total are accepted, and both bounds are enforced by
-	// `v1.CheckScheduleBackfill` on every path that can create a schedule.
+	// Backfill asks creation to take, now, the firings the workflow's cadence
+	// would have taken over past intervals. At most 10 intervals, spanning no
+	// more than 31 days in total.
+	//
+	// Creation-only: it is an operator request, not a property of the workload,
+	// which is why it is here and not in the Flowfile's `triggers.schedule`.
 	Backfill      []*ScheduleBackfill `protobuf:"bytes,5,rep,name=backfill,proto3" json:"backfill,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -480,25 +475,13 @@ type CreateScheduleResponse struct {
 	// intended.
 	Schedule *ScheduleDescription `protobuf:"bytes,1,opt,name=schedule,proto3" json:"schedule,omitempty"`
 	// SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
-	// this RPC: the same question, the same three answers, and deliberately the
-	// same name rather than a second vocabulary for one fact.
+	// this RPC: the same question and the same three answers, about the
+	// specification frozen into the schedule.
 	//
-	// Creating a schedule goes through the same trusted lookup `Run` does — a
-	// caller must not be able to take a trusted `manual: denied` workflow, add a
-	// `schedule:` trigger to their own copy, and have this handler fire *that*
-	// copy under the trusted name — and through the same plugin pin, which the
-	// schedule then freezes into every firing. So the specification a caller holds
-	// may not be the one that will run at 03:00, and this says which. Read
-	// [RunResponse.specification_as_submitted] for the whole argument, including
-	// why *unset* is not `false` and why neither may be read as assent.
-	//
-	// Answered once, here, about the specification frozen into the schedule —
-	// which is the only moment it can be answered, because every firing afterwards
-	// happens with no caller present to be told anything. It is a claim about the
-	// creation, not a standing property of the schedule: a deployment that
-	// registers a trusted copy tomorrow changes nothing about the specification
-	// this schedule already carries, and a caller reading a schedule back later
-	// asks `DescribeSchedule`, which makes no attestation at all.
+	// Creating a schedule goes through the same trusted-workflow substitution and
+	// plugin pinning as Run, so the specification a caller holds may not be the
+	// one every firing runs. Answered once, at creation; DescribeSchedule makes
+	// no such attestation.
 	SpecificationAsSubmitted *bool `protobuf:"varint,2,opt,name=specification_as_submitted,json=specificationAsSubmitted,proto3,oneof" json:"specification_as_submitted,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
@@ -548,21 +531,11 @@ func (x *CreateScheduleResponse) GetSpecificationAsSubmitted() bool {
 	return false
 }
 
-// ListSchedulesRequest asks for the caller's schedules. It takes nothing today.
+// ListSchedulesRequest asks for the caller's schedules. It has no fields.
 //
-// # No paging, deliberately, and what that costs
-//
-// `List` pages runs because a namespace holds them by the hundred thousand and
-// the tenant filter is a memo Temporal cannot query, so an unbounded listing is a
-// denial of service waiting to be written. Schedules are not that: they are
-// created one at a time by people, and a deployment with a thousand of them has a
-// different problem.
-//
-// The scan is still bounded (see `maxScheduleScan`) and when the bound stops it
-// the response says so rather than presenting a partial listing as the whole of
-// it. That is a smaller promise than `List` makes, and it is stated instead of
-// implied. A `page_token` is a field 1 and 2 away on either message the day a
-// deployment needs it, with nothing existing to break.
+// Not paged: schedules are created one at a time by people, not by the hundred
+// thousand. The scan is still bounded, and [ListSchedulesResponse.truncated]
+// says when the bound stopped it.
 type ListSchedulesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -662,8 +635,11 @@ func (x *ListSchedulesResponse) GetTruncated() bool {
 
 // DescribeScheduleRequest asks about one of the caller's schedules by name.
 type DescribeScheduleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is the schedule's name within the caller's tenant, as
+	// CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+	// 1 to 128 characters.
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -752,8 +728,11 @@ func (x *DescribeScheduleResponse) GetSchedule() *ScheduleDescription {
 
 // DeleteScheduleRequest removes one of the caller's schedules.
 type DeleteScheduleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is the schedule's name within the caller's tenant, as
+	// CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+	// 1 to 128 characters.
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -835,7 +814,10 @@ func (*DeleteScheduleResponse) Descriptor() ([]byte, []int) {
 // PauseScheduleRequest stops a schedule firing without removing it.
 type PauseScheduleRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Name is the schedule's name within the caller's tenant, as
+	// CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+	// 1 to 128 characters.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Note is recorded on the schedule and shown by list and describe.
 	//
 	// Worth writing, because a paused schedule found by somebody else is a thing
@@ -930,7 +912,10 @@ func (*PauseScheduleResponse) Descriptor() ([]byte, []int) {
 // ResumeScheduleRequest lets a paused schedule fire again.
 type ResumeScheduleRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Name is the schedule's name within the caller's tenant, as
+	// CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+	// 1 to 128 characters.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Note replaces the message on the schedule, which is usually where the reason
 	// it was paused is still written.
 	Note          string `protobuf:"bytes,2,opt,name=note,proto3" json:"note,omitempty"`
@@ -1021,8 +1006,11 @@ func (*ResumeScheduleResponse) Descriptor() ([]byte, []int) {
 
 // TriggerScheduleRequest fires a schedule now, without waiting for its cadence.
 type TriggerScheduleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is the schedule's name within the caller's tenant, as
+	// CreateSchedule or ListSchedules reports it: letters, digits, `-` and `_`,
+	// 1 to 128 characters.
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

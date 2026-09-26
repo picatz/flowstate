@@ -24,16 +24,26 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Status is where a run is in its lifecycle.
 type RunResponse_Status int32
 
 const (
+	// STATUS_UNSPECIFIED is never sent.
 	RunResponse_STATUS_UNSPECIFIED RunResponse_Status = 0
-	RunResponse_STATUS_RUNNING     RunResponse_Status = 1
-	RunResponse_STATUS_COMPLETED   RunResponse_Status = 2
-	RunResponse_STATUS_FAILED      RunResponse_Status = 3
-	RunResponse_STATUS_CANCELED    RunResponse_Status = 4
-	RunResponse_STATUS_TERMINATED  RunResponse_Status = 5
-	RunResponse_STATUS_TIMED_OUT   RunResponse_Status = 6
+	// STATUS_RUNNING means the run has started and not finished, including
+	// while it waits for a signal or a timer.
+	RunResponse_STATUS_RUNNING RunResponse_Status = 1
+	// STATUS_COMPLETED means every step finished and the run succeeded.
+	RunResponse_STATUS_COMPLETED RunResponse_Status = 2
+	// STATUS_FAILED means the run ended with an error; `error` says why.
+	RunResponse_STATUS_FAILED RunResponse_Status = 3
+	// STATUS_CANCELED means the run stopped in response to a Cancel request.
+	RunResponse_STATUS_CANCELED RunResponse_Status = 4
+	// STATUS_TERMINATED means the run was stopped by Terminate, without
+	// cleanup.
+	RunResponse_STATUS_TERMINATED RunResponse_Status = 5
+	// STATUS_TIMED_OUT means the run's overall time budget expired.
+	RunResponse_STATUS_TIMED_OUT RunResponse_Status = 6
 )
 
 // Enum value maps for RunResponse_Status.
@@ -87,178 +97,94 @@ func (RunResponse_Status) EnumDescriptor() ([]byte, []int) {
 
 // RunRequest is the request message for running a workflow.
 type RunRequest struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	Workflow *Workflow              `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Workflow is the compiled specification to run: the `workflow` a
+	// [CompileResponse] carries, passed unchanged. Flowfile source is not
+	// accepted here; compile it first.
+	Workflow *Workflow `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// Inputs are the arguments this run is started with, keyed by the name an
-	// [InputDeclaration] on the workflow gave.
+	// [InputDeclaration] on the workflow gave. At most 64.
 	//
-	// # Values, never expressions
+	// Every [Value] must be a `literal`. An `expr` or a `secret_ref` is refused:
+	// these arrive from the caller, and a caller must not choose code the server
+	// evaluates or which credential a run resolves.
 	//
-	// Every [Value] here must be a literal. Not a convention: the security posture
-	// of the whole surface. These arrive from whoever can call Run, which is the
-	// definition of an untrusted party, and an expression accepted from there is
-	// code the server would evaluate on its own behalf, in a scope holding the
-	// run's own values. An expression is something a file says, and a file is
-	// reviewed and compiled; this is data a caller sends. `secret_ref` is refused
-	// for the neighbouring reason: a caller naming a secret would be choosing which
-	// credential the run resolves, which is a decision that belongs to the
-	// specification and its policy.
+	// The server checks the inputs against the workflow's declarations before
+	// the run starts and refuses the request if any check fails: every required
+	// input present, no undeclared name, every value of the declared type.
+	// Defaults are filled in for inputs left out.
 	//
-	// The oneof cannot say which arm is allowed (protovalidate rules attach to
-	// fields), so the server enforces it at submit, together with the rest of the
-	// check against the declarations: every required input present, no undeclared
-	// name, every value of the declared type, defaults filled in for what was left
-	// out. Fail closed on each: a run that would be wrong is refused while the
-	// caller is still there to be told.
-	//
-	// # Size (invariant 9)
-	//
-	// These become part of the run's state, so they are weighed by
-	// `CheckRunStateSize` at every Continue-As-New along with everything else the
-	// run carries: `proto.Size` on the whole message, so nothing has to be added
-	// to a tally by hand. The submit-time check is `CheckSpecSize` on the workflow;
-	// a caller who could push a run past the blob limit with arguments alone would
-	// have found the hang that invariant exists to convert into an answer.
+	// Inputs become part of the run's state and count toward its size bound
+	// (ARCHITECTURE.md invariant 9: a run that cannot continue must fail, not
+	// hang).
 	Inputs map[string]*Value `protobuf:"bytes,2,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// EntityKey turns a stable business key into the run's workflow id, in place of
-	// today's random one, so a long-lived workload (a subscription, an order, an
-	// incident) can be addressed by what it *is* rather than by an id nobody wrote
-	// down. Unset is byte-identical to today: a `flowstate-workflow-<uuid>` id, same
-	// as every run before this field existed (invariant 10, no compatibility arm
-	// needed because the zero value already means "generate one").
+	// EntityKey addresses the run by a stable business key, such as an order id
+	// or a subscription id, instead of a generated id.
 	//
-	// # The id is namespace-scoped, and the request never says which namespace
+	// Set, the run's workflow id is `flowstate-entity-<namespace>_<entity_key>`,
+	// so the workload can be found again by what it is. While a run under that
+	// id is still running, another Run with the same key in the same tenant is
+	// refused: there is at most one live workload per key per tenant. Unset, the
+	// server generates a `flowstate-workflow-<uuid>` id.
 	//
-	// The other half of the id is the caller's own tenant, taken only from
-	// [FlowstateServer.identityFor], the same rule [fairnessFor] already applies to
-	// scheduling priority and invariant "a workload's namespace comes from the
-	// authenticated caller, never from the workload itself" states generally. A
-	// request cannot name the namespace half of its own address, or a caller could
-	// address (and collide with) another tenant's entity by asserting their
-	// namespace as a field value rather than authenticating as them.
+	// The namespace half always comes from the caller's authenticated identity,
+	// never from the request, so a caller cannot address or collide with
+	// another tenant's entity.
 	//
-	// # Grammar, and why it is the same grammar a namespace already has
+	// Lowercase ASCII letters, digits and `-`, not starting with `-`, 1 to 128
+	// characters. The namespace grammar is the same and permits no `_`, so the
+	// `_` joining the two halves is unambiguous.
 	//
-	// Lowercase ASCII letters, digits, and a dash that is never first, identical to
-	// [auth.ValidateNamespace]'s grammar, and deliberately so: the two halves are
-	// joined by a single separator character neither grammar permits (see
-	// `EntityWorkflowID` in `pkg/flowstate/v1/entity.go`), which is what makes the
-	// join unambiguous. CLAUDE.md's env-provider incident is the exact trap this
-	// avoids: `prefix + NAMESPACE + "_" + name` let `TEAM_A` + `KEY` collide with
-	// `TEAM` + `A_KEY` because every character legal in the prefix was also legal in
-	// the name. Here, neither half can contain the separator, so there is only ever
-	// one place the string could have been split, and it is the right one.
-	//
-	// # The key is metadata, not a secret
-	//
-	// A workflow id is visibility data: the cluster indexes it, every listing
-	// and every UI shows it, and no payload codec can ever cover it, because
-	// encrypting the address a workload is reached at would leave nothing to
-	// reach it by. On a deployment that encrypts payloads, this key is still at
-	// rest in plaintext. Name the workload by what it is publicly known as, an
-	// order id or a subscription id, and never by a value the codec exists to
-	// protect. The same rule holds for search attributes, and for the same
-	// structural reason; the guard is `runSearchAttributes` in
-	// `pkg/flowstate/v1/server`.
+	// The key is plaintext metadata, never a secret: a workflow id is indexed
+	// and shown in every listing and is not covered by payload encryption.
 	EntityKey *string `protobuf:"bytes,3,opt,name=entity_key,json=entityKey,proto3,oneof" json:"entity_key,omitempty"`
-	// Reason is why a person is starting this run, recorded on it.
+	// Reason is why a person is starting this run, recorded on it. Free text, at
+	// most 512 characters.
 	//
-	// Optional here and required by the *workflow*: a specification declaring
-	// `manual: {require_reason: true}` is refused a start without one (see
-	// [ManualTrigger.require_reason]), while everything else ignores this field.
-	// That placement is deliberate — the requirement is a property of the
-	// workload, so it travels with the workload, and a caller cannot lift it by
-	// omitting the field.
-	//
-	// Recorded as a memo rather than reaching an expression. It is provenance for
-	// whoever reads the run afterwards, not an argument the workflow computes
-	// with: a value a caller writes freely and a step then branches on is an
-	// input, and an input goes through `inputs:` where declarations check it.
-	// That is also why it is absent from [TriggerContext], whose four fields are
-	// all attested rather than asserted.
-	//
-	// Free text, because the question it answers is one a person asks another
-	// person. Bounded like everything else a caller chooses the size of.
+	// Required when the workflow declares `manual: {require_reason: true}` (see
+	// [ManualTrigger.require_reason]) and ignored otherwise. It is recorded for
+	// whoever reads the run later and is not visible to expressions; a value the
+	// workflow computes with belongs in `inputs`.
 	Reason string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
 	// RequestId makes this submission idempotent: two Run calls carrying the same
 	// value in the same namespace produce one run, and the second is answered
 	// with the run the first started, [RunResponse.reused] set.
 	//
-	// # What it is for
+	// Use it whenever a submission may be retried: a caller whose request timed
+	// out cannot tell "never started" from "started and the answer was lost", and
+	// a retry without this field starts the workload a second time. `flow run`
+	// sends a fresh value on every invocation and reuses it across its own
+	// retries; `--request-id` supplies a caller's own, such as a CI job's run id.
 	//
-	// A caller whose request times out after the server has already started the
-	// run — a client deadline, a load balancer reset, a laptop lid — has no way to
-	// tell "never started" from "started and the answer was lost", and a retry
-	// without this field starts the workload a second time. For the workloads
-	// this engine exists for, the second run is the incident. `flow run` sends a
-	// fresh value on every invocation and reuses it across its own retries, and
-	// `--request-id` lets a CI job supply its own, typically the job's run id, so
-	// a re-run of the job converges on the run the first attempt started.
+	// Unset, the run gets a generated `flowstate-workflow-<uuid>` id. Set, the
+	// workflow id is `flowstate-request-<hex>`, derived by digest from the
+	// caller's authenticated namespace and this value, and the cluster's own
+	// uniqueness on that id is the deduplication. A request id names one
+	// submission forever: a retry that arrives after the run finished is answered
+	// with the finished run.
 	//
-	// # What it addresses
+	// When the request also names an `entity_key`, or the workflow declares a
+	// `concurrency:` block, that address decides the run's id. This field then
+	// decides only whether a submission colliding with a live run is a retry of
+	// the submission that started it (answered with that run, `reused` set) or a
+	// new submission, which the address's own rule handles.
 	//
-	// Unset is byte-identical to today: a `flowstate-workflow-<uuid>` id, minted
-	// per request. Set, the run's workflow id is derived from the authenticated
-	// namespace and this value by digest — `flowstate-request-<hex>`, a prefix of
-	// its own so a request can never address, join or block a run created by an
-	// entity key, a `concurrency:` block or a webhook delivery — and Temporal's
-	// own uniqueness on that id is the dedupe: two retries arriving
-	// simultaneously both reach the cluster, one is admitted and the other is
-	// answered with the run it started. There is no window, no local table and
-	// nothing to expire. A retry that arrives after the run *finished* is answered
-	// with the finished run too: a request id names one submission forever, which
-	// is what makes it a key rather than a lock.
+	// A reused value with a different submission is refused with
+	// `AlreadyExists`, naming the run. The run records a digest of the
+	// specification and bound inputs it started with, and a later request whose
+	// digest differs is not treated as a retry. Choose a new value for a new
+	// submission.
 	//
-	// The namespace half comes only from the authenticated caller, exactly as
-	// [RunRequest.entity_key]'s does and for the identical reason: two tenants
-	// choosing the same value are two submissions, and a request cannot name the
-	// tenant it is deduplicated under.
+	// Under `on_conflict: terminate_other`, two identical submissions racing each
+	// other are deduplicated by the cluster rather than terminating each other's
+	// run. This requires Temporal Server 1.24 or later and a server whose
+	// Temporal client applies Flowstate's start interceptor; otherwise such a
+	// replacement is refused with `FailedPrecondition` before anything is
+	// terminated.
 	//
-	// # Composition with the other addressing schemes
-	//
-	// When the request also names an entity key, or the workflow declares a
-	// `concurrency:` block, that address decides the run's id and which run is
-	// live; this field then decides only whether a submission colliding with a
-	// live run is a *retry* of the submission that started it — answered with the
-	// run, reused — or a second submission, which the address's own rule then
-	// handles (an entity refuses it; `on_conflict:` decides for a permit).
-	//
-	// # A reused key with a different submission is refused
-	//
-	// The run records a digest of the submission it was started with — the
-	// specification as sent and the inputs as bound. A later request under the
-	// same key whose digest differs is refused with `AlreadyExists`, naming the
-	// run, rather than silently attached to a run that will do something other
-	// than what this request asked: an idempotency key that answered a different
-	// payload with "done" would be worse than no key at all. Choose a new value
-	// for a new submission.
-	//
-	// # Concurrent submissions under `terminate_other`
-	//
-	// Two identical submissions racing a `terminate_other` reissue are
-	// deduplicated by the cluster itself. The reissue carries a Temporal
-	// request id derived from the submission, and Temporal answers a start
-	// whose request id the current run already carries with that run, before
-	// the conflict policy is consulted, so neither can terminate the other's
-	// run: both are answered with one run id, and the one whose start was
-	// folded onto the other's is told `reused`. A genuinely different
-	// submission carries a different request id and still replaces what it
-	// found. This relies on Temporal Server 1.24 or later, the same floor
-	// `terminate_other`'s conflict policy already needs, and requires a server
-	// whose Temporal client was dialed with temporalclient's options or has
-	// temporalclient.StartInterceptor installed; otherwise such a replacement
-	// is refused `FailedPrecondition` before anything is terminated.
-	//
-	// # Grammar
-	//
-	// A UUID or a caller-chosen string of 1 to 128 ASCII letters, digits and
-	// `.`, `_`, `:`, `/` or `-`, the first a letter or digit: the alphabet a
-	// UUID, a CI job's run id, a ULID or a `<system>:<id>` key is already written
-	// in, and nothing wider, so a value copied from a log line or a URL reads as
-	// itself. It is digested, never interpolated, so nothing about its content
-	// can reach a workflow id — the same discipline `webhookWorkflowID` applies
-	// to an idempotency key — and it is recorded on the run only as that digest,
-	// never as the value itself.
+	// A UUID or a string of 1 to 128 ASCII letters, digits and `.`, `_`, `:`,
+	// `/` or `-`, starting with a letter or digit. The value is digested, never
+	// interpolated into an id, and is recorded on the run only as that digest.
 	RequestId     *string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3,oneof" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -332,16 +258,22 @@ func (x *RunRequest) GetRequestId() string {
 // RunResponse is the response message for a workflow run.
 type RunResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run,
-	// `flowstate-request-<hex>` for one started with [RunRequest.request_id] and
-	// `flowstate-entity-<namespace>_<entity_key>` for one started with
-	// [RunRequest.entity_key], no longer a bare UUID, so the format constraint
-	// is a length bound rather than [buf.validate.field.string.uuid], which the
-	// generated id never actually satisfied on its own (it is a prefixed string,
-	// not a bare UUID) and which an entity-addressed id cannot satisfy at all.
-	WorkflowId string             `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	RunId      string             `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	Status     RunResponse_Status `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
+	// WorkflowId is the durable handle for the workload, which every other RPC
+	// addressing a run takes. It is `flowstate-workflow-<uuid>` for an ordinary
+	// run, `flowstate-request-<hex>` for one started with
+	// [RunRequest.request_id], and `flowstate-entity-<namespace>_<entity_key>`
+	// for one started with [RunRequest.entity_key]. At most 1024 bytes.
+	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// RunId is the UUID of this execution of the workload. A workload that
+	// continues as new gets a new run id per segment, so address a workload by
+	// `workflow_id` and use a run id only to name one segment.
+	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Status is the run's status when this response was produced. Run answers
+	// without waiting, so a newly started run reports STATUS_RUNNING; a reused
+	// or joined run reports its current status, which may already be final.
+	Status RunResponse_Status `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
+	// Kind is the run's result: `error` for a failed run, otherwise `outputs`.
+	//
 	// Types that are valid to be assigned to Kind:
 	//
 	//	*RunResponse_Error_
@@ -350,94 +282,36 @@ type RunResponse struct {
 	// SpecificationAsSubmitted is the server saying whether the run it just
 	// started executes the specification this caller sent, unchanged.
 	//
-	// A deployment may register a workflow of its own under a name a caller also
-	// submits, and the server then runs *its* copy rather than the caller's — that
-	// substitution is the point of the trusted-workflow set, because it is what
-	// makes `manual: denied` and `manual.allowed_principals` authorization policy
-	// rather than caller input. The caller cannot otherwise see it happen. That
-	// matters beyond curiosity because a client renders a run's declared outputs
-	// against the specification it holds: `sensitive: true` is a fact about the
-	// specification that *ran*, so a caller redacting against a copy that did not
-	// run prints in the clear any value only the executed copy marks.
+	// It may not: a deployment can register its own trusted workflow under the
+	// name a caller submits and run that copy instead, and the server writes its
+	// plugin version selection onto what it runs. A client renders a run's
+	// outputs against its own copy's `sensitive: true` declarations, which is
+	// safe only when its copy is the one that ran. The comparison ignores
+	// `resolved_task_capabilities` when the caller omitted it.
 	//
-	// Substitution is the loudest way the two can differ and not the only one. A
-	// server also *transforms* what it runs: it writes its own selection of plugin
-	// versions onto the specification before the engine sees it, and may normalize
-	// or expand more of it later. So this compares the request as it arrived with
-	// the specification handed to the engine, answered after every one of those
-	// steps rather than at the substitution alone. The one excluded field is
-	// Workflow.resolved_task_capabilities when the caller omitted it: that is the
-	// control plane's attestation about an otherwise unchanged program, not an
-	// executable transformation or a declaration a client redacts against. A
-	// caller-supplied value in that field is still a difference when the server
-	// overwrites it. Any future exclusion requires the same explicit semantic
-	// decision here; this is not a field list derived from today's client.
-	//
-	// Three answers, not two, which is why this is `optional`. True means the
-	// executed specification is the submitted one, so a client may trust its own
-	// copy's declarations. False means it is not, so the client must not. *Unset*
-	// means this server did not say — an older server that substitutes and has no
-	// field to report it in — which is not the same claim as false and must not be
-	// read as true: a client fails closed on it exactly as it does on false. A
-	// plain `bool` could not carry that, its zero value being indistinguishable
-	// from silence.
-	//
-	// What it deliberately does not carry is the executed specification, or any
-	// part of it. The trusted copy is deployment configuration the caller did not
-	// send and is not owed; this answers only "is mine the one that ran", which a
-	// caller is owed about their own request, and leaves the disclosure question
-	// alone.
+	// True means the executed specification is the submitted one. False means
+	// it is not. Unset means the server did not say (an older server); treat it
+	// exactly like false. The executed specification itself is never returned.
 	SpecificationAsSubmitted *bool `protobuf:"varint,6,opt,name=specification_as_submitted,json=specificationAsSubmitted,proto3,oneof" json:"specification_as_submitted,omitempty"`
 	// Joined is true when this response describes a run that was already going
 	// rather than one this request started.
 	//
-	// Only [Concurrency.ON_CONFLICT_JOIN] produces it: the workflow declared a
-	// `concurrency:` key, another run of the same workflow already held that key in
-	// this tenant, and the author asked for the incumbent to be returned instead of
-	// a refusal. [RunResponse.workflow_id] and [RunResponse.run_id] then name *that*
-	// run — a run this caller did not start, may not have submitted the same inputs
-	// to, and whose specification is therefore not necessarily theirs.
-	//
-	// Which is why it is a field rather than something a caller infers from a run id
-	// it did not recognize. A caller that submits and gets back a run id has no way
-	// to tell "mine" from "somebody else's, joined" by looking, and the two differ in
-	// what the caller may conclude: [RunResponse.specification_as_submitted] is
-	// answered about the *incumbent's* specification, so a client redacting a joined
-	// run's outputs against its own copy is redacting against a file that did not
-	// run. Establishing the fact here is the same discipline
-	// `WorkflowExecutionErrorWhenAlreadyStarted` buys the webhook path
-	// (`AcceptedDelivery.Joined`): a join is a thing the server states, never a thing
-	// a reader deduces from silence.
-	//
-	// A plain `bool` rather than an `optional` one, unlike the field above it, and
-	// the asymmetry is deliberate. Silence there is a third answer — an older server
-	// that substitutes specifications and cannot say so — and reading it as false
-	// would be unsafe. Here false is the safe reading and the overwhelmingly common
-	// one: a server too old to have this field cannot have honoured a
-	// `concurrency:` block either, so it never joined anything, and "unset" and
-	// "did not join" are the same fact rather than two.
+	// Only `on_conflict: join` produces it: the workflow declared a
+	// `concurrency:` key, another run already held that key in this tenant, and
+	// the workflow asked for that run to be returned instead of a refusal.
+	// `workflow_id` and `run_id` then name a run this caller did not start,
+	// possibly with other inputs, and `specification_as_submitted` describes
+	// that run's specification. False when this request started the run.
 	Joined bool `protobuf:"varint,7,opt,name=joined,proto3" json:"joined,omitempty"`
 	// Reused is true when this response describes the run an earlier request
 	// carrying the same [RunRequest.request_id] already started, rather than one
 	// this request started.
 	//
-	// Output only, and the server's statement rather than a caller's inference:
-	// a retry that gets back a run id cannot tell "mine, started now" from "mine,
-	// started by the attempt whose answer I lost" by looking, and the two differ
-	// in what the caller may conclude — [RunResponse.status] on a reused run is
-	// the run's *current* status, which may already be terminal, and
-	// [RunResponse.specification_as_submitted] is answered false because the
-	// specification that ran is the one the earlier attempt sent, not
-	// necessarily this one's. Established the way [RunResponse.joined] is: from
-	// the cluster's own already-started answer, never from a run id the server
-	// happens not to recognize.
-	//
-	// Distinct from `joined`, which names a run *somebody else* holds under a
-	// `concurrency:` key. A reused run is this caller's own submission, checked
-	// to be the same one by digest; a joined run may have been started by anyone
-	// in the tenant with any inputs. A plain `bool` for `joined`'s reason: a
-	// server too old to have this field never deduplicated anything, so "unset"
-	// and "did not reuse" are one fact.
+	// On a reused run, `status` is the run's current status, which may already
+	// be final, and `specification_as_submitted` is false because the
+	// specification that ran is the one the earlier attempt sent. Unlike
+	// `joined`, a reused run is this caller's own submission, checked to be the
+	// same one by digest.
 	Reused        bool `protobuf:"varint,8,opt,name=reused,proto3" json:"reused,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -545,10 +419,12 @@ type isRunResponse_Kind interface {
 }
 
 type RunResponse_Error_ struct {
+	// Error is why the run failed.
 	Error *RunResponse_Error `protobuf:"bytes,4,opt,name=error,proto3,oneof"`
 }
 
 type RunResponse_Outputs struct {
+	// Outputs are the outputs of the steps that have run, keyed by step id.
 	Outputs *Workflow_StepOutputs `protobuf:"bytes,5,opt,name=outputs,proto3,oneof"`
 }
 
@@ -558,9 +434,14 @@ func (*RunResponse_Outputs) isRunResponse_Kind() {}
 
 // GetRequest is the request message for getting a workflow run.
 type GetRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	RunId         *string                `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3,oneof" json:"run_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// WorkflowId identifies the workload, as Run's `workflow_id` reports it.
+	// The caller may read only runs in its own tenant.
+	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// RunId optionally pins the read to one run of the workload, as a UUID.
+	// Unset reads the latest run, which is what a caller holding only a
+	// workflow id wants.
+	RunId         *string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3,oneof" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -611,29 +492,25 @@ func (x *GetRequest) GetRunId() string {
 
 // GetResponse is the response message for getting a workflow run.
 type GetResponse struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	Status     RunResponse_Status     `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// WorkflowId is the workload this describes.
+	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// RunId is the run this describes: the one requested, or the latest.
+	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Status is the run's current status.
+	Status RunResponse_Status `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
+	// Kind is the run's result: `error` for a failed run, otherwise `outputs`.
+	//
 	// Types that are valid to be assigned to Kind:
 	//
 	//	*GetResponse_Error
 	//	*GetResponse_Outputs
 	Kind isGetResponse_Kind `protobuf_oneof:"kind"`
-	// StartTime is when the workload began, and CloseTime when it finished, unset
-	// while it is still running, so "has not finished" and "finished at the epoch"
-	// stay distinct.
-	//
-	// Same two fields a listing reports, with the same names and the same meaning,
-	// because a listing already answered them and a Get did not: `flow list` could
-	// tell you a run had been going for an hour and `flow get <id>` on the same run
-	// could only tell you it was running. One verb knowing less about a run than the
-	// verb that enumerates it is the wrong way round: Get is the one a person
-	// reaches for when they care about a *particular* run.
-	//
-	// Both come off the same DescribeWorkflowExecution response the status does, so
-	// this costs nothing but the field.
+	// StartTime is when the workload began. For a workload that continued as
+	// new, this is the first segment's start.
 	StartTime *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
+	// CloseTime is when the run finished. Unset while it is still running, so
+	// "has not finished" is never confused with a real time.
 	CloseTime *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
 	// Progress is where a running run has got to. Unset for any other status, since a
 	// finished run's position is its outputs.
@@ -646,106 +523,49 @@ type GetResponse struct {
 	// PendingActivities are the steps Temporal is retrying right now, with why the
 	// last attempt failed and when the next one is due.
 	//
-	// This is the answer to "why has this been RUNNING for six hours", and until
-	// it was carried here that answer was unobtainable through Flowstate at all:
-	// Temporal's Describe response held it, the server read only the status beside
-	// it, and an operator had to leave the tenancy boundary this service enforces
-	// and ask the temporal CLI directly. Set only for a RUNNING run, on the same
-	// reasoning progress is; empty for a running run means nothing is mid-retry,
-	// which is itself the answer: the run is waiting or between steps, not stuck.
+	// This answers "why has this been RUNNING for so long". Set only for a
+	// RUNNING run. Empty for a running run means nothing is mid-retry: the run is
+	// waiting or between steps, not stuck.
 	PendingActivities []*PendingActivity `protobuf:"bytes,9,rep,name=pending_activities,json=pendingActivities,proto3" json:"pending_activities,omitempty"`
 	// PendingActivitiesTruncated is true when this run is retrying more steps
-	// than the answer reports.
+	// than `pending_activities` reports.
 	//
-	// A count bound and a flag, exactly as [RunProgress.pending_waits_truncated]
-	// does it, and for the same reason: a reader must never mistake some of the
-	// retrying steps for all of them. The first of them are still the answer to
-	// "what is this stuck on" rather than a partial map whose keys a caller might
-	// index by.
-	//
-	// It exists because "a handful of retrying steps" was an assumption rather
-	// than a fact. A suspension-opaque block may schedule
-	// [MaxAtomicBlockActivities] activities, and nothing stops all of them from
-	// retrying at once — so both the number of entries and the length of each
-	// one's message are the workload's choice, and an unbounded projection of
-	// them is a read one authorized caller can make expensive (Codex, #1119).
+	// The list and each entry's message are bounded, and this flag says the
+	// bound was reached, so a reader never mistakes some of the retrying steps
+	// for all of them.
 	PendingActivitiesTruncated bool `protobuf:"varint,13,opt,name=pending_activities_truncated,json=pendingActivitiesTruncated,proto3" json:"pending_activities_truncated,omitempty"`
-	// Outputs are the values the workflow declared it would report, computed by
-	// this run: the answer, as against the transcript `outputs` above holds.
+	// RunOutputs are the values the workflow declared under `outputs:`, computed
+	// by this run: the answer, as against the per-step transcript in `outputs`.
 	//
-	// A new field beside the existing oneof rather than a third arm in it: the
-	// oneof answers "did it fail", which is a different question from "what did it
-	// produce", and a run can perfectly well have both a status and a result. Unset
-	// means the workflow declared no outputs, or the run has not finished, or the
-	// run was started before this existed, all three of which are honestly
-	// "nothing to report" rather than "an empty result", which is why there is no
-	// empty message to distinguish them.
+	// Unset when the workflow declares no outputs, when the run has not
+	// finished, or when the run was started by a build that did not record them.
 	RunOutputs *RunOutputs `protobuf:"bytes,10,opt,name=run_outputs,json=runOutputs,proto3" json:"run_outputs,omitempty"`
-	// EntityState is a bounded snapshot of a RUNNING run's carried state (its
-	// top-level `vars:` and the value each active `loop:` is carrying between
-	// iterations), answered by a second Temporal query beside
-	// [RunProgress]'s, for the reason [RunProgress] itself exists: nothing
-	// outside a running workflow knows its own state, because the state lives
-	// in the interpreter's own memory rather than in anything the service
-	// records, so the only way to ask is a query that reaches the worker.
+	// EntityState is a bounded snapshot of a RUNNING run's carried state: its
+	// top-level `vars:` and the value each active `loop:` carries between
+	// iterations, read from the worker by a query.
 	//
-	// # Why this exists at all
-	//
-	// Outputs (both arms of the oneof above) populate only on
-	// STATUS_COMPLETED. An entity (a run shaped as `loop:` +
-	// `wait_for_signal:` that is never meant to finish) is by design always
-	// RUNNING, so before this field existed its state was categorically
-	// unreadable: not even by its own owner, and not without either signaling
-	// it (mutating it to provoke a readable output, the wrong tool for a
-	// read) or waiting for it to end, which it structurally never does.
-	//
-	// Set only for a RUNNING run, on [RunProgress]'s exact reasoning: a
-	// finished run's state is its outputs, which the oneof above already
-	// answers.
+	// This is how to read the state of an entity (a `loop:` with a
+	// `wait_for_signal:` that is never meant to finish), which is always
+	// RUNNING and so never has outputs. Set only for a RUNNING run; a finished
+	// run's state is its outputs.
 	EntityState *EntityState `protobuf:"bytes,11,opt,name=entity_state,json=entityState,proto3" json:"entity_state,omitempty"`
 	// Starter is who submitted this run, as the qualified `issuer#subject` string
 	// the server recorded on it at submit.
 	//
-	// # Why it was invisible, and why that mattered
+	// The raw qualified form, because that is what a signal policy rule's
+	// `subject` names: compare it to a rule or to a caller's identity with string
+	// equality. A display form that drops the issuer would compare equal to a
+	// subject from a different identity provider.
 	//
-	// A run has always recorded its starter - `FlowstateServer.Signal` reads it
-	// out of the run's memo to enforce [SignalPolicy.distinct_from_starter] - and
-	// no RPC answered with it. So a workflow could declare "the approver may not
-	// be whoever asked for this", the server could enforce it exactly, and nobody
-	// outside the server could see the fact being compared against. An operator
-	// told `PermissionDenied` on a `flow signal` had no way to learn that they
-	// were being refused for being the starter, and a surface rendering an
-	// approval gate could not say who was asking.
-	//
-	// # Why the raw qualified string, not a rendered display form
-	//
-	// Because `issuer#subject` is exactly what a [SignalPolicyRule.subject] names,
-	// and [QualifiedSubject] is the one join that produces it. A surface holding
-	// this can compare it to a policy rule, or to its own caller's identity, with
-	// a string equality that is the same comparison [SignalPolicyCheck] makes.
-	// Rendering it - splitting it, shortening it, dropping the issuer - would give
-	// this field a second, prettier spelling of an identity that this schema is
-	// otherwise careful to keep in exactly one form, and a reader who compared the
-	// pretty one would have written a check that passes for a subject minted by a
-	// different identity provider. A client that wants a display form can cut on
-	// the separator; a client that wants to compare must not have to reassemble.
-	//
-	// # Absent means absent
-	//
-	// Empty for a run started before the starter was recorded at all, and for one
-	// whose memo could not be read. There is no compatibility arm and no
-	// placeholder: "this server does not know who started this run" is a true
-	// answer and a different one from any subject, and a reader must not be handed
-	// something that compares equal to a real identity. Authorization never reads
-	// this field - it reads the same memo itself, and denies rather than proceeds
-	// when the answer is missing (see the server's authorizeSignal) - so an empty
-	// value here weakens nothing.
+	// Empty when the run's starter was never recorded or could not be read.
+	// Empty is "unknown", never an identity. Authorization does not read this
+	// field; a `distinct_from_starter` signal policy denies when the starter is
+	// unknown.
 	Starter string `protobuf:"bytes,12,opt,name=starter,proto3" json:"starter,omitempty"`
-	// FirstRunId is the segment the workload began at, read off the same
-	// Describe response everything else here comes from. Equal to run_id for a
-	// run that never continued as new; where it differs, run_id names the
-	// segment this response reports and first_run_id is where `flow timeline`
-	// walks the whole chain from (picatz/flowstate#1690).
+	// FirstRunId is the segment the workload began at. Equal to run_id for a run
+	// that never continued as new; where it differs, run_id names the segment
+	// this response reports and first_run_id is where to start reading the
+	// workload's whole timeline.
 	FirstRunId string `protobuf:"bytes,14,opt,name=first_run_id,json=firstRunId,proto3" json:"first_run_id,omitempty"`
 	// Segments is how many Continue-As-New segments the workload has run as,
 	// this one included, with RunSummary.segments' meaning: two or more when
@@ -910,10 +730,12 @@ type isGetResponse_Kind interface {
 }
 
 type GetResponse_Error struct {
+	// Error is why the run failed.
 	Error *RunResponse_Error `protobuf:"bytes,4,opt,name=error,proto3,oneof"`
 }
 
 type GetResponse_Outputs struct {
+	// Outputs are the outputs of the steps that have run, keyed by step id.
 	Outputs *Workflow_StepOutputs `protobuf:"bytes,5,opt,name=outputs,proto3,oneof"`
 }
 
@@ -924,22 +746,27 @@ func (*GetResponse_Outputs) isGetResponse_Kind() {}
 // SignalRequest delivers a signal to a waiting run.
 type SignalRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowId identifies the run to signal.
+	// WorkflowId identifies the workload to signal, as Run's `workflow_id`
+	// reports it. 1 to 256 characters.
 	//
-	// A caller may address only runs in a namespace their own authenticated
-	// identity establishes. The namespace is never taken from this request: a
-	// caller who could name their own tenant could name someone else's, and an id
-	// is not a capability.
+	// A caller may address only runs in its own tenant. The namespace always
+	// comes from the caller's authenticated identity, never from the request.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	// RunId optionally pins the signal to one run of the workload. Unset addresses
-	// whichever run is current, which is what a human approving a gate means: they
-	// are approving the workload, and they neither know nor care how many times it
-	// has been continued as new.
+	// RunId optionally pins the signal to one run of the workload. Leave it
+	// unset: unset addresses whichever run is current, and a pinned run id is
+	// refused once the workload has continued as new.
 	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	// Name is the signal being sent, matching what the waiting step declared.
+	// Name is the signal being sent: the `name:` the waiting `wait_for_signal:`
+	// step declared, which Get reports as each open gate's signal name.
+	// Letters, digits, `-` and `_`, starting with a letter or digit, at most 128
+	// characters.
 	Name string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
-	// Payload becomes the waiting step's outputs, so `${approval.approved}`
-	// resolves to what a sender put here.
+	// Payload is the data delivered with the signal: named values the waiting
+	// step reads as `${steps.<id>.payload.<key>}`, where `<id>` is that step's
+	// id (a step with its own `outputs:` shaping exposes only what that shaping
+	// selects). Each value is a [Value] holding a `literal`; in JSON, an approval is
+	// `{"namedValues": {"approved": {"literal": {"boolValue": true}}}}`. It is
+	// untrusted input to the workflow and never carries the sender's identity.
 	Payload       *Node_Outputs `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1005,11 +832,9 @@ func (x *SignalRequest) GetPayload() *Node_Outputs {
 
 // SignalResponse is empty: a delivered signal has nothing to report.
 //
-// The absence of a body is the whole of the answer, and it is a narrow one. It
-// says the cluster accepted the signal for the workload, not that a waiting step
-// consumed it, and not that whatever the payload asks for has happened. A caller
-// that needs to know what the run did with it reads the run back with
-// [WorkflowService.Get].
+// It says the cluster accepted the signal for the workload, not that a waiting
+// step consumed it or that whatever the payload asks for has happened. To learn
+// what the run did with it, read the run back with the Get RPC.
 type SignalResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1047,46 +872,26 @@ func (*SignalResponse) Descriptor() ([]byte, []int) {
 }
 
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
-// does not yet exist, which closes the race an ordinary create-then-signal has: a
-// caller who checks "does it exist" and then either Runs or Signals can always be
-// beaten between the two calls, either by another creator or by the signal
-// arriving before the run does.
+// does not yet exist.
 //
-// The delivery that creates the entity travels as part of that entity's own
-// starting state rather than as a signal that follows its creation, so an
-// accepted create can never leave an entity missing the mutation that initiated
-// it — even if this handler disappears immediately afterward. Only a delivery to
-// an entity that *already existed* before this call — the not-created branch — is
-// sent as a signal after the fact, and by then the entity's existence was
-// somebody else's atomic creation, not this call's, so there is nothing left for
-// this call itself to make atomic.
+// Atomic: two callers racing on the same key produce one entity, and the
+// signal that created an entity is part of its starting state, so it is never
+// lost. A separate check-then-Run-or-Signal can always be beaten between the
+// two calls.
 //
-// # Two authorization questions, decided separately, both fail-closed
+// Two authorization decisions, both fail-closed. Delivering the signal is
+// authorized by the signal policy the existing entity declared, exactly as
+// the Signal RPC authorizes it. Creating the entity is authorized exactly as
+// the Run RPC authorizes a run: every check Run performs on `workflow` and
+// `inputs` runs here before either branch is taken.
 //
-// "May this sender signal entity key K" and "may this sender CREATE an entity
-// under key K" are not the same question, and this handler never answers the
-// second by reusing the first's rule. Delivering a signal is authorized by the
-// signal policy the *target* already declared: [Workflow.signals], enforced the
-// same way [FlowstateServer.Signal] enforces it, against the memo recorded when
-// the entity was created. Creating one has nothing yet to declare a policy: there
-// is no target, no memo, no `signals:` block recorded anywhere to check. So it is
-// authorized the same way [FlowstateServer.Run] authorizes an ordinary run:
-// every check `Run` performs on [workflow] and [inputs] runs here too, on the
-// same fields, before either branch is taken, which is a strictly *stronger* bar
-// than delivering a signal (a bare workflow id, a signal name, and a payload)
-// asks for. An authenticated caller in their own namespace may always create,
-// exactly as they may always Run; what [entity_key] changes is only the address
-// the result is reachable at.
-//
-// [workflow] and [inputs] are read only on the branch that creates. See
-// [SignalWithStartResponse.created]. When the entity already exists, Temporal
-// never looks at them and this handler never lets a caller believe they changed
-// anything about the run they signalled.
+// `workflow` and `inputs` are used only when this call creates the entity;
+// see [SignalWithStartResponse.Created]. When the entity already exists they
+// are ignored.
 type SignalWithStartRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// EntityKey addresses the entity, composed with the caller's own namespace
-	// exactly as [RunRequest.entity_key] is. See that field's doc comment for
-	// the grammar and the unforgeability argument, which apply unchanged here.
+	// exactly as [RunRequest.entity_key] is: same grammar, same workflow id.
 	EntityKey string `protobuf:"bytes,1,opt,name=entity_key,json=entityKey,proto3" json:"entity_key,omitempty"`
 	// Workflow is the specification to start the entity from if it does not
 	// already exist. Checked exactly as [RunRequest.workflow] is (the same
@@ -1175,40 +980,23 @@ func (x *SignalWithStartRequest) GetPayload() *Node_Outputs {
 // SignalWithStartResponse identifies the entity the signal reached, and says
 // whether this call is what brought it into existence.
 type SignalWithStartResponse struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	// Created is true when this call is what brought the entity into existence.
-	// False means a signal was delivered to an entity that was already running.
-	// A caller that needs to tell "I just created this" from "this already
-	// existed" (to decide whether to wait for a different handler, say) has
-	// no other way to learn it: [workflow_id] and [run_id] are populated
-	// identically either way, a run and a workflow execution, so this field is
-	// the only place the distinction is reported.
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// WorkflowId is the entity's workflow id,
+	// `flowstate-entity-<namespace>_<entity_key>`.
+	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// RunId is the entity's current run.
+	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Created is true when this call is what brought the entity into existence,
+	// and false when the signal went to an entity that was already running.
+	// `workflow_id` and `run_id` are set the same way in both cases, so this is
+	// the only place the difference is reported.
 	Created bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
 	// SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
-	// this RPC: the same question, the same three answers, and deliberately the
-	// same name rather than a second vocabulary for one fact.
+	// this RPC: the same question and the same three answers.
 	//
-	// This RPC substitutes the trusted copy exactly as `Run` does — see the
-	// server's `trustedWorkflow` — and then transforms what it runs the same way,
-	// writing the deployment's plugin selection onto it before the engine sees it.
-	// So a caller here faces the identical question a caller of `Run` faces: is
-	// the specification I hold the one that ran, and may I therefore trust its
-	// `sensitive: true` declarations to describe this entity's outputs? Read
-	// [RunResponse.specification_as_submitted] for the whole argument, including
-	// why *unset* is not `false` and why neither may be read as assent.
-	//
-	// One thing is this RPC's own, and it is a consequence of [created]. When this
-	// call created the entity, the answer is about the specification this call
-	// handed the engine, exactly as `Run`'s is. When it did not — a mutation
-	// delivered to an entity that was already running — the executing
-	// specification is whatever *that* run was created with, which this server did
-	// not compare against anything and will not claim to know: the answer is false,
-	// the fail-closed one, and it is stated rather than left unset because the
-	// server is answering rather than staying silent. A caller wanting the precise
-	// view of an entity it did not create has no route to it through this field,
-	// which is the honest position.
+	// When this call created the entity, it says whether the specification the
+	// engine runs is the one sent. When the entity already existed, it is false:
+	// the running entity's specification was not compared against anything.
 	SpecificationAsSubmitted *bool `protobuf:"varint,4,opt,name=specification_as_submitted,json=specificationAsSubmitted,proto3,oneof" json:"specification_as_submitted,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
@@ -1275,17 +1063,12 @@ func (x *SignalWithStartResponse) GetSpecificationAsSubmitted() bool {
 // CancelRequest asks a run to stop, letting it clean up on the way out.
 type CancelRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowId identifies the run to cancel.
-	//
-	// A caller may address only runs in a namespace their own authenticated
-	// identity establishes. The namespace is never taken from this request: a
-	// caller who could name their own tenant could name someone else's, and an id
-	// is not a capability.
+	// WorkflowId identifies the workload to cancel, as Run's `workflow_id`
+	// reports it. 1 to 256 characters. The caller may address only runs in its
+	// own tenant.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	// RunId optionally pins the request to one run of the workload. Unset
-	// addresses whichever run is current, which is what someone stopping a
-	// workload means: they neither know nor care how many times it has been
-	// continued as new.
+	// addresses whichever run is current, which is usually what is wanted.
 	RunId         string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1339,8 +1122,8 @@ func (x *CancelRequest) GetRunId() string {
 // claims.
 //
 // Cancellation is cooperative, so this answers that the run has been asked to
-// stop rather than that it has stopped. Cleanup runs after this returns, and a
-// caller that needs the run's final status polls [WorkflowService.Get] for it.
+// stop rather than that it has stopped. Cleanup runs after this returns; poll
+// the Get RPC for the run's final status.
 type CancelResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1380,21 +1163,16 @@ func (*CancelResponse) Descriptor() ([]byte, []int) {
 // TerminateRequest stops a run immediately, without letting it clean up.
 type TerminateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowId identifies the run to terminate.
-	//
-	// A caller may address only runs in a namespace their own authenticated
-	// identity establishes. The namespace is never taken from this request: a
-	// caller who could name their own tenant could name someone else's, and an id
-	// is not a capability.
+	// WorkflowId identifies the workload to terminate, as Run's `workflow_id`
+	// reports it. 1 to 256 characters. The caller may address only runs in its
+	// own tenant.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	// RunId optionally pins the request to one run of the workload. Unset
 	// addresses whichever run is current.
 	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	// Reason is recorded on the terminated execution, so whoever finds the run
-	// later learns why it was stopped rather than only that it was.
-	//
-	// A terminated run leaves no trace of its own explaining itself (that is what
-	// terminate means), so this is the only account of the decision there will be.
+	// Reason is recorded on the terminated execution, at most 1024 characters.
+	// A terminated run records nothing else about why it stopped, so this is the
+	// only account of the decision.
 	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1497,63 +1275,42 @@ func (*TerminateResponse) Descriptor() ([]byte, []int) {
 // ListRequest asks for the caller's runs.
 type ListRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// PageSize bounds how many runs come back. Zero takes the server's default.
+	// PageSize is the most runs one page returns: 0 (the default) means 50,
+	// and at most 1000.
 	//
-	// This bounds the answer, not the work: the server filters by tenant itself
-	// (see ListResponse.next_page_token), so a small page is not a promise of a
-	// small scan.
+	// It bounds the answer, not the work: a page may come back short, or empty,
+	// with `next_page_token` set. See [ListResponse.next_page_token].
 	PageSize int32 `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
-	// PageToken continues a previous List. Opaque: it is a token the server
-	// issued and authenticated, and nothing should be read from or written into
-	// it. A token is accepted only by the server process that issued it, only
-	// from the tenant it was issued to, only with the same filter and page size
-	// it was issued for, and only for a day — each refusal says which. See
-	// ListCursor for what one carries.
+	// PageToken continues a previous List: pass the previous response's
+	// `next_page_token`, with the same `filter` and `page_size`. Opaque.
+	//
+	// A token is refused when it comes from another server process, another
+	// tenant, a different `filter` or `page_size`, or is more than a day old;
+	// the refusal says which.
 	PageToken string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
-	// Filter keeps only the runs a CEL expression answers yes about.
+	// Filter keeps only the runs a CEL expression answers true for. Empty keeps
+	// every run. At most 4096 characters.
 	//
-	// CEL because that is what everything else an author writes here is: the
-	// expressions in a Flowfile, the rules in an egress or auth policy, the
-	// condition on a step. A query language of its own would be a second grammar
-	// to learn, a second parser to bound, and a second place for `status` to mean
-	// something slightly different.
-	//
-	// The names it binds are a run's own: `workflow_id`, `run_id`, `status`,
-	// `start_time`, `close_time`, `finished`. `status` is the short name
-	// (`FAILED`, not `STATUS_FAILED`) and comparing it to a name no status has is
-	// refused rather than silently matching nothing.
+	// The expression can read each run's `workflow_id`, `run_id`, `status`,
+	// `start_time`, `close_time`, `finished`, `name` (the workflow's declared
+	// name), `labels` (a map of the workflow's declared labels), `starter`
+	// (`issuer#subject`) and `worker_version`. `status` is the short name
+	// (`FAILED`, not `STATUS_FAILED`); comparing it to a name no status has is
+	// refused.
 	//
 	//	status == "FAILED"
-	//	status == "RUNNING" && start_time < timestamp("2026-08-01T00:00:00Z")
+	//	name == "nightly-etl" && status == "RUNNING"
+	//	"team" in labels && labels["team"] == "payments"
 	//	finished && close_time - start_time > duration("1h")
 	//
-	// `close_time` is null while a run is going: null rather than the epoch,
-	// because a run that has not finished has no close time and a filter that
-	// compared one against a date would otherwise report every running run as
-	// having finished in 1970. Comparing null errors, which is why `finished`
-	// exists: CEL's `&&` absorbs errors from the side it does not need, so the
-	// guarded form above does what it looks like it does.
+	// `close_time` is null while a run is going, and comparing null is an
+	// error; guard it with `finished &&`. Likewise guard a label with
+	// `"key" in labels &&`. A run the filter cannot be evaluated for is left
+	// out and counted in [ListResponse.excluded_by_error].
 	//
-	// # What this bounds, and what it does not
-	//
-	// A filter narrows the *answer*, never the work. The tenant a run belongs to
-	// is a memo, which Temporal cannot query, so a listing is already a bounded
-	// scan with a predicate applied to each result, and a filter that matches
-	// little makes a page more likely to come back short with a token, not more
-	// likely to scan further. The scan bounds are unchanged and unaffected by what
-	// is written here.
-	//
-	// The evaluation itself is cost-bounded per run, well below the budget an
-	// ordinary expression gets, because this one is evaluated once per execution
-	// read and the two multiply.
-	//
-	// # Room this leaves
-	//
-	// When a deployment registers search attributes, the parts of a filter the
-	// visibility store can answer become a query pushed down into it, and the rest
-	// stays a predicate here. That changes what a listing costs and never what it
-	// means: the same filter returns the same runs either way, which is what lets
-	// an operator turn pushdown on without re-reading every saved query.
+	// A filter narrows the answer, not the scan: the server reads the same
+	// bounded number of runs per call and applies the filter to each, with a
+	// per-run cost limit.
 	Filter        string `protobuf:"bytes,3,opt,name=filter,proto3" json:"filter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1617,82 +1374,49 @@ func (x *ListRequest) GetFilter() string {
 // authorization decision. A list that returned outputs would make "show me my
 // runs" the cheapest way to read every workload's data at once.
 type RunSummary struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	Status     RunResponse_Status     `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// WorkflowId is the workload's durable handle, which Get and the other run
+	// verbs take.
+	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// RunId is the listed run: the workload's current segment.
+	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Status is the run's current status.
+	Status RunResponse_Status `protobuf:"varint,3,opt,name=status,proto3,enum=flowstate.v1.RunResponse_Status" json:"status,omitempty"`
 	// StartTime is when the workload began.
 	// For a workload that continued as new, the workload's start rather than the
 	// listed segment's — see segment_start_time.
 	StartTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=start_time,json=startTime,proto3" json:"start_time,omitempty"`
 	// CloseTime is when it finished, unset while it is still running.
 	CloseTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
-	// Name is the workflow's own declared name (Workflow.name), not Temporal's
-	// WorkflowType: every run's WorkflowType is "Run", the one interpreter
-	// workflow, so it cannot distinguish "nightly-etl" from "onboard-tenant".
-	//
-	// Populated from the run's memo, recorded unconditionally at submit,
-	// never from a search attribute, and deliberately so: a deployment may
-	// additionally project this into Temporal's visibility store for external
-	// tooling, but `flow list --filter` never depends on that having
-	// succeeded, or a filter with nothing wrong with it would silently return
-	// nothing on a deployment where search-attribute registration failed.
-	// Empty only for a run that predates this field entirely. Absence is not
-	// an error. See server/list.go and runfilter.go, where a filter comparing
-	// against `name` simply does not match a run that carries none.
+	// Name is the workflow's own declared `name:`, recorded on the run when it
+	// started. Empty only for a run started before names were recorded; a
+	// filter comparing `name` does not match such a run.
 	Name string `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
-	// Labels are the workflow's own declared labels ([Workflow.labels]), recorded
-	// on the run at submit.
+	// Labels are the workflow's own declared `labels:`, recorded on the run when
+	// it started.
 	//
-	// Populated from the memo, on [RunSummary.name]'s exact terms and for its exact
-	// reason: written unconditionally by every path that starts a run, read back
-	// through the same memo a listing already fetches for the tenant check, and
-	// never sourced from a search attribute — a `labels` filter that worked only
-	// where attribute registration succeeded would answer "nothing matched" to a
-	// filter with nothing wrong with it.
-	//
-	// Empty for a run of a workflow that declared none, and for a run started
-	// before this was recorded at all. The two are deliberately not distinguished:
-	// both are "this run carries no labels", which is the only question a filter
-	// asks. `labels["team"] == "payments"` does not match such a run, and
+	// Empty for a workflow that declared none and for a run started before
+	// labels were recorded; the two are not distinguished. A filter
+	// `labels["team"] == "payments"` does not match such a run, and
 	// `!("team" in labels)` does.
 	Labels map[string]string `protobuf:"bytes,7,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Starter is who submitted this run, as the qualified `issuer#subject` string
-	// recorded on it at submit — the same string, from the same memo, by the same
-	// rules as [GetResponse.starter], whose doc is the whole of the reasoning for
-	// the raw qualified form and for what an empty value means.
-	//
-	// Here rather than only on Get because the question an operator asks at scale
-	// is "whose runs are these", and answering it through Get is one RPC per run.
-	// It is the same fact in both places, read from the same memo by the same
-	// reader, so the two cannot disagree.
+	// Starter is who submitted this run, as the qualified `issuer#subject`
+	// string: the same value, with the same meaning, as [GetResponse.starter].
+	// Empty when the starter is unknown.
 	Starter string `protobuf:"bytes,8,opt,name=starter,proto3" json:"starter,omitempty"`
 	// WorkerVersion is the Worker Deployment version this run is pinned to, as
-	// `deployment-name.build-id` — Temporal's own spelling of the pair
-	// `flow worker --deployment-name`/`--build-id` configures.
+	// `deployment-name.build-id`: the pair `flow worker --deployment-name` and
+	// `--build-id` configure.
 	//
-	// Empty when the deployment does not use Worker Deployment Versioning at all,
-	// which is the unconfigured default, and empty for a run started before its
-	// worker was versioned. Absence is therefore "this run is not pinned to a
-	// version", never "the version is unknown".
-	//
-	// Read from Temporal's own `WorkflowExecutionInfo.versioning_info` rather than
-	// from a memo, unlike every other field here, and the difference is the point:
-	// the pinned version is not a fact about the submission, it is a fact about
-	// where the run is *executing*, and it legitimately changes at Continue-As-New
-	// when a run takes the deployment's current version. A memo written at submit
-	// would freeze a value the run itself does not honour — the one shape of
-	// "recorded twice, drifting" this schema keeps out. It costs nothing extra:
-	// the listing response already carries it.
+	// Empty when the run is not pinned to a version, including every run on a
+	// deployment that does not use Worker Deployment Versioning. It can change
+	// at Continue-As-New, when a run moves to the deployment's current version.
 	WorkerVersion string `protobuf:"bytes,9,opt,name=worker_version,json=workerVersion,proto3" json:"worker_version,omitempty"`
-	// SegmentStartTime is when the listed segment itself started, which for a
-	// workload that continued as new is later than start_time: start_time is
-	// the workload's start, read off the memo the interpreter writes at every
-	// continued segment (picatz/flowstate#1690), and this is the segment's own.
-	// Equal to start_time wherever no chain was recorded — a run that never
-	// continued, whose one segment is the workload, and a chain whose first
-	// segment predates the memo, which then reports the segment's start as
-	// both. segments is zero in both of those cases.
+	// SegmentStartTime is when the listed segment itself started. For a
+	// workload that continued as new, this is later than `start_time`, which is
+	// the workload's start. Equal to `start_time` wherever no chain was
+	// recorded (a run that never continued, or a chain whose first segment
+	// predates the record); `segments` is zero in both cases.
 	SegmentStartTime *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=segment_start_time,json=segmentStartTime,proto3" json:"segment_start_time,omitempty"`
 	// Segments is how many Continue-As-New segments the workload has run as,
 	// this one included: two or more when the interpreter recorded the chain,
@@ -1817,35 +1541,27 @@ func (x *RunSummary) GetSegments() uint32 {
 type ListResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Runs  []*RunSummary          `protobuf:"bytes,1,rep,name=runs,proto3" json:"runs,omitempty"`
-	// NextPageToken continues the listing, and is set whenever the scan stopped
-	// with more to look at, including when this page came back short or empty.
+	// NextPageToken continues the listing. Empty means the listing is done.
 	//
-	// That case is real rather than theoretical. The tenant a run belongs to is
-	// recorded as a memo, which Temporal cannot filter on, so the server reads a
-	// bounded number of executions and keeps the ones that are the caller's. In a
-	// namespace shared by several tenants a scan can therefore end having found
-	// few matches, or none, while plenty remain. An empty page with a token set
-	// means "keep asking", and only an empty token means the listing is done.
-	//
-	// Opaque, and constructed by nobody but the server: see ListRequest.page_token
-	// for what is checked when it comes back, and ListCursor for its contents.
+	// Set whenever the scan stopped with more to look at, including when this
+	// page came back short or empty: the server reads a bounded number of runs
+	// per call and keeps the caller's, so in a namespace shared by several
+	// tenants a scan can end with few matches or none while more remain. Keep
+	// calling with this as [ListRequest.page_token] until it is empty.
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	// How many of the caller's runs this page's scan reached and left out because
-	// the filter could not be evaluated over them — an index into a label the run
-	// does not carry, a comparison against a close time the run does not have yet.
+	// ExcludedByError is how many of the caller's runs this page's scan reached
+	// and left out because the filter could not be evaluated over them: an
+	// index into a label the run does not carry, or a comparison against a
+	// close time the run does not have yet.
 	//
-	// A run the filter cannot answer for is a run it did not say yes about, which
-	// is the fail-closed reading and the one `labels["team"] == "x"` means when
-	// most runs carry no `team` at all (picatz/flowstate#1689). The count is here
-	// so that a caller can tell "nothing matched" from "nothing could be asked",
-	// and so that `flow list -o json` can carry it without a sentence. Zero when
-	// no filter was given.
+	// Such a run is treated as not matching. The count lets a caller tell
+	// "nothing matched" from "nothing could be asked". Zero when no filter was
+	// given.
 	ExcludedByError uint32 `protobuf:"varint,3,opt,name=excluded_by_error,json=excludedByError,proto3" json:"excluded_by_error,omitempty"`
-	// Why the filter could not be evaluated, set only when it could not be
-	// evaluated over any of the runs this page reached — the shape a typo takes,
-	// as opposed to a filter that is right about the runs it is right about. The
-	// first error the scan met, with the spelling that would have avoided it when
-	// there is one. Empty otherwise.
+	// FilterDiagnostic says why the filter could not be evaluated, set only when
+	// it could not be evaluated over any of the runs this page reached (usually
+	// a typo). It is the first error the scan met, with the spelling that would
+	// have avoided it when there is one. Empty otherwise.
 	FilterDiagnostic string `protobuf:"bytes,4,opt,name=filter_diagnostic,json=filterDiagnostic,proto3" json:"filter_diagnostic,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -1914,14 +1630,8 @@ func (x *ListResponse) GetFilterDiagnostic() string {
 // A token is this message serialized, followed by an HMAC-SHA256 over those
 // bytes under a key the server process derived at startup, base64url-encoded.
 // The server refuses a token whose authentication code it did not produce, so
-// a caller cannot construct one and nothing about its layout is a contract: the
-// message is defined in the schema so the server has one wire-stable shape to
-// sign rather than a hand-written struct, not so that a client may read it.
-//
-// The key is per process. Two replicas do not share one yet, so a token issued
-// by one is refused by the other as not a token it issued; the key-sharing
-// question is the same one multi-replica MCP sessions raise (#1654) and is
-// answered there rather than twice.
+// a caller cannot construct one and its layout is not a contract. The key is
+// per process, so a token issued by one server replica is refused by another.
 type ListCursor struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Position is where the scan stopped, in the visibility store's own words:
@@ -2006,11 +1716,8 @@ func (x *ListCursor) GetIssuedAt() *timestamppb.Timestamp {
 // ValidateRequest is one or more files to check.
 type ValidateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Files are the files to check, in the order the report should list them.
-	//
-	// Bounded by count as well as by size, because bounding one resource does not
-	// bound another the peer controls the ratio to: a thousand megabyte files is a
-	// gigabyte of parsing, and every one of them is individually within its bound.
+	// Files are the files to check, in the order the report should list them:
+	// 1 to 64 files, each at most 1 MiB.
 	Files         []*SourceFile `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2057,10 +1764,6 @@ func (x *ValidateRequest) GetFiles() []*SourceFile {
 type ValidateResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Report is one entry per file, including the files that were clean.
-	//
-	// Wrapped rather than returned bare so the RPC can grow a second thing to say
-	// (which version of the grammar answered, how long it took) without changing
-	// the shape a caller already parses.
 	Report        *ValidationReport `protobuf:"bytes,1,opt,name=report,proto3" json:"report,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2106,62 +1809,29 @@ func (x *ValidateResponse) GetReport() *ValidationReport {
 // GetTimelineRequest addresses one run and asks for a page of its account.
 type GetTimelineRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowId is the run to read, as [RunResponse.workflow_id] reports it.
+	// WorkflowId is the workload to read, as Run's `workflow_id` reports it. 1 to
+	// 1024 characters. The caller may read only runs in its own tenant.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	// RunId names one attempt of that workflow. Empty reads the latest, which is
-	// what a caller holding only a workflow id wants.
+	// RunId names one segment of the workload. Empty reads the latest segment.
 	//
-	// Unlike [SignalRequest], where addressing a run rather than the workflow is
-	// a mistake with consequences, naming one here is ordinary: a workload that
-	// continued as new has a timeline per segment, and walking back through them
-	// is what [GetTimelineResponse.next_run_id] is for.
+	// A workload that continued as new has a timeline per segment; walk the
+	// chain with the answer's `first_run_id`, `next_run_id` and
+	// `previous_run_id`. Required when `after_event_id` is set.
 	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	// MaxEntries bounds the answer. Zero means the server's default.
-	//
-	// A ceiling as well as a default, because a history is as long as a workload
-	// is busy and the caller does not pay for reading it.
+	// MaxEntries is the most entries one answer returns: 0 (the default) means
+	// 500, and at most 5000.
 	MaxEntries int32 `protobuf:"varint,3,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
 	// AfterEventId resumes an account past the last entry a caller already read:
 	// pass [TimelineEntry.event_id] from the last row of the previous answer.
+	// Zero starts at the beginning.
 	//
-	// This exists because a ceiling with no way past it is a dead end, and the
-	// ceiling is genuinely reachable — one suspension-opaque block may schedule
-	// [MaxAtomicBlockActivities] activities, and a *successful* activity already
-	// contributes two entries, so a single valid segment can hold several times
-	// the largest answer this will return (Codex, #1119).
+	// Requires `run_id`, and is refused without it. Event ids restart at 1 in
+	// every segment, and an empty `run_id` means the latest segment, which
+	// changes if the workload continues as new between two calls. Pass the
+	// previous answer's [GetTimelineResponse.run_id].
 	//
-	// An event id rather than an opaque cursor, and that is the decision worth
-	// stating. Temporal's own page token would be the obvious cursor and still
-	// cannot be used — though not for the reason first given here, and the
-	// correction matters because the old one sends a reader to plumb something
-	// already plumbed. The Temporal namespace a raw history request needs is
-	// available to the server now. The *token* is reachable only by dropping
-	// below the SDK: its iterator begins at the first page and exposes no
-	// cursor, so through the supported surface there is nothing to hand a
-	// caller at one end and nothing to seed at the other. Temporal's raw
-	// GetWorkflowExecutionHistory does carry the token both ways — at the cost
-	// of re-implementing what the SDK supplies from behind internal/ (RawHistory
-	// decoding, the per-attempt timeout, retries), a copy that fails silently
-	// when the SDK moves. #1135 priced that trade and the decision was to keep
-	// the event id and this walk, document the transitive round-trip bound where
-	// the budget would have gone, and ask the SDK upstream for token access on
-	// the iterator. An event id needs nothing but the history itself.
-	//
-	// The cost, stated rather than glossed: each request walks the run's history
-	// from the start, so resuming re-reads what it skips. That is bounded work —
-	// a single run's history is bounded by Temporal, and by this server's own
-	// scan budget besides — and it buys something a token would not, since the
-	// walk that reaches the cursor has also collected the labels the rows after
-	// it refer back to.
-	//
-	// Requires run_id, and is refused without it. Event ids restart at 1 in every
-	// segment, so a cursor means nothing until the segment it counts within is
-	// named — and an empty run_id means "the latest", which is a *different*
-	// segment the moment the workload continues as new between two calls. Applied
-	// to the new segment, the old cursor silently skips its beginning or mixes
-	// two segments' entries into one account (Codex, #1119). Refusing beats
-	// guessing: [GetTimelineResponse.run_id] reports the segment every answer was
-	// read from, so a caller resuming has the value in hand.
+	// Each request reads the segment's history from the start, so resuming
+	// re-reads what it skips; that work is bounded by the server's scan budget.
 	AfterEventId  int64 `protobuf:"varint,4,opt,name=after_event_id,json=afterEventId,proto3" json:"after_event_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2231,42 +1901,25 @@ type GetTimelineResponse struct {
 	// Entries are in the order they happened, oldest first, which is the order a
 	// history is written and the order an account is read.
 	Entries []*TimelineEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
-	// RunId is the segment this account was read from, always set — including
-	// when the request named none and the server resolved the latest.
-	//
-	// It exists so that resuming is possible at all: event ids restart in every
-	// segment, so [GetTimelineRequest.after_event_id] requires the run id, and a
-	// caller who asked for "the latest" would otherwise not know what that
-	// resolved to. Reporting it turns "read more of what I just read" into
-	// something a caller can express.
+	// RunId is the segment this account was read from, always set, including
+	// when the request named none and the server resolved the latest. Pass it
+	// back as [GetTimelineRequest.run_id] when resuming.
 	RunId string `protobuf:"bytes,6,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// Truncated is true when this is not the whole of this run's account.
 	//
 	// Resume with [GetTimelineRequest.after_event_id] set to the last entry's
 	// [TimelineEntry.event_id]. Raising [GetTimelineRequest.max_entries] is not
-	// the way past it: the ceiling is a ceiling, and a segment can legitimately
-	// hold several times the largest answer this returns.
+	// the way past it: a segment can hold several times the largest answer.
 	//
-	// Set for any of three reasons, deliberately not told apart, because a reader
-	// does the same thing with all of them: the answer hit its entry ceiling, the
-	// read hit its scan budget, or the walk stopped short of the run's end. The
-	// last is checked against the *data* rather than the transport — a closed
-	// run's history ends with an event saying how it ended, so an account of a
-	// closed run that does not reach one is short however it came to be. That is
-	// the "not short, but claiming to be the whole of it" failure CLAUDE.md names,
-	// and the only defence against it is a check that does not trust the reader.
+	// Set when the answer hit its entry ceiling, when the read hit its scan
+	// budget, or when the account of a closed run does not reach the event that
+	// ended it. An answer that exactly filled its ceiling is reported as
+	// truncated even if nothing follows, so a walk can end with one request that
+	// returns nothing and is not truncated.
 	//
-	// Conservative in one direction on purpose. An answer that exactly filled
-	// its entry ceiling is reported as truncated whether or not anything follows
-	// it, because knowing would mean reading further and the ceiling is the
-	// instruction not to. So a walk can end with one request that returns
-	// nothing and says it is whole — a wasted round trip, and the right trade
-	// against the alternative, which is a prefix that claims to be an account.
-	//
-	// One shape a caller has to handle: truncated with *no* entries at all. It
-	// means the scan budget was spent before reaching the cursor, on a history
-	// larger than this server will walk, and it is a stopping point rather than
-	// something to retry — the same request will do the same thing.
+	// Truncated with no entries means the scan budget was spent before reaching
+	// the cursor, on a history larger than this server will walk. Stop there:
+	// the same request will do the same thing.
 	Truncated bool `protobuf:"varint,2,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	// NextRunId is the segment this one handed over to, set when this run
 	// continued as new.
@@ -2275,14 +1928,8 @@ type GetTimelineResponse struct {
 	// a chain of segments, and a caller reading its whole account follows this.
 	NextRunId string `protobuf:"bytes,3,opt,name=next_run_id,json=nextRunId,proto3" json:"next_run_id,omitempty"`
 	// PreviousRunId is the segment that handed over to this one, empty on the
-	// first.
-	//
-	// Forward traversal alone is a trap, which is what makes this worth its own
-	// field: omitting [GetTimelineRequest.run_id] resolves the *latest* segment,
-	// whose next_run_id is by definition empty — so a caller holding nothing but
-	// a workflow id could reach no earlier segment at all, and the chain was
-	// walkable only by somebody who had kept the original run id elsewhere
-	// (Codex, #1119).
+	// first. A caller holding only a workflow id reads the latest segment first
+	// and walks back through this.
 	PreviousRunId string `protobuf:"bytes,4,opt,name=previous_run_id,json=previousRunId,proto3" json:"previous_run_id,omitempty"`
 	// FirstRunId is the segment the workload began at, which is where a caller
 	// reading the whole of a long-lived entity should start.
@@ -2367,14 +2014,11 @@ func (x *GetTimelineResponse) GetFirstRunId() string {
 }
 
 // CompileRequest is one Flowfile to compile.
-//
-// One rather than many, unlike ValidateRequest: validation is a survey and its
-// answer is a report, while compilation produces the artifact the next call
-// submits, and a batch of artifacts would leave a caller matching outputs back
-// to inputs by position.
 type CompileRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	File          *SourceFile            `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// File is the Flowfile to compile: a `name` used in diagnostics and its
+	// `source` bytes, at most 1 MiB (base64 in JSON).
+	File          *SourceFile `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2420,7 +2064,7 @@ func (x *CompileRequest) GetFile() *SourceFile {
 type CompileResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Workflow is the compiled specification, set only when the file compiled
-	// clean. It is exactly what RunRequest.workflow takes.
+	// clean. Pass it unchanged as Run's or CreateSchedule's `workflow`.
 	Workflow *Workflow `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// Report carries the diagnostics for the file, present even when empty so
 	// "compiled clean" is stated rather than inferred from absence.
@@ -2473,8 +2117,7 @@ func (x *CompileResponse) GetReport() *DiagnosticReport {
 	return nil
 }
 
-// GetCatalogRequest asks what this deployment can execute. It takes nothing
-// today; a filter or a profile selector would go here.
+// GetCatalogRequest asks what this deployment can execute. It has no fields.
 type GetCatalogRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2513,9 +2156,14 @@ func (*GetCatalogRequest) Descriptor() ([]byte, []int) {
 
 // GetCatalogResponse is the deployment's capability.
 type GetCatalogResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Catalog       *TaskCatalog           `protobuf:"bytes,1,opt,name=catalog,proto3" json:"catalog,omitempty"`
-	Plugins       *PluginCatalog         `protobuf:"bytes,2,opt,name=plugins,proto3" json:"plugins,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Catalog lists every task a step may name, with its typed inputs and
+	// outputs, and the CEL functions the language profile's extension libraries
+	// add. The same document `flow tasks --output json` prints.
+	Catalog *TaskCatalog `protobuf:"bytes,1,opt,name=catalog,proto3" json:"catalog,omitempty"`
+	// Plugins lists the plugins the deployment brought up and the directories it
+	// searched for them.
+	Plugins       *PluginCatalog `protobuf:"bytes,2,opt,name=plugins,proto3" json:"plugins,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2566,28 +2214,11 @@ func (x *GetCatalogResponse) GetPlugins() *PluginCatalog {
 
 // MutationResult is the answer a mutation gives to a program.
 //
-// Every mutation on this service answers with an empty message today:
-// `CancelResponse`, `TerminateResponse`, `SignalResponse`, and the four
-// schedule mutations. A caller that changed something therefore has nothing to
-// read back and has to ask the server a second time to learn what it just did,
-// which is a round trip for facts the calling process already held. This
-// message is the envelope that closes that gap, and it is deliberately one
-// shape across every mutation verb rather than one per verb: a caller writes a
-// single expression, and a verb added later is already covered by it.
-//
-// It belongs in the schema because it travels. A document a script indexes by
-// name is a contract with everything downstream, and a contract this project
-// keeps is one the schema describes: the field names come from here, protojson
-// renders it, and `buf breaking` guards it exactly as it guards every message a
-// caller reads off an RPC.
-//
-// What may appear here is bounded by what the process performing the mutation
-// knows for certain, which is what it asked and that the server accepted the
-// asking. Nothing is inferred about the resulting state of a run or a schedule,
-// because inventing "the run is now cancelled" out of an empty response is the
-// one claim these surfaces have always refused to make. As those responses gain
-// fields of their own (picatz/flowstate#374), this becomes the smaller half of
-// an answer rather than the whole of it.
+// It is the CLI's machine-readable answer for every mutation verb (cancel,
+// terminate, signal, and the schedule verbs), whose RPC responses are empty, so
+// a script has one shape to read. It carries only what the calling process knows for certain: what it
+// asked and that the server accepted it. It never claims the resulting state of
+// a run or schedule.
 type MutationResult struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Verb is the act that produced this result, spelled the way a caller asked
@@ -2645,12 +2276,9 @@ type MutationResult struct {
 	// delivery that succeeded. "applied" would promise that the workflow acted on
 	// it, which no surface here is in a position to know.
 	//
-	// A string rather than an enum, because this is the calling process reporting
-	// how far its own request got rather than a state the server models, and the
-	// vocabulary grows as those empty responses gain the fields that would let an
-	// answer be more precise. An enum here would freeze a set that is still
-	// learning its own distinctions, and would rename every value a caller reads
-	// today.
+	// A string rather than an enum, because this reports how far the calling
+	// process's own request got rather than a state the server models, and the
+	// vocabulary may grow.
 	Result        string `protobuf:"bytes,6,opt,name=result,proto3" json:"result,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2728,27 +2356,35 @@ func (x *MutationResult) GetResult() string {
 	return ""
 }
 
+// Error describes why a run failed.
 type RunResponse_Error struct {
-	state   protoimpl.MessageState `protogen:"open.v1"`
-	Message string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	// Kind classifies why the run failed, mirroring flowstatev1.ErrorKind, the
-	// same classification retry policy is built from, so an agent (or any
-	// programmatic consumer) can decide "repair the file / retry / escalate to
-	// the operator" without parsing Message.
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Message is the failure in words, for a person to read. Always set.
+	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// Kind classifies the failure so a program can decide what to do without
+	// parsing `message`. One of:
 	//
-	// A plain string rather than an enum: the set this names already lives as a
-	// Go type in the execution-independent layer (errors.go) because it drives
-	// retry semantics on both drivers before it ever needed to travel, and it
-	// already crosses the durable driver's own wire (Temporal's
-	// ApplicationError carries it as its Type) as this same string. Restating
-	// it as a second, proto-owned enum would be two closed sets that could
-	// disagree about what "PolicyDenied" means; this field is that value
-	// reaching the client rather than a parallel definition of it.
+	//   - `InvalidInput`: inputs do not satisfy a task's schema. Fix the
+	//     workflow or its inputs; retrying cannot help.
+	//   - `UnknownTask`: the workflow names a task no worker provides.
+	//   - `Expression`: an expression failed to parse, exceeded its cost
+	//     budget, or referenced something that does not exist.
+	//   - `PolicyDenied`: a policy refused the operation, such as an egress
+	//     rule. Do not retry.
+	//   - `LimitExceeded`: a resource bound was hit, such as a response larger
+	//     than the configured maximum.
+	//   - `UpstreamUnknown`: a request was sent and no answer came back, so the
+	//     dependency may or may not have applied it. Check before resubmitting.
+	//   - `Upstream`: a dependency failed in a way that may be transient.
+	//   - `Timeout`: a step's time budget expired.
+	//   - `RunTimeout`: the whole run's time budget expired. Earlier steps may
+	//     already have had effects, so decide before starting it again.
+	//   - `RateLimited`: a dependency refused the request as too frequent.
+	//   - `Internal`: a defect in Flowstate, or a failure it could not
+	//     otherwise classify.
 	//
-	// Always set alongside Message, on the same rule flowstatev1.ClassifyError
-	// itself follows: a failure this driver cannot otherwise classify is
-	// reported as "Internal" rather than left blank, because an unclassified
-	// failure is a gap in Flowstate and not a statement that nothing is known.
+	// `Upstream`, `Timeout`, `RateLimited` and `Internal` are the retryable
+	// kinds; the rest are permanent. Always set alongside `message`.
 	Kind          string `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

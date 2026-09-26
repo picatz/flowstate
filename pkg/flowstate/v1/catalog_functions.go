@@ -4,6 +4,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/google/cel-go/common"
 )
 
 // What a profile *contains* was not discoverable from anywhere.
@@ -66,6 +68,12 @@ type LibraryFunction struct {
 	// profile's compiled environment instead of a table somebody has to keep
 	// (#702).
 	Signature []string
+
+	// Description says what the function does, read from its declaration's own
+	// documentation (cel-go's `cel.FunctionDocs`, or a macro's `MacroDocs`),
+	// with line breaks folded to spaces. Empty when the declaration carries
+	// none, which is true of most names cel-go's extension libraries add.
+	Description string
 }
 
 // ProfileFunctions returns every name the profile's libraries add, sorted by library
@@ -111,6 +119,7 @@ func ProfileFunctions(profile string) []LibraryFunction {
 	// maps were how the listing came to advertise only the first library's
 	// half of a shared name.
 	sigs := functionSignatures(libs...)
+	descriptions := functionDescriptions(libs...)
 
 	var out []LibraryFunction
 	for _, lib := range libs {
@@ -133,11 +142,12 @@ func ProfileFunctions(profile string) []LibraryFunction {
 			}
 			claimed[name] = true
 			out = append(out, LibraryFunction{
-				Library:   lib,
-				Name:      name,
-				Macro:     macro,
-				Example:   macroExamples[name],
-				Signature: sigs[name],
+				Library:     lib,
+				Name:        name,
+				Macro:       macro,
+				Example:     macroExamples[name],
+				Signature:   sigs[name],
+				Description: descriptions[name],
 			})
 		}
 	}
@@ -215,6 +225,46 @@ func functionSignatures(libs ...string) map[string][]string {
 	}
 
 	return out
+}
+
+// functionDescriptions returns, for every function and macro an environment
+// declares with documentation, that documentation's description on one line.
+//
+// Read off the same compiled environment [functionSignatures] reads, so a
+// description travels with the declaration that carries it: Flowstate's own
+// functions declare theirs beside their overloads, and anything cel-go
+// documents arrives the same way without a table here to keep.
+func functionDescriptions(libs ...string) map[string]string {
+	env, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil
+	}
+
+	out := map[string]string{}
+	for name, fn := range env.Functions() {
+		if text := oneLine(fn.Description()); text != "" {
+			out[name] = text
+		}
+	}
+	for _, macro := range env.Macros() {
+		documented, ok := macro.(common.Documentor)
+		if !ok {
+			continue
+		}
+		if doc := documented.Documentation(); doc != nil {
+			if text := oneLine(doc.Description); text != "" {
+				out[macro.Function()] = text
+			}
+		}
+	}
+
+	return out
+}
+
+// oneLine folds a multi-line cel-go description into one paragraph. cel-go
+// stores each line a declaration passed separately, joined by newlines.
+func oneLine(text string) string {
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // isCallableName reports whether a declared name is one somebody can write.

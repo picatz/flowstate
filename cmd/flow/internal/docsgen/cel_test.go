@@ -2,6 +2,7 @@ package docsgen
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/google/cel-go/cel"
@@ -89,4 +90,25 @@ func TestEveryDocumentedCELIdiomCompiles(t *testing.T) {
 				idiom.title, v1.CurrentProfile, issues.Err())
 		})
 	}
+}
+
+// TestTheCELReferenceListsUnitsLargestFirstAndDescribesFunctions pins two
+// facts the generated reference states about itself: the duration units are
+// listed in the order the sentence promises (declared, largest first, not
+// alphabetical), and a function's declared description reaches its table row.
+func TestTheCELReferenceListsUnitsLargestFirstAndDescribesFunctions(t *testing.T) {
+	rendered := (&Generator{}).renderCELReference()
+
+	assert.Contains(t, rendered,
+		"Units, largest first: `weeks`, `days`, `hours`, `minutes`, `seconds`.")
+
+	var row string
+	for line := range strings.Lines(rendered) {
+		if strings.HasPrefix(line, "| `json` | `json_parse` |") {
+			row = line
+		}
+	}
+	require.NotEmpty(t, row, "the function table has no json_parse row")
+	assert.Contains(t, row, "every number a double",
+		"json_parse's declared description does not reach its row")
 }

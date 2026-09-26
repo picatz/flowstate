@@ -37,7 +37,8 @@ const (
 	// Left as a real arm rather than folded away, for [ScheduleTrigger.Overlap]'s
 	// reason: "the author said nothing" and "the author wrote reject" stay
 	// distinguishable in the specification even though they behave identically.
-	// Defaulting to the refusal is the fail-closed direction (invariant 6) — an
+	// Defaulting to the refusal is the fail-closed direction (ARCHITECTURE.md
+	// invariant 6) — an
 	// author who writes `key:` and forgets `on_conflict:` gets exclusion, not a
 	// second concurrent run.
 	Concurrency_ON_CONFLICT_UNSPECIFIED Concurrency_OnConflict = 0
@@ -123,7 +124,7 @@ func (Concurrency_OnConflict) EnumDescriptor() ([]byte, []int) {
 }
 
 // Type is the legacy declaration vocabulary. Edition-aware specifications use
-// [InputDeclaration.value_type], whose structural [flowstate.v1.Type] can say
+// [InputDeclaration.value_type], whose structural [Type] can say
 // what a list contains and what values a map holds.
 //
 // This enum and its field number remain because a complete Workflow is stored
@@ -258,7 +259,8 @@ type Workflow struct {
 	//
 	// Recorded rather than resolved at execution because a run has to keep meaning
 	// what it meant. A future build that adds a library must not change how an
-	// expression already stored in `RunState` evaluates (invariant 10), and
+	// expression already stored in `RunState` evaluates (ARCHITECTURE.md
+	// invariant 10, RunState is a wire contract), and
 	// "whatever this worker has" is a set that changes underfoot. A profile name has
 	// frozen membership, so a worker resolves the name rather than asking what it
 	// ships with, and refuses a name it does not know.
@@ -345,9 +347,10 @@ type Workflow struct {
 	// things, and they are wanted at different moments: the declaration when the
 	// file is written and type-checked, the values when a run is submitted.
 	//
-	// # Size (invariant 9)
+	// # Size
 	//
-	// These ride in the specification, so `CheckSpecSize` weighs them at submit and
+	// A run that grows past what Temporal can store must fail rather than hang
+	// (ARCHITECTURE.md invariant 9). These ride in the specification, so `CheckSpecSize` weighs them at submit and
 	// `CheckRunStateSize` weighs them again through [RunState.workflow] at every
 	// Continue-As-New. Both call `proto.Size` on the whole message rather than
 	// summing the fields they know about, so a field added here is bounded on the
@@ -413,7 +416,8 @@ type Workflow struct {
 	//
 	// Carried into a run's history as part of the specification, which costs a few
 	// bytes per run and is weighed by the same `CheckSpecSize` as everything else
-	// (invariant 9). That is the price of one compiled artifact, and it is small.
+	// (ARCHITECTURE.md invariant 9). That is the price of one compiled artifact,
+	// and it is small.
 	Triggers *Triggers `protobuf:"bytes,10,opt,name=triggers,proto3" json:"triggers,omitempty"`
 	// Signals declares, per signal name, who may deliver it. See
 	// [SignalPolicy]. Absent for a name means today's behavior: any
@@ -437,7 +441,7 @@ type Workflow struct {
 	//
 	// # Frozen at submit, like the rest of the specification
 	//
-	// The whole specification is frozen once a run starts (invariant 10) so
+	// The whole specification is frozen once a run starts so
 	// that a run means the same thing on its last segment as its first; this
 	// field is no exception; it is extracted into the run's tenancy memo
 	// alongside the namespace at submit and never re-read from the
@@ -458,7 +462,7 @@ type Workflow struct {
 	// different local policies would be an ambiguity the compiler would have
 	// to refuse. Better not to have the ambiguity at all.
 	//
-	// # Bounded (invariant: bound anything that consumes untrusted input)
+	// # Bounded
 	//
 	// A hand-built specification can reach `Run` directly, so this is
 	// untrusted input like the rest of the spec: at most 64 signal names, each
@@ -482,49 +486,28 @@ type Workflow struct {
 	// drifts.
 	Concurrency *Concurrency `protobuf:"bytes,14,opt,name=concurrency,proto3" json:"concurrency,omitempty"`
 	// Debug declares who may pause a durable run of this workflow under a debug
-	// lease — the `debug:` stanza beside `signals:`, and the answer to picatz/flowstate#928's
-	// "who may debug this workflow", recorded as an owner decision on 2026-08-23.
+	// lease: the `debug:` stanza beside `signals:`.
 	//
-	// # It *is* [SignalPolicy], rather than a shape beside it
+	// Its grammar is `signals:`'s, because the question is the same one: "this
+	// claim must carry this value, checked against the caller the server
+	// attested". The type is [SignalPolicy] and it is enforced by the same check
+	// that authorizes a signal.
 	//
-	// "This claim must carry this value, checked against the sender the server
-	// attested" is a question this schema already answers, and answers here:
-	// [SignalPolicyRule] is a structured claims map gating an action on a run.
-	// A fourth spelling of it is the mistake CLAUDE.md's design-sketch rule
-	// names with a worked example, so this field's type is that message and
-	// its enforcement is [SignalPolicyCheck] — the same function `authorizeSignal`
-	// reaches, not a second matcher beside it.
+	// # Absent means not debuggable
 	//
-	// What it costs to reuse rather than to specialize: the message is named for
-	// signals, so a reader meeting `debug:` in a file has to be told that its
-	// grammar is `signals:`'s. That is one sentence of documentation against a
-	// hand-maintained second claims vocabulary, and the trade is the one #726
-	// already decided.
-	//
-	// # The zero case is the opposite of [signals]'s, deliberately
-	//
-	// Absent means **not debuggable durably**. [signals] fails open per name
-	// because authorization there is opt-in — failing closed the day it landed
-	// would have denied every existing workflow's next `flow signal` for a
-	// policy nobody wrote. Nothing has ever been able to pause a durable run, so
-	// there is no existing behavior to preserve and no compatibility argument to
-	// make; the only reachable default is the fail-closed one, which is also the
-	// decision recorded on #928 ("no policy, no pause, no inspect") and the rule
-	// CLAUDE.md states for every policy surface. A run with no `debug:` stanza
-	// refuses every pause ask, including one from the identity that started it.
+	// Unlike `signals:`, which fails open per name, an absent `debug:` fails
+	// closed: a run with no `debug:` stanza refuses every pause ask, including
+	// one from the identity that started it.
 	//
 	// # Frozen at submit, enforced where the ask is accepted
 	//
-	// Extracted into the run's memo at submit exactly as [signals] is, and read
-	// back by the same `DescribeWorkflowExecution` every verb already makes, so
-	// a pause ask is refused before Temporal sees it rather than by a check the
-	// workflow could skip. See `server/lifecycle.go`'s `authorizeReservedSignal`.
+	// Recorded on the run at submit exactly as `signals:` is, and checked before
+	// Temporal sees a pause ask, so the workflow cannot skip the check.
 	//
 	// # Bounded
 	//
-	// By [SignalPolicy]'s own rules — at most 32 alternative rules, each with at
-	// most 16 claim entries — and by `CheckSpecSize`/`CheckRunStateSize` weighing
-	// the whole message, the same two bounds [signals] carries.
+	// By [SignalPolicy]'s own rules (at most 32 alternative rules, each with at
+	// most 16 claim entries) and by the specification's size bound.
 	Debug *SignalPolicy `protobuf:"bytes,15,opt,name=debug,proto3" json:"debug,omitempty"`
 	// ResolvedTaskCapabilities is the task-availability decision made by the
 	// control plane before durable execution. The task names in the program are
@@ -751,8 +734,8 @@ func (x *Workflow) GetResolvedCapabilityBindings() []*ResolvedCapabilityBinding 
 //
 // Nothing in a run ever reads this field. It is consumed once, by the server
 // deciding what id to start the run under, and the engine — either engine — never
-// sees it. So invariant 3 is satisfied by there being nothing for the two drivers
-// to disagree about: `flow run local` executes the same steps in the same order
+// sees it. So the two drivers cannot diverge on it (ARCHITECTURE.md invariant
+// 3, one executor): there is nothing for them to disagree about: `flow run local` executes the same steps in the same order
 // whether or not this block is present, exactly as it does for [Triggers], and no
 // local rehearsal is quietly pretending to model contention it cannot model. That
 // is a property of *where* this is enforced, not a promise this comment makes: a
@@ -789,7 +772,7 @@ type Concurrency struct {
 	// is digested into the run's workflow id and then discarded. It is never
 	// written to a memo, a search attribute or history, which is deliberate — a key
 	// is frequently the name of a customer or a cluster, and `webhookWorkflowID`'s
-	// reasoning about durable, broadly readable identifiers (invariant 8) applies
+	// reasoning about durable, broadly readable identifiers applies
 	// unchanged. Nothing downstream can read the expression either, since nothing
 	// downstream reads this message at all.
 	Key *Value `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -1380,7 +1363,7 @@ type InputDeclaration struct {
 	// identifier.
 	//
 	// Rooting under `inputs` is what keeps the rest of the question small, the same
-	// way `steps.<id>` did (invariant 2). A name here is a field selection rather
+	// way `steps.<id>` did. A name here is a field selection rather
 	// than an identifier, so seventeen of CEL's twenty-one reserved words are legal
 	// (`namespace`, `loop`, `if` and the rest) and only the four lexer tokens are
 	// not. Nothing needs refusing against `steps`, `vars` or `now` either: an input
@@ -1446,16 +1429,7 @@ type InputDeclaration struct {
 	// reach an operator's screen at all is a mistake; that value is a secret
 	// reference, not this.
 	//
-	// # What this does on an *input*, precisely
-	//
-	// This sentence used to say an input was rendered on exactly one surface —
-	// a schedule's bound arguments — and that stopped being true twice, first
-	// when a sensitive *input* was made a reason to withhold a run's whole step
-	// transcript and carried state (#975), and again when a `for_each` bound one
-	// into a failing step and the failure sentence printed it (#974). Both are
-	// written down here now, because this comment travels in the descriptor set
-	// to an editor's hover, and a normative sentence about what a flag does must
-	// not be something the renderers have quietly outgrown.
+	// # What this does on an input
 	//
 	// A sensitive-declared value is withheld or redacted on four surfaces:
 	//
@@ -1873,7 +1847,7 @@ func (x *OutputDeclaration) GetValueType() *Type {
 
 // RunOutputs is what one run computed for its declared outputs.
 //
-// Its own message rather than a widening of [Workflow.StepOutputs], which is a
+// Its own message rather than a widening of `Workflow.StepOutputs`, which is a
 // different question with a similar shape: step outputs are every value the run
 // produced, keyed by the step that produced it, and these are the few values the
 // *workflow* said it would report. A caller wanting the answer should not have to
@@ -1882,7 +1856,8 @@ func (x *OutputDeclaration) GetValueType() *Type {
 //
 // Carried in [RunState] as well as returned, because a run that suspends has to
 // keep what it has computed; and weighed there by `CheckRunStateSize`, which
-// measures the whole message (invariant 9).
+// measures the whole message (ARCHITECTURE.md invariant 9, a run that cannot
+// continue must fail, not hang).
 type RunOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Values are the declared outputs, keyed by the name their declaration gave.
@@ -2579,9 +2554,9 @@ type Wait_DurationExpr struct {
 	// A separate field from `duration` rather than a widening of it, because
 	// `duration` is a published field carried in every running spec and in every
 	// `RunState` crossing a Continue-As-New: changing its type would break the
-	// wire contract invariant 10 exists to protect. So a literal `sleep: 30s`
-	// still compiles to `duration` and is byte-identical through a round trip,
-	// and only a `${...}` reaches here.
+	// RunState wire contract (ARCHITECTURE.md invariant 10). So a literal
+	// `sleep: 30s` still compiles to `duration` and is byte-identical through a
+	// round trip, and only a `${...}` reaches here.
 	//
 	// Two fields for one meaning is the shape CLAUDE.md warns about, so nothing
 	// reads them apart: [EvalWaitDuration] is the single reader, both drivers
@@ -3124,7 +3099,9 @@ func (x *Switch) GetDefault() *Switch_Default {
 // resolution (reading `./provision.yaml`, compiling it, checking its arguments)
 // happens once, in the client, when a Flowfile becomes a Workflow.
 //
-// That is not an optimisation, it is invariant 10. A run's specification is frozen
+// That is not an optimisation; it is what keeps RunState a wire contract
+// between interpreter versions (ARCHITECTURE.md invariant 10). A run's
+// specification is frozen
 // when it is submitted and carried across every Continue-As-New in its chain; a
 // call resolved by name at execution time would make a durable run depend on a
 // definition someone can edit while it is in flight, so a workload could mean one
@@ -3554,14 +3531,15 @@ type Workflow_StepOutputs struct {
 	// it and the durable workflow completes with it), so it is the one value both
 	// drivers already carry out of a run. A field here is therefore how the answer
 	// reaches a caller without either driver changing shape, which is what keeps
-	// `flow run local` and a durable run reporting one thing (invariant 3).
+	// `flow run local` and a durable run reporting one thing (ARCHITECTURE.md
+	// invariant 3, one executor).
 	//
 	// The alternative was a new result message wrapping both. That is a *different
 	// type* on the workflow's completion payload, and a run that completed before
 	// the change is read back by decoding its stored payload into whatever type the
 	// reader names, so an old result would be decoded as a new message and mean
-	// something else, or fail. Adding a field is free and reads back as absent
-	// (invariant 10); replacing the type is not, and this is a payload nobody can
+	// something else, or fail. Adding a field is free and reads back as absent;
+	// replacing the type is not, and this is a payload nobody can
 	// rewrite after the fact.
 	//
 	// It stays a distinct message rather than more entries in `step_values` for the

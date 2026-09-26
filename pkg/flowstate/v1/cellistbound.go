@@ -64,6 +64,9 @@ const listsRangeOverload = "lists_range"
 // that order by asserting the refusal is worded here.
 func listRangeLibrary() cel.EnvOption {
 	return cel.Function(listsRangeFunction,
+		cel.FunctionDocs(fmt.Sprintf("Returns the integers from 0 up to, but not including, n: "+
+			"`lists.range(3)` is `[0, 1, 2]`. n must be between 0 and %d; anything else is an "+
+			"evaluation error.", maxListElements)),
 		cel.Overload(listsRangeOverload,
 			[]*cel.Type{cel.IntType}, cel.ListType(cel.IntType),
 			cel.UnaryBinding(func(arg ref.Val) ref.Val {
