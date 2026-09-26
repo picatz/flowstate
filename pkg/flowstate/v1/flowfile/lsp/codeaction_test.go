@@ -405,3 +405,49 @@ func TestCodeActionQuotesAnUnquotedTernaryInADocumentThatDoesNotParse(t *testing
 	assert.Empty(t, c.codeAction(uri, wholeOf(src), []lsp.CodeActionKind{lsp.CAKRefactor}, nil),
 		"asked for anything but a quickfix, an unparsable document offers nothing")
 }
+
+// TestCodeActionMigratesAWholeValueAliasToAFlowStyleAnchor is #2102 reached
+// through the editor rather than the command.
+//
+// Before #2102's fix, spliceScalar copied a span that stopped short of a
+// flow-style anchor's own closing delimiter (or, for a mapping, its opening
+// one too), so [flowfile.Fix]'s first rewriting round produced invalid YAML
+// — `u: x: 1` for a `{x: 1}` anchor. [flowfile.Fix]'s own fixed-point loop
+// then tried to re-parse that and returned the resulting parse error to its
+// caller, which [migrationActions] treats the same as any other error: no
+// action offered at all, for a document `flow fix` can otherwise migrate
+// cleanly. The fix makes the correct migration reachable here the same way
+// it is from the command line.
+func TestCodeActionMigratesAWholeValueAliasToAFlowStyleAnchor(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.3
+name: t
+vars:
+  a: &a {x: 1}
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	const uri = "file:///flow-anchor.yaml"
+	c := newClient(t)
+	c.initialize()
+	c.open(uri, src)
+
+	actions := c.codeAction(uri, wholeOf(src), nil, nil)
+	require.NotEmpty(t, actions, "no action offered for a document flow fix can migrate")
+
+	migrate := actionOfKind(t, actions, codeActionKindSourceFixAll)
+	fixed := applyEdit(t, uri, src, migrate.Edit)
+	assert.Equal(t, fixedSource(t, src), fixed)
+
+	// The property the whole fix is about: the editor's own edit has to be
+	// valid YAML with both of the anchor's flow-style delimiters intact, not
+	// a document missing its closing (or, for a mapping, its opening) brace.
+	assert.Contains(t, fixed, "u: {x: 1}\n")
+	_, _, err := flowfile.Parse([]byte(fixed))
+	require.NoError(t, err, "%s", fixed)
+}

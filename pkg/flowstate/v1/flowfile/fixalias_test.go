@@ -401,6 +401,234 @@ steps:
       message: hello
 `,
 		},
+		{
+			// #2102: the anchor's value is a flow-style mapping, `{…}`. spliceScalar
+			// used to copy the span spanOfNode computed for it, and eachToken never
+			// visits a MappingNode's own tokens at all — so that span ran from the
+			// first entry to the last, missing both `{` and `}`.
+			name: "a whole-value alias to a flow-style mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a {x: 1}
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: {x: 1}
+  u: {x: 1}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: {x: 1}
+  u: {x: 1}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			// #2102's other shape: a flow-style sequence, `[…]`. eachToken visits a
+			// SequenceNode's opening token but never a matching closing one, so the
+			// computed span kept the `[` and dropped the `]`.
+			name: "a whole-value alias to a flow-style sequence",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a [1, 2]
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: [1, 2]
+  u: [1, 2]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: [1, 2]
+  u: [1, 2]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			// #2102's acceptance criteria asks for a nested case too, since the gap
+			// is structural rather than shape-specific: the outer mapping's own
+			// delimiters are what this fix widens the span to, and the nested flow
+			// mapping's `{`/`}` come along for free as bytes already inside that
+			// range, with no second walk needed to find them.
+			name: "a whole-value alias to a nested flow-style mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a {x: {y: 1}}
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: {x: {y: 1}}
+  u: {x: {y: 1}}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: {x: {y: 1}}
+  u: {x: {y: 1}}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			name: "a whole-value alias to a nested flow-style sequence",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a [[1, 2], 3]
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: [[1, 2], 3]
+  u: [[1, 2], 3]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: [[1, 2], 3]
+  u: [[1, 2], 3]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			// #2102, F1's control direction: the anchor's own declaration is
+			// not inside any flow collection here — `o:` opens a block
+			// mapping, and `ports:` is a block key of it — even though the
+			// anchor's *value* is flow-style. [aliasInliner.anchorInOuterFlow]
+			// has to key off the anchor's own site, not off whether the
+			// document holds flow style anywhere, or this control would be
+			// refused right alongside the case it is meant to be kept
+			// distinct from.
+			name: "a flow-style anchor declared under a block key keeps inlining",
+			src: `edition: v2026.3
+name: t
+vars:
+  o:
+    ports: &p [8080:80]
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  o:
+    ports: [8080:80]
+  u: [8080:80]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  o:
+    ports: [8080:80]
+  u: [8080:80]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			// The delimiter widening this issue's own fix does — see
+			// [widenForFlowDelimiters] — has no entries to fold in for an
+			// *empty* flow mapping, since [ast.MappingNode] with no Values
+			// gives [spanOfNode] nothing to walk and no End to compare
+			// against; that used to leave the span's End unset and refuse
+			// this with "not written on one line", a diagnostic naming the
+			// wrong reason for a value that is very much on one line.
+			name: "a whole-value alias to an empty flow-style mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a {}
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: {}
+  u: {}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: {}
+  u: {}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
 	}
 }
 
@@ -633,6 +861,133 @@ steps:
 			line:    6,
 			column:  9,
 			message: "declares an anchor of its own",
+		},
+		{
+			// #2102, F1: goccy reads a bare `key:value` scalar with no space
+			// after the colon differently depending on context — nested
+			// inside an outer flow mapping it decodes as a further mapping
+			// entry, but beside a block key it is one string. Splicing this
+			// anchor's flow-style sequence out from under the outer `{…}`
+			// and into a block context would silently change which of those
+			// two readings the value gets, so this refuses rather than
+			// guess. On origin/main this same input already fails to
+			// compile with a parse error rather than accepting anything.
+			name: "a flow-style anchor declared inside an outer flow mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: {ports: &p [8080:80]}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "written inside an outer flow collection",
+		},
+		{
+			name: "a flow-style anchor's own sequence entries read differently outside a flow mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: {k: &p [a:b, c]}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "written inside an outer flow collection",
+		},
+		{
+			// #2102, F2: goccy reports the column of the token after a tag
+			// or a literal tab inside a flow collection one short of where
+			// it is actually written, independent of this rewrite's own
+			// delimiter-widening logic — so the span this rewrite trusted
+			// stopped one byte short of the value's own closing `]`, and
+			// [aliasInliner.scalarValueOf]'s own check that the copied
+			// bytes actually start and end with the delimiter tokens they
+			// should is what catches it.
+			name: "a tag before a flow sequence's own element",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p [!!str 1]
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name: "a tag before a flow mapping's own value",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p {c: !!str 1}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name: "a tag inside a flow sequence nested in a flow mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p {a: [!!str 1]}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name: "a local tag before a flow sequence's own element",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: &p [!foo x]
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name:    "a literal tab as a flow sequence's own leading whitespace",
+			src:     "edition: v2026.3\nname: t\nvars:\n  o: &p [\ta]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name:    "a literal tab between a flow sequence's own elements",
+			src:     "edition: v2026.3\nname: t\nvars:\n  o: &p [a,\tb]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
 		},
 	}
 

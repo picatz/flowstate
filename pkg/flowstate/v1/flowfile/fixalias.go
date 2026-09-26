@@ -171,6 +171,15 @@ type aliasInliner struct {
 	anchors     map[string]*ast.AnchorNode
 	anchorNodes []*ast.AnchorNode
 
+	// anchorInOuterFlow records, for an anchor whose declaration
+	// [aliasInliner.collect] has reached, whether some flow collection
+	// (`{…}` or `[…]`) other than the anchor's own value wraps it — see
+	// [aliasInliner.collect]'s own `case *ast.AnchorNode`. Read only by
+	// [aliasInliner.refusesAnchorInOuterFlow], for the one shape moving a
+	// flow-style value out of such a collection can silently change the
+	// meaning of rather than merely its formatting (#2102, F1).
+	anchorInOuterFlow map[*ast.AnchorNode]bool
+
 	sites  []aliasSite
 	byLine map[int]aliasSite
 
@@ -406,6 +415,18 @@ func (in *aliasInliner) collect(n ast.Node, flow bool) {
 		}
 
 	case *ast.AnchorNode:
+		// Recorded before descending, so flow still means "an outer flow
+		// collection wraps this anchor's own declaration" rather than
+		// whatever node.Value's own style folds in below (#2102, F1: an
+		// anchor named here that turns out to hold a flow-style value of
+		// its own is spliced by [aliasInliner.spliceScalar], which this
+		// records for so that splice can refuse rather than move a plain
+		// scalar goccy would read differently once it leaves the flow
+		// collection surrounding it).
+		if in.anchorInOuterFlow == nil {
+			in.anchorInOuterFlow = map[*ast.AnchorNode]bool{}
+		}
+		in.anchorInOuterFlow[node] = flow
 		in.collect(node.Value, flow)
 
 	case *ast.AliasNode:
@@ -574,12 +595,20 @@ func (in *aliasInliner) replacement(site aliasSite, stack []string) ([]string, b
 	switch value := anchor.Value.(type) {
 	case *ast.MappingNode:
 		if value.IsFlowStyle {
+			if in.refusesAnchorInOuterFlow(site, anchor, name) {
+				return nil, false
+			}
+
 			return in.spliceScalar(site, prefix, suffix, anchor)
 		}
 
 		return in.spliceBlock(site, prefix, suffix, anchor, append(slices.Clone(stack), name))
 	case *ast.SequenceNode:
 		if value.IsFlowStyle {
+			if in.refusesAnchorInOuterFlow(site, anchor, name) {
+				return nil, false
+			}
+
 			return in.spliceScalar(site, prefix, suffix, anchor)
 		}
 
@@ -746,7 +775,8 @@ func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Sp
 		return span, true
 	}
 
-	size := originLen(anchor.Value)
+	start, end, isFlow := flowDelimiters(anchor.Value)
+	size := originLen(anchor.Value) + tokenOriginLen(start) + tokenOriginLen(end)
 	if !in.chargeScan(alias, size) {
 		return Span{}, false
 	}
@@ -760,6 +790,13 @@ func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Sp
 	// (#2075).
 	in.rawScannedBytes += size
 	span := spanOfNode(anchor.Value)
+	if isFlow {
+		// [spanOfNode]'s walk never reaches these two tokens itself — see
+		// [flowDelimiters] — so the span it returns for a flow-style value
+		// is widened here, once per anchor, to the actual delimiters an
+		// author wrote (#2102).
+		span = widenForFlowDelimiters(span, start, end)
+	}
 	if in.anchorSpans == nil {
 		in.anchorSpans = map[*ast.AnchorNode]Span{}
 	}
@@ -768,27 +805,101 @@ func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Sp
 	return span, true
 }
 
+// flowDelimiters returns the opening and closing tokens of a flow-style
+// mapping or sequence value, or ok false for anything else — including a
+// *block* mapping or sequence, which the parser never gives such tokens to
+// begin with.
+//
+// This is the gap [eachToken] leaves (#2102): its switch never visits a
+// [ast.MappingNode]'s own `Start`/`End` tokens at all, and for a
+// [ast.SequenceNode] visits only `Start`, never the matching `End`. For a
+// *block* mapping or sequence that gap is invisible, because the parser
+// never sets either token there — a block value has no `{`/`}` or trailing
+// `]` to visit. A *flow* mapping's `{`/`}` and a flow sequence's closing `]`
+// are real tokens with real positions the parser does set, so [spanOfNode]'s
+// answer for one stops one or two columns short of what the author actually
+// wrote, and [spliceScalar] — the one caller that copies those columns
+// straight into another line — copies a value missing its own delimiters.
+//
+// Fixed here, in [aliasInliner.spanOf], rather than in [eachToken] or
+// [spanOfNode] themselves: those two are called from well over a hundred
+// other sites across this package, almost all of them positioning a
+// diagnostic rather than copying bytes, and a span that lands one or two
+// columns short of a flow value's own close is not new outside this file —
+// widening every one of those callers' answers at once is a change this
+// issue has not audited them for. This is the one caller that turns the gap
+// into invalid output, so the fix stays local to it.
+func flowDelimiters(n ast.Node) (start, end *token.Token, ok bool) {
+	switch v := n.(type) {
+	case *ast.MappingNode:
+		if v.IsFlowStyle {
+			return v.Start, v.End, true
+		}
+	case *ast.SequenceNode:
+		if v.IsFlowStyle {
+			return v.Start, v.End, true
+		}
+	}
+	return nil, nil, false
+}
+
+// widenForFlowDelimiters extends span to cover a flow-style value's own
+// opening and closing tokens, when [spanOfNode]'s walk did not already
+// reach them (#2102, see [flowDelimiters]).
+//
+// Only the outermost pair matters here: [spliceScalar] copies the raw bytes
+// between span's two positions on one line, so a nested flow value's own
+// delimiters — `{y: 1}` inside `{x: {y: 1}}`, say — are already inside that
+// range once the outer pair is right, the same way any other byte between
+// them is. Nothing needs to walk the subtree a second time to find them.
+func widenForFlowDelimiters(span Span, start, end *token.Token) Span {
+	if s := spanOfToken(start); s.IsValid() && before(s.Start, span.Start) {
+		span.Start = s.Start
+	}
+	// !span.End.IsValid() is not the same question [before] answers here:
+	// an empty flow value (`&a {}`) gives [spanOfNode] nothing to walk at
+	// all — no entries, so [eachToken] visits neither `{` nor `}` — and
+	// [before](span.End, e.End) with an invalid span.End as its *first*
+	// argument returns false unconditionally, leaving End unset and this
+	// value reporting "not written on one line" for a value that plainly
+	// is. Checked explicitly rather than relying on [before]'s own
+	// invalid-argument rule the way the Start check above safely does,
+	// where the invalid value is [before]'s second argument instead.
+	if e := spanOfToken(end); e.IsValid() && (!span.End.IsValid() || before(span.End, e.End)) {
+		span.End = e.End
+	}
+	return span
+}
+
 // originLen returns the total length of every token's `Origin` in a
 // subtree — the same total [tokenText] would scan with [strings.TrimSpace]
 // on each one — without doing that scan: a string's own length is O(1) to
-// read, so walking the tokens with [eachToken] and summing `len(tok.Origin)`
-// (or `len(tok.Value)`, [tokenText]'s own fallback when a token carries no
-// `Origin`) costs one [len] per token rather than one scan per token's
-// worth of source bytes.
+// read, so walking the tokens with [eachToken] and summing each one's
+// [tokenOriginLen] costs one [len] per token rather than one scan per
+// token's worth of source bytes.
 func originLen(n ast.Node) int {
 	total := 0
 	eachToken(n, func(tok *token.Token) {
-		if tok == nil {
-			return
-		}
-		if tok.Origin != "" {
-			total += len(tok.Origin)
-			return
-		}
-		total += len(tok.Value)
+		total += tokenOriginLen(tok)
 	})
 
 	return total
+}
+
+// tokenOriginLen returns the length [tokenText] would scan for one token
+// with [strings.TrimSpace] — a token's `Origin` when it carries one, or its
+// `Value` otherwise ([tokenText]'s own fallback) — without doing that scan.
+// nil answers zero, so a caller need not check before calling: [spanOf]
+// reads this for [flowDelimiters]'s two tokens, either of which is nil for
+// a value that is not flow-style.
+func tokenOriginLen(tok *token.Token) int {
+	if tok == nil {
+		return 0
+	}
+	if tok.Origin != "" {
+		return len(tok.Origin)
+	}
+	return len(tok.Value)
 }
 
 // charge adds n to the bytes an expansion has spent on *output* and refuses
@@ -915,6 +1026,40 @@ func (in *aliasInliner) appendLine(alias *ast.AliasNode, out []string, line stri
 	return append(out, line), true
 }
 
+// refusesAnchorInOuterFlow refuses inlining a flow-style value whose own
+// anchor is declared inside some *other*, outer flow collection, and
+// reports whether it refused.
+//
+// goccy's parser reads a plain scalar that holds a bare colon and no space
+// after it differently depending on what surrounds it: `[8080:80]` decodes
+// as `[{8080: 80}]` when it sits inside an outer `{…}`, but as
+// `["8080:80"]`, one string, beside a block key — `o: {ports: &p [8080:80]}`
+// against `o:\n  ports: &p [8080:80]`. Splicing an alias always moves the
+// anchor's own value text out of wherever the anchor was declared and into
+// wherever the alias was written; when the anchor sits inside a flow
+// collection the alias is not also inside (#653's refusal already keeps an
+// alias itself out of flow style, in [aliasInliner.recordSite]), that move
+// can silently change what a value like this one means rather than only
+// how it looks. On main this same input already refuses outright with a
+// parse error, so writing something readable in its place would be worse
+// than refusing to guess. #2117 tracks the general question of which
+// flow-style values are actually affected; this refuses every one of
+// them, which is narrower — never a false accept, at the cost of refusing
+// some that would have moved safely.
+func (in *aliasInliner) refusesAnchorInOuterFlow(site aliasSite, anchor *ast.AnchorNode, name string) bool {
+	if !in.anchorInOuterFlow[anchor] {
+		return false
+	}
+
+	in.refuseAlias(site.alias,
+		"the value `&%s` names is written inside an outer flow collection (`{…}` or `[…]`), where a plain value "+
+			"like `8080:80` can mean something other than it would once moved outside one; write the anchor "+
+			"outside flow style and run this again, or write the value out by hand",
+		name)
+
+	return true
+}
+
 // spliceScalar replaces an alias with a value written on one line: a scalar, or a
 // mapping or sequence in flow style.
 //
@@ -992,6 +1137,24 @@ func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, sp
 		in.refuseAlias(site.alias,
 			"the anchor `&%s` names no value, so there is nothing to write in this alias's place; write the value out by hand",
 			anchorName(anchor))
+
+		return "", false
+	}
+
+	// [span.End]'s column already came from [widenForFlowDelimiters], which
+	// widens to wherever goccy itself reports the closing token — and goccy
+	// reports that column one short of where it is actually written when a
+	// tag (`!!str`, `!foo`) or a literal tab sits inside the flow
+	// collection, independent of this file's own delimiter-widening logic.
+	// Checked here, against the tokens' own decoded text rather than their
+	// positions, because a value's *bytes* are the one thing this function
+	// exists to get right: `strings.HasPrefix`/`HasSuffix` catch a value
+	// this rewrite is about to splice in without its own closing (or,
+	// rarely, opening) delimiter, which every caller upstream of here
+	// already believed was correctly spanned.
+	if start, end, isFlow := flowDelimiters(anchor.Value); isFlow &&
+		!(strings.HasPrefix(value, start.Value) && strings.HasSuffix(value, end.Value)) {
+		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
 
 		return "", false
 	}
