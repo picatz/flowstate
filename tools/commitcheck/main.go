@@ -5,11 +5,21 @@
 //	git log -1 --format=%B | go run ./tools/commitcheck   # a commit message
 //	go run ./tools/commitcheck -title 'x: y' -body-file body.md
 //
-// Under GitHub Actions each finding is a `::warning` annotation naming the
-// rule and the skill that explains it; elsewhere it is a line on stderr. The
-// exit status is zero unless -strict is given: the check runs warning-only
-// until 2026-09-21 so the ratchet is visible before it bites, and the plan
-// job flips the flag then.
+// Under GitHub Actions each finding is an annotation naming the rule and the
+// skill that explains it — `::error` under -strict, since that run is the
+// one the annotation's own step then fails, `::warning` otherwise; elsewhere
+// it is a line on stderr. The exit status is zero unless -strict is given
+// and there is a finding: a bare run, of the kind above, only ever reports.
+// commitcheck.yml is what makes the check enforced, by passing -strict in
+// its one step (#2024); it is its own workflow rather than a step of
+// ci.yml's plan job, because it must re-run on an edited pull request, which
+// the plan job does not. #1728's ratchet named 2026-09-21 as when this would
+// turn strict; the check instead stayed warning-only in CI past that date,
+// until #2024 gave commitcheck.yml the flag directly.
+//
+// A pull request opened by [dependabotActor] is exempt from every rule: its
+// title and body are Dependabot's own template, not text its nominal author
+// chose and could hold to these conventions (#2024).
 package main
 
 import (
@@ -23,6 +33,33 @@ import (
 	"github.com/picatz/flowstate/internal/commitcheck"
 )
 
+// dependabotActor is the one automated pull request author this repository's
+// dependabot.yml configures (#2024). Named rather than matched by a `[bot]`
+// suffix or an actor type, in keeping with this package's existing
+// attribution rule: an exemption from a convention is a claim about a
+// specific known author, not a pattern any account could satisfy.
+const dependabotActor = "dependabot[bot]"
+
+// exempt is whether the message owes these conventions nothing: only a pull
+// request opened by [dependabotActor], whose title and body Dependabot
+// generates and its human maintainer never chooses.
+func exempt(where commitcheck.Surface, actor string) bool {
+	return where == commitcheck.SurfacePullRequest && actor == dependabotActor
+}
+
+// decision is the exit status a finding earns: 1 when the run is strict and
+// there is one, 0 otherwise. Pulled out of main, and the only place that
+// reads -strict, so a test can call it directly rather than forking a
+// process to observe os.Exit — and so it fails at once if a future edit
+// stops checking either half of the condition, not only once CI happens to
+// run a case that combination would mishandle.
+func decision(strict bool, findings []commitcheck.Finding) int {
+	if strict && len(findings) > 0 {
+		return 1
+	}
+	return 0
+}
+
 func main() {
 	title := flag.String("title", "", "the subject to check; with -body-file, the two halves of a message")
 	bodyFile := flag.String("body-file", "", "a file holding the body; \"-\" reads stdin")
@@ -34,66 +71,73 @@ func main() {
 	}
 	flag.Parse()
 
-	subject, body, where, err := message(*title, *bodyFile, os.Getenv("GITHUB_EVENT_PATH"), os.Stdin)
+	subject, body, where, actor, err := message(*title, *bodyFile, os.Getenv("GITHUB_EVENT_PATH"), os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "commitcheck: %v\n", err)
 		os.Exit(2)
 	}
 
-	findings := commitcheck.Check(subject, body, where)
-	report(os.Stderr, findings, os.Getenv("GITHUB_ACTIONS") == "true")
-
-	if *strict && len(findings) > 0 {
-		os.Exit(1)
+	if exempt(where, actor) {
+		fmt.Fprintf(os.Stderr, "commitcheck: skipping %s's pull request; its title and body are not text a contributor chose (#2024)\n", actor)
+		return
 	}
+
+	findings := commitcheck.Check(subject, body, where)
+	report(os.Stderr, findings, os.Getenv("GITHUB_ACTIONS") == "true", *strict)
+
+	os.Exit(decision(*strict, findings))
 }
 
 // message picks the subject and body from wherever this invocation carries
 // them: the flags, the pull request in the event payload, or a whole message
-// on stdin with the subject as its first line.
+// on stdin with the subject as its first line. actor is the pull request's
+// author login, and only the event payload carries one.
 //
 // Only the event payload is known to be a pull request body, which the forge
 // has already appended its own footer to. The flags and stdin carry whatever
 // the caller has in hand, so they are read as a commit message, which is the
 // stricter of the two.
-func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, where commitcheck.Surface, err error) {
+func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, where commitcheck.Surface, actor string, err error) {
 	switch {
 	case title != "":
 		if bodyFile != "" {
 			data, err := readFile(bodyFile, stdin)
 			if err != nil {
-				return "", "", 0, err
+				return "", "", 0, "", err
 			}
 			body = string(data)
 		}
-		return title, body, commitcheck.SurfaceCommit, nil
+		return title, body, commitcheck.SurfaceCommit, "", nil
 
 	case eventPath != "":
 		data, err := readBounded(eventPath, nil)
 		if err != nil {
-			return "", "", 0, fmt.Errorf("reading the event payload: %w", err)
+			return "", "", 0, "", fmt.Errorf("reading the event payload: %w", err)
 		}
 		var event struct {
 			PullRequest *struct {
 				Title string `json:"title"`
 				Body  string `json:"body"`
+				User  struct {
+					Login string `json:"login"`
+				} `json:"user"`
 			} `json:"pull_request"`
 		}
 		if err := json.Unmarshal(data, &event); err != nil {
-			return "", "", 0, fmt.Errorf("decoding the event payload: %w", err)
+			return "", "", 0, "", fmt.Errorf("decoding the event payload: %w", err)
 		}
 		if event.PullRequest == nil {
-			return "", "", 0, fmt.Errorf("the event payload carries no pull request; this check reads pull_request events")
+			return "", "", 0, "", fmt.Errorf("the event payload carries no pull request; this check reads pull_request events")
 		}
-		return event.PullRequest.Title, event.PullRequest.Body, commitcheck.SurfacePullRequest, nil
+		return event.PullRequest.Title, event.PullRequest.Body, commitcheck.SurfacePullRequest, event.PullRequest.User.Login, nil
 
 	default:
 		data, err := readBounded("-", stdin)
 		if err != nil {
-			return "", "", 0, fmt.Errorf("reading the message from stdin: %w", err)
+			return "", "", 0, "", fmt.Errorf("reading the message from stdin: %w", err)
 		}
 		subject, body, _ = strings.Cut(strings.TrimSpace(string(data)), "\n")
-		return subject, body, commitcheck.SurfaceCommit, nil
+		return subject, body, commitcheck.SurfaceCommit, "", nil
 	}
 }
 
@@ -133,10 +177,18 @@ func readBounded(name string, stdin io.Reader) ([]byte, error) {
 // A finding repeats part of the author's line, so what reaches the runner
 // log is escaped the way workflow commands require: a newline or a `::` in
 // a title or body must not become a second command, or a spoofed one.
-func report(out io.Writer, findings []commitcheck.Finding, actions bool) {
+//
+// The command is ::error under a strict run: that is the one that fails the
+// step, and the annotation should say so rather than call it a warning the
+// run then contradicts by exiting nonzero.
+func report(out io.Writer, findings []commitcheck.Finding, actions, strict bool) {
+	command := "warning"
+	if strict {
+		command = "error"
+	}
 	for _, f := range findings {
 		if actions {
-			fmt.Fprintf(out, "::warning title=%s::%s\n",
+			fmt.Fprintf(out, "::%s title=%s::%s\n", command,
 				escapeProperty("commitcheck/"+string(f.Rule)),
 				escapeData(f.Message+" (see "+f.Skill+")"))
 			continue

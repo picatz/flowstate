@@ -24,7 +24,7 @@ func TestAnAnnotationCannotBeForgedByTheMessageItReports(t *testing.T) {
 		Rule:    commitcheck.RuleAbsolute,
 		Message: "line one\n::error::forged, with 100% certainty",
 		Skill:   "x",
-	}}, true)
+	}}, true, false)
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	assert.Len(t, lines, 1, "the message's newline became a second line:\n%s", out.String())
@@ -40,21 +40,37 @@ func TestOutsideActionsAFindingIsAPlainLine(t *testing.T) {
 	t.Parallel()
 
 	var out strings.Builder
-	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, false)
+	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, false, false)
 	assert.Equal(t, "commitcheck: issue: no issue (see s)\n", out.String())
+}
+
+// TestAStrictRunAnnotatesAsAnError pins the one difference -strict makes to
+// the annotation itself: ::error, not ::warning, since that is the command
+// that actually fails the step.
+func TestAStrictRunAnnotatesAsAnError(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, true, true)
+	assert.True(t, strings.HasPrefix(out.String(), "::error title=commitcheck/issue::"), out.String())
+
+	out.Reset()
+	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, true, false)
+	assert.True(t, strings.HasPrefix(out.String(), "::warning title=commitcheck/issue::"), out.String())
 }
 
 func TestAnOversizedInputIsRefusedRatherThanRead(t *testing.T) {
 	t.Parallel()
 
-	_, _, _, err := message("", "", "", strings.NewReader(strings.Repeat("x", maxInput+1)))
+	_, _, _, _, err := message("", "", "", strings.NewReader(strings.Repeat("x", maxInput+1)))
 	assert.ErrorContains(t, err, "over", "a message past the bound was read whole")
 
-	subject, body, where, err := message("", "", "", strings.NewReader("a: b\n\nbody\n"))
+	subject, body, where, actor, err := message("", "", "", strings.NewReader("a: b\n\nbody\n"))
 	assert.NoError(t, err)
 	assert.Equal(t, "a: b", subject)
 	assert.Equal(t, "\nbody", body)
 	assert.Equal(t, commitcheck.SurfaceCommit, where, "stdin carries whatever the caller has; the stricter surface applies")
+	assert.Empty(t, actor, "stdin carries no pull request, so no actor to read one from")
 }
 
 // The event payload is the only place [commitcheck.SurfacePullRequest] is
@@ -72,20 +88,93 @@ func TestTheEventPayloadIsReadAsAPullRequestBody(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "event.json")
 	payload, err := json.Marshal(map[string]any{
-		"pull_request": map[string]string{"title": "a: b", "body": stored},
+		"pull_request": map[string]any{
+			"title": "a: b",
+			"body":  stored,
+			"user":  map[string]string{"login": "someone"},
+		},
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, payload, 0o600))
 
-	subject, body, where, err := message("", "", path, nil)
+	subject, body, where, actor, err := message("", "", path, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "a: b", subject)
 	assert.Equal(t, stored, body)
 	require.Equal(t, commitcheck.SurfacePullRequest, where,
 		"a body read back from the forge already carries the footer the forge appended")
+	assert.Equal(t, "someone", actor)
 
 	assert.Empty(t, commitcheck.Check(subject, body, where),
 		"end to end: the appended footer is not reported against the author who did not write it")
 	assert.NotEmpty(t, commitcheck.Check(subject, body, commitcheck.SurfaceCommit),
 		"and the same text in a commit message still is, so the surface is what decides")
+}
+
+// TestTheExitDecisionChecksBothStrictAndFindings pins main's real
+// exit-status choice directly: a test that only exercised report or the
+// flag's default would stay green if a future edit dropped either half of
+// [decision]'s condition, and only fail once CI happened to run a case that
+// combination mishandled (Copilot, #2085).
+func TestTheExitDecisionChecksBothStrictAndFindings(t *testing.T) {
+	t.Parallel()
+
+	finding := []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "x", Skill: "s"}}
+
+	assert.Equal(t, 0, decision(false, nil), "not strict, clean: never a failure")
+	assert.Equal(t, 0, decision(false, finding), "not strict: a finding still exits 0")
+	assert.Equal(t, 0, decision(true, nil), "strict but clean: exits 0")
+	assert.Equal(t, 1, decision(true, finding), "strict and dirty: the one case that must fail")
+}
+
+// TestTheExemptionsNegativeBoundary pins the actors [exempt] must not
+// exempt. Checking only "someone" left two loose matches able to pass:
+// HasSuffix(actor, "[bot]") would wrongly exempt any other bot account, and
+// Contains(actor, "dependabot") would wrongly exempt a login that merely
+// mentions it (#2085 review).
+func TestTheExemptionsNegativeBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, actor := range []string{
+		"someone",
+		"renovate[bot]",       // a real dependency bot, not this one
+		"github-actions[bot]", // any `[bot]`-suffixed login would pass HasSuffix
+		"dependabot",          // Contains without the exact login
+		"dependabot-fan",      // Contains a substring of the login
+	} {
+		assert.False(t, exempt(commitcheck.SurfacePullRequest, actor), "actor %q must still owe the conventions", actor)
+	}
+	assert.False(t, exempt(commitcheck.SurfaceCommit, dependabotActor),
+		"a commit message carries no actor to exempt, even Dependabot's own login")
+}
+
+// TestADependabotPullRequestIsExempt pins the one exemption #2024 added:
+// Dependabot's own title and body, which its human maintainer never chose
+// and could not have held to these conventions, do not count against it.
+func TestADependabotPullRequestIsExempt(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, exempt(commitcheck.SurfacePullRequest, dependabotActor))
+	assert.False(t, exempt(commitcheck.SurfacePullRequest, "someone"),
+		"a human's pull request still owes the conventions")
+	assert.False(t, exempt(commitcheck.SurfaceCommit, dependabotActor),
+		"a commit message carries no actor to exempt; only the event payload does")
+
+	path := filepath.Join(t.TempDir(), "event.json")
+	payload, err := json.Marshal(map[string]any{
+		"pull_request": map[string]any{
+			"title": "build(deps): bump x from 1 to 2",
+			"body":  "Bumps x from 1 to 2.",
+			"user":  map[string]string{"login": dependabotActor},
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, payload, 0o600))
+
+	subject, body, where, actor, err := message("", "", path, nil)
+	require.NoError(t, err)
+	require.Equal(t, dependabotActor, actor)
+	assert.NotEmpty(t, commitcheck.Check(subject, body, where),
+		"the conventions this exemption skips are real: on its own the check would flag this title and body")
+	assert.True(t, exempt(where, actor))
 }

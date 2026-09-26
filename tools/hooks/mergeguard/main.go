@@ -120,11 +120,12 @@ func main() {
 
 	// The squash message the merge would write, held to the conventions
 	// before the merge rather than found wanting in `git log` afterwards
-	// (#1728). A note rather than a denial, matching the plan job's posture
-	// until 2026-09-21, and folded into whichever single document this hook
-	// ends with: a PreToolUse hook answers with one JSON object, so a warning
-	// written here and a denial written below would be two, and the second
-	// would be the one ignored (Codex, #1848).
+	// (#1728). A note rather than a denial — this hook never blocks a merge
+	// on the conventions alone, independent of whether tools/commitcheck's
+	// own CLI runs -strict (#2024) — and folded into whichever single
+	// document this hook ends with: a PreToolUse hook answers with one JSON
+	// object, so a warning written here and a denial written below would be
+	// two, and the second would be the one ignored (Codex, #1848).
 	conventions := conventionNote(in, owner, repo, number)
 
 	tokCtx, tokCancel := context.WithTimeout(context.Background(), tokenLookupTimeout)
@@ -165,8 +166,8 @@ func main() {
 // commit_message. A `gh pr merge` in a Bash call carries it in flags this
 // hook does not parse (-t/--subject, -b/--body, -F/--body-file), and a title
 // the call does not set is GitHub's default rather than an empty one, so
-// that path is left to the plan job, which holds the pull request's own
-// title and body (Codex, #1848).
+// that path is left to commitcheck.yml, the pull request's own workflow,
+// which reads that title and body from the event payload (Codex, #1848).
 func conventionNote(in *hook.Input, owner, repo string, number int) string {
 	title, ok := in.ToolInput["commit_title"].(string)
 	if !ok {
