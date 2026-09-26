@@ -24,7 +24,7 @@ func TestAnAnnotationCannotBeForgedByTheMessageItReports(t *testing.T) {
 		Rule:    commitcheck.RuleAbsolute,
 		Message: "line one\n::error::forged, with 100% certainty",
 		Skill:   "x",
-	}}, true)
+	}}, true, false)
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	assert.Len(t, lines, 1, "the message's newline became a second line:\n%s", out.String())
@@ -40,8 +40,23 @@ func TestOutsideActionsAFindingIsAPlainLine(t *testing.T) {
 	t.Parallel()
 
 	var out strings.Builder
-	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, false)
+	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, false, false)
 	assert.Equal(t, "commitcheck: issue: no issue (see s)\n", out.String())
+}
+
+// TestAStrictRunAnnotatesAsAnError pins the one difference -strict makes to
+// the annotation itself: ::error, not ::warning, since that is the command
+// that actually fails the step.
+func TestAStrictRunAnnotatesAsAnError(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, true, true)
+	assert.True(t, strings.HasPrefix(out.String(), "::error title=commitcheck/issue::"), out.String())
+
+	out.Reset()
+	report(&out, []commitcheck.Finding{{Rule: commitcheck.RuleIssue, Message: "no issue", Skill: "s"}}, true, false)
+	assert.True(t, strings.HasPrefix(out.String(), "::warning title=commitcheck/issue::"), out.String())
 }
 
 func TestAnOversizedInputIsRefusedRatherThanRead(t *testing.T) {
@@ -110,6 +125,27 @@ func TestTheExitDecisionChecksBothStrictAndFindings(t *testing.T) {
 	assert.Equal(t, 0, decision(false, finding), "not strict: a finding still exits 0")
 	assert.Equal(t, 0, decision(true, nil), "strict but clean: exits 0")
 	assert.Equal(t, 1, decision(true, finding), "strict and dirty: the one case that must fail")
+}
+
+// TestTheExemptionsNegativeBoundary pins the actors [exempt] must not
+// exempt. Checking only "someone" left two loose matches able to pass:
+// HasSuffix(actor, "[bot]") would wrongly exempt any other bot account, and
+// Contains(actor, "dependabot") would wrongly exempt a login that merely
+// mentions it (#2085 review).
+func TestTheExemptionsNegativeBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, actor := range []string{
+		"someone",
+		"renovate[bot]",       // a real dependency bot, not this one
+		"github-actions[bot]", // any `[bot]`-suffixed login would pass HasSuffix
+		"dependabot",          // Contains without the exact login
+		"dependabot-fan",      // Contains a substring of the login
+	} {
+		assert.False(t, exempt(commitcheck.SurfacePullRequest, actor), "actor %q must still owe the conventions", actor)
+	}
+	assert.False(t, exempt(commitcheck.SurfaceCommit, dependabotActor),
+		"a commit message carries no actor to exempt, even Dependabot's own login")
 }
 
 // TestADependabotPullRequestIsExempt pins the one exemption #2024 added:

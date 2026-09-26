@@ -5,15 +5,17 @@
 //	git log -1 --format=%B | go run ./tools/commitcheck   # a commit message
 //	go run ./tools/commitcheck -title 'x: y' -body-file body.md
 //
-// Under GitHub Actions each finding is a `::warning` annotation naming the
-// rule and the skill that explains it; elsewhere it is a line on stderr. The
-// exit status is zero unless -strict is given and there is a finding: a bare
-// run, of the kind above, only ever reports. commitcheck.yml is what makes
-// the check enforced, by passing -strict in its one step (#2024); it is its
-// own workflow rather than a step of ci.yml's plan job, because it must
-// re-run on an edited pull request, which the plan job does not. #1728's
-// ratchet — this check ran warning-only everywhere, including in CI, until
-// 2026-09-21 — is complete: nothing dated is left to flip.
+// Under GitHub Actions each finding is an annotation naming the rule and the
+// skill that explains it — `::error` under -strict, since that run is the
+// one the annotation's own step then fails, `::warning` otherwise; elsewhere
+// it is a line on stderr. The exit status is zero unless -strict is given
+// and there is a finding: a bare run, of the kind above, only ever reports.
+// commitcheck.yml is what makes the check enforced, by passing -strict in
+// its one step (#2024); it is its own workflow rather than a step of
+// ci.yml's plan job, because it must re-run on an edited pull request, which
+// the plan job does not. #1728's ratchet named 2026-09-21 as when this would
+// turn strict; the check instead stayed warning-only in CI past that date,
+// until #2024 gave commitcheck.yml the flag directly.
 //
 // A pull request opened by [dependabotActor] is exempt from every rule: its
 // title and body are Dependabot's own template, not text its nominal author
@@ -81,7 +83,7 @@ func main() {
 	}
 
 	findings := commitcheck.Check(subject, body, where)
-	report(os.Stderr, findings, os.Getenv("GITHUB_ACTIONS") == "true")
+	report(os.Stderr, findings, os.Getenv("GITHUB_ACTIONS") == "true", *strict)
 
 	os.Exit(decision(*strict, findings))
 }
@@ -175,10 +177,18 @@ func readBounded(name string, stdin io.Reader) ([]byte, error) {
 // A finding repeats part of the author's line, so what reaches the runner
 // log is escaped the way workflow commands require: a newline or a `::` in
 // a title or body must not become a second command, or a spoofed one.
-func report(out io.Writer, findings []commitcheck.Finding, actions bool) {
+//
+// The command is ::error under a strict run: that is the one that fails the
+// step, and the annotation should say so rather than call it a warning the
+// run then contradicts by exiting nonzero.
+func report(out io.Writer, findings []commitcheck.Finding, actions, strict bool) {
+	command := "warning"
+	if strict {
+		command = "error"
+	}
 	for _, f := range findings {
 		if actions {
-			fmt.Fprintf(out, "::warning title=%s::%s\n",
+			fmt.Fprintf(out, "::%s title=%s::%s\n", command,
 				escapeProperty("commitcheck/"+string(f.Rule)),
 				escapeData(f.Message+" (see "+f.Skill+")"))
 			continue
