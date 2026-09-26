@@ -103,6 +103,69 @@ func TestSupervisorStopsOwnedServerWhenTerminated(t *testing.T) {
 	_ = harness.cmd.Wait()
 }
 
+// TestSupervisorSurvivesASlowDownload proves the fix for #2116: a supervised
+// start succeeds through the public entry point every caller uses even when
+// the Temporal CLI download takes longer than the SDK's fixed ~60s connect
+// wait (testsuite/devserver.go's waitServerReady/retryFor in the pinned
+// go.temporal.io/sdk@v1.48.0, which DevServerOptions has no field to extend).
+// Before the fix, that download ran inside the supervisor, inside the outer
+// wait's budget; StartWith now runs it in the parent, before the supervisor
+// (and that wait) starts at all.
+//
+// The delay is a deterministic sleep, not real network speed: downloadCLI is
+// replaced with a fake that waits, then supplies the CLI this machine already
+// has cached (linked, not copied, to avoid doubling a large binary on a
+// disk-constrained shared machine) so the rest of the start is genuine.
+func TestSupervisorSurvivesASlowDownload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: boots a real supervised dev server")
+	}
+
+	// Read only: whatever already populated this machine's shared cache is
+	// left exactly as found.
+	realCached := cliCachePath()
+	if _, err := os.Stat(realCached); err != nil {
+		t.Skipf("no cached Temporal CLI to reuse at %s (%v); this test avoids a real download", realCached, err)
+	}
+
+	dir := t.TempDir()
+	oldCacheDir, oldDownload := cliCacheDir, downloadCLI
+	cliCacheDir = func() string { return dir }
+	downloadCLI = func(context.Context) error {
+		time.Sleep(65 * time.Second) // longer than the SDK's fixed connect wait
+		return linkOrCopyFile(realCached, cliCachePath())
+	}
+	t.Cleanup(func() { cliCacheDir, downloadCLI = oldCacheDir, oldDownload })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	started := time.Now()
+	server, err := Start(ctx, &client.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = server.Stop() })
+
+	require.GreaterOrEqual(t, time.Since(started), 65*time.Second,
+		"the simulated download did not run before the supervised server answered")
+
+	_, err = server.Client().CheckHealth(ctx, &client.CheckHealthRequest{})
+	require.NoError(t, err, "the supervised server did not answer after a simulated slow download")
+}
+
+// linkOrCopyFile makes src available at dst, hard-linking when the two paths
+// share a filesystem (instant, no extra disk for a large binary) and falling
+// back to a copy otherwise.
+func linkOrCopyFile(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o755)
+}
+
 type runningHarness struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
