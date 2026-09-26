@@ -240,3 +240,53 @@ func TestHeartbeatPhaseIsBoundedAndRestrictedToTheVocabulary(t *testing.T) {
 		"a bounded value happened to still equal one of v1.Phase's constants, which "+
 			"would mean this case tests nothing about the bound")
 }
+
+// countingDataConverter wraps a DataConverter and counts FromPayload calls, so
+// a test can tell "decoded, then discarded" from "never decoded" — the two
+// are indistinguishable from heartbeatPhase's return value alone.
+type countingDataConverter struct {
+	converter.DataConverter
+	fromPayloadCalls int
+}
+
+func (c *countingDataConverter) FromPayload(payload *commonpb.Payload, valuePtr any) error {
+	c.fromPayloadCalls++
+	return c.DataConverter.FromPayload(payload, valuePtr)
+}
+
+// TestHeartbeatPhaseSkipsDecodingAnOversizedPayload is the regression the
+// Copilot review of #2067 asked for: the earlier version of this bound ran
+// [textbound.Cut] on the string [FlowstateServer.heartbeatPhase] had already
+// decoded, so a worker-controlled heartbeat detail was still fully decoded —
+// the converter's own work, and for a codec-configured deployment a decrypt
+// underneath it — on every `flow get`/`flow watch` poll, once per pending
+// activity a run reports, no matter how large the detail was. The bound now
+// checked is on the payload's encoded bytes, before FromPayload ever runs,
+// so an oversized detail costs nothing but a length comparison.
+func TestHeartbeatPhaseSkipsDecodingAnOversizedPayload(t *testing.T) {
+	t.Parallel()
+
+	spy := &countingDataConverter{DataConverter: converter.GetDefaultDataConverter()}
+	s := mustNew(t, nil, WithDataConverter(spy))
+
+	payloadOf := func(t *testing.T, value string) *commonpb.Payloads {
+		t.Helper()
+
+		payload, err := converter.GetDefaultDataConverter().ToPayload(value)
+		require.NoError(t, err)
+
+		return &commonpb.Payloads{Payloads: []*commonpb.Payload{payload}}
+	}
+
+	// A real phase decodes normally, which is what proves the spy is wired
+	// into this server rather than merely constructed and set aside.
+	require.Equal(t, v1.PhaseRequesting.String(), s.heartbeatPhase(payloadOf(t, v1.PhaseRequesting.String())))
+	require.Equal(t, 1, spy.fromPayloadCalls,
+		"a phase within the bound was not decoded through the configured converter")
+
+	long := strings.Repeat("x", 10_000)
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, long)))
+	require.Equal(t, 1, spy.fromPayloadCalls,
+		"an oversized heartbeat detail reached FromPayload anyway: the bound only "+
+			"trimmed what this function returned, not the work of getting there")
+}
