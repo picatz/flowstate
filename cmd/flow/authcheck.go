@@ -20,7 +20,7 @@ import (
 func newAuthCommand() *cobra.Command {
 	authCmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Diagnose caller authentication against a trust policy",
+		Short: "Diagnose caller authentication against an auth policy",
 	}
 	authCmd.AddCommand(newAuthCheckCommand())
 	return authCmd
@@ -29,11 +29,11 @@ func newAuthCommand() *cobra.Command {
 func newAuthCheckCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "check",
-		Short: "Check a bearer token against a trust policy",
-		Long: "Verify one bearer token against a trust policy using the same OIDC verifier and " +
-			"issuer-rule matching path as `flow server`. This diagnoses policy-entry overlap; it does " +
-			"not simulate the server's surface-specific --rpc-resource check. The token is read only from a file " +
-			"or stdin: there is deliberately no token argument or --token flag, because credentials " +
+		Short: "Check a bearer token against an auth policy",
+		Long: "Verify one bearer token against an auth policy using the same OIDC verifier and " +
+			"issuer-rule matching as `flow server`. This diagnoses overlapping policy entries; it does " +
+			"not simulate the server's `--rpc-resource` check. The token is read only from a file " +
+			"or stdin: there is deliberately no token argument or `--token` flag, because credentials " +
 			"in argv leak through process listings, shell history, logs, and completion. Output names " +
 			"only the policy entry that admitted the token, or the policy entries that made it ambiguous; " +
 			"it never prints token claims. This is a concrete-token probe, not a static proof that every " +
@@ -48,14 +48,15 @@ func newAuthCheckCommand() *cobra.Command {
 			return nil
 		},
 		RunE: runAuthCheck,
-		Example: `# Check a projected workload token without putting it in argv:
-flow auth check --auth-policy trust.yaml --token-file /var/run/secrets/tokens/flowstate
+		Example: `# Check a projected workload token without putting it on the command line:
+flow auth check --auth-policy auth.yaml \
+  --token-file /var/run/secrets/tokens/flowstate
 
 # Read a token from stdin instead:
-flow auth check --auth-policy trust.yaml --token-file - < "$TOKEN_FILE"`,
+flow auth check --auth-policy auth.yaml --token-file - < "$TOKEN_FILE"`,
 	}
-	cmd.Flags().String("auth-policy", "", "path to the trust policy to check (required)")
-	cmd.Flags().String("token-file", "", `path containing the bearer token, or "-" to read stdin (required; the token itself is never accepted in argv)`)
+	cmd.Flags().String("auth-policy", "", "path to the auth policy to check the token against (required)")
+	cmd.Flags().String("token-file", "", `file holding the bearer token, or "-" for stdin (required; a token is never accepted as an argument)`)
 	_ = cmd.MarkFlagRequired("auth-policy")
 	_ = cmd.MarkFlagRequired("token-file")
 	return cmd

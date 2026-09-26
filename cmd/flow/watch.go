@@ -291,32 +291,34 @@ func addFollowFlags(cmd *cobra.Command) {
 // newWatchCommand builds the watch sub-command.
 func newWatchCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "watch [workflow-id]",
+		Use:   "watch <workflow-id>",
 		Short: "Follow a run until it finishes",
 		Long: "Follow a run until it finishes.\n\n" +
 			"Where there is a terminal this draws a live view of the run, on stderr, so the " +
 			"outputs it produced still go to stdout the way `flow get` writes them: one " +
 			"invocation can show progress on a terminal and pipe its answer to jq. Where " +
 			"there is not, it prints one line per change instead, so it is safe in a script " +
-			"or a CI job. --output json or jsonl draws no view at all: json is the final " +
+			"or a CI job. `--output json` or `jsonl` draws no view at all: json is the final " +
 			"state as one document, jsonl is one document per change, which is a live event " +
 			"stream a program can read as it arrives.\n\n" +
 			"The exit code reports the run: 0 when it completed, non-zero when it failed, " +
 			"was canceled, terminated, or timed out, so `flow watch` can gate a pipeline " +
 			"without anything having to parse its output." + runDocumentHelp,
-		Example: `# Follow a run on a terminal.
+		Example: `# Follow a run on a terminal:
 flow watch flowstate-workflow-3f7c
 
-# Follow one attempt rather than whichever is current.
-flow watch flowstate-workflow-3f7c --run-id 0198f1c4-8f0e-7d3a-9b21-6c1f4a2e5d77
+# Follow one run of the workload rather than whichever is current:
+flow watch flowstate-workflow-3f7c \
+  --run-id 0198f1c4-8f0e-7d3a-9b21-6c1f4a2e5d77
 
-# Live view on the terminal, the outputs into jq, from one invocation.
+# Live view on the terminal, the outputs into jq, from one invocation:
 flow watch flowstate-workflow-3f7c | jq .steps
 
-# As an event stream, for a script or an agent: one document per change.
-flow watch flowstate-workflow-3f7c -o jsonl | jq -c '{status, steps: (.outputs.steps // {} | keys)}'
+# As an event stream, for a script or an agent, one document per change:
+flow watch flowstate-workflow-3f7c -o jsonl \
+  | jq -c '{status, steps: (.outputs.steps // {} | keys)}'
 
-# Gate on the outcome; the exit code is the run's.
+# Gate on the outcome, since the exit code is the run's:
 flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh`,
 		Args:         cobra.ExactArgs(1),
 		RunE:         runWatch,
@@ -328,7 +330,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh`,
 	addFollowFlags(cmd)
 
 	cmd.Flags().String("run-id", "",
-		"pin the watch to one run of the workload; unset follows whichever run is current")
+		runIDUsage)
 
 	return cmd
 }

@@ -59,23 +59,20 @@ import (
 // newLintCommand builds the `flow lint` command.
 func newLintCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "lint [path...]",
-		Short: "Suggest the canonical spelling where a Flowfile is legal but not idiomatic",
-		Long: "Walk Flowfiles and report where one is written in a way the style charter " +
-			"(docs/STYLE.md) has an opinion about: a conditional nested inside a conditional, " +
+		Use:   "lint <path>...",
+		Short: "Suggest idiomatic spellings for legal Flowfiles",
+		Long: "Walk Flowfiles and report where one is written in a way the style guide " +
+			"(" + docsURL + "STYLE.md) has an opinion about: a conditional nested inside a conditional, " +
 			"one expression stated three or more times, a chain of sibling `if:` steps " +
 			"testing one value for equality where a `switch:` would let the validator check " +
 			"the branches, and a webhook `idempotency_key:` that reads a signature header, " +
 			"which a sender computes afresh on every retry and so names the attempt rather " +
 			"than the event.\n\n" +
-			"Every file this reports on is legal, validates, and runs. These are suggestions, " +
-			"which is what tier 4 of the charter means: it warns and never blocks, and this " +
-			"command exits 0 on every finding it has. `--strict` opts into a nonzero exit, " +
-			"which is what the CI leg over `examples/` uses — the files this repository " +
-			"teaches from are held to a narrower standard than the language is, because they " +
-			"are what an author copies.\n\n" +
+			"Every file this reports on is legal, validates, and runs. These are suggestions: " +
+			"this command exits 0 on every finding. `--strict` exits non-zero instead, for a CI " +
+			"job that holds files to the style guide.\n\n" +
 			"Each finding names the rule it descends from, so `R5/nested-conditional` is a " +
-			"heading to read in docs/STYLE.md rather than a number to look up in a table. " +
+			"heading to read in the style guide rather than a number to look up in a table. " +
 			"What it reports is a property of the file and nothing else: no deployment is " +
 			"consulted, no policy is read, and nothing resolves over a network.\n\n" +
 			"A named file is taken as given; a directory is walked for Flowfiles, the same " +
@@ -93,7 +90,7 @@ flow lint examples/
 # One workflow:
 flow lint examples/expense-approval/workflow.yaml
 
-# The way CI reads it, where a finding is a failure:
+# In CI, where a finding is a failure:
 flow lint --strict examples/
 
 # Every finding as data:
@@ -101,7 +98,7 @@ flow lint -o json examples/ | jq '.files[].findings[].rule'`,
 	}
 
 	cmd.Flags().Bool("strict", false,
-		"exit nonzero when there is anything to report (tier 4 is advisory by default)")
+		"exit non-zero when there is anything to report; by default findings are advisory")
 
 	addOutputFlag(cmd)
 

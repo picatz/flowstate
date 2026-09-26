@@ -200,6 +200,11 @@ const identityKeyUsage = "PKCS#8 PEM key used to mint short-lived workload asser
 	"targets (repeatable: the first signs, and every later one is published for verification only, " +
 	"so assertions signed before a restart keep verifying)"
 
+// runtimeAuthPolicyUsage is --auth-policy's help on every command that executes
+// steps, so the sections a worker and a rehearsal read are worded once.
+const runtimeAuthPolicyUsage = "path to the auth policy (YAML) whose `secrets:` section decides which " +
+	"secrets a step may read and whose `federation:` section defines the credentials a run may assume"
+
 // authFlagsOf reads them off the command being run.
 func authFlagsOf(cmd *cobra.Command) authFlags {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
@@ -2397,20 +2402,17 @@ func newRootCommand() *cobra.Command {
 			"and run it in this process or durably on Temporal. The two behave the same, which is " +
 			"what makes a local run worth rehearsing with.",
 		Version: version,
-		Example: `# Run a workflow locally (without Temporal):
+		Example: `# Run a workflow in this process, with no server:
 flow run local examples/hello-world/workflow.yaml
 
-# Run a workflow using Temporal via the server:
+# Start a local server, worker, and Temporal for development:
+flow server dev
+
+# Then run the same workflow durably, on that server:
 flow run examples/hello-world/workflow.yaml
 
-# Start a Temporal worker:
-flow worker
-
-# Start the Flowstate API server:
-flow server
-
-# Start the LSP server for Flowfile editing:
-flow lsp`,
+# Check a Flowfile without running it:
+flow validate examples/hello-world/workflow.yaml`,
 	}
 
 	// Bound to a local rather than to the package variable, and copied across when
@@ -2440,12 +2442,11 @@ flow lsp`,
 	// explicit ask, wins over NO_COLOR, CLICOLOR_FORCE, and everything else in the
 	// environment.
 	rootCmd.PersistentFlags().Bool("no-color", false,
-		"disable colour on every stream, the same way NO_COLOR does; it is the most explicit ask, "+
-			"so it wins over CLICOLOR_FORCE and the terminal's own capabilities")
+		"disable colour on every stream, like NO_COLOR; overrides CLICOLOR_FORCE and terminal detection")
 
 	// Run command, which executes a workflow using the Flowstate service.
 	runCmd := &cobra.Command{
-		Use:   "run [workflow-file]",
+		Use:   "run <workflow-file>",
 		Short: "Run a workflow and follow it",
 		Long: "Start a workload on a Flowstate server and follow the run until it finishes.\n\n" +
 			"This verb always means the server, and it never falls back to running the " +
@@ -2457,14 +2458,14 @@ flow lsp`,
 			"live view where there is a terminal, one line per change where there is not, " +
 			"and the outputs on stdout when the run produced them. The exit code is the " +
 			"run's, so `flow run x && ./promote.sh` behaves the way a shell reader expects. " +
-			"With --detach the command returns as soon as the run has started, and the exit " +
+			"With `--detach` the command returns as soon as the run has started, and the exit " +
 			"code is the start's: `flow run --detach x && flow watch <id>` is the two-step " +
 			"form of the default, for a CI job, a cron entry, or a script that must not hold " +
 			"a process open while a run waits hours on an approval.\n\n" +
 			"Stopping watching does not stop the run. The workflow id is printed as soon as " +
 			"the run starts, so `flow watch` can pick it up again afterwards.\n\n" +
-			"A workflow that declares `inputs:` is given them with --input name=value or " +
-			"--input-file inputs.json. The declaration decides how a value is read, so an " +
+			"A workflow that declares `inputs:` is given them with `--input name=value` or " +
+			"`--input-file inputs.json`. The declaration decides how a value is read, so an " +
 			"argument that does not fit is refused here, before the run starts." +
 			runDocumentHelp,
 		Args: cobra.ExactArgs(1),
@@ -2473,19 +2474,22 @@ flow lsp`,
 flow run examples/hello-world/workflow.yaml
 
 # Run a workflow that takes arguments:
-flow run examples/parameterized-deploy/workflow.yaml --input service=checkout --input replicas=3
+flow run examples/parameterized-deploy/workflow.yaml \
+  --input service=checkout --input replicas=3
 
 # Or send the same arguments as a document:
-flow run examples/parameterized-deploy/workflow.yaml --input-file examples/parameterized-deploy/inputs.json
+flow run examples/parameterized-deploy/workflow.yaml \
+  --input-file examples/parameterized-deploy/inputs.json
 
 # Run it and pipe the outputs, with the live view still on the terminal:
 flow run examples/hello-world/workflow.yaml | jq .steps
 
-# In CI: one line per change, exit code reports the outcome.
+# In CI, one line per change, and the exit code reports the outcome:
 flow run examples/hello-world/workflow.yaml >/dev/null
 
 # Start a run and come back to it later, from a job that cannot wait:
-flow run --detach examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json -o json
+flow run --detach examples/approval-gate/workflow.yaml \
+  --input-file examples/approval-gate/inputs.json -o json
 
 # Check a workflow without running it:
 flow validate examples/hello-world/workflow.yaml`,
@@ -2534,45 +2538,39 @@ flow validate examples/hello-world/workflow.yaml`,
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{
-		Use:   "local [workflow-file]",
+		Use:   "local <workflow-file>",
 		Short: "Run a workflow locally without Temporal",
 		Long: "Execute a workload in this process, without Temporal and without a Flowstate " +
-			"server.\n\nThis is the rehearsal, and it is worth rehearsing with because the two " +
-			"drivers are one execution model: conditions, retries, timeouts, loops and waits " +
+			"server.\n\nThis is the rehearsal, and it is worth rehearsing with because local and " +
+			"server runs share one execution model: conditions, retries, timeouts, loops and waits " +
 			"behave here the way they behave in production, and the answer comes back in the " +
 			"same document `flow run` writes, so a `jq` expression written against one works " +
 			"against the other.\n\nWhat it cannot give you is durability. A local run is a " +
 			"process: it has no run id, nothing can watch it, and it does not survive this " +
 			"command being interrupted.\n\n" +
-			"Arguments are given the same way `flow run` takes them (--input name=value or " +
-			"--input-file inputs.json) and are bound against the workflow's `inputs:` by the " +
-			"same function the server binds them with, so a rehearsal refuses what production " +
-			"refuses.\n\n" +
-			"Plugin tasks run here too, given --plugin-dir: the plugins are launched in this " +
-			"process, through the discovery, handshake and catalog a worker uses, and the " +
-			"file's `plugins:` requirements are resolved against what was launched, refused " +
-			"in the words a server refuses a submission in. Without --plugin-dir there are no " +
-			"plugins, and a step naming one is an unknown task, which is what a worker without " +
-			"them would also say.\n\n" +
-			"--as-subject and its siblings name the identity this rehearsal runs as, and every " +
-			"surface that reads one reads that: the secret access rules, a credential the run " +
-			"assumes, plugin tasks, `run.identity`, and the --task-policy and --egress-policy " +
-			"rules a worker would enforce. So a rule keyed on identity.namespace answers here " +
-			"the way it answers in production, which is what rehearsing under a policy is for.\n\n" +
-			"What that does not do is make the run attested. Nothing verified these flags - they " +
-			"are what you say you are - so `run.local` reads true, and a credential this run " +
-			"assumes is minted under a subject carrying a `_local` component no server-attested " +
-			"run can ever produce. A cloud trust policy written for your production subject will " +
-			"not match a rehearsal's, deliberately: that refusal is the one divergence between " +
-			"the two drivers that is a feature.\n\n" +
-			"A gate is the one place that limit is lifted, because a gate is the thing worth " +
-			"rehearsing. --signal-as-subject and its siblings name the approver a --signal " +
-			"delivery stands in for, and the workflow's own `signals:` policy is then checked " +
-			"here by the same function the server checks it with - so an approver a rule admits " +
-			"in production opens the gate here, one it refuses is refused here, and an approver " +
-			"who is this run's own starter is refused by `distinct_from_starter:` on both. It " +
-			"remains a rehearsal, and says so: nothing attested it, and the gate's own " +
-			"`sender.local` output reads true." + runDocumentHelp,
+			"Arguments are given the way `flow run` takes them (`--input name=value` or " +
+			"`--input-file inputs.json`) and are bound against the workflow's `inputs:` exactly " +
+			"as the server binds them, so a rehearsal refuses what production refuses.\n\n" +
+			"Plugin tasks run here too, given `--plugin-dir`: the plugins are launched in this " +
+			"process the way a worker launches them, and the file's `plugins:` requirements are " +
+			"checked against what was launched. Without `--plugin-dir` a step naming a plugin " +
+			"task is an unknown task, as it would be on a worker without the plugin.\n\n" +
+			"`--as-subject` and its siblings name the identity this rehearsal runs as, and " +
+			"everything that reads an identity reads that one: secret access rules, credentials " +
+			"the run assumes, plugin tasks, `run.identity`, and the `--task-policy` and " +
+			"`--egress-policy` rules a worker would enforce. So a rule keyed on " +
+			"`identity.namespace` answers here the way it answers in production.\n\n" +
+			"That does not make the run attested. Nothing verified these flags, so `run.local` " +
+			"reads true, and a credential this run assumes is minted under a subject carrying a " +
+			"`_local` component no server-attested run can produce. A cloud trust policy written " +
+			"for your production subject deliberately does not match a rehearsal's.\n\n" +
+			"A gate is the one exception, because a gate is the thing worth rehearsing. " +
+			"`--signal-as-subject` and its siblings name the approver a `--signal` delivery " +
+			"stands in for, and the workflow's `signals:` policy is checked here exactly as the " +
+			"server checks it — so an approver a rule admits in production opens the gate here, " +
+			"one it refuses is refused here, and this run's own starter is refused by " +
+			"`distinct_from_starter:` on both. The gate's `sender.local` output still reads " +
+			"true." + runDocumentHelp,
 		// Exactly one, as `flow run` and `flow compile` already hold: MinimumNArgs
 		// ran the first file and silently dropped the rest, so a habit carried
 		// over from the variadic `flow validate` — `flow run local examples/*/workflow.yaml`
@@ -2592,19 +2590,27 @@ flow run local examples/hello-world/workflow.yaml | jq .steps.hello
 flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
 
 # Run a workflow with an approval gate, answering the gate up front:
-flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
+flow run local examples/expense-approval/workflow.yaml \
+  --input-file examples/expense-approval/inputs.json \
+  --signal manager-approved='{"approved": true}'
 
-# Rehearse a gate whose signals: policy names its approver, standing in for them:
-flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}' --signal-as-subject sre-lead@example.com --signal-as-issuer https://issuer.example.com --signal-as-claim team=release-managers
+# Rehearse a gate whose signals: policy names its approver, as that approver:
+flow run local examples/approval-gate/workflow.yaml \
+  --input-file examples/approval-gate/inputs.json \
+  --signal deploy-approved='{"approved": true}' \
+  --signal-as-subject sre-lead@example.com \
+  --signal-as-issuer https://issuer.example.com \
+  --signal-as-claim team=release-managers
 
 # Run a workflow that takes arguments, and read what it answered with:
-flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs
+flow run local examples/computed-outputs/workflow.yaml \
+  --input release=2026.9.0 -o json | jq .runOutputs
 
-# Rehearse a workflow whose steps use a plugin's tasks, launching the plugins here:
-flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml
+# Rehearse a workflow that uses a plugin's tasks, launching the plugins here:
+flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins \
+  --secret-env GREET_TOKEN --auth-policy auth.yaml
 
-# Step through a rehearsal, held at each step boundary (the console lives on stderr,
-# so stdout is still the document it always was):
+# Step through a rehearsal, held at each step (the console is on stderr):
 flow run local examples/hello-world/workflow.yaml --debug`,
 	}
 
@@ -2635,49 +2641,52 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 	// Worker command, which starts a Temporal worker to process workflows and activities.
 	workerCmd := &cobra.Command{
 		Use:   "worker",
-		Short: "Start a worker",
+		Short: "Start a worker that runs workflow steps",
 		Long: "Start a Temporal worker: the process that actually runs a workflow's steps. " +
 			"The server submits work to Temporal and a worker polling its task queue is what picks " +
 			"it up, so nothing a deployment accepts runs until at least one worker is up: the two " +
-			"never talk to each other, they meet at Temporal. With --deployment-name and --build-id " +
-			"it claims a Worker Deployment version, pinning every run already in flight to the " +
+			"never talk to each other, they meet at Temporal. With `--deployment-name` and `--build-id` " +
+			"it claims a Temporal Worker Deployment version, pinning every run already in flight to the " +
 			"interpreter it started on: a later deploy changes what new runs compute, not what " +
-			"in-flight ones do, until each reaches continue-as-new. With --tenant it executes one " +
+			"in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one " +
 			"namespace's runs and refuses every other outright, rather than running them with this " +
 			"worker's secrets, egress policy and plugins, which needs a queue of its own, named by " +
-			"--task-queue-prefix (the value the server was started with) or given as --task-queue.",
+			"`--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.",
 		RunE: runWorker,
 		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
-flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+flow worker --deployment-name flowstate \
+  --build-id "$(git rev-parse --short HEAD)"
 
-# Start one against a local dev server, accepting that nothing pins the interpreter:
+# Against a local dev server, accepting that nothing pins the interpreter:
 flow worker --allow-unversioned-interpreter
 
-# Start a worker with custom Temporal server:
-flow worker --temporal-address localhost:7233 --deployment-name flowstate --build-id dev-1
+# Start a worker against another Temporal server:
+flow worker --temporal-address temporal.internal:7233 \
+  --deployment-name flowstate --build-id dev-1
 
-# Start a worker with custom namespace:
-flow worker --temporal-namespace production --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
+# Start a worker in another Temporal namespace:
+flow worker --temporal-namespace production \
+  --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
 	}
 
 	// These override Temporal's environment configuration when set; unset means
 	// Server command, which starts a Flowstate server to handle workflow requests.
 	serverCmd := &cobra.Command{
 		Use:   "server",
-		Short: "Start a server",
+		Short: "Start the Flowstate API server",
 		Long: "Start the Flowstate control plane: the Connect (HTTP/gRPC) endpoint every CLI verb and " +
 			"`flow mcp` reaches a deployment through. It authenticates each caller and maps them onto " +
 			"a tenant, then submits accepted runs to Temporal, where the workers execute them: the " +
 			"server schedules, lists and reports on runs, it does not run their steps itself. " +
-			"Authentication is fail-closed: it serves only with a trust policy configured " +
-			"(--auth-policy, naming the issuers and claims to accept) or with authentication waived " +
-			"out loud (--insecure-no-auth, for local development), and never by defaulting open.",
+			"Authentication is fail-closed: it serves only with an auth policy configured " +
+			"(`--auth-policy`, naming the issuers and claims to accept) or with authentication waived " +
+			"out loud (`--insecure-no-auth`, for local development), and never by defaulting open.",
 		RunE: runServer,
-		Example: `# Start the server with default settings:
-flow server
+		Example: `# Authenticate callers against an auth policy:
+flow server --auth-policy /etc/flowstate/auth.yaml
 
-# Start the server with verbose logging:
-flow server --verbose`,
+# Local development, with anonymous callers:
+flow server --insecure-no-auth`,
 	}
 
 	// use whatever TEMPORAL_* variables or the temporal.toml profile resolve to.
@@ -2719,7 +2728,8 @@ flow server --verbose`,
 			"server was started with) or an explicit --task-queue")
 
 	workerCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
-		"Worker Deployment this worker belongs to. With --build-id, pins every in-flight run to the "+
+		"Temporal Worker Deployment this worker belongs to (not the server's Flowstate deployment "+
+			"name). With `--build-id`, pins every in-flight run to the "+
 			"interpreter version it started on; a run moves to the current version only at continue-as-new")
 	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
 		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
@@ -2728,11 +2738,10 @@ flow server --verbose`,
 			"changes what runs already in flight compute; for local development")
 
 	workerCmd.Flags().String("identity", os.Getenv("FLOWSTATE_WORKER_IDENTITY"),
-		"how this worker identifies itself to Temporal, shown in Event History and a Task Queue's "+
-			"poller list (#752); a platform-native identifier (a Kubernetes pod name from the "+
-			"downward API, an ECS task id) is the most useful value here. Unset builds one from "+
-			"--deployment-name/--build-id, --tenant if set, and this process's hostname — still more "+
-			"specific than the SDK's own pid@hostname default, but a real platform identifier beats it")
+		"how this worker identifies itself to Temporal, shown in Event History and a task queue's "+
+			"poller list; a platform identifier (a Kubernetes pod name, an ECS task id) is the most "+
+			"useful value. Unset builds one from `--deployment-name`, `--build-id`, `--tenant` if "+
+			"set, and this machine's hostname")
 
 	// How long Stop() gives an in-flight activity or workflow task to finish
 	// once SIGINT/SIGTERM arrives, before the SDK gives up waiting and returns.
@@ -2766,8 +2775,8 @@ flow server --verbose`,
 		cmp.Or(os.Getenv("FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES"), "0"),
 		"maximum number of activity tasks executing at once in this process; 0 takes the Temporal "+
 			"SDK default (1000). Raising this trades worker CPU/memory for throughput on a single "+
-			"replica; see docs/DEPLOYMENT.md's capacity section for when to raise this versus "+
-			"scaling out")
+			"replica; see the capacity section of "+docsURL+"DEPLOYMENT.md for when to raise "+
+			"this versus scaling out")
 	workerCmd.Flags().String("max-concurrent-workflow-tasks",
 		cmp.Or(os.Getenv("FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS"), "0"),
 		"maximum number of workflow tasks executing at once in this process; 0 takes the Temporal "+
@@ -2784,7 +2793,7 @@ flow server --verbose`,
 			"this worker's task queue, shared across every worker polling that queue; 0 takes the "+
 			"Temporal SDK default (effectively unlimited). Per queue, not per worker: setting this "+
 			"differently on two workers sharing a queue is last-writer-wins on the server, and "+
-			"setting it disables eager activity execution for this worker (DisableEagerActivities)")
+			"setting it disables eager activity execution for this worker")
 
 	// Sticky workflow cache size (#921). A string flag for the identical
 	// docs-generator reason the four flags above are strings, but 0 does NOT
@@ -2805,7 +2814,8 @@ flow server --verbose`,
 			"workflow task resume from cached state instead of replaying history; 0 leaves the "+
 			"Temporal SDK's own default (10000) in place — it does NOT configure a zero-entry "+
 			"cache, which would force full replay on every task. Shared by every worker in this "+
-			"process; see docs/DEPLOYMENT.md's capacity section for when to raise or lower it")
+			"process; see the capacity section of "+docsURL+"DEPLOYMENT.md for when to raise or "+
+			"lower it")
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
@@ -2830,22 +2840,22 @@ flow server --verbose`,
 	addSecretFlags(workerCmd)
 	addSecretFlags(runLocalCmd)
 	addLocalRehearsalFlags(runLocalCmd)
-	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to an access policy whose secrets rules authorize worker-side resolution")
+	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"), runtimeAuthPolicyUsage)
 	workerCmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
+		"path to the auth policy (YAML): its `issuers:` authenticate every caller, `tenancy:` "+
+			"maps callers onto Temporal namespaces, and `federation:` is the identity this "+
+			"deployment publishes")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
-		"allow unauthenticated access; for local development only, and cannot be combined with "+
-			"--auth-policy (or an inherited FLOWSTATE_AUTH_POLICY), which authenticates every caller "+
-			"against a trust policy this flag would leave unread")
+		"allow unauthenticated access, for local development only; cannot be combined with "+
+			"`--auth-policy` (or an inherited FLOWSTATE_AUTH_POLICY)")
 	addRPCResourceFlags(serverCmd)
 	serverCmd.Flags().StringArray("identity-key",
 		identityKeyDefault(),
 		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
-			"required when the trust policy configures federation; the file's base name "+
+			"required when the auth policy configures federation; the file's base name "+
 			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\". "+
 			"Repeatable: the first occurrence signs and every later one is published for "+
 			"verification only, so a restart that rotates keys does not reject assertions "+
@@ -2857,8 +2867,8 @@ flow server --verbose`,
 	// production. Same spelling and same environment default as the worker's flag
 	// on purpose, because they describe the same installation.
 	serverCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
-		"name of this Flowstate deployment, recorded in each run's workload identity "+
-			"and in every assertion subject it mints")
+		"name of this Flowstate installation (not a Temporal Worker Deployment), recorded in "+
+			"each run's workload identity and in every assertion subject it mints")
 	serverCmd.Flags().StringArray("identity-claim", nil, identityClaimUsage)
 
 	// The public listener's own address. Until now this was the one setting in
@@ -2871,10 +2881,9 @@ flow server --verbose`,
 	// a scheme. It is also what `--address` on this command is now refused in
 	// favour of, alongside --temporal-address (picatz/flowstate#580).
 	serverCmd.Flags().String("listen", cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
-		"address this server listens on, as a bare host:port for net.Listen (default "+
-			"$FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, "+
-			"refusePlaintextListener requires --tls-cert-file/--tls-key-file or "+
-			"--tls-terminated-upstream")
+		"address this server listens on, as host:port (default $FLOWSTATE_ADDRESS); not a URL, "+
+			"and not the client's `--address`. Off loopback it requires `--tls-cert-file` and "+
+			"`--tls-key-file` (or `--tls-acme-hosts`), or `--tls-terminated-upstream`")
 
 	// picatz/flowstate#1018: whether an audit sink's own failure fails the
 	// request. Auditing itself has no flag — every deployment gets it, stderr at
@@ -2913,14 +2922,15 @@ flow server --verbose`,
 	// RFC 9728 protected resource metadata for the MCP surface — see
 	// cmd/flow/protectedresource.go. Server only, for the same reason as the
 	// listener flags above: a worker serves no HTTP surface to advertise.
-	addProtectedResourceFlags(serverCmd, "Unset (the default): the route does not exist "+
-		"and every challenge reads exactly as it does today")
+	addProtectedResourceFlags(serverCmd, "Unset, the route does not exist and a 401 "+
+		"challenge names no metadata document")
 
 	// Validate command, which checks Flowfiles without executing them.
 	validateCmd := &cobra.Command{
-		Use:   "validate [workflow-file...]",
+		Use:   "validate <path>...",
 		Short: "Check workflows for problems without running them",
-		Long: "Check one or more Flowfiles for problems without executing them. " +
+		Long: "Check one or more Flowfiles for problems without executing them. A directory is " +
+			"walked for Flowfiles, and `-` reads one from stdin. " +
 			"Reports unknown tasks, duplicate or unusable step ids, and references to " +
 			"steps that do not exist or have not run yet, with the line each problem is on. " +
 			"It also applies every rule the specification's schema declares — a step list " +
@@ -2930,7 +2940,7 @@ flow server --verbose`,
 			"pinned, the tasks it can run, its credential and signal policies — is still " +
 			"the server's answer.\n\n" +
 			"A file naming a plugin's task is checked against that plugin given " +
-			"--plugin-dir: the plugins there are launched here, through the same " +
+			"`--plugin-dir`: the plugins there are launched here, through the same " +
 			"discovery, handshake and catalog a worker uses, and their tasks and input " +
 			"schemas are then what this command checks against — so a misspelled input " +
 			"to a plugin task is a diagnostic at your terminal rather than a failure at " +
@@ -2938,7 +2948,7 @@ flow server --verbose`,
 			"flag rather than looking anywhere by default, and a plugin that will not " +
 			"start fails this command outright: carrying on without it would report " +
 			"every one of its tasks as unknown, which is a false report about the file.\n\n" +
-			"Without --plugin-dir a step naming a plugin task is reported as not " +
+			"Without `--plugin-dir` a step naming a plugin task is reported as not " +
 			"registered here, which is what it is: whether a plugin is installed is the " +
 			"deployment's decision and this process has not been told about one.",
 		Args:          cobra.MinimumNArgs(1),
@@ -2957,18 +2967,20 @@ flow server --verbose`,
 		Example: `# Check a single workflow:
 flow validate examples/hello-world/workflow.yaml
 
-# Check every example:
-flow validate examples/*/workflow.yaml
+# Check every Flowfile under a directory, tests included:
+flow validate examples/expense-approval/
 
 # Ask for the diagnostics as data, one line per file:
-flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | length > 0)'
+flow validate examples/*/workflow.yaml -o jsonl \
+  | jq 'select(.diagnostics | length > 0)'
 
 # Check a file whose steps name a plugin's tasks, against that plugin:
 flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
 
 # The same check against a saved catalog, launching nothing:
 flow plugins --plugin-dir ./plugins -o json > plugins.lock.json
-flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow.yaml`,
+flow validate --plugin-catalog plugins.lock.json \
+  examples/plugins/greet/workflow.yaml`,
 	}
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on
@@ -3005,7 +3017,7 @@ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow
 	// person who started the workload is still watching. A durable workload's
 	// whole point is outliving that terminal, so it has to be askable about later.
 	getCmd := &cobra.Command{
-		Use:   "get [workflow-id]",
+		Use:   "get <workflow-id>",
 		Short: "Report what a run is doing",
 		Long: "Report the status of a run, and its outputs if it has finished. The status is " +
 			"written to stderr and the outputs to stdout, so the outputs can be piped. A run " +
@@ -3016,10 +3028,10 @@ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow
 		Example: `# Ask what a run is doing:
 flow get flowstate-workflow-3f7c
 
-# Keep only the outputs:
+# Keep only the step outputs:
 flow get flowstate-workflow-3f7c | jq .steps
 
-# Ask about one attempt rather than the current one:
+# Ask about one run of the workload rather than the current one:
 flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 	}
 
@@ -3028,7 +3040,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 	addRevealSensitiveFlag(getCmd)
 
 	getCmd.Flags().String("run-id", "",
-		"ask about one attempt of the workload; unset asks about whichever is current")
+		runIDUsage)
 
 	// Signal command, which answers a gate on a run that is already waiting.
 	//
@@ -3037,33 +3049,29 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 	// signal it; here the run is durable and the answer arrives whenever the
 	// person gets to it, which is the case an approval gate exists for.
 	signalCmd := &cobra.Command{
-		Use:   "signal [workflow-id] [signal-name]",
+		Use:   "signal <workflow-id> <signal-name>",
 		Short: "Send a signal to a waiting run",
 		Long: "Deliver a signal to a run waiting for one, which is how a human approval reaches " +
-			"a workload. The payload becomes the waiting step's outputs, so its keys are what " +
-			"later steps read as ${step_id.key}.\n\n" +
+			"a workload. The payload becomes the waiting step's outputs, so later steps read its " +
+			"keys as `${steps.<id>.<key>}`.\n\n" +
 			// The numbers are the constants, not a prose copy of them: a limit
 			// documented by hand is a limit that drifts the day it changes.
-			fmt.Sprintf("One limit worth knowing before designing a payload: a payload over %d KiB "+
-				"is refused synchronously, with the size and the limit named; send a reference to "+
-				"something large rather than the thing itself, since the payload travels with the "+
-				"run from then on. A signal that arrives before its gate is reached is held for "+
-				"it — across all names, however many accumulate — so sending does not fail when "+
-				"the run is elsewhere, it waits; carrying more than %d unconsumed at once is "+
-				"unusual enough that the run logs it, and a backlog that genuinely never stops "+
-				"growing eventually fails the run rather than silently losing any of it.",
+			fmt.Sprintf("A payload over %d KiB is refused, with the size and the limit named; send "+
+				"a reference to something large rather than the thing itself, since the payload "+
+				"travels with the run from then on. A signal that arrives before its gate is "+
+				"reached is held for it, so sending does not fail when the run is elsewhere. A run "+
+				"holding more than %d unconsumed signals logs it, and a backlog that never stops "+
+				"growing fails the run rather than dropping any.",
 				v1.MaxSignalPayloadBytes/1024, v1.MaxPendingSignals) + mutationFlagHelp +
-			"\n\n`result` is \"delivered\" once the server has taken the signal, and `signalName` is " +
-			"which one: two signals to one run are two acts, so the name is part of the result " +
-			"rather than only of the request. \"delivered\" rather than \"applied\" because it is a " +
-			"claim about the server and not about the workflow: being held for a gate not reached " +
-			"yet counts as delivered, and a signal held across the run continuing as new stays " +
-			"held — it is carried forward, not dropped, so \"delivered\" means the workflow will " +
-			"see it, eventually, or the run will fail loudly rather than silently losing it.",
+			"\n\n`signalName` says which signal was delivered, since two signals to one run are " +
+			"two acts. A signal held for a gate not yet reached, or carried across " +
+			"continue-as-new, counts as delivered: the workflow will see it, or the run fails " +
+			"rather than losing it.",
 		Args: cobra.ExactArgs(2),
 		RunE: runSignal,
 		Example: `# Approve a deploy waiting on a gate:
-flow signal deploy-abc123 deploy-approved --data '{"approved": true, "by": "someone@example.com"}'
+flow signal deploy-abc123 deploy-approved \
+  --data '{"approved": true, "by": "someone@example.com"}'
 
 # Decline it; the workload can tell this apart from nobody answering:
 flow signal deploy-abc123 deploy-approved --data '{"approved": false}'
@@ -3071,12 +3079,14 @@ flow signal deploy-abc123 deploy-approved --data '{"approved": false}'
 # Send a signal that carries nothing:
 flow signal deploy-abc123 deploy-approved
 
-# A local run is given its answers up front instead, the same idea for a
-# workflow with no signals: policy to attest a sender against:
-flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
+# A local run takes its signals up front instead:
+flow run local examples/expense-approval/workflow.yaml \
+  --input-file examples/expense-approval/inputs.json \
+  --signal manager-approved='{"approved": true}'
 
-# Confirm the delivery from a script, which gets a document rather than a sentence:
-flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'`,
+# Confirm the delivery from a script, which reads a document, not a sentence:
+flow signal deploy-abc123 deploy-approved -o json \
+  | jq -r '.signalName, .result'`,
 	}
 
 	addOutputFlag(signalCmd)
@@ -3109,8 +3119,7 @@ flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'
 		addServerFlags(c)
 	}
 	signalCmd.Flags().String("run-id", "",
-		"pin the signal to one run of the workload; unset addresses whichever run is current, "+
-			"which is what approving a workload means")
+		runIDUsage)
 
 	// Tasks command: the index of what a step can name, and the description of any
 	// one of them.
@@ -3120,12 +3129,12 @@ flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'
 	// breath is a page nobody can hold, and it grew in the one dimension a
 	// [cobra.NoArgs] command cannot subset: the catalog, which plugins extend.
 	tasksCmd := &cobra.Command{
-		Use:   "tasks [name]",
+		Use:   "tasks [task-name]",
 		Short: "List the tasks workflows can use, or describe one",
 		Long: "List the tasks available to workflow steps, one line each. Name one to see " +
 			"it in full: every input with what may be written in it, what the task evaluates " +
 			"itself, what it hands back, and a step to copy.\n\n" +
-			"What a plugin provides is listed too, given --plugin-dir: the plugins there " +
+			"What a plugin provides is listed too, given `--plugin-dir`: the plugins there " +
 			"are launched and their tasks join the catalog, each marked with the plugin it " +
 			"came from, so this is the whole of what a step could name on a worker " +
 			"configured the same way. Without it this is what this binary alone can run, " +
@@ -3202,14 +3211,15 @@ flow tasks --plugin-catalog plugins.lock.json`,
 			"which is the only way to know what a plugin does.",
 		Args: cobra.NoArgs,
 		RunE: runPlugins,
-		Example: `# What would a worker with this plugin directory be able to run?
+		Example: `# What a worker with this plugin directory could run:
 flow plugins --plugin-dir /usr/local/lib/flowstate/plugins
 
 # The same thing as a document:
 flow plugins --plugin-dir /usr/local/lib/flowstate/plugins --output json
 
-# Which plugin provides a given task?
-flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.greet") | .name'`,
+# Which plugin provides a given task:
+flow plugins -o json \
+  | jq -r '.plugins[] | select(.tasks[].name == "example.greet") | .name'`,
 	}
 	addOutputFlag(pluginsCmd)
 	addPluginFlags(pluginsCmd)
@@ -3234,7 +3244,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 			"with input schemas derived from the same protobuf schema the API speaks. " +
 			"Validation, compilation and local execution always answer in this process; " +
 			"the run-lifecycle tools call the configured server. The task catalog answers " +
-			"in this process too, unless --address (or FLOWSTATE_ADDRESS) explicitly names " +
+			"in this process too, unless `--address` (or FLOWSTATE_ADDRESS) explicitly names " +
 			"a deployment, in which case it answers from that deployment instead, and " +
 			"refuses rather than falling back here if it cannot be reached.\n\n" +
 			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
@@ -3245,8 +3255,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 			"reference at flowstate://docs/dsl, the task catalog as JSON at " +
 			"flowstate://catalog/tasks, and every example Flowfile under " +
 			"flowstate://docs/examples/, embedded at build time, so an agent can read the " +
-			"language and working references without a checkout nearby. See docs/CLI.md " +
-			"for client configuration.\n\n" +
+			"language and working references without a checkout nearby.\n\n" +
 			"An agent host launches this and speaks to it over the same stdin and stdout " +
 			"this process already has; typing `flow mcp` yourself waits for a host to " +
 			"connect rather than doing anything. Claude Code: " +
@@ -3264,11 +3273,10 @@ flow mcp --address flowstate.internal:9233
 # Permit local runs to reach what an egress policy names, and nothing else:
 flow mcp --egress-policy examples/egress-policy.yaml
 
-# Let local runs resolve one environment secret, under an access policy:
-flow mcp --secret-env API_KEY --auth-policy policy.yaml
+# Let local runs resolve one environment secret, under an auth policy:
+flow mcp --secret-env API_KEY --auth-policy auth.yaml
 
-# Teach the catalog, flowstate_validate and flowstate_run_local a plugin's
-# tasks, so a file naming one stops reading as "unknown task":
+# Teach the tools a plugin's tasks, so naming one is not an unknown task:
 flow mcp --plugin-dir ./plugins`,
 	}
 	addServerFlags(mcpCmd)
@@ -3298,9 +3306,9 @@ flow mcp --plugin-dir ./plugins`,
 	// stdio, byte for byte as it did.
 	mcpServeCmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Serve Flowstate to an AI agent over MCP on HTTP, as an OAuth 2.1 protected resource",
+		Short: "Serve Flowstate to AI agents over MCP on HTTP, with token auth",
 		Long: "Serve the Model Context Protocol over streamable HTTP, requiring every caller to " +
-			"present a bearer token this deployment's own trust policy accepts and whose audience " +
+			"present a bearer token this deployment's own auth policy accepts and whose audience " +
 			"names this resource specifically (RFC 8707 section 2). A request with no token is " +
 			"answered 401 with a WWW-Authenticate header naming the RFC 9728 protected resource " +
 			"metadata document, which this command also serves, so a compliant MCP client can " +
@@ -3322,19 +3330,20 @@ flow mcp --plugin-dir ./plugins`,
 			"an operator configured. The protected-resource document advertises the schema-owned " +
 			"scope vocabulary, but no request enforces or challenges for a scope yet, and a " +
 			"token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than " +
-			"read as its bare subject. See docs/MCP_AUTHORIZATION.md.",
+			"read as its bare subject. See " + docsURL + "MCP_AUTHORIZATION.md.",
 		Args: cobra.NoArgs,
 		RunE: runMCPServe,
-		Example: `# One replica behind a TLS-terminating proxy, advertising one identity provider:
+		Example: `# One replica behind a proxy that terminates TLS, with one identity provider:
 flow mcp serve --listen 127.0.0.1:8617 \
-  --auth-policy /etc/flowstate/policy.yaml \
+  --auth-policy /etc/flowstate/auth.yaml \
   --protected-resource https://flowstate.example.com/mcp \
   --authorization-server https://acme.okta.com
 
 # Terminating TLS here instead:
 flow mcp serve --listen :8617 \
-  --tls-cert-file /etc/flowstate/tls.crt --tls-key-file /etc/flowstate/tls.key \
-  --auth-policy /etc/flowstate/policy.yaml \
+  --tls-cert-file /etc/flowstate/tls.crt \
+  --tls-key-file /etc/flowstate/tls.key \
+  --auth-policy /etc/flowstate/auth.yaml \
   --protected-resource https://flowstate.example.com/mcp \
   --authorization-server https://acme.okta.com`,
 	}

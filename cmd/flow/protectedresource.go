@@ -35,21 +35,17 @@ import (
 // Reported by Codex on picatz/flowstate#807.
 func addProtectedResourceFlags(cmd *cobra.Command, unsetBehavior string) {
 	cmd.Flags().String("protected-resource", os.Getenv("FLOWSTATE_PROTECTED_RESOURCE"),
-		"the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface "+
-			"identifies as (overrides FLOWSTATE_PROTECTED_RESOURCE). No fragment, no trailing "+
-			"slash. Given together with one or more --authorization-server, this deployment "+
-			"serves RFC 9728 protected resource metadata at "+auth.ProtectedResourceMetadataPath+
-			", plus this resource's own path if it has one (RFC 9728 section 3.1's well-known-URI "+
-			"construction — a resource ending in /mcp serves its document at "+
-			auth.ProtectedResourceMetadataPath+"/mcp, not at the bare prefix), and every 401 "+
-			"challenge names that exact document. "+unsetBehavior)
+		"canonical resource URI (RFC 8707 section 2) this deployment's MCP surface "+
+			"identifies as, with no fragment or trailing slash. With `--authorization-server`, "+
+			"RFC 9728 protected resource metadata is served at "+auth.ProtectedResourceMetadataPath+
+			" followed by the resource's own path (a resource ending in /mcp is served at "+
+			auth.ProtectedResourceMetadataPath+"/mcp), and every 401 challenge names that "+
+			"document. "+unsetBehavior)
 
 	cmd.Flags().StringArray("authorization-server", nil,
 		"an authorization server this deployment advertises as able to mint tokens for "+
-			"--protected-resource. Repeatable; RFC 9728 requires at least one when "+
-			"--protected-resource is given. Each one must already be a kind: oidc issuer in "+
-			"--auth-policy — an authorization server this deployment's own verifier would "+
-			"reject is refused at start-up rather than advertised")
+			"`--protected-resource` (repeatable; at least one is required with it). Each must "+
+			"already be a `kind: oidc` issuer in the `--auth-policy`, or start-up is refused")
 }
 
 // protectedResourceFlags is what an operator asked for, read once before

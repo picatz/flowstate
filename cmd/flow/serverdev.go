@@ -123,7 +123,7 @@ func newServerDevCommand() *cobra.Command {
 		Short: "Run the whole stack in one command: Temporal, the server, and a worker",
 		Long: "Start everything a durable run needs, in one process: a Temporal dev server, the " +
 			"Flowstate control plane, and a worker polling the run queue. Everything binds loopback " +
-			"and everything is ephemeral unless --db names a file, so a session leaves nothing " +
+			"and everything is ephemeral unless `--db` names a file, so a session leaves nothing " +
 			"behind. Ctrl-C stops all three, the Temporal child process included.\n\n" +
 			"By default it takes two postures on your behalf and states both at start-up: callers are " +
 			"anonymous (what `flow server --insecure-no-auth` does) and the interpreter is " +
@@ -150,18 +150,16 @@ flow server dev
 # The same stack with token authentication and a copyable sign command:
 flow server dev --auth
 
-# Keep the runs: Temporal persists to sqlite at this path.
+# Keep the runs, in a sqlite file at this path:
 flow server dev --db ./flowstate.db
 
 # Somewhere else, and without the web UI:
 flow server dev --listen localhost:9999 --ui-port 0
 
-# Compose with the observability lab: export OTEL_EXPORTER_OTLP_ENDPOINT
-# (examples/observability serves a collector at http://localhost:4317) and
-# telemetry flows to it, as it does from flow server and flow worker.
+# With OTEL_EXPORTER_OTLP_ENDPOINT exported, telemetry goes to that collector:
 flow server dev
 
-# Resolved endpoints, for a script that starts the stack and then addresses it:
+# Resolved endpoints, for a script that starts the stack and then calls it:
 flow server dev -o json`,
 	}
 
@@ -197,10 +195,9 @@ flow server dev -o json`,
 	addTaskPolicyFlag(cmd)
 	addSecretFlags(cmd)
 	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to an access policy whose secrets rules authorize worker-side resolution. Only its "+
-			"secrets section is read: issuer entries are unused (callers are anonymous by default, or "+
-			"verified against the generated local issuer with --auth), and inheriting the path from "+
-			"$FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring deployment authentication")
+		runtimeAuthPolicyUsage+". Its `issuers:` are not read: callers are anonymous, or "+
+			"verified against the generated local issuer with `--auth`, and a path inherited from "+
+			"$FLOWSTATE_AUTH_POLICY is refused rather than silently ignoring its issuers")
 	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 	cmd.Flags().StringArray("identity-claim", nil, identityClaimUsage)
 

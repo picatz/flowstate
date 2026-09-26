@@ -97,6 +97,48 @@ func TestHelpProseSpeaksTheCLIsOwnDialect(t *testing.T) {
 	require.Greater(t, checked, 100, "the walk found almost nothing, so it proves almost nothing")
 }
 
+// issueReference matches a tracker reference such as #411: a hash directly
+// followed by digits, at the start of a word.
+var issueReference = regexp.MustCompile(`(^|[^\w&])#\d+\b`)
+
+// TestHelpProseCarriesNoIssueNumbers refuses an issue or pull-request number in
+// user-facing prose.
+//
+// A number like "(#752)" is the history of a change, meaningful to whoever wrote
+// it and to nobody at a terminal: it names a tracker the reader may never open,
+// and it says why the text exists rather than what the command does. That
+// belongs in a commit or a doc comment.
+func TestHelpProseCarriesNoIssueNumbers(t *testing.T) {
+	var checked int
+
+	eachCommand(newRootCommand(), func(c *cobra.Command) {
+		for where, text := range helpStrings(c) {
+			checked++
+
+			assert.NotRegexp(t, issueReference, text,
+				"%s: %s cites an issue number, which is history a reader at a terminal "+
+					"cannot use. Say what the command does, and leave the reference to "+
+					"the commit that made the change.\n\t%s", c.CommandPath(), where, text)
+		}
+	})
+
+	require.Greater(t, checked, 100, "the walk found almost nothing, so it proves almost nothing")
+}
+
+// TestAnIssueReferenceIsRecognised pins what the pattern above does and does
+// not match, so the walk cannot pass by matching nothing.
+func TestAnIssueReferenceIsRecognised(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{"(issue #411)", "see #187", "#752 made this", "fixed in #1010."} {
+		assert.Regexp(t, issueReference, text, "an issue reference went unnoticed")
+	}
+
+	for _, text := range []string{"# Run a workflow:", "#!/bin/sh", "a#1 id", "&#39;", "# 3 retries"} {
+		assert.NotRegexp(t, issueReference, text, "ordinary text was taken for an issue reference")
+	}
+}
+
 // TestCodeSpansNeverReachAStyledScreen is the other half: markup that was rendered
 // nowhere.
 //

@@ -138,11 +138,6 @@ flow version -o json | jq -e '.version != "devel"'`,
 	}
 
 	addOutputFlag(cmd)
-	// This command's machine output is its own small document, not a server
-	// message, and the shared flag help promises protojson of an RPC response.
-	// Say what is true instead.
-	cmd.Flags().Lookup("output").Usage = "how to render the answer: text, json, jsonl. " +
-		"The JSON shape is this command's own documented field set, not a server message"
 
 	return cmd
 }

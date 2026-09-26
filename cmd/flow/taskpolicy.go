@@ -36,8 +36,7 @@ const taskPolicyEnv = "FLOWSTATE_TASK_POLICY"
 func addTaskPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("task-policy", os.Getenv(taskPolicyEnv),
 		"path to a task-shape policy (YAML) governing which identities may dispatch which "+
-			"tasks (default $"+taskPolicyEnv+"); with nothing configured, every task dispatches "+
-			"exactly as it does today (see #187)")
+			"tasks (default $"+taskPolicyEnv+"); unset, every identity may dispatch every task")
 }
 
 // applyTaskPolicy loads the configured policy file and installs it as the

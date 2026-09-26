@@ -29,7 +29,7 @@ import (
 // newTimelineCommand builds the `flow timeline` command.
 func newTimelineCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "timeline [workflow-id]",
+		Use:   "timeline <workflow-id>",
 		Short: "Report what a run did, in the order it did it",
 		Long: "Read a run's own account of itself: which step ran, which attempt, what it " +
 			"waited for, what failed and with what sentence.\n\n" +
@@ -38,49 +38,49 @@ func newTimelineCommand() *cobra.Command {
 			"report. It starts nothing, signals nothing and changes nothing.\n\n" +
 			"A run that continued as new has an account per segment. `nextRunId` and " +
 			"`previousRunId` name the neighbours and `firstRunId` names where the workload " +
-			"began; pass one with --run-id to read it. Both directions, because omitting " +
-			"--run-id reads the *latest* segment, which by definition has no next one.\n\n" +
+			"began; pass one with `--run-id` to read it. Both directions, because omitting " +
+			"`--run-id` reads the latest segment, which by definition has no next one.\n\n" +
 			"`truncated` says the account is not the whole of that segment — resume with " +
-			"--run-id and --after-event-id set to the last row's event id, which the " +
+			"`--run-id` and `--after-event-id` set to the last row's event id, which the " +
 			"command prints for you. Both, because event ids restart in each segment: a " +
 			"cursor means nothing until the segment it counts within is named. Raising " +
-			"--max-entries is not the way past it either: the ceiling is a ceiling, and " +
+			"`--max-entries` is not the way past it either: the ceiling is a ceiling, and " +
 			"one segment can hold several times the largest answer this returns.\n\n" +
 			"One fact is missing from every account by construction, and this says so on " +
 			"stderr when it applies. A step waiting out a retry backoff has not failed " +
 			"anywhere history can see: Temporal records that failure on the next attempt's " +
 			"start, so the most recent one has no row until that attempt begins, and reading " +
-			"further with --after-event-id will not find it. `flow get` reports it, and the " +
+			"further with `--after-event-id` will not find it. `flow get` reports it, and the " +
 			"note names the command to run.\n\n" +
 			"That note is a second read, taken after the rows, and it says so: it is the run's " +
 			"present rather than the account's last line. A step can stop retrying between the " +
 			"two, in which case no note is printed for a gap the rows really had.",
 		Args: cobra.ExactArgs(1),
 		RunE: runTimeline,
-		Example: `# What did this run actually do?
+		Example: `# What this run actually did:
 flow timeline flowstate-workflow-3f7c
 
-# Just the failures, for a script. Non-empty rather than non-null: this
-# command emits unpopulated fields, so every entry has a failure and a step
-# that succeeded carries it as the empty string.
-flow timeline flowstate-workflow-3f7c -o json | jq '.entries[] | select(.failure != "")'
+# Just the failures (a step that succeeded has an empty failure):
+flow timeline flowstate-workflow-3f7c -o json \
+  | jq '.entries[] | select(.failure != "")'
 
 # The next segment of a workload that continued as new:
 flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-...
 
 # Continue an account the server clipped, which names the segment as well
 # because event ids restart in each one (the command prints both for you):
-flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-... --after-event-id 4821`,
+flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-... \
+  --after-event-id 4821`,
 	}
 
 	addOutputFlag(cmd)
 
 	cmd.Flags().String("run-id", "",
-		"read one segment of the workload; unset reads whichever is current")
+		runIDUsage)
 	cmd.Flags().Int32("max-entries", 0,
 		"stop after this many entries; unset uses the server's default")
 	cmd.Flags().Int64("after-event-id", 0,
-		"resume past an entry already read, by its event id; requires --run-id, since "+
+		"resume past an entry already read, by its event id; requires `--run-id`, since "+
 			"event ids restart in each segment; unset starts at the beginning")
 
 	return cmd

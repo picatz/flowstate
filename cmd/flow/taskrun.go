@@ -224,8 +224,7 @@ func addLocalRehearsalFlags(cmd *cobra.Command) {
 		"Flowstate deployment name to rehearse policy as (local runs only)")
 	cmd.Flags().StringArray("as-claim", nil,
 		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
-	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to an access policy whose secrets rules authorize this local rehearsal")
+	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"), runtimeAuthPolicyUsage)
 	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 }
 
@@ -250,7 +249,7 @@ func newTaskCommand() *cobra.Command {
 	}
 
 	taskRunCmd := &cobra.Command{
-		Use:     "run [task-name]",
+		Use:     "run <task-name>",
 		Short:   "Run one task, without writing a workflow",
 		Long:    taskRunLong,
 		Args:    cobra.ExactArgs(1),
@@ -270,7 +269,7 @@ func newTaskCommand() *cobra.Command {
 
 	taskRunCmd.Flags().StringArray(sensitiveInputFlagName, nil,
 		"treat this input as `sensitive: true` is treated in a file: withheld from the "+
-			"invocation echo unless --reveal-sensitive is typed (repeatable). An input the "+
+			"invocation echo unless `--reveal-sensitive` is typed (repeatable). An input the "+
 			"task's own schema declares as carrying authority is withheld without being named "+
 			"here. Display etiquette only: the value still reaches the task, and a value that "+
 			"must not is a ${secret(...)} reference instead")
@@ -306,15 +305,15 @@ const taskRunLong = "Run one task on its own, with no workflow and no server.\n\
 	"inputs are compiled into a single step and handed to the same engine `flow run local` " +
 	"runs a file with. So it is a real execution and gets the real gates: the egress " +
 	"policy denies internal and loopback addresses here exactly as it denies them there, " +
-	"a ${secret(...)} reference needs the same --secret-env and --auth-policy opt-ins, and " +
+	"a `${secret(...)}` reference needs the same `--secret-env` and `--auth-policy` opt-ins, and " +
 	"retries, timeouts and the task-shape policy behave as they will in production.\n\n" +
-	"Arguments are given the way `flow run` takes them (--input name=value or " +
-	"--input-file inputs.json), and the task's own input schema plays the role a " +
+	"Arguments are given the way `flow run` takes them (`--input name=value` or " +
+	"`--input-file inputs.json`), and the task's own input schema plays the role a " +
 	"workflow's `inputs:` block plays there: it decides how a word is read, which inputs " +
-	"are required, and what a value may hold. A whole value written as ${...} is an " +
-	"expression, and ${secret('env:NAME')} is a reference, exactly as in a file.\n\n" +
+	"are required, and what a value may hold. A whole value written as `${...}` is an " +
+	"expression, and `${secret('env:NAME')}` is a reference, exactly as in a file.\n\n" +
 	"stdout is the answer and stderr is the account of it, so a task invocation pipes. " +
-	"--output json writes the same document `flow run local -o json` writes for a " +
+	"`--output json` writes the same document `flow run local -o json` writes for a " +
 	"finished run." + runDocumentHelp + "\n\n" +
 	"There is no state between invocations and no session, on purpose. Composition is a " +
 	"pipe and then a file: the moment two invocations need to share memory, the answer is " +
@@ -327,16 +326,21 @@ const taskRunExample = `# Run the log task, which needs nothing but a message:
 flow task run log --input message='hello from a task'
 
 # Fetch something, and read one output:
-flow task run http --input url=https://example.com --output json | jq .outputs.steps.http.status_code
+flow task run http --input url=https://example.com --output json \
+  | jq .outputs.steps.http.status_code
 
 # Say what a good response looks like, the way a step's expect: does:
-flow task run http --input url=https://example.com --input expect='${response.status_code == 200}'
+flow task run http --input url=https://example.com \
+  --input expect='${response.status_code == 200}'
 
 # Send a bearer token without it reaching the terminal, or history:
-flow task run http --input url=https://api.example.com/me --input bearer='${secret("env:API_TOKEN")}' --secret-env API_TOKEN --auth-policy policy.yaml
+flow task run http --input url=https://api.example.com/me \
+  --input bearer='${secret("env:API_TOKEN")}' \
+  --secret-env API_TOKEN --auth-policy auth.yaml
 
 # Run a task a plugin provides, through the same discovery a worker uses:
-flow task run example.greet --input name=world --plugin-dir ./plugins --auth-policy examples/plugins/greet/auth.yaml`
+flow task run example.greet --input name=world --plugin-dir ./plugins \
+  --auth-policy examples/plugins/greet/auth.yaml`
 
 // unknownTaskRunError says what was typed, what was probably meant, and what to
 // run to find out.

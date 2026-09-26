@@ -32,7 +32,7 @@ import (
 // newCompileCommand builds the `flow compile` command.
 func newCompileCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "compile [workflow-file]",
+		Use:   "compile <workflow-file>",
 		Short: "Print the workflow specification a Flowfile compiles to",
 		Long: "Compile a Flowfile and write the resulting workflow specification to standard " +
 			"output, executing no workflow step and contacting no server. `--plugin-dir` does " +
@@ -48,7 +48,7 @@ func newCompileCommand() *cobra.Command {
 			"same `file:line:column: message` form `flow validate` writes, standard output " +
 			"stays empty, and the exit status is non-zero. A specification handed out beside " +
 			"a list of its problems would be an invitation to run it anyway.\n\n" +
-			"There is no --input or --input-file here, and the omission is the design rather " +
+			"There is no `--input` or `--input-file` here, and the omission is the design rather " +
 			"than a gap. Compilation takes no arguments: a workflow's `inputs:` are bound to " +
 			"values when a run is submitted, so the specification is the same document " +
 			"whatever it will later be run with. Give arguments to `flow run` or " +

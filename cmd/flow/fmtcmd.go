@@ -77,10 +77,11 @@ func newFmtCommand() *cobra.Command {
 	var opts fmtOptions
 
 	cmd := &cobra.Command{
-		Use:   "fmt [path...]",
-		Short: "Rewrite Flowfiles into the form flowfile.Format writes, keeping comments",
-		Long: "Rewrite a Flowfile from its parsed form rather than editing its source text, the way " +
-			"`flow fix` does. A directory is walked for .yaml and .yml files.\n\n" +
+		Use:   "fmt <path>...",
+		Short: "Rewrite Flowfiles into canonical form, keeping comments",
+		Long: "Rewrite a Flowfile from its parsed form. Unlike `flow fix`, which edits the source " +
+			"text in place, this writes the whole document afresh. A directory is walked for .yaml " +
+			"and .yml files.\n\n" +
 			"Comments are kept, carried onto the document this writes at the key, value or list " +
 			"entry they were written against. Whitespace is not: blank lines, the order a mapping's " +
 			"keys were written in, and a string literal's quote style are all normalized away, " +
@@ -89,7 +90,7 @@ func newFmtCommand() *cobra.Command {
 			"a file carrying a comment this cannot keep, which happens when what the comment was " +
 			"written against is not written back in the same shape.\n\n" +
 			"A Flowfile test (`*.test.yaml`, declaring `tests:` rather than `steps:`) is a different " +
-			"document kind this command does not yet format; it is passed over with a note rather " +
+			"document kind this command does not format; it is passed over with a note rather " +
 			"than parsed as a workflow and refused, so a directory `flow init` writes, tests " +
 			"included, is something this command can walk.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +

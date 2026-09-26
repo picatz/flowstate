@@ -166,13 +166,19 @@ func useLine(c *cobra.Command) string {
 // example from the next — a comment and the command it explains are a pair, and a
 // list of eight lines with no gaps reads as one example with four comments in it.
 // Runs of blanks collapse to one, since how a Go string literal is spaced is not a
-// decision about the help page.
+// decision about the help page. A line continuing a command whose previous line
+// ends in a backslash is indented two spaces under it, so a long invocation split
+// to fit the terminal still reads as one command.
 func exampleLines(c *cobra.Command) []string {
 	var lines []string
 	for line := range strings.SplitSeq(strings.TrimSpace(c.Example), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" && (len(lines) == 0 || lines[len(lines)-1] == "") {
 			continue
+		}
+
+		if line != "" && len(lines) > 0 && strings.HasSuffix(lines[len(lines)-1], `\`) {
+			line = "  " + line
 		}
 
 		lines = append(lines, line)
@@ -198,6 +204,11 @@ func styleExample(theme ui.Theme, line string, width int) string {
 
 	return theme.Strong.Render(line)
 }
+
+// docsURL is where help points a reader for a document the binary does not
+// carry: the published copy, since a person holding only `flow` has no checkout
+// to find a relative path in.
+const docsURL = "https://github.com/picatz/flowstate/blob/main/docs/"
 
 // column is one row of a two-column list: a name and what it does.
 type column struct {

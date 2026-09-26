@@ -57,7 +57,7 @@ func newJWTCommand() *cobra.Command {
 		Long: "Sign a JWT with a key from `flow keys generate`, or inspect one a " +
 			"workload, worker, or relying party produced. For debugging identity, " +
 			"not for minting production workload assertions: a real issuer, named " +
-			"in the trust policy `flow server` is started with (`--auth-policy`), " +
+			"in the auth policy `flow server` is started with (`--auth-policy`), " +
 			"publishes its keys for discovery and can rotate and revoke them, and " +
 			"this command deliberately does none of that.",
 	}
@@ -68,6 +68,26 @@ func newJWTCommand() *cobra.Command {
 	return jwtCmd
 }
 
+// spokenDuration writes a duration the way a sentence says it, "1 hour" rather
+// than the "1h0m0s" [time.Duration.String] gives, for a limit named in help.
+// A duration that is not a whole number of hours or minutes keeps Go's form.
+func spokenDuration(d time.Duration) string {
+	unit, size := "hour", time.Hour
+	if d%time.Hour != 0 {
+		unit, size = "minute", time.Minute
+	}
+	if d <= 0 || d%size != 0 {
+		return d.String()
+	}
+
+	n := int64(d / size)
+	if n != 1 {
+		unit += "s"
+	}
+
+	return fmt.Sprintf("%d %s", n, unit)
+}
+
 func newJWTSignCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sign",
@@ -75,7 +95,7 @@ func newJWTSignCommand() *cobra.Command {
 		Long: fmt.Sprintf("Sign a JWT with a private key from `flow keys generate`. "+
 			"The token's lifetime is capped at %s, because this command mints "+
 			"debugging tokens directly rather than through an issuer with rotation "+
-			"and revocation.", maxSignTTL),
+			"and revocation.", spokenDuration(maxSignTTL)),
 		Args: cobra.NoArgs,
 		RunE: runJWTSign,
 		Example: `# Sign a short-lived token for a debugging session:
@@ -89,11 +109,11 @@ flow jwt sign --key identity/2026-08.pem --issuer https://flowstate.internal \
 
 	cmd.Flags().String("key", "", "path to a PKCS#8 private key PEM (required)")
 	cmd.Flags().String("id", "", "key id in the JWT \"kid\" header "+
-		"(default: --key's file name, without its extension)")
+		"(default: `--key`'s file name, without its extension)")
 	cmd.Flags().String("issuer", "", "the \"iss\" claim")
 	cmd.Flags().String("subject", "", "the \"sub\" claim")
 	cmd.Flags().String("audience", "", "the \"aud\" claim")
-	cmd.Flags().Duration("ttl", defaultSignTTL, "how long the token is valid for, capped at "+maxSignTTL.String())
+	cmd.Flags().Duration("ttl", defaultSignTTL, "how long the token is valid for, capped at "+spokenDuration(maxSignTTL))
 	cmd.Flags().StringArray("claim", nil, "an additional name=value claim (repeatable)")
 	_ = cmd.MarkFlagRequired("key")
 	_ = cmd.MarkFlagRequired("issuer")
@@ -108,7 +128,7 @@ func newJWTInspectCommand() *cobra.Command {
 		Use:   "inspect <token>",
 		Short: "Print a JWT's header and claims",
 		Long: "Print a JWT's header and claims without trusting them: the " +
-			"signature is checked only when --key is given, and an unparseable " +
+			"signature is checked only when `--key` is given, and an unparseable " +
 			"token is reported without echoing it back, since a garbled string " +
 			"handed to this command may be a credential rather than a typo.",
 		Args: cobra.ExactArgs(1),

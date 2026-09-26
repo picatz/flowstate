@@ -120,20 +120,15 @@ func addOutputFlag(cmd *cobra.Command) {
 		names = append(names, string(accepted))
 	}
 
-	// The description says "named fields" rather than "the server's own schema",
-	// which is what it used to say, because that promise stopped being true for
-	// every verb the moment the mutations gained the flag: they answer with
-	// [v1.MutationResult] rather than with a response, since the RPCs behind them
-	// answer with nothing. The schema still describes it, so a field is as
-	// addressable and as guarded there as anywhere else, but it is this process's
-	// account of its own request rather than something the server sent. A flag help
+	// The description names the formats and nothing about where the fields come
+	// from: this flag is on local verbs as well as server ones, and on mutations
+	// that answer with [v1.MutationResult] rather than a server response, so any
+	// one promise about the schema behind it would be false somewhere. A flag help
 	// that overstates its contract is worse than one that is vague about it, and
 	// each verb's own help names the document it writes.
 	cmd.Flags().StringP("output", "o", string(FormatText),
-		"how to render the answer: "+strings.Join(names, ", ")+". "+
-			"json and jsonl are named fields rather than columns, so a value is addressable "+
-			"by name: the server's own schema where a verb reads something, and the result "+
-			"document this verb's help describes where it changes something")
+		"output format: "+strings.Join(names[:len(names)-1], ", ")+", or "+names[len(names)-1]+
+			" (one JSON document per line)")
 
 	// Shell completion for the values, because a flag with a closed set of
 	// answers should not need the help text opened to remember them.
@@ -390,8 +385,8 @@ func writeMutationResult(surface *ui.UI, format OutputFormat, result *v1.Mutatio
 // decision and a help text restating it per verb is a thing that drifts. The fields
 // are named here because a caller reading `--help` is deciding what to index, and
 // sending them to the source to find out would defeat the flag.
-const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdout carries a single result " +
-	"document and nothing else, while the prose above is not written: " +
+const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), the usual text output is " +
+	"suppressed and stdout carries a single result document and nothing else: " +
 	"`{\"verb\", \"workflowId\", \"runId\", \"scheduleName\", \"signalName\", \"result\"}`, the " +
 	"schema's `flowstate.v1.MutationResult`. `result` is \"applied\" for an act that is done when " +
 	"the server answers, \"requested\" for one it has accepted and not yet performed, and " +
@@ -416,12 +411,8 @@ const runDocumentHelp = "\n\nThe run document on stdout is written for a program
 	"`.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in " +
 	"the run's own state, so the transcript is `.outputs.steps` and the answer stays " +
 	"`.runOutputs`.\n\n" +
-	"This document is a contract. Its field names and shape are treated as a public " +
-	"interface: they are pinned by tests, and changing one is a breaking change " +
-	"announced in the release notes, exactly as a change to the schema would be. " +
-	"Fields are added, never renamed or removed in place, and an empty value is " +
-	"written rather than omitted so an expression that resolves against one run " +
-	"resolves against the next.\n\n" +
+	"Fields are added, never renamed or removed, and empty values are written rather " +
+	"than omitted.\n\n" +
 	"`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` " +
 	"and CEL's tagged encoding of every value — which is the shape to read if you " +
 	"are generating a consumer against `flowstate.v1` rather than writing a `jq` " +
