@@ -195,6 +195,52 @@ func TestCutIsIdempotentForEveryInput(t *testing.T) {
 	}
 }
 
+// TestCutNeverKeepsAStraddlingRunesLeadingBytes is the "never splits a rune"
+// half of Cut's contract, held independently of [strings.ToValidUTF8] rather
+// than inferred from it.
+//
+// Cut used to walk back from the limit to the start of a straddling rune
+// itself, in a block removed as dead by #2015: a differential over five
+// million generated (string, limit) pairs, and an exhaustive one over every
+// byte string up to three bytes long, found no input on which removing it
+// changed the result, because the block's own boundary is exactly what
+// [strings.ToValidUTF8] arrives at on its own — a rune's leading bytes with
+// no completion are an incomplete sequence, which is invalid UTF-8 by
+// definition, so the sanitizing pass drops them either way. This test
+// recomputes that same boundary independently, not by calling Cut, so a
+// future change that starts keeping part of a straddling rune's bytes fails
+// here even though "valid UTF-8 and within the limit" cannot tell a correctly
+// bounded answer from one that stops at some other, still-valid, still-short-
+// enough point.
+func TestCutNeverKeepsAStraddlingRunesLeadingBytes(t *testing.T) {
+	t.Parallel()
+
+	var straddled int
+
+	property := func(text generatedText, limit generatedLimit) bool {
+		s, n := string(text), int(limit)
+		if !straddlesLimit(s, n) {
+			return true
+		}
+		straddled++
+
+		// The start of the rune the limit falls inside: the boundary the
+		// removed block used to compute.
+		start := n
+		for start > 0 && !utf8.RuneStart(s[start]) {
+			start--
+		}
+
+		return len(Cut(s, n)) <= start
+	}
+
+	if err := quick.Check(property, checkConfig()); err != nil {
+		t.Fatalf("Cut kept part of a straddling rune's bytes: %v", err)
+	}
+
+	assertReached(t, "a valid multi-byte rune straddling the limit", straddled)
+}
+
 // straddlesLimit reports whether a valid multi-byte rune in s begins before
 // limit and ends at or after it: the case a byte-wise cut would break and this
 // package exists to handle.
