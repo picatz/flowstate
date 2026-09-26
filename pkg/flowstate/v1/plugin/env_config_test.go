@@ -57,6 +57,37 @@ func TestAMisspelledOrRepeatedEnvironmentKeyIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnEmptyPluginNameNeverReachesByPlugin covers the root cause behind the
+// weekly deep-tier fuzz job's FuzzParseEnvConfig crasher (picatz/flowstate
+// #2105): YAML lets a mapping use the empty string as a key just like any
+// other, so a well-formed document can decode [EnvConfig.Env] to a map keyed
+// by "" — no plugin is ever discovered under that name, and no operator typed
+// it meaning to name one, but before this test's fix [EnvConfig.ByPlugin]
+// copied the key straight through, handing its caller an entry attributed to
+// no plugin at all.
+func TestAnEmptyPluginNameNeverReachesByPlugin(t *testing.T) {
+	t.Parallel()
+
+	for name, document := range map[string]string{
+		"empty key, empty mapping value": "env:\n  \"\": {}\n",
+		"empty key, no value at all":     "env:\n  \"\":\n",
+	} {
+		cfg, err := ParseEnvConfig([]byte(document))
+		if err != nil {
+			t.Fatalf("%s: parsing: %v", name, err)
+		}
+		if _, ok := cfg.Env[""]; !ok {
+			t.Fatalf("%s: decoded Env has no entry under the empty key; document no longer exercises the shape under test", name)
+		}
+
+		for pluginName := range cfg.ByPlugin() {
+			if pluginName == "" {
+				t.Errorf("%s: ByPlugin returned an entry under the empty plugin name", name)
+			}
+		}
+	}
+}
+
 // TestAnEmptyEnvironmentFileGrantsNothing keeps "configured nothing" and
 // "configured an empty document" the same answer, which is the answer that
 // leaves every plugin launched exactly as it was.
