@@ -206,6 +206,43 @@ func TestABrokenDefaultsFileIsPublishedOnItsOwnURI(t *testing.T) {
 	})
 }
 
+// TestASuiteRefusedForADirectoryVarShowsWhyInItsOwnBuffer is #2080 in the
+// editor: the refusal of a suite whose `secrets:` names a testdefaults.yaml
+// var is positioned at that var, which the server publishes on the defaults
+// URI — so the suite, the document actually refused, must carry the refusal
+// too, at the `secrets:` entry that seeds the path.
+func TestASuiteRefusedForADirectoryVarShowsWhyInItsOwnBuffer(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+
+		const secret = "sk-live-editor-2080"
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"),
+			[]byte("edition: v2026.3\nname: fine\nsteps:\n  - id: s\n    log:\n      message: hello\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "testdefaults.yaml"),
+			[]byte("vars:\n  token: "+secret+"\n"), 0o600))
+
+		suiteURI := lsp.DocumentURI("file://" + filepath.Join(dir, "a.test.yaml"))
+		c.open(string(suiteURI), "tests:\n  - name: a\n    workflow: ./workflow.yaml\n    secrets:\n"+
+			"      env:TOKEN: ${vars.token}\n    expect: {failed: false}\n")
+		synctest.Wait()
+
+		published, ok := c.lastPublishedFor(suiteURI)
+		require.True(t, ok, "the refused suite drew no diagnostics of its own")
+		var refusal *lsp.Diagnostic
+		for i, d := range published.Diagnostics {
+			assert.NotContains(t, d.Message, secret)
+			if strings.Contains(d.Message, "vars.token is stated by testdefaults.yaml") {
+				refusal = &published.Diagnostics[i]
+			}
+		}
+		require.NotNil(t, refusal, "the suite's buffer does not say why it is refused: %+v", published.Diagnostics)
+		assert.Equal(t, 4, refusal.Range.Start.Line, "at the secrets: entry that seeds the path")
+	})
+}
+
 func TestAnOpenDefaultsSyntaxDiagnosticWinsOverAnIncludingSuiteDuplicate(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

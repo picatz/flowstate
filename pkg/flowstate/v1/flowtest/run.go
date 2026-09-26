@@ -1379,6 +1379,30 @@ func unstubbedTaskFn(name string, seen *unstubbedTasks) v1.TaskFunc {
 // stops waiting and delivers nothing — a signal scripted for after the
 // workflow already finished is simply never sent, matching what a sender
 // pointed at a workload that is no longer running would actually manage.
+//
+// # Two scripts at the same moment
+//
+// The clock only orders *distinct* deadlines: it is silent about which of two
+// signals scripted for the same `at` — most commonly the shared default, "",
+// which every script with no `at:` at all resolves to — reaches the run
+// first, because each is its own goroutine and nothing but the clock stood
+// between them. Left alone, that is a real race for delivery order: two
+// clicks scripted "immediately" queue in whichever order two goroutines
+// happen to reach [v1.LocalSignals.DeliverFrom], which a multi-core run does
+// not hold still, and a scripted approval for the file's *second* stage could
+// answer its *first* — precisely the shape a `loop:`'s next iteration would
+// then never open (issue #2103).
+//
+// So a tie is broken the one way a file can state at all: declaration order.
+// turnDone/waitFor below chain every job to the nearest earlier one sharing
+// its `at`, clamped to zero first, so job i's delivery happens strictly
+// after the job before it in the same tie group has already delivered (or
+// given up because the run ended first) — while two jobs at *different*
+// deadlines are left exactly as unsynchronized as before, since the clock
+// already orders those. The clamp is what keeps a negative `at` — accepted
+// since before this existed, and delivered at once by [v1.VirtualClock.After]
+// exactly like zero — in the same tie group as the shared empty default
+// rather than racing it under a raw-duration key the two would never match.
 func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
@@ -1394,9 +1418,19 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		// the script's own `sender.subject`, "" for a script that named
 		// nobody.
 		senderSubject string
+
+		// waitFor is closed once the nearest earlier job scripted for this
+		// same `at` has delivered (or given up), so this job's own delivery
+		// is ordered after it. Nil for a job that ties nothing before it.
+		waitFor chan struct{}
+
+		// turnDone is closed once this job has delivered or given up,
+		// releasing whichever later job's waitFor names it.
+		turnDone chan struct{}
 	}
 
 	jobs := make([]job, 0, len(scripts))
+	lastByAt := make(map[time.Duration]chan struct{}, len(scripts))
 	for _, s := range scripts {
 		at := time.Duration(0)
 		if s.At != "" {
@@ -1404,17 +1438,28 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			if err != nil {
 				return func() {}, fmt.Errorf("signal %q: invalid `at` duration %q: %w", s.Name, s.At, err)
 			}
-			at = d
+			// Clamped, not refused: a negative `at` was accepted before this
+			// existed and [v1.VirtualClock.After] already answers it exactly
+			// like zero, delivering at once rather than parking. Keying the
+			// tie below on the raw duration would leave a negative `at` out
+			// of every group it actually races with — "-1s" and the shared
+			// empty default both fire immediately, so both belong to the one
+			// tie group everything at-or-before the epoch resolves into.
+			at = max(d, 0)
 		}
 		subject := ""
 		if s.Sender != nil {
 			subject = s.Sender.Subject
 		}
+		turnDone := make(chan struct{})
 		jobs = append(jobs, job{
 			name: s.Name, at: at, payload: s.Payload,
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
+			waitFor:       lastByAt[at],
+			turnDone:      turnDone,
 		})
+		lastByAt[at] = turnDone
 	}
 
 	done := make(chan struct{}, len(jobs))
@@ -1423,6 +1468,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		go func(j job) {
 			defer clock.Leave()
 			defer func() { done <- struct{}{} }()
+			defer close(j.turnDone)
 
 			select {
 			case <-clock.After(j.at):
@@ -1430,6 +1476,18 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 				// The run ended before the clock ever advanced to this
 				// signal's moment — nothing is left to deliver to.
 				return
+			}
+
+			// A job tied to an earlier one at the same `at` waits its turn —
+			// see the doc comment above. The earlier job's own turnDone
+			// closes whether it delivered or gave up, so this never blocks
+			// past the run ending either.
+			if j.waitFor != nil {
+				select {
+				case <-j.waitFor:
+				case <-runFinished:
+					return
+				}
 			}
 
 			// The run may have finished in the instant between the clock

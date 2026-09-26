@@ -175,7 +175,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 	},
 	testLevelSignal: {
 		{name: "name", detail: "string", docs: "The signal a `wait_for_signal:` step names."},
-		{name: "at", detail: "duration", docs: "When to deliver it, as a duration from the moment the run started — \"5m\", \"1h30m\". Empty delivers it immediately."},
+		{name: "at", detail: "duration", docs: "When to deliver it, as a duration from the moment the run started — \"5m\", \"1h30m\". Empty (or a negative duration) delivers it immediately. Signals sharing a moment deliver in declaration order."},
 		{name: "payload", detail: "map", docs: "What the signal carries, read back under `${<step>.payload}` exactly as `flow signal`'s would be."},
 		{name: "sender", detail: "map", docs: "Who this signal stands in for, checked against the workflow's own declared `signals:` policy exactly as a real delivery is."},
 		{name: "delivery_id", detail: "string", docs: "Names the webhook delivery this signal stands in for, so a case can rehearse a redelivery. Two entries sharing one value are one delivery arriving twice: the second answers no gate."},

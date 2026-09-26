@@ -133,6 +133,36 @@ const (
 	maxListPositionBytes = 2048
 )
 
+// scanSegment is what one List scan currently knows about a workflow id's
+// most recently met execution: when it started, whether it read as still
+// open, the filter error it produced (nil if it matched or was never
+// excluded that way), a sequence fixing its place in the scan regardless of
+// map order, and where its summary lives in the page, when it has a place
+// there at all.
+//
+// open is what a later execution sharing this id is judged against — see the
+// comment at [FlowstateServer.List]'s use for why an open execution older
+// than another one under the same id is always stale, and a closed one never
+// is.
+//
+// err and seq exist for one purpose: once the scan ends, recovering the
+// filter diagnostic's example error from whichever executions are still
+// standing rather than from whichever one the scan happened to meet first —
+// see the recomputation at the end of [FlowstateServer.List] (#2112 review,
+// third pass, F1).
+//
+// index is -1 for an execution this scan already decided against — an
+// earlier execution proven stale, or a current one the filter excluded — so
+// a stale duplicate, older still, is skipped too rather than filling a
+// page's slot the current segment itself did not earn.
+type scanSegment struct {
+	start time.Time
+	open  bool
+	err   error
+	seq   int
+	index int
+}
+
 // List returns a page of the runs belonging to the caller's tenant.
 func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
@@ -198,12 +228,23 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	scanned := 0
 	requests := 0
 
+	// The scan's own account of each workflow id's most recently met
+	// execution so far, so an id met more than once in this scan is settled
+	// by whether an older one among them can still legitimately be open —
+	// see the comment at its use below (#2104, #2112 review). Bounded by
+	// the scan itself: it holds at most one entry per unique workflow id
+	// among the executions read, never more than scanned.
+	segments := make(map[string]scanSegment, pageSize)
+
 	// The filter's account of this page: how many of the caller's runs it was
-	// asked about, how many it could not answer for, and the first reason.
-	var (
-		evaluated, excluded int
-		firstErr            error
-	)
+	// asked about and how many it could not answer for. Both retreat when a
+	// segment they counted is later retracted (below) — the only accounting
+	// this scan owes an execution it decided, on fuller information, was
+	// never really a candidate. The example error the diagnostic quotes is
+	// not tracked here at all; recovering it from a retraction-proof source
+	// is what each scanSegment's own err and seq are for, once the scan ends.
+	var evaluated, excluded int
+	evalSeq := 0
 
 	for len(runs) < pageSize && scanned < maxListScan && requests < maxListRequests {
 		requests++
@@ -276,11 +317,123 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// workload would appear once per segment — the same id repeated, most
 			// of them closed — and the more work it had done the more of the page
 			// it would occupy. The current segment carries the workload's real
-			// status, so the earlier ones are skipped rather than deduplicated
-			// afterwards, which would need the whole listing in hand to do.
+			// status, so an earlier one reading CONTINUED_AS_NEW — one this
+			// listing has already moved past — is skipped outright.
 			if execution.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW {
 				continue
 			}
+
+			// That one status is not the only way an earlier segment's own
+			// reading can be stale, and sharing a workflow id is not the same
+			// question as sharing a chain besides. Two attempts at telling a
+			// chain's own segments apart from an unrelated run that merely
+			// reused the id — deciding by start time alone, and then by a
+			// chain memo — each merged a case they should not have (independent
+			// reviews of #2112, F1 and F-A): concurrency's default reuse policy
+			// ([v1.ConcurrencyWorkflowID]) lets a fresh run start under an id a
+			// finished, unrelated run already used, which start time alone
+			// cannot tell from a chain; and a continued segment's own chain
+			// memo can lag visibility for the same reason its predecessor's
+			// status can — the engine writes no chain memo for a workload's
+			// first segment, so its successor gets one only from its own
+			// UpsertMemo, carried forward from there — and even once it lands,
+			// that memo's chain start is read from history at nanosecond
+			// precision while a visibility start is store-truncated, so the
+			// two are exactly wrong for the equality this dedup needs at the
+			// first boundary the soak hit.
+			//
+			// What holds regardless of either lag: Temporal admits at most one
+			// *open* execution per workflow id in a namespace at a time. So
+			// when this scan meets two executions sharing an id, whichever
+			// started earlier cannot really still be open if the later one
+			// exists at all — an earlier execution reading RUNNING (or any
+			// other status short of closed) is stale, whether it is a
+			// predecessor whose CONTINUED_AS_NEW has not reached visibility yet
+			// or a run `terminate_other` is ending whose TERMINATED has not.
+			// Closed is under no such constraint — Temporal only refuses a
+			// second *open* execution — so an older execution that already
+			// reads closed is never stale merely for being older, and is
+			// exactly a finished run under a reused id (F1's own case) rather
+			// than an earlier segment.
+			//
+			// Two residuals this leaves, both named rather than chased further.
+			// The scan this dedup runs over is one List call's, so a pair split
+			// across pages — the stale execution on one, the one that proves it
+			// stale on another — is not caught; that is true of every dedup
+			// this listing has had, including main's own CONTINUED_AS_NEW skip,
+			// so it is not new here.
+			//
+			// And an execution whose own terminal status has not reached
+			// visibility yet is indistinguishable from a genuine predecessor
+			// until it does — correctly treated as stale and left off the
+			// page meanwhile, which is right for a predecessor, but means a
+			// distinct run briefly reads as superseded rather than shown as
+			// itself. Two shapes of this share the one cause: a run
+			// `terminate_other` is ending, still RUNNING until its own
+			// TERMINATED lands; and a run that has already finished on its
+			// own — COMPLETED, FAILED, or otherwise closed — whose visibility
+			// likewise has not caught up, with a fresh submission reusing its
+			// id (concurrency's default reuse policy, [v1.ConcurrencyWorkflowID])
+			// already visible. Nothing here can tell that pair from a
+			// predecessor and its successor by identity — Temporal's own
+			// `FirstRunId` reads empty on this server's own
+			// ListWorkflowExecutions results, which is why identity is not
+			// what decides this at all — so both read
+			// as one case, and both self-heal on the next listing once the
+			// status they are waiting on lands: never a duplicate, only ever
+			// a brief, one-sided absence.
+			workflowID := execution.GetExecution().GetWorkflowId()
+			startTime := execution.GetStartTime().AsTime()
+			open := !segmentClosed(execution.GetStatus())
+
+			prior, known := segments[workflowID]
+			isOlder := known && !startTime.After(prior.start)
+
+			if isOlder && open {
+				// Older than an execution already met sharing this id, and
+				// still reads open: stale by the reasoning above, skipped
+				// without spending a filter evaluation on an execution that
+				// cannot change the page.
+				continue
+			}
+
+			if known && !isOlder && prior.open {
+				// The execution already on record for this id started
+				// earlier than this one and was itself open — proven stale
+				// now that a later-started execution under the same id
+				// exists. Whatever slot it was given is stale too, and is
+				// retracted rather than left as a second-best answer
+				// (#2112 review, F2), compacted out once after the scan.
+				//
+				// Its filter accounting is retracted with it, in full — not
+				// only the row a match earned. Every write to segments below
+				// follows an evaluated++ for that same execution, whatever the
+				// filter went on to say about it, so decrementing here can
+				// never go negative; and a prior that errored had its own
+				// excluded++ to give back too. Retracting only the matched
+				// case (second review of #2112, P2) still let an errored or
+				// non-matching predecessor's counts stand after its status
+				// was proven stale, which could leave an empty page reporting
+				// excluded_by_error with no diagnostic in one scan order and a
+				// diagnostic in the other for the identical two executions
+				// (third review of #2112, F1).
+				evaluated--
+				if prior.err != nil {
+					excluded--
+				}
+				if prior.index >= 0 {
+					runs[prior.index] = nil
+				}
+			}
+
+			// Whether this execution's own account should become what the
+			// next one sharing the id is compared against. Not when it is
+			// the older, closed half of an unrelated pair (reaching here
+			// without being skipped above means closed): the newer one
+			// already on record stays on record, since it is the more
+			// recent thing this scan has met under the id, and there is
+			// only ever room here to track one.
+			trackable := !known || !isOlder
 
 			run := s.summarize(execution)
 
@@ -303,6 +456,7 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// left out. A filter wrong about *every* run it met is still told so,
 			// once, through the diagnostic below.
 			evaluated++
+			evalSeq++
 			matched, err := filter.Match(ctx, run)
 			if err != nil {
 				// A request that was cancelled or timed out is not a run the
@@ -313,16 +467,26 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 					return nil, connect.NewError(contextCode(ctx.Err()), ctx.Err())
 				}
 				excluded++
-				if firstErr == nil {
-					firstErr = err
+				if trackable {
+					// This execution does not answer for the filter — see the
+					// retraction above when it superseded an open one, which
+					// already made sure a stale predecessor never stands in
+					// as a second-best answer (#2112 review, F2).
+					segments[workflowID] = scanSegment{start: startTime, open: open, err: err, seq: evalSeq, index: -1}
 				}
 				continue
 			}
 			if !matched {
+				if trackable {
+					segments[workflowID] = scanSegment{start: startTime, open: open, seq: evalSeq, index: -1}
+				}
 				continue
 			}
 
 			runs = append(runs, run)
+			if trackable {
+				segments[workflowID] = scanSegment{start: startTime, open: open, seq: evalSeq, index: len(runs) - 1}
+			}
 			if len(runs) == pageSize {
 				break
 			}
@@ -335,6 +499,19 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			break
 		}
 	}
+
+	// A slot a later segment's own exclusion emptied (#2112 review, F2) is
+	// compacted out here rather than reclaimed during the scan: the page
+	// coming back short by that many is the honest answer, and reclaiming it
+	// would mean either scanning further than the budget above already
+	// decided or shifting every index this loop is still comparing against.
+	kept := runs[:0]
+	for _, run := range runs {
+		if run != nil {
+			kept = append(kept, run)
+		}
+	}
+	runs = kept
 
 	// Set whenever Temporal has more to give, including when this page came
 	// back short because the scan budget ran out first. A caller that stops on
@@ -353,6 +530,25 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 	// met: that is what a typo looks like, where a filter wrong about some runs
 	// is the ordinary case the exclusion count already reports.
 	if excluded > 0 && excluded == evaluated {
+		// The example error, recovered from segments rather than tracked as
+		// the scan went — because by now segments holds exactly one entry per
+		// workflow id, its most recent, and an id whose predecessor errored
+		// and was later retracted is not that entry any more. Picking by the
+		// lowest seq among the ones that still errored is what makes the
+		// choice the same regardless of the map's own (randomized) iteration
+		// order, and regardless of which of two executions sharing an id this
+		// scan happened to meet first (#2112 review, third pass, F1).
+		var firstErr error
+		firstSeq := -1
+		for _, seg := range segments {
+			if seg.err == nil {
+				continue
+			}
+			if firstSeq == -1 || seg.seq < firstSeq {
+				firstSeq = seg.seq
+				firstErr = seg.err
+			}
+		}
 		response.FilterDiagnostic = filter.Diagnostic(firstErr)
 	}
 

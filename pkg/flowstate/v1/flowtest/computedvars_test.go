@@ -1387,6 +1387,92 @@ tests:
 	assert.NotContains(t, err.Error(), "index out of bounds")
 }
 
+// TestAMixedFenceLiteralIsWithheldBeforeCheckVarsQuotesIt is Copilot's finding
+// on #2080's load-time redaction fix: checkVars' own mixed-fence refusal
+// quoted a var's raw, pre-evaluation text, and it runs before evaluateVars has
+// decided what this file withholds — so the literal text around the fence, a
+// secret's material in every shape below, printed whether the var was named
+// from `secrets:` directly, reached through an alias (Codex), or named by
+// nothing at all. The refusal now quotes only the fence it found.
+func TestAMixedFenceLiteralIsWithheldBeforeCheckVarsQuotesIt(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-earlyleak-8834"
+
+	for _, tc := range []struct{ name, vars, secrets string }{
+		{
+			name:    "named directly",
+			vars:    `  token: "` + secret + `-${bad}"` + "\n",
+			secrets: "    secrets:\n      env:TOKEN: ${vars.token}\n",
+		},
+		{
+			name:    "reached through an alias",
+			vars:    `  token: "` + secret + `-${bad}"` + "\n  alias: ${vars.token}\n",
+			secrets: "    secrets:\n      env:TOKEN: ${vars.alias}\n",
+		},
+		{
+			name: "named by no secrets",
+			vars: `  token: "` + secret + `-${bad}"` + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := flowtest.Load(writeInline(t, t.TempDir(), "vars:\n"+tc.vars+`tests:
+  - name: never loads
+    workflow: ./workflow.yaml
+`+tc.secrets))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `vars.token holds the expression "${bad}"`,
+				"the positive control: the mixed-fence refusal is still reported, quoting the fence")
+			assert.NotContains(t, err.Error(), secret,
+				"the mixed-fence refusal quoted a var's literal text before evaluateVars had decided what this file withholds (#2080)")
+		})
+	}
+}
+
+// TestALoadTimeDiagnosticIsWithheldWhenTheRedactionSetOverflows is Copilot's
+// other finding on #2080's load-time redaction fix: a redaction set too
+// large to enumerate answers [v1.SensitiveValues.WithholdAll], and
+// RedactSubstrings deliberately does not consult that flag on its own — every
+// other rendering in this package checks it first and substitutes a marker
+// for the whole message, which problems.record's first pass at this did not.
+// A single withheld var past [v1.SensitiveValues]'s own substring-matcher
+// byte bound forces exactly that overflow, and the second case's trigger
+// diagnostic — which names neither the huge var nor anything derived from
+// it — must still come back withheld whole rather than printed in the clear
+// just because it was reported after the set could no longer be built. The
+// file is refused for the overflow itself, in a problem recorded before the
+// set is installed, so the report still says why everything else is a marker.
+func TestALoadTimeDiagnosticIsWithheldWhenTheRedactionSetOverflows(t *testing.T) {
+	t.Parallel()
+
+	huge := strings.Repeat("x", 70_000)
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+vars:
+  token: "`+huge+`"
+tests:
+  - name: holds the secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+    expect: {failed: true}
+  - name: a trigger stated both ways
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: somewebhook
+      kind: manual
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "[withheld]",
+		"a load-time diagnostic reported while the redaction set could not be fully enumerated must be withheld whole (#2080)")
+	assert.NotContains(t, err.Error(), "names both a webhook",
+		"the diagnostic's own text leaked instead of being withheld whole")
+	assert.Contains(t, err.Error(), "exceeds what one redaction set can enumerate",
+		"the overflow is refused in words a reader can act on, not only as markers")
+}
+
 // TestACheckErrorQuotingAWithheldValueIsWithheld is Codex's sixth P1: a check
 // that *errors* rather than answering false was the third rendering in
 // check.go, and the one going through neither redaction — it formatted cel-go's

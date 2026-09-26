@@ -4,6 +4,7 @@ package temporaltest
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -101,6 +103,99 @@ func TestSupervisorStopsOwnedServerWhenTerminated(t *testing.T) {
 	}, 10*time.Second, 25*time.Millisecond, "owned Temporal server PID %d survived supervisor termination", serverPID)
 	_ = harness.stdin.Close()
 	_ = harness.cmd.Wait()
+}
+
+// TestSupervisorHandsOffTheCachedCLI proves the fix for #2116 at the exact
+// mechanism a broken hand-off would break: the path StartWith resolves must
+// be what the supervisor's own StartDevServer call actually runs, not merely
+// a path that happens to also be found by the SDK's own default lookup.
+//
+// The supervisor inherits this process's environment, including TMPDIR, so a
+// test that left TMPDIR alone could not tell "the hand-off works" from "the
+// hand-off is broken, but the supervisor's own default lookup found the same
+// real cache anyway" — both look identical when the shared cache is warm,
+// which it is on this machine. TMPDIR here is set to an empty directory, so
+// the SDK's own default lookup inside the supervisor is guaranteed to miss;
+// HTTPS_PROXY/HTTP_PROXY point at a closed local port, so a supervisor that
+// fell back to downloading fails fast instead of hanging or reaching the
+// network for real. cliCacheDir instead points at a private directory
+// holding a link to whatever CLI this machine already has cached, primed by
+// ensureCLICached against the real default cache before cliCacheDir is
+// overridden — the package downloads that file in this same run regardless
+// (the other supervisor tests below all start a real server), so priming it
+// here rather than skipping when it is not yet there adds no network cost
+// overall, and this test always runs instead of only when a shuffled order
+// happens to run it after one that already downloaded — nor does it add a
+// sleep of its own (the wallclock ratchet in tools/wallclock/wallclock_test.go
+// already counts one sleep for this file, the poll in temporalProcess below;
+// a wait added a second here without widening that entry would fail it).
+func TestSupervisorHandsOffTheCachedCLI(t *testing.T) {
+	primeCtx, primeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer primeCancel()
+	realCached, err := ensureCLICached(primeCtx, discardLogger{}) // real default cache, before any override
+	require.NoError(t, err, "priming the real default Temporal CLI cache")
+
+	linkDir := t.TempDir()
+	oldCacheDir := cliCacheDir
+	cliCacheDir = func() string { return linkDir }
+	t.Cleanup(func() { cliCacheDir = oldCacheDir })
+	require.NoError(t, linkOrCopyFile(realCached, cliCachePath()))
+
+	t.Setenv("TMPDIR", t.TempDir()) // empty: the SDK's own default lookup must miss
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// A plain bytes.Buffer or strings.Builder is not safe here: the
+	// supervisor's stdout/stderr pipes stay open for as long as its process
+	// does, so os/exec's background copier goroutines keep writing into
+	// whatever StartOptions.Stdout/Stderr name after StartWith returns, racing
+	// a bare read right after the call (caught by CI's -race run on #2118).
+	// output guards every access with a mutex instead.
+	output := &syncBuffer{}
+	server, err := StartWith(ctx, StartOptions{ClientOptions: &client.Options{}, Stdout: output, Stderr: output})
+	require.NoError(t, err, "supervisor output:\n%s", output.String())
+	t.Cleanup(func() { _ = server.Stop() })
+
+	require.Contains(t, output.String(), "ExePath "+cliCachePath(),
+		"the supervisor did not log starting the CLI this process cached at cliCachePath(), so it "+
+			"either did not receive the hand-off or did not use it:\n%s", output.String())
+}
+
+// syncBuffer is an io.Writer safe for concurrent writes and reads; see
+// TestSupervisorHandsOffTheCachedCLI for why a plain bytes.Buffer or
+// strings.Builder is not.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// linkOrCopyFile makes src available at dst, hard-linking when the two paths
+// share a filesystem (instant, no extra disk for a large binary) and falling
+// back to a copy otherwise.
+func linkOrCopyFile(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o755)
 }
 
 type runningHarness struct {
