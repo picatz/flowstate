@@ -875,6 +875,23 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// Every exit taken from this point on renders through this fuller set, and
 	// every exit before it through what was already known — which is the whole
 	// of the ordering fix, in one assignment.
+	//
+	// Reverting only this line back to `posture = sensitive` cannot be pinned
+	// by an integration test today (Copilot): every value `casePosture`
+	// currently returns is also one of the three sources the pre-#2079
+	// implementation re-added by hand right above this comment's old
+	// location, so a fixture built from any of them renders identically
+	// either way — confirmed directly by running this package's entire suite
+	// with `go test -overlay` pointing this file at that pre-#2079 body
+	// (bb021edda~1): every test still passes, this one included. What this
+	// line actually buys is a source `casePosture` does not have *yet* —
+	// "whatever `casePosture` is given to carry next", four paragraphs up —
+	// surviving without a matching line here, which is exactly the property
+	// [SensitiveValues.Merge]'s own unit tests
+	// (TestMergeExtendsRatherThanReplaces, TestMergeWithholdsWhenEitherSideDoes)
+	// pin directly. A test built to fail on this line alone would have to
+	// invent a fourth source no real `casePosture` call site produces, which
+	// tests a hypothetical rather than this function.
 	posture = posture.Merge(sensitive)
 	sensitive = posture
 
