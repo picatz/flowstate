@@ -405,3 +405,50 @@ func TestCodeActionQuotesAnUnquotedTernaryInADocumentThatDoesNotParse(t *testing
 	assert.Empty(t, c.codeAction(uri, wholeOf(src), []lsp.CodeActionKind{lsp.CAKRefactor}, nil),
 		"asked for anything but a quickfix, an unparsable document offers nothing")
 }
+
+// TestCodeActionDropsSeveralAnchorMarkersOnOneLine is #2106's bad case —
+// `&b`'s value is the quoted string `"&b"`, chosen so that removing `&aa`'s
+// marker first shifts `&b`'s stale column onto that quoted text — reached
+// through the editor rather than the command.
+//
+// Before #2106's fix, [aliasInliner] (as it stood on `dropMarker`'s single-
+// anchor form) located the second marker by a column the first removal had
+// already shifted, matched the quoted text `&b` by coincidence, and deleted
+// it instead of the real marker — silently, with `ok=true` and no refusal.
+// The expected output is written out literally here rather than compared
+// against [fixedSource], which only calls [flowfile.Fix] again: that would
+// make the command's own answer the oracle for the command's own defect,
+// passing even if both sides on it were wrong the same way. This asserts
+// the editor's actual bytes against the one true answer, `x: [1, "&b"]`,
+// and checks the editor's own entry point rather than only `Fix`'s.
+func TestCodeActionDropsSeveralAnchorMarkersOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.3
+name: t
+x: [&aa 1, &b "&b"]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+	const want = `edition: v2026.3
+name: t
+x: [1, "&b"]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	const uri = "file:///anchors-on-one-line.yaml"
+	c := newClient(t)
+	c.initialize()
+	c.open(uri, src)
+
+	actions := c.codeAction(uri, wholeOf(src), nil, nil)
+	require.NotEmpty(t, actions, "no action offered for a document flow fix can migrate")
+
+	migrate := actionOfKind(t, actions, codeActionKindSourceFixAll)
+	assert.Equal(t, want, applyEdit(t, uri, src, migrate.Edit))
+}
