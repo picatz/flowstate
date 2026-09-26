@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goccy/go-yaml/ast"
 	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/jose/pkg/jwa"
@@ -144,22 +145,115 @@ func (s ActionScopes) IsZero() bool { return s == nil }
 // — applies to it.
 type NamespaceMap map[string]string
 
-// UnmarshalYAML implements goccy/go-yaml's BytesUnmarshaler. It is invoked only when
-// the namespace_map key is present in the document, which is what lets a
-// present-but-null or present-but-empty value decode to a non-nil (possibly
-// zero-length) map rather than to the nil value a key that was never written
-// also produces — see [NamespaceMap]'s own doc for why that distinction
-// matters here.
-func (m *NamespaceMap) UnmarshalYAML(data []byte) error {
-	var decoded map[string]string
-	if err := strictyaml.Unmarshal(data, &decoded); err != nil {
+// UnmarshalYAML implements goccy/go-yaml's NodeUnmarshaler: the decoder calls
+// it with the already-parsed AST node for the namespace_map key itself, never
+// with a re-rendering of it. That is the fix for #2077: this method used to
+// implement goccy/go-yaml's BytesUnmarshaler instead, and when NamespaceMap
+// sits inside a larger document — as it always does in a real policy file,
+// which is the only way [ParsePolicy] ever reaches it — that interface is
+// handed goccy's own re-serialization of this field's node rather than the
+// author's source text. That re-serialization can mishandle a scalar goccy's
+// own parser already decoded correctly earlier in the same call: a JSON-style
+// `\uXXXX` escape, including a surrogate pair, comes back with the wrong
+// bytes. An ordinary map[string]string field of the same document never goes
+// through that re-render step, which is how #2077 was found: the same
+// document byte for byte decoded two different ways inside one process.
+// Reading the node this decoder already built, instead of asking it to write
+// that node back out as text and read the text again, is what makes every key
+// and value decode to exactly the string its author wrote, whatever escaping
+// the document used to spell it. See [decodeNamespaceMapNode].
+//
+// It is invoked only when the namespace_map key is present in the document,
+// which is what lets a present-but-null or present-but-empty value decode to
+// a non-nil (possibly zero-length) map rather than to the nil value a key
+// that was never written also produces — see [NamespaceMap]'s own doc for why
+// that distinction matters here.
+func (m *NamespaceMap) UnmarshalYAML(node ast.Node) error {
+	decoded, err := decodeNamespaceMapNode(node)
+	if err != nil {
 		return err
-	}
-	if decoded == nil {
-		decoded = map[string]string{}
 	}
 	*m = decoded
 	return nil
+}
+
+// decodeNamespaceMapNode reads a namespace_map's mapping node directly, key
+// by key, rather than delegating to goccy/go-yaml's own generic map decode.
+//
+// Two keys that decode to the identical string can never reach this
+// function's own map literally twice: goccy/go-yaml's parser refuses a
+// mapping with two keys of equal decoded value at parse time, before any
+// Go type is involved, which is what makes decoding each key correctly the
+// whole fix — a document with two spellings of one key, one of them
+// escaped, is refused up front the same way two identical spellings would
+// be, rather than only once this package also decodes them correctly.
+//
+// A key or a value that is not a plain scalar string — an anchor, an alias,
+// a merge key, a mapping, a sequence, a bool, or a number — is refused the
+// same way a wrong type would be anywhere else in this package, rather than
+// resolved or stringified. That refusal is also this function's whole
+// answer to the merge keys #2077's "also worth deciding" section raises for
+// a namespace_map's own body: `<<: *anchor` inside the mapping arrives here
+// as a key that is not a [*ast.StringNode], so it is refused before it ever
+// reaches namespaceFor, rather than silently inheriting another issuer's
+// tenant table (see [TestParsePolicyRefusesANamespaceMapMergeKey]). Aliasing
+// the whole namespace_map field instead (`namespace_map: *m`) is a
+// different code path — goccy/go-yaml resolves that alias to another
+// field's already-decoded Go value before this method is ever called, so
+// there is no node here to refuse — and is not addressed by this change;
+// #2077 leaves it as a decision for a separate one.
+func decodeNamespaceMapNode(node ast.Node) (map[string]string, error) {
+	if node == nil || node.Type() == ast.NullType {
+		// Defensive: goccy/go-yaml never calls a field's custom unmarshaler
+		// for an explicit YAML null in the first place (see
+		// rejectNullNamespaceMap, which catches that case separately, on the
+		// raw document, before Policy.Validate ever runs), so this method
+		// should never actually be invoked with one.
+		return map[string]string{}, nil
+	}
+
+	mapNode, ok := node.(ast.MapNode)
+	if !ok {
+		return nil, fmt.Errorf("namespace_map must be a mapping, not %s", node.Type())
+	}
+
+	decoded := map[string]string{}
+	iter := mapNode.MapRange()
+	for iter.Next() {
+		keyNode := iter.Key()
+		key, ok := keyNode.(*ast.StringNode)
+		if !ok {
+			return nil, fmt.Errorf("namespace_map: a key at %s is %s, not a plain string; "+
+				"an anchor, alias, or merge key is refused here rather than resolved, since one issuer's "+
+				"map silently inheriting another's tenant entries would be easy to miss in review",
+				keyNode.GetToken().Position, keyNode.Type())
+		}
+
+		value, err := namespaceMapValueString(iter.Value())
+		if err != nil {
+			return nil, fmt.Errorf("namespace_map: value for key %q: %w", key.Value, err)
+		}
+		decoded[key.Value] = value
+	}
+	return decoded, nil
+}
+
+// namespaceMapValueString reads one namespace_map value: a plain string, or
+// an explicit null decoding to the empty string, the same convention a
+// generic map[string]string field of this same document follows. That empty
+// string is not a loophole: [TrustedIssuer.validateNamespaceFields] refuses a
+// namespace_map entry that maps to an empty namespace regardless of how it
+// was spelled, so this is about matching the established decode convention,
+// not about namespace_map accepting an empty value.
+func namespaceMapValueString(node ast.Node) (string, error) {
+	switch v := node.(type) {
+	case *ast.StringNode:
+		return v.Value, nil
+	case *ast.NullNode:
+		return "", nil
+	default:
+		return "", fmt.Errorf("value at %s is %s, not a plain string", node.GetToken().Position, node.Type())
+	}
 }
 
 // UnmarshalJSON implements [encoding/json.Unmarshaler], for the same reason
@@ -203,14 +297,16 @@ func (m *NamespaceMap) UnmarshalJSON(data []byte) error {
 // [TestNamespaceMapJSONRoundTrips] and
 // [TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey].
 //
-// It does not close every way a key can change identity through this
-// package. A key holding a control character, a byte order mark, or a
-// zero-width or line-separator code point can still come back different
-// once goccy re-renders this type's own quoted-JSON bytes as one field of a
-// larger document it is decoding — a decoder defect one layer below this
-// type's own quoting, tracked separately as #2077, and out of scope here:
-// this fix closes the class #1949 reported and the wider one review found
-// beside it, not every way this decoder can mis-render escaped text.
+// This fix closes the class #1949 reported and the wider one review found
+// beside it: every way an *unquoted* round trip through goccy's own Marshal
+// could change a key's identity. It does not, on its own, close the
+// different defect #2077 found one layer below this type's own quoting: a
+// key holding a control character, a byte order mark, or a surrogate pair
+// used to come back different once goccy re-rendered this type's own
+// quoted-JSON bytes as one field of a larger document it was decoding,
+// regardless of how carefully those bytes were quoted going in. That defect
+// is why [NamespaceMap.UnmarshalYAML] no longer decodes bytes at all: see its
+// own doc.
 //
 // [encoding/json.Marshal]'s own default HTML-safe escaping is turned off:
 // it would otherwise render "<<" as six characters — a backslash, "u", and

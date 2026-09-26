@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
@@ -395,8 +396,14 @@ issuers:
 // instead, which the same run found zero breaks for, so this test asserts
 // the round trip directly rather than refusing the one shape found first —
 // see the comment on [NamespaceMap.MarshalYAML] for why quoting is the fix
-// and refusing is not, and for the separate, already-tracked class (#2077)
-// that run's alphabet did not reach and this test does not claim to cover.
+// and refusing is not, and for the separate class (#2077,
+// [TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully]) that run's
+// alphabet did not reach and this test does not claim to cover.
+//
+// Each document decodes through [strictyaml.Unmarshal] rather than a direct
+// call to [auth.NamespaceMap.UnmarshalYAML]: that method now implements
+// goccy/go-yaml's NodeUnmarshaler, which only the decoder itself can call,
+// with a parsed [ast.Node] rather than a []byte.
 func TestNamespaceMapYAMLRoundTrips(t *testing.T) {
 	tests := []struct {
 		name string
@@ -445,14 +452,14 @@ func TestNamespaceMapYAMLRoundTrips(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var m auth.NamespaceMap
-			require.NoError(t, m.UnmarshalYAML([]byte(tt.doc)))
+			require.NoError(t, strictyaml.Unmarshal([]byte(tt.doc), &m))
 
 			// The property FuzzNamespaceMap checks: what decodes must
 			// encode, and decode again to the same map.
 			encoded, err := m.MarshalYAML()
 			require.NoError(t, err)
 			var again auth.NamespaceMap
-			require.NoError(t, again.UnmarshalYAML(encoded), "the YAML %q encoded to did not decode", encoded)
+			require.NoError(t, strictyaml.Unmarshal(encoded, &again), "the YAML %q encoded to did not decode", encoded)
 			require.Equal(t, m, again)
 		})
 	}
@@ -543,6 +550,173 @@ func TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey(t *testing.T) {
 		require.NoError(t, err, "the JSON namespace_map marshaled to did not parse inside a policy: %s", doc)
 		require.Equal(t, policy.Issuers[0].NamespaceMap, decoded.Issuers[0].NamespaceMap)
 	})
+}
+
+// TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully is #2077: a
+// namespace_map key must decode to exactly the string its author wrote,
+// whatever escaping the document uses to spell it, because the key is looked
+// up against a verified token's claim value to decide which tenant a caller
+// joins (see [TrustedIssuer.NamespaceMap]'s own doc).
+//
+// Before the fix, [auth.NamespaceMap.UnmarshalYAML] implemented
+// goccy/go-yaml's BytesUnmarshaler, so when this field sits inside a larger
+// [Policy] document — the only way [ParsePolicy] ever reaches it — the
+// method was handed goccy's own re-serialization of the field's node rather
+// than the author's source text, and that re-serialization mishandled a
+// control character reached through a JSON-style `\uXXXX` escape: the key
+// this test's "café" and "NUL" cases name used to decode to a shorter,
+// different string with no error, a live example of the wider class of
+// input flowstate-reviewer's differential run in this test's development
+// found (control-range `\u00XX` escapes generally, not `é` or a surrogate
+// pair specifically, which happened to already survive the old code's
+// unquoted-origin re-render).
+func TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully(t *testing.T) {
+	policyDoc := func(namespaceMapJSON string) []byte {
+		return []byte(`{"issuers":[{"name":"idp","issuer":"https://issuer.example.com",` +
+			`"audiences":["flowstate"],"namespace_claim":"repository","namespace_map":` +
+			namespaceMapJSON + `}]}`)
+	}
+
+	tests := []struct {
+		name string
+		json string // the namespace_map object, JSON-quoted as an operator's tool would write it
+		yaml string // the same map, written as a YAML block mapping with a double-quoted key
+		want string // the one key this map's entry must decode to
+	}{
+		{
+			name: "a JSON \\uXXXX escape of a non-ASCII letter (café)",
+			json: `{"café/app": "team-a"}`,
+			yaml: "\"caf\\u00e9/app\": team-a\n",
+			want: "café/app",
+		},
+		{
+			name: "a UTF-16 surrogate pair (an emoji outside the Basic Multilingual Plane)",
+			json: `{"😀/app": "team-a"}`,
+			yaml: "\"\\ud83d\\ude00/app\": team-a\n",
+			want: "😀/app",
+		},
+		{
+			name: "a control character reached through \\u0000 (Ctrl-@, a NUL byte)",
+			json: `{"v\u0000v": "team-a"}`,
+			yaml: "\"v\\u0000v\": team-a\n",
+			want: "v\x00v",
+		},
+		{
+			name: "the short escape \\n (a literal newline in the key)",
+			json: `{"a\nb": "team-a"}`,
+			yaml: "\"a\\nb\": team-a\n",
+			want: "a\nb",
+		},
+		{
+			name: "the short escape \\t (a literal tab in the key)",
+			json: `{"a\tb": "team-a"}`,
+			yaml: "\"a\\tb\": team-a\n",
+			want: "a\tb",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("JSON", func(t *testing.T) {
+				policy, err := auth.ParsePolicy(policyDoc(tt.json))
+				require.NoError(t, err, "doc: %s", policyDoc(tt.json))
+				require.Equal(t, auth.NamespaceMap{tt.want: "team-a"}, policy.Issuers[0].NamespaceMap,
+					"the key must decode to exactly %q, never a different, silently truncated or mangled string", tt.want)
+			})
+
+			t.Run("YAML", func(t *testing.T) {
+				doc := "issuers:\n" +
+					"  - name: idp\n" +
+					"    issuer: https://issuer.example.com\n" +
+					"    audiences: [flowstate]\n" +
+					"    namespace_claim: repository\n" +
+					"    namespace_map:\n" +
+					"      " + tt.yaml
+				policy, err := auth.ParsePolicy([]byte(doc))
+				require.NoError(t, err, "doc: %s", doc)
+				require.Equal(t, auth.NamespaceMap{tt.want: "team-a"}, policy.Issuers[0].NamespaceMap,
+					"the key must decode to exactly %q, never a different, silently truncated or mangled string", tt.want)
+			})
+		})
+	}
+}
+
+// TestParsePolicyDoesNotCollapseAnEscapedKeyOntoAnotherTenants is #2077's
+// worst case: one tenant's claim value ("v\u0000v", reached through a JSON
+// `\uXXXX` escape) and a different tenant's claim value, written as its own
+// unescaped entry in the same namespace_map, must decode to two distinct
+// entries. Both are legitimate, independently-written keys, so
+// goccy/go-yaml's own parser-level duplicate-key check — which only refuses
+// two keys that already decode to the same string — does not save this
+// case: it fires only once one of them is mis-decoded, and by then it is
+// too late to tell which of the two configured tenants an operator meant.
+//
+// This reproduces exactly that against the pre-fix decoder: the escaped key
+// used to mis-decode to "v\v" — the same two bytes as the second tenant's
+// key — so the two entries collided into one, and goccy/go-yaml's own
+// duplicate-key check refused the whole policy rather than silently
+// admitting either tenant. That refusal was not this package's own "fail
+// closed" behavior catching an ambiguity; it was an accident of where the
+// collision happened to land, so a document that mis-decoded to a *new*
+// string instead of an existing key's — as this test's sibling
+// [TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully] cases did —
+// would have loaded with no error and the wrong key, admitting neither
+// tenant the operator configured.
+func TestParsePolicyDoesNotCollapseAnEscapedKeyOntoAnotherTenants(t *testing.T) {
+	doc := []byte("issuers:\n" +
+		"  - name: idp\n" +
+		"    issuer: https://issuer.example.com\n" +
+		"    audiences: [flowstate]\n" +
+		"    namespace_claim: repository\n" +
+		"    namespace_map:\n" +
+		"      \"v\\u0000v\": team-a\n" +
+		"      \"v\\v\": team-b\n")
+
+	policy, err := auth.ParsePolicy(doc)
+	require.NoError(t, err, "doc: %s", doc)
+	require.Equal(t, auth.NamespaceMap{
+		"v\x00v": "team-a",
+		"v\v":    "team-b",
+	}, policy.Issuers[0].NamespaceMap,
+		"an escaped key and a plain key naming two different tenants must decode to two distinct entries, "+
+			"never collapse into one")
+}
+
+// TestParsePolicyRefusesANamespaceMapMergeKey is the merge-key half of
+// #2077's "also worth deciding" section: a `<<: *anchor` inside a
+// namespace_map's own body — reusing another issuer's tenant table by
+// reference rather than writing every entry out — is easy to miss in
+// review, since the merged-in entries are not textually present at the
+// point that grants a caller a namespace.
+//
+// Before this change, that merge silently succeeded: the fixture below
+// decoded to `idp`'s namespace_map holding exactly the `other` issuer's one
+// entry, with `idp`'s own explicit "plain" entry gone. [ast.StringNode]
+// covers the whole key type this method now requires, so a merge key
+// arrives here as an [*ast.MergeKeyNode] instead and is refused before it
+// ever reaches [TrustedIssuer.namespaceFor], the same way an alias or any
+// other non-string key is.
+func TestParsePolicyRefusesANamespaceMapMergeKey(t *testing.T) {
+	doc := []byte(`issuers:
+  - name: other
+    issuer: https://other.example.com
+    audiences: [flowstate]
+    namespace_claim: repository
+    namespace_map: &m
+      other-tenant: team-x
+  - name: idp
+    issuer: https://issuer.example.com
+    audiences: [flowstate]
+    namespace_claim: repository
+    namespace_map:
+      <<: *m
+      "plain": team-a
+`)
+
+	_, err := auth.ParsePolicy(doc)
+	require.Error(t, err, "a merge key inside namespace_map must be refused, never silently resolved")
+	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+	require.Contains(t, err.Error(), "MergeKey")
 }
 
 // TestDefaultAlgorithms checks that the default allowlist cannot be talked into

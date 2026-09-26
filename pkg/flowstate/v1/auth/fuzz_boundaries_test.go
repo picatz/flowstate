@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
@@ -44,6 +45,15 @@ func FuzzParsePolicy(f *testing.F) {
 // round-trip property on top: what decodes must encode, and decode again to
 // the same map. [auth.Material]'s decoder, which discards whatever it is
 // given, is fed the same bytes so it can never be surprised by them.
+//
+// The YAML half goes through [strictyaml.Unmarshal] rather than calling
+// [auth.NamespaceMap.UnmarshalYAML] directly: that method implements
+// goccy/go-yaml's NodeUnmarshaler (#2077), which the decoder itself has to
+// call with a parsed [ast.Node] — there is no []byte for a caller outside the
+// decoder to hand it. That also means an empty document (no root node at
+// all) leaves fromYAML at its zero value, nil, without ever calling the
+// unmarshaler — the round-trip property has nothing to check in that case,
+// the same way it would not for any other type decoded from no document.
 func FuzzNamespaceMap(f *testing.F) {
 	f.Add([]byte("team-a\n"))
 	f.Add([]byte("{\"issuer\": \"team-a\", \"*\": \"shared\"}\n"))
@@ -53,13 +63,13 @@ func FuzzNamespaceMap(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var fromYAML auth.NamespaceMap
-		if err := fromYAML.UnmarshalYAML(data); err == nil {
+		if err := strictyaml.Unmarshal(data, &fromYAML); err == nil && fromYAML != nil {
 			encoded, err := fromYAML.MarshalYAML()
 			if err != nil {
 				t.Fatalf("a map that decoded from YAML did not encode: %v", err)
 			}
 			var again auth.NamespaceMap
-			if err := again.UnmarshalYAML(encoded); err != nil {
+			if err := strictyaml.Unmarshal(encoded, &again); err != nil {
 				t.Fatalf("the YAML a map encoded to did not decode: %v\n%s", err, encoded)
 			}
 			if !reflect.DeepEqual(fromYAML, again) {
