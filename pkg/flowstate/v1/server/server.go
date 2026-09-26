@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"maps"
@@ -1632,43 +1633,56 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 				// an exact retry returned the incumbent above — so this
 				// collision is a genuinely different submission, and
 				// `on_conflict:` says it replaces what it found.
+				options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_TERMINATE_EXISTING
+
+				// Sent with a request id derived from the submission (#1966).
+				// Two identical submissions can both have probed the same
+				// stale incumbent and both be here; Temporal answers a start
+				// whose request id the current run already carries with that
+				// run, before it consults the conflict policy, so whichever
+				// reissue lands second is handed the first one's run rather
+				// than terminating it. Terminate-and-start is one call and one
+				// persistence transaction, so there is no window between them
+				// to race.
 				//
-				// Not a bare reissue: two submissions racing this same
-				// collision could each destroy the run the other just
-				// started under Temporal's unconditional TERMINATE_EXISTING.
-				// [FlowstateServer.claimAfterTerminatingOther] closes that
-				// window (#1966) by terminating only the specific run this
-				// call observed, and converges two racing identical
-				// submissions on one answer rather than letting each
-				// destroy the other's.
-				resp, err := s.claimAfterTerminatingOther(
-					ctx, temporal, workflowID, already.RunId, options, state, submission, asSubmitted)
+				// Temporal's reply to the folded call is byte-identical to the
+				// one that started the run, `Started` included, so which call
+				// started it is read back from the run: each reissue records a
+				// nonce of its own, and only the start that created the run
+				// had its memo written.
+				nonce := rand.Text()
+				options.Memo[startMemoKey] = nonce
+				run, err = temporal.ExecuteWorkflow(temporalclient.WithStartRequestID(ctx, submission.startRequestID()), options, engine.Run, state)
+				if err != nil {
+					return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
+				}
+
+				resp, startedHere, err := s.reissueStarted(ctx, workflowID, run.GetRunID(), submission, nonce)
 				if err != nil {
 					return nil, err
 				}
-
-				if resp.GetReused() {
-					// A second record for a second decision, for the same
-					// reason the retry arm above records one: this response
-					// names a run this call did not itself start.
-					//
-					// Written under a context of its own — the caller's
-					// values, none of their cancellation, bounded by
-					// [reusedRunAuditTimeout] — for [recordContext]'s reason
-					// (webhook.go): the decision it describes already
-					// happened by the time this runs, and a caller who left
-					// during the commitment [claimAfterTerminatingOther] just
-					// made must not be why a required record is never
-					// written.
-					auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reusedRunAuditTimeout)
-					err := s.auditAllow(auditCtx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID)
-					cancel()
-					if err != nil {
+				if !startedHere {
+					// Folded onto the run an identical submission's reissue
+					// started: the retry arm's answer and its second record,
+					// for the retry arm's reasons.
+					if err := s.auditAllow(ctx, "Run", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
 						return nil, err
 					}
+					return connect.NewResponse(&v1.RunResponse{
+						WorkflowId:               workflowID,
+						RunId:                    resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+						Status:                   getWorkflowExecutionStatus(resp),
+						Reused:                   true,
+						SpecificationAsSubmitted: proto.Bool(false),
+					}), nil
 				}
 
-				return connect.NewResponse(resp), nil
+				return connect.NewResponse(&v1.RunResponse{
+					WorkflowId:               workflowID,
+					RunId:                    run.GetRunID(),
+					Status:                   v1.RunResponse_STATUS_RUNNING,
+					SpecificationAsSubmitted: proto.Bool(asSubmitted),
+				}), nil
 			}
 
 			if onConflict == v1.Concurrency_ON_CONFLICT_JOIN {
