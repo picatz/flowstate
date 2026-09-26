@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // What a refused `*.test.yaml` reports (#923 step 1): every problem the file
@@ -380,8 +382,19 @@ type problems struct {
 // both plain and `%q` spellings — the pair [bothSpellings] gives every other
 // rendering in this package. Called once, by [File.evaluateVars], right after
 // it computes what the file's vars withhold.
+//
+// A set too large to enumerate withholds every later message whole, which
+// protects the material and leaves an author a report of markers with no
+// reason in it; so the file is refused here, naming the cause, and that one
+// problem is recorded before the set is installed so it reads in the clear.
+// It names no sizes: the bound is [v1.SensitiveValues]' own.
 func (p *problems) withholdText(text []string) {
-	p.sensitive = p.sensitive.WithValues(bothSpellings(text)...)
+	sensitive := p.sensitive.WithValues(bothSpellings(text)...)
+	if sensitive.WithholdAll() {
+		p.report(site{at: at(v1.VarsRoot)}, "vars: the material this file withholds exceeds what one "+
+			"redaction set can enumerate; keep a value derived from a secret to the shape a fixture needs")
+	}
+	p.sensitive = sensitive
 }
 
 // newProblems collects against a parsed document, or against none — the Go

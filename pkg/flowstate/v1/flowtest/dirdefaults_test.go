@@ -270,213 +270,146 @@ func mkdir(t *testing.T, dir string) string {
 	return dir
 }
 
-// gatedSiblingWorkflow waits on one signal, so a scripted signal naming
-// anything else is refused by checkSignalNames — the mismatch every test
-// below drives, so its own error text has something to quote.
-const gatedSiblingWorkflow = `edition: v2026.3
-name: gated
-steps:
-  - id: gate
-    wait_for_signal:
-      name: approve
-      timeout: 10s
-outputs: {}
-`
+// A var testdefaults.yaml states is printed by every suite in the directory,
+// and taint is a fact about one suite's `secrets:`, so a suite whose taint
+// closure reaches a directory var is refused rather than trusted to be the
+// only reader (#2080). The four tests below are the rule's three shapes and
+// its positive control.
 
-// TestASiblingsLocalAliasOfASharedVarIsTaintedToo is Codex's finding on this
-// fix's own first pass: a directory scan seeded only from a sibling's
-// *direct* `secrets:` references (secretHoldingVars alone) missed a shared
-// var read only through the sibling's own local alias of it.
-// `a.test.yaml` never names `vars.token` directly — it names `vars.alias`,
-// its own computed var reading the directory's shared `token` — so a scan
-// that read only `a.test.yaml`'s `secrets:` text found `alias` and never
-// learned that `alias`, in turn, reads the shared `token` every sibling's
-// own `vars:` carries the identical value of.
-func TestASiblingsLocalAliasOfASharedVarIsTaintedToo(t *testing.T) {
+// TestASuiteNamingADirectoryVarAsASecretIsRefused is #2080's first leak at
+// its source: the suite names the directory's var from `secrets:` directly.
+func TestASuiteNamingADirectoryVarAsASecretIsRefused(t *testing.T) {
 	t.Parallel()
 
-	const secret = "sk-live-transitivealias-6631"
+	const secret = "sk-live-dirseed-5521"
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
-	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: "+secret+"\n")
-	writeFile(t, filepath.Join(dir, "a.test.yaml"), "vars:\n"+
-		"  alias: ${vars.token}\n"+
-		"tests:\n"+
-		"  - name: holds the secret through a local alias\n"+
-		"    workflow: ./workflow.yaml\n"+
-		"    secrets:\n"+
-		"      env:TOKEN: ${vars.alias}\n")
-	bPath := filepath.Join(dir, "b.test.yaml")
-	writeFile(t, bPath, "tests:\n"+
-		"  - name: the gate is signalled by the wrong name\n"+
-		"    workflow: ./workflow.yaml\n"+
-		"    signals:\n"+
-		"      - name: ${vars.token}\n"+
-		"        at: 1s\n"+
-		"        payload: {}\n"+
-		"    expect:\n"+
-		"      ran: [gate]\n")
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), "vars:\n  token: "+secret+"\n")
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: names the directory's var as a secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+    expect: {failed: false}
+`)
 
-	report := flowtest.RunFile(bPath)
-	require.Empty(t, report.GetRefused())
-	require.Len(t, report.GetCases(), 1)
-	c := report.GetCases()[0]
-	require.False(t, c.GetPassed(), "the scripted signal names no gate this workflow waits on")
-
-	rendered := c.GetError()
-	assert.NotContains(t, rendered, secret,
-		"a shared var reached through a sibling's own local alias of it printed in full (#2080)")
-	assert.Contains(t, rendered, "matches no gate",
-		"the positive control: the mismatch itself must still be reported")
+	_, err := flowtest.Load(path)
+	require.Error(t, err, "a directory var on a path to a secret must refuse the suite (#2080)")
+	assert.Contains(t, err.Error(), flowtest.DirDefaultsName)
+	assert.Contains(t, err.Error(), "vars.token")
+	assert.Contains(t, err.Error(), `secrets["env:TOKEN"] references`, "the refusal names the chain")
+	assert.Contains(t, err.Error(), "state vars.token in the suite's own vars:", "the refusal names the remedy")
+	assert.NotContains(t, err.Error(), secret, "the refusal names a path, never the value")
 }
 
-// TestATruncatedSiblingScanFailsClosedOnSharedVars is Codex's second finding:
-// a directory scan that cannot visit every suite file in it must not answer
-// as though it had. This directory holds one more sibling than the scan's
-// own bound — 256, [maxSiblingCandidates]' own value, spelled out here since
-// this file cannot import an unexported constant — which makes the scan
-// incomplete deterministically, by count alone, whatever order the
-// directory's own entries come back in.
-//
-// None of the 257 siblings actually references `token` in a `secrets:` of
-// its own — the fail-closed answer this test pins does not depend on any one
-// of them being the file that really would have leaked it, only on the scan
-// being unable to certify that none of them is, the same standing an
-// unreadable sensitive input already gets (CLAUDE.md, "fail closed"): every
-// var the directory's shared vars: states is tainted once a scan of its
-// siblings cannot be shown to be complete, not only the ones a scan that
-// happened to finish would have found.
-func TestATruncatedSiblingScanFailsClosedOnSharedVars(t *testing.T) {
+// TestASuiteAliasOfADirectoryVarNamedAsASecretIsRefused is the transitive
+// shape: the suite's own var reads the directory's, and `secrets:` names the
+// alias. The closure reaches the directory var backward, so the refusal is
+// the same, with the hop in its path.
+func TestASuiteAliasOfADirectoryVarNamedAsASecretIsRefused(t *testing.T) {
 	t.Parallel()
 
-	const secret = "sk-live-truncatedscan-7742"
+	const secret = "sk-live-diralias-7730"
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
-	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: "+secret+"\n")
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), "vars:\n  token: "+secret+"\n")
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+vars:
+  alias: ${vars.token}
+tests:
+  - name: names a local alias of the directory's var as a secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.alias}
+    expect: {failed: false}
+`)
 
-	// One more sibling than the scan's own bound. Each is a minimal,
-	// otherwise-unrelated loadable suite: the scan has to actually open and
-	// decode a candidate to tell it apart from a real secret-holding one, so
-	// a syntactically invalid filler would prove nothing about the bound
-	// this test is about.
-	for i := range 257 {
-		writeFile(t, filepath.Join(dir, fmt.Sprintf("sibling%03d.test.yaml", i)),
-			"tests:\n  - name: filler\n    workflow: ./workflow.yaml\n    expect: {failed: true}\n")
-	}
-
-	targetPath := filepath.Join(dir, "target.test.yaml")
-	writeFile(t, targetPath, "tests:\n"+
-		"  - name: the gate is signalled by the wrong name\n"+
-		"    workflow: ./workflow.yaml\n"+
-		"    signals:\n"+
-		"      - name: ${vars.token}\n"+
-		"        at: 1s\n"+
-		"        payload: {}\n"+
-		"    expect:\n"+
-		"      ran: [gate]\n")
-
-	report := flowtest.RunFile(targetPath)
-	require.Empty(t, report.GetRefused())
-	require.Len(t, report.GetCases(), 1)
-	c := report.GetCases()[0]
-	require.False(t, c.GetPassed(), "the scripted signal names no gate this workflow waits on")
-
-	rendered := c.GetError()
-	assert.NotContains(t, rendered, secret,
-		"a shared var tainted only by a sibling past the scan's own bound printed in full (#2080)")
-	assert.Contains(t, rendered, "matches no gate",
-		"the positive control: the mismatch itself must still be reported")
+	_, err := flowtest.Load(path)
+	require.Error(t, err, "an alias does not launder a directory var out of the rule (#2080)")
+	assert.Contains(t, err.Error(), flowtest.DirDefaultsName)
+	assert.Contains(t, err.Error(), "vars.token → vars.alias", "the refusal walks the alias back to the directory var")
+	assert.NotContains(t, err.Error(), secret)
 }
 
-// TestAnUndecodableSiblingFailsClosedOnSharedVars is Codex's finding that a
-// sibling the scan cannot decode is not evidence it holds no secret
-// reference: the one sibling that actually taints `token` — through an
-// unknown field the strict decode refuses — is skipped, and the scan must
-// answer incomplete for that reason exactly as it does when a candidate sits
-// past its own count bound, not silently continue as though the sibling had
-// contributed nothing.
-func TestAnUndecodableSiblingFailsClosedOnSharedVars(t *testing.T) {
+// TestANestedDirectoryVarOnASecretPathIsRefusedAtItsRoot is the structured
+// shape: a fixture reference names a whole var, so a nested directory leaf
+// reaches `secrets:` through a suite var that reads it. Provenance is per
+// top-level name, so the refusal and its remedy name the root.
+func TestANestedDirectoryVarOnASecretPathIsRefusedAtItsRoot(t *testing.T) {
 	t.Parallel()
 
-	const secret = "sk-live-undecodable-3391"
+	const secret = "sk-live-dirnested-1184"
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
-	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: "+secret+"\n")
-	// A field this loader's strict decode does not know, so the sibling that
-	// actually taints `token` fails to decode rather than simply not
-	// existing.
-	writeFile(t, filepath.Join(dir, "a.test.yaml"), "tests:\n"+
-		"  - name: holds the secret\n"+
-		"    workflow: ./workflow.yaml\n"+
-		"    secrets:\n"+
-		"      env:TOKEN: ${vars.token}\n"+
-		"    unknown_field_this_loader_refuses: true\n"+
-		"    expect: {failed: true}\n")
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), "vars:\n  request:\n    token: "+secret+"\n")
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: ${vars.request.token}
+tests:
+  - name: names a nested directory leaf as a secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: ${vars.token}
+    expect: {failed: false}
+`)
 
-	targetPath := filepath.Join(dir, "target.test.yaml")
-	writeFile(t, targetPath, "tests:\n"+
-		"  - name: the gate is signalled by the wrong name\n"+
-		"    workflow: ./workflow.yaml\n"+
-		"    signals:\n"+
-		"      - name: ${vars.token}\n"+
-		"        at: 1s\n"+
-		"        payload: {}\n"+
-		"    expect:\n"+
-		"      ran: [gate]\n")
-
-	report := flowtest.RunFile(targetPath)
-	require.Empty(t, report.GetRefused())
-	require.Len(t, report.GetCases(), 1)
-	c := report.GetCases()[0]
-	require.False(t, c.GetPassed(), "the scripted signal names no gate this workflow waits on")
-
-	rendered := c.GetError()
-	assert.NotContains(t, rendered, secret,
-		"a shared var tainted only by a sibling the scan could not decode printed in full (#2080)")
-	assert.Contains(t, rendered, "matches no gate",
-		"the positive control: the mismatch itself must still be reported")
+	_, err := flowtest.Load(path)
+	require.Error(t, err, "a nested directory leaf on a path to a secret must refuse the suite (#2080)")
+	assert.Contains(t, err.Error(), "vars.request.token is stated by "+flowtest.DirDefaultsName)
+	assert.Contains(t, err.Error(), "state vars.request in the suite's own vars:")
+	assert.NotContains(t, err.Error(), secret)
 }
 
-// TestASiblingsUnrelatedLocalVarIsNotTaintedByCoincidenceOfName is Codex's
-// finding on the other direction from the two tests above: propagating every
-// name a sibling's own taint closure reaches, not only the ones the
-// directory's shared vars: actually states, taints whatever this file
-// happens to declare under the identical name by pure coincidence. `count`
-// is the sibling's own local var, never stated by testdefaults.yaml, and
-// this file's own `count` is an ordinary integer with no connection to any
-// secret — tainting it anyway (a tainted var holding a non-string adds
-// nothing to the redaction set, so it may not exist) would refuse this file
-// outright for a var that never touched a secret.
-func TestASiblingsUnrelatedLocalVarIsNotTaintedByCoincidenceOfName(t *testing.T) {
+// TestASuiteStatingItsOwnSecretVarShadowsTheDirectory is the remedy the
+// refusals above name, and the rule's positive control: the suite states
+// `token` itself, so the value it withholds lives in the one file that
+// withholds it, and the directory's other var — on no secret path — is read
+// as it always was.
+func TestASuiteStatingItsOwnSecretVarShadowsTheDirectory(t *testing.T) {
 	t.Parallel()
 
+	const secret = "sk-live-dirshadow-6402"
+
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
-	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: sk-live-unrelatedname-2210\n")
-	writeFile(t, filepath.Join(dir, "a.test.yaml"), "vars:\n"+
-		"  count: ${vars.token}\n"+
-		"tests:\n"+
-		"  - name: holds the secret through a local alias named count\n"+
-		"    workflow: ./workflow.yaml\n"+
-		"    secrets:\n"+
-		"      env:TOKEN: ${vars.count}\n"+
-		"    expect: {failed: true}\n")
+	writeDirWorkflow(t, dir)
+	writeFile(t, filepath.Join(dir, flowtest.DirDefaultsName), `
+vars:
+  token: directory-placeholder
+  caller: team-a
+`)
+	path := filepath.Join(dir, "a.test.yaml")
+	writeFile(t, path, `
+vars:
+  token: `+secret+`
+tests:
+  - name: withholds its own secret
+    workflow: ./workflow.yaml
+    inputs: {who: "${vars.caller}"}
+    secrets:
+      env:TOKEN: ${vars.token}
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      check:
+        - that: vars.token == 'nope'
+          because: false on purpose, so the witness renders
+`)
 
-	targetPath := filepath.Join(dir, "target.test.yaml")
-	writeFile(t, targetPath, "vars:\n"+
-		"  count: 1\n"+
-		"tests:\n"+
-		"  - name: an ordinary case naming no secret at all\n"+
-		"    workflow: ./workflow.yaml\n"+
-		"    inputs: {}\n"+
-		"    expect:\n"+
-		"      check:\n"+
-		"        - vars.count == 1\n")
+	report := flowtest.RunFile(path)
+	require.Empty(t, report.GetRefused(), "a suite stating its own secret-holding var is the remedy, and loads")
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the claim is false on purpose")
 
-	file, err := flowtest.Load(targetPath)
-	require.NoError(t, err, "an unrelated var sharing a sibling's local var's name must not be tainted by coincidence")
-	require.Equal(t, uint64(1), file.Vars["count"])
+	rendered := fmt.Sprintf("%v %+v", c.GetFailures(), c.GetFailures())
+	assert.Contains(t, rendered, "[redacted]", "#2041's withholding holds for the suite's own var")
+	assert.NotContains(t, rendered, secret)
 }

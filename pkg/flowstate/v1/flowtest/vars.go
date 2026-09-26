@@ -6,6 +6,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -98,6 +99,13 @@ import (
 //	                      | a fixed  | secret is secret, and a var reached backward
 //	                      | point    | is itself a source for its own readers
 //	                      |          | ([taintedVars])
+//	where the closure     | at the   | taint is a fact about ONE suite's
+//	  stops               | suite    | `secrets:`, and a var testdefaults.yaml
+//	                      | file     | states is printed by every suite beside it,
+//	                      |          | so a directory var on a path to a secret
+//	                      |          | is refused, naming the remedy: state it in
+//	                      |          | the suite's own vars (#2080,
+//	                      |          | [File.evaluateVars])
 //	what a reference IS   | one      | CEL binds `vars.token` and `vars['token']`
 //	                      | recog-   | to one value, so ONE function answers "which
 //	                      | nizer,   | var does this reference" and every site routes
@@ -119,17 +127,18 @@ import (
 //	what a refused var's  | nothing  | the root refusal stands for the chain, the
 //	  dependents report   |          | rule #1185 set for a refused stub's shape
 //	how a rendering hides | one pair | WithholdAll withholds, else RedactSubstrings,
-//	  what it must        | only     | plus the withheld-var rule. SEVEN surfaces:
+//	  what it must        | only     | plus the withheld-var rule. EIGHT surfaces:
 //	                      |          | witnesses, the autopsy, stub diagnostics, a
 //	                      |          | check's evaluator error ([checkErrorText]),
 //	                      |          | a var's own ([scrubbedVarError]), the
 //	                      |          | case's ([redactedErrorText], run.go's
-//	                      |          | caseError), and `flow validate`'s
-//	                      |          | signal-name refusal
-//	                      |          | ([File.CheckSignalNames]). An eighth is a
-//	                      |          | leak until it meets this row — the sixth
-//	                      |          | and seventh both were, exactly as this row
-//	                      |          | predicted when it named five
+//	                      |          | caseError), `flow validate`'s signal-name
+//	                      |          | refusal ([File.CheckSignalNames]), and
+//	                      |          | every load-time problem
+//	                      |          | ([problems.record], #2080). A ninth is a
+//	                      |          | leak until it meets this row — the sixth,
+//	                      |          | seventh and eighth all were, exactly as
+//	                      |          | this row predicted when it named five
 //	when the posture       | before   | it is LOAD-time information: the taint
 //	  exists               | setup    | closure and the case's `secrets:` are both
 //	                      | can fail | known before anything runs, so a setup
@@ -610,8 +619,23 @@ func checkVarLeaves(p *problems, r site, where string, value any, depth int) {
 	case string:
 		if strings.Contains(v, "${") {
 			if _, fenced := flowfile.SplitFence(v); !fenced {
-				p.report(r, "%s holds the expression %q; a computed leaf must be one whole-value `${...}` expression, "+
-					"with no literal text around it", where, v)
+				// Quotes the fences and never the text around them: this runs
+				// before [File.evaluateVars] knows what the file withholds,
+				// and the literal text is exactly what a secret-holding leaf
+				// would carry (#2080). The fences are the expression as
+				// written — what [varDeclaration.fence] quotes — and together
+				// no longer than the leaf.
+				var quoted []string
+				for _, fence := range flowfile.Fences(v) {
+					quoted = append(quoted, strconv.Quote(v[fence.Open:fence.End]))
+				}
+				const rule = "a computed leaf must be one whole-value `${...}` expression, with no literal text around it"
+				if len(quoted) == 0 {
+					p.report(r, "%s holds an unterminated `${`; %s", where, rule)
+				} else {
+					p.report(r, "%s holds the expression %s surrounded by other text; %s",
+						where, strings.Join(quoted, " and "), rule)
+				}
 			}
 		}
 	case map[string]any:
@@ -936,12 +960,7 @@ type fileVars struct {
 // own diagnostic is the one an author acts on, and a cascade would report one
 // mistake once per reader of it — the rule [problems] already states for a
 // value whose kind is already wrong.
-// dd is the directory's shared fixture this file loaded with, or nil, and
-// selfPath is this file's own path, or "" for a door with no path
-// ([LoadSource]) — both exist only to widen the secret-holding seed below
-// across the directory's other suite files (#2080); nothing else here reads
-// either.
-func (f *File) evaluateVars(p *problems, dd *dirDefaults, selfPath string) {
+func (f *File) evaluateVars(p *problems) {
 	block := at(v1.VarsRoot)
 
 	nodes := collectVarNodes(f.Vars)
@@ -957,40 +976,31 @@ func (f *File) evaluateVars(p *problems, dd *dirDefaults, selfPath string) {
 	// means in #1072's record: the seed is a syntactic fact about the document
 	// and the closure is a fact about the dependency graph, so a refusal below
 	// knows what it may not print before there is a value to print.
-	//
-	// Widened to every other suite file in the directory when one states a
-	// shared testdefaults.yaml (#2080): [secretHoldingVars] alone only ever
-	// sees this document, so a var seeded by one file's `secrets:` — or by a
-	// local alias of a shared var, which [siblingTaintedVarNames] traces back
-	// on its own — and merely *read* by this one under the identical name
-	// went untainted here, because the value both files see came from the
-	// directory's shared vars, not from either suite's own. See
-	// [siblingTaintedVarNames]'s own doc for why this is gated on dd rather
-	// than run unconditionally.
-	holding := secretHoldingVars(f.Tests)
-	if dd != nil {
-		sibling, complete := siblingTaintedVarNames(dd, selfPath)
-		for name, where := range sibling {
-			if _, seen := holding[name]; !seen {
-				holding[name] = where
-			}
-		}
+	taint := taintedVars(declared, expandSecretHolding(secretHoldingVars(f.Tests), nodes))
 
-		// An incomplete scan cannot answer "no sibling taints this shared
-		// var" for any var the directory states, so every one of them is
-		// tainted here rather than only the ones the scan actually reached
-		// (CLAUDE.md, "fail closed" — Codex's finding on this fix's own
-		// first pass, which let a scan truncated at [maxSiblingCandidates]
-		// read as a complete one).
-		if !complete {
-			for name := range dd.Vars {
-				if _, seen := holding[name]; !seen {
-					holding[name] = "the directory's shared vars could not be fully scanned for secret-holding siblings"
-				}
-			}
+	// The closure may not reach a var the directory's testdefaults.yaml
+	// stated (#2080). Taint is a fact about one suite's `secrets:`, and a
+	// shared var's value is printed by every other suite in the directory,
+	// none of which can see that this one called it a secret; a suite's own
+	// `vars:` shadows the directory's, so stating the var there keeps the
+	// value inside the one file that withholds it. Once per root, since the
+	// fold records provenance per top-level name. Names a path, never a value.
+	refusedRoots := map[string]bool{}
+	for _, name := range taint.names() {
+		root := strings.SplitN(name, ".", 2)[0]
+		if refusedRoots[root] || !p.writtenElsewhere(block.field(root)) {
+			continue
 		}
+		refusedRoots[root] = true
+		spot := site{at: block.field(root)}
+		if node, known := nodes[name]; known {
+			spot = node.spot
+		}
+		p.report(spot, "vars.%s is stated by %s but is on a path to a secret: %s. A secret-holding var "+
+			"must be stated in the suite that names the secret, so every suite that can print the value "+
+			"withholds it; state vars.%s in the suite's own vars:",
+			name, DirDefaultsName, taint.path(name), root)
 	}
-	taint := taintedVars(declared, expandSecretHolding(holding, nodes))
 
 	resolved := make(map[string]bool, len(nodes))
 	for _, name := range slices.Sorted(maps.Keys(nodes)) {
@@ -1084,10 +1094,11 @@ func (f *File) evaluateVars(p *problems, dd *dirDefaults, selfPath string) {
 	// From here on, every problem this load reports may have had a withheld
 	// var substituted into the fixture position it is about — [File.resolveVars]
 	// runs next — so every one of them is cleared through what this file
-	// withholds, in both spellings, the pair every other rendering in this
-	// package already carries (#2080). A problem reported above this line
-	// cannot yet quote var-derived material: nothing has substituted a var
-	// into anything yet.
+	// withholds, in both spellings (#2080). Installed once, here, rather than
+	// raced by an earlier partial set: nothing has been substituted before
+	// this line, the vars diagnostics above quote a fence or a taint path
+	// rather than a value, and [checkVarLeaves], the one that used to quote a
+	// leaf's raw text, now quotes only the fences it found in it.
 	p.withholdText(f.varsWithheld.text)
 }
 

@@ -1202,7 +1202,7 @@ func LoadSourceAtWithDefaults(data []byte, path string, defaults []byte) (*File,
 // bytes differs; folding and every semantic check remain shared.
 func loadSourceAt(data []byte, path string, dd *dirDefaults) (*File, error) {
 
-	file, refused := parseSourceWith(data, dd, path, true)
+	file, refused := parseSourceWith(data, dd, true)
 	if refused != nil {
 		// The path is stamped on every problem rather than prefixed onto the
 		// rendered text once, so a report of several problems names the file on
@@ -1249,7 +1249,7 @@ func LoadSource(data []byte) (*File, error) {
 // and no path runs the identical checks rather than a second copy of them.
 // requireWorkflow is false only for [LoadSource]; see its doc for why.
 func parseSource(data []byte, requireWorkflow bool) (*File, *Diagnostics) {
-	return parseSourceWith(data, nil, "", requireWorkflow)
+	return parseSourceWith(data, nil, requireWorkflow)
 }
 
 // parseSourceWith is [parseSource] with a directory's contribution folded in
@@ -1266,12 +1266,7 @@ func parseSource(data []byte, requireWorkflow bool) (*File, *Diagnostics) {
 // rather than discarded after the bound, which is the one cost this adds to a
 // suite that loads cleanly: a tree and the value decoded from it, both bounded
 // by [MaxTestFileBytes], live at once instead of one after the other.
-//
-// selfPath is this file's own path — "" for a door with no path
-// ([LoadSource], [parseSource]) — passed on to [File.evaluateVars] so it can
-// widen its secret-holding seed across the directory's other suite files
-// without reading this one back off disk as if it were one of them (#2080).
-func parseSourceWith(data []byte, dd *dirDefaults, selfPath string, requireWorkflow bool) (*File, *Diagnostics) {
+func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File, *Diagnostics) {
 	// Parsed to the AST and no further. Unmarshal resolves every alias into
 	// the destination value as it decodes, which means a billion-laughs
 	// document is already fully expanded in memory by the time any bound
@@ -1376,40 +1371,10 @@ func parseSourceWith(data []byte, dd *dirDefaults, selfPath string, requireWorkf
 	// actually see. That ordering is the reason evaluation is at load rather
 	// than per case — the substitution contract this comment states would
 	// otherwise have nothing to substitute.
-	//
-	// checkVars' own diagnostics can quote a var's raw, pre-evaluation text —
-	// the mixed-fence refusal in particular — and it runs before evaluateVars
-	// has decided what this file withholds. A var this file's own `secrets:`
-	// names directly is already knowable now, syntactically, with no
-	// evaluation needed ([secretHoldingVars]), so its raw text is withheld
-	// before checkVars can quote it (Copilot, #2080's own review: the mixed
-	// fence's literal text was echoed verbatim from exactly this gap).
-	//
-	// Deliberately the direct names only, not evaluateVars' own full
-	// [taintedVars] closure: a var reachable only through another var's
-	// alias — Codex's finding on an earlier pass at this — can be a
-	// structured literal whose own descendants (map keys among them) then
-	// join the set this early, and [scrubbedVarError] quotes a *dependency's
-	// name* in an otherwise-safe sentence — "this expression reads
-	// vars.request.token" — that a descendant string coincidentally equal to
-	// part of that name then redacts wrongly
-	// ([TestRefusedDynamicLeafIndexKeepsItsStaticTaintBase] pins the
-	// invariant this would break). The full closure still runs, correctly
-	// timed after that sentence is already rendered, in evaluateVars itself;
-	// widening the early pass to match it is this fix's own accepted
-	// residual — a mixed-fence bug on a var reachable only through another
-	// var's alias, within this same file, before evaluateVars has run — not
-	// a claim that no gap of that shape remains anywhere.
-	var earlyWithheld []string
-	for name := range secretHoldingVars(file.Tests) {
-		collectVarStrings(file.Vars[name], 0, &earlyWithheld)
-	}
-	p.withholdText(earlyWithheld)
-
 	if !checkVars(p, file.Vars) {
 		return nil, p.err()
 	}
-	file.evaluateVars(p, dd, selfPath)
+	file.evaluateVars(p)
 	file.resolveVars(p)
 
 	// Rows are expanded before defaults are merged, which is what makes the

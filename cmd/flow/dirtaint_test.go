@@ -15,18 +15,21 @@ import (
 // gave it, and a load-time diagnostic — as opposed to a case's own runtime
 // posture, which #2066 and #2079 already cover — had no redaction seam at
 // all. Both are reproduced here exactly as the issue states them, on both
-// `flow test` and `flow validate`, in text and `--json` — the report's
-// `refused` field, in every case, since each fixture never gets past load.
+// `flow test` and `flow validate`, in text and `--json`.
 
-// TestASecretSeededVarIsWithheldInASiblingSuiteFile is #2080's first leak.
-// `testdefaults.yaml` seeds a var every suite file in the directory reads the
-// same value of; `a.test.yaml` taints it through its own `secrets:`, and
-// `b.test.yaml` only ever reads it — through a scripted signal name that
-// matches no gate the workflow waits on, so the mismatch is reported whether
-// the file is run or merely validated. Before #2080's fix, `secretHoldingVars`
-// walked only the file being loaded, so `b.test.yaml`'s own load never learned
-// `token` was secret material at all.
-func TestASecretSeededVarIsWithheldInASiblingSuiteFile(t *testing.T) {
+// TestASuiteNamingASecretFromADirectoryVarIsRefused is #2080's first leak.
+// `testdefaults.yaml` states a var every suite file in the directory reads;
+// `a.test.yaml` names it from its own `secrets:`, and `b.test.yaml` only ever
+// reads it — through a scripted signal name that matches no gate the workflow
+// waits on. Taint is a fact about one suite's `secrets:`, so `a.test.yaml` is
+// refused at load for putting a directory var on a path to a secret, naming
+// the remedy: state `token` in its own `vars:`.
+//
+// b.test.yaml's own mismatch still prints the value, by design: no file b can
+// see calls it a secret, and a.test.yaml is refused before it can. The rule
+// is that a secret-holding value lives in the suite that names the secret, so
+// the residual is a directory var that no loadable suite withholds.
+func TestASuiteNamingASecretFromADirectoryVarIsRefused(t *testing.T) {
 	t.Parallel()
 
 	const secret = "sk-live-multifile-4471"
@@ -66,13 +69,12 @@ func TestASecretSeededVarIsWithheldInASiblingSuiteFile(t *testing.T) {
 				t.Parallel()
 
 				res := runFlow(t, cmd, "-o", format, dir)
-				require.Error(t, res.Err,
-					"b.test.yaml's scripted signal names no gate its workflow waits on, so this must be refused")
+				require.Error(t, res.Err, "a.test.yaml puts a directory var on a path to a secret, so it is refused")
 
-				require.NotContains(t, res.Output(), secret,
-					"a var seeded by one suite file's `secrets:` printed in full for a sibling that only read it (#2080)")
-				require.Contains(t, res.Output(), "matches no gate",
-					"the positive control: the mismatch itself must still be reported")
+				assert.Contains(t, res.Output(), "vars.token is stated by testdefaults.yaml",
+					"the refusal names the directory's var and the file that states it (#2080)")
+				assert.Contains(t, res.Output(), "state vars.token in the suite's own vars:",
+					"the refusal names the remedy")
 			})
 		}
 	}
