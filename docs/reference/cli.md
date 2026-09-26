@@ -74,7 +74,7 @@ flow audit -o json examples/ | jq '.totals'
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 
 ## `flow auth`
 
@@ -177,7 +177,7 @@ flow cancel flowstate-workflow-3f7c -o json | jq -r '.workflowId, .result'
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run-id <string>` | `string` | — | — | pin to one run of the workload, by run id; unset means whichever run is current |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
@@ -218,7 +218,7 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
@@ -356,7 +356,7 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
@@ -435,7 +435,7 @@ flow fix --stdout old.yaml > new.yaml
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--check` | `bool` | `false` | — | report what would change and exit non-zero if anything would, without writing |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
@@ -486,7 +486,7 @@ flow fmt --stdout old.yaml > new.yaml
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--check` | `bool` | `false` | — | report which files would change and exit non-zero if any would, without writing |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow get`
@@ -501,7 +501,7 @@ Report the status of a run, and its outputs if it has finished. The status is wr
 
 The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
 
-Fields are added, never renamed or removed, and empty values are written rather than omitted.
+Empty values are written rather than omitted, so one expression reads every run.
 
 `--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
 
@@ -523,7 +523,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | pin to one run of the workload, by run id; unset means whichever run is current |
@@ -730,7 +730,7 @@ flow lint -o json examples/ | jq '.files[].findings[].rule'
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--strict` | `bool` | `false` | — | exit non-zero when there is anything to report; by default findings are advisory |
 
 ## `flow list`
@@ -793,7 +793,7 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--filter <string>` | `string` | — | — | keep only the runs a CEL expression is true for, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, `name` (the workflow's declared name, empty for older runs), `labels` (a map of the workflow's declared labels), `starter` (issuer#subject of whoever submitted it), and `worker_version` (the Temporal Worker Deployment version the run is pinned to, empty where versioning is off); for example status == "FAILED" |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
 | `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped; opaque, and accepted only by the server that issued it, with the same `--filter` and `--page-size`, within a day |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
@@ -997,7 +997,7 @@ flow plugins -o json \
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
@@ -1026,7 +1026,7 @@ A workflow that declares `inputs:` is given them with `--input name=value` or `-
 
 The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
 
-Fields are added, never renamed or removed, and empty values are written rather than omitted.
+Empty values are written rather than omitted, so one expression reads every run.
 
 `--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
 
@@ -1067,7 +1067,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reason <string>` | `string` | — | — | why this run is being started, recorded on it; required by a workflow whose `manual:` block asks for one |
@@ -1104,7 +1104,7 @@ A gate is the one exception, because a gate is the thing worth rehearsing. `--si
 
 The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
 
-Fields are added, never renamed or removed, and empty values are written rather than omitted.
+Empty values are written rather than omitted, so one expression reads every run.
 
 `--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
 
@@ -1142,7 +1142,7 @@ flow run local examples/computed-outputs/workflow.yaml \
 
 # Rehearse a workflow that uses a plugin's tasks, launching the plugins here:
 flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins \
-  --secret-env GREET_TOKEN --auth-policy auth.yaml
+  --secret-env GREET_TOKEN --auth-policy examples/plugins/greet/auth.yaml
 
 # Step through a rehearsal, held at each step (the console is on stderr):
 flow run local examples/hello-world/workflow.yaml --debug
@@ -1162,7 +1162,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
@@ -1247,7 +1247,7 @@ flow schedule create report.yaml --name report-us --input region=us-east-1
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--name <string>` | `string` | — | — | what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--paused` | `bool` | `false` | — | create the schedule without letting it fire, so its next firing times can be read before it takes one |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
@@ -1284,7 +1284,7 @@ flow schedule delete nightly-report -o json | jq -r '.scheduleName, .result'
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1316,7 +1316,7 @@ flow schedule describe nightly-report -o json \
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1350,7 +1350,7 @@ flow schedule list -o json | jq -r '.schedules[] | select(.paused) | .name'
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1387,7 +1387,7 @@ flow schedule pause nightly-report --note "INC-4471" -o json \
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--note <string>` | `string` | — | — | recorded on the schedule and shown by list and describe; a paused schedule found by somebody else has no explanation attached unless this is written |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1423,7 +1423,7 @@ flow schedule resume nightly-report -o json | jq -r '.scheduleName, .result'
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--note <string>` | `string` | — | — | replaces the message on the schedule, which is usually still the reason it was paused |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1461,7 +1461,7 @@ flow schedule describe nightly-report -o json \
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1595,7 +1595,7 @@ flow server dev -o json
 | `--identity-claim <string,...>` | `stringArray` | — | — | caller token claim to carry into each run and signal sender identity (repeatable), such as team or email; only named claims are persisted, and they are what signals: and workload.claims[...] policy rules read |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); loopback only, and a port of 0 takes a free one |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
@@ -1635,7 +1635,7 @@ Send a signal to a waiting run
 flow signal <workflow-id> <signal-name> [flags]
 ```
 
-Deliver a signal to a run waiting for one, which is how a human approval reaches a workload. The payload becomes the waiting step's outputs, so later steps read its keys as `${steps.<id>.<key>}`.
+Deliver a signal to a run waiting for one, which is how a human approval reaches a workload. The payload is the waiting step's `payload` output, so later steps read a key as `${steps.<id>.payload.<key>}`.
 
 A payload over 64 KiB is refused, with the size and the limit named; send a reference to something large rather than the thing itself, since the payload travels with the run from then on. A signal that arrives before its gate is reached is held for it, so sending does not fail when the run is elsewhere. A run holding more than 128 unconsumed signals logs it, and a backlog that never stops growing fails the run rather than dropping any.
 
@@ -1672,7 +1672,7 @@ flow signal deploy-abc123 deploy-approved -o json \
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--data <string>` | `string` | — | — | signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}' |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run-id <string>` | `string` | — | — | pin to one run of the workload, by run id; unset means whichever run is current |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
@@ -1707,7 +1707,7 @@ stdout is the answer and stderr is the account of it, so a task invocation pipes
 
 The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
 
-Fields are added, never renamed or removed, and empty values are written rather than omitted.
+Empty values are written rather than omitted, so one expression reads every run.
 
 `--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
 
@@ -1750,7 +1750,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins \
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
@@ -1828,7 +1828,7 @@ flow tasks --plugin-catalog plugins.lock.json
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--expressions` | `bool` | `false` | — | describe what every expression can say: the CEL functions, the duration constructors, `now` inside a wait, and where a value comes from |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
@@ -1869,7 +1869,7 @@ flow terminate flowstate-workflow-3f7c --reason "wedged" -o json \
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--reason <string>` | `string` | — | — | recorded on the terminated run; a terminated run leaves no account of itself, so this is the only explanation anyone will find |
 | `--run-id <string>` | `string` | — | — | pin to one run of the workload, by run id; unset means whichever run is current |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
@@ -1924,7 +1924,7 @@ flow test -o jsonl examples/
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
 | `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires --run to name exactly one case, and is refused with --output json and with seeded exploration |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and --coverage-required is refused alongside it, because a subset's coverage gaps are not the suite's |
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
 | `--seed0 <uint64>` | `uint64` | `1` | — | the first seed --seeds walks upward from, to move the search to a different part of the seed space |
@@ -1976,7 +1976,7 @@ flow timeline flowstate-workflow-3f7c --run-id 0198f1e2-... \
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--max-entries <int32>` | `int32` | `0` | — | stop after this many entries; unset uses the server's default |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--run-id <string>` | `string` | — | — | pin to one run of the workload, by run id; unset means whichever run is current |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via --tls-client-auth require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with --tls-client-key-file. Unset presents no certificate, which a server requiring one refuses at the handshake |
@@ -2022,7 +2022,7 @@ flow validate --plugin-catalog plugins.lock.json \
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
@@ -2059,7 +2059,7 @@ flow version -o json | jq -e '.version != "devel"'
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 
 ## `flow watch`
 
@@ -2077,7 +2077,7 @@ The exit code reports the run: 0 when it completed, non-zero when it failed, was
 
 The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
 
-Fields are added, never renamed or removed, and empty values are written rather than omitted.
+Empty values are written rather than omitted, so one expression reads every run.
 
 `--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
 
@@ -2108,7 +2108,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
-| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl (one JSON document per line) |
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |

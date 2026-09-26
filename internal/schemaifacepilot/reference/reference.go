@@ -84,7 +84,7 @@ func fieldConstraints(field protoreflect.FieldDescriptor) []string {
 
 func surfaceSpelling(selection schemaifacepilot.Selection) string {
 	if selection.Positional {
-		return "`[" + selection.SurfaceName + "]`"
+		return "`<" + selection.SurfaceName + ">`"
 	}
 	return "`--" + selection.SurfaceName + "`"
 }

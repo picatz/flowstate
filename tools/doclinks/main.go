@@ -24,9 +24,9 @@
 // exported top-level declaration, in every package under the root:
 //
 //   - a bracketed Go name left as plain text is a link that did not resolve;
-//   - a link to an import path must name a standard-library package or a
-//     directory that exists, and one inside this repository must name an
-//     exported symbol of that package;
+//   - a link to an import path must name a standard-library package, a
+//     module outside this repository, or a package inside it, and one inside
+//     it must name an exported symbol of that package;
 //   - a link through an imported package inside this repository must name an
 //     exported symbol of that package.
 //

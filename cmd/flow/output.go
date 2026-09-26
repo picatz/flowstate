@@ -127,8 +127,7 @@ func addOutputFlag(cmd *cobra.Command) {
 	// that overstates its contract is worse than one that is vague about it, and
 	// each verb's own help names the document it writes.
 	cmd.Flags().StringP("output", "o", string(FormatText),
-		"output format: "+strings.Join(names[:len(names)-1], ", ")+", or "+names[len(names)-1]+
-			" (one JSON document per line)")
+		"output format: "+strings.Join(names[:len(names)-1], ", ")+", or "+names[len(names)-1])
 
 	// Shell completion for the values, because a flag with a closed set of
 	// answers should not need the help text opened to remember them.
@@ -411,8 +410,8 @@ const runDocumentHelp = "\n\nThe run document on stdout is written for a program
 	"`.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in " +
 	"the run's own state, so the transcript is `.outputs.steps` and the answer stays " +
 	"`.runOutputs`.\n\n" +
-	"Fields are added, never renamed or removed, and empty values are written rather " +
-	"than omitted.\n\n" +
+	"Empty values are written rather than omitted, so one expression reads every " +
+	"run.\n\n" +
 	"`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` " +
 	"and CEL's tagged encoding of every value — which is the shape to read if you " +
 	"are generating a consumer against `flowstate.v1` rather than writing a `jq` " +

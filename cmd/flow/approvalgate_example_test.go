@@ -87,10 +87,6 @@ func approvalGateExampleLine(t *testing.T, example string) string {
 	return ""
 }
 
-// splitShellish is a minimal, single-quote-aware word splitter — enough for
-// the one shape these examples use (`--flag value` and `--flag 'json with
-// spaces'`), not a shell parser. Good enough here because the input is this
-// repo's own Example: text, not anything untrusted.
 // exampleCommands is an Example's lines with each backslash continuation joined
 // onto the line it continues, so a command split to fit a terminal is run as the
 // one command a shell would read.
@@ -113,6 +109,10 @@ func exampleCommands(example string) []string {
 	return commands
 }
 
+// splitShellish is a minimal, single-quote-aware word splitter — enough for
+// the one shape these examples use (`--flag value` and `--flag 'json with
+// spaces'`), not a shell parser. Good enough here because the input is this
+// repo's own Example: text, not anything untrusted.
 func splitShellish(t *testing.T, line string) []string {
 	t.Helper()
 

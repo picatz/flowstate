@@ -45,6 +45,7 @@ var bracketed = regexp.MustCompile(`(^|[^\pL\pN_\]])\[(\*?[\pL_][\pL\pN_]*(?:\.[
 // comments to check.
 type pkg struct {
 	importPath string
+	module     string // the module path of the go.mod the package belongs to
 	fset       *token.FileSet
 	files      []*ast.File
 	doc        *doc.Package
@@ -105,8 +106,9 @@ func Check(root string) ([]Finding, int, error) {
 		exported[p.importPath] = names
 	}
 
-	c := checker{root: root, exported: exported, packageNames: map[string]bool{}}
+	c := checker{root: root, exported: exported, packageNames: map[string]bool{}, modules: map[string]bool{}}
 	for _, p := range pkgs {
+		c.modules[p.module] = true
 		c.packageNames[p.doc.Name] = true
 		c.packageNames[path.Base(p.importPath)] = true
 	}
@@ -125,6 +127,7 @@ type checker struct {
 	root         string
 	exported     map[string]map[string]bool
 	packageNames map[string]bool // declared names and import-path bases
+	modules      map[string]bool // module paths of every go.mod under the root
 	findings     []Finding
 	links        int
 }
@@ -218,6 +221,10 @@ func (c *checker) checkDocLink(p *pkg, group *ast.CommentGroup, l *comment.DocLi
 	}
 	names, inside := c.exported[l.ImportPath]
 	if !inside {
+		if c.inModule(l.ImportPath) {
+			c.report(p, group, text, "names import path "+l.ImportPath+", which is no package in this repository", false)
+			return
+		}
 		if !importable(l.ImportPath) {
 			c.report(p, group, text, "names import path "+l.ImportPath+", which is neither in the standard library nor in this repository", false)
 		}
@@ -252,6 +259,17 @@ func (c *checker) report(p *pkg, group *ast.CommentGroup, link, reason string, h
 		rel = pos.Filename
 	}
 	c.findings = append(c.findings, Finding{File: filepath.ToSlash(rel), Line: line, Link: link, Reason: reason})
+}
+
+// inModule reports whether importPath falls inside a module under the root,
+// where every package is loaded and so one missing from the index is a typo.
+func (c *checker) inModule(importPath string) bool {
+	for module := range c.modules {
+		if importPath == module || strings.HasPrefix(importPath, module+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // importable reports whether an import path outside this repository can be
@@ -417,7 +435,7 @@ func loadDir(dir string) ([]*pkg, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
-	importPath, err := importPathOf(dir)
+	importPath, module, err := importPathOf(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -428,35 +446,35 @@ func loadDir(dir string) ([]*pkg, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dir, err)
 		}
-		pkgs = append(pkgs, &pkg{importPath: importPath, fset: fset, files: files, doc: dp})
+		pkgs = append(pkgs, &pkg{importPath: importPath, module: module, fset: fset, files: files, doc: dp})
 	}
 	return pkgs, nil
 }
 
-// importPathOf derives a directory's import path from the module line of the
-// nearest go.mod at or above it.
-func importPathOf(dir string) (string, error) {
+// importPathOf derives a directory's import path, and the module it belongs
+// to, from the module line of the nearest go.mod at or above it.
+func importPathOf(dir string) (importPath, module string, err error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for d := abs; ; d = filepath.Dir(d) {
 		module, err := modulePath(filepath.Join(d, "go.mod"))
 		if err == nil {
 			rel, err := filepath.Rel(d, abs)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if rel == "." {
-				return module, nil
+				return module, module, nil
 			}
-			return module + "/" + filepath.ToSlash(rel), nil
+			return module + "/" + filepath.ToSlash(rel), module, nil
 		}
 		if !os.IsNotExist(err) {
-			return "", err
+			return "", "", err
 		}
 		if filepath.Dir(d) == d {
-			return "", fmt.Errorf("%s: no go.mod at or above it", dir)
+			return "", "", fmt.Errorf("%s: no go.mod at or above it", dir)
 		}
 	}
 }

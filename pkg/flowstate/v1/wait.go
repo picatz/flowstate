@@ -93,7 +93,7 @@ const DeliveriesOutput = "deliveries"
 // reason: nothing a sender puts in a payload can reach it.
 const CountOutput = "count"
 
-// PayloadOutput is where a signal sender's data lands: `${approval.payload.approved}`.
+// PayloadOutput is where a signal sender's data lands: `${steps.approval.payload.approved}`.
 //
 // Rooted rather than spread, and the reason is integrity rather than tidiness.
 // A signal's payload used to become the step's outputs *directly*, so whoever

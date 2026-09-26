@@ -171,7 +171,7 @@ type TaskCatalog struct {
 	// ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
 	// describing a task's security-relevant claims — started at 1 for
 	// needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
-	// expression_inputs (#712); version 2 adds required_secret_inputs.
+	// expression_inputs; version 2 adds required_secret_inputs.
 	//
 	// Exists because proto3 cannot mark a bool or a repeated string field
 	// `optional`, so none of those fields can distinguish "populated as
@@ -699,7 +699,7 @@ type PluginCatalog struct {
 	// rolling-upgrade skew ClaimsSchemaVersion exists to resolve for a remote
 	// GetCatalog reader applies just as well to a saved PluginCatalog read
 	// later by a binary built before this field, or read by a newer binary
-	// against a file a pre-#712 build wrote. Zero means "this catalog predates
+	// against a file a build without claim fields wrote. Zero means "this catalog predates
 	// every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
 	ClaimsSchemaVersion uint32 `protobuf:"varint,3,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
 	// CapabilityBindings are deployment-owned selections available for root
@@ -965,7 +965,7 @@ type PluginDescription struct {
 	DistributionDigest string `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
 	// ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
 	// RequiredSecretInputs, ShapesOutputs, DeferredInputs and ExpressionInputs
-	// only — the fields with security weight (#712) — kept apart from
+	// only — the fields with security weight — kept apart from
 	// task_schema_digest so it
 	// can change on its own without disturbing the replay contract every
 	// already-durable run is pinned to. See

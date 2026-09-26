@@ -133,6 +133,22 @@ func Run() string { return lib.Greet() }
 	require.Equal(t, []string{"[lib.Missing]", "[example.com/m/lib.Greeter.Goodbye]"}, links(findings))
 }
 
+func TestAFullPathIntoTheRepositoryMustNameAPackage(t *testing.T) {
+	t.Parallel()
+
+	findings := check(t, `// Package app links to [example.com/m/lib], [example.com/m/libb], and
+// [example.com/m/nosuch.Greet].
+package app
+
+// Run runs.
+func Run() {}
+`)
+	require.Equal(t, []string{"[example.com/m/libb]", "[example.com/m/nosuch.Greet]"}, links(findings))
+	for _, f := range findings {
+		require.Contains(t, f.Reason, "no package in this repository")
+	}
+}
+
 func TestALinkGluedToASuffixIsNotALink(t *testing.T) {
 	t.Parallel()
 

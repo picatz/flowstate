@@ -2608,7 +2608,7 @@ flow run local examples/computed-outputs/workflow.yaml \
 
 # Rehearse a workflow that uses a plugin's tasks, launching the plugins here:
 flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins \
-  --secret-env GREET_TOKEN --auth-policy auth.yaml
+  --secret-env GREET_TOKEN --auth-policy examples/plugins/greet/auth.yaml
 
 # Step through a rehearsal, held at each step (the console is on stderr):
 flow run local examples/hello-world/workflow.yaml --debug`,
@@ -3052,8 +3052,8 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 		Use:   "signal <workflow-id> <signal-name>",
 		Short: "Send a signal to a waiting run",
 		Long: "Deliver a signal to a run waiting for one, which is how a human approval reaches " +
-			"a workload. The payload becomes the waiting step's outputs, so later steps read its " +
-			"keys as `${steps.<id>.<key>}`.\n\n" +
+			"a workload. The payload is the waiting step's `payload` output, so later steps read " +
+			"a key as `${steps.<id>.payload.<key>}`.\n\n" +
 			// The numbers are the constants, not a prose copy of them: a limit
 			// documented by hand is a limit that drifts the day it changes.
 			fmt.Sprintf("A payload over %d KiB is refused, with the size and the limit named; send "+

@@ -502,10 +502,12 @@ func fieldDescription(fd protoreflect.FieldDescriptor, depth int) string {
 	paragraphs := strings.Split(comment, "\n\n")
 	taken := clip(strings.TrimSpace(paragraphs[0]), maxTopFieldDescription)
 	for _, paragraph := range paragraphs[1:] {
-		paragraph = strings.TrimSpace(paragraph)
+		// Only the surrounding newlines: an indented code block keeps the
+		// indent of every line, its first included.
+		paragraph = strings.Trim(paragraph, "\n")
 		// A heading opens a section of rationale rather than contract; the
 		// comments written for this surface put what a caller needs first.
-		if strings.HasPrefix(paragraph, "# ") {
+		if strings.HasPrefix(strings.TrimSpace(paragraph), "# ") {
 			break
 		}
 		if len(taken)+2+len(paragraph) > maxTopFieldDescription {

@@ -4,7 +4,7 @@
 // on the path a payload takes, that history holds bytes the default converter
 // cannot read, and that the worker reads them back. Proving that needs a codec
 // whose output is unmistakably not the plaintext; it does not need a key
-// custody story, which is [github.com/picatz/flowstate/issues/353] workstream
+// custody story, which is github.com/picatz/flowstate/issues/353 workstream
 // A.1's real subject and is deliberately absent here.
 //
 // It is also the executable specification of [payloadcodec.Codec]'s key-id
