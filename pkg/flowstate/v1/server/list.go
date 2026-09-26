@@ -348,13 +348,27 @@ func (s *FlowstateServer) List(ctx context.Context, req *connect.Request[v1.List
 			// across pages — the stale execution on one, the one that proves it
 			// stale on another — is not caught; that is true of every dedup
 			// this listing has had, including main's own CONTINUED_AS_NEW skip,
-			// so it is not new here. And a run `terminate_other` is ending is
-			// indistinguishable from a genuine predecessor until its own
-			// TERMINATED reaches visibility — it is correctly treated as stale
-			// and left off the page meanwhile, which is right for a predecessor
-			// but means a distinct, about-to-be-terminated run is briefly
-			// unlisted rather than shown as itself; both self-heal on the next
-			// listing once the status they are waiting on lands.
+			// so it is not new here.
+			//
+			// And an execution whose own terminal status has not reached
+			// visibility yet is indistinguishable from a genuine predecessor
+			// until it does — correctly treated as stale and left off the
+			// page meanwhile, which is right for a predecessor, but means a
+			// distinct run briefly reads as superseded rather than shown as
+			// itself. Two shapes of this share the one cause: a run
+			// `terminate_other` is ending, still RUNNING until its own
+			// TERMINATED lands; and a run that has already finished on its
+			// own — COMPLETED, FAILED, or otherwise closed — whose visibility
+			// likewise has not caught up, with a fresh submission reusing its
+			// id (concurrency's default reuse policy, [v1.ConcurrencyWorkflowID])
+			// already visible. Nothing here can tell that pair from a
+			// predecessor and its successor by identity — Temporal's own
+			// `FirstRunId` reads empty on this server's own
+			// ListWorkflowExecutions results, which is why identity is not
+			// what decides this at all — so both read
+			// as one case, and both self-heal on the next listing once the
+			// status they are waiting on lands: never a duplicate, only ever
+			// a brief, one-sided absence.
 			workflowID := execution.GetExecution().GetWorkflowId()
 			startTime := execution.GetStartTime().AsTime()
 			open := !segmentClosed(execution.GetStatus())
