@@ -252,7 +252,12 @@ applies here rather than a second, weaker one.
   declared-`sensitive:` input or a case secret renders `[redacted]` there
   exactly as it does in the transcript beside it. Evaluation still sees the
   real value, and a claim comparing against one still holds; only the printing
-  withholds.
+  withholds. This is a transcript control, not a boundary against the person
+  at the prompt. Whoever runs `flow test --debug` or `flowstate_debug` supplied
+  the case's fixtures, so `inspect inputs.token == "guess"` answers truthfully
+  and a breakpoint condition can name a sensitive value. Redaction keeps the
+  value out of the transcript; it does not stop the session's owner from asking
+  about it.
 
 ## Reading a durable run
 

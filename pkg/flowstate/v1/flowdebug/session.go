@@ -1753,13 +1753,22 @@ func (s *Session) printfTone(tone Tone, format string, args ...any) {
 // So the caller hands the rule in, and hands in nil when the run it applies to
 // is over. Applied to the *rendered line* rather than to values on the way in,
 // because that is the one place everything passes: a step's account, an
-// inspection's answer, a failure at the autopsy. A redactor installed here can
-// only ever make output smaller, so a caller that installs none is exactly as
-// this behaved before.
+// inspection's answer, a failure at the autopsy. A structured value also
+// passes through it leaf by leaf just before it renders, because the rendering
+// is JSON and JSON escapes or encodes exactly the text a substring match has to
+// find (see [withheldLeaves]); the pass over the line stays as the backstop. A
+// redactor installed here can only ever make output smaller, so a caller that
+// installs none is exactly as this behaved before.
 //
 // Evaluation is untouched. A `${...}` in the file still sees the real value,
 // and an inspection still compares against it — only what prints withholds,
-// which is the same split [flowtest]'s transcript already lives by.
+// which is the same split [flowtest]'s transcript already lives by. That makes
+// this a transcript control, not a boundary against the person at the prompt:
+// whoever runs `flow test --debug` or `flowstate_debug` supplied the case's
+// fixtures, so `inspect inputs.token == "guess"` answers truthfully and a
+// breakpoint condition can name a sensitive value. Redaction keeps the value
+// out of the transcript; it does not stop the session's owner from asking
+// about it.
 func (s *Session) SetRedactor(redact func(string) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1810,17 +1819,20 @@ func (s *Session) SetValueRedactor(redact func(any) any) {
 	s.redactValue = redact
 }
 
-// redactedValue is v through the installed value redactor, or v.
+// redactedValue is v through the installed value redactor, then with the text
+// redactor applied to its leaves — both seams, on the tree, before anything
+// renders it. See [withheldLeaves] for why the text half cannot wait for the
+// rendered line: JSON escapes or encodes exactly the leaves it must find.
 func (s *Session) redactedValue(v any) any {
 	s.mu.Lock()
-	redact := s.redactValue
+	redactValue, redactText := s.redactValue, s.redact
 	s.mu.Unlock()
 
-	if redact == nil {
-		return v
+	if redactValue != nil {
+		v = redactValue(v)
 	}
 
-	return redact(v)
+	return withheldLeaves(redactText, v)
 }
 
 func (s *Session) redactText(text string) string {
@@ -1937,17 +1949,17 @@ func nativeText(native any) string {
 // exactly as EvalValueNode does — so what an inspection prints and what the
 // same expression would produce in the file are one rendering of one value,
 // rather than two that can drift.
+//
+// Redacted as a tree first, through [Session.redactedValue], for the reason
+// [withheldLeaves] gives; the caller's pass over the rendered line is the
+// backstop behind it.
 func (s *Session) refValText(out ref.Val) string {
-	s.mu.Lock()
-	redact := s.redactValue
-	s.mu.Unlock()
-
-	native, ok := redactedNative(out, redact)
+	native, ok := redactedNative(out, nil)
 	if !ok {
 		return fmt.Sprint(out.Value())
 	}
 
-	return nativeText(native)
+	return nativeText(s.redactedValue(native))
 }
 
 // redactedNative is out as the native Go value a renderer sees, with redact
