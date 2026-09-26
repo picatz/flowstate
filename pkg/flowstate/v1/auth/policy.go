@@ -188,20 +188,32 @@ func (m *NamespaceMap) UnmarshalYAML(node ast.Node) error {
 // escaped, is refused up front the same way two identical spellings would
 // be, rather than only once this package also decodes them correctly.
 //
-// A key or a value that is not a plain scalar string — an anchor, an alias,
-// a merge key, a mapping, a sequence, a bool, or a number — is refused the
-// same way a wrong type would be anywhere else in this package, rather than
-// resolved or stringified. That refusal is also this function's whole
-// answer to the merge keys #2077's "also worth deciding" section raises for
-// a namespace_map's own body: `<<: *anchor` inside the mapping arrives here
-// as a key that is not a [*ast.StringNode], so it is refused before it ever
-// reaches namespaceFor, rather than silently inheriting another issuer's
-// tenant table (see [TestParsePolicyRefusesANamespaceMapMergeKey]). Aliasing
-// the whole namespace_map field instead (`namespace_map: *m`) is a
-// different code path — goccy/go-yaml resolves that alias to another
-// field's already-decoded Go value before this method is ever called, so
-// there is no node here to refuse — and is not addressed by this change;
-// #2077 leaves it as a decision for a separate one.
+// A key or a value that is a plain, untagged scalar — a string, or a bare
+// integer, float, or boolean — decodes to exactly the source text its
+// author wrote, via [namespaceMapScalarText]: `0123` stays "0123" and
+// `0x1F` stays "0x1F", never goccy/go-yaml's own parsed numeric value (which
+// would renormalize `0123` to "83", the octal value, silently changing the
+// claim value this entry matches). That is not a loophole this fix opens; a
+// bare integer or boolean is exactly as fixed a piece of source text as a
+// string, and a real claim such as GitHub Actions' "repository_owner_id" or
+// "repository_id" is an unquoted number an operator would otherwise have to
+// remember to quote.
+//
+// Anything else — an anchor, an alias, a merge key, a tagged scalar, a
+// block scalar, an explicit `? key`, a mapping, or a sequence — is refused
+// the same way a wrong type would be anywhere else in this package, rather
+// than resolved or stringified; [namespaceMapRefusalReason] names which.
+// That refusal is also this function's whole answer to the merge keys
+// #2077's "also worth deciding" section raises for a namespace_map's own
+// body: `<<: *anchor` inside the mapping arrives here as a key that is not
+// a plain scalar, so it is refused before it ever reaches namespaceFor,
+// rather than silently inheriting another issuer's tenant table (see
+// [TestParsePolicyRefusesANamespaceMapMergeKey]). Aliasing the whole
+// namespace_map field instead (`namespace_map: *m`) is a different code
+// path — goccy/go-yaml resolves that alias to another field's
+// already-decoded Go value before this method is ever called, so there is
+// no node here to refuse — and is not addressed by this change; #2077
+// leaves it as a decision for a separate one.
 func decodeNamespaceMapNode(node ast.Node) (map[string]string, error) {
 	if node == nil || node.Type() == ast.NullType {
 		// Defensive: goccy/go-yaml never calls a field's custom unmarshaler
@@ -221,39 +233,89 @@ func decodeNamespaceMapNode(node ast.Node) (map[string]string, error) {
 	iter := mapNode.MapRange()
 	for iter.Next() {
 		keyNode := iter.Key()
-		key, ok := keyNode.(*ast.StringNode)
+		if _, isNull := keyNode.(*ast.NullNode); isNull {
+			return nil, fmt.Errorf("namespace_map: a null key at %s is refused; a verified claim value is "+
+				"always a non-empty string, so a key spelled null, ~, or left blank can never match one",
+				keyNode.GetToken().Position)
+		}
+		key, ok := namespaceMapScalarText(keyNode)
 		if !ok {
-			return nil, fmt.Errorf("namespace_map: a key at %s is %s, not a plain string; "+
-				"an anchor, alias, or merge key is refused here rather than resolved, since one issuer's "+
-				"map silently inheriting another's tenant entries would be easy to miss in review",
-				keyNode.GetToken().Position, keyNode.Type())
+			return nil, fmt.Errorf("namespace_map: a key at %s is %s, not a plain scalar; %s",
+				keyNode.GetToken().Position, keyNode.Type(), namespaceMapRefusalReason(keyNode))
 		}
 
 		value, err := namespaceMapValueString(iter.Value())
 		if err != nil {
-			return nil, fmt.Errorf("namespace_map: value for key %q: %w", key.Value, err)
+			return nil, fmt.Errorf("namespace_map: value for key %q: %w", key, err)
 		}
-		decoded[key.Value] = value
+		decoded[key] = value
 	}
 	return decoded, nil
 }
 
-// namespaceMapValueString reads one namespace_map value: a plain string, or
-// an explicit null decoding to the empty string, the same convention a
-// generic map[string]string field of this same document follows. That empty
-// string is not a loophole: [TrustedIssuer.validateNamespaceFields] refuses a
-// namespace_map entry that maps to an empty namespace regardless of how it
-// was spelled, so this is about matching the established decode convention,
-// not about namespace_map accepting an empty value.
-func namespaceMapValueString(node ast.Node) (string, error) {
+// namespaceMapScalarText returns the exact source text of a namespace_map
+// key or value that is a plain, untagged string, integer, float, or
+// boolean scalar — never a re-rendering and never goccy/go-yaml's own
+// parsed value, so `0123` and `0x1F` come back exactly as written. ok is
+// false for anything else, including an explicit null, which the two call
+// sites in [decodeNamespaceMapNode] and [namespaceMapValueString] handle
+// themselves since a null key and a null value are not refused alike.
+func namespaceMapScalarText(node ast.Node) (text string, ok bool) {
 	switch v := node.(type) {
 	case *ast.StringNode:
-		return v.Value, nil
-	case *ast.NullNode:
-		return "", nil
+		return v.Value, true
+	case *ast.IntegerNode:
+		return v.GetToken().Value, true
+	case *ast.FloatNode:
+		return v.GetToken().Value, true
+	case *ast.BoolNode:
+		return v.GetToken().Value, true
 	default:
-		return "", fmt.Errorf("value at %s is %s, not a plain string", node.GetToken().Position, node.Type())
+		return "", false
 	}
+}
+
+// namespaceMapRefusalReason names why a namespace_map key or value that
+// [namespaceMapScalarText] refused is refused, so the error blames the
+// node's real shape instead of always naming an anchor: a tagged or block
+// scalar is told to quote itself as a plain string, since either can
+// always be rewritten that way, where an anchor, alias, or merge key
+// cannot be rewritten into one without changing what the document says.
+func namespaceMapRefusalReason(node ast.Node) string {
+	switch node.(type) {
+	case *ast.AnchorNode, *ast.AliasNode, *ast.MergeKeyNode:
+		return "an anchor, alias, or merge key is refused here rather than resolved, since one issuer's " +
+			"map silently inheriting another's tenant entries would be easy to miss in review"
+	case *ast.MappingKeyNode:
+		return "an explicit YAML key (`? ...`) is refused; write it as a plain, unadorned key instead"
+	case *ast.LiteralNode:
+		return "a block scalar is refused rather than reinterpreted as one line; quote it as a plain string instead"
+	case *ast.TagNode:
+		return "a tagged scalar is refused rather than reinterpreted by its tag; quote it as a plain string instead"
+	default:
+		return "quote it as a plain string instead"
+	}
+}
+
+// namespaceMapValueString reads one namespace_map value: a plain scalar (see
+// [namespaceMapScalarText]), or an explicit null decoding to the empty
+// string, the same convention a generic map[string]string field of this
+// same document follows. That empty string is not a loophole:
+// [TrustedIssuer.validateNamespaceFields] refuses a namespace_map entry
+// that maps to an empty namespace regardless of how it was spelled, so
+// this is about matching the established decode convention, not about
+// namespace_map accepting an empty value. Unlike a key, a null value is
+// not refused outright: see [namespaceMapScalarText]'s own doc for why the
+// two are handled separately.
+func namespaceMapValueString(node ast.Node) (string, error) {
+	if _, isNull := node.(*ast.NullNode); isNull {
+		return "", nil
+	}
+	if text, ok := namespaceMapScalarText(node); ok {
+		return text, nil
+	}
+	return "", fmt.Errorf("value at %s is %s, not a plain scalar; %s",
+		node.GetToken().Position, node.Type(), namespaceMapRefusalReason(node))
 }
 
 // UnmarshalJSON implements [encoding/json.Unmarshaler], for the same reason

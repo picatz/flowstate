@@ -563,13 +563,14 @@ func TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey(t *testing.T) {
 // [Policy] document — the only way [ParsePolicy] ever reaches it — the
 // method was handed goccy's own re-serialization of the field's node rather
 // than the author's source text, and that re-serialization mishandled a
-// control character reached through a JSON-style `\uXXXX` escape: the key
-// this test's "café" and "NUL" cases name used to decode to a shorter,
-// different string with no error, a live example of the wider class of
-// input flowstate-reviewer's differential run in this test's development
-// found (control-range `\u00XX` escapes generally, not `é` or a surrogate
-// pair specifically, which happened to already survive the old code's
-// unquoted-origin re-render).
+// `\uXXXX` escape of the kind a JSON encoder such as Python's json.dumps
+// writes by default: this test's "café", surrogate-pair, and "NUL" cases
+// each used to decode to a shorter, different string with no error, both
+// as JSON and as YAML, a live example of the wider class of `\uXXXX`
+// mis-rendering flowstate-reviewer's differential run in this test's
+// development found. The short escapes `\n` and `\t` below did not
+// mis-render either way, so they stay as boundary coverage rather than as
+// further proof of the defect.
 func TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully(t *testing.T) {
 	policyDoc := func(namespaceMapJSON string) []byte {
 		return []byte(`{"issuers":[{"name":"idp","issuer":"https://issuer.example.com",` +
@@ -585,13 +586,13 @@ func TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully(t *testing.T) {
 	}{
 		{
 			name: "a JSON \\uXXXX escape of a non-ASCII letter (café)",
-			json: `{"café/app": "team-a"}`,
+			json: "{\"caf\\u00e9/app\": \"team-a\"}",
 			yaml: "\"caf\\u00e9/app\": team-a\n",
 			want: "café/app",
 		},
 		{
 			name: "a UTF-16 surrogate pair (an emoji outside the Basic Multilingual Plane)",
-			json: `{"😀/app": "team-a"}`,
+			json: "{\"\\ud83d\\ude00/app\": \"team-a\"}",
 			yaml: "\"\\ud83d\\ude00/app\": team-a\n",
 			want: "😀/app",
 		},
@@ -717,6 +718,159 @@ func TestParsePolicyRefusesANamespaceMapMergeKey(t *testing.T) {
 	require.Error(t, err, "a merge key inside namespace_map must be refused, never silently resolved")
 	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
 	require.Contains(t, err.Error(), "MergeKey")
+}
+
+// TestParsePolicyAcceptsUntaggedScalarNamespaceMapKeysAndValues is the
+// compatibility half of the independent review of this change: an
+// untagged integer, float, or boolean namespace_map key or value decodes
+// to exactly the source text its author wrote, the same guarantee
+// [TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully] proves for a
+// string. Refusing every bare number and boolean outright, which an
+// earlier version of this fix did, was itself a compatibility break: a
+// claim as ordinary as GitHub Actions' "repository_owner_id" or
+// "repository_id" is an unquoted number, and an operator should not have
+// to remember to quote one to use it as a namespace_map key.
+//
+// [namespaceMapScalarText] reads the plain scalar's own source token text
+// rather than goccy/go-yaml's parsed numeric value, which is what keeps a
+// leading zero or a hex prefix from being renormalized: `0123` stays
+// "0123" here (not "83", its octal value) and `0x1F` stays "0x1F" (not
+// "31", its decimal value) — the same class of silent mangling #2077's own
+// fix closes for an escaped string, now closed for a number too.
+func TestParsePolicyAcceptsUntaggedScalarNamespaceMapKeysAndValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		mapping string
+		want    auth.NamespaceMap
+	}{
+		{"an unquoted integer key", "123456: team-a", auth.NamespaceMap{"123456": "team-a"}},
+		{"an unquoted integer value", "a: 123", auth.NamespaceMap{"a": "123"}},
+		{"a leading-zero integer key keeps its own digits, not its octal value", "0123: t", auth.NamespaceMap{"0123": "t"}},
+		{"a hex-prefixed integer key keeps its own digits, not its decimal value", "0x1F: t", auth.NamespaceMap{"0x1F": "t"}},
+		{"an unquoted boolean key", "true: t", auth.NamespaceMap{"true": "t"}},
+		{"an unquoted float key", "3.14: t", auth.NamespaceMap{"3.14": "t"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := []byte("issuers:\n" +
+				"  - name: idp\n" +
+				"    issuer: https://issuer.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      " + tt.mapping + "\n")
+			policy, err := auth.ParsePolicy(doc)
+			require.NoError(t, err, "doc: %s", doc)
+			require.Equal(t, tt.want, policy.Issuers[0].NamespaceMap)
+		})
+	}
+}
+
+// TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues is the refusal
+// half of the same review comment: everything
+// [TestParsePolicyAcceptsUntaggedScalarNamespaceMapKeysAndValues] does not
+// cover — a null key, a tagged scalar (built in or custom), a block
+// scalar, and an explicit `? key` — stays refused, each with a message
+// naming its own real cause rather than always blaming an anchor.
+// [TestParsePolicyRefusesANamespaceMapMergeKey] is the merge-key member of
+// this same family, kept separate for its own fixture and history; an
+// alias used as a value is exercised here since nothing else in this file
+// does.
+func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		doc     string
+		wantErr string
+	}{
+		{
+			name: "a null key",
+			doc: "issuers:\n" +
+				"  - name: idp\n" +
+				"    issuer: https://issuer.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      null: team-a\n",
+			wantErr: "a null key",
+		},
+		{
+			name: "a built-in tagged scalar key",
+			doc: "issuers:\n" +
+				"  - name: idp\n" +
+				"    issuer: https://issuer.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      !!str foo: team-a\n",
+			wantErr: "quote it as a plain string",
+		},
+		{
+			name: "a custom tagged scalar key",
+			doc: "issuers:\n" +
+				"  - name: idp\n" +
+				"    issuer: https://issuer.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      !mytag foo: team-a\n",
+			wantErr: "quote it as a plain string",
+		},
+		{
+			name: "a block scalar value",
+			doc: "issuers:\n" +
+				"  - name: idp\n" +
+				"    issuer: https://issuer.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      key: |\n" +
+				"        line one\n",
+			wantErr: "quote it as a plain string",
+		},
+		{
+			name: "an explicit YAML key",
+			doc: "issuers:\n" +
+				"  - name: idp\n" +
+				"    issuer: https://issuer.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      ? explicit\n" +
+				"      : team-a\n",
+			wantErr: "explicit YAML key",
+		},
+		{
+			// The anchor lives on an unrelated field (Role) so that the
+			// alias, not the anchor definition, is what namespace_map
+			// itself refuses.
+			name: "an alias value",
+			doc: "issuers:\n" +
+				"  - name: other\n" +
+				"    issuer: https://other.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    role: &r deployer\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      shared: team-shared\n" +
+				"  - name: idp\n" +
+				"    issuer: https://issuer.example.com\n" +
+				"    audiences: [flowstate]\n" +
+				"    namespace_claim: repository\n" +
+				"    namespace_map:\n" +
+				"      plain: *r\n",
+			wantErr: "anchor, alias, or merge key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := auth.ParsePolicy([]byte(tt.doc))
+			require.Error(t, err, "doc: %s", tt.doc)
+			require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+			require.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 // TestDefaultAlgorithms checks that the default allowlist cannot be talked into
