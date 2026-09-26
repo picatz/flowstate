@@ -2,6 +2,7 @@ package flowfile
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -225,9 +226,11 @@ type aliasInliner struct {
 	// itself. A call that bypasses its wrapper is not counted here; the
 	// cache-population test is what catches that. Two kinds of read are not
 	// counted either: those the output charge bounds (the shifting loop's
-	// trims, [indentWidth] on a site's prefix), and [dropMarker]'s scan,
-	// which runs once per anchor over that anchor's own line and so is
-	// bounded by the input. [fixer.blockEndBytesScanned] is this field's
+	// trims, [indentWidth] on a site's prefix), and [dropMarkers]'s scan,
+	// which walks each line a small constant number of times regardless of
+	// how many anchors share it ([dropMarkersFromLine]'s own doc comment has
+	// the reasoning) and so is bounded by the input either way.
+	// [fixer.blockEndBytesScanned] is this field's
 	// counterpart for [fixer.blockEnd]: incremented inside the scan's own
 	// loop, so neither
 	// counter can be satisfied by charging without actually scanning, the
@@ -244,7 +247,7 @@ type aliasInliner struct {
 	// scanned once rather than once per site (#2075). Nothing moves the
 	// lines a cached answer was computed from while sites are still being
 	// expanded — [aliasInliner.rewrite] only ever edits [fixer.lines] itself
-	// in [aliasInliner.dropMarker], after every site's replacement is
+	// in [aliasInliner.dropMarkers], after every site's replacement is
 	// already recorded — so the same [first, last] line range answers every
 	// site that opens on this anchor. The scan itself is charged through
 	// [aliasInliner.chargeScan] once, at the point this cache is filled.
@@ -294,6 +297,20 @@ type aliasInliner struct {
 	// and [scalarValues] close for an anchor's own line (#2075). The scan
 	// is charged through [aliasInliner.chargeScan] in [split] itself.
 	splits map[*ast.AliasNode]splitResult
+
+	// markerScanSteps sums [byteOffsetsOfColumns]'s own loop iterations
+	// across every line [aliasInliner.dropMarkers] has removed markers
+	// from — not charged through [aliasInliner.chargeScan] for the same
+	// reason [aliasInliner.rawScannedBytes]'s own doc comment gives for
+	// [dropMarkersFromLine]'s scan generally: it is bounded by the line's
+	// own length regardless of how many anchors share it, so nothing here
+	// multiplies with a site count the way every scan [chargeScan] guards
+	// does. A test reads this directly, the same way
+	// [aliasInliner.rawScannedBytes] is read, to prove that bound holds
+	// rather than merely claiming it (#2106, round two: k anchors sharing
+	// one line of length L used to cost O(k·L) here, each one relocating
+	// its own marker by rescanning the line from column one).
+	markerScanSteps int
 }
 
 // splitResult is one alias's cached [aliasInliner.split] answer, plus the
@@ -502,11 +519,272 @@ func (in *aliasInliner) rewrite() {
 			fmt.Sprintf("alias `*%s` would be replaced with the value `&%s` names", name, name))
 	}
 
+	in.dropMarkers()
+}
+
+// dropMarkers removes every anchor's `&name` marker, one line at a time.
+//
+// Every anchor goes, referenced or not: the grammar refuses the marker itself,
+// so a file that kept one would be a file `flow validate` refuses after
+// `flow fix` reported success — the "`flow fix . && git commit` succeeds on a
+// file `flow validate` rejects" outcome the command exists to avoid. The
+// value stays where it was written: an anchor is a name *on* a value, not a
+// declaration of one, so `retry: &backoff` is still `retry:` with its block
+// under it once the name is gone.
+//
+// Anchors are grouped by the line they are written on — a marker's removal
+// never reads or writes any other line — and every marker sharing one line
+// is then found and removed in a single pass over that line's own bytes,
+// through [dropMarkersFromLine]. That is what makes this different from
+// simply calling a per-anchor `dropMarker` in the right order — this
+// rewrite's first answer to #2106, and no longer a symbol this file
+// defines: right-to-left order alone was
+// correct but still cost O(k·L) for k anchors sharing a line of length L —
+// unbudgeted, since [aliasInliner.chargeScan]'s own doc comment already
+// names this scan as the one this file trusts to be bounded by the input —
+// because each anchor relocated its own marker by rescanning the line from
+// column 1 ([byteOffsetOfColumn]) and then rebuilt the whole line from
+// scratch. Batching every anchor on a line into one call finding every
+// column in one forward pass ([byteOffsetsOfColumns]) and rewriting the
+// line in one pass ([dropMarkersFromLine]) costs O(L+k) per line instead
+// (#2106, round two).
+func (in *aliasInliner) dropMarkers() {
+	byLine := map[int][]*ast.AnchorNode{}
+	var lines []int
 	for _, anchor := range in.anchorNodes {
-		if !in.dropMarker(anchor) {
+		line := anchor.Start.Position.Line
+		if _, seen := byLine[line]; !seen {
+			lines = append(lines, line)
+		}
+		byLine[line] = append(byLine[line], anchor)
+	}
+	slices.Sort(lines)
+
+	for _, line := range lines {
+		anchors := byLine[line]
+		slices.SortFunc(anchors, func(a, b *ast.AnchorNode) int {
+			return cmp.Compare(a.Start.Position.Column, b.Start.Position.Column)
+		})
+		// A refusal on one line stops the walk here rather than dropping
+		// markers from every other line too: the document is refused
+		// wholesale either way (see [inlineWholeValueAliases]'s own doc
+		// comment), so continuing would only grow [fixer.changes] with
+		// edits a refused run never applies. Nothing above this call
+		// depends on the return value, which is why the caller,
+		// [aliasInliner.rewrite], no longer reads one either.
+		if !in.dropMarkersOnLine(line, anchors) {
 			return
 		}
 	}
+}
+
+// dropMarkersOnLine removes every one of anchors' markers from the one line
+// they are all written on, and records the changes.
+//
+// anchors is sorted ascending by column, which [dropMarkersFromLine] needs to
+// find every one of them in a single forward pass, and every one of them is
+// on this same line, which is what makes a single rewrite of the line answer
+// for all of them at once.
+func (in *aliasInliner) dropMarkersOnLine(line int, anchors []*ast.AnchorNode) bool {
+	text := in.f.line(line)
+
+	columns := make([]int, len(anchors))
+	names := make([]string, len(anchors))
+	for i, anchor := range anchors {
+		columns[i] = anchor.Start.Position.Column
+		names[i] = anchorName(anchor)
+	}
+
+	rewritten, badIndex, notLocated, steps, ok := dropMarkersFromLine(text, columns, names)
+	in.markerScanSteps += steps
+	if !ok {
+		if notLocated {
+			in.refuseAt(line, columns[badIndex],
+				"this anchor is not written where it was read, so it cannot be removed safely; remove it by hand")
+		} else {
+			in.refuseAt(line, columns[badIndex],
+				"this anchor is not written on its line the way it was read, so it cannot be removed safely; remove it by hand")
+		}
+
+		return false
+	}
+
+	in.f.lines[line-1] = rewritten
+	in.f.substituted = true
+	for _, name := range names {
+		want := "&" + name
+		in.f.changes = append(in.f.changes, FixChange{
+			Line:    line,
+			Message: fmt.Sprintf("anchor `%s` removed, now that its value is written where it was used", want),
+			Pending: fmt.Sprintf("anchor `%s` would be removed, now that its value is written where it was used", want),
+		})
+	}
+
+	return true
+}
+
+// dropMarkersFromLine removes every `&name` in names from text, each one
+// written at the matching, ascending column in columns — [byteOffsetOfColumn]'s
+// own convention (1-based, counting characters).
+//
+// badIndex, notLocated, and a false ok report the first marker (by position
+// in columns/names, which is ascending column order) that could not be
+// removed safely: notLocated true for a column past what the line holds,
+// false for a column that holds something other than the marker it should.
+// Nothing is rewritten on a refusal; the caller leaves the line alone.
+// steps is [byteOffsetsOfColumns]'s own count, passed through so a caller
+// can add it to [aliasInliner.markerScanSteps] without a second call.
+//
+// # One pass to find every column, one to rewrite
+//
+// [byteOffsetsOfColumns] finds every marker's byte offset in one forward walk
+// of text's runes, rather than one restart-from-column-one scan per marker —
+// the O(k·L) cost #2106's second round found in the single-anchor form this
+// replaces. Once every offset and every marker's own width is known, the
+// rewritten line is built in one further pass: copy the text before each
+// marker, skip the marker itself and one adjacent space after it, and move
+// on. Total cost is the line's own length plus the anchor count, once each.
+//
+// # The one thing that still needs a marker's *removal*, not just its bytes
+//
+// The rule this preserves: one space after the marker's name goes with it,
+// so `retry: &backoff 3` becomes `retry: 3` rather than `retry:  3`; when
+// nothing follows on the line, the space *before* the marker goes instead,
+// so `retry: &backoff` becomes `retry:` with no trailing whitespace nobody
+// asked to have added. "Nothing follows" depends on what the rest of the
+// *rewritten* line looks like once every marker to the right is already
+// gone — not on the original text, which still has every marker's own bytes
+// in it. blank[i] answers whether the rest consists only of literal spaces
+// and markers, without re-scanning the line once per marker: computed right
+// to left, it folds in the gap to the next marker (or the line's end).
+// Tabs and other whitespace are not spaces the old rewrite removed.
+func dropMarkersFromLine(text string, columns []int, names []string) (rewritten string, badIndex int, notLocated bool, steps int, ok bool) {
+	offsets, bad, steps := byteOffsetsOfColumns(text, columns)
+	if bad >= 0 {
+		return text, bad, true, steps, false
+	}
+
+	type marker struct{ at, w int }
+	markers := make([]marker, len(columns))
+	for i, at := range offsets {
+		want := "&" + names[i]
+		if at+len(want) > len(text) || text[at:at+len(want)] != want {
+			return text, i, false, steps, false
+		}
+		// A parser position and text match on their own do not rule out
+		// two markers claiming the same bytes: [byteOffsetsOfColumns]
+		// trusts the columns it is given, and nothing before this walk
+		// checks that they are actually in order. Reached only when a
+		// caller's positions do not agree with the text the way the
+		// parser's own should always — goccy gives no way to make it
+		// happen — but "should never" is not "cannot", and every slice
+		// this rewrite makes below assumes markers are disjoint and in
+		// order; refusing here is what keeps that assumption from
+		// becoming a panic instead of a diagnostic.
+		if i > 0 && at < markers[i-1].at+markers[i-1].w {
+			return text, i, false, steps, false
+		}
+		markers[i] = marker{at: at, w: len(want)}
+	}
+
+	blank := make([]bool, len(markers))
+	tailSpaces := true
+	for i := len(markers) - 1; i >= 0; i-- {
+		next := len(text)
+		if i+1 < len(markers) {
+			next = markers[i+1].at
+		}
+		gap := text[markers[i].at+markers[i].w : next]
+		// A tab is blank to TrimSpace, but the old per-marker rewrite only
+		// trimmed literal spaces. Keep it rather than skipping the whole gap.
+		tailSpaces = tailSpaces && strings.Trim(gap, " ") == ""
+		blank[i] = tailSpaces
+	}
+
+	out := make([]byte, 0, len(text))
+	pos := 0
+	for i, m := range markers {
+		out = append(out, text[pos:m.at]...)
+		next := len(text)
+		if i+1 < len(markers) {
+			next = markers[i+1].at
+		}
+		switch {
+		case blank[i]:
+			// The whole gap to the next marker (or to the line's end, for
+			// the last one) is blank, so none of it survives — not just the
+			// one adjacent space the non-blank case below drops. Trimming
+			// the prefix and skipping straight to next matches what
+			// sequentially trimming `text[:at]+rest` down to its last
+			// non-space character would leave, for the same reason
+			// [dropMarkersFromLine]'s own doc comment gives: literal spaces
+			// contribute nothing either way, and every marker's own bytes
+			// in the gap are already excluded from it.
+			out = bytes.TrimRight(out, " ")
+			pos = next
+		case m.at+m.w < len(text) && text[m.at+m.w] == ' ':
+			pos = m.at + m.w + 1
+		default:
+			pos = m.at + m.w
+		}
+	}
+	out = append(out, text[pos:]...)
+	// The last marker's old rewrite trimmed trailing spaces even if its
+	// otherwise blank tail contained tabs; preserve the tabs themselves.
+	last := markers[len(markers)-1]
+	if strings.TrimSpace(text[last.at+last.w:]) == "" {
+		out = bytes.TrimRight(out, " ")
+	}
+
+	return string(out), -1, false, steps, true
+}
+
+// byteOffsetsOfColumns returns the byte offset of every column in columns —
+// which must be given in ascending order, the order [aliasInliner.dropMarkers]
+// already sorts a line's anchors into — found in one forward pass over
+// text's runes, rather than one [byteOffsetOfColumn]-style restart-from-column-one
+// scan per column.
+//
+// bad is the index of the first column [byteOffsetOfColumn] would itself have
+// refused (less than 1, or past one column beyond the line's last rune),
+// or -1 when every one of them was found; offsets past that index are left
+// zero and unused by any caller. steps counts this function's own loop
+// iterations — at most len(text)+1 regardless of how many columns are
+// asked for, which is the property [TestDropMarkersScanIsLinearInLineLength]
+// checks directly rather than by wall time (#2106, round two).
+func byteOffsetsOfColumns(text string, columns []int) (offsets []int, bad, steps int) {
+	offsets = make([]int, len(columns))
+	if len(columns) == 0 {
+		return offsets, -1, 0
+	}
+	if columns[0] < 1 {
+		return offsets, 0, 0
+	}
+
+	idx, col := 0, 1
+	for offset := range text {
+		steps++
+		for idx < len(columns) && columns[idx] == col {
+			offsets[idx] = offset
+			idx++
+		}
+		if idx == len(columns) {
+			return offsets, -1, steps
+		}
+		col++
+	}
+	// One past the last rune is still a valid position — the end of the
+	// line, where a marker may legitimately start when nothing follows it —
+	// matching [byteOffsetOfColumn]'s own final check.
+	for idx < len(columns) {
+		if columns[idx] != col {
+			return offsets, idx, steps
+		}
+		offsets[idx] = len(text)
+		idx++
+	}
+
+	return offsets, -1, steps
 }
 
 // replacement returns the lines one site's line becomes.
@@ -1212,57 +1490,6 @@ func (in *aliasInliner) expandRange(against *ast.AliasNode, first, last int, sta
 	}
 
 	return out, true
-}
-
-// dropMarker removes one `&name` from the line it is written on.
-//
-// Every anchor goes, referenced or not: the grammar refuses the marker itself, so
-// a file that kept one would be a file `flow validate` refuses after `flow fix`
-// reported success — the "`flow fix . && git commit` succeeds on a file `flow
-// validate` rejects" outcome the command exists to avoid.
-//
-// The value stays where it was written. An anchor is a name *on* a value, not a
-// declaration of one, so `retry: &backoff` is still `retry:` with its block under
-// it once the name is gone.
-func (in *aliasInliner) dropMarker(anchor *ast.AnchorNode) bool {
-	pos := anchor.Start.Position
-	text := in.f.line(pos.Line)
-
-	at, located := byteOffsetOfColumn(text, pos.Column)
-	if !located {
-		in.refuseAt(pos.Line, pos.Column,
-			"this anchor is not written where it was read, so it cannot be removed safely; remove it by hand")
-
-		return false
-	}
-
-	want := "&" + anchorName(anchor)
-	if at+len(want) > len(text) || text[at:at+len(want)] != want {
-		in.refuseAt(pos.Line, pos.Column,
-			"this anchor is not written on its line the way it was read, so it cannot be removed safely; remove it by hand")
-
-		return false
-	}
-
-	// One space after the name goes with it, so `retry: &backoff 3` becomes
-	// `retry: 3` rather than `retry:  3`. When nothing follows, the space *before*
-	// it goes instead, so `retry: &backoff` becomes `retry:` with no trailing
-	// whitespace — a byte nobody asked to have added.
-	rest := strings.TrimPrefix(text[at+len(want):], " ")
-	rewritten := text[:at] + rest
-	if strings.TrimSpace(rest) == "" {
-		rewritten = strings.TrimRight(rewritten, " ")
-	}
-
-	in.f.lines[pos.Line-1] = rewritten
-	in.f.substituted = true
-	in.f.changes = append(in.f.changes, FixChange{
-		Line:    pos.Line,
-		Message: fmt.Sprintf("anchor `%s` removed, now that its value is written where it was used", want),
-		Pending: fmt.Sprintf("anchor `%s` would be removed, now that its value is written where it was used", want),
-	})
-
-	return true
 }
 
 // refuseAlias records a refusal positioned at an alias.
