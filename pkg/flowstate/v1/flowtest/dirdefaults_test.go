@@ -347,6 +347,18 @@ tests:
 	assert.Contains(t, err.Error(), flowtest.DirDefaultsName)
 	assert.Contains(t, err.Error(), "vars.token → vars.alias", "the refusal walks the alias back to the directory var")
 	assert.NotContains(t, err.Error(), secret)
+
+	// The suite's copy of the refusal sits at the `secrets:` entry naming the
+	// alias — the seed of the path — not at one naming the refused root.
+	var diagnostics *flowtest.Diagnostics
+	require.ErrorAs(t, err, &diagnostics)
+	var fields []string
+	for _, problem := range diagnostics.Problems {
+		if problem.File == path {
+			fields = append(fields, problem.Field)
+		}
+	}
+	assert.Contains(t, fields, "tests[0].secrets.env:TOKEN", "the refused suite carries the refusal at its seed")
 }
 
 // TestANestedDirectoryVarOnASecretPathIsRefusedAtItsRoot is the structured

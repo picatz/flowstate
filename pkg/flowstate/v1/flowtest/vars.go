@@ -625,7 +625,8 @@ func checkVarLeaves(p *problems, r site, where string, value any, depth int) {
 				// and the literal text is exactly what a secret-holding leaf
 				// would carry (#2080). The fences are the expression as
 				// written — what [varDeclaration.fence] quotes — and together
-				// no longer than the leaf.
+				// no longer than the leaf; a literal inside one still prints
+				// (#2108).
 				var quoted []string
 				for _, fence := range flowfile.Fences(v) {
 					quoted = append(quoted, strconv.Quote(v[fence.Open:fence.End]))
@@ -962,8 +963,9 @@ type fileVars struct {
 // mistake once per reader of it — the rule [problems] already states for a
 // value whose kind is already wrong.
 //
-// restated names the vars the suite states with the very value the
-// directory's testdefaults.yaml also gives them ([contribution.restated]).
+// restated names the vars the suite restates with the YAML value the
+// directory's testdefaults.yaml gives them, written the same way
+// ([contribution.restated]).
 func (f *File) evaluateVars(p *problems, restated []string) {
 	block := at(v1.VarsRoot)
 
@@ -988,8 +990,8 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 	// shared var's value is printed by every other suite in the directory,
 	// none of which can see that this one called it a secret. The value has
 	// to *move* into the suite that withholds it: a suite that shadows the
-	// directory's var with the same value (restated, from
-	// [dirDefaults.combineInto]) loads the copy it withholds while its
+	// directory's var with the same YAML value, written the same way
+	// (restated, from [dirDefaults.combineInto]), loads the copy it withholds while its
 	// siblings keep printing the directory's, so it is refused too. Once per
 	// root, since the fold records provenance per top-level name. Names a
 	// path, never a value.
@@ -1122,13 +1124,13 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 	// raced by an earlier partial set: nothing has been substituted before
 	// this line, and [checkVarLeaves] no longer quotes the literal text around
 	// a leaf's fences. What is still quoted above this line is the expression
-	// as written, by the established rule: [varDeclaration.fence] in an
-	// evaluation error, and cel-go's source snippet in a parse error. That
-	// text is the author's, and it can hold literal material of its own — a
-	// string literal inside the fence, or everything between the braces of
-	// `${a} literal ${b}`, which [flowfile.SplitFence] accepts as one
-	// expression — so these are not a guarantee that no var text precedes
-	// this line (#2108).
+	// as written, by the established rule: each fence [checkVarLeaves] finds,
+	// [varDeclaration.fence] in an evaluation error, and cel-go's source
+	// snippet in a parse error. That text is the author's, and it can hold
+	// literal material of its own — a string literal inside a fence, or
+	// everything between the braces of `${a} literal ${b}`, which
+	// [flowfile.SplitFence] accepts as one expression — so nothing here
+	// guarantees that no var text precedes this line (#2108).
 	p.withholdText(f.varsWithheld.text)
 }
 

@@ -159,11 +159,13 @@ type contribution struct {
 	// or under one of them is attributed to file and positioned in doc.
 	paths []loc
 
-	// restated are the vars the suite shadows with a value equal to the
-	// directory's own, sorted. The suite's copy is withheld when it is on a
-	// path to a secret, but every other suite still reads the directory's, so
-	// [File.evaluateVars] refuses a restated var exactly as it refuses one
-	// the directory contributed (#2080).
+	// restated are the vars the suite restates with the directory's own YAML
+	// value, written the same way (raw, before evaluation), sorted. The
+	// suite's copy is withheld when it is on a path to a secret, but every
+	// other suite still reads the directory's, so [File.evaluateVars] refuses
+	// a restated var exactly as it refuses one the directory contributed
+	// (#2080). A computed copy, a differently typed scalar, or a structure
+	// that differs elsewhere is not a restatement here; see #2107.
 	restated []string
 
 	// ownChecks and ownStubs are how many claims and stubs the *suite's* own
