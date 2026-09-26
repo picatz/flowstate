@@ -218,15 +218,18 @@ type aliasInliner struct {
 
 	// rawScannedBytes is incremented in the wrappers that perform this
 	// rewrite's per-anchor and per-alias scans — [spanOfNode]/[tokenText] on
-	// an anchor's value (in [aliasInliner.spanOf]), [byteOffsetOfColumn] (in
-	// [aliasInliner.scalarValueOf] and [split]), and [indentWidth] (in
-	// [aliasInliner.spliceBlock]'s [aliasInliner.blockBases] block) — never
-	// by [aliasInliner.chargeScan] itself. A call that bypasses its wrapper
-	// is not counted here; the cache-population test is what catches that.
-	// Reads bounded by the output charge instead (the shifting loop's
-	// trims, [indentWidth] on a site's prefix, [dropMarker]'s once-per-anchor
-	// scan) are not counted either. [fixer.blockEndBytesScanned] is this field's counterpart for
-	// [fixer.blockEnd]: incremented inside the scan's own loop, so neither
+	// an anchor's value (in [aliasInliner.spanOf]) and on a site's own key
+	// (in [split]), [byteOffsetOfColumn] (in [aliasInliner.scalarValueOf]
+	// and [split]), and [indentWidth] (in [aliasInliner.spliceBlock]'s
+	// [aliasInliner.blockBases] block) — never by [aliasInliner.chargeScan]
+	// itself. A call that bypasses its wrapper is not counted here; the
+	// cache-population test is what catches that. Two kinds of read are not
+	// counted either: those the output charge bounds (the shifting loop's
+	// trims, [indentWidth] on a site's prefix), and [dropMarker]'s scan,
+	// which runs once per anchor over that anchor's own line and so is
+	// bounded by the input. [fixer.blockEndBytesScanned] is this field's
+	// counterpart for [fixer.blockEnd]: incremented inside the scan's own
+	// loop, so neither
 	// counter can be satisfied by charging without actually scanning, the
 	// way reading only [aliasInliner.scanned] could be (#2075's own review:
 	// three mutants that kept every cache but reverted one round's charge to
