@@ -347,7 +347,9 @@ var _ converter.PayloadCodec = Codec(nil)
 // that has not configured one.
 func Null() Codec { return nullCodec{} }
 
-// IsNull reports whether c is the identity codec.
+// IsNull reports whether c is the identity codec [Null] returns. It reports
+// false for a nil Codec, which a [Config] treats as Null; ask a Config
+// [Config.Enabled] instead.
 func IsNull(c Codec) bool {
 	_, ok := c.(nullCodec)
 	return ok
