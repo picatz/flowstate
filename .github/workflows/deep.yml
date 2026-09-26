@@ -109,7 +109,7 @@ jobs:
           failed=false
           while read -r target dir; do
             echo "::group::${target} (${dir})"
-            if GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz "$target" -fuzztime 10m "./$dir/" 2>&1 | tee "fuzz-${target}.log"; then
+            if GOMEMLIMIT=512MiB go test -short -timeout 900s -parallel 1 -run=XXX -fuzz "$target" -fuzztime 10m "./$dir/" 2>&1 | tee "fuzz-${target}.log"; then
               printf '%s success\n' "$target" >> fuzz-outcomes.txt
             else
               printf '%s failure\n' "$target" >> fuzz-outcomes.txt
@@ -184,7 +184,7 @@ jobs:
               echo "Reproduce: download the artifact, restore the entry to \`${entry}\`, then:"
               echo
               echo '```'
-              echo "GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run '${target}/${name}' ./${pkgdir}/"
+              echo "GOMEMLIMIT=512MiB go test -short -timeout 120s -parallel 1 -run '${target}/${name}' ./${pkgdir}/"
               echo '```'
               echo
               echo "Per CLAUDE.md, a crasher the fuzzer finds is a real defect with a corpus entry to triage, never flake to re-run away."

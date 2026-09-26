@@ -862,6 +862,61 @@ func TestFuzzCrasherIssueDescribesArtifactVisibility(t *testing.T) {
 	t.Fatal("deep CI has no crasher issue step")
 }
 
+// TestFuzzDeepPassesShortSoATargetNeverBootsADevServer pins #2098's fix to the
+// tier fuzzrun does not run: fuzz-deep loops `go test -fuzz` itself rather than
+// calling tools/fuzzrun (see tools/fuzzrun/main.go's package comment), so
+// giving fuzzCommand -short does nothing for this tier. FuzzMCPToolArguments
+// is smoke *and* deep, and cmd/flow's TestMain boots a real Temporal dev
+// server unless -short is set — a boot this weekly job pays for every target,
+// not only the one that needs it, once per run and once again in the crasher
+// repro command it prints.
+func TestFuzzDeepPassesShortSoATargetNeverBootsADevServer(t *testing.T) {
+	wf := readCIWorkflow(t, "../../.github/workflows/deep.yml")
+	job, ok := wf.Jobs["fuzz-deep"]
+	if !ok {
+		t.Fatal("deep CI has no fuzz-deep job")
+	}
+
+	var sawLoop, sawRepro bool
+	for _, step := range job.Steps {
+		if step.ID == "fuzz" {
+			sawLoop = true
+			if !strings.Contains(step.Run, "-fuzz \"$target\"") {
+				t.Fatalf("the fuzz step's run line changed shape; update this test:\n%s", step.Run)
+			}
+			if !hasShortFlag(step.Run) {
+				t.Errorf("the fuzz-deep loop must pass -short to go test, so a target whose harness boots a dev server does not pay for it in this tier too; run is:\n%s", step.Run)
+			}
+		}
+		if step.Name == "File issues for crashers" {
+			sawRepro = true
+			if !strings.Contains(step.Run, "-run '${target}/${name}'") {
+				t.Fatalf("the crasher repro command changed shape; update this test:\n%s", step.Run)
+			}
+			if !hasShortFlag(step.Run) {
+				t.Errorf("the crasher repro command must pass -short too, so reproducing a crash does not itself boot a dev server; run is:\n%s", step.Run)
+			}
+		}
+	}
+	if !sawLoop {
+		t.Fatal("deep CI's fuzz-deep job has no step (id: fuzz) running the fuzz loop")
+	}
+	if !sawRepro {
+		t.Fatal("deep CI's fuzz-deep job has no \"File issues for crashers\" step")
+	}
+}
+
+// hasShortFlag reports whether run contains a -short flag on its own, rather
+// than as a substring of another flag or an argument.
+func hasShortFlag(run string) bool {
+	for _, field := range strings.Fields(run) {
+		if field == "-short" {
+			return true
+		}
+	}
+	return false
+}
+
 func readCIWorkflow(t *testing.T, path string) ciWorkflow {
 	t.Helper()
 	data, err := os.ReadFile(path)
