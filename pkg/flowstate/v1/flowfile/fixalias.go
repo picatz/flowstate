@@ -171,6 +171,15 @@ type aliasInliner struct {
 	anchors     map[string]*ast.AnchorNode
 	anchorNodes []*ast.AnchorNode
 
+	// anchorInOuterFlow records, for an anchor whose declaration
+	// [aliasInliner.collect] has reached, whether some flow collection
+	// (`{…}` or `[…]`) other than the anchor's own value wraps it — see
+	// [aliasInliner.collect]'s own `case *ast.AnchorNode`. Read only by
+	// [aliasInliner.refusesAnchorInOuterFlow], for the one shape moving a
+	// flow-style value out of such a collection can silently change the
+	// meaning of rather than merely its formatting (#2102, F1).
+	anchorInOuterFlow map[*ast.AnchorNode]bool
+
 	sites  []aliasSite
 	byLine map[int]aliasSite
 
@@ -406,6 +415,18 @@ func (in *aliasInliner) collect(n ast.Node, flow bool) {
 		}
 
 	case *ast.AnchorNode:
+		// Recorded before descending, so flow still means "an outer flow
+		// collection wraps this anchor's own declaration" rather than
+		// whatever node.Value's own style folds in below (#2102, F1: an
+		// anchor named here that turns out to hold a flow-style value of
+		// its own is spliced by [aliasInliner.spliceScalar], which this
+		// records for so that splice can refuse rather than move a plain
+		// scalar goccy would read differently once it leaves the flow
+		// collection surrounding it).
+		if in.anchorInOuterFlow == nil {
+			in.anchorInOuterFlow = map[*ast.AnchorNode]bool{}
+		}
+		in.anchorInOuterFlow[node] = flow
 		in.collect(node.Value, flow)
 
 	case *ast.AliasNode:
@@ -574,12 +595,20 @@ func (in *aliasInliner) replacement(site aliasSite, stack []string) ([]string, b
 	switch value := anchor.Value.(type) {
 	case *ast.MappingNode:
 		if value.IsFlowStyle {
+			if in.refusesAnchorInOuterFlow(site, anchor, name) {
+				return nil, false
+			}
+
 			return in.spliceScalar(site, prefix, suffix, anchor)
 		}
 
 		return in.spliceBlock(site, prefix, suffix, anchor, append(slices.Clone(stack), name))
 	case *ast.SequenceNode:
 		if value.IsFlowStyle {
+			if in.refusesAnchorInOuterFlow(site, anchor, name) {
+				return nil, false
+			}
+
 			return in.spliceScalar(site, prefix, suffix, anchor)
 		}
 
@@ -827,7 +856,16 @@ func widenForFlowDelimiters(span Span, start, end *token.Token) Span {
 	if s := spanOfToken(start); s.IsValid() && before(s.Start, span.Start) {
 		span.Start = s.Start
 	}
-	if e := spanOfToken(end); e.IsValid() && before(span.End, e.End) {
+	// !span.End.IsValid() is not the same question [before] answers here:
+	// an empty flow value (`&a {}`) gives [spanOfNode] nothing to walk at
+	// all — no entries, so [eachToken] visits neither `{` nor `}` — and
+	// [before](span.End, e.End) with an invalid span.End as its *first*
+	// argument returns false unconditionally, leaving End unset and this
+	// value reporting "not written on one line" for a value that plainly
+	// is. Checked explicitly rather than relying on [before]'s own
+	// invalid-argument rule the way the Start check above safely does,
+	// where the invalid value is [before]'s second argument instead.
+	if e := spanOfToken(end); e.IsValid() && (!span.End.IsValid() || before(span.End, e.End)) {
 		span.End = e.End
 	}
 	return span
@@ -986,6 +1024,40 @@ func (in *aliasInliner) appendLine(alias *ast.AliasNode, out []string, line stri
 	}
 
 	return append(out, line), true
+}
+
+// refusesAnchorInOuterFlow refuses inlining a flow-style value whose own
+// anchor is declared inside some *other*, outer flow collection, and
+// reports whether it refused.
+//
+// goccy's parser reads a plain scalar that holds a bare colon and no space
+// after it differently depending on what surrounds it: `[8080:80]` decodes
+// as `[{8080: 80}]` when it sits inside an outer `{…}`, but as
+// `["8080:80"]`, one string, beside a block key — `o: {ports: &p [8080:80]}`
+// against `o:\n  ports: &p [8080:80]`. Splicing an alias always moves the
+// anchor's own value text out of wherever the anchor was declared and into
+// wherever the alias was written; when the anchor sits inside a flow
+// collection the alias is not also inside (#653's refusal already keeps an
+// alias itself out of flow style, in [aliasInliner.recordSite]), that move
+// can silently change what a value like this one means rather than only
+// how it looks. On main this same input already refuses outright with a
+// parse error, so writing something readable in its place would be worse
+// than refusing to guess. #2117 tracks the general question of which
+// flow-style values are actually affected; this refuses every one of
+// them, which is narrower — never a false accept, at the cost of refusing
+// some that would have moved safely.
+func (in *aliasInliner) refusesAnchorInOuterFlow(site aliasSite, anchor *ast.AnchorNode, name string) bool {
+	if !in.anchorInOuterFlow[anchor] {
+		return false
+	}
+
+	in.refuseAlias(site.alias,
+		"the value `&%s` names is written inside an outer flow collection (`{…}` or `[…]`), where a plain value "+
+			"like `8080:80` can mean something other than it would once moved outside one; write the anchor "+
+			"outside flow style and run this again, or write the value out by hand",
+		name)
+
+	return true
 }
 
 // spliceScalar replaces an alias with a value written on one line: a scalar, or a

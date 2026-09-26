@@ -13,18 +13,22 @@ import (
 // [inlineWholeValueAliases]'s own, first-round answer, called directly
 // rather than through [Fix]'s fixed-point loop.
 //
-// [Fix] happens to hide this defect's own symptom: [fixOnce] returns a Go
-// error when the loop's second round fails to re-parse what the first round
-// wrote, and [Fix] propagates that error rather than the corrupted bytes —
-// see [TestFixOnAFlowStyleAnchorAliasFailsClosedRatherThanCorrupting] below
-// for that path. But nothing about that safety net is specific to [Fix]:
-// [inlineWholeValueAliases] and [runAliasInliner] are called directly by at
-// least one other caller in this tree — the LSP's `source.fixAll` quick fix
-// (`lsp/codeaction.go`, `flowfile.Fix`'s own call still wraps it there, but a
-// caller reaching this package's lower-level entry points directly has no
-// such second round at all) — so what has to hold is the answer these two
-// functions hand back on the first and only call, not what a caller one
-// layer up happens to do with it afterward.
+// [Fix] happens to hide this defect's own symptom: [fixOnce] — the sole
+// caller of [inlineWholeValueAliases] outside this package's own tests —
+// returns a Go error when the loop's second round fails to re-parse what
+// the first round wrote, and [Fix] propagates that error rather than the
+// corrupted bytes — see
+// [TestFixSucceedsOnAFlowStyleAnchorAliasWithoutASecondRound] below for
+// that path. The LSP's `source.fixAll` quick fix (`lsp/codeaction.go`)
+// reaches this only through [Fix] itself, not through
+// [inlineWholeValueAliases]/[runAliasInliner] directly, so nothing about
+// that safety net is specific to *this* caller — but nothing here should
+// depend on [Fix]'s loop catching a mistake either: what has to hold is
+// the answer these two functions hand back on the first and only call,
+// which is exactly what a caller with no such loop around it — one this
+// package does not have today, but the general shape [runAliasInliner]'s
+// own doc comment names as the reason it hands back the inliner itself
+// rather than only a [FixResult] — would receive.
 func TestAliasInlinerSplicesFlowStyleValuesWithTheirDelimiters(t *testing.T) {
 	t.Parallel()
 
@@ -88,14 +92,18 @@ func TestAliasInlinerSplicesFlowStyleValuesWithTheirDelimiters(t *testing.T) {
 	}
 }
 
-// TestFixOnAFlowStyleAnchorAliasFailsClosedRatherThanCorrupting is #2102's
-// own top-level reproduction: before the fix, [Fix]'s fixed-point loop wrote
-// the corrupted document from round one, tried to re-parse it, and
-// propagated that parse error rather than the corrupted bytes or a
-// positioned refusal — an opaque error naming a line in a file the caller
-// never wrote. After the fix there is nothing to hide: round one's own
-// output already parses, so [Fix] succeeds outright.
-func TestFixOnAFlowStyleAnchorAliasFailsClosedRatherThanCorrupting(t *testing.T) {
+// TestFixSucceedsOnAFlowStyleAnchorAliasWithoutASecondRound is #2102's own
+// top-level reproduction, through the public [Fix]: before the fix, its
+// fixed-point loop wrote the corrupted document from round one, tried to
+// re-parse it, and propagated that parse error rather than the corrupted
+// bytes or a positioned refusal — an opaque error naming a line in a file
+// the caller never wrote, asserted here as a plain success rather than as
+// the absence of that error, which is what the name says this checks.
+// After the fix there is nothing for a second round to catch: round one's
+// own output already parses, so [Fix] succeeds outright, on the first
+// round, the same as [TestAliasInlinerSplicesFlowStyleValuesWithTheirDelimiters]
+// above already checked directly.
+func TestFixSucceedsOnAFlowStyleAnchorAliasWithoutASecondRound(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {

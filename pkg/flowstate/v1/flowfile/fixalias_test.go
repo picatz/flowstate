@@ -545,6 +545,90 @@ steps:
       message: hi
 `,
 		},
+		{
+			// #2102, F1's control direction: the anchor's own declaration is
+			// not inside any flow collection here — `o:` opens a block
+			// mapping, and `ports:` is a block key of it — even though the
+			// anchor's *value* is flow-style. [aliasInliner.anchorInOuterFlow]
+			// has to key off the anchor's own site, not off whether the
+			// document holds flow style anywhere, or this control would be
+			// refused right alongside the case it is meant to be kept
+			// distinct from.
+			name: "a flow-style anchor declared under a block key keeps inlining",
+			src: `edition: v2026.3
+name: t
+vars:
+  o:
+    ports: &p [8080:80]
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  o:
+    ports: [8080:80]
+  u: [8080:80]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  o:
+    ports: [8080:80]
+  u: [8080:80]
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
+		{
+			// The delimiter widening this issue's own fix does — see
+			// [widenForFlowDelimiters] — has no entries to fold in for an
+			// *empty* flow mapping, since [ast.MappingNode] with no Values
+			// gives [spanOfNode] nothing to walk and no End to compare
+			// against; that used to leave the span's End unset and refuse
+			// this with "not written on one line", a diagnostic naming the
+			// wrong reason for a value that is very much on one line.
+			name: "a whole-value alias to an empty flow-style mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  a: &a {}
+  u: *a
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			want: `edition: v2026.3
+name: t
+vars:
+  a: {}
+  u: {}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: {}
+  u: {}
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
 	}
 }
 
@@ -777,6 +861,47 @@ steps:
 			line:    6,
 			column:  9,
 			message: "declares an anchor of its own",
+		},
+		{
+			// #2102, F1: goccy reads a bare `key:value` scalar with no space
+			// after the colon differently depending on context — nested
+			// inside an outer flow mapping it decodes as a further mapping
+			// entry, but beside a block key it is one string. Splicing this
+			// anchor's flow-style sequence out from under the outer `{…}`
+			// and into a block context would silently change which of those
+			// two readings the value gets, so this refuses rather than
+			// guess. On origin/main this same input already fails to
+			// compile with a parse error rather than accepting anything.
+			name: "a flow-style anchor declared inside an outer flow mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: {ports: &p [8080:80]}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "written inside an outer flow collection",
+		},
+		{
+			name: "a flow-style anchor's own sequence entries read differently outside a flow mapping",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: {k: &p [a:b, c]}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    5,
+			column:  6,
+			message: "written inside an outer flow collection",
 		},
 	}
 
