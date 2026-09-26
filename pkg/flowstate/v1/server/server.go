@@ -2531,9 +2531,14 @@ const maxHeartbeatPlaintextBytes = 256
 // reports (Copilot review of #2067).
 //
 // [v1.MaxCodecExpansionBytes] rather than a second guess at what a codec may
-// add: it is this repository's own answer to exactly that question, enforced
-// by `payloadcodec.Config.Validate` at startup, so anything a configured
-// codec is allowed to run with already fits under it by construction. A bound
+// add: it is this repository's own answer to that question. It is an
+// assumption, not a guarantee, at this size: `payloadcodec.Config.Validate`
+// checks a codec's expansion only at the maximal run-state size, and the
+// codec contract requires `MaxEncodedSize` to be monotone, not its additive
+// overhead to stay under this constant at every smaller size. A codec that
+// adds more than this to a phase-sized payload is refused here, and the phase
+// reads as silence: the documented "nothing to say", never a wrong phase and
+// never an error. Every codec this repository ships adds far less. A bound
 // smaller than [v1.MaxCodecExpansionBytes] plus a real phase's plaintext
 // could reject a codec-configured deployment's own heartbeat, silencing a
 // real phase exactly as if it were the unbounded text this exists to refuse
