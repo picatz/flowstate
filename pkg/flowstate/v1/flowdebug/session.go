@@ -1757,10 +1757,9 @@ func (s *Session) printfTone(tone Tone, format string, args ...any) {
 // only ever make output smaller, so a caller that installs none is exactly as
 // this behaved before.
 //
-// Workflow evaluation is untouched. Inspections evaluate against a redacted
-// activation, however: otherwise predicates over a withheld binding would be
-// an oracle even when their final rendered boolean or number contained no
-// sensitive substring.
+// Evaluation is untouched. A `${...}` in the file still sees the real value,
+// and an inspection still compares against it — only what prints withholds,
+// which is the same split [flowtest]'s transcript already lives by.
 func (s *Session) SetRedactor(redact func(string) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
