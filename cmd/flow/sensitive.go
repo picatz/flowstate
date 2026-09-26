@@ -919,9 +919,18 @@ func refusedRunSensitiveValues(cmd *cobra.Command, workflow *v1.Workflow, submit
 //
 // This exists for the one refusal a value set cannot otherwise reach: the
 // coercion's. `--input pin=hunter2` against `type: int` never produces a
-// [v1.Value] to put in a set, and the refusal quotes the word — so the word
-// itself joins the set as a plaintext, which is what [v1.SensitiveValues.WithValues]
-// is for.
+// [v1.Value] to put in a set, so the word had nowhere else to join it —
+// which is what [v1.SensitiveValues.WithValues] is for.
+//
+// [inputCoercionError] itself no longer needs this backstop for a
+// `sensitive:` declaration: it now refuses to quote the word at all in that
+// case, at construction (#2073), rather than print it and trust WithValues's
+// substring floor to catch it afterward — a floor that a word shorter than
+// [minSensitiveSubstringRunes] survives regardless of what reads this
+// function's answer. This function is kept anyway, reading every declared
+// `--input` word whether or not its own coercion failed: a plaintext added
+// here costs nothing when nothing else quotes it, and stands ready for
+// whatever this refusal's chain still carries that does.
 //
 // It reads only where the name ends, never what the value means. inputs.go's
 // header is emphatic that a second reader of --input is how one grammar

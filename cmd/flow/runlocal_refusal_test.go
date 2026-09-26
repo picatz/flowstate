@@ -167,6 +167,16 @@ steps:
 // second is the one a set of *values* cannot reach: the binder's `got <value>`
 // over a submitted argument, and the coercion's, which quotes a word that never
 // became a value at all.
+//
+// The coercion shape carries one more case than the binder's, for #2073:
+// [v1.SensitiveValues.WithValues]'s substring backstop — the only thing
+// standing between a coercion word and this sentence before that issue —
+// floors matching at two runes by documented design, so a *one*-rune word
+// (`--input pin=x`, the issue's own reproduction) used to survive it in the
+// clear where a longer one did not. See
+// TestARefusedCommandLineDoesNotLeakASensitiveWordJSONWouldEscape, just
+// below, for the same proof against a word short enough to need escaping to
+// render at all rather than one that is merely short.
 func TestARefusedCommandLineDoesNotPrintASensitiveArgument(t *testing.T) {
 	t.Parallel()
 
@@ -181,6 +191,10 @@ func TestARefusedCommandLineDoesNotPrintASensitiveArgument(t *testing.T) {
 		"a word the flag cannot coerce to the declared type": {
 			args:  []string{"--input", "pin=hunter2"},
 			value: "hunter2",
+		},
+		"a one-rune word the flag cannot coerce to the declared type": {
+			args:  []string{"--input", "pin=x"},
+			value: "x",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -222,6 +236,52 @@ func TestARefusedCommandLineDoesNotPrintASensitiveArgument(t *testing.T) {
 	}
 }
 
+// TestARefusedCommandLineDoesNotLeakASensitiveWordJSONWouldEscape is #2073's
+// other half: a value need not merely be short to slip a generic
+// "does-the-output-contain-it" check, it can also change *shape* between
+// surfaces. `--input pin=\` carries a single backslash, which stderr's plain
+// prose renders as itself but `-o json`'s encoder escapes to two characters
+// (`\\`) — a different byte sequence for the same forbidden word on each
+// stream. A fix, or a test, that checked only one spelling could look
+// complete while missing the other.
+func TestARefusedCommandLineDoesNotLeakASensitiveWordJSONWouldEscape(t *testing.T) {
+	t.Parallel()
+
+	stdout, stderr, err := runLocal(t, sensitiveRefusalWorkflow,
+		"--output", "json", "--input", `pin=\`)
+	require.Error(t, err, "the command line is refused")
+
+	// The plain spelling: stderr and the returned error are not JSON, so a
+	// leak there is the bare backslash the shell was given.
+	assert.NotContains(t, stderr, `\`, "the plain spelling reached the prose a person reads")
+	assert.NotContains(t, err.Error(), `\`,
+		"the plain spelling reached the error the command returns, which is what main prints")
+
+	// The %q-escaped spelling: stdout is a JSON document, so a leaked
+	// backslash would appear doubled, not single — checked on the raw bytes
+	// first, because that is what a caller storing the response verbatim
+	// keeps, and then again on the decoded message, so undoing the encoding
+	// cannot hide a `[redacted]` marker's own escaping from this assertion.
+	assert.NotContains(t, stdout, `\\`,
+		"the %q-escaped spelling reached the document a machine caller reads")
+
+	var document struct {
+		Status string `json:"status"`
+		Error  struct {
+			Message string `json:"message"`
+			Kind    string `json:"kind"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &document),
+		"stdout is not a single JSON document:\n%s", stdout)
+	assert.Equal(t, "STATUS_FAILED", document.Status)
+	assert.NotContains(t, document.Error.Message, `\`,
+		"the decoded message still carries the word once JSON's own escaping is undone")
+	assert.Contains(t, document.Error.Message, "pin",
+		"the refusal no longer says which input it is about")
+	assert.Equal(t, "InvalidInput", document.Error.Kind)
+}
+
 // TestARefusedCommandLineStillPrintsAnOrdinaryArgument is the direction the
 // change must not take with it.
 //
@@ -252,4 +312,20 @@ func TestARevealedRefusalPrintsTheSensitiveArgument(t *testing.T) {
 	require.Error(t, err)
 
 	assert.Contains(t, stdout, "4321")
+}
+
+// TestARevealedRefusalPrintsTheSensitiveCoercionWord is
+// TestARevealedRefusalPrintsTheSensitiveArgument's own case for #2073's
+// refusal specifically: [inputCoercionError] never produces a [*v1.Value],
+// so it cannot go through [refusedRunSensitiveValues]'s own reveal check the
+// way every other refusal on this path does, and had to be given the flag
+// directly instead — this pins that the escape hatch still reaches it.
+func TestARevealedRefusalPrintsTheSensitiveCoercionWord(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, sensitiveRefusalWorkflow, "--output", "json",
+		"--reveal-sensitive", "--input", "pin=x")
+	require.Error(t, err)
+
+	assert.Contains(t, stdout, "pin=x")
 }
