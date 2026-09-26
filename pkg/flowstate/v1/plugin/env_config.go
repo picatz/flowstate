@@ -59,18 +59,6 @@ func ParseEnvConfig(data []byte) (EnvConfig, error) {
 // environment built from one would otherwise differ run to run — which matters
 // less for what a plugin reads (os.Getenv takes the last of a repeated key
 // either way) than for what an operator sees when comparing two launches.
-//
-// An entry keyed by the empty string is dropped rather than rendered. No
-// discovered plugin is ever named "" ([validPluginName] refuses it outright),
-// so that key never names an operator's attempt at a real plugin the way a
-// misspelled or over-long name does; it is what a decode artifact leaves
-// behind instead — a YAML flow mapping's key-only shorthand (`{""}`, one key
-// with an implied null value) decodes [EnvConfig.Env] to a map with an empty
-// key and no variables under it, and a CLI `--plugin-env =KEY=VALUE` cuts to
-// the same empty name. [Config.validate] still refuses every other name a
-// plugin could not answer to; only this one name, which could never be
-// anyone's typo for a real one, is filtered here instead of surfacing as a
-// phantom entry.
 func (c EnvConfig) ByPlugin() map[string][]string {
 	if len(c.Env) == 0 {
 		return nil
@@ -78,18 +66,11 @@ func (c EnvConfig) ByPlugin() map[string][]string {
 
 	byPlugin := make(map[string][]string, len(c.Env))
 	for name, vars := range c.Env {
-		if name == "" {
-			continue
-		}
-
 		entries := make([]string, 0, len(vars))
 		for _, key := range slices.Sorted(maps.Keys(vars)) {
 			entries = append(entries, key+"="+vars[key])
 		}
 		byPlugin[name] = entries
-	}
-	if len(byPlugin) == 0 {
-		return nil
 	}
 	return byPlugin
 }

@@ -26,12 +26,19 @@ func FuzzParseEnvConfig(f *testing.F) {
 		}
 
 		// ByPlugin is what a caller actually spends, so the accepted half is
-		// exercised too: it must not panic and must not invent a plugin.
-		for name, entries := range cfg.ByPlugin() {
-			if name == "" {
-				t.Fatal("ByPlugin returned an entry under the empty plugin name")
+		// exercised too: it must not panic, and rendering a name faithfully
+		// is not itself the property — accepting one silently is. A name no
+		// plugin could ever answer to must still be refused once it reaches
+		// Config.validate, the one check every source of EnvByPlugin (a file,
+		// or --plugin-env) runs through before a host is built.
+		out := cfg.ByPlugin()
+		for name := range out {
+			if validPluginName(name) {
+				continue
 			}
-			_ = entries
+			if verr := (Config{EnvByPlugin: out}).validate(); verr == nil {
+				t.Fatalf("ByPlugin rendered %q, which no plugin could ever answer to, and Config.validate did not refuse it", name)
+			}
 		}
 	})
 }
