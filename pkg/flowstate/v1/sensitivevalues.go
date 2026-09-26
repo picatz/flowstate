@@ -337,6 +337,15 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 // when `%q` would render value unchanged, since a second, identical
 // substring protects nothing it did not already.
 //
+// Unchanged is a length comparison rather than a rebuilt `"`+value+`"` to
+// compare against: [strconv.Quote] never removes a byte — every escape it
+// performs adds at least one — so quoted is exactly value's own length plus
+// the two bounding quotes precisely when nothing inside it was escaped, and
+// longer otherwise. A hand-quoted comparison string built by concatenating a
+// literal `"` around an arbitrary value is the shape a scanner reads as
+// "unescaped quoting" on sight, whatever it is actually used for here — a
+// length check answers the identical question without giving it that shape.
+//
 // [SensitiveInputValues]'s own walk is the one caller: a check witness, a
 // stub diagnostic, and flowtest's transcript all render a sensitive string
 // with `%q` before this set's substring backstop ever reads the line, so
@@ -346,7 +355,7 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 // the root alone).
 func quotedSpelling(value string) (string, bool) {
 	quoted := strconv.Quote(value)
-	if quoted == `"`+value+`"` {
+	if len(quoted) == len(value)+2 {
 		return "", false
 	}
 
