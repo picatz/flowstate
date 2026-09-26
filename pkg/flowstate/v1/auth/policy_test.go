@@ -725,14 +725,25 @@ func TestValidateHTTPSURL(t *testing.T) {
 			// A password whose leading run is all digits: url.Parse calls it a
 			// *port*, so the URL is well formed and there is no userinfo, and
 			// the rest of the credential lands past the delimiter where the
-			// strict reading stopped. Under https this
-			// function accepts it and validateIssuerURL refuses the query —
-			// see TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL,
-			// which drives that path end to end. Here it is refused a step
-			// earlier, for its scheme, on one of the lines this change touches.
-			name:       "a credential read as a port under plain http",
+			// strict reading stopped, in the query this time rather than the
+			// path. Past picatz/flowstate#2038's widened search, this
+			// function refuses it directly, for the `@` in the query, rather
+			// than deferring to validateIssuerURL or falling through to the
+			// scheme check.
+			name:       "a credential read as a port, in the query, under plain http",
 			url:        "http://acct9:2024?s3cr3t@issuer.example.com",
-			wantErr:    "must use https",
+			wantErr:    `issuer "http://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The same shape under https, so the credentials check is not
+			// merely arriving ahead of a scheme refusal that would have
+			// caught it anyway: this used to pass every check in this
+			// function and reach validateIssuerURL, which refused it for the
+			// query rather than the credential.
+			name:       "a credential read as a port, in the query, under https",
+			url:        "https://acct9:2024?s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
@@ -750,12 +761,13 @@ func TestValidateHTTPSURL(t *testing.T) {
 			// Both misreads at once, which is the shape that slipped between
 			// two searches looking for one spelling each: a digit-leading
 			// password makes this well formed, so the greedy branch never
-			// runs, and the delimiter is encoded, so the strict one found no
-			// `@`. Refused a layer up for its query —
-			// see the cmd/flow test for that path — and here for its scheme.
-			name:       "a percent-encoded delimiter behind a port misread",
+			// ran under the pre-picatz/flowstate#2038 code, and the delimiter
+			// is encoded, so the strict one found no `@`. Past that fix, the
+			// credentials check's own widened search recognizes `%40` the
+			// same as a literal `@` and catches it directly.
+			name:       "a percent-encoded delimiter behind a port misread, in the query",
 			url:        "http://acct9:2024?s3cr3t%40issuer.example.com",
-			wantErr:    "must use https",
+			wantErr:    `issuer "http://[redacted]%40issuer.example.com" must not include credentials`,
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
@@ -770,6 +782,23 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantAbsent: []string{"s3cr3t"},
 		},
 		{
+			// The same username-`@` shape with a slash rather than a query,
+			// which used to leak the password: url.Parse still splits
+			// userinfo `ac`, host `t9`, port `2024`, path
+			// `/s3cr3t@keys.example.com`, and the redaction this refusal
+			// quotes was built from the region *before* the first slash — so
+			// it found the early `@`, cut there, and then appended the
+			// unbounded remainder of the raw string, password and all, past
+			// the marker: `issuer "https://[redacted]@t9:2024/s3cr3t@keys.example.com"
+			// must not include credentials` (flowstate-reviewer). The
+			// credentials refusal now always quotes the whole-remainder
+			// reading.
+			name:       "a username holding an at sign in front of a port misread, with a slash",
+			url:        "https://ac@t9:2024/s3cr3t@keys.example.com",
+			wantErr:    `issuer "https://[redacted]@keys.example.com" must not include credentials`,
+			wantAbsent: []string{"t9", "s3cr3t"},
+		},
+		{
 			// The cost of reading past the authority, with a real credential
 			// present: the later `@` is the one cut at, so the host goes too.
 			// Pinned so that narrowing the region later is a decision.
@@ -779,26 +808,39 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
-			// The residual this deliberately does not close, pinned so it is a
-			// decision on the record: the port misread with the rest of the
-			// credential in what url.Parse calls the path. It is textually
-			// identical to `https://host:8443/path@thing`, an ordinary URL
-			// whose host a refusal must keep, so redacting past the slash
-			// would erase the host from every one of those. picatz/flowstate#2038
-			// holds the repair, which is to stop reading this as host, port
-			// and path at all.
-			name:    "a credential in what url.Parse calls the path is left alone",
-			url:     "http://acct9:2024/s3cr3t@issuer.example.com",
-			wantErr: `issuer "http://acct9:2024/s3cr3t@issuer.example.com" must use https`,
+			// picatz/flowstate#2038: a password whose leading run is all
+			// digits parses as a *port*, so this URL is well formed, carries
+			// no userinfo by url.Parse's reading, and used to be accepted —
+			// dialing host `acct9`, never `issuer.example.com`, with the rest
+			// of the credential riding the request path to it. Refused now,
+			// ahead of the scheme check, because the port that made the read
+			// well formed is exactly the marker that a slash-delimited read
+			// cannot be trusted here.
+			name:       "a credential url.Parse reads as a port and a path",
+			url:        "http://acct9:2024/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "http://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
-			// The cost of the before-first-slash fallback, pinned so that
+			// The same shape under https, so the fix is not merely the
+			// scheme check firing first: this used to pass every check in
+			// this function and reach validateIssuerURL, where it had no
+			// query or fragment to be refused for either — see
+			// picatz/flowstate#2039's note on this exact entry.
+			name:       "a credential url.Parse reads as a port and a path, under https",
+			url:        "https://acct9:2024/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The cost of refusing the delimiter wherever it is, pinned so that
 			// narrowing it later is a decision rather than an accident: this
-			// URL carries no credential, and it is redacted anyway, because it
-			// is textually the same shape as the port misread above.
-			name:    "a credential-free query holding an at sign is redacted too",
+			// URL carries no credential, and it is refused and redacted
+			// anyway, host and all, because nothing in the string says which
+			// `@` its author meant.
+			name:    "a credential-free query holding an at sign is refused too",
 			url:     "http://issuer.example.com?tenant=a@b",
-			wantErr: `issuer "http://[redacted]@b" must use https`,
+			wantErr: `issuer "http://[redacted]@b" must not include credentials`,
 		},
 		{
 			// No scheme at all, which an unexpanded `${SCHEME}` leaves behind.
@@ -809,12 +851,173 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
-			// The other direction: a well-formed URL whose *path* holds an
-			// `@` keeps the strict reading, so the host an operator needs in
-			// order to find the entry is still in the sentence.
-			name:    "an at sign in the path of a valid URL is not a credential",
+			// A well-formed URL with no port whose path holds an `@` is
+			// refused too: the delimiter is the invariant, not the port that
+			// made one reading of it well formed.
+			name:    "an at sign in the path of a URL with no port",
 			url:     "http://issuer.example.com/a@b",
-			wantErr: `issuer "http://issuer.example.com/a@b" must use https`,
+			wantErr: `issuer "http://[redacted]@b" must not include credentials`,
+		},
+		{
+			// The same under https, which used to be accepted outright: no
+			// port, so the check that keyed on one never ran.
+			name:       "an at sign in the path of an https URL with no port",
+			url:        "https://issuer.example.com/path@thing",
+			wantErr:    `issuer "https://[redacted]@thing" must not include credentials`,
+			wantAbsent: []string{"path"},
+		},
+		{
+			// Loopback by name, with a port: the loopback exemption this
+			// check once carried is gone, because what reaches a loopback
+			// listener is still the credential in the path.
+			name:       "an at sign behind a port on localhost",
+			url:        "https://localhost:2024/s3cr3t@host",
+			wantErr:    `issuer "https://[redacted]@host" must not include credentials`,
+			wantAbsent: []string{"localhost", "s3cr3t"},
+		},
+		{
+			name:       "an at sign behind a port on a loopback address",
+			url:        "https://127.0.0.1:8443/x@y",
+			wantErr:    `issuer "https://[redacted]@y" must not include credentials`,
+			wantAbsent: []string{"127.0.0.1"},
+		},
+		{
+			// Percent-encoded in a query with no port. `%40` has no hex
+			// letter in it, so there is one spelling of the escape to find.
+			name:    "an encoded at sign in a query",
+			url:     "https://issuer.example.com/x?u=a%40b",
+			wantErr: `issuer "https://[redacted]%40b" must not include credentials`,
+		},
+		{
+			// The same escape in a path, under a scheme and host written in
+			// upper case, so the search is not keyed on a lower-case spelling
+			// of anything around it.
+			name:       "an encoded at sign in the path of an upper-case URL",
+			url:        "HTTPS://ISSUER.EXAMPLE.COM/S3CR3T%40HOST",
+			wantErr:    `issuer "HTTPS://[redacted]%40HOST" must not include credentials`,
+			wantAbsent: []string{"S3CR3T", "ISSUER"},
+		},
+		{
+			name:    "an at sign in a fragment",
+			url:     "https://issuer.example.com/x#a@b",
+			wantErr: `issuer "https://[redacted]@b" must not include credentials`,
+		},
+		{
+			// A real port followed by a path `@` that carries no credential
+			// at all is textually identical to the misread above —
+			// `scheme://word:digits/…@…` either way. picatz/flowstate#2038's
+			// acceptance criterion 3 asked for this shape to stay accepted;
+			// the decision recorded on that issue supersedes it with "any `@`
+			// or `%40` after `//` in an operator-configured URL is refused".
+			name:       "a real port and a credential-free path at sign are refused together",
+			url:        "https://issuer.example.com:8443/path@thing",
+			wantErr:    `issuer "https://[redacted]@thing" must not include credentials`,
+			wantAbsent: []string{"path"},
+		},
+		{
+			// An earlier version of this check searched only the first path
+			// segment, on the reasoning that a `/` written inside a password
+			// splits its remainder into that one segment and no further. It
+			// does not: this credential's tail is in the *second* segment
+			// (Copilot), one slash past where that version stopped looking,
+			// and passed every check with it. The whole path is searched now
+			// instead — see the comment on the credentials check.
+			name:       "a credential whose tail is a second path segment past the port",
+			url:        "https://acct9:2024/s3cr3t/foo@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t", "foo"},
+		},
+		{
+			// The other way a bounded search missed the tail: a password
+			// that itself began with the slash that split it leaves an
+			// *empty* first path segment (Codex) — `//s3cr3t@host`, not
+			// `/s3cr3t@host` — which a first-segment-only search reads as
+			// "no segment, nothing to check" and lets straight through.
+			name:       "a credential behind a doubled path slash",
+			url:        "https://acct9:2024//s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// A colon with nothing after it: url.Parse reads Host as
+			// `acct9:` and Port() as "", the empty string being a valid (if
+			// useless) port, so a rule keyed on Port() != "" missed this
+			// shape entirely (flowstate-reviewer, urlprobe).
+			name:       "a credential behind an empty port",
+			url:        "https://acct9:/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The empty-port shape again, with the credential's tail in the
+			// query instead of the path.
+			name:       "a credential behind an empty port, in the query",
+			url:        "https://acct9:?s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// The credential's tail split across a path segment and a query,
+			// so neither half alone contains an `@`: `s3` is the path, and
+			// `cr3t@host` is the query. A search bounded to only the path
+			// misses this the same way one bounded to the query alone would.
+			name:       "a credential whose tail crosses from the path into the query",
+			url:        "https://acct9:2024/s3?cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t", "cr3t"},
+		},
+		{
+			// The credential's tail in the fragment, past a `#` this time
+			// rather than a `?` — the same shape, the third delimiter.
+			name:       "a credential whose tail is in the fragment",
+			url:        "https://acct9:2024#s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			// An IPv6 authority with a real, non-loopback port and the same
+			// path-based misread.
+			name:       "a credential behind a port on an IPv6 authority",
+			url:        "https://[2001:db8::1]:2024/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"2001:db8::1", "s3cr3t"},
+		},
+		{
+			// A bracketed IPv6 authority with no port (Codex): the rule no
+			// longer asks whether the authority is ambiguous, so the
+			// literal's own colons have nothing to be mistaken for.
+			name:       "an at sign in the path behind an IPv6 authority with no port",
+			url:        "https://[2001:db8::1]/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"2001:db8::1", "s3cr3t"},
+		},
+		{
+			name:       "an at sign behind a port on an IPv6 loopback authority",
+			url:        "https://[::1]:2024/s3cr3t@issuer.example.com",
+			wantErr:    `issuer "https://[redacted]@issuer.example.com" must not include credentials`,
+			wantAbsent: []string{"::1", "s3cr3t"},
+		},
+		{
+			// Google's IAM Credentials impersonation path is refused as an
+			// operator-configured URL on any host and port: this package
+			// composes it from a validated iam_endpoint and holds it to
+			// validateComposedHTTPSURL instead, and nobody configures it.
+			name:       "Google's service-account impersonation path, configured by hand",
+			url:        "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
+			wantErr:    `issuer "https://[redacted]@project.iam.gserviceaccount.com:generateAccessToken" must not include credentials`,
+			wantAbsent: []string{"iamcredentials", "serviceAccounts", "name"},
+		},
+		{
+			name:       "the same path behind a non-loopback port",
+			url:        "https://iam.internal.example.com:8443/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
+			wantErr:    `issuer "https://[redacted]@project.iam.gserviceaccount.com:generateAccessToken" must not include credentials`,
+			wantAbsent: []string{"iam.internal.example.com", "v1", "projects", "serviceAccounts", "name"},
+		},
+		{
+			name:       "the same path behind a loopback port",
+			url:        "https://127.0.0.1:8443/v1/projects/-/serviceAccounts/name@project.iam.gserviceaccount.com:generateAccessToken",
+			wantErr:    `issuer "https://[redacted]@project.iam.gserviceaccount.com:generateAccessToken" must not include credentials`,
+			wantAbsent: []string{"127.0.0.1", "serviceAccounts", "name"},
 		},
 		{
 			// What holds isURLScheme's *character set* up, which is the
@@ -892,6 +1095,50 @@ func TestValidateHTTPSURL(t *testing.T) {
 				require.NotContains(t, err.Error(), secret,
 					"the refusal repeats the credential it was given")
 			}
+		})
+	}
+}
+
+// TestValidateHTTPSURLAcceptsRealProviderURLs pins what refusing every `@` and
+// `%40` after `//` did not cost: one issuer, key set, token, resource or
+// metadata URL of each shape the providers Flowstate documents publish, none
+// of which carries the delimiter. A provider URL that starts to fail here is a
+// reason to revisit picatz/flowstate#2038's decision, not to special-case it.
+func TestValidateHTTPSURLAcceptsRealProviderURLs(t *testing.T) {
+	for name, rawURL := range map[string]string{
+		"Google issuer":                  "https://accounts.google.com",
+		"Google key set":                 "https://www.googleapis.com/oauth2/v3/certs",
+		"Google token endpoint":          "https://oauth2.googleapis.com/token",
+		"Okta issuer":                    "https://example.okta.com/oauth2/default",
+		"Okta key set":                   "https://example.okta.com/oauth2/default/v1/keys",
+		"Okta token endpoint":            "https://example.okta.com/oauth2/default/v1/token",
+		"Auth0 issuer":                   "https://example.us.auth0.com/",
+		"Auth0 key set":                  "https://example.us.auth0.com/.well-known/jwks.json",
+		"Auth0 token endpoint":           "https://example.us.auth0.com/oauth/token",
+		"Entra ID issuer":                "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0",
+		"Entra ID key set":               "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/discovery/v2.0/keys",
+		"Entra ID token endpoint":        "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token",
+		"Keycloak issuer":                "https://keycloak.example.com/realms/flowstate",
+		"Keycloak key set":               "https://keycloak.example.com/realms/flowstate/protocol/openid-connect/certs",
+		"Keycloak token endpoint":        "https://keycloak.example.com/realms/flowstate/protocol/openid-connect/token",
+		"GitHub Actions issuer":          "https://token.actions.githubusercontent.com",
+		"GitHub Actions key set":         "https://token.actions.githubusercontent.com/.well-known/jwks",
+		"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://pipelinesghubeus2.actions.githubusercontent.com/AbCdEf0123/00000000-0000-0000-0000-000000000000/_apis/distributedtask/hubs/Actions/plans/00000000-0000-0000-0000-000000000000/jobs/00000000-0000-0000-0000-000000000000/idtoken?api-version=2.0",
+		"AWS STS global endpoint":        "https://sts.amazonaws.com/",
+		"AWS STS regional endpoint":      "https://sts.us-east-1.amazonaws.com/",
+		"GCP STS endpoint":               "https://sts.googleapis.com/v1/token",
+		"GCP IAM Credentials base":       "https://iamcredentials.googleapis.com/v1",
+		"protected resource":             "https://flowstate.example.com/rpc",
+		"protected resource metadata":    "https://flowstate.example.com/.well-known/oauth-protected-resource/rpc",
+		"loopback rehearsal issuer":      "http://127.0.0.1:8555",
+		"loopback rehearsal key set":     "http://localhost:8555/.well-known/jwks.json",
+		"IPv6 issuer with a port":        "https://[2001:db8::1]:8443/realms/flowstate",
+		"issuer with a non-default port": "https://idp.internal.example.com:8443/realms/flowstate",
+	} {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := auth.ValidateHTTPSURL(rawURL, "issuer")
+			require.NoError(t, err)
+			require.NotNil(t, parsed)
 		})
 	}
 }

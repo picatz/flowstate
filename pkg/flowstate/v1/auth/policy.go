@@ -1404,21 +1404,19 @@ func validateIssuerURL(issuer string) error {
 	}
 
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		// Redacted like every refusal in [ValidateHTTPSURL], and for a sharper
-		// reason: this is the refusal a credential misread as `host:port`
-		// actually reaches. `https://acct9:2024?s3cr3t@host` passes every
-		// check above — url.Parse calls 2024 a port and finds no userinfo —
-		// and is refused here, for the query the rest of the credential
-		// became.
+		// Redacted like every refusal in [ValidateHTTPSURL]. Past
+		// picatz/flowstate#2038, [ValidateHTTPSURL] already refuses any `@`
+		// or `%40` in the query and fragment along with the path, so a
+		// credential misread as `host:port` — `https://acct9:2024?s3cr3t@host`
+		// — is refused there, for the credential, and never reaches this
+		// refusal. What still reaches here is a query or fragment with no
+		// delimiter in it (`https://issuer.example.com?tenant=a`).
 		//
 		// Read as malformed, which is the one place that is true of a URL
 		// url.Parse accepted. An issuer *is* its identifier: one carrying a
 		// query or a fragment is not a usable issuer whatever else is right
 		// about it, so there is no well-formed reading of this string left to
-		// protect, and the wider search costs nothing here. It buys the shape
-		// that mixes the delimiters — `https://acct9:2024/s3c?r3t@host`, where
-		// the slash keeps the URL parseable and puts the rest of the
-		// credential past where a before-first-slash read stops (Codex).
+		// protect, and the wider search costs nothing here.
 		return fmt.Errorf("issuer %q must not include a query string or fragment",
 			urlWithoutCredentials(issuer, true))
 	}
@@ -1429,13 +1427,62 @@ func validateIssuerURL(issuer string) error {
 // ValidateHTTPSURL checks that a configured URL is absolute and transport
 // protected. Plain http is permitted only against loopback addresses, which
 // keeps a local development issuer usable without leaving a way to configure a
-// production issuer whose tokens and keys cross the network in the clear.
+// production issuer whose tokens and keys cross the network in the clear. A
+// userinfo delimiter, `@` or `%40`, anywhere after the scheme's slashes is
+// refused whatever url.Parse makes of it — in the path, query or fragment as
+// much as in the authority — for the reason the comment on that check gives.
 //
 // Exported so that `credentialsource` holds every credential-bearing URL in this
 // repository to one rule rather than to a second implementation of it. field
 // names the setting in the caller's own vocabulary, so a refusal says what the
 // operator has to change rather than what this function is called.
 func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
+	return validateHTTPSURL(rawURL, field, true)
+}
+
+// validateComposedHTTPSURL is the one exemption from [ValidateHTTPSURL]'s
+// delimiter refusal: a URL this package composed itself by appending path
+// text to base, which an operator configured. gcpExchanger.impersonate is the
+// one caller, and the `@` it carries — the service account's email in
+// `.../serviceAccounts/<email>:generateAccessToken` — is the only one any
+// endpoint this package reaches is known to need.
+//
+// The exemption is structural rather than a matter of trusting the caller:
+// base itself passes [ValidateHTTPSURL] in full, so it names its host with no
+// delimiter anywhere after its `//`, and carries no query or fragment, so it
+// ends in its path; rawURL must be base followed by a "/", so the authority
+// rawURL parses to is base's own and ends no later than that slash; and what
+// follows base may not open a query, a fragment or an empty path segment, so
+// the appended text is path content under base and nothing else. Every other
+// check [ValidateHTTPSURL] runs — literal userinfo, a host, the
+// https-or-loopback scheme rule — still runs on rawURL.
+func validateComposedHTTPSURL(rawURL, base, field string) (*url.URL, error) {
+	parsedBase, err := ValidateHTTPSURL(base, field)
+	if err != nil {
+		return nil, err
+	}
+
+	// A base ending in a query or fragment — even a bare trailing `?`, which
+	// sets only ForceQuery — would put the appended text there instead of in
+	// the path.
+	if parsedBase.RawQuery != "" || parsedBase.Fragment != "" || parsedBase.ForceQuery || strings.ContainsAny(base, "?#") {
+		return nil, fmt.Errorf("%s %q must not include a query string or fragment", field, base)
+	}
+
+	rest, ok := strings.CutPrefix(rawURL, base)
+	if !ok || !strings.HasPrefix(rest, "/") || strings.ContainsAny(rest, "?#") || strings.Contains(rest, "//") {
+		return nil, fmt.Errorf("%s %q is not a path under %q", field, urlWithoutCredentials(rawURL, true), base)
+	}
+
+	return validateHTTPSURL(rawURL, field, false)
+}
+
+// validateHTTPSURL is the shared implementation behind [ValidateHTTPSURL]
+// and [validateComposedHTTPSURL]. refuseAnyDelimiter selects the refusal of
+// an `@` or `%40` anywhere past the scheme's slashes; see the comment on that
+// check for why it is unconditional, and [validateComposedHTTPSURL] for the
+// one caller that turns it off.
+func validateHTTPSURL(rawURL, field string, refuseAnyDelimiter bool) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		// What every refusal here quotes, rather than rawURL itself. One of
@@ -1489,7 +1536,44 @@ func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	// Credentials in an issuer or key set URL would be sent on every fetch and
 	// have to be compared as part of the issuer claim.
 	if parsed.User != nil {
-		return nil, fmt.Errorf("%s %q must not include credentials", field, shown)
+		// Read greedily, not through shown: url.Parse's userinfo can end at an
+		// early `@` while the password continues past a slash —
+		// `https://ac@t9:2024/s3cr3t@keys.example.com` is userinfo `ac`, host
+		// `t9` and path `/s3cr3t@keys.example.com` — and a region that stops
+		// at the first slash cuts at that early `@` and quotes the rest,
+		// password and all (flowstate-reviewer).
+		return nil, fmt.Errorf("%s %q must not include credentials", field, urlWithoutCredentials(rawURL, true))
+	}
+
+	// The userinfo delimiter itself is the invariant, wherever url.Parse
+	// placed it. A password whose leading run is all digits parses as a
+	// *port*, so parsed.User stayed nil above for `acct9:2024/s3cr3t@host`:
+	// host `acct9`, port 2024, path `/s3cr3t@host`. Accepting it dials
+	// `acct9`, never `host`, and sends the rest of the credential down the
+	// request path to that wrong host on every fetch — picatz/flowstate#2038.
+	//
+	// url.Parse's split into userinfo, port, path, query and fragment is the
+	// grammar's, not the author's, and it cannot be reconstructed after the
+	// fact: four rounds of review on picatz/flowstate#2063 each found the
+	// remainder of a credential in a place the previous rule trusted — behind a port, an empty port, a
+	// second path segment, a doubled slash, a query, a fragment, a bracketed
+	// IPv6 literal. So this refuses any `@` or `%40` past the scheme's
+	// slashes, keyed on nothing about the authority, the port or the host,
+	// loopback included, using [urlWithoutCredentials]'s whole-remainder
+	// search — which also cuts the quoted URL at the last delimiter, so the
+	// refusal never repeats what came before it.
+	//
+	// What that costs is a URL whose path, query or fragment legitimately
+	// carries one, which no issuer, key set, token, resource or metadata URL
+	// is known to: Google, Okta, Auth0, Entra ID, Keycloak, GitHub Actions'
+	// ACTIONS_ID_TOKEN_REQUEST_URL, AWS STS, and GCP's STS and IAM Credentials
+	// base URLs carry none. The one `@` this package sends — a GCP service
+	// account's email in the impersonation path — is composed here, not
+	// configured, and passes through [validateComposedHTTPSURL] instead.
+	if refuseAnyDelimiter {
+		if wide := urlWithoutCredentials(rawURL, true); wide != rawURL {
+			return nil, fmt.Errorf("%s %q must not include credentials", field, wide)
+		}
 	}
 
 	switch parsed.Scheme {
@@ -1595,19 +1679,20 @@ const urlCredentialsMarker = "[redacted]"
 // cannot disclose, and the refusal is still addressed by the `issuers[N]:`
 // frame the loader wraps it in.
 //
-// The same trade is made the other way once a slash is involved, and that one
-// does leave a credential in the sentence.
+// The same trade is made the other way once a slash is involved, and by
+// default it does leave a credential in the sentence: `http://host:8443/path@thing`
+// is an ordinary URL whose host a refusal must keep, so this function stops at
+// the first slash for the general case, and a caller passing malformed (a
+// query or fragment on the same shape, from [validateIssuerURL]) is what
+// widens the search past it.
+//
+// [ValidateHTTPSURL] is the third caller of that wider search, and runs it on
+// every URL rather than only one a caller has already decided is malformed:
 // `http://acct9:2024/s3cr3t@host` is the port misread with the rest of the
-// credential in what url.Parse calls the path, and it is textually identical
-// to `http://host:8443/path@thing`, which is an ordinary URL whose host a
-// refusal must keep. Redacting after a slash would erase the host from every
-// one of those, so this stops at the first slash and the credential survives
-// into the scheme refusal that URL earns from [ValidateHTTPSURL]. The same
-// shape reaching [validateIssuerURL] instead — with a query or a fragment on
-// it — is redacted, because that caller passes malformed. It is the
-// disclosure half of
-// picatz/flowstate#2038, whose repair is not to redact harder here but to
-// stop reading a credential as `host:port` and a path in the first place.
+// credential in what url.Parse calls the path, textually identical to
+// `http://host:8443/path@thing` above, so past picatz/flowstate#2038 any
+// delimiter the whole-remainder search finds is a refusal, and the string it
+// returns is the one that refusal quotes.
 func urlWithoutCredentials(rawURL string, malformed bool) string {
 	rest := rawURL
 	prefix := ""

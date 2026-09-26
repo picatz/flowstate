@@ -629,7 +629,7 @@ func (e *gcpExchanger) impersonate(ctx context.Context, assertion Assertion, fed
 		request["lifetime"] = strconv.Itoa(int(e.lifetime.Seconds())) + "s"
 	}
 
-	raw, err := e.client.postJSON(ctx, e.name, endpoint, request, federatedToken)
+	raw, err := e.client.postJSONComposed(ctx, e.name, e.iamEndpoint, endpoint, request, federatedToken)
 	if err != nil {
 		return Credential{}, err
 	}

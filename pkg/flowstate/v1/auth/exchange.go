@@ -627,12 +627,29 @@ func unredirectedClient(client *http.Client) *http.Client {
 
 // postForm posts form-encoded values and returns the response body.
 func (e *exchangeClient) postForm(ctx context.Context, provider, endpoint string, form url.Values) ([]byte, error) {
-	return e.post(ctx, provider, endpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()), nil)
+	return e.post(ctx, provider, endpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()), nil, ValidateHTTPSURL)
 }
 
 // postJSON posts a JSON body and returns the response body. bearer, when set,
 // authenticates the request with a token obtained earlier in the exchange.
 func (e *exchangeClient) postJSON(ctx context.Context, provider, endpoint string, body any, bearer string) ([]byte, error) {
+	return e.postJSONValidated(ctx, provider, endpoint, body, bearer, ValidateHTTPSURL)
+}
+
+// postJSONComposed is [exchangeClient.postJSON] for an endpoint this package
+// composed by appending path text to base, an operator-configured URL:
+// gcpExchanger's impersonation request is the one caller. The endpoint is held
+// to [validateComposedHTTPSURL] rather than [ValidateHTTPSURL], because the
+// service account email it carries in its path is the one `@` this package
+// sends; see that function for what makes the exemption structural.
+func (e *exchangeClient) postJSONComposed(ctx context.Context, provider, base, endpoint string, body any, bearer string) ([]byte, error) {
+	validate := func(rawURL, field string) (*url.URL, error) {
+		return validateComposedHTTPSURL(rawURL, base, field)
+	}
+	return e.postJSONValidated(ctx, provider, endpoint, body, bearer, validate)
+}
+
+func (e *exchangeClient) postJSONValidated(ctx context.Context, provider, endpoint string, body any, bearer string, validate func(string, string) (*url.URL, error)) ([]byte, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encoding %s request: %w", ErrExchangeFailed, provider, err)
@@ -643,7 +660,7 @@ func (e *exchangeClient) postJSON(ctx context.Context, provider, endpoint string
 		authorize = func(req *http.Request) { req.Header.Set("Authorization", "Bearer "+bearer) }
 	}
 
-	return e.post(ctx, provider, endpoint, "application/json", strings.NewReader(string(encoded)), authorize)
+	return e.post(ctx, provider, endpoint, "application/json", strings.NewReader(string(encoded)), authorize, validate)
 }
 
 // post performs the request and returns the response body, which the caller
@@ -655,11 +672,15 @@ func (e *exchangeClient) postJSON(ctx context.Context, provider, endpoint string
 // the status, and the relying party's own error code and description, which is
 // what an operator needs to tell a misconfigured trust relationship from an
 // unreachable endpoint.
-func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentType string, body io.Reader, authorize func(*http.Request)) ([]byte, error) {
+//
+// validate is [ValidateHTTPSURL] for every caller but
+// [exchangeClient.postJSONComposed] — see that method's comment for the one
+// exception and why it exists.
+func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentType string, body io.Reader, authorize func(*http.Request), validate func(string, string) (*url.URL, error)) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	if _, err := ValidateHTTPSURL(endpoint, "endpoint"); err != nil {
+	if _, err := validate(endpoint, "endpoint"); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrExchangeFailed, provider, err)
 	}
 
