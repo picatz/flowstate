@@ -419,8 +419,13 @@ is [#928](https://github.com/picatz/flowstate/issues/928)'s slice 2. Today the
 debugger is a local-driver instrument, which is where authoring happens.
 
 DAP landed: `flow dap` serves the same session to an editor's own debug UI over
-stdio, with function breakpoints on step ids — see
+stdio, with unconditional function breakpoints on step ids — see
 [EDITORS.md](EDITORS.md#stepping-a-run-flow-dap). The VS Code extension does not
 yet contribute a debug type for it (#585).
+
+DAP reports conditional breakpoints, hit conditions, and log messages as
+unsupported instead of silently installing unconditional breakpoints. Its
+`pause` request also reports unsupported; use a step-id breakpoint before
+continuing. The terminal's conditional `break` command remains available.
 
 [`DefaultCostLimit`]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#DefaultCostLimit

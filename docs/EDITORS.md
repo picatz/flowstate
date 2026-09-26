@@ -590,6 +590,18 @@ breakpoints named after a step. A line breakpoint is answered rather than
 ignored, unverified and carrying that reason, so an editor shows a hollow marker
 instead of a filled one you would wait at forever.
 
+Function breakpoints are unconditional. Entries carrying `condition`,
+`hitCondition`, or `logMessage` are returned unverified with an explanation and
+are not armed; other supported entries in the replacement set still apply.
+Adding an unsupported option to an existing breakpoint removes its old
+unconditional form. Malformed requests and oversized sets leave the installed
+set unchanged; an explicit empty array clears it. Conditional breakpoints remain
+available in the terminal debugger as `break <step-id> if <expr>`.
+
+The adapter rejects `pause` because it cannot request a new stop while the run
+is continuing. Set a step-id breakpoint before continuing. A successful
+`continue` can run to completion if it encounters no matching breakpoint.
+
 Two more consequences of the same seam, so nothing here is discovered: stack
 frames name the current step and every `call:` site that reached it, but cannot
 be navigated to; only the innermost frame has a readable scope because it is the

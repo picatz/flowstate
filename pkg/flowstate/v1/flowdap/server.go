@@ -283,7 +283,12 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.release(ctx)
 
 	case "setFunctionBreakpoints":
-		s.reply(request, s.setBreakpoints(request.Arguments))
+		answer, err := s.setBreakpoints(request.Arguments)
+		if err != nil {
+			s.fail(request, err.Error())
+		} else {
+			s.reply(request, answer)
+		}
 
 	case "setBreakpoints":
 		// Answered, and answered honestly. A client sends this for any source
@@ -308,12 +313,9 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		s.evaluate(ctx, request)
 
 	case "pause":
-		// A run under this adapter is either stopped or between steps, and it
-		// stops at every step boundary on its own — so there is nothing to
-		// interrupt and the next stop is already coming. Answered rather than
-		// refused, because a client greys the button out on a failure and a
-		// person then has one fewer thing that works.
-		s.reply(request, nil)
+		// Continue can run past every remaining boundary. A successful pause
+		// would promise a stopped event that this adapter cannot arrange.
+		s.fail(request, "pause is not supported; set a step-id function breakpoint before continuing")
 
 	case "next", "stepIn", "stepOut":
 		// One granularity: a run's steps are its steps, and there is nothing
@@ -598,13 +600,24 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 
 // setBreakpoints applies a client's function breakpoints, which for this
 // adapter are step ids.
-func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
+func (s *Server) setBreakpoints(arguments json.RawMessage) (breakpointsBody, error) {
 	var asked struct {
-		Breakpoints []struct {
-			Name string `json:"name"`
+		Breakpoints []*struct {
+			Name         *string `json:"name"`
+			Condition    *string `json:"condition"`
+			HitCondition *string `json:"hitCondition"`
+			LogMessage   *string `json:"logMessage"`
 		} `json:"breakpoints"`
 	}
-	_ = json.Unmarshal(arguments, &asked)
+	if err := json.Unmarshal(arguments, &asked); err != nil || asked.Breakpoints == nil {
+		// An invalid replacement must not clear the installed set. Keep the
+		// diagnostic independent of submitted names and expressions.
+		return breakpointsBody{}, errors.New("invalid function breakpoint arguments")
+	}
+	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
+		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints),
+			fmt.Sprintf("a session may hold at most %d function breakpoints", flowdebug.MaxBreakpoints))}, nil
+	}
 
 	// Through [flowdebug.Session.SetBreakpoints] and *not* through a command
 	// line, which is the difference between this working and deadlocking. A
@@ -615,14 +628,38 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 	//
 	// It replaces the set for the same reason the method does: a client sends
 	// everything it has each time one changes.
-	requested := make([]string, 0, len(asked.Breakpoints))
-	for _, want := range asked.Breakpoints {
-		requested = append(requested, strings.TrimSpace(want.Name))
+	requested := make([]string, len(asked.Breakpoints))
+	unsupported := make([]string, len(asked.Breakpoints))
+	for i, want := range asked.Breakpoints {
+		if want == nil || want.Name == nil {
+			return breakpointsBody{}, errors.New("invalid function breakpoint arguments")
+		}
+		switch {
+		case want.Condition != nil:
+			unsupported[i] = "conditional function breakpoints are not supported; use break <step-id> if <expr> in the terminal debugger"
+		case want.HitCondition != nil:
+			unsupported[i] = "function breakpoint hit conditions are not supported"
+		case want.LogMessage != nil:
+			unsupported[i] = "function breakpoint log messages are not supported"
+		default:
+			requested[i] = strings.TrimSpace(*want.Name)
+		}
 	}
+	// Unsupported entries occupy empty notice slots and are not armed. This
+	// still replaces the set: adding a condition to an existing unconditional
+	// breakpoint must remove that old breakpoint, not silently leave it active.
 	notices, setErr := s.session.SetBreakpointsWithNotices(requested)
+	if setErr != nil {
+		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), setErr.Error())}, nil
+	}
 
 	answers := make([]breakpoint, 0, len(asked.Breakpoints))
 	for i, name := range requested {
+		if unsupported[i] != "" {
+			answers = append(answers, breakpoint{Message: unsupported[i]})
+
+			continue
+		}
 		if name == "" {
 			answers = append(answers, breakpoint{Message: "a breakpoint here is a step id, and this one is empty"})
 
@@ -655,14 +692,7 @@ func (s *Server) setBreakpoints(arguments json.RawMessage) breakpointsBody {
 		answers = append(answers, breakpoint{Verified: true})
 	}
 
-	if setErr != nil {
-		// The set was refused whole, so no entry may claim to be verified: the
-		// alternative is a person watching for stops at breakpoints the session
-		// never took.
-		return breakpointsBody{Breakpoints: refused(len(asked.Breakpoints), setErr.Error())}
-	}
-
-	return breakpointsBody{Breakpoints: answers}
+	return breakpointsBody{Breakpoints: answers}, nil
 }
 
 // refuseLineBreakpoints answers a source-line request with the reason it cannot
