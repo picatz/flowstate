@@ -2507,38 +2507,44 @@ func timeoutKindText(kind enums.TimeoutType) string {
 	}
 }
 
-// maxHeartbeatPhaseBytes bounds the phase [FlowstateServer.heartbeatPhase]
-// returns, and the wire payload it will decode to look for one.
+// maxHeartbeatDetailBytes bounds the wire payload [FlowstateServer.heartbeatPhase]
+// will decode looking for a phase.
 //
-// [v1.Phase]'s vocabulary is three short constants, so Flowstate's own worker
-// never approaches this. What heartbeats this activity is not necessarily
-// that worker: a worker on a modified tree, or one polling a task queue this
-// deployment never intended to serve, chooses these bytes with nothing
-// stopping it, and this field is read on every `flow get` and `flow watch`
-// poll of a run with a retrying step (AGENTS.md invariant 5).
+// [v1.Phase]'s vocabulary is three short constants — "reading the response" is
+// the longest, at 20 bytes — so Flowstate's own worker never approaches this.
+// What heartbeats this activity is not necessarily that worker: a worker on a
+// modified tree, or one polling a task queue this deployment never intended
+// to serve, chooses these bytes with nothing stopping it, and this field is
+// read on every `flow get` and `flow watch` poll of a run with a retrying
+// step (AGENTS.md invariant 5).
 //
 // Checked against the payload's *encoded* bytes before FromPayload ever runs,
-// which is what makes this a bound on the decode rather than on its answer: a
-// plain JSON string is at least as long encoded as decoded (quoting and
-// escaping only add bytes), and a payload codec's ciphertext is, in every
-// scheme this repository configures, at least as long as the plaintext it
-// wraps (a nonce and an authentication tag, never a compressor). Either way,
-// a payload that already exceeds this bound could not decode to a value
-// within it, so nothing is lost by refusing to try — and everything is lost
-// by trying anyway: FromPayload's decode is the whole cost this bound exists
-// to avoid paying on a value that gets discarded regardless (Copilot review
-// of #2067).
-const maxHeartbeatPhaseBytes = 256
+// which is what makes this a bound on the decode rather than on its answer —
+// the decode is the cost this exists to avoid paying on a value that gets
+// discarded regardless, on every poll, for every pending activity a run
+// reports (Copilot review of #2067). Sized well past any of the three
+// constants' plain JSON encoding (measured at 66-76 bytes through the toy
+// AES-GCM codec this package's own tests configure — a nonce, a tag, and two
+// metadata entries) rather than pinned to their length, because the codec
+// contract this repository's [Option]s accept bounds expansion against
+// Temporal's own blob ceiling and nothing smaller: an envelope scheme this
+// deployment configures — a wrapped per-payload key, a longer key identifier,
+// additional authenticated context — can plausibly cost more than a plain
+// nonce and tag without approaching this bound, and a bound tight enough to
+// reject that would silence a real phase from a codec-configured deployment
+// exactly as if it were the unbounded text this exists to refuse (Codex
+// review of #2067).
+const maxHeartbeatDetailBytes = 4096
 
 // heartbeatPhase reads the phase a running attempt last heartbeated.
 //
 // Empty for every shape of "nothing to say": an attempt that has not reported
 // yet, an attempt waiting to be retried and therefore not running at all, a
-// worker older than the field, a heartbeat detail too large to be one of
-// [v1.Phase]'s constants, details this cannot decode, or a decoded value
-// outside that vocabulary. Those are different facts, and none of them is
-// "the step is doing nothing" — which is why the schema says so on the field
-// rather than leaving a renderer to guess.
+// worker older than the field, a heartbeat detail too large to plausibly hold
+// one of [v1.Phase]'s constants, details this cannot decode, or a decoded
+// value outside that vocabulary. Those are different facts, and none of them
+// is "the step is doing nothing" — which is why the schema says so on the
+// field rather than leaving a renderer to guess.
 //
 // A decode failure is silence rather than an error, deliberately. This is an aside
 // about a running attempt on a response whose subject is the run: a `flow get`
@@ -2546,17 +2552,22 @@ const maxHeartbeatPhaseBytes = 256
 // differently would be refusing to answer a question it can answer. The size
 // check ahead of the decode, and the vocabulary check the value gets
 // afterward, are the same rule applied earlier and one step further: a
-// payload too large to hold one of [v1.Phase]'s constants, or a string that
-// decoded cleanly but is not one of them, was not written by this
-// repository's own worker either, and there is nothing to say about it
-// rather than something to pass along unverified (#2067).
+// payload too large to plausibly hold one of [v1.Phase]'s constants, or a
+// string that decoded cleanly but is not one of them, was not written by this
+// repository's own worker either, and there is nothing to say about it rather
+// than something to pass along unverified (#2067).
+//
+// The vocabulary check ranges over [v1.Phases] rather than naming the three
+// constants again, so a fourth phase added there is recognized here without a
+// matching edit — the same reason [v1.Phases] itself exists (Codex review of
+// #2067).
 func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 	if details == nil || len(details.GetPayloads()) == 0 {
 		return ""
 	}
 
 	payload := details.GetPayloads()[0]
-	if len(payload.GetData()) > maxHeartbeatPhaseBytes {
+	if len(payload.GetData()) > maxHeartbeatDetailBytes {
 		return ""
 	}
 
@@ -2565,12 +2576,13 @@ func (s *FlowstateServer) heartbeatPhase(details *commonpb.Payloads) string {
 		return ""
 	}
 
-	switch phase {
-	case v1.PhaseRequesting.String(), v1.PhaseReadingResponse.String(), v1.PhaseCallingPlugin.String():
-		return phase
-	default:
-		return ""
+	for _, known := range v1.Phases {
+		if phase == known.String() {
+			return phase
+		}
 	}
+
+	return ""
 }
 
 // getWorkflowExecutionStatus maps the Temporal workflow execution status to Flowstate's run response status.

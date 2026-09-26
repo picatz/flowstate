@@ -65,6 +65,19 @@ var (
 	PhaseCallingPlugin = Phase{"calling the plugin"}
 )
 
+// Phases lists every value [Phase] can hold, in the order declared above.
+//
+// For code that must recognize the vocabulary rather than construct a member
+// of it: a decoder reading a phase back off a heartbeat, say, where the value
+// came from outside this process and has to be checked against the closed set
+// rather than assumed to be one of it. Ranging over this is one source of
+// truth for "is this a phase Flowstate can heartbeat"; hand-listing the three
+// constants a second time at the call site is the other spelling, and the two
+// can only drift once a fourth phase is added here and forgotten there
+// (Codex review of #2067). Adding no way to reach a [Phase] the constants
+// above do not already provide, since every element here is one of them.
+var Phases = []Phase{PhaseRequesting, PhaseReadingResponse, PhaseCallingPlugin}
+
 // progressKey carries the reporter a driver installed.
 type progressKey struct{}
 

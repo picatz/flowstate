@@ -233,12 +233,8 @@ func TestHeartbeatPhaseIsBoundedAndRestrictedToTheVocabulary(t *testing.T) {
 			"the caller unverified")
 
 	long := strings.Repeat("x", 10_000)
-	got := s.heartbeatPhase(payloadOf(t, long))
-	assert.LessOrEqual(t, len(got), maxHeartbeatPhaseBytes,
+	require.Equal(t, "", s.heartbeatPhase(payloadOf(t, long)),
 		"one heartbeat made this answer as long as whatever the attempt heartbeated")
-	assert.Equal(t, "", got,
-		"a bounded value happened to still equal one of v1.Phase's constants, which "+
-			"would mean this case tests nothing about the bound")
 }
 
 // countingDataConverter wraps a DataConverter and counts FromPayload calls, so
