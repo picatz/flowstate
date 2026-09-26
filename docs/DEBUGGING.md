@@ -257,7 +257,11 @@ applies here rather than a second, weaker one.
   the case's fixtures, so `inspect inputs.token == "guess"` answers truthfully
   and a breakpoint condition can name a sensitive value. Redaction keeps the
   value out of the transcript; it does not stop the session's owner from asking
-  about it.
+  about it. The one exception is the autopsy's own bindings: `flow test` binds
+  the file's `vars` and `run.error` there already redacted, so
+  `inspect vars.token == "the real value"` answers false at the autopsy even
+  where the same check was true, while `inputs` and `steps` still compare
+  against real values. The autopsy prints a note saying which is which.
 
 ## Reading a durable run
 

@@ -1769,6 +1769,12 @@ func (s *Session) printfTone(tone Tone, format string, args ...any) {
 // breakpoint condition can name a sensitive value. Redaction keeps the value
 // out of the transcript; it does not stop the session's owner from asking
 // about it.
+//
+// The one exception is not this seam's doing: an autopsy evaluates against
+// whatever extra bindings its caller hands [Session.Autopsy], and `flow test`
+// hands the file's `vars` and `run.error` over already redacted, so a
+// comparison against a real value of one of those answers false there. See
+// [Session.noteWithholding], which says so at the prompt.
 func (s *Session) SetRedactor(redact func(string) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1847,18 +1853,20 @@ func (s *Session) redactText(text string) string {
 	return redact(text)
 }
 
-// noteWithholding says, once, that this scope is not the one the checks read.
+// noteWithholding says, once, which of this scope's bindings are not the ones
+// the checks read.
 //
-// The bindings an autopsy evaluates against are the redacted ones, so
-// `inspect vars.token` answers `[redacted]` — which is legible — and
+// Most are. `inputs` and `steps` are the run's own, evaluated against real
+// values like every other inspection — redaction is a transcript control (see
+// [Session.SetRedactor]) — so `inspect inputs.token == "the real value"`
+// answers true here exactly as it would in `expect.check`. The exception is
+// the bindings an autopsy's caller supplies: `flow test` binds the file's
+// `vars` and `run.error` already redacted (`flowtest/check.go`, autopsyExtras),
+// so `inspect vars.token` answers `[redacted]` — which is legible — and
 // `inspect vars.token == "the real value"` answers *false*, which is not: the
 // same expression in `expect.check` saw the real binding and may well have
-// been true. That disagreement is deliberate and stays. Handing the raw value
-// to CEL and redacting only the printed line would restore the agreement and
-// turn a withheld value into a programmable oracle — `startsWith`, `size()`
-// and a slice each answer truthfully about a secret, one call at a time,
-// which is a worse door than the one printing was closed against (Codex,
-// #1109). Fail closed, and say so, rather than being quietly wrong.
+// been true. The note says which half is which rather than leaving an author
+// to conclude their check is wrong (Codex, #1109).
 func (s *Session) noteWithholding() {
 	s.mu.Lock()
 	withholding := s.redact != nil
@@ -1869,9 +1877,10 @@ func (s *Session) noteWithholding() {
 	}
 
 	s.printfTone(ToneWarning,
-		"(this case withholds sensitive values: they are withheld from these bindings, not just "+
-			"from what prints, so a comparison against a real value answers false here even where "+
-			"the same check was true)\n")
+		"(this case withholds sensitive values: the file's `vars` and `run.error` are bound here "+
+			"already redacted, so a comparison against a real value of one answers false here even "+
+			"where the same check was true; `inputs` and `steps` are the run's own and compare "+
+			"against real values, with only what prints withheld)\n")
 }
 
 func (s *Session) printf(format string, args ...any) {
@@ -1956,10 +1965,30 @@ func nativeText(native any) string {
 func (s *Session) refValText(out ref.Val) string {
 	native, ok := redactedNative(out, nil)
 	if !ok {
-		return fmt.Sprint(out.Value())
+		s.mu.Lock()
+		withholding := s.redact != nil || s.redactValue != nil
+		s.mu.Unlock()
+
+		return unrenderedText(out, withholding)
 	}
 
 	return nativeText(s.redactedValue(native))
+}
+
+// unrenderedText is what prints for a value [redactedNative] cannot convert —
+// a map with non-string keys, say — and so no leaf walk can redact.
+//
+// Go's own rendering is the fallback only while nothing is withheld. Under a
+// redactor it would be the one rendering the redaction cannot read: it spells
+// a byte string as decimal bytes, `[104 117 110 ...]`, which no plaintext
+// substring matches, so `{1: bytes(inputs.token)}` would print the token. The
+// value's type is what prints instead, which says why nothing more did.
+func unrenderedText(out ref.Val, withholding bool) string {
+	if !withholding {
+		return fmt.Sprint(out.Value())
+	}
+
+	return fmt.Sprintf("[withheld %s]", out.Type().TypeName())
 }
 
 // redactedNative is out as the native Go value a renderer sees, with redact

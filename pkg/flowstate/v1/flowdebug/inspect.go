@@ -289,9 +289,11 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	// straight through. See [redactedNative].
 	native, converted := redactedNative(out, subject.redactValue)
 	if !converted {
-		// Nothing structured to offer for a value the conversion cannot read,
-		// and the text redactor still covers what comes back as prose.
-		return capRunes(applyText(subject.redactText, fmt.Sprint(out.Value())), MaxInspectRunes), nil, nil
+		// Nothing structured to offer for a value the conversion cannot read.
+		// See [unrenderedText] for why the prose is only its type while this
+		// pause withholds anything.
+		withholding := subject.redactText != nil || subject.redactValue != nil
+		return capRunes(applyText(subject.redactText, unrenderedText(out, withholding)), MaxInspectRunes), nil, nil
 	}
 
 	// Leaves are withheld before the tree is rendered, not after. The text

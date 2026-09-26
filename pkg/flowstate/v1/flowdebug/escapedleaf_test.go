@@ -136,7 +136,9 @@ func TestAnEscapedSecretIsWithheldFromEveryPrintedAnswer(t *testing.T) {
 
 // TestABytesSecretIsWithheldFromEveryPrintedAnswer is the same miss in the
 // other direction: a `bytes` leaf renders as base64, which no plaintext
-// substring can match however it is escaped.
+// substring can match however it is escaped. Inside a value the conversion
+// cannot read — a map keyed by an int — Go's own rendering would spell it as
+// decimal bytes instead, which no substring matches either.
 func TestABytesSecretIsWithheldFromEveryPrintedAnswer(t *testing.T) {
 	t.Parallel()
 
@@ -151,7 +153,7 @@ func TestABytesSecretIsWithheldFromEveryPrintedAnswer(t *testing.T) {
 			"encode": encoded,
 		}}},
 		outputs: map[string]*v1.Node_Outputs{"encode": encoded},
-		script:  []string{"inspect steps.encode.value"},
+		script:  []string{"inspect steps.encode.value", "inspect {1: steps.encode.value}"},
 		install: withBothRedactors(v1.SensitiveValues{}.WithValues(secret)),
 		probe: func(s *flowdebug.Session) {
 			text, value, err := s.Evaluate(t.Context(), "steps.encode.value")
@@ -160,12 +162,27 @@ func TestABytesSecretIsWithheldFromEveryPrintedAnswer(t *testing.T) {
 			require.NotNil(t, value)
 			assert.Equal(t, []byte("[redacted]"), value.Value(),
 				"the structured half stays bytes, with the secret withheld from them")
+
+			text, value, err = s.Evaluate(t.Context(), "{1: steps.encode.value}")
+			require.NoError(t, err)
+			assert.Equal(t, "[withheld map]", text,
+				"a value the conversion cannot read printed through Go's rendering")
+			assert.Nil(t, value)
 		},
 	}.run(t)
 
 	assert.NotContains(t, printed, base64.StdEncoding.EncodeToString([]byte(secret)),
 		"the secret printed as base64, which is the secret")
+	assert.NotContains(t, printed, decimalBytes(secret),
+		"the secret printed as decimal bytes, which is the secret")
+	assert.Contains(t, printed, "\n[withheld map]\n",
+		"the typed inspection of a value the conversion cannot read prints only its type")
 	assert.NotContains(t, printed, secret)
+}
+
+// decimalBytes is text as Go's %v spells a []byte, without the brackets.
+func decimalBytes(text string) string {
+	return strings.Trim(fmt.Sprint([]byte(text)), "[]")
 }
 
 // TestASecretMapKeyIsWithheldFromEveryPrintedAnswer covers a key: one equal
@@ -247,4 +264,11 @@ func TestEvaluationSeesTheRealValueWhilePrintingWithholdsIt(t *testing.T) {
 
 	assert.Contains(t, printed, "\ntrue\n")
 	assert.Contains(t, printed, "\n\"[redacted]\"\n")
+
+	// The autopsy's note has to agree with the answer printed beneath it: it
+	// once told the reader every comparison against a real value answered
+	// false, directly above an `inputs` comparison that answered true.
+	assert.Contains(t, strings.Join(strings.Fields(printed), " "),
+		"`inputs` and `steps` are the run's own and compare against real values",
+		"the note describes evaluation other than the one this autopsy performs")
 }
