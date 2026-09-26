@@ -75,6 +75,27 @@ type instance struct {
 	exited  chan struct{}
 	waitErr error
 
+	// escalated is closed once the waiter goroutine's own call to
+	// [escalateAbandonedGroup] has returned, whether it found nothing to
+	// signal, signalled and waited out a compliant helper, or escalated to
+	// SIGKILL. [instance.stop] waits for it — bounded by its own ctx,
+	// exactly as it already bounds [instance.waitExit] — because escalation
+	// runs in the same goroutine but after [instance.exited] closes, and
+	// without this, whatever calls stop to wind an instance down (and,
+	// through it, Host.Close to wind the whole host down) could return, and
+	// the process could exit, before that goroutine ever reaches its SIGKILL
+	// (Codex, #2008 review, third round).
+	escalated chan struct{}
+
+	// hurry is closed, once, by the first caller of [instance.stop] whose
+	// own ctx ends while it is still waiting on escalated. It tells
+	// [escalateAbandonedGroup] to stop granting grace and send its SIGKILL
+	// now, so a caller that gives up waiting does not leave a SIGTERM-
+	// ignoring helper running with nothing left to kill it: the same "ctx
+	// ended, so kill" rule [instance.stop] already applies to the leader.
+	hurry     chan struct{}
+	hurryOnce sync.Once
+
 	// pumps completes when the stdout and stderr readers have finished.
 	pumps sync.WaitGroup
 
@@ -263,6 +284,8 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 		stdout:        stdoutR,
 		stderr:        stderrR,
 		exited:        make(chan struct{}),
+		escalated:     make(chan struct{}),
+		hurry:         make(chan struct{}),
 	}
 
 	log = log.With("pid", inst.pid)
@@ -277,7 +300,40 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 
 	go func() {
 		inst.waitErr = cmd.Wait()
+
+		// Wait reaps only the group leader. Helpers the plugin left in its
+		// process group can still be running, so clean the group while the
+		// pid is still known to name this launch: publishing the exit first
+		// would let [instance.stop] observe reaped() and skip its own
+		// signal, exactly the gap this closes. Signalling immediately after
+		// Wait returns, before anything else runs in this goroutine, keeps
+		// the pid-reuse window [terminateProcess] already documents as
+		// narrow rather than the arbitrary delay a caller of stop may
+		// otherwise introduce: nothing here calls into the kernel or blocks
+		// between the two lines, so the only thing that can still widen it
+		// is the Go scheduler choosing this moment to preempt the goroutine
+		// — a possibility this narrows, not one it rules out.
+		terminateProcess(inst.proc, false)
 		close(inst.exited)
+
+		// A helper that traps or ignores SIGTERM is otherwise unreachable
+		// after this point: stop's own SIGKILL escalation
+		// (`instance.stop`, below) is gated on the leader still being
+		// alive, which by now it never is again. Finish independently of
+		// stop ever being called, on the same grace period stop would have
+		// given it — polled, not slept through in one piece, so a helper
+		// that behaves is not what pays for the wait; see
+		// [escalateAbandonedGroup].
+		//
+		// escalated closes after, not before: stop waits on it so that
+		// whatever called stop — and, through it, Host.Close winding the
+		// whole host down — does not return, and the process does not
+		// exit, before this goroutine has actually reached its SIGKILL.
+		// Closed unconditionally, including the common case where
+		// escalateAbandonedGroup returned at once, because that path needs
+		// the signal too and nothing else would ever send it.
+		escalateAbandonedGroup(inst.proc, cfg.ShutdownGrace, inst.hurry)
+		close(inst.escalated)
 	}()
 
 	// stderr is a plugin's only diagnostic channel, so it is captured from
@@ -499,7 +555,13 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 		// group now holds that number.
 		//
 		// This is the common path, not an edge: the supervisor reaches here from
-		// the exit it observed, so the process is already gone.
+		// the exit it observed, so the process is already gone. That is not a
+		// gap: the waiter goroutine that reaped it already signalled the group
+		// once, immediately, while the pid still named this launch, and
+		// [escalateAbandonedGroup] carries that through to SIGKILL on its own —
+		// see the comment beside `cmd.Wait` in [launch]. What stop still owns is
+		// the case this goroutine has not reached yet: the leader is alive when
+		// stop runs, so stop is the first and only signal it gets.
 		if i.proc != nil && !i.reaped() {
 			terminateProcess(i.proc, false)
 
@@ -527,6 +589,37 @@ func (i *instance) stop(ctx context.Context, grace time.Duration) {
 			os.RemoveAll(i.socketDir)
 		}
 	})
+
+	// Deliberately outside stopOnce: the one-time cleanup above must run
+	// exactly once, but the wait below must not be — every caller's own ctx
+	// has to govern its own wait, not just whichever caller's ctx happened
+	// to be in scope when stopOnce ran the body. [Plugin.noteExit] and
+	// [Plugin.close] can both reach here for the same instance on
+	// independent exit: noteExit calls with p.procCtx, and close cancels
+	// that same procCtx before making its own call with the still-live
+	// shutdown ctx a caller of Close actually gave. If noteExit's call won
+	// stopOnce with p.procCtx already (or about to be) cancelled, a wait
+	// bound to it inside the Do would return at once regardless of whether
+	// escalation had actually finished, and stopOnce would then make
+	// close's own, later call — with a ctx that was never cancelled — a
+	// no-op that waits for nothing (Codex, #2008 review, fourth round).
+	// [instance.escalated] is safe to observe from as many goroutines as
+	// call stop, each against its own ctx: it is closed exactly once, by
+	// the waiter goroutine, regardless of who is listening.
+	//
+	// The waiter goroutine's own call to [escalateAbandonedGroup] has not
+	// necessarily finished by the time stopOnce's body above returns: it
+	// runs after [instance.exited] closes, in that same goroutine, and it
+	// is the *only* signal a helper ever gets on the leader's own
+	// independent exit, where stopOnce's own SIGTERM branch never ran at
+	// all. Waiting for it here — bounded by this call's own ctx, exactly as
+	// [instance.waitExit] already is inside the Do — is what keeps this
+	// call's own caller, and through Plugin.close and Host.Close winding
+	// the whole host down, from returning before that goroutine's own
+	// SIGKILL actually lands (Codex, #2008 review, third round).
+	if i.proc != nil {
+		i.waitEscalated(ctx)
+	}
 }
 
 // reaped reports whether the process has already been waited on, after which its
@@ -560,6 +653,124 @@ func (i *instance) waitExit(ctx context.Context, grace time.Duration) bool {
 		return false
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// waitEscalated reports whether the waiter goroutine's own call to
+// [escalateAbandonedGroup] finished before ctx ended. When ctx ends first it
+// hurries that escalation to its SIGKILL and waits, bounded by [hurryWait],
+// for it to land, so ending the wait never leaves a helper nothing will kill. See [instance.stop]'s
+// own call to this for why a caller of stop cannot simply not wait:
+// escalation runs after [instance.exited] already closed, in the same
+// goroutine, so nothing else ever observes when — or whether — it actually
+// finishes.
+func (i *instance) waitEscalated(ctx context.Context) bool {
+	if i.escalated == nil {
+		return true
+	}
+
+	// No independent grace-bounded timer here: escalateAbandonedGroup already
+	// owns a grace period of its own, started at a different moment, and a
+	// second timer for the same nominal duration races it. This caller's ctx
+	// bounds the wait; when it ends first, the hurry below cuts the
+	// escalation's grace short and hurryWait bounds what is left.
+	select {
+	case <-i.escalated:
+		return true
+	case <-ctx.Done():
+	}
+
+	// This caller's ctx ended with the escalation still granting grace.
+	// Returning now would let the caller (and through it Host.Close, and
+	// the process) finish while a helper that ignores SIGTERM is still
+	// running, with nothing left that would ever kill it. So cut the grace
+	// short: hurry makes escalateAbandonedGroup check the group once more
+	// and send its SIGKILL at once. What remains is one signal-0 and one
+	// kill syscall, plus the leader's reap if it has not happened yet, so
+	// the wait for it is bounded by hurryWait rather than by ctx, which has
+	// already ended.
+	if i.hurry != nil {
+		i.hurryOnce.Do(func() { close(i.hurry) })
+	}
+
+	timer := time.NewTimer(hurryWait)
+	defer timer.Stop()
+
+	select {
+	case <-i.escalated:
+	case <-timer.C:
+	}
+	return false
+}
+
+// hurryWait bounds how long [instance.waitEscalated] waits, after its ctx
+// has already ended, for a hurried [escalateAbandonedGroup] to send its
+// SIGKILL. That is a syscall or two once the leader is reaped, and the
+// leader's reap is itself bounded by the SIGKILL [instance.stop] already
+// sent it, so this only ever pays out for a leader the kernel cannot kill
+// (a frozen cgroup, say), which it must not hang on forever.
+const hurryWait = time.Second
+
+// escalationPollInterval is how often [escalateAbandonedGroup] re-checks a
+// signalled group rather than sleeping through the whole grace period once.
+//
+// A compliant helper that obeys the SIGTERM already sent typically frees its
+// pid within milliseconds of it, not within the whole grace period — and
+// once it does, that pid is exactly what [terminateProcess]'s own doc names
+// as reusable within minutes on a busy host. Sleeping the whole grace period
+// regardless would hold this goroutine's belief that pid still names the
+// group it signalled long after the kernel is free to hand it to an
+// unrelated process's group, and this goroutine's own SIGKILL at the end
+// would then reach whatever that pid now names instead (Codex, #2008
+// review, second round). Polling narrows that window to this interval, on
+// the process actually having died, rather than to the whole grace period
+// on every escalation — including the common one, a helper that behaves.
+const escalationPollInterval = 20 * time.Millisecond
+
+// escalateAbandonedGroup finishes what the group leader's own exit signal
+// could not: a helper it left behind that traps or ignores SIGTERM.
+//
+// Run from the waiter goroutine rather than from [instance.stop], because by
+// the time a plugin's leader has exited on its own, reaped() is already true
+// and stop's escalation never runs at all — this is the only path that ever
+// reaches a surviving helper in that case. grace is the same period stop
+// would have granted, so a helper gets no less time to exit cleanly for its
+// leader having gone first.
+//
+// A group with nothing left in it is the common case and this returns at
+// once: [processGroupAlive] is one signal-0 syscall, not a sleep. Once a
+// group is seen alive it is polled rather than slept through — see
+// [escalationPollInterval] — so a helper that behaves is only ever a few
+// polls away from this returning too, not the whole grace period; only one
+// that is still alive at the deadline pays for a SIGKILL.
+func escalateAbandonedGroup(proc *os.Process, grace time.Duration, hurry <-chan struct{}) {
+	if proc == nil || !processGroupAlive(proc.Pid) {
+		return
+	}
+
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	poll := time.NewTicker(escalationPollInterval)
+	defer poll.Stop()
+
+wait:
+	for {
+		select {
+		case <-poll.C:
+			if !processGroupAlive(proc.Pid) {
+				return
+			}
+		case <-deadline.C:
+			break wait
+		case <-hurry:
+			// A caller of stop gave up waiting (its ctx ended): no more
+			// grace, send the SIGKILL now. See [instance.hurry].
+			break wait
+		}
+	}
+
+	if processGroupAlive(proc.Pid) {
+		terminateProcess(proc, true)
 	}
 }
 
