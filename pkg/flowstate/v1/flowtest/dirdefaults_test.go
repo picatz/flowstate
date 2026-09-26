@@ -389,3 +389,94 @@ func TestATruncatedSiblingScanFailsClosedOnSharedVars(t *testing.T) {
 	assert.Contains(t, rendered, "matches no gate",
 		"the positive control: the mismatch itself must still be reported")
 }
+
+// TestAnUndecodableSiblingFailsClosedOnSharedVars is Codex's finding that a
+// sibling the scan cannot decode is not evidence it holds no secret
+// reference: the one sibling that actually taints `token` — through an
+// unknown field the strict decode refuses — is skipped, and the scan must
+// answer incomplete for that reason exactly as it does when a candidate sits
+// past its own count bound, not silently continue as though the sibling had
+// contributed nothing.
+func TestAnUndecodableSiblingFailsClosedOnSharedVars(t *testing.T) {
+	t.Parallel()
+
+	const secret = "sk-live-undecodable-3391"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
+	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: "+secret+"\n")
+	// A field this loader's strict decode does not know, so the sibling that
+	// actually taints `token` fails to decode rather than simply not
+	// existing.
+	writeFile(t, filepath.Join(dir, "a.test.yaml"), "tests:\n"+
+		"  - name: holds the secret\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:TOKEN: ${vars.token}\n"+
+		"    unknown_field_this_loader_refuses: true\n"+
+		"    expect: {failed: true}\n")
+
+	targetPath := filepath.Join(dir, "target.test.yaml")
+	writeFile(t, targetPath, "tests:\n"+
+		"  - name: the gate is signalled by the wrong name\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    signals:\n"+
+		"      - name: ${vars.token}\n"+
+		"        at: 1s\n"+
+		"        payload: {}\n"+
+		"    expect:\n"+
+		"      ran: [gate]\n")
+
+	report := flowtest.RunFile(targetPath)
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed(), "the scripted signal names no gate this workflow waits on")
+
+	rendered := c.GetError()
+	assert.NotContains(t, rendered, secret,
+		"a shared var tainted only by a sibling the scan could not decode printed in full (#2080)")
+	assert.Contains(t, rendered, "matches no gate",
+		"the positive control: the mismatch itself must still be reported")
+}
+
+// TestASiblingsUnrelatedLocalVarIsNotTaintedByCoincidenceOfName is Codex's
+// finding on the other direction from the two tests above: propagating every
+// name a sibling's own taint closure reaches, not only the ones the
+// directory's shared vars: actually states, taints whatever this file
+// happens to declare under the identical name by pure coincidence. `count`
+// is the sibling's own local var, never stated by testdefaults.yaml, and
+// this file's own `count` is an ordinary integer with no connection to any
+// secret — tainting it anyway (a tainted var holding a non-string adds
+// nothing to the redaction set, so it may not exist) would refuse this file
+// outright for a var that never touched a secret.
+func TestASiblingsUnrelatedLocalVarIsNotTaintedByCoincidenceOfName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), gatedSiblingWorkflow)
+	writeFile(t, filepath.Join(dir, "testdefaults.yaml"), "vars:\n  token: sk-live-unrelatedname-2210\n")
+	writeFile(t, filepath.Join(dir, "a.test.yaml"), "vars:\n"+
+		"  count: ${vars.token}\n"+
+		"tests:\n"+
+		"  - name: holds the secret through a local alias named count\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    secrets:\n"+
+		"      env:TOKEN: ${vars.count}\n"+
+		"    expect: {failed: true}\n")
+
+	targetPath := filepath.Join(dir, "target.test.yaml")
+	writeFile(t, targetPath, "vars:\n"+
+		"  count: 1\n"+
+		"tests:\n"+
+		"  - name: an ordinary case naming no secret at all\n"+
+		"    workflow: ./workflow.yaml\n"+
+		"    inputs: {}\n"+
+		"    expect:\n"+
+		"      check:\n"+
+		"        - vars.count == 1\n")
+
+	file, err := flowtest.Load(targetPath)
+	require.NoError(t, err, "an unrelated var sharing a sibling's local var's name must not be tainted by coincidence")
+	require.Equal(t, uint64(1), file.Vars["count"])
+}

@@ -413,16 +413,29 @@ func siblingTaintedVarNames(dd *dirDefaults, selfPath string) (holding map[strin
 		// that author never named, has not, so it is checked first and
 		// skipped without ever calling Open on it. [os.Stat] follows a
 		// symlink to ask what it names without opening either end.
-		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		//
+		// Every failure branch below marks the scan incomplete rather than
+		// silently contributing nothing (Codex's second finding on this
+		// fix): a candidate that cannot be inspected is not evidence it
+		// holds no secret reference, and evaluateVars' own answer to an
+		// incomplete scan — taint every var the directory's shared vars:
+		// states — must not be skipped just because the one sibling that
+		// would have triggered it happened to fail differently than by
+		// sitting past the candidate-count bound.
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			complete = false
 			continue
 		}
 
 		data, err := readBounded(path, MaxTestFileBytes, "test file")
 		if err != nil {
+			complete = false
 			continue
 		}
 		sibling, err := decodeSiblingFile(data)
 		if err != nil {
+			complete = false
 			continue
 		}
 
@@ -438,13 +451,33 @@ func siblingTaintedVarNames(dd *dirDefaults, selfPath string) (holding map[strin
 
 		// A throwaway collector: this decode's own mistakes are not this
 		// file's to report, and declareVars' bounds already answer for
-		// themselves — a sibling past them contributes nothing, the
-		// identical posture an unreadable one gets.
-		declared := sibling.declareVars(newProblems(nil))
+		// themselves — a sibling past them makes the scan incomplete the
+		// identical way an unreadable one does, rather than silently
+		// contributing nothing.
+		p := newProblems(nil)
+		declared := sibling.declareVars(p)
+		if p.total > 0 {
+			complete = false
+			continue
+		}
 		nodes := collectVarNodes(sibling.Vars)
 		taint := taintedVars(declared, expandSecretHolding(secretHoldingVars(sibling.Tests), nodes))
 
 		for _, varName := range taint.names() {
+			// Only a name the directory's own shared vars: actually states:
+			// a sibling's purely local var can share taint's closure (a
+			// local alias of a shared one still needs its own node to trace
+			// the edge through), but propagating *that* local name into
+			// this file's own posture taints whatever this file happens to
+			// declare under the identical name by coincidence — a false
+			// positive `refuseUnprotectableVar` would reject a wholly
+			// unrelated var over (Codex's third finding on this fix). What
+			// matters to this file is only ever a name it could itself have
+			// read the same value under, which is exactly [dd.Vars]' own
+			// keys.
+			if _, shared := dd.Vars[varName]; !shared {
+				continue
+			}
 			if _, seen := holding[varName]; !seen {
 				holding[varName] = taint.path(varName) + " (" + name + ")"
 			}
