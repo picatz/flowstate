@@ -452,10 +452,14 @@ type fixer struct {
 	// full scan to find — so a caller that asks for the same range more
 	// than once pays for the scan again each time. [aliasInliner] reads the
 	// delta across its own call to charge that scan against
-	// [aliasInliner.bytes] before the range is used, and a test reads this
-	// field directly to prove the scan itself: kept as a plain counter, not
-	// a benchmark, because the scan performs no allocation a
-	// `-bench`/MemStats comparison could see (#2075).
+	// [aliasInliner.scanned] before the range is used. Because it is
+	// incremented inside [fixer.blockEnd]'s own loop rather than by that
+	// charge, a test reads this field directly as ground truth for how much
+	// scanning actually happened — proof a charge alone cannot give, since
+	// a charge can be skipped without the scan it would have priced also
+	// being skipped: kept as a plain counter, not a benchmark, because the
+	// scan performs no allocation a `-bench`/MemStats comparison could see
+	// (#2075).
 	blockEndBytesScanned int
 }
 

@@ -90,9 +90,10 @@ func runAliasInliner(data []byte, file *ast.File) (*aliasInliner, []byte, bool) 
 			trailingNewline: bytes.HasSuffix(data, []byte("\n")),
 			terminator:      lineTerminator(data),
 		},
-		anchors: map[string]*ast.AnchorNode{},
-		byLine:  map[int]aliasSite{},
-		bytes:   len(data),
+		anchors:  map[string]*ast.AnchorNode{},
+		byLine:   map[int]aliasSite{},
+		bytes:    len(data),
+		inputLen: len(data),
 	}
 
 	for _, doc := range file.Docs {
@@ -192,24 +193,44 @@ type aliasInliner struct {
 	// the growth would let a large file's last few bytes of headroom be spent
 	// on an expansion this rewrite never priced.
 	//
-	// [aliasInliner.chargeScan] also charges *scanning* source text against
-	// this same total, not only the output [appendLine] builds — the one
-	// budget this file already prices takes both rather than growing a
-	// second mechanism for the second resource (AGENTS.md invariant 2;
-	// #2075). A rewrite that never scanned more than it charged would not
-	// need this, but every scan named on [aliasInliner.chargeScan] can be
-	// handed attacker-sized source text — a token's padding, a block's
-	// blank tail — whether or not the *value* it resolves to is ever large.
+	// Only output is charged here. [aliasInliner.chargeScan] charges
+	// *scanning* source text separately, against [aliasInliner.scanned] and
+	// [maxScanned] — folding it in here once double-counted the same bytes
+	// this field's own seed already prices, refusing legitimate documents
+	// nowhere near [maxBytes] on their own (#2075).
 	bytes int
 
-	// scanBytes is the total size of every source-text read this rewrite
-	// has charged through [aliasInliner.chargeScan] — a token's Origin, a
-	// line, or a block's extent — as distinct from bytes charged for the
-	// output [aliasInliner.appendLine] builds. Both add to
-	// [aliasInliner.bytes] alike, but this one lets a test observe total
-	// scan work on its own, without having to reconstruct it from whichever
-	// specific cache did or didn't fire (#2075).
-	scanBytes int
+	// inputLen is the source's own length, recorded once so [maxScanned]
+	// can use it without threading it through every call to
+	// [aliasInliner.chargeScan] — the same value [aliasInliner.bytes] seeds
+	// from, kept separately because that field no longer stays fixed at it.
+	inputLen int
+
+	// scanned is the total size of every source-text read this rewrite has
+	// charged through [aliasInliner.chargeScan] — a token's Origin, a line,
+	// or a block's extent — charged against [maxScanned] rather than
+	// [aliasInliner.bytes] (#2075). Caching still keeps this to roughly the
+	// document's own size for a legitimate document (each anchor or alias
+	// scanned once, not once per site); this field is what a test reads to
+	// check that directly, without conflating it with what
+	// [aliasInliner.appendLine] charges for output.
+	scanned int
+
+	// rawScannedBytes is incremented at the point of every actual scan this
+	// rewrite performs — [spanOfNode]/[tokenText] on an anchor's value (via
+	// [aliasInliner.spanOf]), [byteOffsetOfColumn] (via
+	// [aliasInliner.scalarValueOf] and [split]), and [indentWidth] (in
+	// [aliasInliner.spliceBlock]) — never by [aliasInliner.chargeScan]
+	// itself. [fixer.blockEndBytesScanned] is this field's counterpart for
+	// [fixer.blockEnd]: incremented inside the scan's own loop, so neither
+	// counter can be satisfied by charging without actually scanning, the
+	// way reading only [aliasInliner.scanned] could be (#2075's own review:
+	// three mutants that kept every cache but reverted one round's charge to
+	// call its underlying scan directly, uncached, all passed a test that
+	// only read what was charged). Test-only in the sense that nothing in
+	// this file's own logic reads it back, not in the sense that its
+	// updates are conditional on a test running.
+	rawScannedBytes int
 
 	// blockEnds caches [fixer.blockEnd]'s answer for an anchor's block
 	// extent, keyed by the anchor itself, so an anchor many sites alias is
@@ -622,6 +643,13 @@ func (in *aliasInliner) split(site aliasSite) (prefix, suffix string, ok bool) {
 		return "", "", false
 	}
 
+	// Counted here rather than inside [aliasInliner.chargeScan]:
+	// [byteOffsetOfColumn] below actually reads text, and every
+	// `strings.Trim*` further down reads a piece of it, so this is what a
+	// test checks stays flat per alias rather than growing per outer site
+	// (#2075).
+	in.rawScannedBytes += len(text)
+
 	at, located := byteOffsetOfColumn(text, pos.Column)
 	if !located {
 		in.refuseAlias(site.alias, "this alias is not written where it was read, so it cannot be replaced safely; write the value out by hand")
@@ -667,9 +695,14 @@ func (in *aliasInliner) split(site aliasSite) (prefix, suffix string, ok bool) {
 	// the document carries that whole run in its own Origin (found via
 	// this file's own probe for the unrelated block-blank-tail shape,
 	// #2075).
-	if !in.chargeScan(site.alias, originLen(site.key)) {
+	keySize := originLen(site.key)
+	if !in.chargeScan(site.alias, keySize) {
 		return "", "", false
 	}
+
+	// Counted here, not inside [aliasInliner.chargeScan]: [spanOfNode]
+	// right below is the actual scan [keySize] prices (#2075).
+	in.rawScannedBytes += keySize
 
 	keySpan := spanOfNode(site.key)
 	if !keySpan.IsValid() || keySpan.Start.Line != pos.Line {
@@ -706,10 +739,19 @@ func (in *aliasInliner) spanOf(alias *ast.AliasNode, anchor *ast.AnchorNode) (Sp
 		return span, true
 	}
 
-	if !in.chargeScan(alias, originLen(anchor.Value)) {
+	size := originLen(anchor.Value)
+	if !in.chargeScan(alias, size) {
 		return Span{}, false
 	}
 
+	// Counted here, next to the call [size] prices, rather than inside
+	// [aliasInliner.chargeScan]: this line runs exactly when [spanOfNode]
+	// is about to walk every token in anchor.Value and scan each one's
+	// `Origin`, which is the actual cost this file's own tests check stays
+	// bounded — a mutant that kept the charge above but skipped
+	// [aliasInliner.anchorSpans] would still show it growing per site here
+	// (#2075).
+	in.rawScannedBytes += size
 	span := spanOfNode(anchor.Value)
 	if in.anchorSpans == nil {
 		in.anchorSpans = map[*ast.AnchorNode]Span{}
@@ -742,14 +784,13 @@ func originLen(n ast.Node) int {
 	return total
 }
 
-// charge adds n to the bytes an expansion has spent and refuses once that
-// crosses [maxBytes], exactly where [countNodes]'s own comment says a charge
-// belongs: at the point of spend, before the memory is allocated, rather than
-// after. It is the one mechanism both directions of spend go through —
-// [aliasInliner.appendLine] for a line this rewrite produces, and
-// [aliasInliner.chargeScan] for source text this rewrite reads in order to
-// build one, so that a scan large enough to matter is bounded by the same
-// budget an output large enough to matter already was (#2075).
+// charge adds n to the bytes an expansion has spent on *output* and refuses
+// once that crosses [maxBytes], exactly where [countNodes]'s own comment
+// says a charge belongs: at the point of spend, before the memory is
+// allocated, rather than after. [aliasInliner.appendLine] is the only
+// caller — a line this rewrite produces — since [aliasInliner.chargeScan]
+// charges source text this rewrite scans against its own, separate budget
+// rather than this one (#2075).
 func (in *aliasInliner) charge(alias *ast.AliasNode, n int) bool {
 	in.bytes += n
 	if in.bytes > maxBytes {
@@ -763,23 +804,52 @@ func (in *aliasInliner) charge(alias *ast.AliasNode, n int) bool {
 	return true
 }
 
-// chargeScan is [aliasInliner.charge] for source text this rewrite is about
-// to scan (or, where the exact size is only known once the scan is already
-// done, has just finished scanning) rather than for a line it is about to
-// produce. It is the one accounting path every per-expansion read of line or
-// token text in this file goes through — [split], [spanOfNode]/[tokenText]
-// on an anchor's value (via [aliasInliner.spanOf]), the derived trims
-// [splitResult] precomputes, [fixer.blockEnd], and [byteOffsetOfColumn] —
-// so a read added later that forgets to memoize its own answer is still
-// bounded by [maxBytes] rather than bounded only by whichever cache someone
-// remembered to write for it (#2075's own review round: the round before
-// this one added a cache per finding, and the next finding was a read
-// [split]'s cache never covered because it ran before that cache was even
-// consulted).
-func (in *aliasInliner) chargeScan(alias *ast.AliasNode, n int) bool {
-	in.scanBytes += n
+// maxScanned bounds [aliasInliner.scanned] for a document inputLen bytes
+// long — [scanBudgetMultiple] times [maxBytes], plus inputLen itself as a
+// floor. inputLen is a floor rather than the resource being priced: every
+// scan this rewrite makes reads a subset of what the parser already read
+// once, so a document's own length is the least any of them could cost, not
+// an estimate of what several of them touching the same region will add up
+// to. [scanBudgetMultiple]'s own comment has the reasoning for the
+// multiplier (#2075).
+func maxScanned(inputLen int) int {
+	return scanBudgetMultiple*maxBytes + inputLen
+}
 
-	return in.charge(alias, n)
+// chargeScan is [aliasInliner.charge]'s shape for source text this rewrite
+// is about to scan (or, where the exact size is only known once the scan is
+// already done, has just finished scanning) rather than for a line it is
+// about to produce — but charged against [aliasInliner.scanned] and
+// [maxScanned], a separate budget from [aliasInliner.bytes] and [maxBytes].
+// Charging both into one budget double-counted the same bytes (this field's
+// own history: an earlier version of this rewrite did exactly that, and
+// review found it refused legitimate documents nowhere near [maxBytes] on
+// their own — see [scanBudgetMultiple]'s comment).
+//
+// It is the one accounting path every per-expansion read of line or token
+// text in this file goes through — [split], [spanOfNode]/[tokenText] on an
+// anchor's value (via [aliasInliner.spanOf]), the derived trims
+// [splitResult] precomputes, [fixer.blockEnd], [byteOffsetOfColumn], and
+// [indentWidth] — so a read added later that forgets to memoize its own
+// answer is still bounded by [maxScanned] rather than bounded only by
+// whichever cache someone remembered to write for it. That bound on its own
+// does not prove a read is actually cached, only that it cannot run away
+// unbounded either way — [aliasInliner.rawScannedBytes] is what a test
+// checks for the caching itself, incremented at each scan directly rather
+// than through this function, so a mutant that kept this charge but
+// reverted a cache still shows up there even though this function alone
+// cannot tell the difference.
+func (in *aliasInliner) chargeScan(alias *ast.AliasNode, n int) bool {
+	in.scanned += n
+	if limit := maxScanned(in.inputLen); in.scanned > limit {
+		in.refuseAlias(alias,
+			"writing these aliases out would scan more than %d bytes, more than a Flowfile is meant to require reading; nothing was rewritten",
+			limit)
+
+		return false
+	}
+
+	return true
 }
 
 // appendLine is the one place a line this rewrite produces is added to a
@@ -877,6 +947,12 @@ func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, sp
 		return "", false
 	}
 
+	// Counted here rather than inside [aliasInliner.chargeScan]: both
+	// [byteOffsetOfColumn] calls below actually read text, up to twice its
+	// own length (once per call), so this is what a test checks stays flat
+	// per anchor rather than growing per site (#2075).
+	in.rawScannedBytes += len(text)
+
 	from, located := byteOffsetOfColumn(text, span.Start.Column)
 	if !located {
 		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
@@ -934,12 +1010,18 @@ func (in *aliasInliner) spliceBlock(site aliasSite, prefix, suffix string, ancho
 	// per site (#2075).
 	base, baseCached := in.blockBases[anchor]
 	if !baseCached {
-		if !in.chargeScan(site.alias, len(in.f.line(first))+len(in.f.line(anchorLine))) {
+		firstLine, anchorLineText := in.f.line(first), in.f.line(anchorLine)
+		if !in.chargeScan(site.alias, len(firstLine)+len(anchorLineText)) {
 			return nil, false
 		}
 
-		base = indentWidth(in.f.line(first))
-		if first <= anchorLine || base <= indentWidth(in.f.line(anchorLine)) {
+		// Counted here, not inside [aliasInliner.chargeScan]: the two
+		// [indentWidth] calls right below are the actual scans this charge
+		// prices (#2075).
+		in.rawScannedBytes += len(firstLine) + len(anchorLineText)
+
+		base = indentWidth(firstLine)
+		if first <= anchorLine || base <= indentWidth(anchorLineText) {
 			// Either the block opens on the anchor's own line — `- &s id: x`, whose
 			// first line is not a whole line of the block — or it is written at or left
 			// of the anchor's own indentation, which is legal YAML for a sequence and

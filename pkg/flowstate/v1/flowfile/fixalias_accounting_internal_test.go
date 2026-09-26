@@ -551,21 +551,124 @@ func blockTailFlowfile(sites, blankTail int) string {
 	return b.String()
 }
 
-// aliasInlinerScanReport is what each shape's test checks: the total
-// [aliasInliner.scanBytes] this rewrite charged for scanning source text, as
-// opposed to charging output, over one run.
-type aliasInlinerScanReport struct {
-	ok         bool
-	scanBytes  int
-	outputOnly int // in.bytes - in.scanBytes: charged for output, not scanning.
-	inputLen   int
+// #2075's independent review, round three: folding [aliasInliner.chargeScan]
+// into [aliasInliner.bytes] — the fix the round above this one made — priced
+// the same bytes twice for any legitimate document large enough to notice.
+// [aliasInliner.bytes] starts seeded at the document's own length; a scan of
+// an anchor's value or a block's extent then charged largely those same
+// bytes again, before the eventual output priced them a third time. A
+// 5,000-line block aliased once (259 KB in, ~518 KB correctly out) and a
+// 3,000-line block aliased twice (155 KB in, ~465 KB out) — both ordinary,
+// both accepted before that round — were refused with "would copy more
+// than 1048576 bytes", a message about output size that was not actually
+// about output at all.
+//
+// Separately, this file's own tests read [aliasInliner.scanBytes] (that
+// round's name for what [aliasInliner.scanned] is now), which only
+// [aliasInliner.chargeScan] itself incremented. Three mutants that each
+// reverted one round's original defect — spanOf uncached and uncharged,
+// blockEnd's charge point removed, split uncached with no charge — all
+// still passed every test in this file, because an uncharged scan never
+// touched the one counter being read.
+//
+// Both are fixed the same way this issue's every other round has been:
+// [aliasInliner.chargeScan] now charges against [aliasInliner.scanned] and
+// [maxScanned], a budget separate from [aliasInliner.bytes] and [maxBytes]
+// (so a scan can no longer inflate what a document's *output* is judged
+// against), and [aliasInliner.rawScannedBytes] is incremented at the actual
+// scanning primitives themselves — [spanOfNode]/[tokenText] via
+// [aliasInliner.spanOf], [byteOffsetOfColumn] via [aliasInliner.scalarValueOf]
+// and [split], [indentWidth] in [aliasInliner.spliceBlock], and
+// [fixer.blockEndBytesScanned] for [fixer.blockEnd] — never by
+// [aliasInliner.chargeScan], so a mutant that keeps the charge but skips the
+// underlying scan (impossible, since the charge's own size comes from
+// measuring what is about to be scanned) is not what this catches; a mutant
+// that skips the *cache* and calls the primitive again is.
+
+// largeBlockOneAliasFlowfile and largeBlockTwoAliasFlowfile are the two
+// documents review measured directly: an ordinary, large block aliased
+// once or twice, with no padding and no attacker-shaped anything — the
+// legitimate side of the class this issue's fix has to stay usable for.
+func largeBlockOneAliasFlowfile(lines int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  a: &a\n")
+	for i := range lines {
+		fmt.Fprintf(&b, "    k%d: %s\n", i, strings.Repeat("x", 40))
+	}
+	b.WriteString("  u0: *a\n")
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
 }
 
-// scanReportOf runs the inliner over src and reports what it charged,
-// without requiring either outcome: a probe shape this issue's fix newly
-// bounds may now be refused rather than accepted, and that is one of the
-// two healthy outcomes [TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap]
-// checks for explicitly.
+func largeBlockTwoAliasFlowfile(lines int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nvars:\n  a: &a\n")
+	for i := range lines {
+		fmt.Fprintf(&b, "    k%d: %s\n", i, strings.Repeat("x", 40))
+	}
+	b.WriteString("  u0: *a\n  u1: *a\n")
+	b.WriteString("steps:\n  - id: a\n    log:\n      message: hi\n")
+
+	return b.String()
+}
+
+// TestAliasInlinerAcceptsLargeLegitimateDocuments is #2075's round-three
+// regression: both documents were accepted before [aliasInliner.chargeScan]
+// existed, and both must be accepted with it too, since neither is anywhere
+// near [maxBytes] on its own — 259 KB and 155 KB in, a few hundred KB out.
+// Fails against a mutant that folds scan charges back into
+// [aliasInliner.bytes] (this file's own history, aa1d3302): both were
+// refused there with "would copy more than 1048576 bytes", a message about
+// output that was never actually about output.
+func TestAliasInlinerAcceptsLargeLegitimateDocuments(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"5,000-line block, 1 alias", largeBlockOneAliasFlowfile(5000)},
+		{"3,000-line block, 2 aliases", largeBlockTwoAliasFlowfile(3000)},
+	} {
+		data := []byte(tc.src)
+		file, err := parser.ParseBytes(data, parser.ParseComments)
+		require.NoError(t, err)
+
+		in, _, ok := runAliasInliner(data, file)
+		require.True(t, ok, "%s (%d bytes in): expected to be accepted; refusals: %v", tc.name, len(data), in.refusals)
+	}
+}
+
+// aliasInlinerScanReport is what each shape's test checks: how much this
+// rewrite actually scanned against how much it charged for output and how
+// large the input was, plus the outcome.
+type aliasInlinerScanReport struct {
+	ok bool
+
+	// trueScanned is [aliasInliner.rawScannedBytes] plus
+	// [fixer.blockEndBytesScanned] — every scan this rewrite actually ran,
+	// counted at the scan itself rather than at
+	// [aliasInliner.chargeScan] (#2075).
+	trueScanned int
+
+	// scanned is [aliasInliner.scanned]: what was charged against
+	// [maxScanned], the value a refusal is actually decided on.
+	scanned int
+
+	// outputBytes is [aliasInliner.bytes]: seeded at the input's own
+	// length, grown only by what [aliasInliner.appendLine] charges for
+	// output — no longer inflated by scanning (#2075).
+	outputBytes int
+
+	inputLen int
+}
+
+// scanReportOf runs the inliner over src and reports what it charged and
+// scanned, without requiring either outcome: a probe shape may be refused
+// rather than accepted, and either can be healthy depending on which shape
+// it is — [assertScanBounded] requires acceptance, but a caller checking a
+// shape that is expected to sit near a budget reads the report directly.
 func scanReportOf(t *testing.T, src string) aliasInlinerScanReport {
 	t.Helper()
 
@@ -576,39 +679,49 @@ func scanReportOf(t *testing.T, src string) aliasInlinerScanReport {
 	in, _, ok := runAliasInliner(data, file)
 
 	return aliasInlinerScanReport{
-		ok:         ok,
-		scanBytes:  in.scanBytes,
-		outputOnly: in.bytes - in.scanBytes,
-		inputLen:   len(src),
+		ok:          ok,
+		trueScanned: in.rawScannedBytes + in.f.blockEndBytesScanned,
+		scanned:     in.scanned,
+		outputBytes: in.bytes,
+		inputLen:    len(src),
 	}
 }
 
 // assertScanBounded is the shape every one of this issue's shapes checks:
-// scanning grows with what this rewrite actually charged plus the size of
-// the document it read, not disproportionately past both — k is small and
-// fixed across every shape, not tuned per shape, because the property under
-// test is that one mechanism ([aliasInliner.chargeScan]) bounds all of them
-// alike. A rewrite whose scan cost is many times its own charged output and
-// the input it read (an unbounded per-site rescan, uncached and uncharged)
-// fails this on any k a legitimate document would never approach.
+// true scanning grows with what this rewrite actually charged for output
+// (which is seeded at the input's own length, so that is counted once, not
+// added again), not disproportionately past it — k is small and fixed
+// across every shape, not tuned per shape, because the property under test
+// is that one mechanism ([aliasInliner.chargeScan] plus caching) bounds all
+// of them alike. A rewrite whose true scan cost is many times its own
+// charged output (an unbounded per-site rescan, uncached) fails this on any
+// k a legitimate document would never approach.
 func assertScanBounded(t *testing.T, name string, r aliasInlinerScanReport) {
 	t.Helper()
 
 	require.True(t, r.ok, "%s: expected the rewrite to succeed", name)
 
 	const k = 3
-	bound := k * (r.outputOnly + r.inputLen)
-	require.LessOrEqual(t, r.scanBytes, bound,
-		"%s: scanned %d bytes against %d bytes charged for output plus %d bytes of input — "+
-			"expected scanning within %dx of what this rewrite actually charged and read, not "+
-			"disproportionately more (#2075)", name, r.scanBytes, r.outputOnly, r.inputLen, k)
+	bound := k * r.outputBytes
+	require.LessOrEqual(t, r.trueScanned, bound,
+		"%s: truly scanned %d bytes against %d bytes charged for output (already seeded at the "+
+			"input's own length) — expected scanning within %dx of that, not disproportionately "+
+			"more (#2075)", name, r.trueScanned, r.outputBytes, k)
 }
 
 // TestAliasInlinerScanStaysProportionalAcrossFindingShapes runs
-// [assertScanBounded] over all four shapes #2075's two review rounds
-// accumulated, each at a site count (100) large enough that an unbounded
-// per-site rescan would fail it by orders of magnitude rather than by
-// chance.
+// [assertScanBounded] over all four shapes #2075's review has accumulated,
+// each at a site count (100) large enough that an unbounded per-site rescan
+// would fail it by orders of magnitude rather than by chance. Checking
+// [aliasInlinerScanReport.trueScanned] — [aliasInliner.rawScannedBytes] plus
+// [fixer.blockEndBytesScanned], incremented at each scan itself — rather
+// than [aliasInlinerScanReport.scanned] (fed only by
+// [aliasInliner.chargeScan]) is what makes this catch an uncached scan even
+// where nothing charged it: a mutant that keeps every charge but skips a
+// cache still shows the true count growing per site here, which reading
+// only what was charged cannot (#2075's own review: three such mutants each
+// passed every test in an earlier push, because that push's tests read only
+// the charge).
 func TestAliasInlinerScanStaysProportionalAcrossFindingShapes(t *testing.T) {
 	t.Parallel()
 
@@ -625,15 +738,18 @@ func TestAliasInlinerScanStaysProportionalAcrossFindingShapes(t *testing.T) {
 // TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap reproduces the
 // independent review's own probe at its own scale: `vars:` holds one
 // scalar anchor whose value is preceded by 500,000 padding columns,
-// aliased by 10,000 sites. At the pre-round-two revision this was
-// *accepted* — correct output, but 3.70s and free of the byte budget's
-// attention, because [aliasInliner.spliceScalar] read that padding through
-// [spanOfNode] before ever reaching its own value cache. Charging that scan
-// changes the outcome: 10,000 sites' worth of charge for a value this large
-// crosses [maxBytes], so the document most reviewers would call "accepted
-// but slow" is now refused instead — the other of the two outcomes
-// [assertScanBounded]'s own probes check is healthy, named explicitly here
-// because this is the shape that actually flips.
+// aliased by 10,000 sites. Before any of this issue's caching existed, this
+// was *accepted* — correct output, but 3.70s, because
+// [aliasInliner.spliceScalar] read that padding through [spanOfNode] before
+// ever reaching its own value cache, once per site rather than once for the
+// anchor. Caching closes the repeat; charging what is scanned is what makes
+// that closure provable rather than merely observed. Named explicitly
+// because it is the shape the independent review's own probe used, not
+// because its outcome is expected to differ from
+// [TestAliasInlinerScanStaysProportionalAcrossFindingShapes]'s other three
+// shapes — at this scale it does not: cached, the anchor's value is scanned
+// once regardless of site count, comfortably inside both budgets, so this
+// is accepted and cheap, the same as the others.
 func TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap(t *testing.T) {
 	// Not t.Parallel(): 10,000 sites over 500,000 columns of padding is the
 	// one shape in this file sized to match the reviewer's own probe rather
@@ -642,9 +758,10 @@ func TestAliasInlinerScalarPaddingProbeIsRefusedOrCheap(t *testing.T) {
 
 	r := scanReportOf(t, scalarPaddingFlowfile(10000, 500000))
 	if !r.ok {
-		// Refused: healthy on its own terms. maxBytes existed before this
-		// fix; a legitimate value this size was never going to fit once an
-		// alias to it is charged even once, honestly, per site.
+		// Refused: healthy on its own terms too, and was this file's own
+		// prior expectation — kept as a branch rather than removed, in
+		// case a future, tighter choice of [scanBudgetMultiple] revisits
+		// where this shape sits relative to [maxScanned].
 		return
 	}
 
