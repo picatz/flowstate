@@ -271,12 +271,17 @@ func fuzzAll(ctx context.Context, out io.Writer, targets []target, workers int, 
 // fuzzCommand builds the command for one target. It is a function of its own,
 // rather than three lines inside [fuzzOne], because these arguments are the
 // tier's safety bounds and a test has to be able to assert them: one fuzzing
-// worker, a time budget, and a memory limit, because -fuzztime bounds time and
-// GOMEMLIMIT is what bounds memory. -run=XXX keeps the package's ordinary tests
-// out of the budget by matching none of them. Dropping any of them would
-// otherwise leave every test in this package green.
+// worker, a time budget, a memory limit, and -short, because -fuzztime bounds
+// time, GOMEMLIMIT is what bounds memory, and -short is what keeps a target's
+// package from paying for infrastructure the target never touches — cmd/flow's
+// TestMain boots a Temporal dev server unless -short tells it to skip, and a
+// download or startup hiccup there failed fuzzing that never needed the server
+// (#2098). -run=XXX keeps the package's ordinary tests out of the budget by
+// matching none of them. Dropping any of them would otherwise leave every test
+// in this package green.
 func fuzzCommand(ctx context.Context, t target, opts options) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "go", "test",
+		"-short",
 		"-timeout", opts.timeout.String(),
 		"-parallel", "1",
 		"-run=XXX",
