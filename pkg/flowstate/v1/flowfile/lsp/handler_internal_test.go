@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,9 +41,12 @@ func TestAnnounceInboundOrdersTheBuild(t *testing.T) {
 	s := &FlowfileServer{Logger: discardLogger()}
 	uri := lsp.DocumentURI("file:///ordered.yaml")
 
-	_, release := s.announceInbound(requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
+	_, release, coalesced := s.announceInbound(requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
 		TextDocument: lsp.TextDocumentItem{URI: uri, Version: 1, Text: "edition: v2026.3\n"},
 	}))
+	if coalesced {
+		t.Fatal("a didOpen must never be coalesced")
+	}
 
 	if got := func() int {
 		s.docs.mu.Lock()
@@ -131,9 +135,9 @@ func TestAnnounceInboundQueuesSameURINotificationsInAnnouncedOrder(t *testing.T)
 	// All three announced before any handler below has run, exactly as the
 	// read loop would announce a burst the goroutines behind it have not
 	// caught up with yet.
-	openWait, openRelease := s.announceInbound(openReq)
-	closeWait, closeRelease := s.announceInbound(closeReq)
-	reopenWait, reopenRelease := s.announceInbound(reopenReq)
+	openWait, openRelease, _ := s.announceInbound(openReq)
+	closeWait, closeRelease, _ := s.announceInbound(closeReq)
+	reopenWait, reopenRelease, _ := s.announceInbound(reopenReq)
 
 	if openWait != nil {
 		t.Fatal("the first notification queued for a URI has nothing to wait on")
@@ -162,6 +166,111 @@ func TestAnnounceInboundQueuesSameURINotificationsInAnnouncedOrder(t *testing.T)
 	}
 }
 
+// changeReq builds a full-sync didChange request: the single-entry,
+// no-range shape this server advertises and the one
+// [documentStore.enqueueChange] coalesces.
+func changeReq(t *testing.T, uri lsp.DocumentURI, version int, text string) *jsonrpc2.Request {
+	t.Helper()
+	return requestWithParams(t, "textDocument/didChange", lsp.DidChangeTextDocumentParams{
+		TextDocument:   lsp.VersionedTextDocumentIdentifier{TextDocumentIdentifier: lsp.TextDocumentIdentifier{URI: uri}, Version: version},
+		ContentChanges: []lsp.TextDocumentContentChangeEvent{{Text: text}},
+	})
+}
+
+// TestAnnounceInboundCoalescesFullSyncDidChangeBurst is the deterministic
+// half of the #2071 fix, in the spirit [TestAnnounceInboundOrdersTheBuild]
+// and [TestAnnounceInboundQueuesSameURINotificationsInAnnouncedOrder] pin for
+// #317 and #1986: it drives announceInbound directly, in a single goroutine,
+// so the bound under test does not depend on how a scheduler happens to run
+// anything.
+//
+// A burst of full-sync didChanges for one URI, every one of them announced —
+// as [asyncHandler.Handle] announces them on the read loop — before any
+// handler has run at all, is exactly what a burst of keystrokes produces
+// under jsonrpc2.AsyncHandler's goroutine-per-message dispatch. Before the
+// fix, every one of them queued: each got a wait channel and a release
+// [asyncHandler.Handle] would hand to a goroutine of its own, so N
+// notifications meant N goroutines parked holding N sets of params, however
+// large N was. This shows the queue holds at most one of them, whatever N
+// is: [asyncHandler.Handle] spawns a goroutine only for the one
+// announceInbound reports as queued (coalesced == false), never for one it
+// reports as coalesced — see its own doc comment — so the count this test
+// makes of the former is the count of goroutines the fix leaves parked.
+func TestAnnounceInboundCoalescesFullSyncDidChangeBurst(t *testing.T) {
+	t.Parallel()
+
+	s := &FlowfileServer{Logger: discardLogger()}
+	uri := lsp.DocumentURI("file:///storm.yaml")
+
+	const burst = 200
+	var queued, coalescedCount int
+	var wait <-chan struct{}
+	var release func()
+	for i := 1; i <= burst; i++ {
+		w, r, coalesced := s.announceInbound(changeReq(t, uri, i, strings.Repeat("#", i)+"\n"))
+		if coalesced {
+			coalescedCount++
+			if w != nil || r != nil {
+				t.Fatalf("message %d: a coalesced didChange returned a non-nil wait or release", i)
+			}
+			continue
+		}
+		queued++
+		wait, release = w, r
+	}
+
+	if queued != 1 {
+		t.Fatalf("a burst of %d full-sync didChanges for one URI queued %d, want 1", burst, queued)
+	}
+	if coalescedCount != burst-1 {
+		t.Fatalf("a burst of %d full-sync didChanges for one URI coalesced %d, want %d", burst, coalescedCount, burst-1)
+	}
+	if wait != nil {
+		t.Fatal("the first notification queued for a URI has nothing to wait on")
+	}
+
+	// Exactly one build in flight and one queue entry for the whole burst,
+	// not one per message — the same building count [documentStore.await]
+	// relies on to know a build is still coming rather than never arriving.
+	s.docs.mu.Lock()
+	building := s.docs.building[uri]
+	tail := len(s.docs.tail)
+	s.docs.mu.Unlock()
+	if building != 1 {
+		t.Fatalf("building[%s] = %d after the burst, want 1", uri, building)
+	}
+	if tail != 1 {
+		t.Fatalf("tail has %d entries after the burst, want 1", tail)
+	}
+
+	// The one queued message, once its handler claims its slot, reads the
+	// newest version and text — the ones the burst's last message carried —
+	// not its own: versions 1..(burst-1) were folded away rather than each
+	// being separately applied and discarded.
+	version, text := s.docs.claimChange(uri, 1, strings.Repeat("#", 1)+"\n")
+	wantText := strings.Repeat("#", burst) + "\n"
+	if version != burst || text != wantText {
+		t.Fatalf("claimChange returned version=%d text=%q, want version=%d text=%q", version, text, burst, wantText)
+	}
+
+	release()
+
+	s.docs.mu.Lock()
+	_, stillCoalesced := s.docs.coalesced[uri]
+	n := len(s.docs.building)
+	q := len(s.docs.tail)
+	s.docs.mu.Unlock()
+	if stillCoalesced {
+		t.Fatal("the coalesced slot survived its owner's release")
+	}
+	if n != 0 {
+		t.Fatalf("building has %d entries after release, want 0", n)
+	}
+	if q != 0 {
+		t.Fatalf("tail has %d entries after release, want 0", q)
+	}
+}
+
 // TestAnnounceInboundIgnoresWhatBuildsNothing pins the negative space: only a
 // document notification with a usable URI registers a build, and everything
 // else must be a no-op, because a registration nothing will ever retire would
@@ -186,9 +295,12 @@ func TestAnnounceInboundIgnoresWhatBuildsNothing(t *testing.T) {
 		{"empty uri", requestWithParams(t, "textDocument/didChange", lsp.DidChangeTextDocumentParams{})},
 	}
 	for _, tc := range cases {
-		wait, release := s.announceInbound(tc.req)
+		wait, release, coalesced := s.announceInbound(tc.req)
 		if wait != nil {
 			t.Fatalf("%s: announceInbound returned a wait channel for a message that queues nothing", tc.name)
+		}
+		if coalesced {
+			t.Fatalf("%s: announceInbound reported a message that builds nothing as coalesced", tc.name)
 		}
 		s.docs.mu.Lock()
 		n := len(s.docs.building)

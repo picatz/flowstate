@@ -185,12 +185,23 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc := s.docs.change(params.TextDocument.URI, params.TextDocument.Version, params.ContentChanges, s.tasks())
+		version, changes := params.TextDocument.Version, params.ContentChanges
+		if isFullSyncChange(changes) {
+			// A later full-sync didChange for this URI may have coalesced
+			// into the slot [FlowfileServer.announceInbound] queued this
+			// message under — see [documentStore.enqueueChange]. Claim it so
+			// what gets applied is whatever is newest, not necessarily what
+			// this particular message happened to carry.
+			var text string
+			version, text = s.docs.claimChange(params.TextDocument.URI, version, changes[0].Text)
+			changes = []lsp.TextDocumentContentChangeEvent{{Text: text}}
+		}
+		doc := s.docs.change(params.TextDocument.URI, version, changes, s.tasks())
 		if doc == nil {
 			// A stale edit, already superseded. Publishing diagnostics computed
 			// from it would replace the newer document's report with an older one.
 			s.logger().Debug("ignored stale change",
-				"uri", params.TextDocument.URI, "version", params.TextDocument.Version)
+				"uri", params.TextDocument.URI, "version", version)
 			return nil, nil
 		}
 		s.publish(ctx, conn, doc)

@@ -37,6 +37,13 @@ import (
 // correctly for open, change and hover; it just falls back to the grace
 // period for the window this closes, and the three document notifications
 // lose the ordering this file gives them — see [documentStore.enqueue].
+//
+// A full-sync didChange gets one more thing here: a same-URI one still
+// queued when a newer one arrives is folded into it rather than queued
+// again, since only the newest full text matters — see
+// [documentStore.enqueueChange]. Without that, a burst of keystrokes parks
+// one goroutine per didChange, each holding its own params, until the queue
+// ahead of it drains (#2071).
 func NewHandler(s *FlowfileServer) jsonrpc2.Handler {
 	return asyncHandler{server: s}
 }
@@ -48,7 +55,19 @@ type asyncHandler struct {
 // Handle implements [jsonrpc2.Handler]. It runs on the connection's read loop,
 // so everything before the `go` below happens in the order messages arrived.
 func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-	wait, release := h.server.announceInbound(req)
+	wait, release, coalesced := h.server.announceInbound(req)
+	if coalesced {
+		// A full-sync didChange this store already folded into a later one
+		// queued behind it — see [documentStore.enqueueChange]. Nothing is
+		// queued or building for this message, so there is nothing to wait
+		// on, release, or hand to [FlowfileServer.Handle]: the goroutine
+		// already queued for the change this one coalesced into will apply
+		// its content instead, through [documentStore.claimChange]. Not
+		// spawning a goroutine here — rather than spawning one that would
+		// immediately have nothing to do — is what keeps a burst of same-URI
+		// full-sync didChanges from parking one goroutine per message (#2071).
+		return
+	}
 	go func() {
 		defer release()
 		if wait != nil {
@@ -73,6 +92,14 @@ func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *json
 // build record once the message has been handled. For any message that
 // queues and builds nothing it returns a nil wait and a no-op release.
 //
+// A full-sync didChange — the only sync kind this server advertises — takes
+// a fourth path: [documentStore.enqueueChange] in place of
+// [documentStore.enqueue]. coalesced reports whether this call's message was
+// folded into a full-sync didChange already queued for the same URI rather
+// than queuing one of its own; when it is, wait and release are both nil,
+// because [asyncHandler.Handle] has nothing left to wait on or retire — see
+// its own doc comment for what it does instead.
+//
 // The retire runs after [FlowfileServer.Handle] returns rather than inside
 // the store's own open/change/close bookkeeping, because those also announce
 // and retire around themselves — the counts and the queue both nest, and this
@@ -84,24 +111,38 @@ func (h asyncHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *json
 // A malformed or empty params is not an error here: the handler will reject
 // it with a proper protocol answer, and there is no document to wait for or
 // queue entry to claim.
-func (s *FlowfileServer) announceInbound(req *jsonrpc2.Request) (wait <-chan struct{}, release func()) {
+func (s *FlowfileServer) announceInbound(req *jsonrpc2.Request) (wait <-chan struct{}, release func(), coalesced bool) {
 	switch req.Method {
 	case "textDocument/didOpen", "textDocument/didChange", "textDocument/didClose":
 	default:
-		return nil, func() {}
+		return nil, func() {}, false
 	}
 	if req.Params == nil {
-		return nil, func() {}
+		return nil, func() {}, false
 	}
 	var params struct {
 		TextDocument struct {
-			URI lsp.DocumentURI `json:"uri"`
+			URI     lsp.DocumentURI `json:"uri"`
+			Version int             `json:"version"`
 		} `json:"textDocument"`
+		ContentChanges []lsp.TextDocumentContentChangeEvent `json:"contentChanges"`
 	}
 	if err := json.Unmarshal(*req.Params, &params); err != nil || params.TextDocument.URI == "" {
-		return nil, func() {}
+		return nil, func() {}, false
 	}
 	uri := params.TextDocument.URI
+
+	if req.Method == "textDocument/didChange" && isFullSyncChange(params.ContentChanges) {
+		wait, done, coalesced := s.docs.enqueueChange(uri, params.TextDocument.Version, params.ContentChanges[0].Text)
+		if coalesced {
+			return nil, nil, true
+		}
+		s.docs.beginBuild(uri)
+		return wait, func() {
+			s.docs.endBuild(uri)
+			done()
+		}, false
+	}
 
 	wait, done := s.docs.enqueue(uri)
 
@@ -109,12 +150,12 @@ func (s *FlowfileServer) announceInbound(req *jsonrpc2.Request) (wait <-chan str
 		// A close builds nothing [documentStore.await] would wait for, so it
 		// does not join beginBuild/endBuild; it still joins the queue above,
 		// which is the whole of what it needs.
-		return wait, done
+		return wait, done, false
 	}
 
 	s.docs.beginBuild(uri)
 	return wait, func() {
 		s.docs.endBuild(uri)
 		done()
-	}
+	}, false
 }

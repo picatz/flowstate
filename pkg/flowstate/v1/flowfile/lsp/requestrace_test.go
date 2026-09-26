@@ -231,6 +231,94 @@ func testHoverThroughAChangeStorm(t *testing.T) {
 	require.Contains(t, hoverText(c.hover(uri, at.Line, at.Character)), "final_marker", "hover kept answering from a version older than the last change")
 }
 
+// TestFullSyncDidChangeBurstCoalescesInsteadOfQueuingEach is the wire-level
+// companion to [TestAnnounceInboundCoalescesFullSyncDidChangeBurst]: the same
+// claim, driven over a real connection with [NewHandler] instead of by
+// calling announceInbound directly, so the bound is shown to hold for the
+// actual dispatch path an editor's traffic goes through and not only for the
+// mechanism in isolation.
+//
+// A burst of full-sync didChanges is what a burst of keystrokes produces —
+// the same shape [TestHoverThroughAChangeStormAnswersFromTheLatestVersion]
+// sends — and before the fix, every one of them queued behind its
+// predecessor and parked a goroutine holding its own params until its turn
+// came; nothing bounded how many could pile up (#2071). Counted through
+// [documentStore.setCoalesceTrace] rather than inferred from timing, for the
+// same reason [TestHoverAnsweredWhenItArrivesWithDidOpen] reads the store's
+// own trace instead of a stopwatch: how many of the burst actually queued is
+// a fact about the mechanism, not about how the scheduler happened to
+// interleave anything.
+func TestFullSyncDidChangeBurstCoalescesInsteadOfQueuingEach(t *testing.T) {
+	synctest.Test(t, testFullSyncDidChangeBurstCoalesces)
+}
+
+func testFullSyncDidChangeBurstCoalesces(t *testing.T) {
+	c := newClient(t)
+	c.initialize()
+
+	uri := "file:///storm-bound.yaml"
+	c.openNoWait(uri, raceSource)
+	synctest.Wait() // the open lands before the burst starts, uninvolved in what is under test.
+
+	// The gate holds the burst's first message at the point where it would
+	// otherwise claim the coalescing slot, which is what makes the rest of
+	// the burst provably land in that same slot rather than merely making it
+	// likely: without it, nothing stops the scheduler from letting that
+	// first message run to completion (and its slot with it) partway
+	// through the loop below, which would make this test's own bound depend
+	// on the same scheduling this fix does not.
+	proceed := make(chan struct{})
+	c.server.docs.setChangeGate(func(u lsp.DocumentURI) {
+		if u == lsp.DocumentURI(uri) {
+			<-proceed
+		}
+	})
+
+	var queued, coalesced atomic.Int64
+	c.server.docs.setCoalesceTrace(func(wasCoalesced bool) {
+		if wasCoalesced {
+			coalesced.Add(1)
+		} else {
+			queued.Add(1)
+		}
+	})
+
+	// Each change only grows a trailing comment, so every one is distinct
+	// and the last is identifiable, without the changes needing to differ in
+	// any way that matters to what is under test here.
+	const burst = 100
+	var latest string
+	for i := 1; i <= burst; i++ {
+		latest = raceSource + strings.Repeat("#", i) + "\n"
+		c.changeNoWait(uri, latest, i+1)
+	}
+
+	synctest.Wait()
+
+	// The bound #2071 asks for: however large the burst, at most one
+	// full-sync didChange for this URI ever actually queues — every other
+	// one folds into it — so at most one goroutine was ever parked holding
+	// its own params for this URI's didChange traffic.
+	if got := queued.Load(); got != 1 {
+		t.Fatalf("a burst of %d full-sync didChanges queued %d rather than coalescing into one", burst, got)
+	}
+	if got := coalesced.Load(); got != burst-1 {
+		t.Fatalf("a burst of %d full-sync didChanges coalesced %d, want %d", burst, got, burst-1)
+	}
+
+	// Releasing the gate lets the one queued message claim the slot — by now
+	// holding the whole burst's last version and text — and apply it.
+	close(proceed)
+	synctest.Wait()
+
+	// And, exactly as the storm test above shows for a smaller burst, it
+	// still settles on the last change's text rather than on whichever one a
+	// scheduler happened to apply last.
+	doc, ok := c.server.docs.await(c.t.Context(), make(chan struct{}), lsp.DocumentURI(uri))
+	require.True(t, ok, "the document is gone")
+	require.Equal(t, latest, doc.text, "the document did not settle on the newest text")
+}
+
 // TestDidOpenWaitsForAnInFlightDidCloseOnTheSameURI is the wire-level
 // regression test for #1986 itself: a same-URI didClose and didOpen sent back
 // to back must have their handlers run in that order, because the connection
