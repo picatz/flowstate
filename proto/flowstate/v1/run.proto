@@ -1053,6 +1053,12 @@ message RunState {
   // carries zero too, which is why the interpreter reads whether it continued
   // from anything off its own history rather than from here.
   uint32 segment = 16;
+
+  // Debug is the run's durable debug session, if one is attached, carried to
+  // the next segment: a serialized [DebugCarry]. Bytes rather than the message
+  // because `debug.proto` imports this file, and the carry is only ever read
+  // back by the engine that wrote it. Empty when no session is attached.
+  bytes debug = 17 [(buf.validate.field).bytes = {max_len: 262144}];
 }
 
 // TimelineEntry is one thing a run did, read back from its own durable history.

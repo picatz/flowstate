@@ -732,6 +732,71 @@ func WorkflowServiceMethods() []ServiceMethod {
 		// that can start a workload every night should have to say so in a tool call
 		// somebody can read rather than by writing a loop that sleeps.
 		{
+			Name:   "DebugAttach",
+			Input:  (&v1.DebugAttachRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DebugAttachResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DebugAttach(ctx, connect.NewRequest(in.(*v1.DebugAttachRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			Name:   "DebugGet",
+			Input:  (&v1.DebugGetRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DebugGetResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DebugGet(ctx, connect.NewRequest(in.(*v1.DebugGetRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			Name:   "DebugResume",
+			Input:  (&v1.DebugResumeRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DebugResumeResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DebugResume(ctx, connect.NewRequest(in.(*v1.DebugResumeRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			Name:   "DebugSetBreakpoints",
+			Input:  (&v1.DebugSetBreakpointsRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DebugSetBreakpointsResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DebugSetBreakpoints(ctx, connect.NewRequest(in.(*v1.DebugSetBreakpointsRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			Name:   "DebugInspect",
+			Input:  (&v1.DebugInspectRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.DebugInspectResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().DebugInspect(ctx, connect.NewRequest(in.(*v1.DebugInspectRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
 			Name:   "CreateSchedule",
 			Input:  (&v1.CreateScheduleRequest{}).ProtoReflect().Descriptor(),
 			Output: (&v1.CreateScheduleResponse{}).ProtoReflect().Descriptor(),

@@ -93,6 +93,14 @@ const (
 	// open has a lever only if the two are distinguishable. Sharing an action
 	// would have made that choice for them, permanently.
 	AuthorizationAction_AUTHORIZATION_ACTION_MCP_DEBUG AuthorizationAction = 17
+	// WorkloadDebug is attaching a debugger to a durable run, reading its debug
+	// state, and controlling it: DebugAttach, DebugGet, DebugResume,
+	// DebugSetBreakpoints, and a Signal on the reserved debug channel. The run's
+	// own `debug:` policy still decides per run.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG AuthorizationAction = 18
+	// WorkloadDebugInspect is evaluating expressions against a held durable run,
+	// which can disclose any value in its scope: DebugInspect.
+	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT AuthorizationAction = 19
 )
 
 // Enum value maps for AuthorizationAction.
@@ -116,26 +124,30 @@ var (
 		15: "AUTHORIZATION_ACTION_MCP_RUN_LOCAL",
 		16: "AUTHORIZATION_ACTION_MCP_TEST",
 		17: "AUTHORIZATION_ACTION_MCP_DEBUG",
+		18: "AUTHORIZATION_ACTION_WORKLOAD_DEBUG",
+		19: "AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT",
 	}
 	AuthorizationAction_value = map[string]int32{
-		"AUTHORIZATION_ACTION_UNSPECIFIED":        0,
-		"AUTHORIZATION_ACTION_WORKLOAD_RUN":       1,
-		"AUTHORIZATION_ACTION_WORKLOAD_READ":      2,
-		"AUTHORIZATION_ACTION_WORKLOAD_SIGNAL":    3,
-		"AUTHORIZATION_ACTION_WORKLOAD_CANCEL":    4,
-		"AUTHORIZATION_ACTION_WORKLOAD_TERMINATE": 5,
-		"AUTHORIZATION_ACTION_WORKLOAD_VALIDATE":  6,
-		"AUTHORIZATION_ACTION_WORKLOAD_COMPILE":   7,
-		"AUTHORIZATION_ACTION_CATALOG_READ":       8,
-		"AUTHORIZATION_ACTION_SCHEDULE_CREATE":    9,
-		"AUTHORIZATION_ACTION_SCHEDULE_READ":      10,
-		"AUTHORIZATION_ACTION_SCHEDULE_DELETE":    11,
-		"AUTHORIZATION_ACTION_SCHEDULE_PAUSE":     12,
-		"AUTHORIZATION_ACTION_SCHEDULE_RESUME":    13,
-		"AUTHORIZATION_ACTION_SCHEDULE_TRIGGER":   14,
-		"AUTHORIZATION_ACTION_MCP_RUN_LOCAL":      15,
-		"AUTHORIZATION_ACTION_MCP_TEST":           16,
-		"AUTHORIZATION_ACTION_MCP_DEBUG":          17,
+		"AUTHORIZATION_ACTION_UNSPECIFIED":            0,
+		"AUTHORIZATION_ACTION_WORKLOAD_RUN":           1,
+		"AUTHORIZATION_ACTION_WORKLOAD_READ":          2,
+		"AUTHORIZATION_ACTION_WORKLOAD_SIGNAL":        3,
+		"AUTHORIZATION_ACTION_WORKLOAD_CANCEL":        4,
+		"AUTHORIZATION_ACTION_WORKLOAD_TERMINATE":     5,
+		"AUTHORIZATION_ACTION_WORKLOAD_VALIDATE":      6,
+		"AUTHORIZATION_ACTION_WORKLOAD_COMPILE":       7,
+		"AUTHORIZATION_ACTION_CATALOG_READ":           8,
+		"AUTHORIZATION_ACTION_SCHEDULE_CREATE":        9,
+		"AUTHORIZATION_ACTION_SCHEDULE_READ":          10,
+		"AUTHORIZATION_ACTION_SCHEDULE_DELETE":        11,
+		"AUTHORIZATION_ACTION_SCHEDULE_PAUSE":         12,
+		"AUTHORIZATION_ACTION_SCHEDULE_RESUME":        13,
+		"AUTHORIZATION_ACTION_SCHEDULE_TRIGGER":       14,
+		"AUTHORIZATION_ACTION_MCP_RUN_LOCAL":          15,
+		"AUTHORIZATION_ACTION_MCP_TEST":               16,
+		"AUTHORIZATION_ACTION_MCP_DEBUG":              17,
+		"AUTHORIZATION_ACTION_WORKLOAD_DEBUG":         18,
+		"AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT": 19,
 	}
 )
 
@@ -269,7 +281,7 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12C\n" +
 	"\x06parent\x18\x02 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06parent\x12;\n" +
 	"\x04rpcs\x18\x03 \x03(\tB'\xbaH$\x92\x01!\x10\b\x18\x01\"\x1br\x19\x10\x01\x18@2\x13^[A-Z][A-Za-z0-9]*$R\x04rpcs\x12B\n" +
-	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools*\xf2\x05\n" +
+	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools*\xcc\x06\n" +
 	"\x13AuthorizationAction\x12$\n" +
 	" AUTHORIZATION_ACTION_UNSPECIFIED\x10\x00\x12%\n" +
 	"!AUTHORIZATION_ACTION_WORKLOAD_RUN\x10\x01\x12&\n" +
@@ -289,7 +301,9 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"%AUTHORIZATION_ACTION_SCHEDULE_TRIGGER\x10\x0e\x12&\n" +
 	"\"AUTHORIZATION_ACTION_MCP_RUN_LOCAL\x10\x0f\x12!\n" +
 	"\x1dAUTHORIZATION_ACTION_MCP_TEST\x10\x10\x12\"\n" +
-	"\x1eAUTHORIZATION_ACTION_MCP_DEBUG\x10\x11B\xb1\x01\n" +
+	"\x1eAUTHORIZATION_ACTION_MCP_DEBUG\x10\x11\x12'\n" +
+	"#AUTHORIZATION_ACTION_WORKLOAD_DEBUG\x10\x12\x12/\n" +
+	"+AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT\x10\x13B\xb1\x01\n" +
 	"\x10com.flowstate.v1B\x12AuthorizationProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (

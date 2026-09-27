@@ -164,6 +164,35 @@ type debugControl struct {
 	// is the server's clock rather than this one's — or landing the field then.
 	// That is a decision better made where a caller exists to want it.
 	holdUntil time.Time
+
+	// carry is the typed session, carried across Continue-As-New; see
+	// debugsession.go. Never nil once the run has started.
+	carry *v1.DebugCarry
+	// parsed is carry's breakpoints, compiled once per segment.
+	parsed []parsedBreakpoint
+	// held is what the current typed hold is about, for the queries.
+	held heldStop
+	// occurrence is the last boundary this run reached, and arrivals counts
+	// them in this segment.
+	occurrence *v1.DebugOccurrence
+	arrivals   uint64
+	// continuation is this segment's position in the run's chain.
+	continuation int32
+	// pendingPause is the request id a pause is receipted under once it holds.
+	pendingPause string
+	// irDigest identifies the program this run executes, for a client binding
+	// its source map; computed once, when the queries are installed.
+	irDigest string
+
+	// lastSession is the session that ended most recently, so a late command
+	// for it is told it ended rather than that it never existed.
+	lastSession string
+
+	// observations are an attached session's recent step outcomes, in worker
+	// memory for the query only.
+	observations []*v1.DebugObservation
+	sequence     uint64
+	dropped      uint64
 }
 
 // enabled reports whether this run reads the debug channel at all.
@@ -222,10 +251,15 @@ func (e *executor) debugAsksAtBoundary(node *v1.Node) {
 	}
 
 	if !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
+		e.typedArrival(node)
+	}
+
+	if !v1.DebugLeaseHeld(e.debug.lease, workflow.Now(e.ctx)) {
 		return
 	}
 
 	e.holdForDebugLease(node, backlogged)
+	e.debugHoldEnded()
 }
 
 // applyDebugAsks consumes the debug asks waiting for this run, in the order
@@ -425,6 +459,15 @@ func dispositionOfPause(parked, held, holder bool) pauseDisposition {
 // workflow's `debug:` policy does not admit — this is the second half, the part
 // only the run knows: whether somebody else is already holding it.
 func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) (deferred bool) {
+	// A typed ask carries its session and is answered by a receipt; see
+	// debugsession.go. Everything below is the identity-fenced protocol, kept
+	// exactly as it was so a history recorded before sessions replays unchanged.
+	if ask, typed, err := v1.ParseTypedDebugAsk(delivery.GetPayload()); typed {
+		e.applyTypedAsk(ask, err, delivery.GetSender())
+
+		return false
+	}
+
 	logger := workflow.GetLogger(e.ctx)
 	sender := delivery.GetSender()
 	who := v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
@@ -466,6 +509,14 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) (defe
 		e.releaseDebugLease()
 
 	case v1.DebugVerbPause:
+		// While a typed session is attached, an identity-fenced pause would
+		// hold the run under a lease the session's commands cannot release.
+		if e.debug.attached() {
+			logger.Warn("refusing an identity-fenced debug pause: a typed debug session is attached",
+				"sender", who, "session", e.debug.carry.GetSessionId())
+
+			return false
+		}
 		requested := v1.DebugLeaseRequested(delivery.GetPayload())
 
 		switch dispositionOfPause(parked, held,

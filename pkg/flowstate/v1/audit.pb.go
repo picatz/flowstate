@@ -635,7 +635,11 @@ type AuditRecord struct {
 	// counts the rest for an interval, and the next refusal after the interval
 	// carries the count. Nothing is lost; the trail's granularity for a flood
 	// is the interval rather than the request.
-	Count         uint32 `protobuf:"varint,19,opt,name=count,proto3" json:"count,omitempty"`
+	Count uint32 `protobuf:"varint,19,opt,name=count,proto3" json:"count,omitempty"`
+	// Debug describes a debugger decision: which session and command it was
+	// about. Never the expression an inspection evaluated — that can hold a
+	// guessed value — only its digest.
+	Debug         *AuditDebugDetail `protobuf:"bytes,20,opt,name=debug,proto3" json:"debug,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -803,11 +807,98 @@ func (x *AuditRecord) GetCount() uint32 {
 	return 0
 }
 
+func (x *AuditRecord) GetDebug() *AuditDebugDetail {
+	if x != nil {
+		return x.Debug
+	}
+	return nil
+}
+
+// AuditDebugDetail is what a debugger decision was about.
+type AuditDebugDetail struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	RequestId string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Revision  uint64                 `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Operation names the command: `attach`, `get`, `resume/step_over`,
+	// `breakpoints`, `inspect`, `signal`.
+	Operation string `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"`
+	// ExpressionDigest is the content digest of an inspected expression.
+	ExpressionDigest string `protobuf:"bytes,5,opt,name=expression_digest,json=expressionDigest,proto3" json:"expression_digest,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *AuditDebugDetail) Reset() {
+	*x = AuditDebugDetail{}
+	mi := &file_flowstate_v1_audit_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditDebugDetail) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditDebugDetail) ProtoMessage() {}
+
+func (x *AuditDebugDetail) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_audit_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditDebugDetail.ProtoReflect.Descriptor instead.
+func (*AuditDebugDetail) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_audit_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *AuditDebugDetail) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *AuditDebugDetail) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *AuditDebugDetail) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *AuditDebugDetail) GetOperation() string {
+	if x != nil {
+		return x.Operation
+	}
+	return ""
+}
+
+func (x *AuditDebugDetail) GetExpressionDigest() string {
+	if x != nil {
+		return x.ExpressionDigest
+	}
+	return ""
+}
+
 var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xae\x0e\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe4\x0e\n" +
 	"\vAuditRecord\x12C\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
@@ -835,10 +926,19 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\vdelivery_id\x18\x11 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\n" +
 	"deliveryId\x12\x16\n" +
 	"\x06joined\x18\x12 \x01(\bR\x06joined\x12\x14\n" +
-	"\x05count\x18\x13 \x01(\rR\x05count:\xcf\x04\xbaH\xcb\x04\x1a\xd0\x01\n" +
+	"\x05count\x18\x13 \x01(\rR\x05count\x124\n" +
+	"\x05debug\x18\x14 \x01(\v2\x1e.flowstate.v1.AuditDebugDetailR\x05debug:\xcf\x04\xbaH\xcb\x04\x1a\xd0\x01\n" +
 	"\x16audit_record.operation\x12Uexactly one of rpc, mcp_tool or enforcement_point must identify the audited operation\x1a_[this.rpc != '', this.mcp_tool != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xca\x01\n" +
 	"\x13audit_record.action\x12taction names the authorization vocabulary and is set for an rpc or mcp_tool decision, never for an enforcement point\x1a=(this.action != 0) == (this.rpc != '' || this.mcp_tool != '')\x1a\xa8\x01\n" +
-	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)*\x85\x01\n" +
+	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)\"\xde\x01\n" +
+	"\x10AuditDebugDetail\x12'\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tsessionId\x12'\n" +
+	"\n" +
+	"request_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\trequestId\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\x04R\brevision\x12%\n" +
+	"\toperation\x18\x04 \x01(\tB\a\xbaH\x04r\x02\x18@R\toperation\x125\n" +
+	"\x11expression_digest\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x10expressionDigest*\x85\x01\n" +
 	"\rAuditDecision\x12\x1e\n" +
 	"\x1aAUDIT_DECISION_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14AUDIT_DECISION_ALLOW\x10\x01\x12\x17\n" +
@@ -895,30 +995,32 @@ func file_flowstate_v1_audit_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_audit_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_flowstate_v1_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_flowstate_v1_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_flowstate_v1_audit_proto_goTypes = []any{
 	(AuditDecision)(0),            // 0: flowstate.v1.AuditDecision
 	(AuditEnforcementPoint)(0),    // 1: flowstate.v1.AuditEnforcementPoint
 	(AuditResourceKind)(0),        // 2: flowstate.v1.AuditResourceKind
 	(AuditDenyCode)(0),            // 3: flowstate.v1.AuditDenyCode
 	(*AuditRecord)(nil),           // 4: flowstate.v1.AuditRecord
-	(AuthorizationAction)(0),      // 5: flowstate.v1.AuthorizationAction
-	(*WorkloadIdentity)(nil),      // 6: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(*AuditDebugDetail)(nil),      // 5: flowstate.v1.AuditDebugDetail
+	(AuthorizationAction)(0),      // 6: flowstate.v1.AuthorizationAction
+	(*WorkloadIdentity)(nil),      // 7: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
 }
 var file_flowstate_v1_audit_proto_depIdxs = []int32{
-	5, // 0: flowstate.v1.AuditRecord.action:type_name -> flowstate.v1.AuthorizationAction
+	6, // 0: flowstate.v1.AuditRecord.action:type_name -> flowstate.v1.AuthorizationAction
 	0, // 1: flowstate.v1.AuditRecord.decision:type_name -> flowstate.v1.AuditDecision
-	6, // 2: flowstate.v1.AuditRecord.identity:type_name -> flowstate.v1.WorkloadIdentity
+	7, // 2: flowstate.v1.AuditRecord.identity:type_name -> flowstate.v1.WorkloadIdentity
 	2, // 3: flowstate.v1.AuditRecord.resource_kind:type_name -> flowstate.v1.AuditResourceKind
-	7, // 4: flowstate.v1.AuditRecord.decided_at:type_name -> google.protobuf.Timestamp
+	8, // 4: flowstate.v1.AuditRecord.decided_at:type_name -> google.protobuf.Timestamp
 	3, // 5: flowstate.v1.AuditRecord.deny_code:type_name -> flowstate.v1.AuditDenyCode
 	1, // 6: flowstate.v1.AuditRecord.enforcement_point:type_name -> flowstate.v1.AuditEnforcementPoint
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	5, // 7: flowstate.v1.AuditRecord.debug:type_name -> flowstate.v1.AuditDebugDetail
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_audit_proto_init() }
@@ -934,7 +1036,7 @@ func file_flowstate_v1_audit_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_audit_proto_rawDesc), len(file_flowstate_v1_audit_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   1,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

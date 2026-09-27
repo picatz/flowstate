@@ -2440,7 +2440,7 @@ var File_flowstate_v1_service_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
+	"\x1aflowstate/v1/service.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x18flowstate/v1/debug.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x16flowstate/v1/run.proto\x1a\x1bflowstate/v1/schedule.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\x03\n" +
 	"\n" +
 	"RunRequest\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
@@ -2628,7 +2628,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\rschedule_name\x18\x04 \x01(\tR\fscheduleName\x12\x1f\n" +
 	"\vsignal_name\x18\x05 \x01(\tR\n" +
 	"signalName\x12\x16\n" +
-	"\x06result\x18\x06 \x01(\tR\x06result2\xea\v\n" +
+	"\x06result\x18\x06 \x01(\tR\x06result2\xaa\x0f\n" +
 	"\x0fWorkflowService\x12<\n" +
 	"\x03Run\x12\x18.flowstate.v1.RunRequest\x1a\x19.flowstate.v1.RunResponse\"\x00\x12<\n" +
 	"\x03Get\x12\x18.flowstate.v1.GetRequest\x1a\x19.flowstate.v1.GetResponse\"\x00\x12E\n" +
@@ -2637,7 +2637,12 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x04List\x12\x19.flowstate.v1.ListRequest\x1a\x1a.flowstate.v1.ListResponse\"\x00\x12T\n" +
 	"\vGetTimeline\x12 .flowstate.v1.GetTimelineRequest\x1a!.flowstate.v1.GetTimelineResponse\"\x00\x12E\n" +
 	"\x06Cancel\x12\x1b.flowstate.v1.CancelRequest\x1a\x1c.flowstate.v1.CancelResponse\"\x00\x12N\n" +
-	"\tTerminate\x12\x1e.flowstate.v1.TerminateRequest\x1a\x1f.flowstate.v1.TerminateResponse\"\x00\x12K\n" +
+	"\tTerminate\x12\x1e.flowstate.v1.TerminateRequest\x1a\x1f.flowstate.v1.TerminateResponse\"\x00\x12T\n" +
+	"\vDebugAttach\x12 .flowstate.v1.DebugAttachRequest\x1a!.flowstate.v1.DebugAttachResponse\"\x00\x12K\n" +
+	"\bDebugGet\x12\x1d.flowstate.v1.DebugGetRequest\x1a\x1e.flowstate.v1.DebugGetResponse\"\x00\x12T\n" +
+	"\vDebugResume\x12 .flowstate.v1.DebugResumeRequest\x1a!.flowstate.v1.DebugResumeResponse\"\x00\x12l\n" +
+	"\x13DebugSetBreakpoints\x12(.flowstate.v1.DebugSetBreakpointsRequest\x1a).flowstate.v1.DebugSetBreakpointsResponse\"\x00\x12W\n" +
+	"\fDebugInspect\x12!.flowstate.v1.DebugInspectRequest\x1a\".flowstate.v1.DebugInspectResponse\"\x00\x12K\n" +
 	"\bValidate\x12\x1d.flowstate.v1.ValidateRequest\x1a\x1e.flowstate.v1.ValidateResponse\"\x00\x12H\n" +
 	"\aCompile\x12\x1c.flowstate.v1.CompileRequest\x1a\x1d.flowstate.v1.CompileResponse\"\x00\x12Q\n" +
 	"\n" +
@@ -2666,65 +2671,75 @@ func file_flowstate_v1_service_proto_rawDescGZIP() []byte {
 var file_flowstate_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_flowstate_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_flowstate_v1_service_proto_goTypes = []any{
-	(RunResponse_Status)(0),          // 0: flowstate.v1.RunResponse.Status
-	(*RunRequest)(nil),               // 1: flowstate.v1.RunRequest
-	(*RunResponse)(nil),              // 2: flowstate.v1.RunResponse
-	(*GetRequest)(nil),               // 3: flowstate.v1.GetRequest
-	(*GetResponse)(nil),              // 4: flowstate.v1.GetResponse
-	(*SignalRequest)(nil),            // 5: flowstate.v1.SignalRequest
-	(*SignalResponse)(nil),           // 6: flowstate.v1.SignalResponse
-	(*SignalWithStartRequest)(nil),   // 7: flowstate.v1.SignalWithStartRequest
-	(*SignalWithStartResponse)(nil),  // 8: flowstate.v1.SignalWithStartResponse
-	(*CancelRequest)(nil),            // 9: flowstate.v1.CancelRequest
-	(*CancelResponse)(nil),           // 10: flowstate.v1.CancelResponse
-	(*TerminateRequest)(nil),         // 11: flowstate.v1.TerminateRequest
-	(*TerminateResponse)(nil),        // 12: flowstate.v1.TerminateResponse
-	(*ListRequest)(nil),              // 13: flowstate.v1.ListRequest
-	(*RunSummary)(nil),               // 14: flowstate.v1.RunSummary
-	(*ListResponse)(nil),             // 15: flowstate.v1.ListResponse
-	(*ListCursor)(nil),               // 16: flowstate.v1.ListCursor
-	(*ValidateRequest)(nil),          // 17: flowstate.v1.ValidateRequest
-	(*ValidateResponse)(nil),         // 18: flowstate.v1.ValidateResponse
-	(*GetTimelineRequest)(nil),       // 19: flowstate.v1.GetTimelineRequest
-	(*GetTimelineResponse)(nil),      // 20: flowstate.v1.GetTimelineResponse
-	(*CompileRequest)(nil),           // 21: flowstate.v1.CompileRequest
-	(*CompileResponse)(nil),          // 22: flowstate.v1.CompileResponse
-	(*GetCatalogRequest)(nil),        // 23: flowstate.v1.GetCatalogRequest
-	(*GetCatalogResponse)(nil),       // 24: flowstate.v1.GetCatalogResponse
-	(*MutationResult)(nil),           // 25: flowstate.v1.MutationResult
-	nil,                              // 26: flowstate.v1.RunRequest.InputsEntry
-	(*RunResponse_Error)(nil),        // 27: flowstate.v1.RunResponse.Error
-	nil,                              // 28: flowstate.v1.SignalWithStartRequest.InputsEntry
-	nil,                              // 29: flowstate.v1.RunSummary.LabelsEntry
-	(*Workflow)(nil),                 // 30: flowstate.v1.Workflow
-	(*Workflow_StepOutputs)(nil),     // 31: flowstate.v1.Workflow.StepOutputs
-	(*timestamppb.Timestamp)(nil),    // 32: google.protobuf.Timestamp
-	(*RunProgress)(nil),              // 33: flowstate.v1.RunProgress
-	(*PendingActivity)(nil),          // 34: flowstate.v1.PendingActivity
-	(*RunOutputs)(nil),               // 35: flowstate.v1.RunOutputs
-	(*EntityState)(nil),              // 36: flowstate.v1.EntityState
-	(*Node_Outputs)(nil),             // 37: flowstate.v1.Node.Outputs
-	(*SourceFile)(nil),               // 38: flowstate.v1.SourceFile
-	(*ValidationReport)(nil),         // 39: flowstate.v1.ValidationReport
-	(*TimelineEntry)(nil),            // 40: flowstate.v1.TimelineEntry
-	(*DiagnosticReport)(nil),         // 41: flowstate.v1.DiagnosticReport
-	(*TaskCatalog)(nil),              // 42: flowstate.v1.TaskCatalog
-	(*PluginCatalog)(nil),            // 43: flowstate.v1.PluginCatalog
-	(*Value)(nil),                    // 44: flowstate.v1.Value
-	(*CreateScheduleRequest)(nil),    // 45: flowstate.v1.CreateScheduleRequest
-	(*ListSchedulesRequest)(nil),     // 46: flowstate.v1.ListSchedulesRequest
-	(*DescribeScheduleRequest)(nil),  // 47: flowstate.v1.DescribeScheduleRequest
-	(*DeleteScheduleRequest)(nil),    // 48: flowstate.v1.DeleteScheduleRequest
-	(*PauseScheduleRequest)(nil),     // 49: flowstate.v1.PauseScheduleRequest
-	(*ResumeScheduleRequest)(nil),    // 50: flowstate.v1.ResumeScheduleRequest
-	(*TriggerScheduleRequest)(nil),   // 51: flowstate.v1.TriggerScheduleRequest
-	(*CreateScheduleResponse)(nil),   // 52: flowstate.v1.CreateScheduleResponse
-	(*ListSchedulesResponse)(nil),    // 53: flowstate.v1.ListSchedulesResponse
-	(*DescribeScheduleResponse)(nil), // 54: flowstate.v1.DescribeScheduleResponse
-	(*DeleteScheduleResponse)(nil),   // 55: flowstate.v1.DeleteScheduleResponse
-	(*PauseScheduleResponse)(nil),    // 56: flowstate.v1.PauseScheduleResponse
-	(*ResumeScheduleResponse)(nil),   // 57: flowstate.v1.ResumeScheduleResponse
-	(*TriggerScheduleResponse)(nil),  // 58: flowstate.v1.TriggerScheduleResponse
+	(RunResponse_Status)(0),             // 0: flowstate.v1.RunResponse.Status
+	(*RunRequest)(nil),                  // 1: flowstate.v1.RunRequest
+	(*RunResponse)(nil),                 // 2: flowstate.v1.RunResponse
+	(*GetRequest)(nil),                  // 3: flowstate.v1.GetRequest
+	(*GetResponse)(nil),                 // 4: flowstate.v1.GetResponse
+	(*SignalRequest)(nil),               // 5: flowstate.v1.SignalRequest
+	(*SignalResponse)(nil),              // 6: flowstate.v1.SignalResponse
+	(*SignalWithStartRequest)(nil),      // 7: flowstate.v1.SignalWithStartRequest
+	(*SignalWithStartResponse)(nil),     // 8: flowstate.v1.SignalWithStartResponse
+	(*CancelRequest)(nil),               // 9: flowstate.v1.CancelRequest
+	(*CancelResponse)(nil),              // 10: flowstate.v1.CancelResponse
+	(*TerminateRequest)(nil),            // 11: flowstate.v1.TerminateRequest
+	(*TerminateResponse)(nil),           // 12: flowstate.v1.TerminateResponse
+	(*ListRequest)(nil),                 // 13: flowstate.v1.ListRequest
+	(*RunSummary)(nil),                  // 14: flowstate.v1.RunSummary
+	(*ListResponse)(nil),                // 15: flowstate.v1.ListResponse
+	(*ListCursor)(nil),                  // 16: flowstate.v1.ListCursor
+	(*ValidateRequest)(nil),             // 17: flowstate.v1.ValidateRequest
+	(*ValidateResponse)(nil),            // 18: flowstate.v1.ValidateResponse
+	(*GetTimelineRequest)(nil),          // 19: flowstate.v1.GetTimelineRequest
+	(*GetTimelineResponse)(nil),         // 20: flowstate.v1.GetTimelineResponse
+	(*CompileRequest)(nil),              // 21: flowstate.v1.CompileRequest
+	(*CompileResponse)(nil),             // 22: flowstate.v1.CompileResponse
+	(*GetCatalogRequest)(nil),           // 23: flowstate.v1.GetCatalogRequest
+	(*GetCatalogResponse)(nil),          // 24: flowstate.v1.GetCatalogResponse
+	(*MutationResult)(nil),              // 25: flowstate.v1.MutationResult
+	nil,                                 // 26: flowstate.v1.RunRequest.InputsEntry
+	(*RunResponse_Error)(nil),           // 27: flowstate.v1.RunResponse.Error
+	nil,                                 // 28: flowstate.v1.SignalWithStartRequest.InputsEntry
+	nil,                                 // 29: flowstate.v1.RunSummary.LabelsEntry
+	(*Workflow)(nil),                    // 30: flowstate.v1.Workflow
+	(*Workflow_StepOutputs)(nil),        // 31: flowstate.v1.Workflow.StepOutputs
+	(*timestamppb.Timestamp)(nil),       // 32: google.protobuf.Timestamp
+	(*RunProgress)(nil),                 // 33: flowstate.v1.RunProgress
+	(*PendingActivity)(nil),             // 34: flowstate.v1.PendingActivity
+	(*RunOutputs)(nil),                  // 35: flowstate.v1.RunOutputs
+	(*EntityState)(nil),                 // 36: flowstate.v1.EntityState
+	(*Node_Outputs)(nil),                // 37: flowstate.v1.Node.Outputs
+	(*SourceFile)(nil),                  // 38: flowstate.v1.SourceFile
+	(*ValidationReport)(nil),            // 39: flowstate.v1.ValidationReport
+	(*TimelineEntry)(nil),               // 40: flowstate.v1.TimelineEntry
+	(*DiagnosticReport)(nil),            // 41: flowstate.v1.DiagnosticReport
+	(*TaskCatalog)(nil),                 // 42: flowstate.v1.TaskCatalog
+	(*PluginCatalog)(nil),               // 43: flowstate.v1.PluginCatalog
+	(*Value)(nil),                       // 44: flowstate.v1.Value
+	(*DebugAttachRequest)(nil),          // 45: flowstate.v1.DebugAttachRequest
+	(*DebugGetRequest)(nil),             // 46: flowstate.v1.DebugGetRequest
+	(*DebugResumeRequest)(nil),          // 47: flowstate.v1.DebugResumeRequest
+	(*DebugSetBreakpointsRequest)(nil),  // 48: flowstate.v1.DebugSetBreakpointsRequest
+	(*DebugInspectRequest)(nil),         // 49: flowstate.v1.DebugInspectRequest
+	(*CreateScheduleRequest)(nil),       // 50: flowstate.v1.CreateScheduleRequest
+	(*ListSchedulesRequest)(nil),        // 51: flowstate.v1.ListSchedulesRequest
+	(*DescribeScheduleRequest)(nil),     // 52: flowstate.v1.DescribeScheduleRequest
+	(*DeleteScheduleRequest)(nil),       // 53: flowstate.v1.DeleteScheduleRequest
+	(*PauseScheduleRequest)(nil),        // 54: flowstate.v1.PauseScheduleRequest
+	(*ResumeScheduleRequest)(nil),       // 55: flowstate.v1.ResumeScheduleRequest
+	(*TriggerScheduleRequest)(nil),      // 56: flowstate.v1.TriggerScheduleRequest
+	(*DebugAttachResponse)(nil),         // 57: flowstate.v1.DebugAttachResponse
+	(*DebugGetResponse)(nil),            // 58: flowstate.v1.DebugGetResponse
+	(*DebugResumeResponse)(nil),         // 59: flowstate.v1.DebugResumeResponse
+	(*DebugSetBreakpointsResponse)(nil), // 60: flowstate.v1.DebugSetBreakpointsResponse
+	(*DebugInspectResponse)(nil),        // 61: flowstate.v1.DebugInspectResponse
+	(*CreateScheduleResponse)(nil),      // 62: flowstate.v1.CreateScheduleResponse
+	(*ListSchedulesResponse)(nil),       // 63: flowstate.v1.ListSchedulesResponse
+	(*DescribeScheduleResponse)(nil),    // 64: flowstate.v1.DescribeScheduleResponse
+	(*DeleteScheduleResponse)(nil),      // 65: flowstate.v1.DeleteScheduleResponse
+	(*PauseScheduleResponse)(nil),       // 66: flowstate.v1.PauseScheduleResponse
+	(*ResumeScheduleResponse)(nil),      // 67: flowstate.v1.ResumeScheduleResponse
+	(*TriggerScheduleResponse)(nil),     // 68: flowstate.v1.TriggerScheduleResponse
 }
 var file_flowstate_v1_service_proto_depIdxs = []int32{
 	30, // 0: flowstate.v1.RunRequest.workflow:type_name -> flowstate.v1.Workflow
@@ -2770,36 +2785,46 @@ var file_flowstate_v1_service_proto_depIdxs = []int32{
 	19, // 40: flowstate.v1.WorkflowService.GetTimeline:input_type -> flowstate.v1.GetTimelineRequest
 	9,  // 41: flowstate.v1.WorkflowService.Cancel:input_type -> flowstate.v1.CancelRequest
 	11, // 42: flowstate.v1.WorkflowService.Terminate:input_type -> flowstate.v1.TerminateRequest
-	17, // 43: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
-	21, // 44: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
-	23, // 45: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
-	45, // 46: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
-	46, // 47: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
-	47, // 48: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
-	48, // 49: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
-	49, // 50: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
-	50, // 51: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
-	51, // 52: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
-	2,  // 53: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
-	4,  // 54: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
-	6,  // 55: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
-	8,  // 56: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
-	15, // 57: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
-	20, // 58: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
-	10, // 59: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
-	12, // 60: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
-	18, // 61: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
-	22, // 62: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
-	24, // 63: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
-	52, // 64: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
-	53, // 65: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
-	54, // 66: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
-	55, // 67: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
-	56, // 68: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
-	57, // 69: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
-	58, // 70: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
-	53, // [53:71] is the sub-list for method output_type
-	35, // [35:53] is the sub-list for method input_type
+	45, // 43: flowstate.v1.WorkflowService.DebugAttach:input_type -> flowstate.v1.DebugAttachRequest
+	46, // 44: flowstate.v1.WorkflowService.DebugGet:input_type -> flowstate.v1.DebugGetRequest
+	47, // 45: flowstate.v1.WorkflowService.DebugResume:input_type -> flowstate.v1.DebugResumeRequest
+	48, // 46: flowstate.v1.WorkflowService.DebugSetBreakpoints:input_type -> flowstate.v1.DebugSetBreakpointsRequest
+	49, // 47: flowstate.v1.WorkflowService.DebugInspect:input_type -> flowstate.v1.DebugInspectRequest
+	17, // 48: flowstate.v1.WorkflowService.Validate:input_type -> flowstate.v1.ValidateRequest
+	21, // 49: flowstate.v1.WorkflowService.Compile:input_type -> flowstate.v1.CompileRequest
+	23, // 50: flowstate.v1.WorkflowService.GetCatalog:input_type -> flowstate.v1.GetCatalogRequest
+	50, // 51: flowstate.v1.WorkflowService.CreateSchedule:input_type -> flowstate.v1.CreateScheduleRequest
+	51, // 52: flowstate.v1.WorkflowService.ListSchedules:input_type -> flowstate.v1.ListSchedulesRequest
+	52, // 53: flowstate.v1.WorkflowService.DescribeSchedule:input_type -> flowstate.v1.DescribeScheduleRequest
+	53, // 54: flowstate.v1.WorkflowService.DeleteSchedule:input_type -> flowstate.v1.DeleteScheduleRequest
+	54, // 55: flowstate.v1.WorkflowService.PauseSchedule:input_type -> flowstate.v1.PauseScheduleRequest
+	55, // 56: flowstate.v1.WorkflowService.ResumeSchedule:input_type -> flowstate.v1.ResumeScheduleRequest
+	56, // 57: flowstate.v1.WorkflowService.TriggerSchedule:input_type -> flowstate.v1.TriggerScheduleRequest
+	2,  // 58: flowstate.v1.WorkflowService.Run:output_type -> flowstate.v1.RunResponse
+	4,  // 59: flowstate.v1.WorkflowService.Get:output_type -> flowstate.v1.GetResponse
+	6,  // 60: flowstate.v1.WorkflowService.Signal:output_type -> flowstate.v1.SignalResponse
+	8,  // 61: flowstate.v1.WorkflowService.SignalWithStart:output_type -> flowstate.v1.SignalWithStartResponse
+	15, // 62: flowstate.v1.WorkflowService.List:output_type -> flowstate.v1.ListResponse
+	20, // 63: flowstate.v1.WorkflowService.GetTimeline:output_type -> flowstate.v1.GetTimelineResponse
+	10, // 64: flowstate.v1.WorkflowService.Cancel:output_type -> flowstate.v1.CancelResponse
+	12, // 65: flowstate.v1.WorkflowService.Terminate:output_type -> flowstate.v1.TerminateResponse
+	57, // 66: flowstate.v1.WorkflowService.DebugAttach:output_type -> flowstate.v1.DebugAttachResponse
+	58, // 67: flowstate.v1.WorkflowService.DebugGet:output_type -> flowstate.v1.DebugGetResponse
+	59, // 68: flowstate.v1.WorkflowService.DebugResume:output_type -> flowstate.v1.DebugResumeResponse
+	60, // 69: flowstate.v1.WorkflowService.DebugSetBreakpoints:output_type -> flowstate.v1.DebugSetBreakpointsResponse
+	61, // 70: flowstate.v1.WorkflowService.DebugInspect:output_type -> flowstate.v1.DebugInspectResponse
+	18, // 71: flowstate.v1.WorkflowService.Validate:output_type -> flowstate.v1.ValidateResponse
+	22, // 72: flowstate.v1.WorkflowService.Compile:output_type -> flowstate.v1.CompileResponse
+	24, // 73: flowstate.v1.WorkflowService.GetCatalog:output_type -> flowstate.v1.GetCatalogResponse
+	62, // 74: flowstate.v1.WorkflowService.CreateSchedule:output_type -> flowstate.v1.CreateScheduleResponse
+	63, // 75: flowstate.v1.WorkflowService.ListSchedules:output_type -> flowstate.v1.ListSchedulesResponse
+	64, // 76: flowstate.v1.WorkflowService.DescribeSchedule:output_type -> flowstate.v1.DescribeScheduleResponse
+	65, // 77: flowstate.v1.WorkflowService.DeleteSchedule:output_type -> flowstate.v1.DeleteScheduleResponse
+	66, // 78: flowstate.v1.WorkflowService.PauseSchedule:output_type -> flowstate.v1.PauseScheduleResponse
+	67, // 79: flowstate.v1.WorkflowService.ResumeSchedule:output_type -> flowstate.v1.ResumeScheduleResponse
+	68, // 80: flowstate.v1.WorkflowService.TriggerSchedule:output_type -> flowstate.v1.TriggerScheduleResponse
+	58, // [58:81] is the sub-list for method output_type
+	35, // [35:58] is the sub-list for method input_type
 	35, // [35:35] is the sub-list for extension type_name
 	35, // [35:35] is the sub-list for extension extendee
 	0,  // [0:35] is the sub-list for field type_name
@@ -2811,6 +2836,7 @@ func file_flowstate_v1_service_proto_init() {
 		return
 	}
 	file_flowstate_v1_catalog_proto_init()
+	file_flowstate_v1_debug_proto_init()
 	file_flowstate_v1_diagnostics_proto_init()
 	file_flowstate_v1_run_proto_init()
 	file_flowstate_v1_schedule_proto_init()

@@ -52,6 +52,21 @@ const (
 	// WorkflowServiceTerminateProcedure is the fully-qualified name of the WorkflowService's Terminate
 	// RPC.
 	WorkflowServiceTerminateProcedure = "/flowstate.v1.WorkflowService/Terminate"
+	// WorkflowServiceDebugAttachProcedure is the fully-qualified name of the WorkflowService's
+	// DebugAttach RPC.
+	WorkflowServiceDebugAttachProcedure = "/flowstate.v1.WorkflowService/DebugAttach"
+	// WorkflowServiceDebugGetProcedure is the fully-qualified name of the WorkflowService's DebugGet
+	// RPC.
+	WorkflowServiceDebugGetProcedure = "/flowstate.v1.WorkflowService/DebugGet"
+	// WorkflowServiceDebugResumeProcedure is the fully-qualified name of the WorkflowService's
+	// DebugResume RPC.
+	WorkflowServiceDebugResumeProcedure = "/flowstate.v1.WorkflowService/DebugResume"
+	// WorkflowServiceDebugSetBreakpointsProcedure is the fully-qualified name of the WorkflowService's
+	// DebugSetBreakpoints RPC.
+	WorkflowServiceDebugSetBreakpointsProcedure = "/flowstate.v1.WorkflowService/DebugSetBreakpoints"
+	// WorkflowServiceDebugInspectProcedure is the fully-qualified name of the WorkflowService's
+	// DebugInspect RPC.
+	WorkflowServiceDebugInspectProcedure = "/flowstate.v1.WorkflowService/DebugInspect"
 	// WorkflowServiceValidateProcedure is the fully-qualified name of the WorkflowService's Validate
 	// RPC.
 	WorkflowServiceValidateProcedure = "/flowstate.v1.WorkflowService/Validate"
@@ -192,6 +207,41 @@ type WorkflowServiceClient interface {
 	// [TerminateResponse] is empty: the run is already stopped by the time this
 	// returns, so a follow-up call to [Get] confirms status rather than awaiting it.
 	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
+	// DebugAttach asks a durable run to hold at its next step boundary under a
+	// debug lease, or renews or re-pauses a session the caller already holds.
+	//
+	// The run must declare `debug:` naming the caller. The answer's receipt says
+	// whether the run applied the ask or it is still pending: a run executing a
+	// long step reaches its next boundary only when that step finishes, and a
+	// hold never freezes work already dispatched. Keep the returned `session_id`;
+	// every later command must carry it. Retry with the same `request_id`.
+	DebugAttach(context.Context, *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error)
+	// DebugGet reads a durable run's debug session: state, stop reason, position,
+	// frames, capabilities, and recent observations. It changes nothing.
+	//
+	// Set `after_revision` and `wait` to wait for the next change instead of
+	// polling in a tight loop.
+	DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error)
+	// DebugResume releases a held durable run: continue, step in, step over,
+	// step out, run until a step, or detach.
+	//
+	// Only the session's holder may resume it, naming its `session_id`. Set
+	// `expected_revision` to the snapshot you acted on, so a command meant for a
+	// stop the run has already left is refused as stale rather than applied to
+	// the next one. Detach ends the session; it never ends the run.
+	DebugResume(context.Context, *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error)
+	// DebugSetBreakpoints replaces a durable session's breakpoints and failure
+	// stops, atomically. Only the session's holder may set them.
+	DebugSetBreakpoints(context.Context, *connect.Request[v1.DebugSetBreakpointsRequest]) (*connect.Response[v1.DebugSetBreakpointsResponse], error)
+	// DebugInspect evaluates a read-only CEL expression against a held durable
+	// run, or lists its scope, with typed, bounded, paged values.
+	//
+	// Evaluation is a disclosure: an expression can test any value in scope,
+	// including values whose rendering is redacted. It therefore needs its own
+	// authorization scope, only the session's holder may inspect, the run must be
+	// held at the named `revision`, and every request is audited. Inspection
+	// cannot dispatch a task, write history, or change what the run computes.
+	DebugInspect(context.Context, *connect.Request[v1.DebugInspectRequest]) (*connect.Response[v1.DebugInspectResponse], error)
 	// Validate checks Flowfiles and returns their diagnostics, executing nothing.
 	//
 	// The same checks and the same [ValidationReport] as `flow validate`: one
@@ -327,6 +377,36 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("Terminate")),
 			connect.WithClientOptions(opts...),
 		),
+		debugAttach: connect.NewClient[v1.DebugAttachRequest, v1.DebugAttachResponse](
+			httpClient,
+			baseURL+WorkflowServiceDebugAttachProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DebugAttach")),
+			connect.WithClientOptions(opts...),
+		),
+		debugGet: connect.NewClient[v1.DebugGetRequest, v1.DebugGetResponse](
+			httpClient,
+			baseURL+WorkflowServiceDebugGetProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DebugGet")),
+			connect.WithClientOptions(opts...),
+		),
+		debugResume: connect.NewClient[v1.DebugResumeRequest, v1.DebugResumeResponse](
+			httpClient,
+			baseURL+WorkflowServiceDebugResumeProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DebugResume")),
+			connect.WithClientOptions(opts...),
+		),
+		debugSetBreakpoints: connect.NewClient[v1.DebugSetBreakpointsRequest, v1.DebugSetBreakpointsResponse](
+			httpClient,
+			baseURL+WorkflowServiceDebugSetBreakpointsProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DebugSetBreakpoints")),
+			connect.WithClientOptions(opts...),
+		),
+		debugInspect: connect.NewClient[v1.DebugInspectRequest, v1.DebugInspectResponse](
+			httpClient,
+			baseURL+WorkflowServiceDebugInspectProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("DebugInspect")),
+			connect.WithClientOptions(opts...),
+		),
 		validate: connect.NewClient[v1.ValidateRequest, v1.ValidateResponse](
 			httpClient,
 			baseURL+WorkflowServiceValidateProcedure,
@@ -392,24 +472,29 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 
 // workflowServiceClient implements WorkflowServiceClient.
 type workflowServiceClient struct {
-	run              *connect.Client[v1.RunRequest, v1.RunResponse]
-	get              *connect.Client[v1.GetRequest, v1.GetResponse]
-	signal           *connect.Client[v1.SignalRequest, v1.SignalResponse]
-	signalWithStart  *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
-	list             *connect.Client[v1.ListRequest, v1.ListResponse]
-	getTimeline      *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
-	cancel           *connect.Client[v1.CancelRequest, v1.CancelResponse]
-	terminate        *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
-	validate         *connect.Client[v1.ValidateRequest, v1.ValidateResponse]
-	compile          *connect.Client[v1.CompileRequest, v1.CompileResponse]
-	getCatalog       *connect.Client[v1.GetCatalogRequest, v1.GetCatalogResponse]
-	createSchedule   *connect.Client[v1.CreateScheduleRequest, v1.CreateScheduleResponse]
-	listSchedules    *connect.Client[v1.ListSchedulesRequest, v1.ListSchedulesResponse]
-	describeSchedule *connect.Client[v1.DescribeScheduleRequest, v1.DescribeScheduleResponse]
-	deleteSchedule   *connect.Client[v1.DeleteScheduleRequest, v1.DeleteScheduleResponse]
-	pauseSchedule    *connect.Client[v1.PauseScheduleRequest, v1.PauseScheduleResponse]
-	resumeSchedule   *connect.Client[v1.ResumeScheduleRequest, v1.ResumeScheduleResponse]
-	triggerSchedule  *connect.Client[v1.TriggerScheduleRequest, v1.TriggerScheduleResponse]
+	run                 *connect.Client[v1.RunRequest, v1.RunResponse]
+	get                 *connect.Client[v1.GetRequest, v1.GetResponse]
+	signal              *connect.Client[v1.SignalRequest, v1.SignalResponse]
+	signalWithStart     *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
+	list                *connect.Client[v1.ListRequest, v1.ListResponse]
+	getTimeline         *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
+	cancel              *connect.Client[v1.CancelRequest, v1.CancelResponse]
+	terminate           *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
+	debugAttach         *connect.Client[v1.DebugAttachRequest, v1.DebugAttachResponse]
+	debugGet            *connect.Client[v1.DebugGetRequest, v1.DebugGetResponse]
+	debugResume         *connect.Client[v1.DebugResumeRequest, v1.DebugResumeResponse]
+	debugSetBreakpoints *connect.Client[v1.DebugSetBreakpointsRequest, v1.DebugSetBreakpointsResponse]
+	debugInspect        *connect.Client[v1.DebugInspectRequest, v1.DebugInspectResponse]
+	validate            *connect.Client[v1.ValidateRequest, v1.ValidateResponse]
+	compile             *connect.Client[v1.CompileRequest, v1.CompileResponse]
+	getCatalog          *connect.Client[v1.GetCatalogRequest, v1.GetCatalogResponse]
+	createSchedule      *connect.Client[v1.CreateScheduleRequest, v1.CreateScheduleResponse]
+	listSchedules       *connect.Client[v1.ListSchedulesRequest, v1.ListSchedulesResponse]
+	describeSchedule    *connect.Client[v1.DescribeScheduleRequest, v1.DescribeScheduleResponse]
+	deleteSchedule      *connect.Client[v1.DeleteScheduleRequest, v1.DeleteScheduleResponse]
+	pauseSchedule       *connect.Client[v1.PauseScheduleRequest, v1.PauseScheduleResponse]
+	resumeSchedule      *connect.Client[v1.ResumeScheduleRequest, v1.ResumeScheduleResponse]
+	triggerSchedule     *connect.Client[v1.TriggerScheduleRequest, v1.TriggerScheduleResponse]
 }
 
 // Run calls flowstate.v1.WorkflowService.Run.
@@ -450,6 +535,31 @@ func (c *workflowServiceClient) Cancel(ctx context.Context, req *connect.Request
 // Terminate calls flowstate.v1.WorkflowService.Terminate.
 func (c *workflowServiceClient) Terminate(ctx context.Context, req *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
 	return c.terminate.CallUnary(ctx, req)
+}
+
+// DebugAttach calls flowstate.v1.WorkflowService.DebugAttach.
+func (c *workflowServiceClient) DebugAttach(ctx context.Context, req *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error) {
+	return c.debugAttach.CallUnary(ctx, req)
+}
+
+// DebugGet calls flowstate.v1.WorkflowService.DebugGet.
+func (c *workflowServiceClient) DebugGet(ctx context.Context, req *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
+	return c.debugGet.CallUnary(ctx, req)
+}
+
+// DebugResume calls flowstate.v1.WorkflowService.DebugResume.
+func (c *workflowServiceClient) DebugResume(ctx context.Context, req *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error) {
+	return c.debugResume.CallUnary(ctx, req)
+}
+
+// DebugSetBreakpoints calls flowstate.v1.WorkflowService.DebugSetBreakpoints.
+func (c *workflowServiceClient) DebugSetBreakpoints(ctx context.Context, req *connect.Request[v1.DebugSetBreakpointsRequest]) (*connect.Response[v1.DebugSetBreakpointsResponse], error) {
+	return c.debugSetBreakpoints.CallUnary(ctx, req)
+}
+
+// DebugInspect calls flowstate.v1.WorkflowService.DebugInspect.
+func (c *workflowServiceClient) DebugInspect(ctx context.Context, req *connect.Request[v1.DebugInspectRequest]) (*connect.Response[v1.DebugInspectResponse], error) {
+	return c.debugInspect.CallUnary(ctx, req)
 }
 
 // Validate calls flowstate.v1.WorkflowService.Validate.
@@ -611,6 +721,41 @@ type WorkflowServiceHandler interface {
 	// [TerminateResponse] is empty: the run is already stopped by the time this
 	// returns, so a follow-up call to [Get] confirms status rather than awaiting it.
 	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
+	// DebugAttach asks a durable run to hold at its next step boundary under a
+	// debug lease, or renews or re-pauses a session the caller already holds.
+	//
+	// The run must declare `debug:` naming the caller. The answer's receipt says
+	// whether the run applied the ask or it is still pending: a run executing a
+	// long step reaches its next boundary only when that step finishes, and a
+	// hold never freezes work already dispatched. Keep the returned `session_id`;
+	// every later command must carry it. Retry with the same `request_id`.
+	DebugAttach(context.Context, *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error)
+	// DebugGet reads a durable run's debug session: state, stop reason, position,
+	// frames, capabilities, and recent observations. It changes nothing.
+	//
+	// Set `after_revision` and `wait` to wait for the next change instead of
+	// polling in a tight loop.
+	DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error)
+	// DebugResume releases a held durable run: continue, step in, step over,
+	// step out, run until a step, or detach.
+	//
+	// Only the session's holder may resume it, naming its `session_id`. Set
+	// `expected_revision` to the snapshot you acted on, so a command meant for a
+	// stop the run has already left is refused as stale rather than applied to
+	// the next one. Detach ends the session; it never ends the run.
+	DebugResume(context.Context, *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error)
+	// DebugSetBreakpoints replaces a durable session's breakpoints and failure
+	// stops, atomically. Only the session's holder may set them.
+	DebugSetBreakpoints(context.Context, *connect.Request[v1.DebugSetBreakpointsRequest]) (*connect.Response[v1.DebugSetBreakpointsResponse], error)
+	// DebugInspect evaluates a read-only CEL expression against a held durable
+	// run, or lists its scope, with typed, bounded, paged values.
+	//
+	// Evaluation is a disclosure: an expression can test any value in scope,
+	// including values whose rendering is redacted. It therefore needs its own
+	// authorization scope, only the session's holder may inspect, the run must be
+	// held at the named `revision`, and every request is audited. Inspection
+	// cannot dispatch a task, write history, or change what the run computes.
+	DebugInspect(context.Context, *connect.Request[v1.DebugInspectRequest]) (*connect.Response[v1.DebugInspectResponse], error)
 	// Validate checks Flowfiles and returns their diagnostics, executing nothing.
 	//
 	// The same checks and the same [ValidationReport] as `flow validate`: one
@@ -742,6 +887,36 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("Terminate")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceDebugAttachHandler := connect.NewUnaryHandler(
+		WorkflowServiceDebugAttachProcedure,
+		svc.DebugAttach,
+		connect.WithSchema(workflowServiceMethods.ByName("DebugAttach")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDebugGetHandler := connect.NewUnaryHandler(
+		WorkflowServiceDebugGetProcedure,
+		svc.DebugGet,
+		connect.WithSchema(workflowServiceMethods.ByName("DebugGet")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDebugResumeHandler := connect.NewUnaryHandler(
+		WorkflowServiceDebugResumeProcedure,
+		svc.DebugResume,
+		connect.WithSchema(workflowServiceMethods.ByName("DebugResume")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDebugSetBreakpointsHandler := connect.NewUnaryHandler(
+		WorkflowServiceDebugSetBreakpointsProcedure,
+		svc.DebugSetBreakpoints,
+		connect.WithSchema(workflowServiceMethods.ByName("DebugSetBreakpoints")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceDebugInspectHandler := connect.NewUnaryHandler(
+		WorkflowServiceDebugInspectProcedure,
+		svc.DebugInspect,
+		connect.WithSchema(workflowServiceMethods.ByName("DebugInspect")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceValidateHandler := connect.NewUnaryHandler(
 		WorkflowServiceValidateProcedure,
 		svc.Validate,
@@ -820,6 +995,16 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceCancelHandler.ServeHTTP(w, r)
 		case WorkflowServiceTerminateProcedure:
 			workflowServiceTerminateHandler.ServeHTTP(w, r)
+		case WorkflowServiceDebugAttachProcedure:
+			workflowServiceDebugAttachHandler.ServeHTTP(w, r)
+		case WorkflowServiceDebugGetProcedure:
+			workflowServiceDebugGetHandler.ServeHTTP(w, r)
+		case WorkflowServiceDebugResumeProcedure:
+			workflowServiceDebugResumeHandler.ServeHTTP(w, r)
+		case WorkflowServiceDebugSetBreakpointsProcedure:
+			workflowServiceDebugSetBreakpointsHandler.ServeHTTP(w, r)
+		case WorkflowServiceDebugInspectProcedure:
+			workflowServiceDebugInspectHandler.ServeHTTP(w, r)
 		case WorkflowServiceValidateProcedure:
 			workflowServiceValidateHandler.ServeHTTP(w, r)
 		case WorkflowServiceCompileProcedure:
@@ -879,6 +1064,26 @@ func (UnimplementedWorkflowServiceHandler) Cancel(context.Context, *connect.Requ
 
 func (UnimplementedWorkflowServiceHandler) Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Terminate is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DebugAttach(context.Context, *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugAttach is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DebugGet(context.Context, *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugGet is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DebugResume(context.Context, *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugResume is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DebugSetBreakpoints(context.Context, *connect.Request[v1.DebugSetBreakpointsRequest]) (*connect.Response[v1.DebugSetBreakpointsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugSetBreakpoints is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) DebugInspect(context.Context, *connect.Request[v1.DebugInspectRequest]) (*connect.Response[v1.DebugInspectResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.DebugInspect is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) Validate(context.Context, *connect.Request[v1.ValidateRequest]) (*connect.Response[v1.ValidateResponse], error) {
