@@ -312,10 +312,11 @@ row.
 
 - `inputs:` and `expect:` merge one level deep: a row that writes
   `expect.error_contains` keeps its entry's `expect.failed`.
-- `stubs:`, `signals:`, `secrets:`, and `trigger:` are inherited whole or
-  replaced whole. A case's stub for the same target and the same `where:`
-  replaces its inherited twin; any other case stub is tried before the
-  inherited ones.
+- `signals:`, `secrets:`, `trigger:`, and `starter:` are inherited whole or
+  replaced whole.
+- `stubs:` merge: a case's stub for the same target and the same `where:`
+  replaces its inherited twin, every other case stub is tried first, and the
+  remaining inherited stubs answer what those do not.
 - `check:` lists accumulate: every level's claims must hold.
 - `sender:` in `defaults:` fills in only signals that name no sender. A case
   that means "no sender" writes `sender: {}`.
@@ -440,9 +441,16 @@ They reach the workflow's own `signals:` policy, including
 that the requester cannot approve their own run. They do not reach
 `run.identity` (empty in every case, with `run.local` true), egress policy (a
 stub answers the request that would have been checked), task-shape policy, or
-secret-access policy. `flow test` takes no deployment policy flags. A green case
-therefore says what the workflow does for a given identity; it says nothing
-about whether a deployment would let that identity do it.
+secret-access policy. A green case therefore says what the workflow does for a
+given identity; it says nothing about whether a deployment would let that
+identity do it.
+
+The `flow test` command takes no deployment policy flags, so no task-shape
+policy applies and every dispatch is allowed. A suite run through the
+`flowstate_test` MCP tool is the exception: under `flow mcp --task-policy`,
+that policy is checked on every dispatch, stubbed or not, against the empty
+`run.identity`. A rule that requires an identity therefore denies the case
+there, although the same suite passes under `flow test`.
 [`examples/approval-gate`](../examples/approval-gate/workflow.test.yaml) tests
 its separation of duties this way.
 
@@ -488,7 +496,7 @@ skipped by `if:` does not count. `switch:` arms are counted separately.
 **A failing case** prints its transcript: each step's outputs, the virtual time
 it happened at, which stub answered (marked `from defaults` when inherited),
 each signal, and each `switch:` arm taken. Exit status is 0 when everything
-passed and 1 otherwise.
+passed, 1 when a case failed, and 2 for a usage error.
 
 ## Tests in Go
 

@@ -19,8 +19,8 @@ stopping.
 
 Authors get a fast local loop: validation with line and column, tests on a
 virtual clock, a step debugger, and editor and agent integration. Operators get
-authenticated callers and approvers, fail-closed policy over what workflows may
-reach, worker-side secret resolution, tenant isolation, and an audit trail.
+authenticated callers and approvers, policy over what workflows may reach and
+read, worker-side secret resolution, tenant isolation, and an audit trail.
 
 Flowstate works alongside CI, services, and your existing Temporal usage rather
 than replacing them. CI still builds and tests; a CI job can hand off to a

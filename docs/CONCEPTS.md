@@ -10,7 +10,7 @@ durably on [Temporal](https://temporal.io/), under policy about who may start
 it, who may answer it, what it may reach, and which secrets it may use.
 
 This page explains the building blocks and how they connect. It assumes you have
-seen a Flowfile; [Get started](GETTING_STARTED.md) is the quickest way to have.
+seen a Flowfile; [Get started](GETTING_STARTED.md) is the quickest way to see one.
 
 ## The pieces
 
@@ -135,8 +135,8 @@ A wait with a `timeout:` does not fail when the timeout lapses. It reports
 ## Failure
 
 Each task attempt either succeeds or fails with a classified error. Retryable
-failures are retried under the step's `retry:` policy (tasks have defaults), up
-to its `timeout:`. A request whose effect is unknown, such as a `POST` that
+failures are retried under the step's `retry:` policy (tasks have defaults).
+`timeout:` bounds each attempt and `total_timeout:` bounds all of them together. A request whose effect is unknown, such as a `POST` that
 timed out, is not retried unless the step says the endpoint is idempotent.
 
 A failed step fails the run, unless the step has `continue_on_error: true`, in
@@ -187,17 +187,20 @@ Every durable run records who started it: an identity the server verified from
 the caller's token, including the caller's **tenant** (namespace). A Flowfile
 cannot claim a tenant; it comes only from authentication.
 
-Policy is enforced where the action happens, and every check fails closed:
-missing configuration or an error while evaluating a rule denies.
+Policy is enforced where the action happens. Once a rule is configured, an error
+while evaluating it denies. What a check does when **nothing** is configured
+differs, and the last column says, because several allow by default.
 
-| Question | Answered by | Configured in |
-| --- | --- | --- |
-| May this caller use the API at all, and for which actions? | The server, on every RPC | The deployment's trust policy: which token issuers are trusted, and an optional per-issuer `actions:` list such as `workload.run` or `workload.read` |
-| May this caller start this workflow? | The server, at `Run` | The workflow's `triggers.manual:` |
-| May this caller send this signal? | The server, at `Signal` | The workflow's `signals:` block |
-| May this task reach this host? | The worker, as the connection is made | The deployment's egress policy, with CEL rules. Internal addresses are denied by default. |
-| May this identity dispatch this task? | The worker, before each attempt | The deployment's task policy, in CEL |
-| May this step read this secret? | The worker, before the provider is asked | The trust policy's `secrets:` rules, in CEL |
+| Question | Answered by | Configured in | With nothing configured |
+| --- | --- | --- | --- |
+| May this caller use the API at all, and for which actions? | The server, on every RPC | The deployment's trust policy: which token issuers are trusted, and an optional per-issuer `actions:` list such as `workload.run` or `workload.read` | A server refuses to start without a trust policy, unless told `--insecure-no-auth`. An issuer with no `actions:` list may use every action. |
+| May this caller start this workflow? | The server, at `Run` | The workflow's `triggers.manual:` | Any authenticated caller in the workflow's tenant. |
+| May this caller send this signal? | The server, at `Signal` | The workflow's `signals:` block | Any authenticated caller in the run's tenant. |
+| May this caller hold a durable run for debugging? | The server, at `Signal` | The workflow's `debug:` block | Nobody. |
+| May this task reach this host? | The worker, as the connection is made | The deployment's egress policy, with CEL rules | Internal and loopback addresses are refused; public ones are allowed. |
+| May this identity dispatch this task? | The worker, before each attempt | The deployment's task policy, in CEL | Every task is allowed. |
+| May this step read this secret? | The worker, before the provider is asked | The trust policy's `secrets:` rules, in CEL | Nothing may be read. |
+| May this step mint a federated credential? | The worker, before the exchange | The trust policy's `federation:` rules, in CEL | Any configured target. Write an `allow:` rule for each. |
 
 Some policy lives in the workflow, because the author knows who should approve a
 release. The rest lives in the deployment, because an operator decides what a
@@ -232,7 +235,7 @@ wait for days without holding anything.
 | `needs:` | A reference: reading `${steps.build.value}` orders the step after `build` |
 | `if:` | `if:` |
 | `strategy.matrix` | `for_each:` over a list the workflow computes |
-| `continue-on-error`, `timeout-minutes` | `continue_on_error:`, `timeout:` |
+| `continue-on-error`, `timeout-minutes` | `continue_on_error:`, and `total_timeout:` for the whole step (`timeout:` bounds one attempt) |
 | `secrets.TOKEN` | `${secret('env:TOKEN')}`, resolved on the worker under policy |
 | An environment's required reviewers | `wait_for_signal:` with a `signals:` policy naming who may approve |
 | Reusable workflows | `call:` |
