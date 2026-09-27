@@ -40,7 +40,7 @@ func TestDeploymentOptionsNeedsBothHalves(t *testing.T) {
 	}{
 		{name: "neither"},
 		{name: "only a deployment name", deployment: "flowstate", wantErr: "--build-id"},
-		{name: "only a build id", buildID: "abc123", wantErr: "--deployment-name"},
+		{name: "only a build id", buildID: "abc123", wantErr: "set --temporal-deployment-name (or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME)"},
 		{name: "both", deployment: "flowstate", buildID: "abc123", versioned: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

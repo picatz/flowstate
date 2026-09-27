@@ -59,7 +59,7 @@ real ones:
 ```console
 $ flow worker --auth-policy examples/http-federated/auth-policy.yaml \
     --identity-key /etc/flowstate/identity.pem \
-    --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
 `flow run local` takes the same two flags, so a rehearsal exchanges credentials the

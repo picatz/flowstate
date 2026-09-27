@@ -1,6 +1,6 @@
 # Worker deployment versioning
 
-`flow worker --deployment-name --build-id`: a run finishes on the interpreter it
+`flow worker --temporal-deployment-name --build-id`: a run finishes on the interpreter it
 started on, takes the current version at Continue-As-New, and a worker given half
 the pair refuses to start.
 
@@ -30,7 +30,7 @@ a shipped capability depends on the guarantee rather than merely benefiting from
 
 ```console
 $ flow server --insecure-no-auth &
-$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+$ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
@@ -57,7 +57,7 @@ Now start a second worker at a different build id, as a deploy would, and watch 
 does *not* happen to the run already in flight:
 
 ```console
-$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
+$ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
 ```
 
 Nothing. The in-flight run keeps executing on the version it started on. That is the
@@ -91,14 +91,14 @@ Two consequences worth holding onto:
 **Half a version.** Both halves arrive together or not at all:
 
 ```console
-$ flow worker --deployment-name flowstate
+$ flow worker --temporal-deployment-name flowstate
 Error: worker deployment "flowstate" has no build id: a version is the pair, so set
 --build-id (or FLOWSTATE_BUILD_ID) to something unique per build, such as the commit
 
 $ flow worker --build-id 1a2b3c4
 Error: build id "1a2b3c4" has no worker deployment: a version is the pair, so set
---deployment-name (or FLOWSTATE_DEPLOYMENT_NAME) to the deployment this worker
-belongs to
+--temporal-deployment-name (or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME) to the Worker
+Deployment this worker belongs to
 ```
 
 Each message names the missing half *and echoes the half that was given*, which is
@@ -106,8 +106,8 @@ what identifies whose command line is wrong when several fleets are being deploy
 at once.
 
 Note the case that looks like it should be an exception and is not: passing
-`--deployment-name` with `--allow-unversioned-interpreter` and no build id is still
-refused for the missing build id. The flag accepts running unversioned; it does not
+`--temporal-deployment-name` with `--allow-unversioned-interpreter` and no build id
+is still refused for the missing build id. The flag accepts running unversioned; it does not
 accept a version that is half-written. Nobody chose that state, so the answer is to
 name the missing half rather than to offer to proceed without either.
 
@@ -119,12 +119,12 @@ $ flow worker
 Error: refusing to start an unversioned worker: this worker evaluates workflow
 expressions (step conditions, a loop's items:, a step's vars:, task inputs) in
 workflow code, so the expression engine built into this binary decides what they
-mean — and with no version, deploying a different binary changes what every run
+mean; with no version, deploying a different binary changes what every run
 already in flight computes, including where a run resumes after continue-as-new.
-Pass --deployment-name and --build-id (or FLOWSTATE_DEPLOYMENT_NAME and
-FLOWSTATE_BUILD_ID) to pin each run to the interpreter it started on, or
---allow-unversioned-interpreter to accept that exposure, which is what a local
-`temporal server start-dev` session usually wants
+Pass --temporal-deployment-name and --build-id (or
+FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to the
+interpreter it started on, or --allow-unversioned-interpreter to accept that
+exposure, which is what a local `temporal server start-dev` session usually wants
 ```
 
 Typing the flag is the whole cost of a dev-server session, which is what keeps this
@@ -135,6 +135,22 @@ every start, not only at the moment the flag was typed:
 
 Same reasoning as tenant-routing's restricted-worker line: the person reading a
 worker's logs a month later is usually not the person who wrote its command line.
+
+**The old spelling.** The worker's flag used to be `--deployment-name`, the same
+spelling `flow server` uses for the Flowstate installation recorded in workload
+identities. It is refused on the worker rather than accepted, so a pinned command
+line fails saying which flag it meant:
+
+```console
+$ flow worker --deployment-name flowstate
+Error: --deployment-name was removed from `flow worker`: it named Temporal's Worker
+Deployment (picatz/flowstate#2121)
+--temporal-deployment-name names Temporal's Worker Deployment
+--deployment-name on `flow server` names the Flowstate installation recorded in
+workload identities; a worker does not take it
+```
+
+`FLOWSTATE_DEPLOYMENT_NAME` is `flow server`'s variable; a worker ignores it.
 
 ## Why the dev server is not detected and exempted
 
@@ -152,7 +168,7 @@ the value. Both flags default from the environment, which lets one command line 
 identical across every deployment:
 
 ```console
-$ export FLOWSTATE_DEPLOYMENT_NAME=flowstate
+$ export FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME=flowstate
 $ export FLOWSTATE_BUILD_ID="$(git rev-parse --short HEAD)"
 $ flow worker
 ```

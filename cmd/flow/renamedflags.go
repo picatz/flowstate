@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -30,27 +31,49 @@ import (
 // costs one hidden flag rather than a policy nothing else follows.
 var renamedTemporalFlags = []renamedFlag{
 	{
-		old:  "address",
-		new:  "temporal-address",
-		what: "Temporal's frontend address",
+		old:   "address",
+		new:   "temporal-address",
+		what:  "Temporal's frontend address",
+		issue: "picatz/flowstate#580",
 	},
 	{
-		old:  "namespace",
-		new:  "temporal-namespace",
-		what: "Temporal's namespace, which is not a Flowstate tenant",
+		old:   "namespace",
+		new:   "temporal-namespace",
+		what:  "Temporal's namespace, which is not a Flowstate tenant",
+		issue: "picatz/flowstate#580",
 	},
 	{
-		old:  "profile",
-		new:  "temporal-profile",
-		what: "a Temporal configuration profile",
+		old:   "profile",
+		new:   "temporal-profile",
+		what:  "a Temporal configuration profile",
+		issue: "picatz/flowstate#580",
+	},
+}
+
+// The flags only `flow worker` used to spell without Temporal's prefix
+// (picatz/flowstate#2121).
+//
+// Kept apart from [renamedTemporalFlags] because that list is refused on both
+// commands, and `flow server --deployment-name` is not removed: it names the
+// Flowstate installation recorded in every run's workload identity. The worker's
+// flag of the same spelling named Temporal's Worker Deployment, a different
+// thing sharing the name and the FLOWSTATE_DEPLOYMENT_NAME default, so an
+// operator setting one variable for "the deployment" configured both at once.
+var renamedWorkerFlags = []renamedFlag{
+	{
+		old:   "deployment-name",
+		new:   "temporal-deployment-name",
+		what:  "Temporal's Worker Deployment",
+		issue: "picatz/flowstate#2121",
 	},
 }
 
 // renamedFlag is one spelling that is gone and the one that replaced it.
 type renamedFlag struct {
-	old  string
-	new  string
-	what string // what the old spelling named, as the object of "named ...".
+	old   string
+	new   string
+	what  string // what the old spelling named, as the object of "named ...".
+	issue string // where the rename was decided, cited in the refusal.
 }
 
 // refusedFlagUsage marks a flag that exists only to be refused.
@@ -60,7 +83,7 @@ type renamedFlag struct {
 // same cobra tree the docs generator does and has only the flag to read.
 const refusedFlagUsage = "removed: "
 
-// addRenamedTemporalFlags registers the old spellings on a command, hidden, and
+// addRenamedFlags registers a table of old spellings on a command, hidden, and
 // arranges for any of them that is actually passed to fail before the command
 // runs.
 //
@@ -70,8 +93,8 @@ const refusedFlagUsage = "removed: "
 // operator reads rather than `unknown flag: --address`, which names neither
 // meaning and suggests nothing (the near-miss suggester in cmd/flow/suggest.go
 // is bounded at two edits; `address` is ten from `temporal-address`).
-func addRenamedTemporalFlags(cmd *cobra.Command) {
-	for _, renamed := range renamedTemporalFlags {
+func addRenamedFlags(cmd *cobra.Command, table []renamedFlag) {
+	for _, renamed := range table {
 		cmd.Flags().String(renamed.old, "", refusedFlagUsage+"say `--"+renamed.new+"` instead")
 
 		if err := cmd.Flags().MarkHidden(renamed.old); err != nil {
@@ -80,26 +103,30 @@ func addRenamedTemporalFlags(cmd *cobra.Command) {
 	}
 
 	// PreRunE rather than RunE's first lines, so that every command sharing
-	// this list refuses identically, and so `--help` still renders: cobra runs
-	// PreRunE only on the way to RunE.
+	// a list refuses identically, and so `--help` still renders: cobra runs
+	// PreRunE only on the way to RunE. One call per command, with the whole
+	// table, because a second would replace the first one's refusal.
 	if cmd.PreRunE != nil {
-		panic(fmt.Sprintf("%q already has a PreRunE; addRenamedTemporalFlags would replace it", cmd.Name()))
+		panic(fmt.Sprintf("%q already has a PreRunE; addRenamedFlags would replace it", cmd.Name()))
 	}
-	cmd.PreRunE = refuseRenamedTemporalFlags
+	table = slices.Clone(table)
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		return refuseRenamedFlags(cmd, table)
+	}
 }
 
-// refuseRenamedTemporalFlags reports the first old spelling this invocation
+// refuseRenamedFlags reports the first old spelling in table this invocation
 // passed, as an error naming what it used to mean and every flag that answers
 // that question now.
-func refuseRenamedTemporalFlags(cmd *cobra.Command, _ []string) error {
-	for _, renamed := range renamedTemporalFlags {
+func refuseRenamedFlags(cmd *cobra.Command, table []renamedFlag) error {
+	for _, renamed := range table {
 		if !cmd.Flags().Changed(renamed.old) {
 			continue
 		}
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "--%s was removed from `%s`: it named %s (picatz/flowstate#580)",
-			renamed.old, cmd.CommandPath(), renamed.what)
+		fmt.Fprintf(&b, "--%s was removed from `%s`: it named %s (%s)",
+			renamed.old, cmd.CommandPath(), renamed.what, renamed.issue)
 		for _, remedy := range remediesFor(cmd, renamed) {
 			b.WriteString("\n  " + remedy)
 		}
@@ -132,6 +159,12 @@ func remediesFor(cmd *cobra.Command, renamed renamedFlag) []string {
 		if cmd.Flags().Lookup("tenant") != nil {
 			remedies = append(remedies, "--tenant names the Flowstate tenant whose runs this worker executes")
 		}
+	case "deployment-name":
+		// Only the worker refuses it; the spelling survives on `flow server`
+		// with its other meaning, which is the likelier intent when an
+		// operator carried it over from a server's command line.
+		remedies = append(remedies, "--deployment-name on `flow server` names the Flowstate installation "+
+			"recorded in workload identities; a worker does not take it")
 	}
 
 	return remedies

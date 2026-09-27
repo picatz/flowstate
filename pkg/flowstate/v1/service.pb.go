@@ -1405,8 +1405,8 @@ type RunSummary struct {
 	// Empty when the starter is unknown.
 	Starter string `protobuf:"bytes,8,opt,name=starter,proto3" json:"starter,omitempty"`
 	// WorkerVersion is the Worker Deployment version this run is pinned to, as
-	// `deployment-name.build-id`: the pair `flow worker --deployment-name` and
-	// `--build-id` configure.
+	// `deployment-name.build-id`: the pair `flow worker --temporal-deployment-name`
+	// and `--build-id` configure.
 	//
 	// Empty when the run is not pinned to a version, including every run on a
 	// deployment that does not use Worker Deployment Versioning. It can change

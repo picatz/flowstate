@@ -28,7 +28,7 @@ Secret access requires two independent pieces of worker configuration:
 
 ```sh
 flow worker \
-  --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
+  --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
   --secret-env API_TOKEN \
   --secret-dir /var/run/secrets/flowstate \
   --auth-policy /etc/flowstate/auth.yaml
@@ -63,7 +63,7 @@ http:
 
 ```sh
 flow worker \
-  --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
+  --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
   --auth-policy /etc/flowstate/auth.yaml \
   --identity-key /var/run/flowstate/2026-08.pem
 ```

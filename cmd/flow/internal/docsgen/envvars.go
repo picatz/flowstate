@@ -102,7 +102,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_BUILD_ID",
 			value:   "unset",
-			purpose: "Default for `--build-id`: this worker binary's version identifier, unique per build. Required alongside the deployment name.",
+			purpose: "Default for `flow worker --build-id`: this worker binary's version identifier, unique per build. Required alongside `--temporal-deployment-name`.",
 			read:    "cmd/flow/main.go",
 		},
 		{
@@ -114,7 +114,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_DEPLOYMENT_NAME",
 			value:   "unset",
-			purpose: "Default for `--deployment-name`: the Worker Deployment this worker belongs to. A worker refuses to start without both halves of a version unless `--allow-unversioned-interpreter` accepts the risk.",
+			purpose: "Default for `flow server --deployment-name`: the name of this Flowstate installation, recorded in each run's workload identity and in every assertion subject the server mints. Not a Temporal Worker Deployment, and a worker does not read it; that is `FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME`.",
 			read:    "cmd/flow/main.go",
 		},
 		{
@@ -401,6 +401,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/internal/ui/ui.go",
 		},
 		{
+			name:    "FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME",
+			value:   "unset",
+			purpose: "Default for `flow worker --temporal-deployment-name`: the Temporal Worker Deployment this worker belongs to, which is not the Flowstate installation `FLOWSTATE_DEPLOYMENT_NAME` names. A worker refuses to start without both halves of a version unless `--allow-unversioned-interpreter` accepts the risk.",
+			read:    "cmd/flow/main.go",
+		},
+		{
 			name:    "FLOWSTATE_TLS_ACME_ACCEPT_TOS",
 			value:   "unset",
 			purpose: "Default for `--tls-acme-accept-tos` on `flow server`: set (to anything) to agree to the ACME CA's subscriber agreement. Required to turn ACME automatic-certificate issuance on; not defaulted, because agreeing to a third party's terms on an operator's behalf is not this process's decision to make quietly.",
@@ -505,7 +511,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_WORKER_IDENTITY",
 			value:   "unset",
-			purpose: "Default for `--identity`: how this worker identifies itself to Temporal, shown in Event History and a task queue's poller list. Unset builds one from `--deployment-name`/`--build-id`, `--tenant` if set, and this process's hostname — more specific than the SDK's own `pid@hostname` default, but a platform-native identifier (a Kubernetes pod name, an ECS task id) is worth setting explicitly.",
+			purpose: "Default for `--identity`: how this worker identifies itself to Temporal, shown in Event History and a task queue's poller list. Unset builds one from `--temporal-deployment-name`/`--build-id`, `--tenant` if set, and this process's hostname — more specific than the SDK's own `pid@hostname` default, but a platform-native identifier (a Kubernetes pod name, an ECS task id) is worth setting explicitly.",
 			read:    "cmd/flow/main.go",
 		},
 		{
