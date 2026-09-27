@@ -903,7 +903,7 @@ type SignalScript struct {
 // ([Test.Starter]), carrying the fields [v1.WorkloadIdentity] does that a `signals:` policy is
 // matched on: subject and issuer together, never subject alone, for the
 // identical multi-IdP reason `flow validate` requires a
-// [v1.SignalPolicyRule.subject] to be issuer-qualified.
+// `v1.SignalPolicyRule.subject` to be issuer-qualified.
 //
 // One type for both ends on purpose. `distinct_from_starter:` compares the two
 // against each other, through [v1.QualifiedSubject] on each, so a case whose

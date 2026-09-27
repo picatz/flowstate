@@ -22,7 +22,7 @@ import (
 // A loop's trip count is the resource an author does not fully control — a cursor
 // that never reports exhaustion loops forever — so a bound is mandatory rather than
 // advisory (docs/ARCHITECTURE.md's "bound anything that consumes untrusted input").
-// This is the value both drivers apply when [Loop.max_iterations] is unset, read
+// This is the value both drivers apply when `Loop.max_iterations` is unset, read
 // through [LoopMaxIterations] so the number lives in exactly one place: a ceiling
 // that was 1000 locally and something else durably would be a loop that halts in
 // rehearsal and runs away in production, which is the precise disagreement
@@ -31,7 +31,7 @@ import (
 // Chosen well above any hand-written loop and well below anything that threatens a
 // worker: a thousand cursor pages is a large repository's whole history, and a
 // thousand activities is a segment Continue-As-New handles without strain. An
-// author who genuinely needs more says so with [Loop.max_iterations], up to the
+// author who genuinely needs more says so with `Loop.max_iterations`, up to the
 // absolute cap the schema enforces on that field.
 const DefaultMaxIterations = 1000
 
@@ -55,7 +55,7 @@ func LoopCarriesState(loop *Loop) bool {
 }
 
 // LoopIterationLimitError is the failure a loop reports when it runs its whole
-// budget of iterations without [Loop.until] ever holding.
+// budget of iterations without `Loop.until` ever holding.
 //
 // A distinct, named outcome rather than a silent stop or a generic failure, which
 // is the whole point of bounding the loop honestly. A loop that quietly returned
@@ -245,13 +245,13 @@ func EvalLoopUntilWithCost(ctx context.Context, loop *Loop, scope *Scope) (bool,
 	return stop, cost, nil
 }
 
-// EvalLoopValue evaluates one of a loop's carried-state expressions — [Loop.initial]
-// or [Loop.update] — against a scope, returning the result as a literal Value ready
+// EvalLoopValue evaluates one of a loop's carried-state expressions — `Loop.initial`
+// or `Loop.update` — against a scope, returning the result as a literal Value ready
 // to bind for the next iteration.
 //
 // A literal is returned rather than the expression, for the reason [PendingUndo]
 // stores a resolved value: what is bound into the next iteration, and what travels
-// in [Frame.loop_state] across a Continue-As-New, must be a value and not an
+// in `Frame.loop_state` across a Continue-As-New, must be a value and not an
 // expression over a scope the resumed segment no longer has. Evaluating it here, in
 // workflow code, is what invariant 4 permits for a loop's own control expressions —
 // the same latitude a `for_each`'s `items:` and a step's `vars:` already take.
@@ -288,7 +288,7 @@ func EvalLoopValueWithCost(ctx context.Context, scope *Scope, v *Value) (*Value,
 	}
 }
 
-// LoopInitialState evaluates a loop's [Loop.initial] expression, returning the value
+// LoopInitialState evaluates a loop's `Loop.initial` expression, returning the value
 // its carried state holds on the first iteration.
 //
 // Evaluated against the scope the loop node sits in, before any iteration runs, so a
@@ -314,7 +314,7 @@ func LoopInitialStateWithCost(ctx context.Context, loop *Loop, scope *Scope) (*V
 	return v, cost, nil
 }
 
-// LoopNextState evaluates a loop's [Loop.update] expression against the scope the
+// LoopNextState evaluates a loop's `Loop.update` expression against the scope the
 // body finished in, returning the value its carried state holds on the next
 // iteration.
 //
@@ -354,8 +354,8 @@ func LoopNextStateWithCost(ctx context.Context, loop *Loop, scope *Scope) (*Valu
 // the state is bound bare *inside* the body, so no expression outside the loop could
 // name it. A loop that carried nothing reports `results` alone.
 //
-// finalState is the last value the state held — the [Loop.initial] value for a loop
-// whose `until:` was already true after one iteration, or the last [Loop.update]
+// finalState is the last value the state held — the `Loop.initial` value for a loop
+// whose `until:` was already true after one iteration, or the last `Loop.update`
 // result otherwise — and nil for a loop that carries no state.
 func LoopStateOutputs(iterations []*Workflow_StepOutputs, finalState *Value) *Node_Outputs {
 	out := LoopOutputs(iterations)

@@ -29,7 +29,7 @@ type PinsConfig struct {
 // This checks the document's shape only. Whether each entry is a spelling
 // [Config] can compare against — a valid plugin name, and a digest of the
 // form "sha256:" plus sixty-four lower-case hex characters — is
-// [Config.validate]'s job, via [validateDigestPin], run once at host
+// `Config.validate`'s job, via [validateDigestPin], run once at host
 // construction regardless of whether a pin arrived through this file, a
 // --plugin-pin flag, or a [Config] a caller built directly — one check, one
 // error message, for every source of a pin.

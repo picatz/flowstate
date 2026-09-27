@@ -222,7 +222,7 @@ func (w WorkloadIdentity) LogValue() slog.Value {
 // These are the Go half of the protovalidate rules on
 // flowstate.v1.WorkloadIdentity.claims, which state the same numbers where
 // `buf breaking` guards them. They are stated once here and read by both
-// [WorkloadIdentity.Validate] and [Issuer.mintFor], per CLAUDE.md's rule that
+// [WorkloadIdentity.Validate] and `Issuer.mintFor`, per CLAUDE.md's rule that
 // one constant cannot disagree with itself.
 //
 // The numbers come from measuring what legitimate identities carry, with

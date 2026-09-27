@@ -203,7 +203,7 @@ func CheckWebhookTrigger(trigger *WebhookTrigger) error {
 // CheckWebhookName reports whether a webhook is named at all.
 //
 // The shape of the name — letters, digits, `-` and `_` — is the schema's rule
-// ([WebhookTrigger.name]'s pattern); what is checked here is the part protovalidate
+// (`WebhookTrigger.name`'s pattern); what is checked here is the part protovalidate
 // cannot say usefully in an editor, which is that there is a name to address this
 // source by at all.
 func CheckWebhookName(name string) error {
@@ -955,7 +955,7 @@ func eventRefValue(event *Value) ref.Val {
 // A digest of the evaluated idempotency key rather than the key itself, and that
 // is the whole substance of the function: the usual key *is* a signature header,
 // and this value is written into a memo and into the run's own
-// [TriggerContext.delivery_id], both of which are durable and broadly readable
+// `TriggerContext.delivery_id`, both of which are durable and broadly readable
 // (invariant 8). A digest reveals nothing about the key it names.
 //
 // Truncated to sixteen bytes because this is an identifier a human correlates
@@ -979,7 +979,7 @@ func eventRefValue(event *Value) ref.Val {
 //
 // Without that, two bridges on one workflow whose keys legitimately coincide —
 // the same order id answering two different gates — produce one digest, and
-// [RunState.consumed_delivery_ids] is a set *per run* across every source, so
+// `RunState.consumed_delivery_ids` is a set *per run* across every source, so
 // the second genuine delivery is dropped as a redelivery of the first. The
 // dedupe would then be silently refusing approvals nobody duplicated, which is
 // the failure a per-run set has to be scoped to avoid.

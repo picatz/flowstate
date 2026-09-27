@@ -66,7 +66,7 @@ func MessageDescriptorBytes(md protoreflect.MessageDescriptor, alsoProvided ...p
 // [MessageDescriptorBytes] does: shape travels, prose does not, and the reader
 // renders one paragraph fewer rather than an error. So does a prose that
 // describes some other file, or one whose file has drifted from the compiled-in
-// one — see [DescriptorProse.sourceInfoFor].
+// one — see `DescriptorProse.sourceInfoFor`.
 func MessageDescriptorBytesWithProse(md protoreflect.MessageDescriptor, prose *DescriptorProse, alsoProvided ...protoreflect.FileDescriptor) ([]byte, string, error) {
 	if md == nil {
 		return nil, "", nil

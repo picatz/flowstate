@@ -1329,7 +1329,7 @@ func runAddress(ctx workflow.Context) *v1.RunAddress {
 // a different one after, with nothing in the file to explain it. `firstRunID`
 // (Temporal's `FirstRunID`) is preserved along the whole chain of continued
 // executions, so it names the run an author believes they wrote. See
-// [v1.RunAddress.run_id].
+// `v1.RunAddress.run_id`.
 //
 // The fallback is for the one source that does not offer the first id at all:
 // Temporal's own workflow test environment leaves it unset. Falling back to the

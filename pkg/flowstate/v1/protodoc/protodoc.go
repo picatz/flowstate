@@ -268,11 +268,13 @@ func isStructural(line string) bool {
 
 // translateLinks rewrites godoc-style [Symbol] links as backticked names.
 //
-// The schema writes [ValidationReport] and [SignalWithStartRequest.workflow]
-// because those render as links on pkg.go.dev, where the generated Go types
-// carry these same comments. Everywhere else they read as stray brackets, so
-// they become `ValidationReport` here: a name a terminal, a JSON description
-// and a Markdown table all render identically.
+// The schema writes [ValidationReport] because it renders as a link on
+// pkg.go.dev, where the generated Go types carry these same comments; a field
+// is written `SignalWithStartRequest.workflow` instead, since the Go field is
+// spelled differently and a bracketed schema spelling would never resolve.
+// Everywhere but pkg.go.dev a link reads as stray brackets, so it becomes
+// `ValidationReport` here: a name a terminal, a JSON description and a
+// Markdown table all render identically.
 //
 // Only bracketed text shaped like a symbol is touched. Prose that genuinely
 // brackets something ("[sic]", "[1]") keeps its brackets, because rewriting it

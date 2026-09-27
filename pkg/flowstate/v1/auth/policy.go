@@ -138,7 +138,7 @@ func (s ActionScopes) IsZero() bool { return s == nil }
 // namespace_map now fails to load rather than deferring the failure to the
 // first token that hits it.
 //
-// [TrustedIssuer.validateNamespaceFields] reads that distinction directly:
+// `TrustedIssuer.validateNamespaceFields` reads that distinction directly:
 // nil means the key was never written, so this entry does not use a map at
 // all; non-nil (even length zero) means the key was written, and every check
 // that applies to a configured namespace_map — including "present but empty"
@@ -659,7 +659,7 @@ const MaxPolicyProvenanceBytes = 128
 //
 // Every rule on this type is a statement about a claim the issuer asserts, so
 // an absent claim fails the rule — AnyOf and NoneOf alike. See
-// [ClaimRule.check], where that is decided and argued: a NoneOf that held
+// `ClaimRule.check`, where that is decided and argued: a NoneOf that held
 // vacuously against a missing claim would let an issuer widen an entry to
 // everybody by dropping a claim from its tokens, which is a fail-open change
 // nobody in this repository would have made or reviewed.
@@ -1067,7 +1067,7 @@ func bearerIssuers(policy *Policy) []TrustedIssuer {
 // anything to at all.
 //
 // A policy of nothing but kind: mtls entries admits callers purely by client
-// certificate, and [TrustedIssuer.validateMTLS] refuses an `audiences` list on
+// certificate, and `TrustedIssuer.validateMTLS` refuses an `audiences` list on
 // one of those outright ("a client certificate carries no audience claim"), so
 // there is no audience such a deployment could name and no token whose "aud"
 // any surface could check. A caller deciding whether to *require* a canonical

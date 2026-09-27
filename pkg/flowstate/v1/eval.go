@@ -391,7 +391,7 @@ const InputsRoot = "inputs"
 // # Naming this over `caller`, `principal`, `requester`, `started_by`
 //
 // `run` reads least surprising against this codebase's own vocabulary — every
-// comment that explains [WorkloadIdentity.subject] already calls it "the caller
+// comment that explains `WorkloadIdentity.subject` already calls it "the caller
 // that requested the run" — and it is the word this project's own design notes
 // already set aside for exactly this: docs/DSL.md lists `run.*` beside
 // `steps.<id>.*`, `vars.*` and `inputs.*` as part of one naming model, and its

@@ -98,7 +98,7 @@ func CheckWebhookSignalBridges(wf *Workflow) error {
 // answers a gate.
 //
 // Refused rather than ordered by precedence, for the reason
-// [ManualTrigger.denied] refuses its own contradiction: a delivery that binds
+// `ManualTrigger.denied` refuses its own contradiction: a delivery that binds
 // `inputs:` starts something, a delivery that answers a gate joins something
 // that is already running, and a trigger claiming both is two sentences that
 // cannot both be true. Whichever one a precedence rule picked would be the
@@ -528,7 +528,7 @@ func BindWebhookTriggerSignal(
 // reports whether it was new.
 //
 // This is the dedupe, and it is one function because both drivers have to
-// answer it identically: durably the set is [RunState.consumed_delivery_ids]
+// answer it identically: durably the set is `RunState.consumed_delivery_ids`
 // carried across every Continue-As-New, locally it is a field of the process's
 // own [LocalSignals], and neither may decide "already consumed" a different way
 // from the other. Membership is the whole of it — no clock, no verification, no

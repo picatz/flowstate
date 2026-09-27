@@ -627,7 +627,7 @@ func (s *FlowstateServer) memoStarter(memo *common.Memo) (string, bool, error) {
 // The workload receives two separate things, never merged into one. Payload is
 // the sender's own claim, forwarded verbatim — it is evidence, not identity.
 // Sender is this handler's own attestation of who sent it, built from exactly
-// what [FlowstateServer.authorizeRun] already established about the caller a few
+// what `FlowstateServer.authorizeRun` already established about the caller a few
 // lines above: the same identity a run's own [v1.WorkloadIdentity] is built
 // from, at the same call. [v1.SignalRequest] has no field a caller could use to
 // set this — the schema itself is the refusal — so there is nothing here to

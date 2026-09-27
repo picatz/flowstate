@@ -340,7 +340,7 @@ func (p *Pool) For(namespace string) (client.Client, error) {
 // it belongs to.
 //
 // It fails closed identically to [Pool.For], and by construction rather than by
-// resemblance: both are [Pool.resolve]. An accessor that answered where For
+// resemblance: both are `Pool.resolve`. An accessor that answered where For
 // refuses would hand a caller another tenant's namespace to address — the breach
 // the pool exists to prevent, arriving through the door left open for reading
 // rather than for writing.

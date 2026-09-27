@@ -113,7 +113,7 @@ func scheduleNameFrom(id, namespace string) (string, bool) {
 // The refusals are `Run`'s, deliberately and in the same order, because a schedule
 // is a run somebody arranged in advance and every reason to refuse one now is a
 // reason to refuse it at three in the morning — with nobody there to read it. That
-// is why this shares [FlowstateServer.validateSpecification] with `Run` rather than
+// is why this shares `FlowstateServer.validateSpecification` with `Run` rather than
 // hand-rolling a second copy of it: a schedule that refused a specification `Run`
 // accepts, or accepted one `Run` refuses, would be exactly the "may create" versus
 // "may Run" drift `validateSubmission`'s own doc warns about, one RPC further out.

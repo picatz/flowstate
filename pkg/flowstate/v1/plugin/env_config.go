@@ -39,7 +39,7 @@ type EnvConfig struct {
 //
 // This checks the document's shape only. Whether each key is a name a plugin
 // could answer to, and whether the whole grant fits the bound a launch
-// environment has, is [Config.validate]'s job — run once at host construction
+// environment has, is `Config.validate`'s job — run once at host construction
 // however the entries arrived, so a file and a flag cannot come to mean two
 // different things.
 func ParseEnvConfig(data []byte) (EnvConfig, error) {

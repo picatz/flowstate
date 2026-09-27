@@ -85,7 +85,7 @@ type TaskPolicyCase struct {
 // # The identity cases, and why they were missing
 //
 // This set used to say, in this comment, that every rule here is over `task`
-// alone because "the local driver's [Scope.identity] is always empty… a case
+// alone because "the local driver's `Scope.identity` is always empty… a case
 // that asserted identity-based denial here would either always pass locally
 // regardless of what the rule said or require the local driver to carry an
 // identity it structurally does not have."

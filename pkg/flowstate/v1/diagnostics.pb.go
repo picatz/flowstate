@@ -198,8 +198,8 @@ func (x *Diagnostic) GetEdits() []*SuggestedEdit {
 // The same coordinates rather than byte offsets, because a message carrying two
 // coordinate systems asks every reader to know which one each field speaks, and
 // the reader that guesses wrong edits the wrong text. Lines and columns are
-// 1-based and columns count Unicode code points, exactly as [Diagnostic.line]
-// and [Diagnostic.column] do; zero means unknown, for the same reason it does
+// 1-based and columns count Unicode code points, exactly as `Diagnostic.line`
+// and `Diagnostic.column` do; zero means unknown, for the same reason it does
 // there.
 //
 // The end is exclusive, so a range over a four-character key on one line ends

@@ -86,7 +86,7 @@ var ErrUndoBudgetExpired = errors.New("the compensation budget for this cancelle
 // UndoLog is the compensations a run has registered and not yet run, oldest first.
 //
 // A Go type rather than a schema one, because what travels is
-// [RunState.pending_undo] and this is the thing that accumulates it during a
+// `RunState.pending_undo` and this is the thing that accumulates it during a
 // segment. It is shared by pointer between an executor and its nested executors
 // for the reason a run's signal carry is: a compensation registered anywhere is
 // registered for the whole run, and a copy per level would let one be run twice or
@@ -181,7 +181,7 @@ func (l *UndoLog) Fill(slot int, entry *PendingUndo) {
 // across a Continue-As-New.
 //
 // Reserved-and-unfilled slots are dropped rather than carried: what travels in
-// [RunState.pending_undo] is compensations, and a hole is the absence of one. A
+// `RunState.pending_undo` is compensations, and a hole is the absence of one. A
 // scope always joins what it started before it can suspend, so a slot is never
 // still open at the moment this is read for a Continue-As-New.
 func (l *UndoLog) Pending() []*PendingUndo {

@@ -142,13 +142,13 @@ type RunRequest struct {
 	// most 512 characters.
 	//
 	// Required when the workflow declares `manual: {require_reason: true}` (see
-	// [ManualTrigger.require_reason]) and ignored otherwise. It is recorded for
+	// `ManualTrigger.require_reason`) and ignored otherwise. It is recorded for
 	// whoever reads the run later and is not visible to expressions; a value the
 	// workflow computes with belongs in `inputs`.
 	Reason string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
 	// RequestId makes this submission idempotent: two Run calls carrying the same
 	// value in the same namespace produce one run, and the second is answered
-	// with the run the first started, [RunResponse.reused] set.
+	// with the run the first started, `RunResponse.reused` set.
 	//
 	// Use it whenever a submission may be retried: a caller whose request timed
 	// out cannot tell "never started" from "started and the answer was lost", and
@@ -261,8 +261,8 @@ type RunResponse struct {
 	// WorkflowId is the durable handle for the workload, which every other RPC
 	// addressing a run takes. It is `flowstate-workflow-<uuid>` for an ordinary
 	// run, `flowstate-request-<hex>` for one started with
-	// [RunRequest.request_id], and `flowstate-entity-<namespace>_<entity_key>`
-	// for one started with [RunRequest.entity_key]. At most 1024 bytes.
+	// `RunRequest.request_id`, and `flowstate-entity-<namespace>_<entity_key>`
+	// for one started with `RunRequest.entity_key`. At most 1024 bytes.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	// RunId is the UUID of this execution of the workload. A workload that
 	// continues as new gets a new run id per segment, so address a workload by
@@ -304,7 +304,7 @@ type RunResponse struct {
 	// that run's specification. False when this request started the run.
 	Joined bool `protobuf:"varint,7,opt,name=joined,proto3" json:"joined,omitempty"`
 	// Reused is true when this response describes the run an earlier request
-	// carrying the same [RunRequest.request_id] already started, rather than one
+	// carrying the same `RunRequest.request_id` already started, rather than one
 	// this request started.
 	//
 	// On a reused run, `status` is the run's current status, which may already
@@ -891,22 +891,22 @@ func (*SignalResponse) Descriptor() ([]byte, []int) {
 type SignalWithStartRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// EntityKey addresses the entity, composed with the caller's own namespace
-	// exactly as [RunRequest.entity_key] is: same grammar, same workflow id.
+	// exactly as `RunRequest.entity_key` is: same grammar, same workflow id.
 	EntityKey string `protobuf:"bytes,1,opt,name=entity_key,json=entityKey,proto3" json:"entity_key,omitempty"`
 	// Workflow is the specification to start the entity from if it does not
-	// already exist. Checked exactly as [RunRequest.workflow] is (the same
+	// already exist. Checked exactly as `RunRequest.workflow` is (the same
 	// validation, the same signal-policy shape check, the same size bound)
 	// and ignored entirely if the entity is already running.
 	Workflow *Workflow `protobuf:"bytes,2,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// Inputs seed the entity's arguments if it does not already exist. Checked
-	// exactly as [RunRequest.inputs] is, and ignored if the entity is already
+	// exactly as `RunRequest.inputs` is, and ignored if the entity is already
 	// running: an existing entity's inputs were bound once, at its own
 	// creation, and this call cannot rebind them.
 	Inputs map[string]*Value `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Name is the signal to deliver, matching what a waiting step declared:
-	// the same field, the same grammar, as [SignalRequest.name].
+	// the same field, the same grammar, as `SignalRequest.name`.
 	Name string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	// Payload becomes the waiting step's outputs, exactly as [SignalRequest.payload].
+	// Payload becomes the waiting step's outputs, exactly as `SignalRequest.payload`.
 	Payload       *Node_Outputs `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -991,7 +991,7 @@ type SignalWithStartResponse struct {
 	// `workflow_id` and `run_id` are set the same way in both cases, so this is
 	// the only place the difference is reported.
 	Created bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
-	// SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+	// SpecificationAsSubmitted is `RunResponse.specification_as_submitted` for
 	// this RPC: the same question and the same three answers.
 	//
 	// When this call created the entity, it says whether the specification the
@@ -1279,7 +1279,7 @@ type ListRequest struct {
 	// and at most 1000.
 	//
 	// It bounds the answer, not the work: a page may come back short, or empty,
-	// with `next_page_token` set. See [ListResponse.next_page_token].
+	// with `next_page_token` set. See `ListResponse.next_page_token`.
 	PageSize int32 `protobuf:"varint,1,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	// PageToken continues a previous List: pass the previous response's
 	// `next_page_token`, with the same `filter` and `page_size`. Opaque.
@@ -1306,7 +1306,7 @@ type ListRequest struct {
 	// `close_time` is null while a run is going, and comparing null is an
 	// error; guard it with `finished &&`. Likewise guard a label with
 	// `"key" in labels &&`. A run the filter cannot be evaluated for is left
-	// out and counted in [ListResponse.excluded_by_error].
+	// out and counted in `ListResponse.excluded_by_error`.
 	//
 	// A filter narrows the answer, not the scan: the server reads the same
 	// bounded number of runs per call and applies the filter to each, with a
@@ -1401,7 +1401,7 @@ type RunSummary struct {
 	// `!("team" in labels)` does.
 	Labels map[string]string `protobuf:"bytes,7,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Starter is who submitted this run, as the qualified `issuer#subject`
-	// string: the same value, with the same meaning, as [GetResponse.starter].
+	// string: the same value, with the same meaning, as `GetResponse.starter`.
 	// Empty when the starter is unknown.
 	Starter string `protobuf:"bytes,8,opt,name=starter,proto3" json:"starter,omitempty"`
 	// WorkerVersion is the Worker Deployment version this run is pinned to, as
@@ -1547,7 +1547,7 @@ type ListResponse struct {
 	// page came back short or empty: the server reads a bounded number of runs
 	// per call and keeps the caller's, so in a namespace shared by several
 	// tenants a scan can end with few matches or none while more remain. Keep
-	// calling with this as [ListRequest.page_token] until it is empty.
+	// calling with this as `ListRequest.page_token` until it is empty.
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
 	// ExcludedByError is how many of the caller's runs this page's scan reached
 	// and left out because the filter could not be evaluated over them: an
@@ -1822,13 +1822,13 @@ type GetTimelineRequest struct {
 	// 500, and at most 5000.
 	MaxEntries int32 `protobuf:"varint,3,opt,name=max_entries,json=maxEntries,proto3" json:"max_entries,omitempty"`
 	// AfterEventId resumes an account past the last entry a caller already read:
-	// pass [TimelineEntry.event_id] from the last row of the previous answer.
+	// pass `TimelineEntry.event_id` from the last row of the previous answer.
 	// Zero starts at the beginning.
 	//
 	// Requires `run_id`, and is refused without it. Event ids restart at 1 in
 	// every segment, and an empty `run_id` means the latest segment, which
 	// changes if the workload continues as new between two calls. Pass the
-	// previous answer's [GetTimelineResponse.run_id].
+	// previous answer's `GetTimelineResponse.run_id`.
 	//
 	// Each request reads the segment's history from the start, so resuming
 	// re-reads what it skips; that work is bounded by the server's scan budget.
@@ -1903,12 +1903,12 @@ type GetTimelineResponse struct {
 	Entries []*TimelineEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
 	// RunId is the segment this account was read from, always set, including
 	// when the request named none and the server resolved the latest. Pass it
-	// back as [GetTimelineRequest.run_id] when resuming.
+	// back as `GetTimelineRequest.run_id` when resuming.
 	RunId string `protobuf:"bytes,6,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// Truncated is true when this is not the whole of this run's account.
 	//
-	// Resume with [GetTimelineRequest.after_event_id] set to the last entry's
-	// [TimelineEntry.event_id]. Raising [GetTimelineRequest.max_entries] is not
+	// Resume with `GetTimelineRequest.after_event_id` set to the last entry's
+	// `TimelineEntry.event_id`. Raising `GetTimelineRequest.max_entries` is not
 	// the way past it: a segment can hold several times the largest answer.
 	//
 	// Set when the answer hit its entry ceiling, when the read hit its scan
@@ -2243,7 +2243,7 @@ type MutationResult struct {
 	// ScheduleName names the schedule acted on, and is empty on the run verbs.
 	//
 	// A name rather than an id, because that is what the schema calls it
-	// ([ScheduleDescription.name]) and a schedule has no other identity. Spelling
+	// (`ScheduleDescription.name`) and a schedule has no other identity. Spelling
 	// it "schedule_id" here would invent a second word for one concept.
 	ScheduleName string `protobuf:"bytes,4,opt,name=schedule_name,json=scheduleName,proto3" json:"schedule_name,omitempty"`
 	// SignalName is the signal that was sent, and is empty on every other verb.

@@ -118,8 +118,8 @@ func (u UnreachableIssuer) String() string {
 // a containment claim, not a similarity heuristic. The two are called the broad
 // and the narrow entry below, which is about what they admit and never about
 // where they sit: the same test is applied to each pair both ways round. Every
-// condition [TrustedIssuer.admits] checks (for kind: oidc) or
-// [TrustedIssuer.admitsPeer] plus [MTLSVerifier.VerifyPeer]'s chain and subject
+// condition `TrustedIssuer.admits` checks (for kind: oidc) or
+// `TrustedIssuer.admitsPeer` plus [MTLSVerifier.VerifyPeer]'s chain and subject
 // selection (for kind: mtls) has to be at least as permissive on the broad
 // entry:
 //
@@ -148,7 +148,7 @@ func (u UnreachableIssuer) String() string {
 //     would report a correct policy as broken.
 //
 // Namespace, NamespaceClaim, NamespaceMap and Role are deliberately not
-// consulted. None of them takes part in admission: [TrustedIssuer.namespaceFor]
+// consulted. None of them takes part in admission: `TrustedIssuer.namespaceFor`
 // runs only once exactly one entry has admitted, and a namespace it cannot
 // determine rejects the caller. An entry shadowed by one whose namespace_map
 // lacks the caller's value is still unreachable — that caller matched two
@@ -179,7 +179,7 @@ func (u UnreachableIssuer) String() string {
 //     package does not model any issuer's claim vocabulary. A single rule
 //     naming one value in both any_of and none_of is the one shape of this
 //     that is caught, and it is caught where it belongs — at load, by
-//     [TrustedIssuer.validateRequire], as a refusal rather than a lint.
+//     `TrustedIssuer.validateRequire`, as a refusal rather than a lint.
 //   - Any kind other than oidc and mtls. A kind added to the schema later is
 //     compared to nothing until somebody decides what containment means for it,
 //     rather than inheriting a rule written before it existed.

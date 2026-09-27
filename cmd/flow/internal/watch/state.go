@@ -266,7 +266,7 @@ type Option func(*State)
 // Named says what to call the run in prose, for a caller that knows the
 // workflow's own name.
 //
-// Only [State.subject] moves. The workflow id stays what every message about
+// Only `State.subject` moves. The workflow id stays what every message about
 // addressing the run uses — the `flow watch` hint, [State.WorkflowID], the
 // error a failed run exits with — because a name is not something another
 // command can be pointed at.
@@ -434,7 +434,7 @@ func (s *State) stop(err error) Progress {
 // nothing to relearn.
 //
 // The run ids this walk has seen and not yet written down follow, per
-// [State.runsClause]. Every identifier is therefore said once and then
+// `State.runsClause`. Every identifier is therefore said once and then
 // assumed, which is what leaves room for the part a reader is actually
 // waiting for: where the run has got to, what is being retried, which gate it
 // is parked on, and what it failed with.

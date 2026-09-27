@@ -86,7 +86,7 @@ type Option func(*FlowstateServer) error
 // It is a fallback and only a fallback: a verified caller's namespace always
 // wins, because a tenant decided by how the server was started rather than by who
 // is calling would make the boundary decorative — every caller would share one
-// tenant. See [FlowstateServer.identityFor], where that precedence lives.
+// tenant. See `FlowstateServer.identityFor`, where that precedence lives.
 //
 // So the useful reading is "the tenant of a single-tenant deployment", whose trust
 // policy names no namespaces. It is emphatically **not** the Temporal namespace,
@@ -111,7 +111,7 @@ type Option func(*FlowstateServer) error
 //     namespace `team` with a schedule named `a_x`.
 //   - [runStaticSummary] delimits with backticks on the strength of the same
 //     grammar.
-//   - [FlowstateServer.taskQueueFor] and the secret providers re-check it and
+//   - `FlowstateServer.taskQueueFor` and the secret providers re-check it and
 //     refuse, so an ungrammatical value configured here would surface as a
 //     per-request refusal on a routed deployment rather than as a
 //     misconfiguration at startup.
@@ -194,7 +194,7 @@ func WithNamespacePool(pool *temporalclient.Pool) Option {
 //
 // A deployment routing tenants onto separate Temporal namespaces has no single
 // answer to record and does not need one: [WithNamespacePool] supplies the
-// per-tenant answer, which [FlowstateServer.clientAndTemporalNamespaceFor] prefers.
+// per-tenant answer, which `FlowstateServer.clientAndTemporalNamespaceFor` prefers.
 //
 // The empty namespace is refused. There is no deployment it is right for —
 // [temporalclient.Config.Options] resolves a non-empty namespace for every
@@ -306,7 +306,7 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 // WithTrustedWorkflows installs deployment-owned workflow specifications for
 // remote submission, scoped to namespace exactly as [FlowstateServer.NewWebhookReceiver]'s
 // own namespace argument is: empty means this deployment's own, unnamed
-// tenant — the same value [FlowstateServer.identityFor] falls back to for an
+// tenant — the same value `FlowstateServer.identityFor` falls back to for an
 // unauthenticated caller or one WithNamespace named. A request whose
 // namespace and workflow name match one of these entries is authorized and
 // executed from the trusted copy, not from the copy carried by the request.
@@ -329,7 +329,7 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 // A registration this option cannot honour never degrades to open submission.
 // A name registered twice with different specifications, or one whose
 // specification the schema refuses, poisons that one key — see
-// [FlowstateServer.refuseTrustedWorkflow] — and a registration carrying no name
+// `FlowstateServer.refuseTrustedWorkflow` — and a registration carrying no name
 // at all, which no key could be refused for, refuses the construction.
 func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 	return func(s *FlowstateServer) error {
@@ -660,7 +660,7 @@ func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows [
 // encodeMemoValue, gated on SDKFlagMemoUserDCEncode, which defaults to true). So
 // on a deployment that configures a payload codec, every memo this server writes
 // is ciphertext, and a server that read it back with the default converter would
-// decode nothing. [FlowstateServer.ownedBy] would answer false for every run,
+// decode nothing. `FlowstateServer.ownedBy` would answer false for every run,
 // and every tenant would be told "no such run" about runs it owns. That is not a
 // hypothetical: it is what the codec knob would ship with behind it if the read
 // side did not move with the write side.
@@ -757,7 +757,7 @@ func WithSearchAttributesRegistered() Option {
 // safe because its stack is unversioned by construction, which is a property of
 // that command rather than of this server — so this stays an option a
 // co-located caller adopts knowingly, and must not be promoted into an
-// unconditional line in [FlowstateServer.prepareCreate].
+// unconditional line in `FlowstateServer.prepareCreate`.
 //
 // Nothing observable about execution changes: the same first workflow task, the
 // same history, the same result, taken by a worker in this process instead of
@@ -1124,7 +1124,7 @@ func runStaticSummary(namespace, workflowName string) string {
 // had (invariant 8's zero-configuration path, and every deployment before
 // this feature existed), which is a correctness-preserving, purely-slower
 // fallback rather than a broken one. That is "fail-open on FILTERING only,
-// never on tenancy": [FlowstateServer.searchAttributesRegistered] stays
+// never on tenancy": `FlowstateServer.searchAttributesRegistered` stays
 // false, so [runSearchAttributes] is never called and a run never carries an
 // attribute Temporal has not agreed to accept — see
 // [WithSearchAttributesRegistered] for what happens if it is.

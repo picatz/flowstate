@@ -73,7 +73,7 @@ const (
 	//
 	// A prefix rather than a list, so that reserving the next one is not a
 	// second edit somewhere an author's file can be checked against. Underscored
-	// rather than dotted because [SignalRequest.name]'s own pattern admits no
+	// rather than dotted because `SignalRequest.name`'s own pattern admits no
 	// dot: a reserved name has to be *sendable* through the door the ask arrives
 	// at, or the reservation would describe a name nobody could ever use for
 	// anything.
@@ -87,8 +87,8 @@ const (
 	// DebugSignal is the one channel every debug ask arrives on, whatever it
 	// asks for.
 	//
-	// Delivered like any other signal, and gated by [Workflow.debug] rather
-	// than by [Workflow.signals] — see [DebugPolicyCheck] for the zero case,
+	// Delivered like any other signal, and gated by `Workflow.debug` rather
+	// than by `Workflow.signals` — see [DebugPolicyCheck] for the zero case,
 	// which is the opposite of an ordinary signal's.
 	//
 	// # One channel, because ordering has to come from history
@@ -257,7 +257,7 @@ const DebugBacklogPace = time.Second
 // hand-built specification submitted without the compiler is refused on the
 // same terms a file is. It is deliberately not introduced as a new check in
 // workflow replay: an in-flight pre-change run may legitimately use this
-// prefix, and [Workflow.debug] being absent keeps the engine machinery inert.
+// prefix, and `Workflow.debug` being absent keeps the engine machinery inert.
 // Fail closed for new submissions: an author who waits for a reserved name
 // gets a diagnostic, never a gate that a pause ask can answer.
 func IsReservedSignalName(name string) bool {
@@ -454,7 +454,7 @@ func DebugHoldDeadline(grantedAt time.Time) time.Time {
 // session has left. Whichever runs out first ends the hold.
 //
 // The clamp is on what the lease *says* rather than only on what the engine
-// does, because [DebugSession.lease_expires_at] is answered to operators: a
+// does, because `DebugSession.lease_expires_at` is answered to operators: a
 // renewal that recorded an expiry past the session's deadline would be a
 // message promising a hold the run is going to end early, which is worse than
 // a short answer — somebody would plan around it.
@@ -561,13 +561,13 @@ func NewDebugLease(
 //
 // # Everything except the expiry is the session's, not this ask's
 //
-// A renewal is not an attach, and [DebugSession.attached_at] is defined as
+// A renewal is not an attach, and `DebugSession.attached_at` is defined as
 // "when the server accepted the attach". Rebuilding the message from the
 // renewing ask would move that timestamp forward every time somebody asked, so
 // a session held for an hour would report having attached a minute ago — the
 // record saying the hold is younger than it is, which is precisely the fact an
 // operator meeting a stopped workload needs to be true. The same argument
-// keeps [DebugSession.attached_by]: the identity is the one attested when the
+// keeps `DebugSession.attached_by`: the identity is the one attested when the
 // session began, and `DebugLeaseHolder` has already established that this ask
 // comes from that same qualified subject.
 //
@@ -588,7 +588,7 @@ func ExtendDebugLease(lease *DebugSession, now time.Time, requested time.Duratio
 // DebugLeaseHeld reports whether lease is still holding a run at instant now.
 //
 // A lease with no expiry never holds, which is the fail-closed reading of a
-// message that should always carry one: [DebugSession.lease_expires_at] is
+// message that should always carry one: `DebugSession.lease_expires_at` is
 // unset only for a local session, and a local session is not this. A durable
 // lease that somehow arrived without an expiry is a lease nothing would ever
 // end, so it ends immediately.
@@ -608,7 +608,7 @@ func DebugLeaseHeld(lease *DebugSession, now time.Time) bool {
 // DebugLeaseHolder reports whether identity is the one holding lease.
 //
 // Compared as [QualifiedSubject] — issuer and subject together — which is the
-// same join [SignalPolicyRule.subject] is matched by, and for the same reason:
+// same join `SignalPolicyRule.subject` is matched by, and for the same reason:
 // a subject is unique only within its issuer, so two identity providers can
 // each mint a "runner" that must not be able to resume each other's leases.
 //

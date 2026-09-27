@@ -278,7 +278,7 @@ func (m Model) Key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // to arrange that. Identifiers and marks are *trimmed*: an id too long to
 // fit is looked up rather than read, a reader who wants the whole of one has
 // `flow get`, and what matters here is that the line below it does not
-// move. Prose is *wrapped*, by [Model.note] — see there for why that
+// move. Prose is *wrapped*, by `Model.note` — see there for why that
 // exception is the important one.
 func (m Model) View() tea.View {
 	theme := m.surface.ErrTheme

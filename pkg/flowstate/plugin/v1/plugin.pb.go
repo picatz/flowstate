@@ -1007,7 +1007,7 @@ func (x *ExecuteStreamRequest) GetNamespace() string {
 // A call answers with zero or more progress messages, then exactly one
 // response message, then the stream ends. A stream that ends without ever
 // sending a response is a protocol violation, not a call with an empty
-// result — see [Plugin.taskFunc]'s handling in plugin/task.go.
+// result — see `Plugin.taskFunc`'s handling in plugin/task.go.
 type ExecuteStreamResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Message is one stream frame: either a best-effort progress update or the

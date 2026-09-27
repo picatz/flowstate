@@ -126,7 +126,7 @@ const (
 	// parties that can read it, such as a GCP attribute mapping or an
 	// Anthropic or OpenAI assumption rule. Like every other reserved claim, an
 	// identity cannot carry one of this name — [WorkloadIdentity.Validate] and
-	// [Issuer.mintFor] both refuse it — so it cannot be set by `--as-claim` or
+	// `Issuer.mintFor` both refuse it — so it cannot be set by `--as-claim` or
 	// any other caller-supplied claim.
 	ClaimRunMode = "run_mode"
 )
@@ -518,7 +518,7 @@ func WithKeyRetention(retention time.Duration) IssuerOption {
 // forever. A signer that ignores its context cannot be interrupted by anything
 // here — no caller can interrupt a call that does not look — but it can no
 // longer stall the issuer, because the signature does not run under any lock
-// (see [Issuer.mintFor]).
+// (see `Issuer.mintFor`).
 //
 // It must be positive. Zero is refused rather than read as "no bound", because
 // this package fails closed and an unbounded remote call configured by leaving
@@ -911,7 +911,7 @@ func (i *Issuer) Rotate(key SigningKey) error {
 //
 // This does not wait for signatures already in flight, and does not need to: a
 // mint whose signature was made with a key revoked while it was being signed
-// discards it rather than returning it. See [Issuer.mintFor] for why the
+// discards it rather than returning it. See `Issuer.mintFor` for why the
 // signature is made outside the lock, and what closes that window instead.
 func (i *Issuer) RevokeKey(keyID string) error {
 	i.mu.Lock()

@@ -25,7 +25,7 @@ import (
 // always reads a Tasks set directly, install or not — executes the
 // program's own. Two drivers silently disagreeing about what one step does
 // is exactly the thing CLAUDE.md's driver-parity rule exists to catch, so
-// this checks ownership ([Tasks.installedExactly]) rather than existence.
+// this checks ownership (`Tasks.installedExactly`) rather than existence.
 //
 // Unlike [RunLocal], which reads a Tasks set fresh on every call, a durable
 // run's activities execute in a Temporal activity context this package never

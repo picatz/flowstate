@@ -88,7 +88,7 @@ func statOwner(_ string, info fs.FileInfo) (uint32, bool) {
 // The cwd itself is still checked, because it is the directory the first
 // component is looked up in — whoever can write it can replace the entry the
 // path names. And `..` puts real ancestry back in play the moment a relative
-// path uses one: the kernel does traverse the parent then, so [Checker.descend]
+// path uses one: the kernel does traverse the parent then, so `Checker.descend`
 // checks every directory a `..` step lands on rather than walking silently
 // upward.
 //
@@ -293,7 +293,7 @@ func (c *Checker) CheckDirectory(path string) error {
 	return c.Component(path, info)
 }
 
-// Component is the per-component refusal [Checker.descend] applies at every
+// Component is the per-component refusal `Checker.descend` applies at every
 // step of its walk, to every real directory reached along the way.
 func (c *Checker) Component(component string, info fs.FileInfo) error {
 	if info.Mode()&os.ModeSymlink != 0 {

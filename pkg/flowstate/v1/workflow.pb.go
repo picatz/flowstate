@@ -52,7 +52,7 @@ const (
 	// key names a resource that is free again once the run holding it ends.
 	Concurrency_ON_CONFLICT_REJECT Concurrency_OnConflict = 1
 	// Join returns the run already holding the key instead of starting a second
-	// one, with [RunResponse.joined] true — the generalization of what a webhook
+	// one, with `RunResponse.joined` true — the generalization of what a webhook
 	// redelivery already does (`AcceptedDelivery.Joined`).
 	//
 	// For a caller whose request is "make sure this is happening" rather than
@@ -61,7 +61,7 @@ const (
 	//
 	// Implemented as `WORKFLOW_ID_CONFLICT_POLICY_FAIL` and the already-started
 	// error, not as `USE_EXISTING`, and the difference is the whole reason
-	// [RunResponse.joined] can be trusted. `USE_EXISTING` answers a conflict
+	// `RunResponse.joined` can be trusted. `USE_EXISTING` answers a conflict
 	// silently with the incumbent, and `WorkflowExecutionErrorWhenAlreadyStarted`
 	// does not apply to it because nothing was disallowed — so the server gets
 	// back a run id and no way to tell whether it started it. Every fact this
@@ -124,7 +124,7 @@ func (Concurrency_OnConflict) EnumDescriptor() ([]byte, []int) {
 }
 
 // Type is the legacy declaration vocabulary. Edition-aware specifications use
-// [InputDeclaration.value_type], whose structural [Type] can say
+// `InputDeclaration.value_type`, whose structural [Type] can say
 // what a list contains and what values a map holds.
 //
 // This enum and its field number remain because a complete Workflow is stored
@@ -217,7 +217,7 @@ type Workflow struct {
 	// Labels are the author's own key-value facts about this workflow — the team
 	// that owns it, the cost centre it bills to, the pipeline it belongs to — and
 	// they exist to be *selected on* rather than read: every run records them at
-	// submit, [RunSummary.labels] carries them back, and `flow list --filter`
+	// submit, `RunSummary.labels` carries them back, and `flow list --filter`
 	// exposes them as `labels`, so "which runs are payments' runs" is a question
 	// the listing can answer.
 	//
@@ -228,8 +228,8 @@ type Workflow struct {
 	// already; a caller who wants to select the whole class has this.
 	//
 	// Recorded into the run's memo at submit, never read back out of a search
-	// attribute — see [RunSummary.labels] for the whole of that reasoning, which
-	// is [RunSummary.name]'s unchanged: a field a filter can read only on a
+	// attribute — see `RunSummary.labels` for the whole of that reasoning, which
+	// is `RunSummary.name`'s unchanged: a field a filter can read only on a
 	// deployment where attribute registration happened to succeed is worse than
 	// one it cannot read at all, because "sometimes" is indistinguishable from
 	// "nothing matched".
@@ -290,7 +290,7 @@ type Workflow struct {
 	// *unrepresentable* rather than something a validation rule has to forbid. What
 	// stays bare is only what is bound where the expression is written: a `for_each`
 	// iterator, `now` inside `wait_until:`, the names a task resolves against its own
-	// scope. Those are bare bindings; see [Scope.vars].
+	// scope. Those are bare bindings; see `Scope.vars`.
 	//
 	// # Two sites, and only this one is rooted
 	//
@@ -298,7 +298,7 @@ type Workflow struct {
 	// different: a step's vars are *bare* within that step (`${modified}`), because
 	// they are author-chosen and lexically local, the same standing as a loop
 	// binding. Only the workflow-level ones are ambient, so only these are rooted.
-	// See [Scope.vars] for where a step's land.
+	// See `Scope.vars` for where a step's land.
 	//
 	// # Shadowing is refused, not resolved
 	//
@@ -342,7 +342,7 @@ type Workflow struct {
 	// `inputs` of a new shape would be read out of an old history as the old one.
 	//
 	// The name is honest anyway, because these are not the values. What a caller
-	// passes is [RunRequest.inputs]; what the specification carries is the
+	// passes is `RunRequest.inputs`; what the specification carries is the
 	// declaration of what may be passed. A run carries both, they are different
 	// things, and they are wanted at different moments: the declaration when the
 	// file is written and type-checked, the values when a run is submitted.
@@ -351,7 +351,7 @@ type Workflow struct {
 	//
 	// A run that grows past what Temporal can store must fail rather than hang
 	// (ARCHITECTURE.md invariant 9). These ride in the specification, so `CheckSpecSize` weighs them at submit and
-	// `CheckRunStateSize` weighs them again through [RunState.workflow] at every
+	// `CheckRunStateSize` weighs them again through `RunState.workflow` at every
 	// Continue-As-New. Both call `proto.Size` on the whole message rather than
 	// summing the fields they know about, so a field added here is bounded on the
 	// day it is added and nobody has to remember to count it.
@@ -379,7 +379,7 @@ type Workflow struct {
 	//
 	// The expression is evaluated by the run, at the end, in the run's own scope.
 	// It is not a value a caller supplies, which is the mirror image of the rule on
-	// [RunRequest.inputs] and worth reading beside it. Which names that scope holds
+	// `RunRequest.inputs` and worth reading beside it. Which names that scope holds
 	// (`steps`, `vars`, `inputs`) is the compiler's business, not the schema's.
 	DeclaredOutputs []*OutputDeclaration `protobuf:"bytes,9,rep,name=declared_outputs,json=declaredOutputs,proto3" json:"declared_outputs,omitempty"`
 	// Triggers are the ways this workload is *meant* to start other than somebody
@@ -466,7 +466,7 @@ type Workflow struct {
 	//
 	// A hand-built specification can reach `Run` directly, so this is
 	// untrusted input like the rest of the spec: at most 64 signal names, each
-	// with at most 32 alternative rules ([SignalPolicy.allow]), each rule with
+	// with at most 32 alternative rules (`SignalPolicy.allow`), each rule with
 	// at most 16 claim entries. `CheckSpecSize`/`CheckRunStateSize` also weigh
 	// the whole message via `proto.Size`, so this is bounded twice over: by
 	// shape here, and by total bytes there.
@@ -716,18 +716,18 @@ func (x *Workflow) GetResolvedCapabilityBindings() []*ResolvedCapabilityBinding 
 //
 // There is no lease, no fencing token and no lock table, because Temporal already
 // has exactly one mutual-exclusion primitive and it is the workflow id: at most
-// one execution may be open under one id at a time. So [Concurrency.key] is
+// one execution may be open under one id at a time. So `Concurrency.key` is
 // composed with the run's tenant and this workflow's name, digested, and used as
 // the id of the run itself — the identical construction webhook delivery dedupe
 // already uses (`webhookWorkflowID`, server/webhook.go), under its own
 // `flowstate-lock-` prefix so a key can never address, join or block a run
-// created by a delivery or by [RunRequest.entity_key].
+// created by a delivery or by `RunRequest.entity_key`.
 //
 // Two properties fall out of the holder *being* a run rather than holding a
 // permit on behalf of one. The permit's lifetime is the run's own execution
 // timeout, so an orphaned permit that wedges a resource forever is structurally
 // impossible rather than something a lease has to expire. And acquisition never
-// waits: all three arms of [Concurrency.on_conflict] answer immediately, at
+// waits: all three arms of `Concurrency.on_conflict` answer immediately, at
 // submit, while the caller is still present to be told.
 //
 // # Submit-time by construction, which is why both drivers agree
@@ -763,7 +763,7 @@ type Concurrency struct {
 	//
 	// The expression is evaluated exactly once, in `FlowstateServer.Run`, after
 	// [BindRunInputs] and before the run exists — the same moment and the same
-	// discipline [SignalPolicyRule.subject_from] established. `inputs.*` is the
+	// discipline `SignalPolicyRule.subject_from` established. `inputs.*` is the
 	// whole of what it may read, and the validator refuses anything else, because
 	// at that moment nothing else exists: no step has produced an output, `vars:`
 	// have not been evaluated, and there is no run to have a `run.id`.
@@ -1351,7 +1351,7 @@ func (x *PureHelperParameter) GetType() InputDeclaration_Type {
 //   - A required input with a default is a contradiction, and one of the two is
 //     a mistake worth naming rather than resolving by precedence.
 //   - Whether a submitted value matches the declared type, which is the check
-//     at submit. See [RunRequest.inputs].
+//     at submit. See `RunRequest.inputs`.
 type InputDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is what the input is called, and how an expression reaches it:
@@ -1669,7 +1669,7 @@ func (x *InputDeclaration) GetValueType() *Type {
 //
 // The expression is evaluated by the run, in the run's own scope, after its steps
 // have finished, so this is the one place in the schema where an author's
-// expression is deliberately what is stored, as against [RunRequest.inputs] where
+// expression is deliberately what is stored, as against `RunRequest.inputs` where
 // an expression is deliberately what is refused. The two rules point the same
 // way: an expression may come from the file, which is reviewed and compiled, and
 // never from a caller.
@@ -1698,11 +1698,11 @@ type OutputDeclaration struct {
 	// produced, checked once that expression has been evaluated, so a workflow
 	// cannot report a value that violates its own contract, which is what makes
 	// consuming a library workflow's result safe. Same rules as
-	// [InputDeclaration.must]: compiled and type-checked when the specification
+	// `InputDeclaration.must`: compiled and type-checked when the specification
 	// loads, evaluated under the standard CEL cost bound, and refused if it
 	// references `now` or calls anything else nondeterministic.
 	Must *string `protobuf:"bytes,4,opt,name=must,proto3,oneof" json:"must,omitempty"`
-	// Sensitive marks this output's value the way [InputDeclaration.sensitive]
+	// Sensitive marks this output's value the way `InputDeclaration.sensitive`
 	// marks an input's: display etiquette, never containment. See that field's
 	// doc comment for the honesty this comes with; nothing about the two differs
 	// beyond which side of a run they describe.
@@ -1712,7 +1712,7 @@ type OutputDeclaration struct {
 	// present, the message-level rule requires them to agree.
 	//
 	// Optional, and permanently so, which is the difference from
-	// [InputDeclaration.type]. An input's type is required because a value arrives
+	// `InputDeclaration.type`. An input's type is required because a value arrives
 	// from a caller and is refused at submit if it does not match; an output's
 	// value is computed by the run from expressions the file already contains, so
 	// an undeclared type is not a hole in a trust boundary — it is a workflow that
@@ -1738,7 +1738,7 @@ type OutputDeclaration struct {
 	Type InputDeclaration_Type `protobuf:"varint,6,opt,name=type,proto3,enum=flowstate.v1.InputDeclaration_Type" json:"type,omitempty"`
 	// Values is the closed set of strings a `type: enum` output may report,
 	// carrying the identical per-declaration shape rules
-	// [InputDeclaration.values] does — non-empty, bounded, distinct — and bounded
+	// `InputDeclaration.values` does — non-empty, bounded, distinct — and bounded
 	// for the identical reason: the declared choices are rendered into the
 	// sentence a run that produced something else fails with.
 	//
@@ -1952,7 +1952,7 @@ type Node struct {
 	Description *string `protobuf:"bytes,8,opt,name=description,proto3,oneof" json:"description,omitempty"`
 	// Vars are names this step binds for itself, read *bare* inside it: `${modified}`.
 	//
-	// Bare rather than rooted, which is the opposite of [Workflow.vars] and deliberate.
+	// Bare rather than rooted, which is the opposite of `Workflow.vars` and deliberate.
 	// The rule is not about which block a name came from but about where it is bound:
 	// an author-chosen name bound lexically, close enough to read the binding and the
 	// use together, stays bare, the same standing a `for_each` binding has. A name
@@ -1973,7 +1973,7 @@ type Node struct {
 	// second one correctly.
 	//
 	// By the time a spec reaches the engine there is therefore nothing to decide, which
-	// is why [Scope.vars] holds these and a loop's binding in one map.
+	// is why `Scope.vars` holds these and a loop's binding in one map.
 	Vars map[string]*Value `protobuf:"bytes,9,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Undo is how this step is taken back when a *later* step fails and the run
 	// cannot continue: the saga compensation for whatever this step did.
@@ -2295,7 +2295,7 @@ func (*Node_Switch) isNode_Kind() {}
 //     specification can express. Better than a bound on one.
 //   - A compensation cannot loop, branch, or wait. Those are the node kinds, and
 //     each of them is a position a run could suspend at; compensation runs in the
-//     segment that failed and does not suspend (see [RunState.pending_undo]), so a
+//     segment that failed and does not suspend (see `RunState.pending_undo`), so a
 //     kind that needs a resume position could not honour that.
 //   - A compensation has no `id`, so it can never appear in `steps.<id>` and no
 //     expression can depend on one having run.
@@ -2313,7 +2313,7 @@ type Compensation struct {
 	// Task is the work that undoes the step.
 	//
 	// Its inputs are resolved at the moment the step *succeeds*, not at the moment
-	// compensation runs. See [PendingUndo.task] for why that is the whole design.
+	// compensation runs. See `PendingUndo.task` for why that is the whole design.
 	Task          *Task `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2786,7 +2786,7 @@ func (x *Parallel) GetBranches() []*Parallel_Branch {
 // language on purpose. A named block of state entries would immediately need an
 // answer to whether one entry may read another: the exact `vars:`-sibling
 // ordering question a protobuf map cannot answer and this repo already refused
-// once ([Workflow.vars]). A single value sidesteps it: when several fields are
+// once (`Workflow.vars`). A single value sidesteps it: when several fields are
 // wanted, [initial] and [update] are CEL maps, and the ordering question never
 // arises because there is one expression, evaluated once per iteration.
 //
@@ -3521,7 +3521,7 @@ func (x *ResolvedTaskCapabilities) GetTaskNames() []string {
 type Workflow_StepOutputs struct {
 	state      protoimpl.MessageState   `protogen:"open.v1"`
 	StepValues map[string]*Node_Outputs `protobuf:"bytes,1,rep,name=step_values,json=stepValues,proto3" json:"step_values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// RunOutputs are the values [Workflow.declared_outputs] promised, once this
+	// RunOutputs are the values `Workflow.declared_outputs` promised, once this
 	// run has computed them. Unset for a workflow that declares none, and unset
 	// for a run that has not finished.
 	//

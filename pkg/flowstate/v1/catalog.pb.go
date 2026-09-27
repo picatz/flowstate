@@ -690,7 +690,7 @@ type PluginCatalog struct {
 	// configuration mistake.
 	SearchPath []string `protobuf:"bytes,2,rep,name=search_path,json=searchPath,proto3" json:"search_path,omitempty"`
 	// ClaimsSchemaVersion is the same presence signal as
-	// [TaskCatalog.claims_schema_version], for the same reason, on the other
+	// `TaskCatalog.claims_schema_version`, for the same reason, on the other
 	// message a build's task claims travel in.
 	//
 	// `flow plugins -o json` serializes this message directly rather than a
@@ -969,7 +969,7 @@ type PluginDescription struct {
 	// task_schema_digest so it
 	// can change on its own without disturbing the replay contract every
 	// already-durable run is pinned to. See
-	// [flowstatev1.ResolvedPlugin.claims_digest] for how a worker treats an
+	// `flowstatev1.ResolvedPlugin.claims_digest` for how a worker treats an
 	// old pin that predates this field (#763 review): it is not compared, not
 	// assumed safe, simply not asked.
 	ClaimsDigest  string `protobuf:"bytes,10,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
@@ -1109,7 +1109,7 @@ type TaskField struct {
 	// `ExpressionInputs` and secret-accepting input lists. So a bound tightened in
 	// the schema is a bound `flow tasks http` states, with nothing else touched.
 	//
-	// Rendered rather than structured for the same reason [TaskField.type] is a
+	// Rendered rather than structured for the same reason `TaskField.type` is a
 	// string saying `map[string, any]` rather than a Protobuf type name: what a
 	// reader needs is the sentence they would have had to assemble out of the rule
 	// message anyway, and a consumer wanting the rules themselves has the
