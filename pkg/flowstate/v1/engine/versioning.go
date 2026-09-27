@@ -235,8 +235,8 @@ func DeploymentOptions(deployment, buildID string) (worker.DeploymentOptions, er
 				"(or FLOWSTATE_BUILD_ID) to something unique per build, such as the commit", deployment)
 	case deployment == "":
 		return worker.DeploymentOptions{}, fmt.Errorf(
-			"build id %q has no worker deployment: a version is the pair, so set --deployment-name "+
-				"(or FLOWSTATE_DEPLOYMENT_NAME) to the deployment this worker belongs to", buildID)
+			"build id %q has no worker deployment: a version is the pair, so set --temporal-deployment-name "+
+				"(or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME) to the Worker Deployment this worker belongs to", buildID)
 	}
 
 	return worker.DeploymentOptions{

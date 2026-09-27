@@ -45,17 +45,17 @@ $ flow worker --tenant team-a --task-queue-prefix flowstate-run \
     --temporal-namespace temporal-team-a \
     --egress-policy /etc/flowstate/team-a/egress.yaml \
     --secret-dir /etc/flowstate/team-a/secrets \
-    --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 
 $ flow worker --tenant team-b --task-queue-prefix flowstate-run \
     --temporal-namespace temporal-team-b \
     --egress-policy /etc/flowstate/team-b/egress.yaml \
     --secret-dir /etc/flowstate/team-b/secrets \
-    --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
-`--deployment-name`/`--build-id` are on both lines for a reason that has nothing to
-do with tenancy — see [worker-versioning](../worker-versioning/), and note that a
+`--temporal-deployment-name`/`--build-id` are on both lines for a reason that has
+nothing to do with tenancy — see [worker-versioning](../worker-versioning/), and note that a
 worker refuses to start without them.
 
 Note what makes those two fleets actually different: `--egress-policy` and

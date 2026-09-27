@@ -14,10 +14,11 @@ import (
 // workerCommand returns a fresh `flow worker`, with the environment defaults its
 // versioning flags read cleared.
 //
-// Cleared rather than trusted: `--deployment-name` and `--build-id` default from
-// FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, so a developer's shell — or a
-// CI job that sets a build id for something else entirely — would otherwise decide
-// whether these tests are exercising a versioned worker or an unversioned one.
+// Cleared rather than trusted: `--temporal-deployment-name` and `--build-id`
+// default from FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, so a
+// developer's shell — or a CI job that sets a build id for something else
+// entirely — would otherwise decide whether these tests are exercising a
+// versioned worker or an unversioned one.
 // FLOWSTATE_WORKER_IDENTITY is cleared for the identical reason (#752).
 //
 // Not parallel, and neither is anything below: newRootCommand binds flags to
@@ -25,7 +26,7 @@ import (
 func workerCommand(t *testing.T) *cobra.Command {
 	t.Helper()
 
-	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
+	t.Setenv("FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 	t.Setenv("FLOWSTATE_WORKER_IDENTITY", "")
 	// Same reasoning, for #783's capacity flags: a developer's shell should not
@@ -63,8 +64,8 @@ func TestWorkerRefusesToStartUnversioned(t *testing.T) {
 		"refusing to start an unversioned worker",
 		"in workflow code",
 		"already in flight",
-		"--deployment-name",
-		"--build-id",
+		"Pass --temporal-deployment-name and --build-id",
+		"(or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID)",
 		"--" + allowUnversionedFlag,
 	} {
 		require.Contains(t, err.Error(), want)
@@ -79,7 +80,7 @@ func TestWorkerRefusesToStartUnversioned(t *testing.T) {
 // posture is settled from flags alone — as are the plugin hosts and secret
 // providers this never opens.
 func TestWorkerRefusalIsReachedBeforeTemporalIs(t *testing.T) {
-	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
+	t.Setenv("FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 
 	err := runFlow(t, "worker", "--temporal-address", "127.0.0.1:1").Err
@@ -91,7 +92,7 @@ func TestWorkerRefusalIsReachedBeforeTemporalIs(t *testing.T) {
 // and the pair carried through to the worker's options unchanged.
 func TestWorkerStartsVersioned(t *testing.T) {
 	cmd := workerCommand(t)
-	require.NoError(t, cmd.Flags().Set("deployment-name", "flowstate"))
+	require.NoError(t, cmd.Flags().Set("temporal-deployment-name", "flowstate"))
 	require.NoError(t, cmd.Flags().Set("build-id", "abc123"))
 
 	deployment, err := workerDeployment(cmd, temporalFlagsOf(cmd))
@@ -139,19 +140,19 @@ func TestWorkerRefusesHalfAVersion(t *testing.T) {
 	}{
 		{
 			name:    "a deployment name with no build id",
-			set:     map[string]string{"deployment-name": "flowstate"},
+			set:     map[string]string{"temporal-deployment-name": "flowstate"},
 			wantErr: "--build-id",
 		},
 		{
 			name:    "a build id with no deployment name",
 			set:     map[string]string{"build-id": "abc123"},
-			wantErr: "--deployment-name",
+			wantErr: "set --temporal-deployment-name (or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME)",
 		},
 		{
 			name: "a deployment name with no build id, unversioned accepted",
 			set: map[string]string{
-				"deployment-name":    "flowstate",
-				allowUnversionedFlag: "true",
+				"temporal-deployment-name": "flowstate",
+				allowUnversionedFlag:       "true",
 			},
 			wantErr: "--build-id",
 		},
@@ -185,7 +186,7 @@ func TestWorkerRefusesHalfAVersion(t *testing.T) {
 // would start refusing to start, which is safe but would look like the gate itself
 // had broken.
 func TestWorkerVersioningFlagsDefaultFromTheEnvironment(t *testing.T) {
-	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "flowstate")
+	t.Setenv("FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME", "flowstate")
 	t.Setenv("FLOWSTATE_BUILD_ID", "deadbeef")
 
 	cmd, _, err := newRootCommand().Find([]string{"worker"})
@@ -197,6 +198,26 @@ func TestWorkerVersioningFlagsDefaultFromTheEnvironment(t *testing.T) {
 	require.True(t, deployment.UseVersioning)
 	require.Equal(t, "flowstate", deployment.Version.DeploymentName)
 	require.Equal(t, "deadbeef", deployment.Version.BuildID)
+}
+
+// TestWorkerIgnoresTheServersDeploymentName is the negative half of the rename
+// (picatz/flowstate#2121): FLOWSTATE_DEPLOYMENT_NAME names the Flowstate
+// installation `flow server` records in workload identities, not Temporal's
+// Worker Deployment. A shell or env file that sets it for the server must not
+// configure the worker's version as a side effect, so with only the build id of
+// the worker's own pair set, the worker still refuses half a version.
+func TestWorkerIgnoresTheServersDeploymentName(t *testing.T) {
+	t.Setenv("FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME", "")
+	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "prod")
+	t.Setenv("FLOWSTATE_BUILD_ID", "deadbeef")
+
+	cmd, _, err := newRootCommand().Find([]string{"worker"})
+	require.NoError(t, err)
+
+	_, err = workerDeployment(cmd, temporalFlagsOf(cmd))
+
+	require.ErrorContains(t, err, "set --temporal-deployment-name (or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME)")
+	require.NotContains(t, err.Error(), "prod")
 }
 
 // TestWorkerIdentityOverride is #752's escape hatch: an operator with a
@@ -218,7 +239,7 @@ func TestWorkerIdentityOverride(t *testing.T) {
 // the flag's default source — the shape an operator setting it through a
 // container's environment rather than its command line actually uses.
 func TestWorkerIdentityOverrideFromEnvironment(t *testing.T) {
-	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
+	t.Setenv("FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 	t.Setenv("FLOWSTATE_WORKER_IDENTITY", "pod/flowstate-worker-7f9c-abcde")
 
@@ -242,7 +263,7 @@ func TestWorkerIdentityOverrideFromEnvironment(t *testing.T) {
 // all, and the hostname still disambiguates replicas of that same pair.
 func TestWorkerIdentityDefaultIsMoreSpecificThanTheSDKs(t *testing.T) {
 	cmd := workerCommand(t)
-	require.NoError(t, cmd.Flags().Set("deployment-name", "flowstate"))
+	require.NoError(t, cmd.Flags().Set("temporal-deployment-name", "flowstate"))
 	require.NoError(t, cmd.Flags().Set("build-id", "abc123"))
 
 	deployment, err := workerDeployment(cmd, temporalFlagsOf(cmd))
@@ -263,7 +284,7 @@ func TestWorkerIdentityDefaultIsMoreSpecificThanTheSDKs(t *testing.T) {
 // traceable.
 func TestWorkerIdentityDefaultNamesTheTenant(t *testing.T) {
 	cmd := workerCommand(t)
-	require.NoError(t, cmd.Flags().Set("deployment-name", "flowstate"))
+	require.NoError(t, cmd.Flags().Set("temporal-deployment-name", "flowstate"))
 	require.NoError(t, cmd.Flags().Set("build-id", "abc123"))
 	require.NoError(t, cmd.Flags().Set("tenant", "team-a"))
 
@@ -558,7 +579,7 @@ func TestWorkerCapacityOptionsRefusesMaxConcurrentWorkflowTasksOfOne(t *testing.
 // in this test provides a Temporal server, so the refusal is proof the gate
 // sits before any I/O.
 func TestWorkerCapacityOptionsRefusalIsReachedBeforeTemporalIs(t *testing.T) {
-	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
+	t.Setenv("FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 
 	err := runFlow(t,

@@ -282,13 +282,13 @@ Continue-As-New is the only safe seam: the next run replays nothing, starting fr
 instead of from history. That is the whole reason invariant 10 exists — the seam is only sound
 if the two versions either side of it agree about the message crossing it.
 
-Both halves arrive together or not at all: a worker given one of `--deployment-name` and
-`--build-id` refuses to start naming the missing half, and a worker given neither refuses
-unless `--allow-unversioned-interpreter` accepts the exposure by name — which is what keeps
-invariant 8, since typing the flag is the whole cost of a dev-server session. The gate
-exists because a shipped capability depends on the guarantee rather than merely benefiting
-from it: expression evaluation runs in workflow code, where cel-go's behavior is pinned by
-the binary and by nothing else. See [DSL.md](DSL.md).
+Both halves arrive together or not at all: a worker given one of
+`--temporal-deployment-name` and `--build-id` refuses to start naming the missing half, and a
+worker given neither refuses unless `--allow-unversioned-interpreter` accepts the exposure
+by name — which is what keeps invariant 8, since typing the flag is the whole cost of a
+dev-server session. The gate exists because a shipped capability depends on the guarantee
+rather than merely benefiting from it: expression evaluation runs in workflow code, where
+cel-go's behavior is pinned by the binary and by nothing else. See [DSL.md](DSL.md).
 
 ## Leaning into Temporal
 
@@ -310,7 +310,7 @@ Rows marked **(done)** are implemented; the rest are the shape the surface shoul
 | Update | synchronous request/response against a running workload |
 | Child workflow | `call:` — a callee's whole compiled specification runs nested inside the caller's own execution, isolated from the caller's scope and reachable only through its declared `inputs:`/`outputs:`, resolved at compile time so filesystem access never reaches a worker **(done)**; still in the caller's own history rather than a separate one, which a *literal* Temporal child workflow would give — a call is transparent to Continue-As-New in the meantime (see DSL.md), so a callee's own steps count against the same step budget the caller's do |
 | Continue-As-New | transparent history and payload management **(done)**; a suspension-opaque block — a `parallel:` block and all its branches, or a `for_each` with `max_parallel:` or inside a parallel branch, loop body or switch arm — has no seam inside it, so the whole enclosing body's worst-case activity count is bounded by `MaxAtomicBlockActivities` before dispatch, keeping one atomic stretch under the history-event cap Temporal would otherwise force-terminate (skipping compensation) at |
-| Worker Deployment Versioning | `flow worker --deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
+| Worker Deployment Versioning | `flow worker --temporal-deployment-name --build-id`; a run is pinned to the interpreter it started on and takes the current version at Continue-As-New **(done)** |
 | Dynamic workflow registration | not used, deliberately: one *static* interpreter type, `Run`, registered pinned by `engine.RegisterWorkflows`, with the workload arriving as a `RunState` argument rather than as a workflow type name **(done)** — which is what gives one pinned version for the whole fleet, one stable type for the replay corpus to register against, and one place determinism is enforced. The cost is that every run's WorkflowType is `Run`, so Temporal-side per-type tooling sees one name, and the workload's declared name rides in the run's memo instead. See [One interpreter, not a workflow type per workload](#one-interpreter-not-a-workflow-type-per-workload) |
 | Schedules | `triggers: { schedule: ... }` declares a cadence — cron expressions or an interval, with a time zone, jitter and an overlap policy — and `flow schedule create\|list\|describe\|delete\|pause\|resume\|trigger` acts on it **(done)**; the declaration starts nothing, because a file that begins running on merge is a surprise, and arguments are bound and type-checked once at creation rather than at each firing. Calendar specs, start/end bounds, a catchup window and pause-on-failure are declared beside the cadence (`flowfile/triggers.go`'s schedule keys), and backfill is a creation-time request bounded in intervals and span (`flow schedule create --backfill`, `ScheduleBackfill`) **(done)** |
 | Workflow-id exclusion | `concurrency: { key:, on_conflict: }` **(done)** — at most one run of a workflow per key, decided at submit: the key resolves from the run's bound inputs, is digested with the tenant and the workflow name, and becomes the run's own workflow id, so the permit *is* the run and expires with it. `reject`/`join`/`terminate_other` map to `WorkflowIDConflictPolicy` `FAIL`/`FAIL`-and-catch/`TERMINATE_EXISTING`; `join` is a caught refusal rather than `USE_EXISTING` so that a join is a fact the server established. What is **not** surfaced is *buffering*: `buffer_one`/`buffer_all`/`cancel_other` exist only in Temporal's schedule machinery (the Schedules row's `overlap:`), which a manual `Run` never touches, so a workflow id cannot queue and the validator refuses those three words by name rather than accepting one it would not honour. For the same reason `concurrency:` cannot be combined with a webhook or a schedule trigger, whose runs are already addressed by an id of their own |

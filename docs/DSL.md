@@ -707,7 +707,7 @@ said so — `flow worker` warned, and a warning is not a gate. It is a gate now:
 
     # Pinned: a run finishes on the interpreter it started on, and takes the
     # current version at continue-as-new.
-    flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+    flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 
     # Unpinned, accepted out loud.
     flow worker --allow-unversioned-interpreter
@@ -722,8 +722,8 @@ command line can see what was accepted without reading the code that enforced it
 The worker still warns on every start, because the person reading a worker's logs a
 month later is usually not the person who wrote its command line.
 
-**Half a version is an error, not a fallback.** Setting `--deployment-name` without
-`--build-id` (or the reverse) used to drop silently to unversioned — an operator who
+**Half a version is an error, not a fallback.** Setting `--temporal-deployment-name`
+without `--build-id` (or the reverse) used to drop silently to unversioned — an operator who
 asked for the guarantee, did not get it, and was not told, which is a fail-open on
 the exact posture this section is about. `engine.DeploymentOptions` now names the
 missing half and the command stops. `--allow-unversioned-interpreter` does not
@@ -2666,7 +2666,7 @@ moment:
 | grammar | `edition:` in the file (required) | parse | at any edition, with `flow fix` across the boundary |
 | expression dialect | `Workflow.profile`, stamped by the compiler | compile; honoured at run and replay | with the edition; never within one |
 | compiled spec | proto package `flowstate.v1` | forever — histories replay against it | WIRE never; FILE spent deliberately |
-| engine | worker `--deployment-name --build-id` | run start; Continue-As-New takes current | freely between runs; never within one |
+| engine | worker `--temporal-deployment-name --build-id` | run start; Continue-As-New takes current | freely between runs; never within one |
 | plugins | `plugins:` minimums in the file; exact resolutions recorded in the compiled spec | resolve at submit, pin for the run | majors freely; a major is a different requirement |
 
 The coherence rules, and what each refuses:

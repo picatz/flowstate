@@ -554,7 +554,7 @@ $ flow worker --tenant team-a --task-queue-prefix flowstate-run \
     --temporal-namespace temporal-team-a \
     --egress-policy /etc/flowstate/team-a/egress.yaml \
     --secret-dir /etc/flowstate/team-a/secrets \
-    --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 
 # And the default tenant of a deployment whose trust policy has a `default`:
 $ flow worker --tenant= --task-queue-prefix flowstate-run ...
@@ -698,7 +698,7 @@ credentials issued by the substrate rather than by Flowstate.
 ## Deployment matrix
 
 Every recipe below that runs `flow worker` in a production setting sets one of
-`FLOWSTATE_DEPLOYMENT_NAME`/`FLOWSTATE_BUILD_ID` (or, deliberately for
+`FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME`/`FLOWSTATE_BUILD_ID` (or, deliberately for
 non-production, `--allow-unversioned-interpreter`) — the worker refuses to
 start with neither, per invariant 10 in `ARCHITECTURE.md`, and every recipe
 below shows the flag because the alternative is discovering the refusal at
@@ -772,7 +772,7 @@ for Tier 2: one worker unit per tenant's Temporal namespace.
 ```env
 TEMPORAL_ADDRESS=temporal.internal:7233
 TEMPORAL_NAMESPACE=production
-FLOWSTATE_DEPLOYMENT_NAME=flowstate
+FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME=flowstate
 FLOWSTATE_BUILD_ID=2026.08.06-a1b2c3d
 FLOWSTATE_AUTH_POLICY=/etc/flowstate/policy.yaml
 FLOWSTATE_SECRET_DIR=/etc/flowstate/secrets
@@ -880,7 +880,7 @@ ordinary Kubernetes way — Secret volumes or `envFrom`.
 
 **Set `--identity` (or `FLOWSTATE_WORKER_IDENTITY`) to the pod name.** Left
 unset, a worker's identity in Temporal's Event History and Task Queue poller
-list is built from `--deployment-name`/`--build-id`, `--tenant` if set, and
+list is built from `--temporal-deployment-name`/`--build-id`, `--tenant` if set, and
 this process's hostname — better than the SDK's own `pid@hostname` default
 (every container's PID 1 is `1`), but a pod hostname is still a hash an
 operator has to cross-reference against `kubectl get pods`. Wire the
@@ -950,7 +950,7 @@ There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
 the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:249`,
-reached from `cmd/flow/main.go:259` through `temporalclient.Dial`)
+reached from `cmd/flow/main.go:268` through `temporalclient.Dial`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies
@@ -1212,7 +1212,7 @@ TEMPORAL_TLS_CLIENT_KEY_PATH=/etc/flowstate/client.key
 ```
 
 ```console
-$ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+$ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 $ flow server --auth-policy /etc/flowstate/policy.yaml \
     --rpc-resource https://flowstate.example.com/rpc
 ```
@@ -2047,7 +2047,7 @@ with its own client and is not governed by the egress policy at all.
 ## Worker versioning, every time
 
 Every recipe in this document that starts a production worker sets
-`FLOWSTATE_DEPLOYMENT_NAME`/`FLOWSTATE_BUILD_ID` or
+`FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME`/`FLOWSTATE_BUILD_ID` or
 `--allow-unversioned-interpreter` explicitly, because the worker **refuses to
 start** with neither — see
 [Versioning: pinned within a run, upgraded between runs](ARCHITECTURE.md#versioning-pinned-within-a-run-upgraded-between-runs).

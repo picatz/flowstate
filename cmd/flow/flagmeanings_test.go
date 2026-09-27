@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -65,6 +66,22 @@ var flagMeanings = []flagMeaning{
 		holdsOn: declaresNot("profile"),
 		because: "same rule: Temporal's settings carry Temporal's prefix",
 	},
+	{
+		name:    "deployment-name",
+		means:   "the Flowstate installation recorded in workload identities",
+		holdsOn: declaresToo("identity-key"),
+		because: "the installation name is part of the identity a server mints assertions from, so " +
+			"it is declared beside the key that signs them; `flow worker --deployment-name` named " +
+			"Temporal's Worker Deployment instead, and is refused now (#2121)",
+	},
+	{
+		name:    "temporal-deployment-name",
+		means:   "Temporal's Worker Deployment this worker belongs to",
+		holdsOn: declaresNot("deployment-name"),
+		because: "a command carrying both would let one operator's `--deployment-name` mean the " +
+			"installation on one command and Temporal's Worker Deployment on the other, which is " +
+			"the collision #2121 removed",
+	},
 }
 
 // flagMeaning is one flag name, the single thing it names, and the property that
@@ -113,18 +130,23 @@ func TestNoFlagNameCarriesTwoMeanings(t *testing.T) {
 }
 
 // TestTemporalSettingsAreSpelledWithTemporalsPrefix is the positive and negative
-// halves of the rename, on the two commands that dial Temporal.
+// halves of the rename, on the two commands that dial Temporal, each against the
+// table of old spellings it refuses: the worker refuses one the server keeps
+// with another meaning (#2121).
 //
 // The negative direction is the one that matters, and it is the direction
 // CLAUDE.md asks for: not "--temporal-address exists", which a tree that kept
 // both spellings would satisfy, but "the unprefixed spelling is gone from the
 // surface a reader judges".
 func TestTemporalSettingsAreSpelledWithTemporalsPrefix(t *testing.T) {
-	for _, path := range []string{"server", "worker"} {
+	for path, table := range map[string][]renamedFlag{
+		"server": renamedTemporalFlags,
+		"worker": slices.Concat(renamedTemporalFlags, renamedWorkerFlags),
+	} {
 		t.Run(path, func(t *testing.T) {
 			cmd := findCommand(t, path)
 
-			for _, renamed := range renamedTemporalFlags {
+			for _, renamed := range table {
 				replacement := cmd.Flags().Lookup(renamed.new)
 				require.NotNil(t, replacement,
 					"`flow %s` has no --%s; Temporal's settings carry Temporal's prefix (#580)",
@@ -174,6 +196,14 @@ func TestRemovedFlagSpellingsRefuseAndSayWhatToSayInstead(t *testing.T) {
 			args:    []string{"server", "--profile", "prod"},
 			mention: []string{"--profile was removed", "--temporal-profile"},
 		},
+		{
+			args: []string{"worker", "--deployment-name", "flowstate"},
+			mention: []string{
+				"--deployment-name was removed from `flow worker`: it named Temporal's Worker Deployment (picatz/flowstate#2121)",
+				"--temporal-deployment-name names Temporal's Worker Deployment",
+				"--deployment-name on `flow server` names the Flowstate installation",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -197,6 +227,14 @@ func TestRemovedFlagSpellingsRefuseAndSayWhatToSayInstead(t *testing.T) {
 	// command does not have is a false diagnostic, which CLAUDE.md holds is
 	// worse than a missing one.
 	assert.NotContains(t, runFlow(t, "worker", "--address", "temporal:7233").Err.Error(), "--listen")
+
+	// The refusal is the worker's alone: `flow server --deployment-name` still
+	// names the Flowstate installation (#2121). The server fails here for its
+	// own reason — no auth policy — which is reached only past PreRunE.
+	server := runFlow(t, "server", "--deployment-name", "prod", "--temporal-address", "127.0.0.1:1")
+	require.Error(t, server.Err)
+	assert.NotContains(t, server.Err.Error(), "was removed")
+	assert.Contains(t, server.Err.Error(), "no authentication configured")
 }
 
 // TestNoVisibleFlagIsARemovedSpelling holds the convention the two tests above

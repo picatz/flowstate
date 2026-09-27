@@ -2126,13 +2126,13 @@ Start a worker that runs workflow steps
 flow worker [flags]
 ```
 
-Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
+Start a Temporal worker: the process that actually runs a workflow's steps. The server submits work to Temporal and a worker polling its task queue is what picks it up, so nothing a deployment accepts runs until at least one worker is up: the two never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` it claims a Temporal Worker Deployment version, pinning every run already in flight to the interpreter it started on: a later deploy changes what new runs compute, not what in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one namespace's runs and refuses every other outright, rather than running them with this worker's secrets, egress policy and plugins, which needs a queue of its own, named by `--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.
 
 Examples:
 
 ```sh
 # Start a worker, pinned so a deploy does not change runs already in flight:
-flow worker --deployment-name flowstate \
+flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 
 # Against a local dev server, accepting that nothing pins the interpreter:
@@ -2140,11 +2140,12 @@ flow worker --allow-unversioned-interpreter
 
 # Start a worker against another Temporal server:
 flow worker --temporal-address temporal.internal:7233 \
-  --deployment-name flowstate --build-id dev-1
+  --temporal-deployment-name flowstate --build-id dev-1
 
 # Start a worker in another Temporal namespace:
 flow worker --temporal-namespace production \
-  --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+  --temporal-deployment-name flowstate \
+  --build-id "$(git rev-parse --short HEAD)"
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -2153,10 +2154,9 @@ flow worker --temporal-namespace production \
 | `--allow-unversioned-interpreter` | `bool` | `false` | — | start without a Worker Deployment version, accepting that deploying a different binary changes what runs already in flight compute; for local development |
 | `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
-| `--build-id <string>` | `string` | — | `FLOWSTATE_BUILD_ID` | version identifier for this worker's binary, unique per build. Required with --deployment-name |
-| `--deployment-name <string>` | `string` | — | `FLOWSTATE_DEPLOYMENT_NAME` | Temporal Worker Deployment this worker belongs to (not the server's Flowstate deployment name). With `--build-id`, pins every in-flight run to the interpreter version it started on; a run moves to the current version only at continue-as-new |
+| `--build-id <string>` | `string` | — | `FLOWSTATE_BUILD_ID` | version identifier for this worker's binary, unique per build. Required with --temporal-deployment-name |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party git, github, slack, sql and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file, plugins are granted the default policy built-in HTTP runs under, which sql refuses to reach a database under; a file replaces that default entirely and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is then ignored, so a file that wants loopback says `allow_loopback: true` |
-| `--identity <string>` | `string` | — | `FLOWSTATE_WORKER_IDENTITY` | how this worker identifies itself to Temporal, shown in Event History and a task queue's poller list; a platform identifier (a Kubernetes pod name, an ECS task id) is the most useful value. Unset builds one from `--deployment-name`, `--build-id`, `--tenant` if set, and this machine's hostname |
+| `--identity <string>` | `string` | — | `FLOWSTATE_WORKER_IDENTITY` | how this worker identifies itself to Temporal, shown in Event History and a task queue's poller list; a platform identifier (a Kubernetes pod name, an ECS task id) is the most useful value. Unset builds one from `--temporal-deployment-name`, `--build-id`, `--tenant` if set, and this machine's hostname |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a private socket of this process's own; empty (the default) means no internal listener at all. Pass a loopback address, such as --internal-listen 127.0.0.1:9090, to turn it on — nothing else is accepted: it serves pprof, whose profiles carry this process's memory and running goroutines (secret values resolved into it among them), and it carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--max-activities-per-second <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND` | maximum rate, per second, at which this worker process starts activity tasks; 0 takes the Temporal SDK default (effectively unlimited). Enforced locally, per worker process — see --task-queue-activities-per-second for the server-enforced, per-queue limit |
@@ -2196,6 +2196,7 @@ flow worker --temporal-namespace production \
 | `--task-queue-activities-per-second <string>` | `string` | `0` | `FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND` | maximum rate, per second, at which the Temporal server dispatches activity tasks from this worker's task queue, shared across every worker polling that queue; 0 takes the Temporal SDK default (effectively unlimited). Per queue, not per worker: setting this differently on two workers sharing a queue is last-writer-wins on the server, and setting it disables eager activity execution for this worker |
 | `--task-queue-prefix <string>` | `string` | — | `FLOWSTATE_TASK_QUEUE_PREFIX` | route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, so a per-tenant worker fleet can be addressed; unset means every tenant shares the single default queue, which is the zero-configuration behavior |
 | `--temporal-address <string>` | `string` | — | — | Temporal frontend address to dial (overrides environment configuration) |
+| `--temporal-deployment-name <string>` | `string` | — | `FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME` | Temporal Worker Deployment this worker belongs to (not the Flowstate installation `flow server --deployment-name` names). With `--build-id`, pins every in-flight run to the interpreter version it started on; a run moves to the current version only at continue-as-new |
 | `--temporal-namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
 | `--temporal-profile <string>` | `string` | — | — | Temporal configuration profile to use |
 | `--tenant <string>` | `string` | — | — | execute only this Flowstate namespace's runs, refusing any other tenant's outright rather than executing it with this worker's secrets, egress policy and plugins. Pass an empty value (--tenant=) for the default tenant of an untenanted deployment. Needs a queue of this worker's own: either --task-queue-prefix (the same value the server was started with) or an explicit --task-queue |

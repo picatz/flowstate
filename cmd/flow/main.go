@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -97,8 +98,14 @@ type temporalFlags struct {
 	// built it — a CI job knows the commit; a person typing `flow worker` does not.
 	//
 	// See pkg/flowstate/v1/engine/versioning.go for what turning this on buys.
+	workerDeploymentName string
+	buildID              string
+
+	// deploymentName is `flow server`'s: the Flowstate installation recorded in
+	// every run's workload identity, which is not a Temporal Worker Deployment.
+	// The two used to share a spelling and FLOWSTATE_DEPLOYMENT_NAME; the
+	// worker's is --temporal-deployment-name now (picatz/flowstate#2121).
 	deploymentName string
-	buildID        string
 
 	// verbose says whether to describe the connection that was resolved, which is
 	// the one thing that makes a misconfigured TEMPORAL_* variable findable.
@@ -122,21 +129,23 @@ func temporalFlagsOf(cmd *cobra.Command) temporalFlags {
 	taskQueuePrefix, _ := cmd.Flags().GetString("task-queue-prefix")
 	tenant, _ := cmd.Flags().GetString("tenant")
 	deploymentName, _ := cmd.Flags().GetString("deployment-name")
+	workerDeploymentName, _ := cmd.Flags().GetString("temporal-deployment-name")
 	buildID, _ := cmd.Flags().GetString("build-id")
 	verbose, _ := cmd.Flags().GetBool("verbose")
 
 	return temporalFlags{
-		address:           address,
-		namespace:         namespace,
-		profile:           profile,
-		taskQueue:         taskQueue,
-		taskQueuePrefix:   taskQueuePrefix,
-		tenant:            tenant,
-		tenantSet:         cmd.Flags().Changed("tenant"),
-		taskQueueExplicit: cmd.Flags().Changed("task-queue"),
-		deploymentName:    deploymentName,
-		buildID:           buildID,
-		verbose:           verbose,
+		address:              address,
+		namespace:            namespace,
+		profile:              profile,
+		taskQueue:            taskQueue,
+		taskQueuePrefix:      taskQueuePrefix,
+		tenant:               tenant,
+		tenantSet:            cmd.Flags().Changed("tenant"),
+		taskQueueExplicit:    cmd.Flags().Changed("task-queue"),
+		deploymentName:       deploymentName,
+		workerDeploymentName: workerDeploymentName,
+		buildID:              buildID,
+		verbose:              verbose,
 	}
 }
 
@@ -346,7 +355,7 @@ const allowUnversionedFlag = "allow-unversioned-interpreter"
 // that decides how much safety to enforce by pattern-matching a hostname fails open
 // on exactly the deployment that most needs it.
 func workerDeployment(cmd *cobra.Command, flags temporalFlags) (worker.DeploymentOptions, error) {
-	deployment, err := engine.DeploymentOptions(flags.deploymentName, flags.buildID)
+	deployment, err := engine.DeploymentOptions(flags.workerDeploymentName, flags.buildID)
 	if err != nil {
 		return worker.DeploymentOptions{}, err
 	}
@@ -364,8 +373,8 @@ func workerDeployment(cmd *cobra.Command, flags temporalFlags) (worker.Deploymen
 			"(step conditions, a loop's items:, a step's vars:, task inputs) in workflow code, so the "+
 			"expression engine built into this binary decides what they mean; with no version, "+
 			"deploying a different binary changes what every run already in flight computes, including "+
-			"where a run resumes after continue-as-new. Pass --deployment-name and --build-id "+
-			"(or FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to the interpreter "+
+			"where a run resumes after continue-as-new. Pass --temporal-deployment-name and --build-id "+
+			"(or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to the interpreter "+
 			"it started on, or --%s to accept that exposure, which is what a local "+
 			"`temporal server start-dev` session usually wants",
 		allowUnversionedFlag)
@@ -384,9 +393,9 @@ func workerDeployment(cmd *cobra.Command, flags temporalFlags) (worker.Deploymen
 // the SDK default, only by that hostname fragment.
 //
 // So the default here is built from what this process already knows is
-// stable and meaningful: the Worker Deployment version (--deployment-name/
-// --build-id), which is the same identity the worker already logs at
-// startup, and the tenant restriction when --tenant is set, since a run
+// stable and meaningful: the Worker Deployment version
+// (--temporal-deployment-name/--build-id), which is the same identity the
+// worker already logs at startup, and the tenant restriction when --tenant is set, since a run
 // misrouted to the wrong tenant's worker is exactly the kind of thing this
 // string exists to make traceable. The hostname is appended last, unchanged
 // from what the SDK would have used — it still disambiguates replicas of the
@@ -836,7 +845,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 			"task_queue", taskQueue,
 			"accepted_with", "--"+allowUnversionedFlag,
 			"identity", identity,
-			"fix", "set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id")
+			"fix", "set FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --temporal-deployment-name and --build-id")
 	}
 
 	// Start worker (non-blocking) such that it can run in the background
@@ -2645,7 +2654,7 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 		Long: "Start a Temporal worker: the process that actually runs a workflow's steps. " +
 			"The server submits work to Temporal and a worker polling its task queue is what picks " +
 			"it up, so nothing a deployment accepts runs until at least one worker is up: the two " +
-			"never talk to each other, they meet at Temporal. With `--deployment-name` and `--build-id` " +
+			"never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` " +
 			"it claims a Temporal Worker Deployment version, pinning every run already in flight to the " +
 			"interpreter it started on: a later deploy changes what new runs compute, not what " +
 			"in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one " +
@@ -2654,7 +2663,7 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 			"`--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.",
 		RunE: runWorker,
 		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
-flow worker --deployment-name flowstate \
+flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 
 # Against a local dev server, accepting that nothing pins the interpreter:
@@ -2662,11 +2671,12 @@ flow worker --allow-unversioned-interpreter
 
 # Start a worker against another Temporal server:
 flow worker --temporal-address temporal.internal:7233 \
-  --deployment-name flowstate --build-id dev-1
+  --temporal-deployment-name flowstate --build-id dev-1
 
 # Start a worker in another Temporal namespace:
 flow worker --temporal-namespace production \
-  --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
+  --temporal-deployment-name flowstate \
+  --build-id "$(git rev-parse --short HEAD)"`,
 	}
 
 	// These override Temporal's environment configuration when set; unset means
@@ -2695,14 +2705,17 @@ flow server --insecure-no-auth`,
 	// settings of its own that answer the same questions: --listen is the
 	// socket `flow server` binds, --tenant is a Flowstate tenant. Unprefixed,
 	// `--address` named Temporal's frontend here and the Flowstate server on
-	// every client verb (picatz/flowstate#580). addRenamedTemporalFlags keeps
-	// the old spellings registered, hidden, and refusing.
+	// every client verb (picatz/flowstate#580). addRenamedFlags keeps the old
+	// spellings registered, hidden, and refusing; the worker also refuses its
+	// own old --deployment-name, which the server still declares with another
+	// meaning (picatz/flowstate#2121).
 	for _, c := range []*cobra.Command{workerCmd, serverCmd} {
 		c.Flags().String("temporal-address", "", "Temporal frontend address to dial (overrides environment configuration)")
 		c.Flags().String("temporal-namespace", "", "Temporal namespace (overrides environment configuration)")
 		c.Flags().String("temporal-profile", "", "Temporal configuration profile to use")
-		addRenamedTemporalFlags(c)
 	}
+	addRenamedFlags(serverCmd, renamedTemporalFlags)
+	addRenamedFlags(workerCmd, slices.Concat(renamedTemporalFlags, renamedWorkerFlags))
 	workerCmd.Flags().String("task-queue", cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName),
 		"task queue for Temporal workflows and activities")
 
@@ -2727,12 +2740,16 @@ flow server --insecure-no-auth`,
 			"Needs a queue of this worker's own: either --task-queue-prefix (the same value the "+
 			"server was started with) or an explicit --task-queue")
 
-	workerCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
-		"Temporal Worker Deployment this worker belongs to (not the server's Flowstate deployment "+
-			"name). With `--build-id`, pins every in-flight run to the "+
+	// Temporal's prefix, like the other Temporal settings above: this names
+	// Temporal's Worker Deployment, and `flow server --deployment-name` names
+	// the Flowstate installation. The unprefixed spelling is refused here
+	// (renamedWorkerFlags, picatz/flowstate#2121).
+	workerCmd.Flags().String("temporal-deployment-name", os.Getenv("FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME"),
+		"Temporal Worker Deployment this worker belongs to (not the Flowstate installation "+
+			"`flow server --deployment-name` names). With `--build-id`, pins every in-flight run to the "+
 			"interpreter version it started on; a run moves to the current version only at continue-as-new")
 	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
-		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
+		"version identifier for this worker's binary, unique per build. Required with --temporal-deployment-name")
 	workerCmd.Flags().Bool(allowUnversionedFlag, false,
 		"start without a Worker Deployment version, accepting that deploying a different binary "+
 			"changes what runs already in flight compute; for local development")
@@ -2740,7 +2757,7 @@ flow server --insecure-no-auth`,
 	workerCmd.Flags().String("identity", os.Getenv("FLOWSTATE_WORKER_IDENTITY"),
 		"how this worker identifies itself to Temporal, shown in Event History and a task queue's "+
 			"poller list; a platform identifier (a Kubernetes pod name, an ECS task id) is the most "+
-			"useful value. Unset builds one from `--deployment-name`, `--build-id`, `--tenant` if "+
+			"useful value. Unset builds one from `--temporal-deployment-name`, `--build-id`, `--tenant` if "+
 			"set, and this machine's hostname")
 
 	// How long Stop() gives an in-flight activity or workflow task to finish
@@ -2864,8 +2881,9 @@ flow server --insecure-no-auth`,
 	// The server's deployment name is not the worker's Worker Deployment pair: it
 	// names this Flowstate installation in the identity every run carries, so an
 	// assertion presented to an external system distinguishes staging from
-	// production. Same spelling and same environment default as the worker's flag
-	// on purpose, because they describe the same installation.
+	// production. The worker's Temporal setting used to share this spelling and
+	// FLOWSTATE_DEPLOYMENT_NAME, which made one variable configure two unrelated
+	// things; it is --temporal-deployment-name now (picatz/flowstate#2121).
 	serverCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"name of this Flowstate installation (not a Temporal Worker Deployment), recorded in "+
 			"each run's workload identity and in every assertion subject it mints")

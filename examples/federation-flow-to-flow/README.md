@@ -84,7 +84,8 @@ the key):
 ```console
 $ flow server --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
     --identity-key /etc/flowstate/identity.pem \
-    --rpc-resource https://flowstate.example.com/rpc
+    --rpc-resource https://flowstate.example.com/rpc \
+    --deployment-name prod
 ```
 
 Deployment A's **worker** runs the workflow and mints the assertion, with the
@@ -94,7 +95,7 @@ the server publishes:
 ```console
 $ flow worker --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
     --identity-key /etc/flowstate/identity.pem \
-    --deployment-name prod --build-id "$(git rev-parse --short HEAD)"
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
 Deployment B's **server** authenticates callers against `trust.yaml`, which
@@ -113,10 +114,13 @@ for — `audience: https://flowstate.peer.example.com`, the same string in
 one more angle: the assertion A presents to B is spendable at B's RPC surface
 precisely because it names B.
 
-`--deployment-name prod` on A's worker is what makes the assertion carry
-`deployment: prod`, which B's `trust.yaml` requires. A rehearsal has to supply
-the same identity by hand, because `flow run local` defaults `--as-namespace` to
-empty and `--as-deployment` to `local` — and A's own allow rule requires
+`--deployment-name prod` on A's server is what makes the assertion carry
+`deployment: prod`, which B's `trust.yaml` requires: the server records the
+installation name in the identity every run carries, and the worker mints the
+assertion from that identity. The worker's own `--temporal-deployment-name` is
+Temporal's Worker Deployment and never enters an identity. A rehearsal has to
+supply the same identity by hand, because `flow run local` defaults `--as-namespace`
+to empty and `--as-deployment` to `local` — and A's own allow rule requires
 namespace `acme` (a mismatch is `ErrAssumeDenied`, before anything is minted)
 while B requires deployment `prod`:
 

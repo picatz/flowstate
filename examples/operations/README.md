@@ -7,7 +7,7 @@ They are properties of the *processes* a deployment runs:
 | Walkthrough | Shows |
 | --- | --- |
 | [tenant-routing](tenant-routing/) | `flow server --task-queue-prefix` and `flow worker --tenant`: one worker fleet per tenant, each with that tenant's own secrets and egress policy, and the two half-configured command lines that are refused at startup |
-| [worker-versioning](worker-versioning/) | `flow worker --deployment-name --build-id`: a run pinned to the interpreter it started on, upgraded at Continue-As-New, and the refusal when given half the pair |
+| [worker-versioning](worker-versioning/) | `flow worker --temporal-deployment-name --build-id`: a run pinned to the interpreter it started on, upgraded at Continue-As-New, and the refusal when given half the pair |
 
 ## Why these are here, and not somewhere else
 
