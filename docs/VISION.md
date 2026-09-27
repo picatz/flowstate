@@ -15,8 +15,9 @@ be cited as though it were shipped.
 
 ## What the platform is for
 
-Not a CI system — the engine targets anything that has to finish correctly
-despite crashes, network failures, and long waits. The workload shapes to design
+Not a replacement for CI: the engine targets anything that has to finish
+correctly despite crashes, network failures, and long waits, including the
+release and deployment work a CI job hands off. The workload shapes to design
 toward, beyond the obvious pipelines: security orchestration and response,
 agentic investigations, business processes with humans in the loop, chat-driven
 operations (Slack/Discord bots as both trigger and approval surface), and
@@ -68,8 +69,9 @@ built on OCI artifacts instead, which brings digests, registries, and signing
 (sigstore) for free. Leaning OCI. Explicitly **not** go-getter. A deployment
 would choose its posture: local-binaries-only, or a configured allowlist of
 fetchable plugins. The dotted task namespace, discovery-by-explicit-path, and
-the handshake's verification are the hooks this builds on; the `plugins:` header
-reserved for Phase 3 is the natural home for version minimums.
+the handshake's verification are the hooks this builds on; the `plugins:` header,
+which already declares the least version of each plugin a workflow needs and
+pins the build a run resolved, is the natural home for what a fetch resolves.
 
 ## Remote plugins as services, and MCP in both directions
 
@@ -99,7 +101,11 @@ none — and what does a *remote* plugin present back to us?
 ## Webhooks, in both directions
 
 Workloads live among systems that speak webhooks, and both directions belong
-here. Inbound: Slack, Discord, Jira, a GitHub App, or an arbitrary system posts
+here. Part of the inbound half has landed: a Flowfile's `webhook:` trigger,
+served by `flow server --webhook`, verifies an HMAC or Stripe signature and
+either starts a run or answers a waiting one (see
+[the language guide](LANGUAGE.md#webhooks)). What follows is the rest.
+Inbound: Slack, Discord, Jira, a GitHub App, or an arbitrary system posts
 an event; signature verification is a first-class necessity (per-provider HMAC
 or asymmetric schemes, timestamp and replay windows), and a verified event
 feeds the trigger mechanism and bridges into signals — a webhook answering a

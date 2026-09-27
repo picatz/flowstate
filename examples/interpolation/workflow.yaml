@@ -1,10 +1,16 @@
 # Text and expressions in one value.
 #
-# A `${...}` fence holds one expression, and a value may hold several of them
-# with ordinary text between. That is the whole of the feature: a spelling for
-# building a sentence out of values, and no capability that was not already
-# there — `${'a' + inputs.x + 'b'}` has always been legal, and this says the
-# same thing in the order a person reads it.
+# A value may mix ordinary text with `${...}` fences:
+#
+#   message: deploying ${inputs.version} to ${inputs.environment}
+#
+# Each fence holds one expression, each is converted with `string()`, and the
+# result is one string. `flow fmt` rewrites such a value into the single
+# expression it means, `${"deploying " + string(inputs.version) + " to " +
+# string(inputs.environment)}`, and both spellings compile to the same
+# specification. Every example is kept in `flow fmt` form, so the steps below
+# show the rewritten spelling; write whichever reads better and let the
+# formatter settle it.
 #
 # It is deliberately not a template language. There is no conditional, no loop
 # and no filter in text; a fence holds an expression and nothing else. That is
@@ -22,29 +28,26 @@ inputs:
 vars:
   requester: an unattested caller
 steps:
-  # The shape the whole feature exists for. As one expression this reads
-  # `${vars.requester + ' requests deploying ' + inputs.version + ' to ' + inputs.environment}`,
-  # which says the same thing with the words and the values interleaved by hand.
+  # The shape the feature exists for, written as
+  # `${vars.requester} requests deploying ${inputs.version} to ${inputs.environment}`.
   - id: announce
     log:
       message: ${string(vars.requester) + " requests deploying " + string(inputs.version) + " to " + string(inputs.environment)}
 
   # Every fence is rendered with CEL's own `string()`, so a number, a boolean
-  # and a duration all read the way `string()` renders them. `format()` remains
-  # the spelling for width and precision; this one is for concatenation, which
-  # is what nearly every message actually wants.
+  # and a duration all read the way `string()` renders them: this logs
+  # "attempt 2, forced false, budget 90s". `format()` remains the spelling for
+  # width and precision.
   - id: kinds
     log:
       message: ${"attempt " + string(1 + 1) + ", forced " + string(false) + ", budget " + string(duration("90s"))}
 
-  # A block scalar interpolates identically — the fence rule belongs to the
-  # value, not to the quoting style it was written in.
+  # A quoted or block scalar interpolates identically: the fence rule belongs
+  # to the value, not to the quoting style it was written in.
   - id: summary
     log:
       message: ${"deploying " + string(inputs.version) + " to " + string(inputs.environment)}
-  # `$${` is a literal `${`. It is needed only by a file that wants to *show*
-  # the syntax, since a value holding a literal `${` was refused before
-  # interpolation existed, so nothing older can contain one.
+  # `$${` is a literal `${`, for a file that wants to *show* the syntax.
   #
   # The escape works in a field read when the workflow is compiled as readily as
   # in one the engine evaluates — a `description:` is prose, and prose about this

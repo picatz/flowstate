@@ -2,7 +2,7 @@
 
 Flowstate is a durable, policy-governed workload engine. Authors declare a
 workload in a YAML+CEL `Flowfile`; Flowstate compiles it to a typed Protobuf
-specification and executes it on Temporal. It is not a CI system. The target is
+specification and executes it on Temporal. It complements CI. The target is
 any workload that must finish correctly despite crashes, network failures, and
 long waits.
 

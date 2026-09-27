@@ -13,6 +13,17 @@ reuse, and temporarily inconsistent fleet members. A lower revision is a rollbac
 equal revisions with different digests are configuration split-brain. Both fail
 closed. HTTP cache age is never evidence that an authorization decision is fresh.
 
+> [!NOTE]
+> This page is the design, and most of it is not built. What exists today is
+> the protected-resource metadata document with the caching behavior described
+> [below](#public-metadata-caching), and a descriptor digest and revision
+> computed for each protected resource (`ProtectedResource.Digest` and
+> `.Revision` in `pkg/flowstate/v1/auth`). No `flow` flag sets a revision yet,
+> so `Flowstate-Policy-Revision` is not sent by any deployment of this binary.
+> Carrying the identity through sessions, caches, decisions, audit records, and
+> traces; refusing rollback and split-brain; and invalidating on the change
+> classes below are not implemented.
+
 ## Where the identity travels
 
 Both values are carried in MCP session records, OAuth client-cache entries,
@@ -63,9 +74,8 @@ tenancy map and its secret boundaries — which is what makes it useful for
 telling fleet members apart, and exactly why it may not be published on a
 route that has no authentication. A hash of private policy on an anonymous
 endpoint is an offline oracle: guess a mapping, hash the candidate, compare,
-at no cost and unobservably. It is available to an operator who is already
-inside, through `ProtectedResource.Digest`, and to telemetry
-(`flowstate.auth.resource_digest`).
+at no cost and unobservably. It is available to code inside the process
+through `ProtectedResource.Digest`; no telemetry attribute carries it yet.
 
 `Flowstate-Policy-Revision` is sent only when a deployment actually configures
 a revision. Defaulting it and announcing it made a constant look like a

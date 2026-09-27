@@ -56,7 +56,10 @@ $ flow worker --tenant team-b --task-queue-prefix flowstate-run \
 
 `--temporal-deployment-name`/`--build-id` are on both lines for a reason that has
 nothing to do with tenancy — see [worker-versioning](../worker-versioning/), and note that a
-worker refuses to start without them.
+worker refuses to start without them. A Worker Deployment belongs to one Temporal
+namespace, so make the build current in each tenant's namespace before
+submitting (`temporal worker deployment set-current-version --namespace
+temporal-team-a ...`); until then that fleet receives no runs.
 
 Note what makes those two fleets actually different: `--egress-policy` and
 `--secret-dir` are per-process, so each holds one tenant's material and no other's.
@@ -93,15 +96,18 @@ command line.
 ## The two command lines that are refused
 
 Both halves of the pair are required, and each is refused for its own reason
-rather than as a symmetry. These are the messages the binary prints.
+rather than as a symmetry. These are the messages the binary prints. Both
+command lines carry a version, because a worker without one is refused for
+that first.
 
 **A tenant with no queue of its own:**
 
 ```console
-$ flow worker --tenant team-a
-Error: --tenant "team-a" needs a task queue of its own: this worker refuses every
-run belonging to another tenant, so on the shared queue "flowstate-run-task-queue"
-— where every tenant's runs are submitted when the server routes nothing — it
+$ flow worker --tenant team-a --temporal-deployment-name flowstate --build-id 1a2b3c4
+ERROR
+--tenant "team-a" needs a task queue of its own: this worker refuses every run
+belonging to another tenant, so on the shared queue "flowstate-run-task-queue"
+(where every tenant's runs are submitted when the server routes nothing) it
 would fail other tenants' work rather than leave it to the general fleet. Pass
 --task-queue-prefix with the same value `flow server` was started with, or name
 this fleet's queue with --task-queue
@@ -115,11 +121,12 @@ for everyone's runs and terminally fail the ones it won.
 **A prefix with no tenant:**
 
 ```console
-$ flow worker --task-queue-prefix flowstate-run
-Error: --task-queue-prefix "flowstate-run" names a family of per-tenant task
-queues, and which one this worker should poll is a function of the tenant: pass
---tenant <namespace> (or --tenant= for the default tenant of an untenanted
-deployment), or drop the prefix to poll the single shared queue
+$ flow worker --task-queue-prefix flowstate-run --temporal-deployment-name flowstate --build-id 1a2b3c4
+ERROR
+--task-queue-prefix "flowstate-run" names a family of per-tenant task queues,
+and which one this worker should poll is a function of the tenant: pass --tenant
+<namespace> (or --tenant= for the default tenant of an untenanted deployment),
+or drop the prefix to poll the single shared queue
 ```
 
 Half the pair addresses nothing: the queue a prefix composes *is* a function of the
