@@ -316,7 +316,7 @@ func isQuietError(err error) bool {
 // running and finding something to refuse.
 //
 // Typed errors first: anything this repo constructs that means "the invocation
-// was wrong" says so with [newUsageError], checked with errors.As so a wrap
+// was wrong" says so with [newUsageError], checked with errors.AsType so a wrap
 // anywhere in the chain is still found. Cobra's own errors carry no type, so
 // they fall through to the wording match below — see [usageError]'s doc for why
 // that split is exact rather than incidental.

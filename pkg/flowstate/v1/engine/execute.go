@@ -1464,9 +1464,9 @@ type durableStepTimeoutError struct {
 func (d *durableStepTimeoutError) Error() string { return d.err.Error() }
 
 // Unwrap reaches straight through to the Temporal error this wraps, which is
-// what keeps [recordedStepError] and [recordedStepKind]'s own errors.As calls
-// finding the same [temporal.ActivityError]/[temporal.TimeoutError] they
-// would have found without this wrapper in the way.
+// what keeps the errors.As and errors.AsType calls in [recordedStepError] and
+// [recordedStepKind] finding the same [temporal.ActivityError] and
+// [temporal.TimeoutError] they would have found without this wrapper.
 func (d *durableStepTimeoutError) Unwrap() error { return d.err }
 
 // runMessageText is [failedAt]'s translated sentence for the run-level

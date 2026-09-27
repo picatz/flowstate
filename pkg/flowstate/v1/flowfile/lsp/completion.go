@@ -771,7 +771,6 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	// the second entry's outputs are a step this expression cannot reach.
 	seen := map[string]bool{}
 	for _, s := range slices.Backward(doc.parsed.steps) {
-
 		if s.id == "" || seen[s.id] || !visibleFromEntry(s, from, ls) {
 			continue
 		}
@@ -860,7 +859,6 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 
 	scope := refScope{steps: make([]celcomplete.Candidate, 0, len(earlier))}
 	for _, s := range slices.Backward(earlier) {
-
 		if s.id == "" || s.indent > currentIndent || ancestors[s] {
 			continue
 		}

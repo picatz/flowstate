@@ -103,7 +103,7 @@ func (e *renderedDiagnosticsError) Unwrap() error { return e.diagnostics }
 // compile failure already returns [flowfile.Diagnostics] with a real line and
 // column, and anything else — a bare I/O or YAML-syntax error — becomes one
 // unpositioned diagnostic naming the whole document, [flowfile.Diagnostic]'s own
-// honest answer for a fact about the file as a whole. The `errors.As` pattern is
+// honest answer for a fact about the file as a whole. The `errors.AsType` pattern is
 // shared with [diagnosticsError]'s callers rather than repeated per command, so
 // a third command cannot widen an error its own way and spell the fallback
 // differently.

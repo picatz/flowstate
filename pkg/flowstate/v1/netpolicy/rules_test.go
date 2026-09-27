@@ -657,7 +657,8 @@ func Test_ruleSet_evaluate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			rs := ruleSet{
 				Allow: compile(t, "allow", test.allow...),
-				Deny:  compile(t, "deny", test.deny...)}
+				Deny:  compile(t, "deny", test.deny...),
+			}
 
 			test.check(t, rs.evaluate(t.Context(), "https://api.example.com/v1/things", vars))
 		})

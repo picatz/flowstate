@@ -857,7 +857,7 @@ func (h *telemetryErrorHandler) first(key string) (report, overflow bool) {
 // metrics", the log exporter's names neither — so the exporters are wrapped
 // where [initTelemetry] builds them and each failure is tagged with what that
 // function knows: which signal, and where it was going. Error() is the SDK's
-// text unchanged; the tag is read back with errors.As.
+// text unchanged; the tag is read back with errors.AsType.
 type exportFailure struct {
 	signal, endpoint string
 	err              error

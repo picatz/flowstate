@@ -343,10 +343,10 @@ func recordedStepError(err error) (string, bool) {
 // [durableStepTimeoutType] is checked before the application error, and the
 // order is the same line [durableStepTimeoutMessage] draws for the same reason,
 // stated there at length: whether Temporal returns a TimeoutError around the
-// last attempt or an ActivityError with RetryState TIMEOUT, errors.As can still
-// reach the stale [temporal.ApplicationError] underneath — so asking about the
-// application error first hides that the budget ended the step. The message and
-// kind must name the same fact, and they decide it in one helper.
+// last attempt or an ActivityError with RetryState TIMEOUT, errors.AsType can
+// still reach the stale [temporal.ApplicationError] underneath — so asking
+// about the application error first hides that the budget ended the step. The
+// message and kind must name the same fact, and they decide it in one helper.
 //
 // Every timeout type is one answer, not only the two a step's policy names.
 // [durableStepTimeoutMessage] returns err untranslated for schedule-to-start

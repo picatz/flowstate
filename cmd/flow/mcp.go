@@ -235,7 +235,8 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		},
 
 		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
-		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd))}
+		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd)),
+	}
 
 	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
 		stdioExtraTools(cmd, providers)...)

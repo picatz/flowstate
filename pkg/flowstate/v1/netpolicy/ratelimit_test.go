@@ -237,7 +237,7 @@ func TestHostRateLimitConcurrentRequestsSeeExactlyOneRefusal(t *testing.T) {
 
 			resp, err := client.Do(req)
 			if err != nil {
-				// errors.As rather than require, which must not be called
+				// errors.AsType rather than require, which must not be called
 				// off the test's own goroutine.
 				if _, ok := errors.AsType[*RateLimitedError](err); ok {
 					refusals.Add(1)
