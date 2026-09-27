@@ -1324,8 +1324,21 @@ func (in *aliasInliner) appendLine(alias *ast.AliasNode, out []string, line stri
 // flow-style values are actually affected; this refuses every one of
 // them, which is narrower — never a false accept, at the cost of refusing
 // some that would have moved safely.
+//
+// An anchor [aliasInliner.collect] never reached, such as one beneath a tag
+// like `!!map` that it does not descend through, has no entry, and is
+// refused too: not knowing what wraps the declaration is not evidence that
+// nothing does.
 func (in *aliasInliner) refusesAnchorInOuterFlow(site aliasSite, anchor *ast.AnchorNode, name string) bool {
-	if !in.anchorInOuterFlow[anchor] {
+	inOuterFlow, reached := in.anchorInOuterFlow[anchor]
+	if !reached {
+		in.refuseAlias(site.alias,
+			"the value `&%s` names is declared where this rewrite cannot tell whether an outer flow collection "+
+				"(`{…}` or `[…]`) wraps it, such as beneath a tag; write the value out by hand",
+			name)
+		return true
+	}
+	if !inOuterFlow {
 		return false
 	}
 

@@ -888,6 +888,27 @@ steps:
 			message: "written inside an outer flow collection",
 		},
 		{
+			// A tag above the outer flow mapping hides the anchor from the
+			// walk that records what wraps each declaration; its missing
+			// entry refuses rather than reading as "no outer flow" and
+			// moving `[8080:80]` somewhere it means one string.
+			name: "a flow-style anchor inside an outer flow mapping beneath a tag",
+			src: `edition: v2026.3
+name: t
+vars:
+  o: !!map
+    a: {ports: &p [8080:80]}
+  u: *p
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+			line:    6,
+			column:  6,
+			message: "cannot tell whether an outer flow collection",
+		},
+		{
 			name: "a flow-style anchor's own sequence entries read differently outside a flow mapping",
 			src: `edition: v2026.3
 name: t
