@@ -31,6 +31,22 @@ func TestAByteBoundIsNotACharacterBound(t *testing.T) {
 	assert.Equal(t, []string{"at least 1 character", "at most 256 bytes"}, constraintPhrases(rules))
 }
 
+// TestACountOfOneTakesTheSingular pins every unit the renderer counts in,
+// including the one whose plural is not a trailing s.
+func TestACountOfOneTakesTheSingular(t *testing.T) {
+	t.Parallel()
+
+	for unit, want := range map[string]string{
+		"characters": "character",
+		"items":      "item",
+		"bytes":      "byte",
+		"entries":    "entry",
+	} {
+		assert.Equal(t, want, unitFor(1, unit))
+		assert.Equal(t, unit, unitFor(2, unit))
+	}
+}
+
 // TestExclusiveBoundsKeepTheirWords pins the difference between gt and gte at
 // the surface an author reads: a field constrained `gt: 0` refuses zero, so
 // describing it as "at least 0" would teach the one value validation rejects.

@@ -133,7 +133,7 @@ func constraintPhrases(rules *validate.FieldRules) []string {
 
 	if s := rules.GetString(); s != nil {
 		if s.HasLen() {
-			out = append(out, fmt.Sprintf("exactly %d characters", s.GetLen()))
+			out = append(out, fmt.Sprintf("exactly %d %s", s.GetLen(), unitFor(s.GetLen(), "characters")))
 		} else {
 			out = append(out, countPhrase("characters", s.MinLen, s.MaxLen)...)
 		}
@@ -202,13 +202,16 @@ func countPhrase(unit string, minimum, maximum *uint64) []string {
 	}
 }
 
-// unitFor spells unit for a count of n: "1 character", "2 characters". The
-// units countPhrase is given are all plurals formed with a trailing s.
+// unitFor spells the plural unit for a count of n: "1 character", "1 entry",
+// "2 characters".
 func unitFor(n uint64, unit string) string {
-	if n == 1 {
-		return strings.TrimSuffix(unit, "s")
+	if n != 1 {
+		return unit
 	}
-	return unit
+	if stem, ok := strings.CutSuffix(unit, "ies"); ok {
+		return stem + "y"
+	}
+	return strings.TrimSuffix(unit, "s")
 }
 
 // numericRangePhrases renders whichever numeric rule set a field carries.
