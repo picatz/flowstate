@@ -108,7 +108,7 @@ flow keys public --in identity/2026-08.pem`,
 
 	cmd.Flags().String("in", "", "path to a PKCS#8 private key PEM (required)")
 	cmd.Flags().String("id", "", "key id published in the JWK "+
-		"(default: --in's file name, without its extension)")
+		"(default: `--in`'s file name, without its extension)")
 	cmd.Flags().Bool("jwks", false, "wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file")
 	_ = cmd.MarkFlagRequired("in")
 

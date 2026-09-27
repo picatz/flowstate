@@ -52,12 +52,12 @@ import (
 // nothing pointing back at the flag that caused it.
 func addClientCertFlags(cmd *cobra.Command) {
 	cmd.Flags().String("tls-client-cert-file", os.Getenv("FLOWSTATE_TLS_CLIENT_CERT_FILE"),
-		"PEM client certificate to present when a server requires one via --tls-client-auth "+
-			"require (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with "+
-			"--tls-client-key-file. Unset presents no certificate, which a server requiring one "+
+		"PEM client certificate to present when a server requires one via "+
+			"`--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with "+
+			"`--tls-client-key-file`. Unset presents no certificate, which a server requiring one "+
 			"refuses at the handshake")
 	cmd.Flags().String("tls-client-key-file", os.Getenv("FLOWSTATE_TLS_CLIENT_KEY_FILE"),
-		"PEM private key matching --tls-client-cert-file (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE)")
+		"PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE)")
 	cmd.Flags().String("tls-ca-file", os.Getenv("FLOWSTATE_TLS_CA_FILE"),
 		"PEM CA bundle to verify the server's certificate against, in place of the system roots "+
 			"(overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what "+

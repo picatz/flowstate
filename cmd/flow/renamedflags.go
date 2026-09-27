@@ -95,7 +95,7 @@ const refusedFlagUsage = "removed: "
 // is bounded at two edits; `address` is ten from `temporal-address`).
 func addRenamedFlags(cmd *cobra.Command, table []renamedFlag) {
 	for _, renamed := range table {
-		cmd.Flags().String(renamed.old, "", refusedFlagUsage+"say --"+renamed.new+" instead")
+		cmd.Flags().String(renamed.old, "", refusedFlagUsage+"say `--"+renamed.new+"` instead")
 
 		if err := cmd.Flags().MarkHidden(renamed.old); err != nil {
 			panic(fmt.Sprintf("marking --%s hidden on %q: %v", renamed.old, cmd.Name(), err))

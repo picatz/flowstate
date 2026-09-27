@@ -897,9 +897,8 @@ type ResolvedPlugin struct {
 	DistributionDigest string                 `protobuf:"bytes,5,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
 	// ClaimsDigest is the pinned answer to [flowstatev1.PluginDescription]'s
 	// field of the same name — the security-weight claims, hashed apart from
-	// task_schema_digest so the two can move independently (#712, #763
-	// review). Empty on a run resolved before this field existed: a worker
-	// checking this pin skips comparing it rather than refusing the run, since
+	// task_schema_digest so the two can move independently. Empty on a run
+	// resolved before this field existed: a worker checking this pin skips comparing it rather than refusing the run, since
 	// there is nothing recorded to compare against and the alternative is a
 	// routine host upgrade permanently failing every already-durable run
 	// touching a plugin with a non-default claim.
@@ -1992,7 +1991,7 @@ type Node struct {
 	// Async marks a step execution may depart from written order for, as
 	// `async: true`.
 	//
-	// The opt-in half of structured concurrency (issue #418). Flowstate already
+	// The opt-in half of structured concurrency. Flowstate already
 	// carries every dependency edge in the most natural position there is —
 	// `${steps.build.artifact}` *is* the edge, written at the point of use — so
 	// the open question was never how an author states edges but when execution
@@ -2629,8 +2628,8 @@ type ForEach struct {
 	//
 	// Empty is the default, not a name, so the pattern is not applied to it:
 	// both drivers bind `item` for an empty iterator, and a rule that refused
-	// the empty string refused every `for_each:` written without `iterator:`
-	// at submit while the compiler accepted it (picatz/flowstate#1757).
+	// the empty string would refuse at submit every `for_each:` written
+	// without `iterator:` that the compiler accepts.
 	Iterator string `protobuf:"bytes,2,opt,name=iterator,proto3" json:"iterator,omitempty"`
 	// Body is the steps to run per item.
 	Body []*Node `protobuf:"bytes,3,rep,name=body,proto3" json:"body,omitempty"`
@@ -3370,9 +3369,8 @@ type RetryPolicy struct {
 	//
 	// Zero is the default rather than a coefficient: both drivers substitute
 	// their default for a value below one, and the compiler writes zero for a
-	// `retry:` without `backoff:`. The rule therefore skips zero, or every such
-	// retry was refused at submit while the compiler accepted it
-	// (picatz/flowstate#1757).
+	// `retry:` without `backoff:`. The rule therefore skips zero; otherwise
+	// submit would refuse every such retry that the compiler accepts.
 	BackoffCoefficient float64 `protobuf:"fixed64,3,opt,name=backoff_coefficient,json=backoffCoefficient,proto3" json:"backoff_coefficient,omitempty"`
 	// MaxInterval caps the delay between attempts, so exponential growth does not
 	// produce an unbounded wait.

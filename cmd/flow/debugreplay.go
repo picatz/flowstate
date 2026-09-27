@@ -183,15 +183,15 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 // lives in taskrun.go: a flag set belongs beside the verb whose shape it is.
 func addLocalSignalFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("signal", nil,
-		`answer a wait_for_signal step, as name=json (repeatable), e.g. --signal deploy-approved='{"approved": true}'`)
+		"answer a wait_for_signal step, as name=json (repeatable), e.g. `--signal deploy-approved='{\"approved\": true}'`")
 	cmd.Flags().String("signal-as-subject", "",
-		"authenticated subject to deliver --signal as, with --signal-as-issuer (local runs only)")
+		"authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only)")
 	cmd.Flags().String("signal-as-issuer", "",
-		"authenticated issuer to deliver --signal as, with --signal-as-subject (local runs only)")
+		"authenticated issuer to deliver `--signal` as, with `--signal-as-subject` (local runs only)")
 	cmd.Flags().String("signal-as-namespace", "",
-		"tenant namespace to deliver --signal as (local runs only)")
+		"tenant namespace to deliver `--signal` as (local runs only)")
 	cmd.Flags().StringArray("signal-as-claim", nil,
-		"authenticated string claim NAME=VALUE to deliver --signal as (repeatable)")
+		"authenticated string claim NAME=VALUE to deliver `--signal` as (repeatable)")
 }
 
 // replayDebugScript reads a script, refuses what the run would disagree with,

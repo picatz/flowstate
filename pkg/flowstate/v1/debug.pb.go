@@ -870,7 +870,7 @@ type DebugBinding_Rendered struct {
 	// 4160 rather than the content bound of 4096, because the marker is part
 	// of what travels and a bound that forgot it would refuse a value
 	// *precisely when it was cut* — the one case this field exists to
-	// describe honestly (Codex, #1194). The 64 runes of headroom are provable
+	// describe honestly. The 64 runes of headroom are provable
 	// rather than generous: the marker is `… (%d more)` and the number it
 	// carries is a count of runes held in memory, so at most 19 digits, so at
 	// most 28 runes.
@@ -1081,8 +1081,7 @@ type DebugCommand struct {
 	// line — and neither is expressible here, because neither is a property of
 	// this field alone. `flowdebug.CommandLine` makes both refusals where the
 	// line is built, so a message that satisfies this rule and still cannot be
-	// delivered is refused before it is rendered rather than after (Codex,
-	// #1194).
+	// delivered is refused before it is rendered rather than after.
 	//
 	// `max_bytes` and not `max_len` here, the opposite unit from
 	// `DebugBinding.rendered` and for the same reason — the resource being
@@ -1198,8 +1197,8 @@ type DebugSession struct {
 	//
 	// Unset means no lease, which is a real answer rather than a missing one: a
 	// local run is the author's own process and holds itself for as long as they
-	// want it held, which is #928's recorded decision that local debugging is
-	// always-on. A durable session is leased because a run held paused by a
+	// want it held, so local debugging is always on. A durable session is
+	// leased because a run held paused by a
 	// vanished debugger is an availability incident, and expiry resuming the run
 	// is that decision's other half.
 	LeaseExpiresAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=lease_expires_at,json=leaseExpiresAt,proto3,oneof" json:"lease_expires_at,omitempty"`

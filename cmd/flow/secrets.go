@@ -72,11 +72,11 @@ func addSecretFlags(cmd *cobra.Command) {
 	// anything reachable as one external command.
 	cmd.Flags().StringArray("secret-command", splitSearchPath(os.Getenv(secretCommandEnv)),
 		"argv of the command that resolves command: secrets, repeatable in order (executable first);"+
-			"\"{{name}}\" and, with --secret-command-namespaced, \"{{namespace}}\" are substituted "+
+			"\"{{name}}\" and, with `--secret-command-namespaced`, \"{{namespace}}\" are substituted "+
 			"literally into one argument, never through a shell (default $"+secretCommandEnv+
 			", "+string(os.PathListSeparator)+"-separated)")
 	cmd.Flags().Bool("secret-command-namespaced", false,
-		"substitute \"{{namespace}}\" in --secret-command with the tenant's namespace")
+		"substitute \"{{namespace}}\" in `--secret-command` with the tenant's namespace")
 
 	// vault: — HashiCorp Vault or OpenBao, the regulated-deployment backend.
 	cmd.Flags().String("secret-vault-addr", os.Getenv(secretVaultAddrEnv),

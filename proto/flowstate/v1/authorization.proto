@@ -9,14 +9,12 @@ option go_package = "flowstatev1";
 // The authorization action vocabulary: the one closed list of operations this
 // deployment can be asked to perform, and the one spelling of each.
 //
-// This is picatz/flowstate#567's D1, answered: "One proto-owned action list,
-// read by policy, by the protected-resource metadata, and by ceremonies —
-// decided before S5 and S7 each bake in a spelling." Three consumers were
-// heading for three lists — #558's `scopes_supported` and its
-// `insufficient_scope` challenges, #557's ceremony rules, and #548's policy
-// surfaces all name operations — and three lists means a step-up challenge and
-// the policy that provoked it name one operation differently, with no claim
-// mapping able to bridge a split we created ourselves.
+// One proto-owned action list is read by policy, by the protected-resource
+// metadata, and by ceremonies. The metadata's `scopes_supported` and its
+// `insufficient_scope` challenges, ceremony rules, and policy surfaces all
+// name operations, and three lists would let a step-up challenge and the
+// policy that provoked it name one operation differently, with no claim
+// mapping able to bridge the split.
 //
 // It lives in flowstate.v1 rather than in a package of its own because the
 // thing it is a vocabulary *of* is this package's service: every action here
@@ -24,15 +22,15 @@ option go_package = "flowstatev1";
 // projected from it, and a vocabulary one `buf breaking` run away from the
 // RPCs it names cannot drift apart from them. It lives in its own file, and
 // not in service.proto, because the service describes what the RPCs *are*
-// while this describes what they are *authorized as* — a distinction #567
-// needs to keep, since a later action may gate something that is not an RPC at
+// while this describes what they are *authorized as* — a distinction worth
+// keeping, since a later action may gate something that is not an RPC at
 // all (mcp.run_local and mcp.test already are).
 //
 // What is deliberately absent is the rest of an authorization model. There is
 // no principal message, no request, no resource, no decision, and no policy
-// evaluator here: those are D1's *consumers*, and a principal shipped now
-// would have to spell the delegation edge, which is #567's D2 — "the track's
-// one nearly-irreversible move", still open. A field name in a public schema
+// evaluator here: those are this list's *consumers*, and a principal message
+// would have to spell the delegation edge, which is not yet decided and would
+// be nearly irreversible once shipped. A field name in a public schema
 // that `buf breaking` guards is not a thing to guess at.
 //
 // The cost of choosing an enum: adding an action is a schema change and a

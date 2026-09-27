@@ -67,8 +67,8 @@ message SignalPolicyRule {
   // identical reason), so two identity providers can each mint a "runner"
   // subject that must not be treated as the same caller. A rule keyed on
   // subject alone would authorize the wrong runner's signal under the right
-  // name, the exact multi-IdP ambiguity #215 found in `run.identity`
-  // comparisons, reproduced here if this field accepted a bare subject. Only
+  // name, the same multi-IdP ambiguity a bare-subject `run.identity`
+  // comparison has. Only
   // the qualified spelling is accepted; there is no subject-only form to be
   // ambiguous about.
   string subject = 1 [(buf.validate.field) = {
@@ -398,7 +398,7 @@ message SignalSender {
   // attested at all: this message absent entirely, which covers a signal
   // that predates this field, a timed-out wait with nothing pending, and the
   // engine's own compatibility fallback for a signal that arrived in the
-  // pre-#194 wire shape (engine/signal_compat.go). All of those are the same
+  // older wire shape (engine/signal_compat.go). All of those are the same
   // fact from a workflow author's point of view (nobody attested this), and
   // must read the same way, distinct from an attested-but-anonymous caller
   // (this message present, Local false, Identity.Subject merely empty because

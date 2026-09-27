@@ -220,9 +220,10 @@ func (c *checker) looksLikeALink(name string) bool {
 		return true
 	}
 	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
-		// A lowercase member of an exported type, [RunRequest.inputs], is a
-		// protobuf field in its schema spelling: meant as a link, and never
-		// one, since the Go field is spelled RunRequest.Inputs.
+		// A lowercase member of an exported type is meant as a link and is
+		// never one: a protobuf field in its schema spelling
+		// ([RunRequest.inputs], where Go spells RunRequest.Inputs) or an
+		// unexported method, which go/doc does not link.
 		return slices.ContainsFunc(strings.Split(name[:dot], "."), ast.IsExported)
 	}
 	return c.packageNames[name]
