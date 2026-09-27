@@ -355,8 +355,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		request.RunId = &runID
 	}
 	if err := v1.Validate(request); err != nil {
-		return fmt.Errorf("%w\n  a run id is the UUID Temporal gave one attempt at the workload; "+
-			"omit it to follow whichever attempt is current", err)
+		return withRunIDHint(err, "follow")
 	}
 
 	surface := newSurface(cmd)
