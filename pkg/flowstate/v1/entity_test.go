@@ -96,7 +96,7 @@ func TestValidateEntityKeyAcceptsTheGrammarProtovalidateAlsoEnforces(t *testing.
 	require.Error(t, v1.ValidateEntityKey("order_123"))
 }
 
-// TestMaxWorkflowIDLenIsTheSchemaBound holds the Go constant to the `max_len`
+// TestMaxWorkflowIDLenIsTheSchemaBound holds the Go constant to the `max_bytes`
 // the schema declares on every workflow_id that addresses a run, read from the
 // descriptor rather than restated, so the compile-time assertions against
 // [v1.MaxWorkflowIDLen] prove something about the bound the validator enforces.
@@ -116,7 +116,7 @@ func TestMaxWorkflowIDLenIsTheSchemaBound(t *testing.T) {
 
 			rules, _ := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
 			require.NotNil(t, rules, "workflow_id carries no validation rules")
-			require.Equal(t, uint64(v1.MaxWorkflowIDLen), rules.GetString().GetMaxLen())
+			require.Equal(t, uint64(v1.MaxWorkflowIDLen), rules.GetString().GetMaxBytes())
 		})
 	}
 }

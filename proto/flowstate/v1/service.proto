@@ -197,7 +197,7 @@ message RunResponse {
     (buf.validate.field).required = true,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 256
+      max_bytes: 256
     }
   ];
 
@@ -270,13 +270,13 @@ message RunResponse {
 // GetRequest is the request message for getting a workflow run.
 message GetRequest {
   // WorkflowId identifies the workload, as Run's `workflow_id` reports it.
-  // 1 to 256 characters. The caller may read only runs in its own tenant.
+  // 1 to 256 bytes. The caller may read only runs in its own tenant.
   string workflow_id = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 256
+      max_bytes: 256
     }
   ];
 
@@ -394,7 +394,7 @@ message GetResponse {
 // SignalRequest delivers a signal to a waiting run.
 message SignalRequest {
   // WorkflowId identifies the workload to signal, as Run's `workflow_id`
-  // reports it. 1 to 256 characters.
+  // reports it. 1 to 256 bytes.
   //
   // A caller may address only runs in its own tenant. The namespace always
   // comes from the caller's authenticated identity, never from the request.
@@ -403,7 +403,7 @@ message SignalRequest {
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 256
+      max_bytes: 256
     }
   ];
 
@@ -540,14 +540,14 @@ message SignalWithStartResponse {
 // CancelRequest asks a run to stop, letting it clean up on the way out.
 message CancelRequest {
   // WorkflowId identifies the workload to cancel, as Run's `workflow_id`
-  // reports it. 1 to 256 characters. The caller may address only runs in its
+  // reports it. 1 to 256 bytes. The caller may address only runs in its
   // own tenant.
   string workflow_id = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 256
+      max_bytes: 256
     }
   ];
 
@@ -570,14 +570,14 @@ message CancelResponse {}
 // TerminateRequest stops a run immediately, without letting it clean up.
 message TerminateRequest {
   // WorkflowId identifies the workload to terminate, as Run's `workflow_id`
-  // reports it. 1 to 256 characters. The caller may address only runs in its
+  // reports it. 1 to 256 bytes. The caller may address only runs in its
   // own tenant.
   string workflow_id = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 256
+      max_bytes: 256
     }
   ];
 
@@ -1000,13 +1000,13 @@ message ValidateResponse {
 // GetTimelineRequest addresses one run and asks for a page of its account.
 message GetTimelineRequest {
   // WorkflowId is the workload to read, as Run's `workflow_id` reports it. 1 to
-  // 256 characters. The caller may read only runs in its own tenant.
+  // 256 bytes. The caller may read only runs in its own tenant.
   string workflow_id = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 256
+      max_bytes: 256
     }
   ];
 

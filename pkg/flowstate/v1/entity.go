@@ -94,8 +94,10 @@ var _ [maxWorkflowIDBytes - len(entityWorkflowIDPrefix) - auth.MaxNamespaceLen -
 
 // MaxWorkflowIDLen is the schema bound on the `workflow_id` of every RPC that
 // addresses a run — Get, Signal, Cancel, Terminate, GetTimeline — and on the
-// one Run reports. The `max_len` literal in `proto/flowstate/v1/service.proto`
-// must equal it; a test reads the descriptor to hold them together.
+// one Run reports, in bytes. The `max_bytes` literal in
+// `proto/flowstate/v1/service.proto` must equal it; a test reads the
+// descriptor to hold them together. Bytes, not characters: every id this
+// system mints is ASCII, and Temporal's own ceiling is in bytes.
 //
 // Tighter than Temporal's [maxWorkflowIDBytes] on purpose: it bounds what an
 // addressing request may carry, and every id this system mints fits under it,

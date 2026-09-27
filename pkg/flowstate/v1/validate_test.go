@@ -275,7 +275,19 @@ func TestValidate(t *testing.T) {
 		{
 			name: "get request workflow id past the bound",
 			msg:  &v1.GetRequest{WorkflowId: pastBound},
-			want: []failure{{"workflow_id", "string.max_len"}},
+			want: []failure{{"workflow_id", "string.max_bytes"}},
+		},
+		{
+			// The bound is bytes, not characters: 64 four-byte characters are
+			// exactly 256 bytes, and one more is over it while still far under
+			// 256 characters, which a code-point bound would have admitted.
+			name: "get request workflow id of multibyte characters at the bound",
+			msg:  &v1.GetRequest{WorkflowId: strings.Repeat("\U0001F600", 64)},
+		},
+		{
+			name: "get request workflow id of multibyte characters past the bound",
+			msg:  &v1.GetRequest{WorkflowId: strings.Repeat("\U0001F600", 65)},
+			want: []failure{{"workflow_id", "string.max_bytes"}},
 		},
 		{
 			name: "get request longest schedule-started workflow id",
@@ -316,7 +328,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "timeline request workflow id past the bound",
 			msg:  &v1.GetTimelineRequest{WorkflowId: pastBound},
-			want: []failure{{"workflow_id", "string.max_len"}},
+			want: []failure{{"workflow_id", "string.max_bytes"}},
 		},
 		{
 			name: "run response workflow id past the bound",
@@ -326,7 +338,7 @@ func TestValidate(t *testing.T) {
 				Status:     v1.RunResponse_STATUS_FAILED,
 				Kind:       &v1.RunResponse_Error_{Error: &v1.RunResponse_Error{Message: "failed"}},
 			},
-			want: []failure{{"workflow_id", "string.max_len"}},
+			want: []failure{{"workflow_id", "string.max_bytes"}},
 		},
 	}
 
