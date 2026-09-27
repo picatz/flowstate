@@ -712,9 +712,10 @@ message DebugSite {
   // Path is the chain of step ids from that workflow's top level down to and
   // including the step: `["pages", "page"]` for a step `page` in the body of a
   // loop `pages`. Ids are unique within a visibility domain rather than within a
-  // file, so the chain, not the last id, is what names one site.
+  // file, so the chain, not the last id, is what names one site. It holds at
+  // most one id more than an occurrence's 128 segments: the step itself.
   repeated string path = 2 [(buf.validate.field).repeated = {
-    max_items: 64
+    max_items: 129
     items: {
       string: {max_len: 256}
     }

@@ -38,6 +38,10 @@ import (
 // the schema's own bound on [DebugOccurrence.segments].
 const MaxDebugSegments = 128
 
+// MaxDebugAddressRunes is the schema's bound on an occurrence address. A longer
+// address keeps its innermost end, which names the step, behind an elision.
+const MaxDebugAddressRunes = 4096
+
 // contextWithSegment returns ctx with one more level of dynamic nesting, when a
 // debugger is installed, and ctx itself otherwise.
 func contextWithSegment(ctx context.Context, kind DebugSegmentKind, stepID string, index int) context.Context {
@@ -112,7 +116,13 @@ func FormatDebugAddress(segments []*DebugSegment, step string) string {
 	}
 	b.WriteString(step)
 
-	return b.String()
+	address := []rune(b.String())
+	if len(address) <= MaxDebugAddressRunes {
+		return b.String()
+	}
+	const elision = "…/"
+
+	return elision + string(address[len(address)-(MaxDebugAddressRunes-len([]rune(elision))):])
 }
 
 // DebugSiteKey is a site's canonical text: its workflow, then its path joined
