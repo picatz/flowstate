@@ -17,6 +17,20 @@ func TestUUIDConstraintUsesTheSharedVocabulary(t *testing.T) {
 	assert.Equal(t, []string{"a UUID"}, constraintPhrases(rules))
 }
 
+// TestAByteBoundIsNotACharacterBound pins that a max_bytes rule reaches the
+// surface as bytes: 256 bytes admits only 64 four-byte characters, so leaving
+// it out, or calling it characters, overstates what the field takes.
+func TestAByteBoundIsNotACharacterBound(t *testing.T) {
+	t.Parallel()
+
+	one, limit := uint64(1), uint64(256)
+	rules := &validate.FieldRules{Type: &validate.FieldRules_String_{String_: &validate.StringRules{
+		MinLen:   &one,
+		MaxBytes: &limit,
+	}}}
+	assert.Equal(t, []string{"at least 1 character", "at most 256 bytes"}, constraintPhrases(rules))
+}
+
 // TestExclusiveBoundsKeepTheirWords pins the difference between gt and gte at
 // the surface an author reads: a field constrained `gt: 0` refuses zero, so
 // describing it as "at least 0" would teach the one value validation rejects.

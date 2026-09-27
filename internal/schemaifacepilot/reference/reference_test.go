@@ -39,8 +39,10 @@ func TestGeneratedReferenceIsCurrentAndHasNoInventedProse(t *testing.T) {
 	assert.Equal(t, string(committedDocs), docs.String())
 	assert.Contains(t, docs.String(), "UUID")
 	assert.Contains(t, docs.String(), "Command-owned usage")
-	assert.Equal(t, 1, strings.Count(docs.String(), " | — | "),
-		"only workflow_id's schema constraints are empty; both fields' prose comes from the schema")
+	assert.Equal(t, 0, strings.Count(docs.String(), " | — | "),
+		"both fields carry schema constraints and schema prose; an empty cell means one was lost")
+	assert.Contains(t, docs.String(), "at most 256 bytes",
+		"workflow_id's byte bound reaches the reference as bytes")
 }
 
 func TestPresenceLabelSeparatesRequirednessFromProtobufPresence(t *testing.T) {

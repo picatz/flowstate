@@ -137,6 +137,10 @@ func constraintPhrases(rules *validate.FieldRules) []string {
 		} else {
 			out = append(out, countPhrase("characters", s.MinLen, s.MaxLen)...)
 		}
+		// A byte bound is its own rule, and a different one: 256 bytes is 64
+		// characters of four-byte UTF-8, so reading it as characters would
+		// overstate what a field admits.
+		out = append(out, countPhrase("bytes", s.MinBytes, s.MaxBytes)...)
 		if s.HasPattern() {
 			out = append(out, "matching "+s.GetPattern())
 		}
@@ -190,12 +194,21 @@ func countPhrase(unit string, minimum, maximum *uint64) []string {
 	case minimum != nil && maximum != nil:
 		return []string{fmt.Sprintf("%d to %d %s", *minimum, *maximum, unit)}
 	case minimum != nil:
-		return []string{fmt.Sprintf("at least %d %s", *minimum, unit)}
+		return []string{fmt.Sprintf("at least %d %s", *minimum, unitFor(*minimum, unit))}
 	case maximum != nil:
-		return []string{fmt.Sprintf("at most %d %s", *maximum, unit)}
+		return []string{fmt.Sprintf("at most %d %s", *maximum, unitFor(*maximum, unit))}
 	default:
 		return nil
 	}
+}
+
+// unitFor spells unit for a count of n: "1 character", "2 characters". The
+// units countPhrase is given are all plurals formed with a trailing s.
+func unitFor(n uint64, unit string) string {
+	if n == 1 {
+		return strings.TrimSuffix(unit, "s")
+	}
+	return unit
 }
 
 // numericRangePhrases renders whichever numeric rule set a field carries.
