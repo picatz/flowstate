@@ -55,6 +55,21 @@ func validWorkflow() *v1.Workflow {
 // TestValidate checks messages against the rules declared as buf.validate
 // options in proto/flowstate/v1/*.proto.
 func TestValidate(t *testing.T) {
+	// The longest ids the system mints, so the addressing bound is proved to
+	// admit them rather than assumed to. A schedule's run is the schedule id
+	// with Temporal's `-<RFC 3339 UTC nominal time>` appended.
+	const (
+		runID     = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+		longestNS = "n23456789-123456789-123456789-123456789-123456789-123456789-123"
+	)
+	longestName := strings.Repeat("k", 128)
+	scheduled := "flowstate-schedule-" + longestNS + "_" + longestName + "-2026-09-27T03:00:00Z"
+	require.Len(t, scheduled, 232, "the longest schedule-started workflow id")
+	entity, err := v1.EntityWorkflowID(longestNS, longestName)
+	require.NoError(t, err)
+	atBound := strings.Repeat("w", v1.MaxWorkflowIDLen)
+	pastBound := atBound + "w"
+
 	tests := []struct {
 		name string
 		msg  proto.Message
@@ -248,6 +263,70 @@ func TestValidate(t *testing.T) {
 				RunId:      proto.String("not-a-uuid"),
 			},
 			want: []failure{{"run_id", "string.uuid"}},
+		},
+
+		// Every request addressing a run holds workflow_id to one bound that
+		// admits each id the system mints, and a pinned run_id to Temporal's
+		// UUID; an empty run_id addresses the current run.
+		{
+			name: "get request workflow id at the bound",
+			msg:  &v1.GetRequest{WorkflowId: atBound},
+		},
+		{
+			name: "get request workflow id past the bound",
+			msg:  &v1.GetRequest{WorkflowId: pastBound},
+			want: []failure{{"workflow_id", "string.max_len"}},
+		},
+		{
+			name: "get request longest schedule-started workflow id",
+			msg:  &v1.GetRequest{WorkflowId: scheduled},
+		},
+		{
+			name: "get request longest entity workflow id",
+			msg:  &v1.GetRequest{WorkflowId: entity},
+		},
+		{
+			name: "signal request empty run id",
+			msg:  &v1.SignalRequest{WorkflowId: atBound, Name: "approval"},
+		},
+		{
+			name: "signal request pinned run id",
+			msg:  &v1.SignalRequest{WorkflowId: atBound, RunId: runID, Name: "approval"},
+		},
+		{
+			name: "signal request run id not a uuid",
+			msg:  &v1.SignalRequest{WorkflowId: atBound, RunId: "r-first", Name: "approval"},
+			want: []failure{{"run_id", "string.uuid"}},
+		},
+		{
+			name: "cancel request run id not a uuid",
+			msg:  &v1.CancelRequest{WorkflowId: atBound, RunId: "r-first"},
+			want: []failure{{"run_id", "string.uuid"}},
+		},
+		{
+			name: "terminate request run id not a uuid",
+			msg:  &v1.TerminateRequest{WorkflowId: atBound, RunId: "r-first"},
+			want: []failure{{"run_id", "string.uuid"}},
+		},
+		{
+			name: "timeline request run id not a uuid",
+			msg:  &v1.GetTimelineRequest{WorkflowId: atBound, RunId: "r-first"},
+			want: []failure{{"run_id", "string.uuid"}},
+		},
+		{
+			name: "timeline request workflow id past the bound",
+			msg:  &v1.GetTimelineRequest{WorkflowId: pastBound},
+			want: []failure{{"workflow_id", "string.max_len"}},
+		},
+		{
+			name: "run response workflow id past the bound",
+			msg: &v1.RunResponse{
+				WorkflowId: pastBound,
+				RunId:      runID,
+				Status:     v1.RunResponse_STATUS_FAILED,
+				Kind:       &v1.RunResponse_Error_{Error: &v1.RunResponse_Error{Message: "failed"}},
+			},
+			want: []failure{{"workflow_id", "string.max_len"}},
 		},
 	}
 

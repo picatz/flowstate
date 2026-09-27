@@ -94,13 +94,13 @@ func TestCancelJSONIsTheOnlyThingOnStdout(t *testing.T) {
 	fake := &fakeWorkflowService{}
 	serveFake(t, fake)
 
-	stdout, stderr, err := runCLI(t, "cancel", "deploy-abc123", "--run-id", "run-7", "-o", "json")
+	stdout, stderr, err := runCLI(t, "cancel", "deploy-abc123", "--run-id", "6ba7b817-9dad-11d1-80b4-00c04fd430c8", "-o", "json")
 	require.NoError(t, err)
 
 	document := requireOnlyDocument(t, stdout)
 	assert.Equal(t, "cancel", document.Verb)
 	assert.Equal(t, "deploy-abc123", document.WorkflowID)
-	assert.Equal(t, "run-7", document.RunID, "--run-id was not reported, so a caller cannot tell which attempt was asked")
+	assert.Equal(t, "6ba7b817-9dad-11d1-80b4-00c04fd430c8", document.RunID, "--run-id was not reported, so a caller cannot tell which attempt was asked")
 	assert.Empty(t, document.ScheduleName)
 	assert.Empty(t, document.SignalName)
 
