@@ -180,7 +180,7 @@ type lintTotals struct {
 
 // errLintFindings reports that `--strict` was given and there was something to
 // report. The findings themselves have already been printed.
-var errLintFindings = errors.New("style findings: the corpus is held to docs/STYLE.md")
+var errLintFindings = errors.New("style findings: the corpus is held to " + docsURL + "STYLE.md")
 
 // errLintUnchecked reports that `--strict` was given and a file somebody named
 // could not be read at all.
@@ -422,7 +422,7 @@ func writeLintText(surface *ui.UI, report lintReport, strict bool) error {
 	if !strict {
 		fmt.Fprintf(out, "%s\n", theme.Muted.Render(
 			"Every file above is legal and runs; these are style suggestions "+
-				"(docs/STYLE.md), and this command exits 0."))
+				"("+docsURL+"STYLE.md), and this command exits 0."))
 	}
 
 	return nil

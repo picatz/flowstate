@@ -1652,7 +1652,7 @@ type Frame struct {
 	// finished loop's own reported `results` output is *omitted* rather than
 	// showing only the last segment's iterations: an absent key rather than a
 	// list that looks complete and is not. See docs/DSL.md's loop section for
-	// the contract this states to an author, and #229.
+	// the contract this states to an author.
 	Results []*Workflow_StepOutputs `protobuf:"bytes,3,rep,name=results,proto3" json:"results,omitempty"`
 	// CallOutputs holds the step outputs a called workflow's own steps had
 	// produced when a run suspended partway through it, for a frame standing
@@ -2118,7 +2118,7 @@ type RunState struct {
 	// interpreter read it off its own history at that segment
 	// (workflow.GetInfo(ctx).WorkflowStartTime), and carried unchanged across
 	// every Continue-As-New so that a later segment can say when the workload
-	// began rather than when it last continued (picatz/flowstate#1690). Absent
+	// began rather than when it last continued. Absent
 	// on a run whose first segment predates this field, which then cannot say.
 	WorkloadStartedAt *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=workload_started_at,json=workloadStartedAt,proto3" json:"workload_started_at,omitempty"`
 	// Segment counts the Continue-As-New handovers this interpreter has

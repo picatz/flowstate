@@ -254,7 +254,7 @@ message TaskManifest {
   // because "the plugin" means a process on the same machine, reached over a
   // filesystem socket only this worker can open — there is exactly one policy
   // enforcement point between the secret store and the value's only reader.
-  // A remote plugin endpoint (tracked as issue #151) breaks that: resolving
+  // A remote plugin endpoint breaks that: resolving
   // here and sending the value over a network hands a credential to a third
   // party's process, which is disclosure rather than execution. Extending the
   // transport to a remote endpoint must NOT reuse this resolve-then-send path

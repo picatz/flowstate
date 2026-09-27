@@ -28,8 +28,8 @@ extend google.protobuf.EnumValueOptions {
   // for a user: an embedded database an SQL plugin's tests exercise the
   // dialect logic against, which a released binary refuses because opening one
   // grants the worker's filesystem to the workflow. Without this option the
-  // catalog advertised that value on every surface and `flow validate`
-  // accepted it, and the refusal came at dispatch (#1692).
+  // catalog would advertise that value on every surface and `flow validate`
+  // would accept it, leaving the refusal to dispatch.
   //
   // The host does not advertise a value marked here and does not accept it: it
   // is left out of the choices every surface lists, and a Flowfile naming it

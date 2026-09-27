@@ -25,7 +25,7 @@ type rpcResourceFlags struct {
 
 func addRPCResourceFlags(cmd *cobra.Command) {
 	cmd.Flags().String("rpc-resource", os.Getenv("FLOWSTATE_RPC_RESOURCE"),
-		"canonical resource URI required in the aud claim of every bearer token spent on the Connect RPC surface (default $FLOWSTATE_RPC_RESOURCE); must be an absolute HTTPS URI with no fragment or trailing slash and appear in at least one kind: oidc issuer's audiences. Required whenever --auth-policy trusts an issuer that mints bearer tokens")
+		"canonical resource URI required in the aud claim of every bearer token spent on the Connect RPC surface (default $FLOWSTATE_RPC_RESOURCE); must be an absolute HTTPS URI with no fragment or trailing slash and appear in at least one kind: oidc issuer's audiences. Required whenever `--auth-policy` trusts an issuer that mints bearer tokens")
 	cmd.Flags().Bool("allow-issuer-wide-audiences", false,
 		"accept any audience listed for a token's trusted issuer, for a deployment that predates `--rpc-resource`; cannot be combined with it")
 }

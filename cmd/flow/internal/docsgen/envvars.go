@@ -108,7 +108,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
 			value:   "unset",
-			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
+			purpose: "Default for `--credential-source`: acquire a credential from a named source (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
 			read:    "cmd/flow/client.go",
 		},
 		{
@@ -120,7 +120,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_DST_SCHEDULES",
 			value:   "24",
-			purpose: "How many seeded schedules the deterministic simulation tier explores per case (`pkg/flowstate/v1/dst`). Read by that test harness rather than by any command; the weekly deep tier raises it. Capped, because a schedule is a whole workflow run and the cost is linear.",
+			purpose: "How many seeded schedules the deterministic simulation tier explores per case. Read by the simulation test harness rather than by any command; the weekly deep tier raises it. Capped, because a schedule is a whole workflow run and the cost is linear.",
 			read:    "pkg/flowstate/v1/dst/dst.go",
 		},
 		{
@@ -270,13 +270,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_PLUGIN_TOKEN",
 			value:   "unset",
-			purpose: "Retired: it carried the per-launch token up to plugin protocol version 3, and nothing sets or reads it now (#1336). The name stays reserved, so a plugin still does not see it if a deployment sets it.",
+			purpose: "Retired: it carried the per-launch token up to plugin protocol version 3, and nothing sets or reads it now. The name stays reserved, so a plugin still does not see it if a deployment sets it.",
 			read:    "pkg/flowstate/v1/plugin/launch.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_TOKEN_FD",
 			value:   "unset",
-			purpose: "Handshake: the descriptor carrying the per-launch token a plugin authenticates its host with. Set by the host on the child process; never configured by an operator. The token itself is never in the environment, because /proc/<pid>/environ would then expose it for the plugin's whole life (#1336).",
+			purpose: "Handshake: the descriptor carrying the per-launch token a plugin authenticates its host with. Set by the host on the child process; never configured by an operator. The token itself is never in the environment, because /proc/<pid>/environ would then expose it for the plugin's whole life.",
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
@@ -511,31 +511,31 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND",
 			value:   "0",
-			purpose: "Default for `--max-activities-per-second` on `flow worker`: maximum rate, per second, at which this worker process starts activity tasks. `0` takes the Temporal SDK's own default (effectively unlimited). Enforced locally, per worker process — see `FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND` for the server-enforced, per-queue limit. A negative value refuses to start (#783).",
+			purpose: "Default for `--max-activities-per-second` on `flow worker`: maximum rate, per second, at which this worker process starts activity tasks. `0` takes the Temporal SDK's own default (effectively unlimited). Enforced locally, per worker process — see `FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND` for the server-enforced, per-queue limit. A negative value refuses to start.",
 			read:    "cmd/flow/main.go",
 		},
 		{
 			name:    "FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES",
 			value:   "0",
-			purpose: "Default for `--max-concurrent-activities` on `flow worker`: maximum number of activity tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). Raising this trades worker CPU/memory for throughput on a single replica rather than scaling out — see docs/DEPLOYMENT.md's capacity section. A negative value refuses to start (#783).",
+			purpose: "Default for `--max-concurrent-activities` on `flow worker`: maximum number of activity tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). Raising this trades worker CPU/memory for throughput on a single replica rather than scaling out — see docs/DEPLOYMENT.md's capacity section. A negative value refuses to start.",
 			read:    "cmd/flow/main.go",
 		},
 		{
 			name:    "FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS",
 			value:   "0",
-			purpose: "Default for `--max-concurrent-workflow-tasks` on `flow worker`: maximum number of workflow tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). The value `1` refuses to start: the Temporal SDK panics on it, because a worker with a single workflow-task slot never polls its regular queue (#783).",
+			purpose: "Default for `--max-concurrent-workflow-tasks` on `flow worker`: maximum number of workflow tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). The value `1` refuses to start: the Temporal SDK panics on it, because a worker with a single workflow-task slot never polls its regular queue.",
 			read:    "cmd/flow/main.go",
 		},
 		{
 			name:    "FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND",
 			value:   "0",
-			purpose: "Default for `--task-queue-activities-per-second` on `flow worker`: maximum rate, per second, at which the Temporal server dispatches activity tasks from this worker's task queue, shared across every worker polling that queue (last-writer-wins if they disagree). `0` takes the Temporal SDK's own default (effectively unlimited); setting it disables eager activity execution for this worker. A negative value refuses to start (#783).",
+			purpose: "Default for `--task-queue-activities-per-second` on `flow worker`: maximum rate, per second, at which the Temporal server dispatches activity tasks from this worker's task queue, shared across every worker polling that queue (last-writer-wins if they disagree). `0` takes the Temporal SDK's own default (effectively unlimited); setting it disables eager activity execution for this worker. A negative value refuses to start.",
 			read:    "cmd/flow/main.go",
 		},
 		{
 			name:    "FLOWSTATE_WORKER_STICKY_CACHE_SIZE",
 			value:   "0",
-			purpose: "Default for `--sticky-cache-size` on `flow worker`: maximum number of workflow executions kept in this process's sticky cache. Unlike the other four `FLOWSTATE_WORKER_*` capacity variables, `0` does NOT take the Temporal SDK's own default (10000) by being passed through — `worker.SetStickyWorkflowCacheSize` assigns its argument unconditionally, so `0` reaching it would configure a zero-entry cache and force full history replay on every workflow task. `0` (or unset) is implemented by not calling the setter at all — see docs/DEPLOYMENT.md's capacity section and workerCapacity's doc comment in cmd/flow/main.go (#921).",
+			purpose: "Default for `--sticky-cache-size` on `flow worker`: maximum number of workflow executions kept in this process's sticky cache. Unlike the other four `FLOWSTATE_WORKER_*` capacity variables, `0` does NOT take the Temporal SDK's own default (10000) by being passed through — `worker.SetStickyWorkflowCacheSize` assigns its argument unconditionally, so `0` reaching it would configure a zero-entry cache and force full history replay on every workflow task. `0` (or unset) is implemented by not calling the setter at all — see docs/DEPLOYMENT.md's capacity section.",
 			read:    "cmd/flow/main.go",
 		},
 		{
@@ -632,7 +632,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			purpose: "Temporal's own environment configuration, honoured by every command that dials a " +
 				"cluster: `flow server` and `flow worker` resolve it through the SDK, and " +
 				"`--temporal-address` overrides it (`--address` on those two commands is refused, and " +
-				"says so — picatz/flowstate#580). `flow server dev` is the exception, and refuses to " +
+				"says so). `flow server dev` is the exception, and refuses to " +
 				"start while it is set: " +
 				"that command starts a Temporal of its own, so a variable naming somebody else's cluster " +
 				"would be silently unused while its operator believed their runs were landing there.",

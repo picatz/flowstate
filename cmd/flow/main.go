@@ -2629,7 +2629,7 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 	runLocalCmd.Flags().Bool("debug", false,
 		"hold the run before each step and read commands from the terminal — step, "+
 			"continue, until, break, inspect, scope, quit; the console shares stderr "+
-			"with the run's account, so stdout stays the answer under every --output")
+			"with the run's account, so stdout stays the answer under every `--output`")
 
 	// Supplying signals up front, and naming who they are from. Declared
 	// through a helper because `flow debug replay` is the same local run with
@@ -2723,16 +2723,16 @@ flow server --insecure-no-auth`,
 	workerCmd.Flags().String("tenant", "",
 		"execute only this Flowstate namespace's runs, refusing any other tenant's outright "+
 			"rather than executing it with this worker's secrets, egress policy and plugins. "+
-			"Pass an empty value (--tenant=) for the default tenant of an untenanted deployment. "+
-			"Needs a queue of this worker's own: either --task-queue-prefix (the same value the "+
-			"server was started with) or an explicit --task-queue")
+			"Pass an empty value (`--tenant=`) for the default tenant of an untenanted deployment. "+
+			"Needs a queue of this worker's own: either `--task-queue-prefix` (the same value the "+
+			"server was started with) or an explicit `--task-queue`")
 
 	workerCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"Temporal Worker Deployment this worker belongs to (not the server's Flowstate deployment "+
 			"name). With `--build-id`, pins every in-flight run to the "+
 			"interpreter version it started on; a run moves to the current version only at continue-as-new")
 	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
-		"version identifier for this worker's binary, unique per build. Required with --deployment-name")
+		"version identifier for this worker's binary, unique per build. Required with `--deployment-name`")
 	workerCmd.Flags().Bool(allowUnversionedFlag, false,
 		"start without a Worker Deployment version, accepting that deploying a different binary "+
 			"changes what runs already in flight compute; for local development")
@@ -2786,7 +2786,7 @@ flow server --insecure-no-auth`,
 		cmp.Or(os.Getenv("FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND"), "0"),
 		"maximum rate, per second, at which this worker process starts activity tasks; 0 takes "+
 			"the Temporal SDK default (effectively unlimited). Enforced locally, per worker process "+
-			"— see --task-queue-activities-per-second for the server-enforced, per-queue limit")
+			"— see `--task-queue-activities-per-second` for the server-enforced, per-queue limit")
 	workerCmd.Flags().String("task-queue-activities-per-second",
 		cmp.Or(os.Getenv("FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND"), "0"),
 		"maximum rate, per second, at which the Temporal server dispatches activity tasks from "+
@@ -3092,7 +3092,7 @@ flow signal deploy-abc123 deploy-approved -o json \
 	addOutputFlag(signalCmd)
 
 	signalCmd.Flags().String("data", "",
-		`signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}'`)
+		"signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. `--data '{\"approved\": true}'`")
 
 	// The commands that talk to a Flowstate server can say which one.
 	//

@@ -8,19 +8,13 @@ import (
 	"github.com/google/cel-go/common"
 )
 
-// What a profile *contains* was not discoverable from anywhere.
-//
-// `flow tasks` printed the library names — `bindings, comprehensions, encoders,
-// json, lists, math, optional, protos, regex, sets, strings` — which say what is
-// switched on and nothing about what any of them offers. Nothing else printed more.
-// So an author who wanted to sort a list had no way to learn that `sortBy` exists,
-// short of reading cel-go's extension documentation and guessing which parts of it
-// this build enables.
-//
-// That was survivable while the answer was "everything cel-go has". It stopped being
-// survivable the moment a profile became a *membership* — the point of naming one is
-// that it is a subset, and a subset nobody can enumerate is a subset nobody can
-// write against.
+// A CEL profile is a membership: naming one selects a subset of what cel-go
+// offers, so an author can only write against it if its contents can be
+// enumerated. [ProfileFunctions] lists every name a profile's libraries add,
+// with its call form and description, for `flow tasks`, the generated CEL
+// reference, completion, hover, and the checks that refuse an unknown call.
+// Library names alone (`lists`, `math`, `strings`) say what is switched on,
+// not what any of them offers.
 
 // LibraryFunction is one name an expression may call.
 type LibraryFunction struct {
@@ -65,8 +59,7 @@ type LibraryFunction struct {
 	// tell a namespace receiver from a value one; an ordinary function's own
 	// overload does not have that gap — `OverloadDecl.IsMemberFunction` names the
 	// receiver directly — so [functionSignatures] reads it straight off the
-	// profile's compiled environment instead of a table somebody has to keep
-	// (#702).
+	// profile's compiled environment instead of a table somebody has to keep.
 	Signature []string
 
 	// Description says what the function does, read from its declaration's own
