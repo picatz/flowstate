@@ -170,5 +170,15 @@ func mcpToolDocs() []docsgen.MCPTool {
 		Local:       true,
 	})
 
+	// The retained sessions, from their own registration so the reference
+	// cannot describe a tool other than the one served.
+	for _, registration := range newDebugSessions(nil).tools() {
+		tools = append(tools, docsgen.MCPTool{
+			Name:        registration.Tool.Name,
+			Description: registration.Tool.Description,
+			Local:       true,
+		})
+	}
+
 	return tools
 }

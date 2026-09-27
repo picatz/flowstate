@@ -210,10 +210,23 @@ func (e *mcpAuditEmitter) Emit(_ context.Context, record *v1.AuditRecord) error 
 // above: a verdict and a transcript of questions are different documents, and
 // a tool choosing between them by which arguments were set is the implicit
 // mode this surface keeps refusing.
+//
+// The flowstate_debug_session_* tools (#2127) are the same conversation made
+// incremental: a session this process retains across calls, over the stubbed
+// run above or over a durable run through the server's own debug RPCs, which
+// authorize it. A retained session is process state, not a service method, and
+// the durable half is already served as the DebugAttach…DebugInspect tools for
+// a caller who wants no retained state at all.
 var documentedLocalTools = map[string]bool{
 	flowmcp.RunLocalToolName: true,
 	flowmcp.TestToolName:     true,
 	flowmcp.DebugToolName:    true,
+
+	debugSessionStartTool:   true,
+	debugSessionAttachTool:  true,
+	debugSessionObserveTool: true,
+	debugSessionCommandTool: true,
+	debugSessionEndTool:     true,
 }
 
 func documentedLocalToolNames() []string {
@@ -493,7 +506,7 @@ func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
 func mcpExtraToolsForWithProviders(posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	// The command's own list, not a copy of it: a tool registered for an agent
 	// and missing here is a tool no test ever calls.
-	return stdioExtraTools(posture, providers)
+	return stdioExtraTools(posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil })
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a

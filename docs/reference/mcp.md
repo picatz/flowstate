@@ -51,6 +51,11 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_run_local` | locally | — | — |
 | `flowstate_test` | locally | — | — |
 | `flowstate_debug` | locally | — | — |
+| `flowstate_debug_session_start` | locally | — | — |
+| `flowstate_debug_session_attach` | locally | — | — |
+| `flowstate_debug_session_observe` | locally | — | — |
+| `flowstate_debug_session_command` | locally | — | — |
+| `flowstate_debug_session_end` | locally | — | — |
 
 ## `flowstate_validate`
 
@@ -263,4 +268,24 @@ The answer carries the session transcript (every stop, every step's own outcome,
 A case that fails is held open once more after the verdict, its failures printed and the finished run still questionable — so one script can assert, see the failure, and then ask what the run actually produced.
 
 Runs on stubs, like flowstate_test: no egress, no secret resolved, a virtual clock. Debugging a real, unstubbed local run is not this tool.
+
+## `flowstate_debug_session_start`
+
+Start a retained debug session over one test case of a Flowfile — the same stubbed, egress-free, virtual-clock run flowstate_test uses — held at its first step. Drive it with flowstate_debug_session_command, read it with flowstate_debug_session_observe, and finish with flowstate_debug_session_end. The session is leased: each call renews it, and one idle for 10 minutes is ended. Answers with the session id, its typed snapshot (state, stop reason, occurrence address, frames, capabilities, revision), and the transcript so far.
+
+## `flowstate_debug_session_attach`
+
+Attach a retained debug session to a durable run on the configured server, holding it at its next step boundary. Needs the run's `debug:` policy to name you and workload.debug (workload.debug_inspect to evaluate). A hold never freezes work already dispatched. Pass session_id to rejoin a session.
+
+## `flowstate_debug_session_observe`
+
+Read a retained session: its typed snapshot and the transcript since the last observe. Set after_revision and wait_seconds (at most 30) to wait for the next stop instead of polling.
+
+## `flowstate_debug_session_command`
+
+Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, catch none|uncaught|all, delete <step>, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, detach, status. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale.
+
+## `flowstate_debug_session_end`
+
+End a retained session. A durable run is detached and continues; with keep, its session stays attached for a later rejoin until its lease lapses. A stubbed case is let finish and its test report is returned.
 

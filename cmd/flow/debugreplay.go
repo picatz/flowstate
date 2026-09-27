@@ -96,6 +96,7 @@ func newDebugCommand() *cobra.Command {
 	replayCmd.Flags().Lookup("debug").Hidden = true
 
 	debugCmd.AddCommand(replayCmd)
+	addDebugRemoteCommands(debugCmd)
 
 	return debugCmd
 }
