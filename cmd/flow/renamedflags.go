@@ -93,13 +93,8 @@ const refusedFlagUsage = "removed: "
 // operator reads rather than `unknown flag: --address`, which names neither
 // meaning and suggests nothing (the near-miss suggester in cmd/flow/suggest.go
 // is bounded at two edits; `address` is ten from `temporal-address`).
-<<<<<<< HEAD
 func addRenamedFlags(cmd *cobra.Command, table []renamedFlag) {
 	for _, renamed := range table {
-=======
-func addRenamedTemporalFlags(cmd *cobra.Command) {
-	for _, renamed := range renamedTemporalFlags {
->>>>>>> origin/main
 		cmd.Flags().String(renamed.old, "", refusedFlagUsage+"say `--"+renamed.new+"` instead")
 
 		if err := cmd.Flags().MarkHidden(renamed.old); err != nil {
