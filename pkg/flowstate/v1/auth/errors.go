@@ -119,7 +119,7 @@ var (
 	// ErrUndeclaredClaim is returned when a mint is asked to carry a claim the
 	// issuer does not declare. The claim set an assertion may carry is a closed
 	// set, and a name absent from it is refused rather than signed: see
-	// [Issuer.mintFor] and [WithDeclaredClaims].
+	// `Issuer.mintFor` and [WithDeclaredClaims].
 	ErrUndeclaredClaim = errors.New("auth: claim is not declared by this issuer")
 
 	// ErrNoSigningKey is returned when an [Issuer] has no key able to sign, which

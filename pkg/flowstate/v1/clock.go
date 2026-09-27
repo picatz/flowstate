@@ -203,7 +203,7 @@ func EnterClockForWholeRun(ctx context.Context) (leave func()) {
 // # Why this has to exist
 //
 // [VirtualClock] only ever advances once every registered participant is
-// parked on a timer or gone (see [VirtualClock.advanceLocked]). A goroutine
+// parked on a timer or gone (see `VirtualClock.advanceLocked`). A goroutine
 // blocked in a real channel receive is not parked on the clock — it never
 // called [VirtualClock.After] — so as long as it stays counted as a
 // participant, the clock can never see "everyone is parked" and never

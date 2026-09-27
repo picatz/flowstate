@@ -139,7 +139,7 @@ const (
 	// Deliberately the same number as that one and written as that one, so the
 	// two cannot drift: they answer one question — how many entries may one
 	// debug answer carry — for two listings. A pane asks for a terminal's
-	// height and a wire client pages by [DebugStepWindow.total], so nothing
+	// height and a wire client pages by `DebugStepWindow.total`, so nothing
 	// here has a use for more.
 	MaxStepWindow = MaxScopeBindings
 )
@@ -1126,7 +1126,7 @@ func (s *Session) announce(node *v1.Node) {
 
 // Close releases the session's reader.
 //
-// A session reads its console on a goroutine (see [Session.readCommand]), and
+// A session reads its console on a goroutine (see `Session.readCommand`), and
 // that goroutine parks on an unbuffered send whenever a line arrives with
 // nobody left to take it — which is every session whose run ended while a
 // command was still in flight. In a process that is about to exit, parked is
@@ -1774,7 +1774,7 @@ func (s *Session) printfTone(tone Tone, format string, args ...any) {
 // whatever extra bindings its caller hands [Session.Autopsy], and `flow test`
 // hands the file's `vars` and `run.error` over already redacted, so a
 // comparison against a real value of one of those answers false there. See
-// [Session.noteWithholding], which says so at the prompt.
+// `Session.noteWithholding`, which says so at the prompt.
 func (s *Session) SetRedactor(redact func(string) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -1050,7 +1050,7 @@ func (p *Policy) checkLiteralHost(req *http.Request) error {
 // reported while it can still be corrected.
 //
 // With a proxy configured it does more than that, and the caveat is already
-// written down where it matters: [Policy.checkProxiedTarget] resolves the host
+// written down where it matters: `Policy.checkProxiedTarget` resolves the host
 // and evaluates the connection-scoped rules, so this is neither I/O-free nor
 // address-free on that path. eval_task_http_check.go says the same thing, and is
 // why the validator does not call this — a diagnostic drawn from a deployment's

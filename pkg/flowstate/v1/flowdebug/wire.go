@@ -111,7 +111,7 @@ func (s *Session) PositionProto() (*v1.DebugPosition, bool) {
 // The limit is additionally held to [MaxStepWindow], which [Session.Steps] does
 // not do: a caller in this process pays for its own copy, and a wire answer is
 // a message whose size the *workload* would otherwise decide. A caller wanting
-// more pages, which is what [DebugStepWindow.total] is for.
+// more pages, which is what `DebugStepWindow.total` is for.
 func (s *Session) StepWindowProto(offset, limit int) *v1.DebugStepWindow {
 	s.mu.Lock()
 
@@ -337,7 +337,7 @@ func (s *Session) scopeProto(ctx context.Context, onlyGroup string, limit, carry
 
 // SessionProto is who is debugging which run, for a session of this package.
 //
-// Every field but [v1.DebugSession.local] is the zero value, and that is the
+// Every field but `v1.DebugSession.local` is the zero value, and that is the
 // answer rather than a gap: this package's sessions hold *local* runs — see the
 // package doc on [v1.Debugger] being a local-driver seam — so nothing attested
 // a caller, there is no durable execution to address, and there is no lease,
@@ -526,7 +526,7 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 	return command, true
 }
 
-// CommandLine is a wire command as the line [Session.dispatch] understands.
+// CommandLine is a wire command as the line `Session.dispatch` understands.
 //
 // The canonical line and not a rendering of it: a session records the lines it
 // accepted and replays a run from them, so what comes back here is the same
@@ -546,7 +546,7 @@ func CommandProto(line string) (*v1.DebugCommand, bool) {
 //
 // # The two refusals a field rule cannot make
 //
-// [Session.takeControl] refuses a line past [MaxCommandBytes] and a line
+// `Session.takeControl` refuses a line past [MaxCommandBytes] and a line
 // holding a line break, and neither is expressible as a rule on
 // `DebugCommand.argument`: the first is about the *line*, which is the verb and
 // a separator longer than the argument, and the second is about a character

@@ -741,7 +741,7 @@ func positionIn(order []Step, workflow, id string) int {
 // Steps returns at most limit entries of the run's step list, starting at
 // offset, and what each has done.
 //
-// Two sources for the list itself, exactly as [Session.reachableSteps] has two
+// Two sources for the list itself, exactly as `Session.reachableSteps` has two
 // and for the same reason: a caller that holds the workflow said so
 // ([Options.Steps]), and that is the list worth drawing — it carries the steps
 // the run has *not* reached, which is most of a step list's value. A caller

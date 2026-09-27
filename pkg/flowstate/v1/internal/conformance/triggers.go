@@ -543,7 +543,7 @@ func triggerContextOutputs(trigger *v1.TriggerContext, notified bool) *v1.Workfl
 // Both drivers run every one, and the pairing is the whole point: the two arrive
 // at the same value through entirely different machinery. The local driver reads
 // it off a context value ([v1.TriggerFromContext]) and the durable driver reads it
-// out of [v1.RunState.trigger], where it also crosses the wire, is written to
+// out of `v1.RunState.trigger`, where it also crosses the wire, is written to
 // history and is carried through every Continue-As-New. A field dropped at that
 // seam would make a workflow a scheduled sweep before it suspended and a manual
 // run afterwards, with nothing in the file to explain it — which is exactly the

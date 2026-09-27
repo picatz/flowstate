@@ -135,7 +135,7 @@ func CheckSignalPolicies(wf *Workflow) error {
 // refused exactly like any other shape a memo this server wrote would never
 // have. requireResolvedSubjects is which question is being asked: false for
 // the declared side, true for the decoded side. See
-// [SignalPolicyRule.subject_from] for when resolution happens and why the
+// `SignalPolicyRule.subject_from` for when resolution happens and why the
 // enforcement path never evaluates an expression.
 func CheckSignalPolicyShape(declared map[string]*SignalPolicy, requireResolvedSubjects bool) error {
 	if len(declared) == 0 {
@@ -153,7 +153,7 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy, requireResolvedSu
 
 // CheckPolicyShape is [CheckSignalPolicyShape]'s per-policy body, with the
 // stanza that carries the policy named by `where` — `signals["approve"]` for a
-// signal name, `debug` for the [Workflow.debug] stanza.
+// signal name, `debug` for the `Workflow.debug` stanza.
 //
 // Extracted rather than restated, because a second stanza now compiles to the
 // same [SignalPolicy] and a second copy of these rules is exactly the "one
@@ -358,7 +358,7 @@ func evalSubjectFrom(ctx context.Context, value *Value, scope *Scope) (string, e
 // SignalPolicyAllows reports whether identity satisfies policy — whether it
 // matches at least one of policy's alternative rules.
 //
-// identity is always the server's own attestation ([SignalSender.identity]),
+// identity is always the server's own attestation (`SignalSender.identity`),
 // never anything a request or a payload supplied; see [SignalPolicyRule] for
 // why that is what every field here is checked against. A nil policy is not
 // meaningful input here — the caller (`FlowstateServer.Signal`) only reaches
@@ -400,7 +400,7 @@ func signalPolicyRuleMatches(rule *SignalPolicyRule, identity *WorkloadIdentity)
 }
 
 // SignalPolicyCheck reports whether identity may deliver a signal governed by
-// policy — the whole of what [FlowstateServer.authorizeSignal] enforces once
+// policy — the whole of what `FlowstateServer.authorizeSignal` enforces once
 // it already knows a policy exists for the name in question, factored out so
 // a second caller can enforce identically rather than re-derive it.
 //
@@ -414,7 +414,7 @@ func signalPolicyRuleMatches(rule *SignalPolicyRule, identity *WorkloadIdentity)
 // drift the rule warns about, so this folds both checks into the one place
 // either caller reaches.
 //
-// starter/hasStarter follow [SignalPolicy.distinct_from_starter]'s own
+// starter/hasStarter follow `SignalPolicy.distinct_from_starter`'s own
 // fail-closed rule, generalized past the server's one source (a run's memo)
 // to whatever a caller's own notion of "this run's starter" is: hasStarter
 // false means nothing here can prove separation, and is refused exactly like
@@ -448,7 +448,7 @@ func SignalPolicyCheck(policy *SignalPolicy, identity *WorkloadIdentity, starter
 	return nil
 }
 
-// QualifiedSubject renders an issuer and subject the way [SignalPolicyRule.subject]
+// QualifiedSubject renders an issuer and subject the way `SignalPolicyRule.subject`
 // is written and matched: "<issuer>#<subject>". Exported so a caller writing a
 // rule — `flow`'s own diagnostics, a Flowfile author copying a value out of a
 // token — has one place that produces the exact spelling the matcher accepts,
@@ -457,14 +457,14 @@ func SignalPolicyCheck(policy *SignalPolicy, identity *WorkloadIdentity, starter
 // Matching on the joined form, rather than comparing issuer and subject as two
 // separate fields, is what makes an unqualified rule (no "#") refused at the
 // schema rather than silently matching every issuer's version of a subject —
-// see [SignalPolicyRule.subject]'s own comment for why subject alone is
+// see `SignalPolicyRule.subject`'s own comment for why subject alone is
 // refused as ambiguous across issuers.
 func QualifiedSubject(issuer, subject string) string {
 	return issuer + "#" + subject
 }
 
 // LooksLikeQualifiedSubject reports whether s has the shape a
-// [SignalPolicyRule.subject] requires: something, a single '#', and something
+// `SignalPolicyRule.subject` requires: something, a single '#', and something
 // after it. The schema's own pattern rule enforces this at the wire level;
 // this is exported so a diagnostic closer to an author — the Flowfile
 // compiler — can explain a malformed subject in its own words rather than

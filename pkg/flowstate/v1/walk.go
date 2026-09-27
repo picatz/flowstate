@@ -155,7 +155,7 @@ const (
 
 	// SlotConcurrencyKey is the workflow's `concurrency:` `key:` — the resource
 	// at most one run of this workflow may hold at a time. Evaluated at submit
-	// against the run's bound inputs and nothing else; see [Concurrency.key].
+	// against the run's bound inputs and nothing else; see `Concurrency.key`.
 	SlotConcurrencyKey
 
 	// SlotDebugSubject is a `debug:` policy rule's computed `subject:`.

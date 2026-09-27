@@ -78,7 +78,7 @@ import "context"
 type rehearsalIdentityContextKey struct{}
 
 // NewContextWithRehearsalIdentity returns a context carrying the identity a
-// local run rehearses as, which [RunWithInputs] reads into [Scope.identity].
+// local run rehearses as, which [RunWithInputs] reads into `Scope.identity`.
 //
 // Set by `flow run local`, `flow task run` and `flow mcp` from the same
 // `--as-*` flags that build the run's [TaskRuntime] identity — one source, so

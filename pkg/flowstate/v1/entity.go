@@ -95,10 +95,10 @@ var _ [maxWorkflowIDBytes - len(entityWorkflowIDPrefix) - auth.MaxNamespaceLen -
 // EntityWorkflowID composes the workflow id for an entity-addressed run.
 //
 // namespace must come from the authenticated caller's identity —
-// [FlowstateServer.identityFor] in `pkg/flowstate/v1/server`, never from a
+// `FlowstateServer.identityFor` in `pkg/flowstate/v1/server`, never from a
 // request field — the same rule [fairnessFor] already applies to scheduling
-// priority. entityKey is whatever [RunRequest.entity_key] or
-// [SignalWithStartRequest.entity_key] the caller supplied, already checked by
+// priority. entityKey is whatever `RunRequest.entity_key` or
+// `SignalWithStartRequest.entity_key` the caller supplied, already checked by
 // protovalidate against the schema's own copy of [ValidateEntityKey]'s grammar,
 // and checked again here so this function is safe to call directly (the embed
 // path calls it without going through protovalidate at all).

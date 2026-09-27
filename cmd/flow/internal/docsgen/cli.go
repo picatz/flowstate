@@ -185,7 +185,7 @@ func (g *Generator) environmentMirrors() map[string]string {
 	return mirrors
 }
 
-// EnvironmentMirrors is [Generator.environmentMirrors] with the environment
+// EnvironmentMirrors is `Generator.environmentMirrors` with the environment
 // cleared around it, which is the only way the answer means anything.
 //
 // Exported for the test that pins the derivation. Setting a sentinel and

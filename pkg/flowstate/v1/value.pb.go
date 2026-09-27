@@ -240,7 +240,7 @@ func (x *SecretRef) GetName() string {
 // names a secret resolved only by the worker that uses it; a `structure` is a
 // list or map of Values, the only shape that can hold a secret reference below
 // the top level; and an `error` records a value that could not be produced.
-// Values a caller submits, such as [RunRequest.inputs], must be literals.
+// Values a caller submits, such as `RunRequest.inputs`, must be literals.
 type Value struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Kind:

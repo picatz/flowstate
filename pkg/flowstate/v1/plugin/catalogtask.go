@@ -311,7 +311,7 @@ func boundCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) (int, error) {
 // The name is taken as written. A description is produced by
 // [flowstatev1.DescribeTask] from a def that was already registered, so the
 // name in it is the qualified one an author writes — unlike a manifest's, which
-// is bare and gets the plugin's name prefixed onto it by [Plugin.taskDef].
+// is bare and gets the plugin's name prefixed onto it by `Plugin.taskDef`.
 //
 // The claim fields are carried straight across, which is the point of the
 // exercise: a def rebuilt here has to refuse everything the launched def

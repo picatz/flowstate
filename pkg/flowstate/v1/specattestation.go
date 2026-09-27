@@ -32,7 +32,7 @@ package flowstatev1
 // that this run executes the specification the caller submitted, unchanged.
 //
 // False for a server that said the specification was substituted, and false for
-// one that did not answer at all — see [RunResponse.specification_as_submitted]
+// one that did not answer at all — see `RunResponse.specification_as_submitted`
 // for why silence is not consent. A client deciding whether its own copy of a
 // specification may be trusted to describe the run — which values it declared
 // `sensitive: true`, above all — asks this and nothing else.
@@ -58,7 +58,7 @@ func (x *RunResponse) RanSubmittedSpecification() bool {
 //
 // False additionally, and always, when this call did not create the entity: the
 // specification a pre-existing run is executing was compared against nothing
-// here. See [SignalWithStartResponse.specification_as_submitted].
+// here. See `SignalWithStartResponse.specification_as_submitted`.
 func (x *SignalWithStartResponse) RanSubmittedSpecification() bool {
 	if x == nil || x.SpecificationAsSubmitted == nil {
 		return false
@@ -74,7 +74,7 @@ func (x *SignalWithStartResponse) RanSubmittedSpecification() bool {
 // The same method on the same field for the same reason as
 // [RunResponse.RanSubmittedSpecification], and a claim about the creation rather
 // than a standing property of the schedule — see
-// [CreateScheduleResponse.specification_as_submitted].
+// `CreateScheduleResponse.specification_as_submitted`.
 func (x *CreateScheduleResponse) RanSubmittedSpecification() bool {
 	if x == nil || x.SpecificationAsSubmitted == nil {
 		return false

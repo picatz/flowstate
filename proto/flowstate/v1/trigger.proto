@@ -27,7 +27,7 @@ message Triggers {
   // Schedule is the cadence this workload is meant to run at.
   //
   // Optional and, when present, still inert until somebody creates it. See
-  // [Workflow.triggers] for why the declaration and the act are separate.
+  // `Workflow.triggers` for why the declaration and the act are separate.
   ScheduleTrigger schedule = 1 [(google.api.field_behavior) = OPTIONAL];
 
   // Webhooks are the deliveries this workload is meant to start on, one entry
@@ -37,9 +37,9 @@ message Triggers {
   // is the ordinary case rather than the exotic one — a payments provider and a
   // storefront both reporting the same order — and each brings its own payload
   // shape, its own signing scheme, and therefore its own mapping into
-  // [Workflow.declared_inputs]. That is what makes a webhook a *call site*
+  // `Workflow.declared_inputs`. That is what makes a webhook a *call site*
   // rather than a second declaration of the inputs: `arguments` here is the same
-  // construct as [Call.arguments], checked against the same signature, so N
+  // construct as `Call.arguments`, checked against the same signature, so N
   // sources are N callers instead of a keyed sub-language nobody asked for.
   //
   // Inert exactly as `schedule` is on the run path: nothing in `Run` reads
@@ -112,7 +112,7 @@ message ManualTrigger {
   bool denied = 1 [(google.api.field_behavior) = OPTIONAL];
 
   // RequireReason makes a manual start carry a reason, recorded on the run
-  // ([RunRequest.reason]).
+  // (`RunRequest.reason`).
   //
   // For the workload where "who ran this, and why" is asked after the fact —
   // a break-glass rotation, a manual refund — and where the answer being
@@ -163,7 +163,7 @@ message ManualTrigger {
 // # Metadata, never data
 //
 // The set is closed at these four fields on purpose. Everything a workflow
-// *operates on* arrives through a trigger's `with:` into [Workflow.declared_inputs],
+// *operates on* arrives through a trigger's `with:` into `Workflow.declared_inputs`,
 // checked against declarations `flow validate` can see. A payload field reachable
 // under `trigger` would be a second input path with no contract, invisible to
 // the validator — so there is no `trigger.payload`, no `trigger.headers`, and
@@ -207,7 +207,7 @@ message TriggerContext {
   // caller's subject for a manual start, the trigger the delivery arrived at
   // for a webhook, the schedule's owner for a scheduled firing.
   //
-  // Never taken from a request. It is the same value [RunState.identity]
+  // Never taken from a request. It is the same value `RunState.identity`
   // carries, restated here because a step reading "how was I started" should
   // not have to know that a webhook's principal is spelled one way under `run`
   // and another under `trigger`.
@@ -312,10 +312,10 @@ message WebhookTrigger {
   // Arguments bind this source's payload to the workflow's declared inputs, one
   // expression per input, over `event`.
   //
-  // Named `arguments` rather than `with` for the reason [Call.arguments] is: the
+  // Named `arguments` rather than `with` for the reason `Call.arguments` is: the
   // schema says what the field holds and the DSL says how it is spelled, and the
   // two constructs are deliberately the same construct — checked against
-  // [Workflow.declared_inputs] by the same rules, in both directions.
+  // `Workflow.declared_inputs` by the same rules, in both directions.
   map<string, Value> arguments = 4 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).map = {
@@ -388,7 +388,7 @@ message WebhookTrigger {
 
     // Correlate is the expression, over `event`, that says which run this
     // delivery answers. It yields the run's *entity key* — the stable business
-    // key [RunRequest.entity_key] and [SignalWithStartRequest.entity_key]
+    // key `RunRequest.entity_key` and `SignalWithStartRequest.entity_key`
     // already address a run by — and the receiver composes the workflow id
     // from it exactly as those do.
     //
@@ -412,7 +412,7 @@ message WebhookTrigger {
     // Arguments are what the delivery carries into the gate, one expression
     // per name, over `event` — spelled `with:` in a Flowfile.
     //
-    // Named `arguments` rather than `payload` for [WebhookTrigger.arguments]'
+    // Named `arguments` rather than `payload` for `WebhookTrigger.arguments`'
     // reason, and spelled `with:` for the same one: this is a *call site*, and
     // when a wait later declares what it accepts, the call-site spelling is
     // already the one triggers use. Nothing checks these names against a
@@ -458,7 +458,7 @@ message WebhookTrigger {
 //
 // There is deliberately no `inputs:` under a schedule. What a scheduled run is
 // started with is bound at creation, from the command that creates it (see
-// [CreateScheduleRequest.inputs]), because arguments are a deployment's answer
+// `CreateScheduleRequest.inputs`), because arguments are a deployment's answer
 // (which cluster, which account, which region) while the cadence is the
 // workload's. Putting them here would also make the same values expressible in
 // two places, since an input declaration already carries a default, and a

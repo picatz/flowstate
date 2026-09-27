@@ -164,6 +164,21 @@ func Run() {}
 	require.Empty(t, findings, "lib was never walked, so its absence from the index is not a typo")
 }
 
+func TestAProtobufFieldSpellingIsNotALink(t *testing.T) {
+	t.Parallel()
+
+	findings := check(t, `// Package app is fine.
+package app
+
+// Config configures.
+type Config struct{ Name string }
+
+// Run reads [Config.Name], never [Config.name], and indexes [e.t].
+func Run(Config) {}
+`)
+	require.Equal(t, []string{"[Config.name]"}, links(findings))
+}
+
 func TestALinkGluedToASuffixIsNotALink(t *testing.T) {
 	t.Parallel()
 

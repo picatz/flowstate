@@ -224,7 +224,7 @@ func splitScriptLines(text string) []string {
 //
 // # Why a script is checked when a prompt is not
 //
-// [Session.dispatch] answers a mistyped command and asks again, deliberately:
+// `Session.dispatch` answers a mistyped command and asks again, deliberately:
 // "ending someone's run over a typo is the worst possible reading of an
 // ambiguous line". That reading depends on there being a next line from the
 // person who typed the last one. A file has no next line — the typo is a defect

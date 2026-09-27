@@ -211,7 +211,7 @@ func (v *MTLSVerifier) ClientCAPool() *x509.CertPool {
 // between two *policies* instead of two SANs.
 //
 // Namespace determination stays a rejection and never a reason to look
-// further, per [TrustedIssuer.namespaceFor]; with exactly one entry admitting,
+// further, per `TrustedIssuer.namespaceFor`; with exactly one entry admitting,
 // there is nothing further to look at in any case.
 func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certificate) (Principal, error) {
 	if len(chains) == 0 || len(chains[0]) == 0 {

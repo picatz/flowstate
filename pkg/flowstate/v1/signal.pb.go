@@ -39,7 +39,7 @@ type SignalPolicy struct {
 	// DistinctFromStarter requires, in addition to whichever rule in [allow]
 	// an otherwise-authorized sender satisfies, that the sender not be this
 	// run's own starter: the same issuer and the same subject as the
-	// identity that submitted the run, compared the way [SignalPolicyRule.subject]
+	// identity that submitted the run, compared the way `SignalPolicyRule.subject`
 	// already is (see `QualifiedSubject`). Set at the policy level, not on a
 	// rule, so it cannot be bypassed by adding a wide-open rule to `allow:`:
 	// separation of duties is ANDed onto every rule this policy has, present
@@ -309,7 +309,7 @@ type Signal struct {
 	// to it means. `deploy-approved` is a routing key, not a question: an
 	// operator holding a run id learned the name to send and nothing about what
 	// they would be approving. This is the sentence that was missing, and it
-	// travels on [PendingWait.prompt] so every surface that reports a parked gate
+	// travels on `PendingWait.prompt` so every surface that reports a parked gate
 	// reports it.
 	//
 	// An expression rather than a literal string, because the interesting part of
@@ -353,7 +353,7 @@ type Signal struct {
 	//
 	// The evaluated text is bounded by [MaxWaitPromptBytes], read by both drivers
 	// from the package both import. Text past the bound is cut and
-	// [PendingWait.prompt_truncated] says so, because a question a reader cannot
+	// `PendingWait.prompt_truncated` says so, because a question a reader cannot
 	// tell was cut short is a question they may answer having read half of it.
 	Prompt        *Value `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -439,7 +439,7 @@ func (x *Signal) GetPrompt() *Value {
 //
 // # A separate message from Signal, rather than a drain flag on it
 //
-// By exactly the argument [Signal.outputs] makes for sitting on [Signal] rather
+// By exactly the argument `Signal.outputs` makes for sitting on [Signal] rather
 // than on [Wait]: a drain binds `deliveries` and `count`, and does *not* bind
 // `payload` or `sender`. A flag inside [Signal] would make every `outputs:`
 // expression's validity depend on the value of a sibling key — the reported
@@ -455,7 +455,7 @@ func (x *Signal) GetPrompt() *Value {
 // here, only something to keep true.
 type SignalBatch struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Name is what a sender addresses, under exactly [Signal.name]'s rules — the
+	// Name is what a sender addresses, under exactly `Signal.name`'s rules — the
 	// same channel, read a different way.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// MaxBatch bounds how many deliveries one drain takes. Zero means
@@ -465,7 +465,7 @@ type SignalBatch struct {
 	// input and the batch is the multiplication: the count is what the far side
 	// chooses, and bytes follow from it — each delivery is already bounded by
 	// [MaxSignalPayloadBytes] at admission, so a bounded count bounds the whole.
-	// A bounded `int32` in the manner of [ForEach.max_parallel], for the same
+	// A bounded `int32` in the manner of `ForEach.max_parallel`, for the same
 	// reason: bound the resource the peer controls.
 	//
 	// Deliveries past the bound are *not* dropped and *not* re-buffered — they
@@ -473,7 +473,7 @@ type SignalBatch struct {
 	// a `loop:` around this already wants, and it means a bound being reached
 	// costs an iteration rather than an approval.
 	MaxBatch int32 `protobuf:"varint,2,opt,name=max_batch,json=maxBatch,proto3" json:"max_batch,omitempty"`
-	// Outputs shapes what the waiting step produces, exactly as [Signal.outputs]
+	// Outputs shapes what the waiting step produces, exactly as `Signal.outputs`
 	// does — same evaluator, same single moment, same replace-not-extend rule.
 	//
 	// What differs is the names it binds, and that difference is why this is a
@@ -481,7 +481,7 @@ type SignalBatch struct {
 	// first), `count`, and `timed_out`, plus `now`. There is no `payload` and no
 	// `sender`, because a batch has many of each.
 	Outputs map[string]*Value `protobuf:"bytes,3,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Prompt is what this gate is asking for, under [Signal.prompt]'s whole
+	// Prompt is what this gate is asking for, under `Signal.prompt`'s whole
 	// contract: evaluated once at the moment the wait parks, seeing the enclosing
 	// scope and `now` and not the wait's result, bounded by [MaxWaitPromptBytes],
 	// and refused any reach to a `sensitive:` input or a `${secret(...)}` by
@@ -609,11 +609,11 @@ type SignalSender struct {
 	// credential-shaped material may not go (ARCHITECTURE.md invariant 7). A digest is fixed-length,
 	// alphabet-safe, and says nothing about the key it names.
 	//
-	// It is here rather than in [WorkloadIdentity.claims] because it is not a
+	// It is here rather than in `WorkloadIdentity.claims` because it is not a
 	// claim about a principal — every delivery from one trigger attests the same
 	// principal and carries a different one of these. What it is for is the
 	// engine's own dedupe: a run records the ids it has consumed
-	// ([RunState.consumed_delivery_ids]) so that a redelivery after the gate has
+	// (`RunState.consumed_delivery_ids`) so that a redelivery after the gate has
 	// already been answered is dropped rather than taken by the next
 	// `wait_for_signal:` a `loop:` comes back around to.
 	DeliveryId    string `protobuf:"bytes,4,opt,name=delivery_id,json=deliveryId,proto3" json:"delivery_id,omitempty"`

@@ -414,7 +414,7 @@ func CheckInputConstraintShape(profile string, decl *InputDeclaration) error {
 
 // EnumValuesShapeError reports that a declared enum's `values:` list
 // violates one of the per-member or list-size rules the schema itself
-// declares on [InputDeclaration.values] in
+// declares on `InputDeclaration.values` in
 // proto/flowstate/v1/workflow.proto: at most 64 entries, each 1-128
 // characters, all distinct.
 //
@@ -636,7 +636,7 @@ func CheckOutputConstraintShape(profile string, decl *OutputDeclaration) error {
 //
 // Nil for an output that declares no type, which is every declaration written
 // before there was one to declare and every declaration that still chooses not
-// to — see [OutputDeclaration.type] on why that stays legal. Nil, too, for a
+// to — see `OutputDeclaration.type` on why that stays legal. Nil, too, for a
 // value with no literal to judge: an expression the engine could not evaluate is
 // a different failure, reported by whoever computed it.
 //

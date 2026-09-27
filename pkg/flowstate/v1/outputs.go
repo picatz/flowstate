@@ -24,7 +24,7 @@ import (
 //
 // Nil and no error when the workflow declares none, so a run that promises nothing
 // reports nothing rather than an empty result — the same distinction
-// [GetResponse.run_outputs] draws between "nothing to report" and "a result with
+// `GetResponse.run_outputs` draws between "nothing to report" and "a result with
 // no values in it".
 //
 // A failure here fails the run, and deliberately: an output is the answer a caller

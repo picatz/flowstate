@@ -154,7 +154,7 @@ func (q TaskQueues) Validate() error {
 // errors — including for a namespace [auth.ValidateNamespace] would refuse.
 // That is deliberate and is the byte-identical default the issue asks for: a
 // run whose recorded identity predates that grammar (see
-// [FlowstateServer.identityFor]) starts today, and must keep starting.
+// `FlowstateServer.identityFor`) starts today, and must keep starting.
 //
 // Configured, it fails closed. A namespace outside the grammar cannot be
 // composed into a queue name whose boundary is trustworthy, and the answer to

@@ -324,7 +324,7 @@ type TaskPolicy struct {
 
 // Check reports whether policy permits dispatching task under identity. A
 // nil identity renders as every field empty — the same reading
-// [Scope.identity] itself gives a local run or a scope that predates
+// `Scope.identity` itself gives a local run or a scope that predates
 // identity — so a rule meaning "no attested caller" writes
 // `identity.subject == ""`.
 //

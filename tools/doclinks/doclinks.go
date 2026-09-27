@@ -209,17 +209,21 @@ func (c *checker) checkComment(p *pkg, pr *comment.Parser, group *ast.CommentGro
 }
 
 // looksLikeALink reports whether a bracketed name left in plain text was
-// meant as a doc link: an exported name, qualified or not, or the bare name of
-// a package in this repository. A bracketed lowercase word that is neither
-// ([i], [n], [key]) is prose.
+// meant as a doc link: an exported name, qualified or not; a lowercase member
+// of an exported type; or the bare name of a package in this repository. A
+// bracketed lowercase word or path that is none of those ([i], [n], [e.t]) is
+// prose.
 func (c *checker) looksLikeALink(name string) bool {
 	name = strings.TrimPrefix(name, "*")
 	last := name[strings.LastIndexByte(name, '.')+1:]
 	if ast.IsExported(last) {
 		return true
 	}
-	if strings.Contains(name, ".") {
-		return false
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+		// A lowercase member of an exported type, [RunRequest.inputs], is a
+		// protobuf field in its schema spelling: meant as a link, and never
+		// one, since the Go field is spelled RunRequest.Inputs.
+		return slices.ContainsFunc(strings.Split(name[:dot], "."), ast.IsExported)
 	}
 	return c.packageNames[name]
 }

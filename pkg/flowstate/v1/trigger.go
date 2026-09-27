@@ -61,7 +61,7 @@ import (
 //
 // # Replay-safe, which is not true of everything a run might want to know
 //
-// Every field is fixed when the run starts and carried in [RunState.trigger], so
+// Every field is fixed when the run starts and carried in `RunState.trigger`, so
 // it reads identically on every replay and after every Continue-As-New. That is
 // exactly what the clock and randomness are not, and it is why `now` is bound
 // only inside a wait while this is readable everywhere: a value that cannot drift
@@ -85,12 +85,12 @@ const (
 	TriggerKindManual = "manual"
 
 	// TriggerKindWebhook is a start by a delivery to a declared
-	// [WebhookTrigger]. [TriggerContext.name] is the webhook's name and
-	// [TriggerContext.delivery_id] names the arrival.
+	// [WebhookTrigger]. `TriggerContext.name` is the webhook's name and
+	// `TriggerContext.delivery_id` names the arrival.
 	TriggerKindWebhook = "webhook"
 
 	// TriggerKindSchedule is a firing of a schedule created from a
-	// [ScheduleTrigger]. [TriggerContext.name] is the schedule's id.
+	// [ScheduleTrigger]. `TriggerContext.name` is the schedule's id.
 	TriggerKindSchedule = "schedule"
 )
 

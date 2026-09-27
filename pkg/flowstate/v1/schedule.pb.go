@@ -206,7 +206,7 @@ type ScheduleDescription struct {
 	Trigger *ScheduleTrigger `protobuf:"bytes,3,opt,name=trigger,proto3" json:"trigger,omitempty"`
 	// Paused is whether firings are currently suppressed.
 	Paused bool `protobuf:"varint,4,opt,name=paused,proto3" json:"paused,omitempty"`
-	// Note is the message carried on the schedule; see [ScheduleSummary.note].
+	// Note is the message carried on the schedule; see `ScheduleSummary.note`.
 	Note string `protobuf:"bytes,5,opt,name=note,proto3" json:"note,omitempty"`
 	// NumActions is how many firings this schedule has taken, including manual
 	// ones.
@@ -241,7 +241,7 @@ type ScheduleDescription struct {
 	//
 	// A non-zero value is `overlap: skip` (or one of the other non-allow
 	// policies) doing exactly what it was configured to do — and how much of it.
-	// See [ScheduleTrigger.overlap].
+	// See `ScheduleTrigger.overlap`.
 	NumActionsSkippedOverlap int64 `protobuf:"varint,11,opt,name=num_actions_skipped_overlap,json=numActionsSkippedOverlap,proto3" json:"num_actions_skipped_overlap,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
@@ -370,7 +370,7 @@ type CreateScheduleRequest struct {
 	// Inputs are the arguments every firing starts its run with, at most 64.
 	//
 	// Checked here, once, against the workflow's declared inputs, with the same
-	// rules as [RunRequest.inputs]: literal values only, no undeclared name,
+	// rules as `RunRequest.inputs`: literal values only, no undeclared name,
 	// every required input present, defaults filled in. A mistake is refused
 	// now rather than at the first firing. What is stored is the checked map,
 	// so a declaration edited later does not change what this schedule passes.
@@ -474,7 +474,7 @@ type CreateScheduleResponse struct {
 	// that most often reveals a cadence meaning something other than what was
 	// intended.
 	Schedule *ScheduleDescription `protobuf:"bytes,1,opt,name=schedule,proto3" json:"schedule,omitempty"`
-	// SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+	// SpecificationAsSubmitted is `RunResponse.specification_as_submitted` for
 	// this RPC: the same question and the same three answers, about the
 	// specification frozen into the schedule.
 	//
@@ -534,7 +534,7 @@ func (x *CreateScheduleResponse) GetSpecificationAsSubmitted() bool {
 // ListSchedulesRequest asks for the caller's schedules. It has no fields.
 //
 // Not paged: schedules are created one at a time by people, not by the hundred
-// thousand. The scan is still bounded, and [ListSchedulesResponse.truncated]
+// thousand. The scan is still bounded, and `ListSchedulesResponse.truncated`
 // says when the bound stopped it.
 type ListSchedulesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -580,7 +580,7 @@ type ListSchedulesResponse struct {
 	// Truncated reports that the scan stopped at its bound with schedules still
 	// unexamined, so this listing is not the whole of it.
 	//
-	// Said rather than hidden, on the same reasoning as [ListResponse.next_page_token]:
+	// Said rather than hidden, on the same reasoning as `ListResponse.next_page_token`:
 	// a caller concluding from a short answer that they have seen everything is the
 	// failure worth preventing, and it is worse than an answer that admits its own
 	// limit.

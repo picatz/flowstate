@@ -115,7 +115,7 @@ type ProtectedResource struct {
 //     in policy trusts at all: a client would be directed to an issuer this
 //     server's own [Verifier] refuses outright.
 //   - An authorization server policy trusts, but not for cfg.Resource as an
-//     audience: [TrustedIssuer.admits] checks a token's "aud" claim against
+//     audience: `TrustedIssuer.admits` checks a token's "aud" claim against
 //     exactly [TrustedIssuer.Audiences], so a token minted for the resource
 //     this document advertises would still be rejected — the same failure,
 //     one policy field further in.
@@ -336,7 +336,7 @@ func (p *ProtectedResource) Digest() string {
 // server to be right about. Both read the same [bearerIssuers] filter, so
 // neither can start counting an entry the other does not — a kind: mtls entry
 // is skipped by both, and cannot satisfy either, since
-// [TrustedIssuer.validateMTLS] refuses it an `audiences` list at all.
+// `TrustedIssuer.validateMTLS` refuses it an `audiences` list at all.
 //
 // A policy that admits no bearer tokens is therefore always an error here,
 // never a silent pass: see [AdmitsBearerTokens] for the question a caller asks

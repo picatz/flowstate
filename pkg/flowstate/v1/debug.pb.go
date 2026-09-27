@@ -122,7 +122,7 @@ func (DebugStepState) EnumDescriptor() ([]byte, []int) {
 //
 // Closed on purpose, and that is a property rather than a style: a caller that
 // could name a verb this enum does not have would be naming a capability the
-// deployment never granted, which is the reasoning [PendingActivity.phase]
+// deployment never granted, which is the reasoning `PendingActivity.phase`
 // states for its own vocabulary. Aliases are deliberately not here — `s`, `c`,
 // `p` and the rest are a convenience for somebody typing, and a wire client
 // spells the verb.
@@ -289,7 +289,7 @@ type DebugPosition struct {
 	// "the position has a step" have to stay separable.
 	Autopsy bool `protobuf:"varint,4,opt,name=autopsy,proto3" json:"autopsy,omitempty"`
 	// Declaration says which invocation of a workflow this position is in, when
-	// the producer can tell, keyed to [DebugStep.declaration] on the rows.
+	// the producer can tell, keyed to `DebugStep.declaration` on the rows.
 	//
 	// Present exactly when the producer resolved the position to one row of its
 	// own inventory. Absent when it could not — one callee invoked from two
@@ -393,7 +393,7 @@ func (x *DebugPosition) GetDeclaration() int32 {
 type DebugStackFrame struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Workflow is the workflow that owns [step_id]. Empty means the producer did
-	// not know, with the same meaning as [DebugPosition.workflow].
+	// not know, with the same meaning as `DebugPosition.workflow`.
 	Workflow string `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// StepId is the current step for the first frame and the `call:` step for a
 	// caller frame.
@@ -526,7 +526,7 @@ type DebugStep struct {
 	// hand distinguishes its workflows by name, one built by a walk distinguishes
 	// them here, and neither has to know about the other.
 	//
-	// Not [RunProgress.path] and not [Frame], though all three describe position
+	// Not `RunProgress.path` and not [Frame], though all three describe position
 	// in a nesting. Those two say where inside one workflow's control flow a run
 	// stands; this says which invocation of a workflow a row belongs to, which is
 	// a different question and one neither of them can answer.
@@ -643,7 +643,7 @@ type DebugStepWindow struct {
 	// reader can see, and mis-claiming is a debugger pointing at the wrong step.
 	Unattributed int32 `protobuf:"varint,4,opt,name=unattributed,proto3" json:"unattributed,omitempty"`
 	// Truncated reports that the producing session stopped recording what it
-	// watched, so a [DebugStep.state] above may understate what a step did.
+	// watched, so a `DebugStep.state` above may understate what a step did.
 	//
 	// Not about this window's own cut, which [offset] and [total] already
 	// describe. It is about the session's record of outcomes running out.
@@ -657,7 +657,7 @@ type DebugStepWindow struct {
 	// ids would be that second resolver.
 	//
 	// Absent means the run's held row is not at an index of this window, and
-	// [DebugPosition.declaration] is what separates the two ways that happens: a
+	// `DebugPosition.declaration` is what separates the two ways that happens: a
 	// position carrying a declaration is a real row the window simply does not
 	// reach, and a position carrying none could not be attributed at all. Absent
 	// also for an autopsy, where the run is over and no row is held.
@@ -865,7 +865,7 @@ type DebugBinding_Rendered struct {
 	// The two disagree on any non-ASCII rendering, and a limit written down
 	// twice in two units is a boundary that refuses values its producer
 	// considers legal. Same unit, both layers — the rule
-	// [WorkloadIdentity.claims] states at length.
+	// `WorkloadIdentity.claims` states at length.
 	//
 	// 4160 rather than the content bound of 4096, because the marker is part
 	// of what travels and a bound that forgot it would refuse a value
@@ -914,7 +914,7 @@ type DebugScopeGroup struct {
 	// under no root at all.
 	//
 	// Distinct from [group], which is a label. This is the part a consumer
-	// computes with, and [DebugBinding.expression] is already that computation
+	// computes with, and `DebugBinding.expression` is already that computation
 	// done once by the producer.
 	Root string `protobuf:"bytes,2,opt,name=root,proto3" json:"root,omitempty"`
 	// Bindings are this group's names, and may be a prefix of them: resolving a
@@ -997,7 +997,7 @@ type DebugScope struct {
 	// Total is how many names the run can reach across every group.
 	//
 	// There is deliberately no `truncated` flag beside this, unlike
-	// [EntityState.truncated] and [RunProgress.pending_waits_truncated]. Those
+	// `EntityState.truncated` and `RunProgress.pending_waits_truncated`. Those
 	// answers omit data without saying how much; this one carries the total, so
 	// "fewer bindings arrived than names exist" is derivable and a flag would be
 	// a second spelling of a fact already here.
@@ -1085,7 +1085,7 @@ type DebugCommand struct {
 	// #1194).
 	//
 	// `max_bytes` and not `max_len` here, the opposite unit from
-	// [DebugBinding.rendered] and for the same reason — the resource being
+	// `DebugBinding.rendered` and for the same reason — the resource being
 	// bounded is memory in a scanner, which is bytes, where a rendering's bound
 	// is about how much text a reader is handed.
 	Argument      string `protobuf:"bytes,2,opt,name=argument,proto3" json:"argument,omitempty"`
@@ -1188,7 +1188,7 @@ type DebugSession struct {
 	// authenticated caller at all, because there is no server in front of it to
 	// attest anything.
 	//
-	// The same marker [SignalSender.local] is, for the same reason and with the
+	// The same marker `SignalSender.local` is, for the same reason and with the
 	// same warning: it means "the local driver", and a consumer must not read it
 	// as the general "nothing was attested", which is also what an unset
 	// [attached_by] means on a session this schema has no other explanation for.
