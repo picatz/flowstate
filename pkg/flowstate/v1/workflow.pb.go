@@ -897,8 +897,8 @@ type ResolvedPlugin struct {
 	DistributionDigest string                 `protobuf:"bytes,5,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
 	// ClaimsDigest is the pinned answer to [flowstatev1.PluginDescription]'s
 	// field of the same name — the security-weight claims, hashed apart from
-	// task_schema_digest so the two can move independently. Empty on a run resolved before this field existed: a worker
-	// checking this pin skips comparing it rather than refusing the run, since
+	// task_schema_digest so the two can move independently. Empty on a run
+	// resolved before this field existed: a worker checking this pin skips comparing it rather than refusing the run, since
 	// there is nothing recorded to compare against and the alternative is a
 	// routine host upgrade permanently failing every already-durable run
 	// touching a plugin with a non-default claim.

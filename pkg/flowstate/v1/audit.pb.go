@@ -519,8 +519,8 @@ type AuditRecord struct {
 	EnforcementPoint AuditEnforcementPoint `protobuf:"varint,12,opt,name=enforcement_point,json=enforcementPoint,proto3,enum=flowstate.v1.AuditEnforcementPoint" json:"enforcement_point,omitempty"`
 	// The operator's own policy rule that decided, verbatim.
 	//
-	// This is the record's provenance — a record that says a dispatch was refused and cannot say by *what* leaves
-	// the operator reading it exactly where they started — and it is the one
+	// This is the record's provenance — a record that says a dispatch was
+	// refused and cannot say by *what* leaves the operator reading it exactly where they started — and it is the one
 	// string in this message whose bytes were neither chosen by this deployment
 	// at compile time nor bounded by another schema. It is admitted for the
 	// same reason issuer_name and role are, and under the same rule: it is

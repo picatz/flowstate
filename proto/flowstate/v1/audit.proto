@@ -87,9 +87,10 @@ option go_package = "flowstatev1";
 // # The worker's half
 //
 // Everything above describes a decision about a *caller*, made by the control
-// plane, keyed by AuthorizationAction. The other half is the decisions a worker makes about the workload it is already running
-// — whether this task may dispatch, whether this secret may be read, whether
-// this request may leave, whether this credential may be assumed.
+// plane, keyed by AuthorizationAction. The other half is the decisions a
+// worker makes about the workload it is already running — whether this task
+// may dispatch, whether this secret may be read, whether this request may
+// leave, whether this credential may be assumed.
 //
 // They are the same kind of record and share every field that means the same
 // thing (the decision, the attested identity, the server clock, the deny
@@ -234,8 +235,8 @@ message AuditRecord {
 
   // The operator's own policy rule that decided, verbatim.
   //
-  // This is the record's provenance — a record that says a dispatch was refused and cannot say by *what* leaves
-  // the operator reading it exactly where they started — and it is the one
+  // This is the record's provenance — a record that says a dispatch was
+  // refused and cannot say by *what* leaves the operator reading it exactly where they started — and it is the one
   // string in this message whose bytes were neither chosen by this deployment
   // at compile time nor bounded by another schema. It is admitted for the
   // same reason issuer_name and role are, and under the same rule: it is

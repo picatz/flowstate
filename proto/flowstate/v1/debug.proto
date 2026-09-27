@@ -13,9 +13,8 @@ option go_package = "flowstatev1";
 // can name, which steps it may reach, and the commands that move it.
 //
 // These are schema types because they cross a wire, and Position.Step is
-// reconciled with RunProgress.step_id. Nothing here is an RPC; the service
-// that carries these messages is defined separately, and the shapes are
-// defined before the transport.
+// reconciled with RunProgress.step_id. Nothing here is an RPC, and no service
+// carries these messages yet: the shapes are defined before the transport.
 //
 // # What is here and what deliberately is not
 //
