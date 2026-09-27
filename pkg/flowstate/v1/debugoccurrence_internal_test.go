@@ -2,7 +2,9 @@ package flowstatev1
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestOccurrenceTrackingCostsNothingWithoutADebugger pins the disabled-mode
@@ -48,5 +50,40 @@ func TestOccurrenceTrackingRecordsNestingUnderADebugger(t *testing.T) {
 	}
 	if got := occurrence.GetSite().GetPath(); len(got) != 2 || got[0] != "fan" || got[1] != "get" {
 		t.Fatalf("site path %v, want the callee-relative [fan get]", got)
+	}
+}
+
+// TestAnOccurrenceStaysInsideTheSchemasBounds nests as deep as an occurrence
+// may, under ids as long as a step id may be, and reads the result against the
+// schema's own limits: the segments, the site's path, and the address.
+func TestAnOccurrenceStaysInsideTheSchemasBounds(t *testing.T) {
+	id := strings.Repeat("s", 256)
+	segments := make([]*DebugSegment, 0, MaxDebugSegments)
+	for range MaxDebugSegments {
+		segments = append(segments, &DebugSegment{Kind: DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, StepId: id, Index: 9})
+	}
+	occurrence := NewDebugOccurrence("root", segments, "leaf", "log")
+
+	if got := len(occurrence.GetSegments()); got > MaxDebugSegments {
+		t.Fatalf("segments = %d, over the schema's %d", got, MaxDebugSegments)
+	}
+	if got := len(occurrence.GetSite().GetPath()); got > MaxDebugSegments+1 {
+		t.Fatalf("site path = %d ids, over the schema's %d", got, MaxDebugSegments+1)
+	}
+	address := occurrence.GetAddress()
+	if got := utf8.RuneCountInString(address); got > MaxDebugAddressRunes {
+		t.Fatalf("address = %d runes, over the schema's %d", got, MaxDebugAddressRunes)
+	}
+	if !strings.HasSuffix(address, "/leaf") {
+		t.Fatalf("a shortened address lost the step it names: ...%s", address[len(address)-32:])
+	}
+
+	ctx := NewContextWithDebugger(contextWithExecutingWorkflow(context.Background(), "root"), recordingDebugger{})
+	for range MaxDebugSegments + 4 {
+		ctx = contextWithExecutingCall(ctx, "caller", "call", "callee")
+	}
+	position, _ := ctx.Value(executingWorkflowKey{}).(executingPosition)
+	if got := len(position.segments); got > MaxDebugSegments {
+		t.Fatalf("call segments = %d, over the schema's %d", got, MaxDebugSegments)
 	}
 }

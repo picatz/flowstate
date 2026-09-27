@@ -1816,7 +1816,8 @@ type DebugSite struct {
 	// Path is the chain of step ids from that workflow's top level down to and
 	// including the step: `["pages", "page"]` for a step `page` in the body of a
 	// loop `pages`. Ids are unique within a visibility domain rather than within a
-	// file, so the chain, not the last id, is what names one site.
+	// file, so the chain, not the last id, is what names one site. It holds at
+	// most one id more than an occurrence's 128 segments: the step itself.
 	Path []string `protobuf:"bytes,2,rep,name=path,proto3" json:"path,omitempty"`
 	// Kind is the step's kind as [DebugPosition.kind] spells it.
 	Kind          string `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
@@ -4334,10 +4335,11 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"attachedAt\x12\x14\n" +
 	"\x05local\x18\x05 \x01(\bR\x05local\x12I\n" +
 	"\x10lease_expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\x0eleaseExpiresAt\x88\x01\x01B\x13\n" +
-	"\x11_lease_expires_at\"s\n" +
+	"\x11_lease_expires_at\"t\n" +
 	"\tDebugSite\x12$\n" +
-	"\bworkflow\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\bworkflow\x12#\n" +
-	"\x04path\x18\x02 \x03(\tB\x0f\xbaH\f\x92\x01\t\x10@\"\x05r\x03\x18\x80\x02R\x04path\x12\x1b\n" +
+	"\bworkflow\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\bworkflow\x12$\n" +
+	"\x04path\x18\x02 \x03(\tB\x10\xbaH\r\x92\x01\n" +
+	"\x10\x81\x01\"\x05r\x03\x18\x80\x02R\x04path\x12\x1b\n" +
 	"\x04kind\x18\x03 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04kind\"\xd6\x01\n" +
 	"\fDebugSegment\x12<\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1e.flowstate.v1.DebugSegmentKindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\x12!\n" +
