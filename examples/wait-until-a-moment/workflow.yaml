@@ -8,10 +8,11 @@ description: Holds a workload until a moment it computes, rather than for a fixe
 # should land at a particular time rather than after a particular gap.
 #
 # Inside a wait expression, `now` is the moment the wait is evaluated, so a
-# deadline can be built relative to it. It is bound here and nowhere else: a task
-# input is resolved inside an activity, where every retry would read a different
-# value, so a `now` there would quietly disagree with itself. Using it in a task
-# input is a diagnostic that says so.
+# deadline can be built relative to it. It is bound in a wait's own expressions
+# (`sleep:`, `wait_until:`, and a wait's `timeout:`, `prompt:` and `outputs:`)
+# and nowhere else: a task input may be resolved inside an activity, where every
+# retry would read a different value, so a `now` there would quietly disagree
+# with itself. Using it in a task input is a diagnostic that says so.
 #
 # The duration units — seconds, minutes, hours, days, weeks — are available to
 # every expression. Go's own duration parser stops at hours, which is why

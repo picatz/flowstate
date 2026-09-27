@@ -386,20 +386,22 @@ type TaskManifest struct {
 	// What it cannot check is the type — an expression returning the wrong thing is
 	// still wrong, and that is not this field's problem.
 	//
-	// # Where it is enforced, and where it still is not
+	// # Where it is enforced, and where it is not
 	//
 	// The host maps this onto TaskDef.ExpressionInputs, and `flow worker` registers
 	// a host's tasks into the registry every lookup reads — so inside a worker this
 	// is enforced by the same code that enforces `http`'s `expect:`, because it is
 	// the same code.
 	//
-	// Where it is still not enforced is a process that has not launched the plugin.
-	// `flow validate` in a terminal and the language server in an editor build their
-	// registry from the built-ins alone, so a plugin's task is `unknown task` there
-	// while running correctly on the worker. That split is deliberate for now —
-	// validating a file would otherwise mean executing plugin binaries on an
-	// editor's keystroke path — and it is the reason `flow plugins` exists: it is
-	// the surface that will launch them when you have asked it to.
+	// `flow validate` and the language server do the same when asked: given
+	// `--plugin-dir` they launch the plugins there and register them the same way,
+	// and `flow validate --plugin-catalog` reads the same descriptors out of a
+	// document `flow plugins --output json` wrote, launching nothing. Without
+	// either flag they build their registry from the built-ins alone, so a
+	// plugin's task is unknown there while running correctly on the worker. That
+	// default is deliberate — validating a file would otherwise mean executing
+	// plugin binaries on an editor's keystroke path — so launching is something
+	// a person asks for on the command line.
 	//
 	// Recorded rather than assumed, because a field whose enforcement is assumed
 	// rather than checked is how `expect:` got its own reputation.

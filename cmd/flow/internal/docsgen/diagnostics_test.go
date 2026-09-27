@@ -3,6 +3,7 @@ package docsgen
 import (
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -58,4 +59,13 @@ func TestDiagnosticShapeExampleIsReal(t *testing.T) {
 	require.Equal(t, uint32(5), edit.Changes[0].Range.StartColumn)
 	require.Equal(t, uint32(5), edit.Changes[0].Range.EndLine)
 	require.Equal(t, uint32(11), edit.Changes[0].Range.EndColumn)
+
+	// And the rename really is the whole repair for this fixture: the page calls
+	// applying an edit a complete repair for the problem it names, so a fixture
+	// whose renamed key still held a mistake (`max_attempts:` under `retry:`,
+	// which takes `attempts:`) would show a repair that leaves a second error.
+	repaired := strings.Replace(source, "retryy:", "retry:", 1)
+	diagnostics, err := flowfile.ValidateSource([]byte(repaired))
+	require.NoError(t, err, "the fixture still fails once the suggested rename is applied")
+	require.Empty(t, diagnostics, "the fixture still has a problem once the suggested rename is applied")
 }

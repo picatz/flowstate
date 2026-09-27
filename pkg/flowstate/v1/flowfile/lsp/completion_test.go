@@ -621,8 +621,8 @@ edition: v2026.3
 		},
 		{
 			// The negative direction, and the reason `now` is not simply in every
-			// scope: a task input is resolved inside an activity, which has no
-			// clock that survives a retry. The validator refuses it there, so
+			// scope: a task input may be resolved inside an activity, where each
+			// retry would read a different time. The validator refuses it there, so
 			// offering it would walk an author into a diagnostic.
 			name: "a task input does not bind the clock",
 			src: `name: c

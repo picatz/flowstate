@@ -458,11 +458,12 @@ type Task_HTTP_Inputs struct {
 	// exactly these named values instead of `status_code`, `body`, `headers`
 	// and `json`, so a large response is not carried into the run's history.
 	//
-	// Each value is a literal or a CEL expression over the response:
-	//   - status_code (int)
-	//   - body (string)
-	//   - headers (map<string,string>)
-	//   - json (the parsed body, when `parse_json` asked for it)
+	// Each value is a literal or a CEL expression over the response, which is
+	// bound as the single root `response`:
+	//   - response.status_code (int)
+	//   - response.body (string)
+	//   - response.headers (map<string,string>)
+	//   - response.json (the parsed body, when `parse_json` asked for it)
 	//
 	// An expression that fails to evaluate fails the step without a retry.
 	Outputs map[string]*Value `protobuf:"bytes,5,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -498,7 +499,7 @@ type Task_HTTP_Inputs struct {
 	// where a query string is written down by everything it passes.
 	Form map[string]*Value `protobuf:"bytes,8,rep,name=form,proto3" json:"form,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Which responses count as success, as a CEL expression over the same
-	// variables `outputs` sees.
+	// `response` root `outputs` sees.
 	//
 	// The default is unchanged and needs no expression: 2xx succeeds, 4xx fails
 	// permanently, and repeat-safe 5xx responses are retried. This expression
@@ -506,14 +507,14 @@ type Task_HTTP_Inputs struct {
 	// not replace status classification or make an ambiguous mutation safe to
 	// repeat. This is for the cases that default cannot express: a 404 that
 	// means "not there yet, and that is fine", or an API that answers 200 with
-	// an error in the body:
+	// an error in the body (read with `parse_json: true`):
 	//
-	//	expect: ${status_code == 200 || status_code == 404}
-	//	expect: ${status_code == 200 && !json.error}
+	//	expect: ${response.status_code == 200 || response.status_code == 404}
+	//	expect: ${response.status_code == 200 && !response.json.?error.orValue(false)}
 	//
 	// One expression rather than a status list plus a predicate, because a list
-	// is the expression `status_code in [200, 404]` and two spellings of one idea
-	// is two things to keep in agreement.
+	// is the expression `response.status_code in [200, 404]` and two spellings
+	// of one idea is two things to keep in agreement.
 	Expect *Value `protobuf:"bytes,9,opt,name=expect,proto3" json:"expect,omitempty"`
 	// Parse the response body as JSON into the `json` output.
 	//

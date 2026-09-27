@@ -163,8 +163,9 @@ flow test -o jsonl examples/`,
 	// runs a case many times, and a selection that is not exactly one case.
 	cmd.Flags().Bool("debug", false,
 		"stop before each step of one case and read commands from the terminal — step, "+
-			"continue, until, break, inspect, scope, quit; requires `--run` to name exactly "+
-			"one case, and is refused with `--output json` and with seeded exploration")
+			"continue, until, break, inspect, scope, quit; requires exactly one test file and "+
+			"exactly one selected case (narrow with `--run` when the file has more), and is "+
+			"refused with `--output json` and with seeded exploration")
 
 	return cmd
 }

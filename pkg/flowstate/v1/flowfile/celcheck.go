@@ -444,7 +444,10 @@ var unknownFunction = regexp.MustCompile(`^undeclared reference to '([^']+)'`)
 // be absent arrives here as this message about a call the author did not write.
 // The advice has to fit what they *did* write, which is why the null case gets a
 // sentence about saying what a missing value should read as rather than one about
-// rendering a structure.
+// rendering a structure. Only the map and list cases are reported in practice:
+// cel-go's checker accepts `string(null)`, so `${null}` validates and fails only
+// when evaluated, with cel-go's run-time `no such overload`, which this does not
+// rewrite.
 var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'string' applied to '\((map|list|null_type)`)
 
 // forAnAuthor turns one of cel-go's sentences into one written for the person who

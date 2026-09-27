@@ -2657,12 +2657,15 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 			"never talk to each other, they meet at Temporal. With `--temporal-deployment-name` and `--build-id` " +
 			"it claims a Temporal Worker Deployment version, pinning every run already in flight to the " +
 			"interpreter it started on: a later deploy changes what new runs compute, not what " +
-			"in-flight ones do, until each reaches continue-as-new. With `--tenant` it executes one " +
+			"in-flight ones do, until each reaches continue-as-new. A version receives new runs " +
+			"only once it is the deployment's current version, which this command does not set: " +
+			"promote each build with `temporal worker deployment set-current-version`. With `--tenant` it executes one " +
 			"namespace's runs and refuses every other outright, rather than running them with this " +
 			"worker's secrets, egress policy and plugins, which needs a queue of its own, named by " +
 			"`--task-queue-prefix` (the value the server was started with) or given as `--task-queue`.",
 		RunE: runWorker,
-		Example: `# Start a worker, pinned so a deploy does not change runs already in flight:
+		Example: `# Start a worker, pinned so a deploy does not change runs already in flight.
+# It receives new runs once its build is made the current version.
 flow worker --temporal-deployment-name flowstate \
   --build-id "$(git rev-parse --short HEAD)"
 

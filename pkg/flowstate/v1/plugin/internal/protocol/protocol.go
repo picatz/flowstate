@@ -15,7 +15,7 @@
 // plugin that finds any of it missing must refuse to serve:
 //
 //	FLOWSTATE_PLUGIN_MAGIC_COOKIE      must equal MagicCookieValue
-//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "6"
+//	FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS versions the host speaks, e.g. "7"
 //	FLOWSTATE_PLUGIN_SOCKET            absolute path the plugin must listen on
 //	FLOWSTATE_PLUGIN_TOKEN_FD          fd carrying the per-launch secret
 //	FLOWSTATE_PLUGIN_HOST_FD           fd that closes when the host exits
@@ -43,7 +43,7 @@
 // the host captures as that plugin's logs. Reserving stdout for one line is what
 // keeps a plugin's own logging from corrupting the protocol.
 //
-//	FLOWSTATE-PLUGIN|1|5|unix|/var/folders/.../s
+//	FLOWSTATE-PLUGIN|1|7|unix|/var/folders/.../s
 //
 // The fields are the sentinel, the version of this handshake format, the
 // negotiated protocol version, the network, and the address. The handshake

@@ -246,7 +246,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_PLUGIN_MAX_CALL_TIMEOUT",
 			value:   "1h",
-			purpose: "Ceiling on the deadline a plugin call may inherit from its caller. `--plugin-call-timeout` is the default a call with no deadline of its own gets; this is the most any call may take, so a caller that arrives with a long deadline cannot hold a plugin worker past it. An unparseable or non-positive value is refused at startup.",
+			purpose: "Ceiling on the deadline a plugin call may inherit from its caller. A call with no deadline of its own gets the host's fixed default call timeout instead (no flag sets it); this is the most any call may take, so a caller that arrives with a long deadline cannot hold a plugin worker past it. An unparseable or non-positive value is refused at startup.",
 			read:    "cmd/flow/plugins.go",
 		},
 		{
@@ -664,7 +664,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "TEMPORAL_TASK_QUEUE",
 			value:   "flowstate-run-task-queue",
-			purpose: "Default for `--task-queue`: the queue workers serve and workflows are routed to.",
+			purpose: "Default for `flow worker --task-queue`: the queue this worker polls. Only the worker reads it; `flow server` submits runs to `flowstate-run-task-queue`, or to `<prefix>_<namespace>` under `--task-queue-prefix`, so a worker given a different queue here polls one nothing submits to.",
 			read:    "cmd/flow/main.go",
 		},
 		{

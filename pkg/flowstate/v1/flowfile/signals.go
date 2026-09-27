@@ -102,10 +102,17 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 
 	f, found := fields.get("allow")
 	if !found {
+		// The remedy is where the two stanzas sharing this grammar differ:
+		// removing a signal's policy opens the signal, and removing `debug:`
+		// closes debugging entirely (see [v1.Workflow.Debug]).
+		remedy := "or remove this signal's policy so the signal keeps today's behavior " +
+			"(any authenticated caller in the run's tenant may deliver it)"
+		if path == "debug" {
+			remedy = "or remove the `debug:` stanza, which leaves the run not debuggable at all " +
+				"(every pause ask is refused)"
+		}
 		c.report(spanOfNode(n), r,
-			"declares no `allow:` list, so it authorizes nobody; write at least one rule, "+
-				"or remove this signal's policy so the signal keeps today's behavior "+
-				"(any authenticated caller in the run's tenant may deliver it)")
+			"declares no `allow:` list, so it authorizes nobody; write at least one rule, %s", remedy)
 		return nil
 	}
 

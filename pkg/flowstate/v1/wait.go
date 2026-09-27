@@ -333,11 +333,11 @@ func signalSenderValue(sender *SignalSender) *Value {
 // # Where it is bound
 //
 // In a wait, and nowhere else in the language. Every expression a [Wait] carries
-// sees it: `until`, `duration_expr`, and `timeout_expr`. That is one rule about a
-// node kind rather than three about fields, and it is the rule the reasoning below
-// actually supports — a wait is evaluated in workflow code holding the driver's own
-// clock whichever arm it takes, so `${deadline - now}` is as replay-safe as
-// `${now + days(3)}` is.
+// sees it: `until`, `duration_expr`, `timeout_expr`, a signal's `prompt` and its
+// shaped `outputs`. That is one rule about a node kind rather than several about
+// fields, and it is the rule the reasoning below actually supports — a wait is
+// evaluated in workflow code holding the driver's own clock whichever arm it
+// takes, so `${deadline - now}` is as replay-safe as `${now + days(3)}` is.
 //
 // It was narrower than that for one release, bound only inside `until`, and the
 // narrowness was an artifact rather than a decision: `until` was the only arm that
@@ -637,9 +637,10 @@ func EvalWaitTimeout(ctx context.Context, wait *Wait, scope *Scope, now time.Tim
 //
 // A string is accepted and read with [ParseDuration], which is what makes
 // `sleep: ${inputs.grace}` work against a declared input: [InputDeclaration.Type]
-// has no duration member — it is the six types a caller can *send*, and a duration
-// is not one of them — so a string is how a duration arrives from outside, and it
-// has to mean there exactly what the same characters mean written literally.
+// has no duration member — it is the seven types an input may declare, and a
+// duration is not one of them — so a string is how a duration arrives from
+// outside, and it has to mean there exactly what the same characters mean
+// written literally.
 //
 // An integer is refused, and that refusal is the point rather than an omission.
 // Nothing in `${inputs.grace * 2}` says whether the number counts seconds or

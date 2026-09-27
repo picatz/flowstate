@@ -517,8 +517,9 @@ func writeExpressionReference(surface *ui.UI) error {
 	fmt.Fprintln(&b)
 	section(&b, theme, "waiting")
 	fmt.Fprintln(&b, indentBlock(wrap(fmt.Sprintf(
-		"Inside a wait (sleep, wait_until, a signal's timeout), %s is the moment the wait is "+
-			"evaluated, so a deadline is ${%s + days(3)} and a remaining bound is ${deadline - %s}.",
+		"Inside a wait (sleep, wait_until, a wait's timeout, prompt and outputs), %s is the "+
+			"moment the wait is evaluated, so a deadline is ${%s + days(3)} and a remaining bound "+
+			"is ${deadline - %s}.",
 		v1.NowIdentifier, v1.NowIdentifier, v1.NowIdentifier), width-2)))
 
 	// Where a value comes from, which a task listing otherwise leaves somebody to

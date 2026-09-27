@@ -1979,7 +1979,7 @@ func (e *executor) runLoopIteration(body []string, loop *v1.Loop, stateName stri
 		// accepting placement since #253 (iterations are sequential on both
 		// drivers, and a compensation is resolved when its step succeeds), but a
 		// `loop:` written inside a `for_each` body or a `parallel` branch carries
-		// that scope's refusal straight through rather than laundering it.
+		// that scope's `async:` refusal straight through rather than laundering it.
 		undoScope: e.undoScope.IntoLoop(),
 
 		callDepth: e.callDepth,

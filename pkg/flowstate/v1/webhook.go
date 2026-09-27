@@ -21,25 +21,26 @@ import (
 //
 // Three surfaces read a [WebhookTrigger] and must say the same thing about it:
 // `flow validate` in an author's editor, `flow test` replaying a stored delivery
-// offline, and the receiver that will one day accept a live one. Two of those have
-// a line to point at and one does not, which is the shape [CheckScheduleTrigger]
-// already has and the reason these checks live here rather than in the compiler:
-// a rule with two implementations eventually has two meanings.
+// offline, and the receiver (`server.WebhookReceiver`) accepting a live one. Two
+// of those have a line to point at and one does not, which is the shape
+// [CheckScheduleTrigger] already has and the reason these checks live here rather
+// than in the compiler: a rule with two implementations eventually has two
+// meanings.
 //
-// # The bound the receiver will inherit rather than invent
+// # The bound the receiver inherits rather than invents
 //
 // A delivery body is attacker-chosen input, so it gets a byte bound *before* it is
-// read into memory — [MaxWebhookPayloadBytes]. That bound is enforced today by the
-// only reader there is, `flow test` reading a stored delivery off disk
-// (`flowtest.loadDelivery`), and it is the number the live receiver will apply to
-// a request body when the receiver lands: the cap belongs on the reader, below
-// whatever framework serves the request, for the same reason `plugin/transport.go`
-// puts the response cap on the RoundTripper rather than on the RPC library.
+// read into memory — [MaxWebhookPayloadBytes]. Both readers enforce it: `flow
+// test` reading a stored delivery off disk (`flowtest.loadDelivery`), and the live
+// receiver on a request body. The cap belongs on the reader, below whatever
+// framework serves the request, for the same reason `plugin/transport.go` puts the
+// response cap on the RoundTripper rather than on the RPC library.
 //
-// Nothing here is the receiver. There is no endpoint, no routing, and no signature
-// arithmetic in this repository yet; what exists is the declaration, its checks,
-// and the mapping from a delivery to a run's inputs — which is the part a file
-// controls and the part that is testable with no network at all.
+// Nothing here is the receiver. The endpoint and routing live in the server
+// package and the signature arithmetic in webhookverify.go; what is here is the
+// declaration, its checks, and the mapping from a delivery to a run's inputs —
+// which is the part a file controls and the part that is testable with no network
+// at all.
 
 // EventRoot is the name a trigger's expressions read the delivery through.
 //
@@ -62,8 +63,9 @@ const EventRoot = "event"
 //
 // Named here rather than left as strings in three files, so an editor's completion,
 // the mapping below and whatever documents the shape cannot disagree about the
-// spelling. Headers are the transport's metadata (a signature header is the usual
-// idempotency key), body is the decoded payload.
+// spelling. Headers are the transport's metadata (a provider's delivery id may
+// travel in one; a signature header is never an idempotency key), body is the
+// decoded payload.
 const (
 	EventHeadersField = "headers"
 	EventBodyField    = "body"
@@ -953,8 +955,8 @@ func eventRefValue(event *Value) ref.Val {
 // WebhookDeliveryID names one delivery, for provenance and for a log line.
 //
 // A digest of the evaluated idempotency key rather than the key itself, and that
-// is the whole substance of the function: the usual key *is* a signature header,
-// and this value is written into a memo and into the run's own
+// is the whole substance of the function: the key is a value read out of the
+// delivery, and this value is written into a memo and into the run's own
 // `TriggerContext.delivery_id`, both of which are durable and broadly readable
 // (invariant 8). A digest reveals nothing about the key it names.
 //

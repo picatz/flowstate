@@ -195,9 +195,9 @@ steps:
 }
 
 // TestNowDocNamesEveryPositionTheValidatorBinds keeps the prose from repeating
-// #319: the sentence names all four positions the validator binds `now` in
-// (validateWait's own three, plus the shaping scope it builds from `waiting` at
-// validate.go:1889-1897), and the old wait_until-only claim stays out.
+// #319: the sentence names all five positions the validator binds `now` in
+// (validateWait's own four, a wait's `prompt:` among them, plus the shaping
+// scope it builds from `waiting`), and the old wait_until-only claim stays out.
 func TestNowDocNamesEveryPositionTheValidatorBinds(t *testing.T) {
 	t.Parallel()
 
@@ -205,7 +205,7 @@ func TestNowDocNamesEveryPositionTheValidatorBinds(t *testing.T) {
 	for _, position := range []string{
 		"`" + waitUntilKey + ":`",
 		"`" + sleepKey + ":`",
-		"a signal's `" + signalTimeoutKey + ":`",
+		"a wait's `" + signalTimeoutKey + ":` and `prompt:`",
 		"a signal's `" + taskShapingKey + ":` shaping",
 	} {
 		assert.Contains(t, doc, position,

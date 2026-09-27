@@ -1979,7 +1979,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// The body's placement composes with the scope this loop itself sits in
 		// — see [UndoScope.IntoLoop] — rather than always being [UndoScopeLoop].
 		// A `loop:` written inside a for_each body or a parallel branch is legal,
-		// and must not become an escape hatch out of the concurrency refusal that
+		// and must not become an escape hatch out of the `async:` refusal that
 		// already applies there.
 		return runLoop(pushWaitAncestor(ctx, node.GetId()), n.Loop, scope, undo, placement.IntoLoop(), depth)
 
@@ -2013,7 +2013,8 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// sits in — see [UndoScope.IntoCall] — rather than always being
 		// [UndoScopeCall]. A call reached from inside a for_each body or a
 		// parallel branch must not become an escape hatch out of the
-		// concurrency refusal just because a call sits between the two.
+		// concurrent scope's `async:` refusal just because a call sits between
+		// the two.
 		return runCall(pushWaitAncestor(ctx, node.GetId()), node.GetId(), NodeKind(node), n.Call, scope, undo, placement.IntoCall(), depth+1)
 
 	default:
@@ -2046,14 +2047,15 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 //
 // placement is the callee's own body scope, already composed by the caller
 // through [UndoScope.IntoCall] — not always [UndoScopeCall]. A call reached
-// from the top level or from another call's body does run its callee at
-// [UndoScopeCall], which [CheckUndoPlacement] honours for the reason above; a
-// call reached from inside a `for_each` body, a `parallel` branch, or a
-// `loop:` body carries that restriction straight through, because nothing
-// about a call sitting in between changes why the enclosing scope refused
-// `undo:` in the first place. [CheckUndoPlacement] still refuses `undo:` on
-// the `call:` step itself regardless, since a call has no effect of its own —
-// the compensation belongs on the callee's steps, not on the step that
+// from the top level, from another call's body, or from a `loop:` body runs
+// its callee at [UndoScopeCall]; a call reached from inside a `for_each` body
+// or a `parallel` branch carries [UndoScopeConcurrent] straight through,
+// because nothing about a call sitting in between changes what makes the
+// enclosing scope concurrent — a callee's `undo:` is honoured there too, on
+// that child's own log, and its `async:` is refused as it would be in the
+// enclosing scope ([CheckAsyncPlacement]). [CheckUndoPlacement] refuses `undo:`
+// on the `call:` step itself regardless, since a call has no effect of its own
+// — the compensation belongs on the callee's steps, not on the step that
 // reaches them.
 func runCall(ctx context.Context, callerStep, callerKind string, call *Call, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	if err := CheckCallDepth(depth); err != nil {
@@ -2343,7 +2345,7 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 //
 // placement is the body's own scope, already composed by the caller through
 // [UndoScope.IntoLoop], which is what keeps a loop inside a `for_each` from
-// laundering the concurrency refusal.
+// laundering the concurrent scope's `async:` refusal.
 func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
 	name := loop.GetState()
 	max := LoopMaxIterations(loop)
@@ -2388,11 +2390,12 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		}
 		iterationScope = iterationScope.WithOutputs(iterationOutputs)
 
-		// The run's own log and the composed placement: a body step's `undo:` is
-		// registered onto the same stack a top-level step's is, once per iteration.
-		// Where the composed placement is still [UndoScopeConcurrent] — a loop
-		// inside a for_each body — [CheckUndoPlacement] refuses it rather than this
-		// level quietly ignoring it.
+		// The log this loop was handed and the composed placement: a body step's
+		// `undo:` is registered onto that stack once per iteration — the run-level
+		// log, or a child's private log for a loop inside a for_each body or a
+		// parallel branch, where the composed placement stays
+		// [UndoScopeConcurrent] and `async:` is refused ([CheckAsyncPlacement])
+		// rather than this level quietly ignoring it.
 		//
 		// toleratedSteps collects which body steps failed and were tolerated —
 		// the marker the attach below keys on, per iteration, so a successful
