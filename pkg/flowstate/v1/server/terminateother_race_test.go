@@ -213,8 +213,12 @@ func raceTerminateOther(t *testing.T, namespace string) (temporal client.Client,
 }
 
 // runsUnder lists every run Temporal holds under workflowID, once visibility
-// lists at least want of them.
-func runsUnder(t *testing.T, temporal client.Client, workflowID string, want int) []*workflowpb.WorkflowExecutionInfo {
+// lists at least want of them and closed among them no longer reads RUNNING.
+//
+// Visibility is eventually consistent: a run already terminated, as Get
+// reports it, can still be listed with the status it had before (#2139).
+// Waiting on the count alone let a caller read that stale status.
+func runsUnder(t *testing.T, temporal client.Client, workflowID string, want int, closed string) []*workflowpb.WorkflowExecutionInfo {
 	t.Helper()
 
 	var runs []*workflowpb.WorkflowExecutionInfo
@@ -226,8 +230,10 @@ func runsUnder(t *testing.T, temporal client.Client, workflowID string, want int
 			return false
 		}
 		runs = listed.GetExecutions()
-		return len(runs) >= want
-	}, 30*time.Second, 50*time.Millisecond, "visibility never listed %d runs of %s", want, workflowID)
+		return len(runs) >= want && slices.ContainsFunc(runs, func(run *workflowpb.WorkflowExecutionInfo) bool {
+			return run.GetExecution().GetRunId() == closed && run.GetStatus() != enums.WORKFLOW_EXECUTION_STATUS_RUNNING
+		})
+	}, 30*time.Second, 50*time.Millisecond, "visibility never listed %d runs of %s with %s closed", want, workflowID, closed)
 
 	return runs
 }
@@ -317,7 +323,7 @@ func TestTwoIdenticalTerminateOtherSubmissionsConvergeOnOneRun(t *testing.T) {
 
 	// The incumbent and the survivor, and nothing between them: a third run
 	// is a start the race made and then destroyed.
-	runs := runsUnder(t, plain, workflowID, 2)
+	runs := runsUnder(t, plain, workflowID, 2, incumbentRunID)
 	require.Len(t, runs, 2, "the race started a run nobody was answered with")
 	closed := slices.DeleteFunc(slices.Clone(runs), func(run *workflowpb.WorkflowExecutionInfo) bool {
 		return run.GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_RUNNING
