@@ -1450,6 +1450,18 @@ func (in *aliasInliner) scalarValueOf(site aliasSite, anchor *ast.AnchorNode, sp
 		return "", false
 	}
 
+	// A scalar is one token, and goccy reports a plain one's column too far
+	// right by however many spaces trail it on its line (#2119):
+	// `us-east-1 ` spans `s-east-1 `, and `true ` spans `rue `, a string.
+	// The copied bytes are held to the token's own source text for the same
+	// reason as the flow check above, and refused rather than re-found on
+	// the line, since the skew is goccy's and nothing here bounds it.
+	if _, _, isFlow := flowDelimiters(anchor.Value); !isFlow && value != tokenText(anchor.Value.GetToken()) {
+		in.refuseAlias(site.alias, "the value `&%s` names is not written where it was read; write it out by hand", anchorName(anchor))
+
+		return "", false
+	}
+
 	return value, true
 }
 
