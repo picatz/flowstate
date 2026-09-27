@@ -30,13 +30,21 @@ import (
 // hold a different checkout, or no checkout at all. See the reference package
 // for that tradeoff written out.
 //
-// The three are one triple deliberately: the language (docs/dsl), the vocabulary
-// this build can actually execute (catalog/tasks), and working files that use
-// both (docs/examples/<name>). Prose alone lets an agent write a task this binary
-// does not have; a catalog alone gives it the names and not the grammar.
+// The first three are one triple deliberately: the language (docs/language),
+// the vocabulary this build can actually execute (catalog/tasks), and working
+// files that use both (docs/examples/<name>). Prose alone lets an agent write a
+// task this binary does not have; a catalog alone gives it the names and not
+// the grammar. The fourth, docs/dsl, is the record of why the language is
+// shaped as it is: useful when an agent is asked to change or argue about the
+// language, and several times the size of the guide, so it is described as
+// what it is rather than offered as the place to learn the syntax.
 
 const (
-	// DSLResourceURI is the Flowfile language reference.
+	// LanguageResourceURI is the Flowfile language guide: every construct, its
+	// defaults and limits, and where each expression root is in scope.
+	LanguageResourceURI = "flowstate://docs/language"
+
+	// DSLResourceURI is the record of the language's design decisions.
 	DSLResourceURI = "flowstate://docs/dsl"
 
 	// CatalogResourceURI is what this build can execute.
@@ -64,17 +72,31 @@ const (
 // an agent reads would eventually stop being the one it is validated against.
 func addResources(srv *mcp.Server, local *server.FlowstateServer, deps Deps) {
 	srv.AddResource(&mcp.Resource{
+		URI:      LanguageResourceURI,
+		Name:     "flowfile-language",
+		Title:    "The Flowfile language",
+		MIMEType: MarkdownMIME,
+		Size:     int64(len(reference.Language())),
+		Description: "The Flowfile language guide: every top-level key and step kind, inputs and " +
+			"outputs, which expression roots are in scope where, CEL types and pitfalls, tasks, " +
+			"control flow, waits and signals, retries and timeouts, compensation, triggers, " +
+			"signal and debug policy, secrets, and limits, each with a working snippet. Read " +
+			"this before authoring a workflow. It is compiled into this binary, so it describes " +
+			"the engine you are about to call rather than whatever is checked out nearby.",
+	}, wrapResourceHandler(deps, LanguageResourceURI, mcpMarkdownResourceHandler(reference.Language)))
+
+	srv.AddResource(&mcp.Resource{
 		URI:      DSLResourceURI,
-		Name:     "flowfile-dsl-reference",
-		Title:    "Flowfile DSL reference",
+		Name:     "flowfile-design-decisions",
+		Title:    "Flowfile language design decisions",
 		MIMEType: MarkdownMIME,
 		Size:     int64(len(reference.DSL())),
-		Description: "The complete Flowfile language reference: the grammar, every step kind, " +
-			"expression scoping and the CEL roots in scope where, retries, timeouts, loops, " +
-			"parallel blocks, waits, secrets, and the reasoning behind each rule. Read this before " +
-			"authoring a workflow. It is compiled into this binary, so it describes the engine you " +
-			"are about to call rather than whatever is checked out nearby.",
-	}, wrapResourceHandler(deps, DSLResourceURI, mcpDSLResourceHandler()))
+		Description: "Why the Flowfile language is shaped as it is: each construct's design, the " +
+			"alternatives that were refused, and the invariants a proposal is checked against. " +
+			"Long, and organized by decision rather than by construct. Read " +
+			LanguageResourceURI + " to learn or write the language; read this to change it or " +
+			"to understand a rule's reasoning.",
+	}, wrapResourceHandler(deps, DSLResourceURI, mcpMarkdownResourceHandler(reference.DSL)))
 
 	srv.AddResource(&mcp.Resource{
 		URI:      CatalogResourceURI,
@@ -138,7 +160,7 @@ func exampleUseNote(deps Deps) string {
 	return "Execute it as-is with flowstate_run_local to see what it does."
 }
 
-// mcpDSLResourceHandler serves the language reference, whole.
+// mcpMarkdownResourceHandler serves one compiled-in document, whole.
 //
 // Whole because there is nowhere else for it to go. MCP pages a resource *list*
 // — the SDK's listResources runs through paginateList — and has no notion of a
@@ -150,16 +172,18 @@ func exampleUseNote(deps Deps) string {
 // behind a template, or to serve a summary. Sections would mean inventing an
 // index no client asked for and no heading structure guarantees — and an agent
 // that fetched the wrong three sections would author against two-thirds of the
-// grammar, which is the failure mode the reference exists to prevent. It is
-// ~110 KB, read once, and clients cache resources. Serving it whole is the
-// pragmatic answer and this is it being said plainly.
-func mcpDSLResourceHandler() mcp.ResourceHandler {
+// grammar, which is the failure mode the reference exists to prevent. A
+// document is read once and clients cache resources, so serving it whole is
+// the pragmatic answer. That is also why the guide an agent authors from is a
+// separate, smaller resource from the design record: the size a model pays for
+// is chosen by which URI it reads, not by a range it cannot ask for.
+func mcpMarkdownResourceHandler(document func() string) mcp.ResourceHandler {
 	return func(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{
 			Contents: []*mcp.ResourceContents{{
 				URI:      req.Params.URI,
 				MIMEType: MarkdownMIME,
-				Text:     reference.DSL(),
+				Text:     document(),
 			}},
 		}, nil
 	}

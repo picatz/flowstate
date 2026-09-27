@@ -3,44 +3,36 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/picatz/flowstate/badge)](https://scorecard.dev/viewer/?uri=github.com/picatz/flowstate)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Author, validate, and rehearse reliable workflows on your machine—then submit
-the same workflow for governed, durable execution on [Temporal].**
+**Write a workflow once, rehearse and test it on your machine, then run the same
+workflow durably on [Temporal], governed by identity, policy, and secrets.**
 
-Flowstate is a durable, policy-governed workload engine. It is not a CI system.
-The target is any workload that must finish correctly despite crashes, network
-failures, and long waits. It is for developers whose automation has outgrown a
-script, and for the teams responsible for running that automation safely. Model
-data pipelines,
-infrastructure changes, operational runbooks, approval gates, and long-running
-integrations with retries, timers, signals, and compensation. Authors get a fast
-local loop; platform, operations, and security teams get typed contracts,
-identity, policy, secrets, and audit at the shared execution boundary.
+Flowstate is a durable, policy-governed workload engine: for work that has to
+finish correctly despite crashes, network failures, and waits of hours or days.
+Releases that need an approval and roll out in stages; provisioning that must be
+undone when a later step fails; incident runbooks; data pipelines; integrations
+that coordinate several systems and wait on people. You describe the workload in
+a `Flowfile`, [YAML] for structure and [CEL] expressions for data and
+conditions. Flowstate validates it, compiles it into a typed [Protobuf]
+specification, and runs that specification either in-process for rehearsal or
+on Temporal, where every step is recorded and a run survives any process
+stopping.
 
-Flowstate complements CI systems, services, and orchestrators rather than asking
-one tool to replace them. CI can build and test; services and typed tasks perform
-domain work; Temporal supplies durable execution. Flowstate owns the declarative
-coordination between them, so work can start as one developer's local automation
-and move to a team-operated durable run without a second workflow definition.
+Authors get a fast local loop: validation with line and column, tests on a
+virtual clock, a step debugger, and editor and agent integration. Operators get
+authenticated callers and approvers, fail-closed policy over what workflows may
+reach, worker-side secret resolution, tenant isolation, and an audit trail.
 
-The mechanism is a readable `Flowfile`: [YAML] for structure and cost-bounded [CEL]
-for data flow and policy. Flowstate validates and compiles it into a typed,
-versioned [Protobuf] contract. The local and Temporal drivers execute that same
-contract through the same step executor; Temporal adds persistence, recovery,
-durable waits, and signals.
-
-**Start here:** [try the local quickstart](#quickstart), browse
-[validated examples](examples/README.md), or read the [architecture](docs/ARCHITECTURE.md)
-and [deployment guide](docs/DEPLOYMENT.md) before operating a shared service.
-
-**Deciding whether to start at all?** [Why Flowstate, and when not](docs/COMPARISON.md)
-puts it beside the Temporal SDK, Argo, Step Functions, CI systems, and durable
-functions in code, says what each is better at, and names the workloads that are
-not a fit.
+Flowstate works alongside CI, services, and your existing Temporal usage rather
+than replacing them. CI still builds and tests; a CI job can hand off to a
+Flowstate run that waits for an approval, rolls a release out, and undoes it if
+a stage fails, long after the job has finished. [Why Flowstate, and when
+not](docs/COMPARISON.md) compares it with the alternatives, including the
+workloads it does not fit.
 
 > [!WARNING]
-> Flowstate is super-alpha software. Expect breaking changes and evaluate it
-> accordingly; the capabilities described below are shipped today, but the
-> interfaces are not yet stable.
+> Flowstate is early software. The capabilities described here are shipped and
+> tested, but the interfaces are not yet stable: expect breaking changes, and
+> see [SUPPORT.md](SUPPORT.md).
 
 [YAML]: https://yaml.org/
 [CEL]: https://cel.dev/
@@ -49,10 +41,10 @@ not a fit.
 
 ## A Flowfile
 
-This complete workflow accepts typed inputs, uses CEL to shape data, processes a
-bounded worklist, and publishes typed outputs. A durable run uses `max_parallel`
-to process up to three items concurrently; the local driver runs those same
-iterations sequentially for deterministic rehearsal:
+This workflow takes a typed list of targets, normalizes it with a CEL
+expression, deploys each target, and reports what it did. On a durable run,
+`max_parallel` lets up to three targets deploy at once; the local driver runs
+them one at a time so a rehearsal is repeatable.
 
 ```yaml
 edition: v2026.3
@@ -83,29 +75,21 @@ outputs:
     value: ${size(steps.deploy.results)}
 ```
 
-Save it as `workflow.yaml`, then:
-
 ```console
 $ flow validate workflow.yaml
-$ flow compile workflow.yaml | jq -r '.steps[].id'
+workflow.yaml: ok
 $ flow run local workflow.yaml -o json | jq -c .runOutputs
 {"deployed":3,"targets":["api","worker","scheduler"]}
 ```
 
-`inputs.targets` is the run's typed argument. `plan` and `deploy` are stable step
-identities; `${steps.plan.value}` is both a data dependency and a join. The
-workflow's declared `outputs` are its public result. These names are distinct
-from authenticated [workload and caller identity](docs/ARCHITECTURE.md#identity-in-both-directions),
-which the server and policy engine attach and verify rather than trusting the
-Flowfile to assert.
-
-The complete Flowfiles in this README and the core language docs are compiled in
-tests. The [computed outputs](examples/computed-outputs) and
-[fan-out and parallelism](examples/fan-out-and-parallel) examples develop this
-pattern with runnable tests and commentary.
+`inputs.targets` is the run's typed argument. `plan` and `deploy` are step ids;
+reading `${steps.plan.value}` is how `deploy` gets the plan, and also what
+orders it after `plan`. The `outputs` are the run's result. Every complete
+Flowfile in this README and the core guides is compiled and linted by the test
+suite.
 
 <details>
-<summary><strong>Start smaller: one local task</strong></summary>
+<summary><strong>Start smaller: one step</strong></summary>
 
 ```yaml
 edition: v2026.3
@@ -117,31 +101,28 @@ steps:
 ```
 
 Run it with `flow run local workflow.yaml`. No server, worker, or Temporal is
-involved. A task can also run without a Flowfile through `flow task run`; see the
-[generated task catalog](docs/reference/tasks.md).
+involved. A single task can also run without a Flowfile through
+`flow task run`; the [task reference](docs/reference/tasks.md) lists what each
+task takes.
 
 </details>
 
 <details>
-<summary><strong>Go further: a durable, policy-governed approval</strong></summary>
+<summary><strong>Go further: an authenticated approval</strong></summary>
 
-The [approval-gate example](examples/approval-gate) combines a durable
-`wait_for_signal` with an allow rule over the sender's attested identity. The
-server authorizes the signal before Temporal receives it; the worker can restart
-while the run is parked, and no thread or process must remain open for the wait.
+The [approval-gate example](examples/approval-gate) waits for a durable signal
+and accepts it only from an approver with the right verified identity, who is
+not the person who asked. The server checks the sender before Temporal receives
+the signal, and no process stays open while the run waits.
 
-Rehearse its decisions, timeout, and refusal paths locally with virtual time:
+Rehearse its approvals, timeout, and refusals locally, on a virtual clock:
 
 ```console
 $ flow test examples/approval-gate/
 ```
 
-Then follow its [worked authenticated approval journey](examples/approval-gate/README.md#run-an-authenticated-approval)
-to cross the durable driver with separate requester and approver credentials.
-
-Production authorization also requires deployment-side trust and task policy.
-Read [Deployment](docs/DEPLOYMENT.md) before sharing a server or Temporal
-namespace.
+Then follow its [authenticated approval walkthrough](examples/approval-gate/README.md#run-an-authenticated-approval)
+to run it durably with separate requester and approver credentials.
 
 </details>
 
@@ -164,136 +145,112 @@ flowchart TB
   class Spec contract;
 ```
 
-The Flowfile is authoring syntax; the compiled `flowstate.v1.Workflow` is the
-execution contract. Both drivers interpret that contract through the same step
-executor. Local execution is intentionally ephemeral. A Temporal run adds durable
-history, retry and timer recovery, signals, and Continue-As-New; a versioned
-production worker also pins the interpreter used by an in-flight run. The API
-starts and observes runs through Temporal, while workers poll and complete their
-work through it. See [Architecture](docs/ARCHITECTURE.md) for the invariants and
-the precise parity boundary.
+The Flowfile is how you write a workflow; the compiled `flowstate.v1.Workflow`
+is what runs. The local driver and the Temporal driver execute that one
+specification through the same step executor, and a shared conformance suite
+holds them to the same results. Temporal adds durable history, recovery, timers,
+signals, and Continue-As-New. The API server starts and observes runs through
+Temporal, and workers execute them. [How Flowstate works](docs/CONCEPTS.md)
+explains each piece.
 
 ## Quickstart
 
-Install the current CLI with Go:
+Install the CLI (Go 1.27 or newer):
 
 ```console
 $ go install github.com/picatz/flowstate/cmd/flow@latest
 ```
 
-This installs `flow` in `$(go env GOBIN)` when `GOBIN` is set, otherwise in
-`$(go env GOPATH)/bin`. From a repository checkout, each command below may
-instead be written as `go run ./cmd/flow ...`.
-
-### 1. Scaffold and inspect
+Scaffold a workflow with its test, check it, and run it locally:
 
 ```console
 $ flow init my-workflow
 $ flow validate my-workflow/workflow.yaml
-$ flow compile my-workflow/workflow.yaml | jq .name
-"my-workflow"
+my-workflow/workflow.yaml: ok
 $ flow test my-workflow
 PASS  my-workflow/workflow.test.yaml: the greeting uses the input it was given
-```
-
-`flow init` creates a workflow and its `*.test.yaml`. Validation and compilation
-execute nothing. Tests stub tasks and signals and use a virtual clock, so they
-also need no server or network.
-
-### 2. Run locally
-
-```console
 $ flow run local my-workflow/workflow.yaml
 running locally
 INFO hello, world
 COMPLETED workflow my-workflow
 ```
 
-Pass typed arguments with `--input name=value` or `--input-file inputs.json`.
-When stdout is piped, a local run emits the same stable result document as a
-durable run.
-
-### 3. Run durably
-
-Start the development stack in one terminal:
+Run it durably. `flow server dev` starts a Temporal development server, the
+Flowstate API server, and a worker in one process on loopback; the first launch
+downloads the Temporal CLI. In another terminal:
 
 ```console
 $ flow server dev
 ```
 
-It starts an ephemeral Temporal development server, Flowstate API server, and
-worker on loopback. No separate Temporal installation is required: on its first
-launch, this command downloads the Temporal CLI and caches it, so that first
-launch needs network access and later launches do not. In another terminal:
-
 ```console
 $ flow run my-workflow/workflow.yaml
 ```
 
-`flow run` always means the server; it never falls back to local execution. Use
-`flow watch`, `flow get`, and `flow timeline` to follow or inspect a run, and
-`flow signal`, `flow cancel`, or `flow terminate` to act on it. For persistent,
-authenticated, multi-tenant, or Temporal Cloud setups, use the
-[deployment guide](docs/DEPLOYMENT.md).
+`flow run` always means the server and never falls back to running locally.
+Follow and act on runs with `flow watch`, `flow get`, `flow timeline`,
+`flow signal`, `flow cancel`, and `flow list`.
+
+[Get started](docs/GETTING_STARTED.md) takes this further in twenty minutes: a
+release-approval workflow, its tests, the debugger, and a durable run that
+survives a restart while it waits for an approval.
 
 ## What you can build today
 
-| Area | Current capabilities | Go deeper |
+| Area | Shipped | Go deeper |
 | --- | --- | --- |
-| **Author** | Strict YAML grammar; typed inputs and outputs; cost-bounded CEL; source diagnostics; formatting, linting, migration, tests, LSP, and debugger | [Language](docs/DSL.md) · [Style](docs/STYLE.md) · [Editors](docs/EDITORS.md) |
-| **Compose** | Data dependencies by step ID; `if`, checked `switch`, bounded `for_each`, `parallel`, `async`, state-carrying `loop`, and isolated `call` with optional digest pinning | [Control-flow examples](examples/README.md) · [Language reference](docs/DSL.md) |
-| **Execute** | Local rehearsal; Temporal activities, retries, timeouts, durable timers and signals, schedules, webhooks, Continue-As-New, cancellation, and saga compensation | [Execution model](docs/ARCHITECTURE.md#execution-model) · [Use cases](docs/USE_CASES.md) |
-| **Extend** | Typed out-of-process tasks and secret providers over ConnectRPC; Docker, Git, GitHub, JOSE, OCI, OIDC, SCIM, Slack, SQL, SSH, VCS, and bounded Codex plugins; curated Go embedding API | [Plugins](docs/PLUGINS.md) · [Embedding](docs/EMBEDDING.md) |
-| **Govern** | Authenticated caller/workload/signal identity; CEL authorization, task and default-deny egress policy; worker-side secret resolution; tenant routing; audit records | [Deployment](docs/DEPLOYMENT.md) · [Architecture](docs/ARCHITECTURE.md#deployment-portability) |
-| **Operate** | ConnectRPC lifecycle and schedule APIs; terminal and JSON output; run listing, watch, timeline, cancellation; OpenTelemetry traces, metrics, and logs | [CLI reference](docs/reference/cli.md) · [Observability example](examples/observability) |
+| **Author** | Typed inputs and outputs; cost-bounded CEL; positioned diagnostics; `flow fmt`, `flow fix`, `flow lint`; tests on a virtual clock; a step debugger; LSP and MCP servers | [Language](docs/LANGUAGE.md) · [Testing](docs/TESTING.md) · [Editors](docs/EDITORS.md) |
+| **Compose** | Data flow by step reference; `if`, checked `switch`, bounded `for_each`, `parallel`, `async`, state-carrying `loop`, and isolated `call` with optional digest pinning | [Language](docs/LANGUAGE.md#control-flow) · [Examples](examples/README.md) |
+| **Execute** | Local rehearsal; durable runs on Temporal with retries, timeouts, durable timers and signals, schedules, webhooks, Continue-As-New, cancellation, and saga compensation | [Concepts](docs/CONCEPTS.md) · [Use cases](docs/USE_CASES.md) |
+| **Govern** | Authenticated callers and signal senders; per-workflow approval policy; egress that refuses internal addresses by default; CEL policy over egress, tasks, and secrets, with secrets denied until allowed; short-lived federated credentials; tenant routing; audit records | [Secrets](docs/SECRETS.md) · [Deployment](docs/DEPLOYMENT.md) · [Threat model](THREAT_MODEL.md) |
+| **Extend** | Out-of-process plugins over a typed protocol, with first-party Docker, Git, GitHub, JOSE, OCI, OIDC, SCIM, Slack, SQL, SSH, VCS, and Codex plugins; a Go embedding package | [Plugins](docs/PLUGINS.md) · [Embedding](docs/EMBEDDING.md) |
+| **Operate** | A ConnectRPC API; terminal and JSON output; run listing, watching, timelines, and cancellation; OpenTelemetry traces, metrics, and logs | [API](docs/API.md) · [CLI reference](docs/reference/cli.md) · [Observability example](examples/observability) |
 
-Flowstate currently ships the capabilities above. Remote plugin distribution and
-hosted plugins, consuming MCP services as capabilities, chat integrations, generic
-LLM tasks, and additional Temporal surfaces are future directions—not current
-product claims. They are tracked in [Vision](docs/VISION.md).
+Fetching plugins from a registry, hosted plugins, consuming MCP servers as
+capabilities, chat-based approvals, and a general LLM task are directions, not
+shipped features. [Vision](docs/VISION.md) records them.
 
 ## Integrate it
 
-- **ConnectRPC and Protobuf:** the control plane is defined in
-  [`proto/flowstate/v1/service.proto`](proto/flowstate/v1/service.proto), usable
-  over HTTP/1.1 or HTTP/2 by generated clients and gRPC-compatible tooling.
-- **Plugins:** workers discover explicit local executables that advertise typed
-  task descriptors. Validation, completion, execution, and generated docs read
-  the same catalog. Plugins are trusted worker-side code, not a sandbox boundary.
-- **Go embedding:** [`pkg/flowstate/embed`](pkg/flowstate/embed) compiles
-  Flowfiles, registers application tasks, and runs locally or on a Temporal
-  worker owned by the embedding program.
-- **Agents and MCP:** `flow mcp` exposes authoring and control-plane tools over
-  stdio; `flow mcp serve` exposes an authorized HTTP subset. The tool roster is
-  generated from the service descriptor. See [MCP reference](docs/reference/mcp.md)
-  and [HTTP authorization](docs/MCP_AUTHORIZATION.md).
+- **API.** Every server operation is an RPC on `flowstate.v1.WorkflowService`,
+  defined in [`proto/flowstate/v1/service.proto`](proto/flowstate/v1/service.proto).
+  Call it as JSON over HTTP with curl, with the generated Go client, or with a
+  client you generate for another language. See [the API guide](docs/API.md).
+- **Plugins.** A worker launches plugin executables you name and learns their
+  typed tasks from them; validation, completion, and generated docs read the
+  same schema. A plugin is trusted code, not a sandbox.
+- **Go embedding.** [`pkg/flowstate/embed`](pkg/flowstate/embed) compiles
+  Flowfiles, registers Go functions as tasks, and runs workflows in-process or
+  on a Temporal worker your program owns.
+- **Agents.** `flow mcp` gives an MCP client the language guide, the task
+  catalog, validation, tests, a scripted debugger, local rehearsal, and the
+  control plane. See [Using Flowstate from an agent](docs/MCP.md) and the
+  generated [MCP tool reference](docs/reference/mcp.md).
 
-## Choose your next document
+## Find your way
 
-| Goal | Start here |
+| You want to | Start with |
 | --- | --- |
-| Write a Flowfile | [Language decisions and reference](docs/DSL.md) · [validated examples](examples/README.md) |
-| Find a task, CEL function, command, or setting | [Tasks](docs/reference/tasks.md) · [CEL](docs/reference/cel.md) · [CLI](docs/reference/cli.md) · [environment](docs/reference/envvars.md) |
-| Understand execution and security boundaries | [Architecture](docs/ARCHITECTURE.md) · [Deployment](docs/DEPLOYMENT.md) |
-| Build a plugin or embed the engine | [Plugins](docs/PLUGINS.md) · [Embedding](docs/EMBEDDING.md) |
-| Use an editor or agent | [Editors](docs/EDITORS.md) · [MCP](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) |
-| Browse everything | [Documentation index](docs/README.md) |
+| Try it | [Get started](docs/GETTING_STARTED.md) |
+| Understand the model | [How Flowstate works](docs/CONCEPTS.md) |
+| Write workflows | [The Flowfile language](docs/LANGUAGE.md) · [Examples](examples/README.md) · [Task reference](docs/reference/tasks.md) · [CEL reference](docs/reference/cel.md) |
+| Test and debug them | [Testing](docs/TESTING.md) · [Debugging](docs/DEBUGGING.md) · [Editors](docs/EDITORS.md) |
+| Run Flowstate for a team | [Deployment](docs/DEPLOYMENT.md) · [Secrets](docs/SECRETS.md) · [CLI reference](docs/reference/cli.md) |
+| Build on it | [API](docs/API.md) · [Embedding](docs/EMBEDDING.md) · [Plugins](docs/PLUGINS.md) · [MCP](docs/MCP.md) |
+| See every document | [Documentation index](docs/README.md) |
 
 ## Development
 
-Contributors start with [CONTRIBUTING.md](CONTRIBUTING.md); coding agents start with [AGENTS.md](AGENTS.md). Both apply the same gate.
-
-The repository checks complete documentation Flowfiles against the compiler,
-tests the examples, verifies the docs index, and regenerates CLI, task, CEL,
-diagnostic, environment, and MCP references from their owning code and schemas.
+Contributors start with [CONTRIBUTING.md](CONTRIBUTING.md); coding agents start
+with [AGENTS.md](AGENTS.md). Both apply the same gate:
 
 ```console
 $ go run ./tools/gate   # checks reachable from the current diff
 $ make check            # full CI-parity suite
 ```
 
-Read the [architecture invariants](docs/ARCHITECTURE.md#invariants) before changing
-the engine.
+Read the [architecture invariants](docs/ARCHITECTURE.md#invariants) before
+changing the engine.
 
 ## License
 

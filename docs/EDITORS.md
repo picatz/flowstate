@@ -13,12 +13,12 @@ that only ever offers things the engine will accept.
 | Feature | What you get |
 | --- | --- |
 | **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, an input a task used to accept and no longer does — reported as a key that can be deleted rather than as a misspelling of something else, malformed step timeouts and retry intervals, a `log:` message that interpolates an input declared `sensitive:` — the `sensitive-in-log` lint, which names what to log instead — a step that is no kind of work or more than one, a step named the retired bare way rather than under `steps.` — reported as a migration with the command that performs it, not as an unknown name — and an `edition:` this build does not compile, which is reported on its own since every other complaint would be describing the wrong grammar. |
-| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces when the registry declares one (an output shaped by the step's own `outputs:` has no type to claim), and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a wait's expressions (`wait_until:`, an expression-valued `sleep:`, a signal's `timeout:`) and why it is bound only there; what a `${secret('scheme:name')}` reference names; what each `Flowfile` key means. |
+| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces when the registry declares one (an output shaped by the step's own `outputs:` has no type to claim), and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a wait's own expressions and why it is bound only there; what a `${secret('scheme:name')}` reference names; what each `Flowfile` key means. |
 | **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
 | **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration, from a loop's bare iterator name to the loop that binds it, and from a `call:` target to the called Flowfile — opened at its `name:`, and resolved relative to the calling file's own directory by the same rule the compiler uses, so the file you arrive in is the file the run compiles. A call the compiler would refuse, or one naming a file that is not there, navigates nowhere rather than somewhere wrong. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
 | **Formatting** | Rewrites the whole document into the form `flow fmt` and `flowfile.Format` write. Comments are kept, carried onto the rewritten document at the key, value or list entry they were written against; whitespace is not, so a blank line, a mapping's key order, and a string literal's quote style are all normalized away. A document that does not compile draws no edit at all, never a partial or guessed one, and neither does one carrying a comment the rewrite cannot keep. Because of the rewrite, this is opt-in in most editors' configuration rather than run on every save; see the per-editor notes below for how to bind it deliberately. |
-| **Code actions** | The migration `flow fix` performs, offered from the editor. Two kinds of the same thing: a `source.fixAll` action titled *Migrate to edition …*, and a `quickfix` on each line the migration rewrites, so it is reachable from the diagnostic that told you to run the command. Both carry one whole-document edit holding exactly what `flow fix` writes — comments and untouched lines copied through byte for byte, unlike formatting. A document already in the current edition, one that does not parse, and one where the rewriter *refuses* — a `task:` written in flow style, a binding through an alias it cannot resolve — each draw no action at all, because the only edit that could be offered there is the guess `flow fix` declined to make. |
+| **Code actions** | A quick fix for each diagnostic the validator can repair itself, such as renaming a misspelled key to the one it meant, and the migration `flow fix` performs. The migration comes in two kinds of the same thing: a `source.fixAll` action titled *Migrate to edition …*, and a `quickfix` on each line the migration rewrites, so it is reachable from the diagnostic that told you to run the command. Both carry one whole-document edit holding exactly what `flow fix` writes — comments and untouched lines copied through byte for byte, unlike formatting. A document already in the current edition, one that does not parse, and one where the rewriter *refuses* — a `task:` written in flow style, a binding through an alias it cannot resolve — each draw no action at all, because the only edit that could be offered there is the guess `flow fix` declined to make. |
 
 Everything above is read from the task registry and the Protobuf schema at the
 moment you ask for it, so a task added to the engine shows up in your editor with
@@ -64,10 +64,11 @@ each level is answered from a different place:
 
 Two things follow from the split that are easy to miss. `now` is offered inside a
 wait's expressions and nowhere else: rightly not in a task input, where the
-validator refuses it because a task input is resolved inside an activity that has
-no clock surviving a retry. The set matches what validates: all three of a wait's
-expressions (`wait_until:`, a computed `sleep:`, and a signal's `timeout:`)
-plus the signal's `outputs:` shaping, which is evaluated in the wait's own scope.
+validator refuses it because a task input may be resolved inside an activity,
+where each retry would read a different time. Completion offers it in
+`wait_until:`, a computed `sleep:`, a wait's `timeout:`, and a signal's
+`outputs:` shaping. The validator also accepts it in a wait's `prompt:`, where
+completion and hover do not offer it yet.
 
 And a bare qualifier gets nothing: `${item.` could only be a binding, whose element
 type is not statically known, or a step reference written the retired way — and
@@ -593,12 +594,20 @@ breakpoints named after a step. A line breakpoint is answered rather than
 ignored, unverified and carrying that reason, so an editor shows a hollow marker
 instead of a filled one you would wait at forever.
 
-Two more consequences of the same seam, so nothing here is discovered: stack
-frames name the current step and every `call:` site that reached it, but cannot
-be navigated to; only the innermost frame has a readable scope because it is the
-one actually paused. A run is one thread even where a `parallel:` block is
-running several steps at once — the debugger deliberately does not stop inside
-one.
+Two more consequences of the same seam: stack frames name the current step and
+every `call:` site that reached it, but cannot be navigated to; only the
+innermost frame has a readable scope because it is the one actually paused. A
+run is one thread even where a `parallel:` block is running several steps at
+once, and the debugger does not stop inside one.
+
+**What a launch can say.** A launch request reads `program` and
+`revealSensitive`, nothing else. The run starts with no inputs and no signals,
+so a workflow with a required input that has no default cannot be debugged
+through `flow dap` today, and a `wait_for_signal:` step can only time out. Use
+`flow test --debug` on a test case, which supplies both, or
+`flow run local --debug` with `--input` and `--signal`. `attach` is treated as
+`launch`: it starts a local run, and cannot attach to a durable one. The
+debugger inspects values but cannot change them.
 
 ### Visual Studio Code
 
@@ -813,19 +822,12 @@ which would cost them their trust in the page.
 
 ## Agents
 
-An AI agent editing Flowfiles is not an editor client, and pointing one at
-`flow lsp` is the wrong shape: LSP answers questions about a buffer at a
-position, and an agent has no cursor. It wants the same guarantees through a
-protocol built for it, which is `flow mcp` — one tool per RPC with schemas
-derived from the protobuf schema, `flowstate_run_local` to rehearse a file in
-process, and read-only resources carrying the DSL reference, the task catalog,
-and the examples.
-
-The validation is the same validation. `flow validate`, the language server's
-`flowfile` diagnostics, and `flowstate_validate` are one implementation with
-three front doors, so an agent and the person reviewing its pull request cannot
-be told different things about the same file.
-
-Client configuration — Claude Code, Claude Desktop, and the generic stdio shape —
-is in [CLI.md](CLI.md#flow-mcp-the-same-surface-for-an-agent), along with what a
-local run may reach and the authoring loop the surface is shaped around.
+An AI agent editing Flowfiles is not an editor client: the language server
+answers questions about a buffer at a cursor position, and an agent has no
+cursor. `flow mcp` gives an agent the same validation through the Model Context
+Protocol, along with the language guide, the task catalog, tests, a scripted
+debugger, and local rehearsal. `flow validate`, the language server's
+diagnostics, and `flowstate_validate` are one implementation, so an agent and the
+person reviewing its change are told the same things about the same file.
+[Using Flowstate from an agent](MCP.md) covers client configuration and the
+authoring loop.

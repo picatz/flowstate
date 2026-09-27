@@ -35,7 +35,7 @@ Local execution is an ephemeral rehearsal, not a durable-run simulation. The
 local and Temporal drivers share the compiled model and step semantics; Temporal
 adds persisted history, crash recovery, durable timers and signals, and worker
 versioning. A production claim is made only where a durable-driver test or the
-adjacent README says so. Follow the [durable quickstart](../README.md#3-run-durably)
+adjacent README says so. Follow the [durable run in Get started](../docs/GETTING_STARTED.md#7-run-it-durably)
 before using `flow run` without `local`.
 
 ## Choose a journey
@@ -52,6 +52,7 @@ inventory below remains the source of truth for every directory.
 | Journey | Start with | Role |
 | --- | --- | --- |
 | Hello and the authoring loop | [hello-world](hello-world), then [hello-world-multi-step](hello-world-multi-step) | first-run tutorial |
+| A first real workflow, local then durable | [release-approval](release-approval), with the [getting-started tutorial](../docs/GETTING_STARTED.md) | first-run tutorial |
 | Typed inputs, outputs, and CEL | [parameterized-deploy](parameterized-deploy), [computed-outputs](computed-outputs), [expressions](expressions) | focused feature demonstration |
 | Refusing a value rather than carrying it | [enum-input](enum-input), [alert-title-bound](alert-title-bound), [utilization-guard](utilization-guard) | focused feature demonstration |
 | Branching and optional values | [webhook-routing](webhook-routing), [optional-dispatch](optional-dispatch) | focused feature demonstration |
@@ -103,6 +104,7 @@ says otherwise.
 | Example | Shows | Network |
 | --- | --- | --- |
 | [hello-world](hello-world) | The smallest possible workflow: one `log:` step | no |
+| [release-approval](release-approval) | The [getting-started tutorial](../docs/GETTING_STARTED.md)'s workflow: typed inputs, a `value:` step, a `wait_for_signal:` approval with a timeout, a gated `for_each`, and declared `outputs:`, with tests for approval, rejection, and silence | no |
 | [hello-world-multi-step](hello-world-multi-step) | Several steps in order, each reading a value named once at the top | no |
 | [logging](logging) | `log:` — a message for a person to read, with `level:` and `fields:`, and no outputs | no |
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
