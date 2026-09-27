@@ -2749,7 +2749,11 @@ flow server --insecure-no-auth`,
 			"`flow server --deployment-name` names). With `--build-id`, pins every in-flight run to the "+
 			"interpreter version it started on; a run moves to the current version only at continue-as-new")
 	workerCmd.Flags().String("build-id", os.Getenv("FLOWSTATE_BUILD_ID"),
+<<<<<<< HEAD
 		"version identifier for this worker's binary, unique per build. Required with `--temporal-deployment-name`")
+=======
+		"version identifier for this worker's binary, unique per build. Required with `--deployment-name`")
+>>>>>>> origin/main
 	workerCmd.Flags().Bool(allowUnversionedFlag, false,
 		"start without a Worker Deployment version, accepting that deploying a different binary "+
 			"changes what runs already in flight compute; for local development")
