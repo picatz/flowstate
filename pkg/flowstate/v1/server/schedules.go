@@ -74,6 +74,22 @@ import (
 // delete`.
 const schedulePrefix = "flowstate-schedule-"
 
+// maxScheduleNameLen is `CreateScheduleRequest.name`'s schema bound
+// (`proto/flowstate/v1/schedule.proto`, `max_len: 128`). There is no Go-side
+// twin to cite, so it is named here for the assertion below.
+const maxScheduleNameLen = 128
+
+// scheduleFiringSuffixLen is what Temporal appends to a schedule's id to name
+// the run one firing starts: a dash and the nominal time as RFC 3339 in UTC.
+const scheduleFiringSuffixLen = len("-2006-01-02T15:04:05Z")
+
+// A compile-time check: the longest id of a run a schedule started — the
+// prefix, the longest namespace, the separator, the longest schedule name (an
+// empty one takes the workflow's, bounded by [v1.MaxWorkflowNameLen]) and
+// Temporal's firing suffix — fits under [v1.MaxWorkflowIDLen], or a scheduled
+// run would be one no caller could Get, Signal, Cancel or Terminate.
+var _ [v1.MaxWorkflowIDLen - len(schedulePrefix) - auth.MaxNamespaceLen - len("_") - max(maxScheduleNameLen, v1.MaxWorkflowNameLen) - scheduleFiringSuffixLen]struct{}
+
 // scheduleIDFor is the Temporal schedule id a tenant's schedule name maps to.
 //
 // It does not check the namespace, and deliberately does not: the grammar the

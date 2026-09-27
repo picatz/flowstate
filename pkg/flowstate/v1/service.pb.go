@@ -262,7 +262,8 @@ type RunResponse struct {
 	// addressing a run takes. It is `flowstate-workflow-<uuid>` for an ordinary
 	// run, `flowstate-request-<hex>` for one started with
 	// `RunRequest.request_id`, and `flowstate-entity-<namespace>_<entity_key>`
-	// for one started with `RunRequest.entity_key`. At most 1024 bytes.
+	// for one started with `RunRequest.entity_key`. At most 256 bytes, the
+	// bound every request addressing a run holds its `workflow_id` to.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	// RunId is the UUID of this execution of the workload. A workload that
 	// continues as new gets a new run id per segment, so address a workload by
@@ -436,7 +437,7 @@ func (*RunResponse_Outputs) isRunResponse_Kind() {}
 type GetRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WorkflowId identifies the workload, as Run's `workflow_id` reports it.
-	// The caller may read only runs in its own tenant.
+	// 1 to 256 bytes. The caller may read only runs in its own tenant.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	// RunId optionally pins the read to one run of the workload, as a UUID.
 	// Unset reads the latest run, which is what a caller holding only a
@@ -747,14 +748,14 @@ func (*GetResponse_Outputs) isGetResponse_Kind() {}
 type SignalRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WorkflowId identifies the workload to signal, as Run's `workflow_id`
-	// reports it. 1 to 256 characters.
+	// reports it. 1 to 256 bytes.
 	//
 	// A caller may address only runs in its own tenant. The namespace always
 	// comes from the caller's authenticated identity, never from the request.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	// RunId optionally pins the signal to one run of the workload. Leave it
-	// unset: unset addresses whichever run is current, and a pinned run id is
-	// refused once the workload has continued as new.
+	// RunId optionally pins the signal to one run of the workload, as a UUID.
+	// Leave it empty: empty addresses whichever run is current, and a pinned run
+	// id is refused once the workload has continued as new.
 	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// Name is the signal being sent: the `name:` the waiting `wait_for_signal:`
 	// step declared, which Get reports as each open gate's signal name.
@@ -1064,11 +1065,11 @@ func (x *SignalWithStartResponse) GetSpecificationAsSubmitted() bool {
 type CancelRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WorkflowId identifies the workload to cancel, as Run's `workflow_id`
-	// reports it. 1 to 256 characters. The caller may address only runs in its
+	// reports it. 1 to 256 bytes. The caller may address only runs in its
 	// own tenant.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	// RunId optionally pins the request to one run of the workload. Unset
-	// addresses whichever run is current, which is usually what is wanted.
+	// RunId optionally pins the request to one run of the workload, as a UUID.
+	// Empty addresses whichever run is current, which is usually what is wanted.
 	RunId         string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1164,11 +1165,11 @@ func (*CancelResponse) Descriptor() ([]byte, []int) {
 type TerminateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WorkflowId identifies the workload to terminate, as Run's `workflow_id`
-	// reports it. 1 to 256 characters. The caller may address only runs in its
+	// reports it. 1 to 256 bytes. The caller may address only runs in its
 	// own tenant.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	// RunId optionally pins the request to one run of the workload. Unset
-	// addresses whichever run is current.
+	// RunId optionally pins the request to one run of the workload, as a UUID.
+	// Empty addresses whichever run is current.
 	RunId string `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
 	// Reason is recorded on the terminated execution, at most 1024 characters.
 	// A terminated run records nothing else about why it stopped, so this is the
@@ -1810,9 +1811,10 @@ func (x *ValidateResponse) GetReport() *ValidationReport {
 type GetTimelineRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WorkflowId is the workload to read, as Run's `workflow_id` reports it. 1 to
-	// 1024 characters. The caller may read only runs in its own tenant.
+	// 256 bytes. The caller may read only runs in its own tenant.
 	WorkflowId string `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	// RunId names one segment of the workload. Empty reads the latest segment.
+	// RunId names one segment of the workload, as a UUID. Empty reads the
+	// latest segment.
 	//
 	// A workload that continued as new has a timeline per segment; walk the
 	// chain with the answer's `first_run_id`, `next_run_id` and
@@ -2456,7 +2458,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\v_request_id\"\xab\x05\n" +
 	"\vRunResponse\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
 	"workflowId\x12\"\n" +
 	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xc8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12G\n" +
 	"\x06status\x18\x03 \x01(\x0e2 .flowstate.v1.RunResponse.StatusB\r\xbaH\n" +
@@ -2478,11 +2480,11 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x11STATUS_TERMINATED\x10\x05\x12\x14\n" +
 	"\x10STATUS_TIMED_OUT\x10\x06B\r\n" +
 	"\x04kind\x12\x05\xbaH\x02\b\x01B\x1d\n" +
-	"\x1b_specification_as_submitted\"j\n" +
+	"\x1b_specification_as_submitted\"q\n" +
 	"\n" +
-	"GetRequest\x12+\n" +
-	"\vworkflow_id\x18\x01 \x01(\tB\n" +
-	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\n" +
+	"GetRequest\x122\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
 	"workflowId\x12$\n" +
 	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01H\x00R\x05runId\x88\x01\x01B\t\n" +
 	"\a_run_id\"\xa4\x06\n" +
@@ -2509,12 +2511,12 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\ffirst_run_id\x18\x0e \x01(\tR\n" +
 	"firstRunId\x12\x1a\n" +
 	"\bsegments\x18\x0f \x01(\rR\bsegmentsB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xde\x01\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xe1\x01\n" +
 	"\rSignalRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80\x02R\n" +
-	"workflowId\x12\x1f\n" +
-	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05runId\x12B\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12B\n" +
 	"\x04name\x18\x03 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\x04name\x124\n" +
 	"\apayload\x18\x04 \x01(\v2\x1a.flowstate.v1.Node.OutputsR\apayload\"\x10\n" +
 	"\x0eSignalResponse\"\xc8\x03\n" +
@@ -2535,18 +2537,18 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x18\n" +
 	"\acreated\x18\x03 \x01(\bR\acreated\x12A\n" +
 	"\x1aspecification_as_submitted\x18\x04 \x01(\bH\x00R\x18specificationAsSubmitted\x88\x01\x01B\x1d\n" +
-	"\x1b_specification_as_submitted\"d\n" +
+	"\x1b_specification_as_submitted\"g\n" +
 	"\rCancelRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80\x02R\n" +
-	"workflowId\x12\x1f\n" +
-	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05runId\"\x10\n" +
-	"\x0eCancelResponse\"\x89\x01\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\"\x10\n" +
+	"\x0eCancelResponse\"\x8c\x01\n" +
 	"\x10TerminateRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80\x02R\n" +
-	"workflowId\x12\x1f\n" +
-	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05runId\x12 \n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12 \n" +
 	"\x06reason\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06reason\"\x13\n" +
 	"\x11TerminateResponse\"\x81\x01\n" +
 	"\vListRequest\x12'\n" +
@@ -2590,12 +2592,12 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x05files\x18\x01 \x03(\v2\x18.flowstate.v1.SourceFileB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10@R\x05files\"J\n" +
 	"\x10ValidateResponse\x126\n" +
-	"\x06report\x18\x01 \x01(\v2\x1e.flowstate.v1.ValidationReportR\x06report\"\xc5\x01\n" +
+	"\x06report\x18\x01 \x01(\v2\x1e.flowstate.v1.ValidationReportR\x06report\"\xc8\x01\n" +
 	"\x12GetTimelineRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\n" +
-	"workflowId\x12\x1f\n" +
-	"\x06run_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x05runId\x12+\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12+\n" +
 	"\vmax_entries\x18\x03 \x01(\x05B\n" +
 	"\xbaH\a\x1a\x05\x18\x88'(\x00R\n" +
 	"maxEntries\x12-\n" +

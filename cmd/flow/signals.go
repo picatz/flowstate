@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -370,8 +372,15 @@ func runSignal(cmd *cobra.Command, args []string) error {
 	if err := v1.Validate(request); err != nil {
 		// The rule is the schema's, but a pattern is not a thing to hand somebody
 		// as advice, so the hint says what the rule is for rather than restating it.
-		return fmt.Errorf("%w\n  a signal name is the one its wait_for_signal step declares: "+
-			"a letter or digit, then letters, digits, - or _", err)
+		// Only a violation on the name earns it: a malformed --run-id is refused by
+		// the same call, and a hint about signal names would send that reader to
+		// the wrong argument.
+		if invalid, ok := errors.AsType[*v1.ValidationError](err); ok &&
+			slices.ContainsFunc(invalid.Violations, func(v v1.Violation) bool { return v.Field == "name" }) {
+			return fmt.Errorf("%w\n  a signal name is the one its wait_for_signal step declares: "+
+				"a letter or digit, then letters, digits, - or _", err)
+		}
+		return err
 	}
 
 	if _, err := newWorkflowServiceClient(server).Signal(cmd.Context(), connect.NewRequest(request)); err != nil {

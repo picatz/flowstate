@@ -2272,6 +2272,13 @@ func manualStartPrincipal(ctx context.Context) string {
 
 // Get retrieves the status of a workflow execution by its ID (and optionally its run ID).
 func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRequest]) (*connect.Response[v1.GetResponse], error) {
+	// Validated here rather than left to the CLI's protovalidate interceptor,
+	// for the reason [FlowstateServer.Run] gives: an embedder that builds a
+	// server without it would otherwise send an unbounded id to Temporal.
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Authorized before anything is read. This previously described the run and
 	// returned its status to whoever asked, so any caller who knew or guessed an
 	// id could read another tenant's run — and a completed run returns its whole

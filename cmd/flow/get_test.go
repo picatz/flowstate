@@ -411,7 +411,22 @@ func TestGetRefusesARunIDThatIsNotAUUIDBeforeSending(t *testing.T) {
 
 	err := runGet(cmd, []string{"flowstate-workflow-3f7c"})
 	require.Error(t, err, "a run id the schema forbids was accepted")
+	require.ErrorContains(t, err, "a run id is the UUID")
 	require.Nil(t, fake.gotGet, "an invalid run id was sent anyway")
+}
+
+// TestGetRefusesAnOverlongWorkflowIDWithoutRunIDAdvice checks that the run-id
+// hint follows a violation on run_id alone: no run id was given here, so
+// advice about one would point at the wrong argument.
+func TestGetRefusesAnOverlongWorkflowIDWithoutRunIDAdvice(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _, _ := getCommand(t)
+
+	err := runGet(cmd, []string{strings.Repeat("w", v1.MaxWorkflowIDLen+1)})
+	require.ErrorContains(t, err, "workflow_id")
+	require.NotContains(t, err.Error(), "run id")
+	require.Nil(t, fake.gotGet, "an overlong workflow id was sent anyway")
 }
 
 // TestGetWithoutARunIDLeavesItAbsent checks that unset means "whichever attempt is

@@ -430,14 +430,14 @@ func TestSignalReachesTheServer(t *testing.T) {
 	cmd, out := signalCommand(t)
 
 	require.NoError(t, cmd.Flags().Set("data", `{"approved": true, "by": "someone@example.com"}`))
-	require.NoError(t, cmd.Flags().Set("run-id", "run-1"))
+	require.NoError(t, cmd.Flags().Set("run-id", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"))
 
 	require.NoError(t, runSignal(cmd, []string{"deploy-abc123", "deploy-approved"}))
 
 	require.NotNil(t, fake.got, "nothing reached the server")
 	require.Equal(t, "deploy-abc123", fake.got.GetWorkflowId())
 	require.Equal(t, "deploy-approved", fake.got.GetName())
-	require.Equal(t, "run-1", fake.got.GetRunId(), "--run-id was dropped")
+	require.Equal(t, "6ba7b811-9dad-11d1-80b4-00c04fd430c8", fake.got.GetRunId(), "--run-id was dropped")
 
 	// The payload is what a later step reads as ${approval.approved}, so its
 	// shape surviving the trip is the whole point of sending it.
@@ -499,6 +499,26 @@ func TestSignalRefusesAnInvalidNameBeforeSending(t *testing.T) {
 	err := runSignal(cmd, []string{"deploy-abc123", "not a signal name"})
 	require.Error(t, err, "a signal name the schema forbids was accepted")
 	require.Nil(t, fake.got, "an invalid signal name was sent anyway")
+	require.ErrorContains(t, err, "wait_for_signal step declares",
+		"a refused name should say what a signal name is")
+}
+
+// TestSignalRefusesAMalformedRunIDWithoutTheNameHint checks that the hint about
+// signal names rides only a violation on the name: a run id that is not a UUID
+// is refused by the same validation, and pointing its reader at the signal name
+// would send them to the wrong argument.
+func TestSignalRefusesAMalformedRunIDWithoutTheNameHint(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _ := signalCommand(t)
+	require.NoError(t, cmd.Flags().Set("run-id", "run-7"))
+
+	err := runSignal(cmd, []string{"deploy-abc123", "approved"})
+	require.Error(t, err, "a run id that is not a UUID was accepted")
+	require.Nil(t, fake.got, "a malformed run id was sent anyway")
+	require.ErrorContains(t, err, "run_id")
+	require.NotContains(t, err.Error(), "wait_for_signal step declares",
+		"a run id refusal carried the signal-name hint")
 }
 
 // TestSignalOnAnUnaddressableRunNamesEveryCause checks the message a person gets

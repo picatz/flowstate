@@ -3,8 +3,10 @@ package flowstatev1_test
 import (
 	"testing"
 
+	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestEntityWorkflowIDComposesNamespaceAndKey(t *testing.T) {
@@ -92,4 +94,29 @@ func TestValidateEntityKeyAcceptsTheGrammarProtovalidateAlsoEnforces(t *testing.
 	require.Error(t, v1.ValidateEntityKey(""))
 	require.Error(t, v1.ValidateEntityKey("Order"))
 	require.Error(t, v1.ValidateEntityKey("order_123"))
+}
+
+// TestMaxWorkflowIDLenIsTheSchemaBound holds the Go constant to the `max_bytes`
+// the schema declares on every workflow_id that addresses a run, read from the
+// descriptor rather than restated, so the compile-time assertions against
+// [v1.MaxWorkflowIDLen] prove something about the bound the validator enforces.
+func TestMaxWorkflowIDLenIsTheSchemaBound(t *testing.T) {
+	for _, msg := range []proto.Message{
+		&v1.GetRequest{},
+		&v1.SignalRequest{},
+		&v1.CancelRequest{},
+		&v1.TerminateRequest{},
+		&v1.GetTimelineRequest{},
+		&v1.RunResponse{},
+	} {
+		descriptor := msg.ProtoReflect().Descriptor()
+		t.Run(string(descriptor.Name()), func(t *testing.T) {
+			field := descriptor.Fields().ByName("workflow_id")
+			require.NotNil(t, field, "workflow_id is gone from the schema")
+
+			rules, _ := proto.GetExtension(field.Options(), validate.E_Field).(*validate.FieldRules)
+			require.NotNil(t, rules, "workflow_id carries no validation rules")
+			require.Equal(t, uint64(v1.MaxWorkflowIDLen), rules.GetString().GetMaxBytes())
+		})
+	}
 }

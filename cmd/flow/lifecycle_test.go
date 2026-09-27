@@ -51,13 +51,13 @@ func TestCancelReachesTheServer(t *testing.T) {
 	serveFake(t, fake)
 	cmd, _, errOut := lifecycleCommand(t)
 
-	require.NoError(t, cmd.Flags().Set("run-id", "run-1"))
+	require.NoError(t, cmd.Flags().Set("run-id", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"))
 
 	require.NoError(t, runCancel(cmd, []string{"deploy-abc123"}))
 
 	require.NotNil(t, fake.gotCancel, "nothing reached the server")
 	require.Equal(t, "deploy-abc123", fake.gotCancel.GetWorkflowId())
-	require.Equal(t, "run-1", fake.gotCancel.GetRunId(), "--run-id was dropped")
+	require.Equal(t, "6ba7b811-9dad-11d1-80b4-00c04fd430c8", fake.gotCancel.GetRunId(), "--run-id was dropped")
 
 	// Cancellation is a request, not a result. Reporting it as "cancelled" would
 	// claim something not yet true, and a script would build on the claim.

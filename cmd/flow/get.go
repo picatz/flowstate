@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,6 +13,20 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+// withRunIDHint adds what a run id is to a refused [v1.GetRequest], when the
+// refusal names run_id. Only such a violation earns it: an overlong workflow
+// id is refused by the same call, and advice about --run-id would send that
+// reader to the wrong argument. verb says what omitting the run id asks the
+// command to do with the current attempt.
+func withRunIDHint(err error, verb string) error {
+	invalid, ok := errors.AsType[*v1.ValidationError](err)
+	if !ok || !slices.ContainsFunc(invalid.Violations, func(v v1.Violation) bool { return v.Field == "run_id" }) {
+		return err
+	}
+	return fmt.Errorf("%w\n  a run id is the UUID Temporal gave one attempt at the workload; "+
+		"omit it to %s whichever attempt is current", err, verb)
+}
 
 // runGet reports what a run is doing, and what it produced if it is finished.
 //
@@ -40,8 +56,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := v1.Validate(request); err != nil {
-		return fmt.Errorf("%w\n  a run id is the UUID Temporal gave one attempt at the workload; "+
-			"omit it to ask about whichever attempt is current", err)
+		return withRunIDHint(err, "ask about")
 	}
 
 	response, err := newWorkflowServiceClient(server).Get(cmd.Context(), connect.NewRequest(request))

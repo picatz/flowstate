@@ -1203,8 +1203,22 @@ func TestWatchRefusesARunIDThatIsNotAUUIDBeforeWatching(t *testing.T) {
 
 	require.NoError(t, cmd.Flags().Set("run-id", "the-latest-one"))
 
-	require.Error(t, runWatch(cmd, []string{"flowstate-workflow-3f7c"}))
+	err := runWatch(cmd, []string{"flowstate-workflow-3f7c"})
+	require.ErrorContains(t, err, "a run id is the UUID")
 	require.Nil(t, fake.gotGet, "an invalid run id was sent anyway")
+}
+
+// TestWatchRefusesAnOverlongWorkflowIDWithoutRunIDAdvice checks that the run-id
+// hint follows a violation on run_id alone, as it does for `flow get`.
+func TestWatchRefusesAnOverlongWorkflowIDWithoutRunIDAdvice(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _, _ := watchCommandForTest(t)
+
+	err := runWatch(cmd, []string{strings.Repeat("w", v1.MaxWorkflowIDLen+1)})
+	require.ErrorContains(t, err, "workflow_id")
+	require.NotContains(t, err.Error(), "run id")
+	require.Nil(t, fake.gotGet, "an overlong workflow id was sent anyway")
 }
 
 // TestClientPollerAsksWhatGetAsks is the one thing a fake poller cannot check.

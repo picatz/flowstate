@@ -225,9 +225,9 @@ func TestSignalWalkingAChainRecordsOneDecision(t *testing.T) {
 		describeByRun: map[string]*workflowservice.DescribeWorkflowExecutionResponse{
 			"": {
 				WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
-					Execution:  &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "r-current"},
+					Execution:  &commonpb.WorkflowExecution{WorkflowId: "orders-1", RunId: "6ba7b813-9dad-11d1-80b4-00c04fd430c8"},
 					Type:       &commonpb.WorkflowType{Name: flowstateRunWorkflowType},
-					FirstRunId: "r-first",
+					FirstRunId: "6ba7b812-9dad-11d1-80b4-00c04fd430c8",
 					Status:     enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 					Memo:       mineMemo(t),
 				},
@@ -241,7 +241,7 @@ func TestSignalWalkingAChainRecordsOneDecision(t *testing.T) {
 
 	_, err := s.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{
 		WorkflowId: "orders-1",
-		RunId:      "r-first",
+		RunId:      "6ba7b812-9dad-11d1-80b4-00c04fd430c8",
 		Name:       "approval",
 	}))
 	require.NoError(t, err)

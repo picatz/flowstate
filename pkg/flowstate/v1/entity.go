@@ -92,6 +92,25 @@ const maxWorkflowIDBytes = 1000
 // submit. Failing the build here is cheaper than failing a caller's first Run.
 var _ [maxWorkflowIDBytes - len(entityWorkflowIDPrefix) - auth.MaxNamespaceLen - len(entitySeparator) - MaxEntityKeyLen]struct{}
 
+// MaxWorkflowIDLen is the schema bound on the `workflow_id` of every RPC that
+// addresses a run — Get, Signal, Cancel, Terminate, GetTimeline — and on the
+// one Run reports, in bytes. The `max_bytes` literal in
+// `proto/flowstate/v1/service.proto` must equal it; a test reads the
+// descriptor to hold them together. Bytes, not characters: every id this
+// system mints is ASCII, and Temporal's own ceiling is in bytes.
+//
+// Tighter than Temporal's [maxWorkflowIDBytes] on purpose: it bounds what an
+// addressing request may carry, and every id this system mints fits under it,
+// as the compile-time assertions below and beside the server's schedule prefix
+// prove.
+const MaxWorkflowIDLen = 256
+
+// A compile-time check, beside [maxWorkflowIDBytes]'s: the longest
+// entity-addressed id fits under [MaxWorkflowIDLen], or a run [EntityWorkflowID]
+// named would be one no caller could address. The schedule-started id's twin
+// sits beside `schedulePrefix` in `pkg/flowstate/v1/server`, which owns it.
+var _ [MaxWorkflowIDLen - len(entityWorkflowIDPrefix) - auth.MaxNamespaceLen - len(entitySeparator) - MaxEntityKeyLen]struct{}
+
 // EntityWorkflowID composes the workflow id for an entity-addressed run.
 //
 // namespace must come from the authenticated caller's identity —
