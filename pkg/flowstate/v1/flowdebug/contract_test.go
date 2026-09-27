@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -559,4 +560,46 @@ func TestLineBreakpointsResolveThroughTheSourceMap(t *testing.T) {
 	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
 	assert.Equal(t, "each[0]/touch", at.GetOccurrence().GetAddress())
 	assert.Equal(t, []string{"line"}, at.GetBreakpointIds())
+}
+
+// TestTheTypedSurfaceIsRedacted withholds one step name and reads every typed
+// place a name is printed: the stop's occurrence and frames, and the sites a
+// breakpoint resolved to.
+func TestTheTypedSurfaceIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
+	run.session.SetRedactor(func(text string) string { return strings.ReplaceAll(text, "touch", "[redacted]") })
+	target := flowdebug.Target(run.session)
+	at := waitHeld(t, target, 0)
+
+	response, err := target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		RequestId:   "bp",
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "at", Step: "touch"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, response.GetBreakpoints(), 1)
+	state := response.GetBreakpoints()[0]
+	require.True(t, state.GetVerified(), state.GetMessage())
+	require.NotEmpty(t, state.GetSites())
+	for _, site := range state.GetSites() {
+		assert.NotContains(t, strings.Join(site.GetPath(), "/"), "touch", "a breakpoint's site printed a withheld name")
+	}
+
+	at = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+	require.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_BREAKPOINT, at.GetReason())
+	encoded, err := protojson.Marshal(at)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "touch", "the stop printed a withheld name")
+	assert.Contains(t, at.GetOccurrence().GetAddress(), "[redacted]")
+
+	// The reply is the caller's: changing it leaves the session's own sites
+	// as they were.
+	state.GetSites()[0].Path[0] = "mutated"
+	again, err := target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		RequestId:   "bp-again",
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "at", Step: "touch"}},
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, "mutated", again.GetBreakpoints()[0].GetSites()[0].GetPath()[0])
 }

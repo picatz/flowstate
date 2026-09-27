@@ -81,6 +81,14 @@ const (
 	// maxObservationRunes bounds one observation's text.
 	maxObservationRunes = 1024
 
+	// maxFailureRunes keeps a stop's failure text, elision included, inside
+	// the schema's 16384.
+	maxFailureRunes = 16384 - 64
+
+	// maxBreakpointSites keeps the sites a breakpoint reports inside the
+	// schema's 1024; a breakpoint still arms every site it resolves to.
+	maxBreakpointSites = 1024
+
 	// maxReceipts bounds the request ids a session remembers for retries.
 	maxReceipts = 256
 
@@ -129,8 +137,9 @@ type contractState struct {
 	receiptOrder []string
 
 	// ack is the acknowledgement channel of the typed command the prompt
-	// loop is acting on, if any.
-	ack chan<- acknowledgement
+	// loop is acting on, if any, and ackRequest its request id.
+	ack        chan<- acknowledgement
+	ackRequest string
 
 	// released is the revision the last release of a hold was recorded at.
 	released uint64
@@ -158,8 +167,11 @@ func newContractState(opts Options) contractState {
 		sources:     map[string]*v1.DebugSourceLocation{},
 	}
 	if opts.Workflow != nil {
-		c.sites, _ = v1.DebugStaticSites(opts.Workflow)
-		c.sitesKnown = true
+		// A truncated enumeration cannot say a step is absent, so targets are
+		// then judged by step id, as they are without a workflow.
+		var truncated bool
+		c.sites, truncated = v1.DebugStaticSites(opts.Workflow)
+		c.sitesKnown = !truncated
 		if profile := opts.Workflow.GetProfile(); profile != "" {
 			c.profile = profile
 		}
@@ -458,7 +470,7 @@ func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopR
 	s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_HELD
 	s.contract.reason = reason
 	s.contract.hitIDs = hitIDs
-	s.contract.failure = failure
+	s.contract.failure = capRunes(failure, maxFailureRunes)
 	s.contract.occurrence = occurrence
 	s.contract.entry = false
 	s.contract.pauseAsked = false
@@ -495,14 +507,23 @@ type acknowledgement struct {
 }
 
 // acknowledge answers the typed command the prompt loop just acted on, if the
-// line it read came from one.
+// line it read came from one. The outcome is also recorded under the command's
+// request id here, where it is known, so a caller that stopped waiting before
+// the answer came still finds it on a retry.
 func (s *Session) acknowledge(applied bool) {
 	s.mu.Lock()
-	ack := s.contract.ack
-	s.contract.ack = nil
+	ack, requestID := s.contract.ack, s.contract.ackRequest
+	s.contract.ack, s.contract.ackRequest = nil, ""
 	answer := acknowledgement{applied: applied, revision: s.contract.revision}
 	if applied {
 		answer.revision = s.contract.released
+		s.rememberLocked(&v1.DebugReceipt{
+			RequestId: requestID,
+			Status:    v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED,
+			Revision:  answer.revision,
+		})
+	} else {
+		s.forgetPendingLocked(requestID)
 	}
 	s.mu.Unlock()
 
@@ -711,6 +732,22 @@ func redactOccurrence(occurrence *v1.DebugOccurrence, redact func(string) string
 	return out
 }
 
+// redactSite returns a copy of site with its names redacted, so a reply never
+// shares the session's own site or prints a name the session would withhold.
+func redactSite(site *v1.DebugSite, redact func(string) string) *v1.DebugSite {
+	out := proto.CloneOf(site)
+	if redact == nil {
+		return out
+	}
+	out.Kind = redact(out.GetKind())
+	out.Workflow = redact(out.GetWorkflow())
+	for i, part := range out.GetPath() {
+		out.Path[i] = redact(part)
+	}
+
+	return out
+}
+
 // framesLocked builds the frames of a held occurrence.
 func (s *Session) framesLocked(occurrence *v1.DebugOccurrence) []*v1.DebugFrame {
 	return Frames(occurrence, func(site *v1.DebugSite) *v1.DebugSourceLocation {
@@ -821,8 +858,16 @@ func (s *Session) rememberedReceipt(requestID string) (*v1.DebugReceipt, bool) {
 		return nil, false
 	}
 	duplicate := proto.CloneOf(receipt)
-	if duplicate.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
+	switch duplicate.GetStatus() {
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED:
 		duplicate.Status = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE
+	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
+		// Delivered and not yet acted on. A session that ended first will
+		// never act on it, and says so rather than pending forever.
+		if terminal(s.contract.state) {
+			duplicate.Status = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED
+			duplicate.Message = "the session is over"
+		}
 	}
 
 	return duplicate, true
@@ -848,18 +893,40 @@ func (s *Session) answerAt(requestID string, status v1.DebugCommandStatus, messa
 		Revision:  revision,
 		Message:   message,
 	}
-	if requestID != "" && status == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
-		if _, seen := s.contract.receipts[requestID]; !seen {
-			s.contract.receiptOrder = append(s.contract.receiptOrder, requestID)
-			if len(s.contract.receiptOrder) > maxReceipts {
-				delete(s.contract.receipts, s.contract.receiptOrder[0])
-				s.contract.receiptOrder = s.contract.receiptOrder[1:]
-			}
-		}
-		s.contract.receipts[requestID] = proto.CloneOf(receipt)
+	if status == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
+		s.rememberLocked(receipt)
 	}
 
 	return receipt
+}
+
+// rememberLocked records receipt under its request id, evicting the oldest
+// beyond [maxReceipts]. The caller holds s.mu.
+func (s *Session) rememberLocked(receipt *v1.DebugReceipt) {
+	requestID := receipt.GetRequestId()
+	if requestID == "" {
+		return
+	}
+	if _, seen := s.contract.receipts[requestID]; !seen {
+		s.contract.receiptOrder = append(s.contract.receiptOrder, requestID)
+		if len(s.contract.receiptOrder) > maxReceipts {
+			delete(s.contract.receipts, s.contract.receiptOrder[0])
+			s.contract.receiptOrder = s.contract.receiptOrder[1:]
+		}
+	}
+	s.contract.receipts[requestID] = proto.CloneOf(receipt)
+}
+
+// forgetPendingLocked drops requestID's placeholder if it is still pending: the
+// command was never acted on, so a retry may deliver it again. The caller
+// holds s.mu.
+func (s *Session) forgetPendingLocked(requestID string) {
+	receipt, ok := s.contract.receipts[requestID]
+	if !ok || receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+		return
+	}
+	delete(s.contract.receipts, requestID)
+	s.contract.receiptOrder = slices.DeleteFunc(s.contract.receiptOrder, func(id string) bool { return id == requestID })
 }
 
 // resumeLine is the prompt line a typed resume is.
@@ -940,7 +1007,7 @@ func (s *Session) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v1.D
 	}
 
 	ack := make(chan acknowledgement, 1)
-	if _, err := s.deliverAcknowledged(ctx, line, ack); err != nil {
+	if _, err := s.deliverAcknowledged(ctx, line, requestID, ack); err != nil {
 		if errors.Is(err, ErrRunOver) {
 			return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, "the session is over"), nil
 		}
@@ -1086,8 +1153,8 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		}
 		at.site = v1.DebugSiteKey(site)
 		at.source = fmt.Sprintf("%s:%d", want.GetLine().GetUri(), want.GetLine().GetLine())
-		state.Sites = []*v1.DebugSite{site}
-		state.Source = location
+		state.Sites = []*v1.DebugSite{redactSite(site, redact)}
+		state.Source = proto.CloneOf(location)
 
 	case want.GetStep() != "":
 		target, err := v1.ParseDebugTarget(strings.TrimSpace(want.GetStep()))
@@ -1100,13 +1167,17 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		at.target = target
 		at.source = target.String()
 		s.mu.Lock()
-		for _, site := range target.Resolve(s.contract.sites) {
-			state.Sites = append(state.Sites, site.Site)
+		resolved := target.Resolve(s.contract.sites)
+		for _, site := range resolved[:min(len(resolved), maxBreakpointSites)] {
+			state.Sites = append(state.Sites, redactSite(site.Site, redact))
 		}
-		if len(state.Sites) == 1 {
-			state.Source = s.contract.sources[v1.DebugSiteKey(state.Sites[0])]
+		if len(resolved) == 1 {
+			state.Source = proto.CloneOf(s.contract.sources[v1.DebugSiteKey(resolved[0].Site)])
 		}
 		s.mu.Unlock()
+		if len(resolved) > maxBreakpointSites {
+			state.Message = fmt.Sprintf("armed at %d sites; the first %d are listed", len(resolved), maxBreakpointSites)
+		}
 
 	default:
 		return refuse("a breakpoint names a step or a line, and this one names neither")

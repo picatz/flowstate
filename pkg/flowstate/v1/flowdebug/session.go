@@ -1226,7 +1226,7 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			// for and the sender has to be told rather than left waiting.
 			s.mu.Lock()
 			taken := controlTaken{generation: s.pauseGen, autopsy: s.at.autopsy}
-			s.contract.ack = request.ack
+			s.contract.ack, s.contract.ackRequest = request.ack, request.request
 			s.mu.Unlock()
 			request.at <- taken
 

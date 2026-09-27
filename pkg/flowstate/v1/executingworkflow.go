@@ -71,7 +71,7 @@ func contextWithExecutingCall(ctx context.Context, callerStep, callerKind, calle
 	})
 
 	segments := position.segments
-	if DebuggerFromContext(ctx) != nil {
+	if DebuggerFromContext(ctx) != nil && len(segments) < MaxDebugSegments {
 		segments = append(slices.Clip(segments), &DebugSegment{
 			Kind:     DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL,
 			StepId:   callerStep,
