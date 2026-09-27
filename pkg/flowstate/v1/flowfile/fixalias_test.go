@@ -629,6 +629,37 @@ steps:
       message: hi
 `,
 		},
+		{
+			// The counterpart to the trailing-space refusals (#2119): a
+			// trailing tab, or a trailing space after a quoted scalar, leaves
+			// the parser's column where the value is written, so the copy is
+			// the value itself and nothing is refused.
+			name: "anchored scalars whose lines end in whitespace the parser positions correctly",
+			src: "edition: v2026.3\nname: t\nvars:\n" +
+				"  a: &a us-east-1\t\n  b: &b 12\t\n  c: &c \"x y\"\t\n  d: &d 'x y' \n" +
+				"  e: *a\n  f: *b\n  g: *c\n  h: *d\n" +
+				"steps:\n  - id: a\n    log:\n      message: hi\n",
+			want: "edition: v2026.3\nname: t\nvars:\n" +
+				"  a: us-east-1\t\n  b: 12\t\n  c: \"x y\"\t\n  d: 'x y' \n" +
+				"  e: us-east-1\n  f: 12\n  g: \"x y\"\n  h: 'x y'\n" +
+				"steps:\n  - id: a\n    log:\n      message: hi\n",
+			equivalent: `edition: v2026.3
+name: t
+vars:
+  a: us-east-1
+  b: 12
+  c: "x y"
+  d: 'x y'
+  e: us-east-1
+  f: 12
+  g: "x y"
+  h: 'x y'
+steps:
+  - id: a
+    log:
+      message: hi
+`,
+		},
 	}
 }
 
@@ -1024,6 +1055,37 @@ steps:
 		{
 			name:    "a literal tab between a flow sequence's own elements",
 			src:     "edition: v2026.3\nname: t\nvars:\n  o: &p [a,\tb]\n  u: *p\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			// goccy reports a plain scalar's column one to the right for each
+			// space trailing it (#2119), which copied `s-east-1 ` here.
+			name:    "a trailing space after an anchored plain scalar",
+			src:     "edition: v2026.3\nname: t\nvars:\n  region: &r us-east-1 \n  other: *r\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  10,
+			message: "not written where it was read",
+		},
+		{
+			// Copied as `rue `: a boolean silently turned into a string.
+			name:    "a trailing space after an anchored boolean",
+			src:     "edition: v2026.3\nname: t\nvars:\n  k: &a true \n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name:    "trailing spaces after an anchored integer",
+			src:     "edition: v2026.3\nname: t\nvars:\n  k: &a 0x1f  \n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+			line:    5,
+			column:  6,
+			message: "not written where it was read",
+		},
+		{
+			name:    "a space and a tab trailing an anchored plain scalar",
+			src:     "edition: v2026.3\nname: t\nvars:\n  k: &a abc \t\n  u: *a\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 			line:    5,
 			column:  6,
 			message: "not written where it was read",
