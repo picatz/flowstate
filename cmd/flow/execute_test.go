@@ -66,7 +66,7 @@ func TestNewUsageErrorMarksWithoutChangingTheMessage(t *testing.T) {
 	assert.Nil(t, newUsageError(nil))
 }
 
-// TestNewUsageErrorSurvivesFurtherWrapping proves errors.As finds the mark
+// TestNewUsageErrorSurvivesFurtherWrapping proves errors.AsType finds the mark
 // through an %w chain, since every command here wraps its own errors further —
 // with a file path, a step name — before returning them.
 func TestNewUsageErrorSurvivesFurtherWrapping(t *testing.T) {

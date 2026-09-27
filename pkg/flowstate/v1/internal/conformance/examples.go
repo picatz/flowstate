@@ -892,9 +892,9 @@ func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []strin
 // the same name for this to choose between — but bindings is assembled inner
 // scope last, so taking the last match is the correct read of it regardless.
 func lookupBinding(bindings []binding, name string) (binding, bool) {
-	for _, binding := range slices.Backward(bindings) {
-		if binding.name == name {
-			return binding, true
+	for _, b := range slices.Backward(bindings) {
+		if b.name == name {
+			return b, true
 		}
 	}
 	return binding{}, false

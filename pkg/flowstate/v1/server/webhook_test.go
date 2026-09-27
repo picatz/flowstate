@@ -364,7 +364,6 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 	start := make(chan struct{})
 	for range arrivals {
 		wg.Go(func() {
-
 			<-start
 			resp := deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed)
 			if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {

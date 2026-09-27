@@ -140,7 +140,6 @@ func rewriteExpressions(line string, rewrite func(string) (string, bool)) (strin
 
 	out, changed := line, false
 	for _, span := range slices.Backward(spans) {
-
 		replaced, did := rewrite(out[span[0]:span[1]])
 		if !did {
 			continue

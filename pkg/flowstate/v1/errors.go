@@ -283,10 +283,10 @@ func RetryPermitted(err error) bool {
 // RetryAfter returns how long a failure asked us to wait before another attempt, or
 // zero when it did not say.
 //
-// It looks through wrapping with errors.As rather than asserting a type, because a
-// task failure reaches the engine wrapped — a plugin's failure arrives inside
-// fmt.Errorf("plugin %q: %w", ...) — and an assertion would silently find nothing
-// for every one of those.
+// It looks through wrapping with errors.AsType rather than asserting a type,
+// because a task failure reaches the engine wrapped — a plugin's failure arrives
+// inside fmt.Errorf("plugin %q: %w", ...) — and an assertion would silently find
+// nothing for every one of those.
 func RetryAfter(err error) time.Duration {
 	if taskErr, ok := errors.AsType[*TaskError](err); ok {
 		if taskErr.Outcome != nil && taskErr.Outcome.GetRetryAfter() != nil {
@@ -456,8 +456,8 @@ func ClassifyError(err error) ErrorKind {
 		return ""
 	}
 	// The overall step budget is an outer judgement over the last attempt's
-	// failure. Check it before TaskError because its structured cause is that
-	// last failure, and errors.As would otherwise classify the stale dependency
+	// failure. Check it before TaskError because its structured cause is that last
+	// failure, and errors.AsType would otherwise classify the stale dependency
 	// error instead of the budget that actually ended the step (#1163).
 	if _, ok := errors.AsType[*scheduleToCloseTimeoutError](err); ok {
 		return ErrorKindTimeout
