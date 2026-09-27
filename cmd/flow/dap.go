@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -66,16 +67,15 @@ flow run local --debug examples/hello-world/workflow.yaml`,
 	addLocalRehearsalFlags(cmd)
 	addRevealSensitiveFlag(cmd)
 
+	// For an `attach` request: the server a durable run is reached through,
+	// with the caller's own credentials.
+	addServerFlags(cmd)
+
 	return cmd
 }
 
 // runDAP serves one debug session.
 func runDAP(cmd *cobra.Command, _ []string) error {
-	// Before the plugins launch and before a client can name a workflow, for
-	// the reason `flow run local` applies them in that order: these read files
-	// this process was pointed at, and a policy that cannot load must refuse
-	// the command rather than start somebody else's programs and then run under
-	// the permissive defaults.
 	if err := applyEgressPolicy(cmd); err != nil {
 		return err
 	}
@@ -83,10 +83,6 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Build the provider registry before the plugin host, as the worker and
-	// `flow run local` do. A plugin can contribute both a task and a secrets
-	// backend, and the runtime below must resolve through the registry that host
-	// registered into rather than a second, empty one.
 	providers, err := localSecretProviders(cmd)
 	if err != nil {
 		return fmt.Errorf("configuring secrets for the debug adapter: %w", err)
@@ -101,150 +97,140 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 
 	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), dapBanner)
 
-	// Where the session's prose goes once there is a client to send it to.
-	//
-	// The indirection is the construction order rather than a preference: the
-	// server needs the session, so the session cannot be handed the server. A
-	// mutex rather than a bare variable because the session emits from the
-	// run's goroutine, and "it cannot emit before the run starts" is an
-	// argument, not a synchronization edge.
+	// The console the session narrates through. Attached once the adapter
+	// exists, because the adapter is what the text goes to.
 	var console dapConsole
 
-	// Controlled, and with nowhere to type: this session has no console and no
-	// stream of commands, because the client is the only thing driving it.
-	session, err := flowdebug.New(flowdebug.Options{
-		Controlled: true,
-		// Discarded rather than written: this process's standard output *is*
-		// the protocol stream, and a debugger printing its account onto it
-		// would corrupt the conversation. Emit below sends the same fragments
-		// to the client's debug console instead, which is where a person is
-		// looking anyway.
-		Out:  io.Discard,
-		Emit: func(text string, _ flowdebug.Tone) { console.write(text) },
-	})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = session.Close() }()
-
-	server := flowdap.NewServer(session,
-		// The same bounded framing the language server reads with. DAP frames
-		// exactly as LSP does, and the bound there was measured rather than
-		// guessed — see lsp.MaxFrameBytes for the 512 MiB an unbounded header
-		// parse cost. A second framer here would be a second place to get that
-		// wrong.
-		lsp.NewBoundedStream(stdio{}))
-
+	var server *flowdap.Server
+	server = flowdap.NewServer(nil, lsp.NewBoundedStream(stdio{}),
+		flowdap.WithLaunch(func(ctx context.Context, args flowdap.LaunchArguments) (*flowdap.Launch, error) {
+			return launchDebuggedRun(cmd, args, catalog, providers, &console, server)
+		}),
+		flowdap.WithAttach(func(ctx context.Context, args flowdap.AttachArguments) (*flowdap.Attachment, error) {
+			return attachDebuggedRun(ctx, cmd, args)
+		}),
+	)
 	console.attach(server)
-
-	// The run starts when the client has finished configuring and not before.
-	// Breakpoints arrive after launch in DAP's own order, so a run started at
-	// the launch request is already past the step somebody set one on.
-	go func(server *flowdap.Server) {
-		select {
-		case <-server.Launched():
-		case <-cmd.Context().Done():
-			return
-		}
-
-		// What the client is told the run exited with. Set on every path that
-		// ends without a completed run, because an editor reads the `exited`
-		// event to decide what happened — and a zero there says a workflow
-		// that never started succeeded.
-		exit := 0
-
-		// Ordered rather than deferred separately, because the three steps
-		// have to happen in this order. Recording the code first means a
-		// movement released by the close — which learns the run is over
-		// through ErrRunOver and reports it — reports the same code this
-		// goroutine would have. Closing then releases anything still waiting
-		// for a stop that will not come, since the adapter cannot see a run
-		// end and this is what says so.
-		defer func() {
-			server.Exited(exit)
-			_ = session.Close()
-			server.Finished()
-		}()
-
-		program := server.Program()
-		reveal := revealSensitiveRequested(cmd) || server.RevealSensitive()
-		if program == "" {
-			exit = 1
-			server.Output("flowdap: the launch configuration named no `program`, so there is " +
-				"no workflow to run\n")
-
-			return
-		}
-
-		// Validated, not merely parsed, and the difference is a side effect
-		// somebody cannot take back. A Flowfile can parse and still be wrong —
-		// an unknown task name is the standing example — and a run started on
-		// one performs every step before the bad one and *then* fails. This is
-		// an unstubbed local run, so those steps make real requests. Every
-		// other verb that executes a Flowfile goes through [loadWorkflow] for
-		// exactly this reason, and this one reached past it (Codex, #1124).
-		workflow, err := loadWorkflow(program)
-		if err != nil {
-			// Source diagnostics can quote the invalid document. Without a valid
-			// specification there is no declaration posture to redact them
-			// against, so the shared decision fails closed. Invocation and I/O
-			// errors do not carry source diagnostics and remain useful as-is.
-			exit = 1
-			var diagnostics flowfile.Diagnostics
-			if !errors.As(err, &diagnostics) || decideCarriedValues(nil, reveal) == carriedValuesShown {
-				server.Output(fmt.Sprintf("flowdap: %v\n", err))
-			} else {
-				server.Output("flowdap: workflow diagnostics withheld because the invalid file has no " +
-					"trusted sensitive-value declarations; run `flow validate` outside the adapter, or " +
-					"explicitly authorize disclosure with --reveal-sensitive or \"revealSensitive\": true\n")
-			}
-
-			return
-		}
-		disclosure := decideCarriedValues(workflow, reveal)
-		if disclosure != carriedValuesShown {
-			exit = 1
-			if disclosure == carriedValuesDeclared {
-				server.Output("flowdap: the workflow declares sensitive inputs or outputs whose " +
-					"values the debugger would expose; add --reveal-sensitive to the adapter command " +
-					"or \"revealSensitive\": true to the launch configuration to debug it with values shown\n")
-			} else {
-				server.Output("flowdap: the workflow's sensitive-value declarations could not be fully " +
-					"inspected, so the debugger will not start without explicit disclosure authorization; " +
-					"add --reveal-sensitive to the adapter command or \"revealSensitive\": true to the " +
-					"launch configuration\n")
-			}
-
-			return
-		}
-		if err := v1.ResolvePlugins(workflow, catalog); err != nil {
-			exit = 1
-			server.Output(fmt.Sprintf("flowdap: resolving plugins before this run: %v\n", err))
-
-			return
-		}
-
-		ctx := v1.NewContextWithDebugger(cmd.Context(), session)
-		ctx = v1.NewContextWithRunObserver(ctx, session)
-		ctx, err = withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
-		if err != nil {
-			exit = 1
-			server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
-
-			return
-		}
-
-		if _, err := v1.RunWithInputs(ctx, workflow, nil); err != nil {
-			exit = 1
-			server.Output(fmt.Sprintf("run failed: %v\n", err))
-		}
-	}(server)
 
 	return server.Serve(cmd.Context())
 }
 
-// dapConsole carries the session's prose to a client that does not exist yet
-// when the session is built.
+// launchDebuggedRun prepares a local run of the program a launch names: the
+// workflow, its disclosure decision, its plugins, and a session built with the
+// program and its source map. The run starts when the adapter calls Start.
+func launchDebuggedRun(
+	cmd *cobra.Command, args flowdap.LaunchArguments, catalog *v1.PluginCatalog,
+	providers *localSecrets, console *dapConsole, server *flowdap.Server,
+) (*flowdap.Launch, error) {
+	program := args.Program
+	reveal := revealSensitiveRequested(cmd) || args.RevealSensitive
+	if program == "" {
+		return nil, errors.New("flowdap: the launch configuration named no `program`, so there is no workflow to run")
+	}
+
+	workflow, err := loadWorkflow(program)
+	if err != nil {
+		var diagnostics flowfile.Diagnostics
+		if !errors.As(err, &diagnostics) || decideCarriedValues(nil, reveal) == carriedValuesShown {
+			return nil, fmt.Errorf("flowdap: %w", err)
+		}
+
+		return nil, errors.New("flowdap: workflow diagnostics withheld because the invalid file has no " +
+			"trusted sensitive-value declarations; run `flow validate` outside the adapter, or " +
+			"explicitly authorize disclosure with --reveal-sensitive or \"revealSensitive\": true")
+	}
+
+	// A debugger is a reveal, so a workflow whose declarations would make the
+	// final render withhold values does not get one without saying so.
+	switch decideCarriedValues(workflow, reveal) {
+	case carriedValuesShown:
+	case carriedValuesDeclared:
+		return nil, errors.New("flowdap: the workflow declares sensitive inputs or outputs whose " +
+			"values the debugger would expose; add --reveal-sensitive to the adapter command " +
+			"or \"revealSensitive\": true to the launch configuration to debug it with values shown")
+	default:
+		return nil, errors.New("flowdap: the workflow's sensitive-value declarations could not be fully " +
+			"inspected, so the debugger will not start without explicit disclosure authorization; " +
+			"add --reveal-sensitive to the adapter command or \"revealSensitive\": true to the " +
+			"launch configuration")
+	}
+	if err := v1.ResolvePlugins(workflow, catalog); err != nil {
+		return nil, fmt.Errorf("flowdap: resolving plugins before this run: %w", err)
+	}
+
+	sourceMap := debugSourceMap(program, workflow)
+	session, err := flowdebug.New(flowdebug.Options{
+		Controlled: true,
+		Out:        io.Discard,
+		Emit:       func(text string, _ flowdebug.Tone) { console.write(text) },
+		Workflow:   workflow,
+		SourceMap:  sourceMap,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithCancel(cmd.Context())
+
+	return &flowdap.Launch{
+		Target:    session,
+		SourceMap: sourceMap,
+		Terminate: cancel,
+		Start: func() {
+			defer cancel()
+
+			exit := 0
+			defer func() {
+				server.Exited(exit)
+				_ = session.Close()
+				server.Finished()
+			}()
+
+			ctx := v1.NewContextWithDebugger(runCtx, session)
+			ctx = v1.NewContextWithRunObserver(ctx, session)
+			ctx, err := withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
+			if err != nil {
+				exit = 1
+				session.Finished(err)
+				server.Output(fmt.Sprintf("flowdap: configuring the local task runtime: %v\n", err))
+
+				return
+			}
+
+			_, runErr := v1.RunWithInputs(ctx, workflow, nil)
+			session.Finished(runErr)
+			if runErr != nil {
+				exit = 1
+				server.Output(session.RedactText(fmt.Sprintf("run failed: %v\n", runErr)))
+			}
+		},
+	}, nil
+}
+
+// attachDebuggedRun attaches to a durable run through the server this command
+// was pointed at, with the caller's own credentials. A program, when named, is
+// compiled for its source map, which is used only if it matches the program
+// the run executes.
+func attachDebuggedRun(ctx context.Context, cmd *cobra.Command, args flowdap.AttachArguments) (*flowdap.Attachment, error) {
+	var sourceMap *v1.DebugSourceMap
+	if args.Program != "" {
+		if workflow, err := loadWorkflow(args.Program); err == nil {
+			sourceMap = debugSourceMap(args.Program, workflow)
+		}
+	}
+
+	remote, _, err := flowdebug.AttachRemote(ctx, newWorkflowServiceClient(serverFlagsOf(cmd)),
+		args.WorkflowID, args.RunID, flowdebug.RemoteOptions{SessionID: args.SessionID, SourceMap: sourceMap})
+	if err != nil {
+		return nil, fmt.Errorf("flowdap: attaching to %s: %w", args.WorkflowID, err)
+	}
+	if sourceMap != nil && !remote.SourceMapVerified() {
+		sourceMap = nil
+	}
+
+	return &flowdap.Attachment{Target: remote, SourceMap: sourceMap}, nil
+}
+
 type dapConsole struct {
 	mu sync.Mutex
 	to *flowdap.Server

@@ -109,23 +109,35 @@ type event struct {
 
 // capabilities is the initialize response body.
 type capabilities struct {
-	// Breakpoints by name, because a step id is a name and the seam has no
-	// lines. See the package comment.
-	SupportsFunctionBreakpoints bool `json:"supportsFunctionBreakpoints"`
+	SupportsConfigurationDoneRequest  bool              `json:"supportsConfigurationDoneRequest"`
+	SupportsFunctionBreakpoints       bool              `json:"supportsFunctionBreakpoints"`
+	SupportsConditionalBreakpoints    bool              `json:"supportsConditionalBreakpoints"`
+	SupportsHitConditionalBreakpoints bool              `json:"supportsHitConditionalBreakpoints"`
+	SupportsLogPoints                 bool              `json:"supportsLogPoints"`
+	SupportsEvaluateForHovers         bool              `json:"supportsEvaluateForHovers"`
+	SupportsTerminateRequest          bool              `json:"supportsTerminateRequest"`
+	SupportTerminateDebuggee          bool              `json:"supportTerminateDebuggee"`
+	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
+	ExceptionBreakpointFilters        []exceptionFilter `json:"exceptionBreakpointFilters"`
+}
 
-	// Told about configurationDone, so breakpoints set before the run starts
-	// are in place when it does. Without it a client launches and the run is
-	// already past the step somebody meant to stop at.
-	SupportsConfigurationDoneRequest bool `json:"supportsConfigurationDoneRequest"`
+// exceptionFilter is one kind of failure stop an editor offers as a checkbox.
+type exceptionFilter struct {
+	Filter      string `json:"filter"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
 
-	// `evaluate` answers in the REPL and on hover, which is the debug console
-	// this package exists to make useful.
-	SupportsEvaluateForHovers bool `json:"supportsEvaluateForHovers"`
+// source names a document the way an editor opens it.
+type source struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type stoppedBody struct {
 	Reason            string `json:"reason"`
 	Description       string `json:"description,omitempty"`
+	Text              string `json:"text,omitempty"`
 	ThreadID          int    `json:"threadId"`
 	AllThreadsStopped bool   `json:"allThreadsStopped"`
 }
@@ -151,6 +163,14 @@ type stackFrame struct {
 	// with more confidence than "nowhere".
 	Line   int `json:"line"`
 	Column int `json:"column"`
+
+	// Source is where the frame's step is written, when a verified source map
+	// says so.
+	Source *source `json:"source,omitempty"`
+
+	// PresentationHint is "subtle" for a container frame: a loop iteration, a
+	// parallel branch, a switch arm or a call the stop is inside.
+	PresentationHint string `json:"presentationHint,omitempty"`
 }
 
 type stackTraceBody struct {
@@ -161,6 +181,7 @@ type stackTraceBody struct {
 type scope struct {
 	Name               string `json:"name"`
 	VariablesReference int    `json:"variablesReference"`
+	NamedVariables     int    `json:"namedVariables,omitempty"`
 	Expensive          bool   `json:"expensive"`
 }
 
@@ -175,6 +196,12 @@ type variable struct {
 	// reference is a promise that `variables` will expand it. Handing out a
 	// reference this adapter would then refuse is worse than a flat value.
 	VariablesReference int `json:"variablesReference"`
+
+	// Type is the value's CEL type.
+	Type string `json:"type,omitempty"`
+
+	// EvaluateName is the expression that reads this value again.
+	EvaluateName string `json:"evaluateName,omitempty"`
 }
 
 type variablesBody struct {
@@ -183,10 +210,14 @@ type variablesBody struct {
 
 type evaluateBody struct {
 	Result             string `json:"result"`
+	Type               string `json:"type,omitempty"`
 	VariablesReference int    `json:"variablesReference"`
 }
 
 type breakpoint struct {
+	// ID is the number an editor knows the breakpoint by across updates.
+	ID int `json:"id,omitempty"`
+
 	// Verified says the session took it.
 	//
 	// It is not a claim that the run will reach it, and cannot be: breakpoints
@@ -204,6 +235,9 @@ type breakpoint struct {
 	// stop that cannot come.
 	Verified bool   `json:"verified"`
 	Message  string `json:"message,omitempty"`
+
+	// Line is the line a source breakpoint was set on.
+	Line int `json:"line,omitempty"`
 }
 
 type breakpointsBody struct {

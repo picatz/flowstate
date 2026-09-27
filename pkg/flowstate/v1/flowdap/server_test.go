@@ -234,11 +234,11 @@ func TestStackTraceUsesTheCoresCallChain(t *testing.T) {
 	c.await("response", "configurationDone")
 	c.await("event", "stopped")
 
-	// Step over the caller's call boundary and stop at the callee's first
-	// step. The adapter asks the session for the resulting chain; it does not
-	// infer one from the inventory or from ids.
-	c.send(4, "next", map[string]any{"threadId": 1})
-	c.await("response", "next")
+	// Step into the call and stop at the callee's first step. The adapter
+	// asks the session for the resulting chain; it does not infer one from the
+	// inventory or from ids.
+	c.send(4, "stepIn", map[string]any{"threadId": 1})
+	c.await("response", "stepIn")
 	c.await("event", "stopped")
 	c.send(5, "stackTrace", map[string]any{"threadId": 1})
 	trace := c.await("response", "stackTrace")
@@ -283,6 +283,31 @@ func TestStackTraceUsesTheCoresCallChain(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(20 * time.Second):
 		t.Fatal("the called run did not finish")
+	}
+}
+
+// TestNextStepsOverACall is the other half of call-aware stepping: over a
+// `call:` step, `next` runs the whole callee and stops at nothing inside it.
+func TestNextStepsOverACall(t *testing.T) {
+	t.Parallel()
+
+	c, finished := called(t)
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(4, "next", map[string]any{"threadId": 1})
+	c.await("response", "next")
+
+	select {
+	case err := <-finished:
+		require.NoError(t, err, "stepping over the only step ran the callee through to the end")
+	case <-time.After(20 * time.Second):
+		t.Fatal("stepping over a call stopped inside the callee")
 	}
 }
 
