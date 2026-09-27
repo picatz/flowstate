@@ -236,7 +236,7 @@ func (s *Session) scopeProto(ctx context.Context, onlyGroup string, limit, carry
 		return nil, ErrNotPaused
 	}
 
-	groups := s.visibleScopeNames(subject)
+	groups := visibleScopeNames(subject)
 	if onlyGroup != "" {
 		selected := groups[:0]
 		for _, group := range groups {
@@ -420,6 +420,11 @@ var verbs = map[v1.DebugCommandVerb]string{
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_BACKTRACE:   "backtrace",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_QUIT:        "quit",
 	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_HELP:        "help",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_NEXT:        "next",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_FINISH:      "finish",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_LOG:         "log",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_CATCH:       "catch",
+	v1.DebugCommandVerb_DEBUG_COMMAND_VERB_DETACH:      "detach",
 }
 
 // CommandProto is one command line as a wire message, reporting whether the

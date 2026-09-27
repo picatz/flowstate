@@ -3,8 +3,10 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/diagnostics.proto";
 import "flowstate/v1/identity.proto";
 import "flowstate/v1/run.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "flowstatev1";
@@ -543,6 +545,24 @@ enum DebugCommandVerb {
 
   // List the current step and the `call:` chain that reached it.
   DEBUG_COMMAND_VERB_BACKTRACE = 13;
+
+  // Next is `next`: run this step, including anything inside it, and stop at
+  // the next step at this nesting or shallower.
+  DEBUG_COMMAND_VERB_NEXT = 14;
+
+  // Finish is `finish`: run until the enclosing iteration, branch, switch
+  // arm, or call is left.
+  DEBUG_COMMAND_VERB_FINISH = 15;
+
+  // Log is `log <step-id> <message>`: a logpoint.
+  DEBUG_COMMAND_VERB_LOG = 16;
+
+  // Catch is `catch none|uncaught|all`: which step failures stop the run.
+  DEBUG_COMMAND_VERB_CATCH = 17;
+
+  // Detach is `detach`: clear every breakpoint and let the run finish
+  // unattended.
+  DEBUG_COMMAND_VERB_DETACH = 18;
 }
 
 // DebugCommand is one thing a debug session is told to do.
@@ -658,4 +678,819 @@ message DebugSession {
   // vanished debugger is an availability incident, and expiry resuming the run
   // is that decision's other half.
   optional google.protobuf.Timestamp lease_expires_at = 6;
+}
+
+// # The shared debugger contract
+//
+// Everything below is the one semantic model every debugger surface speaks:
+// the local session in `flowdebug`, the durable RPCs on [WorkflowService], the
+// editor adapter in `flowdap`, the retained MCP sessions, and the embedding API.
+// A surface translates its own protocol's conventions onto these messages; it
+// does not invent execution semantics of its own, so "supported by the console"
+// and "supported by the editor" are the same claim, stated by
+// [DebugCapabilities].
+//
+// Three identities are kept apart, and a display label is never one of them:
+//
+//   - A [DebugSite] is a static place in the compiled program: which workflow
+//     declares the step and the chain of step ids from that workflow's top
+//     level down to it. It exists whether or not the run ever reaches it, and
+//     whether or not any source text produced it.
+//   - A [DebugOccurrence] is one dynamic arrival at a site: the same site
+//     reached in the third iteration of a loop, in the second parallel branch,
+//     or through a second `call:` is a different occurrence.
+//   - A [DebugSourceLocation] is where a site came from, when anything says so.
+//     It is optional by construction: a program built directly as IR, or by a
+//     frontend that publishes no map, is still fully debuggable by site.
+
+// DebugSite is a static execution site in the compiled program.
+message DebugSite {
+  // Workflow is the name of the workflow that declares the step: the root
+  // workflow, or the callee a `call:` reached.
+  string workflow = 1 [(buf.validate.field).string = {max_len: 256}];
+
+  // Path is the chain of step ids from that workflow's top level down to and
+  // including the step: `["pages", "page"]` for a step `page` in the body of a
+  // loop `pages`. Ids are unique within a visibility domain rather than within a
+  // file, so the chain, not the last id, is what names one site.
+  repeated string path = 2 [(buf.validate.field).repeated = {
+    max_items: 64
+    items: {
+      string: {max_len: 256}
+    }
+  }];
+
+  // Kind is the step's kind as [DebugPosition.kind] spells it.
+  string kind = 3 [(buf.validate.field).string = {max_len: 64}];
+}
+
+// DebugSegmentKind is how execution entered a nested part of the program.
+enum DebugSegmentKind {
+  // Unspecified is never written.
+  DEBUG_SEGMENT_KIND_UNSPECIFIED = 0;
+  // Call is a `call:` step running its callee.
+  DEBUG_SEGMENT_KIND_CALL = 1;
+  // Iteration is one pass through a `for_each:` or `loop:` body.
+  DEBUG_SEGMENT_KIND_ITERATION = 2;
+  // Branch is one branch of a `parallel:` step.
+  DEBUG_SEGMENT_KIND_BRANCH = 3;
+  // Case is the arm a `switch:` step took.
+  DEBUG_SEGMENT_KIND_CASE = 4;
+}
+
+// DebugSegment is one level of dynamic nesting between the run's top level and
+// an occurrence.
+message DebugSegment {
+  // Kind says how this level was entered.
+  DebugSegmentKind kind = 1 [(buf.validate.field).enum.defined_only = true];
+
+  // StepId is the container step: the loop, the parallel, the switch, or the
+  // call step.
+  string step_id = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Workflow is the workflow that declares the container step.
+  string workflow = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // Index is the iteration, branch, or case index, counting from zero. Zero for
+  // a call.
+  int32 index = 4 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Callee is the workflow a call entered. Empty for every other kind.
+  string callee = 5 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// DebugOccurrence is one dynamic arrival at a site.
+message DebugOccurrence {
+  // Site is the static site reached.
+  DebugSite site = 1;
+
+  // Segments are the dynamic levels enclosing the arrival, outermost first.
+  repeated DebugSegment segments = 2 [(buf.validate.field).repeated = {max_items: 128}];
+
+  // Address is the canonical text form of this occurrence: segments joined by
+  // `/`, an iteration written `id[3]`, a branch `id#1`, a case `id?0`, a call
+  // `id(callee)`, then the step id. It is what a person types and what a
+  // breakpoint may name; the structured fields above are what a program reads.
+  string address = 3 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Arrival counts the boundaries this session has seen, starting at one, so
+  // two stops at the same address in a `loop:` that revisits it are ordered.
+  uint64 arrival = 4;
+
+  // Continuation counts the Continue-As-New segments before the one this
+  // occurrence ran in. Always zero for a local run.
+  int32 continuation = 5 [(buf.validate.field).int32 = {gte: 0}];
+}
+
+// DebugSourceDocument is one source document a program was produced from.
+message DebugSourceDocument {
+  // Uri names the document as its producer knows it: a file path or URI for
+  // text, an opaque identifier for a visual canvas.
+  string uri = 1 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Digest is the content digest (`sha256:…`) of the exact bytes the map was
+  // computed from. A consumer holding different bytes must treat every
+  // location in this document as unverified rather than guess a line.
+  string digest = 2 [(buf.validate.field).string = {max_len: 128}];
+
+  // Language names the frontend: `flowfile` for YAML+CEL, or any other token a
+  // generator or visual editor chooses.
+  string language = 3 [(buf.validate.field).string = {max_len: 64}];
+
+  // GeneratedFrom is the index into [DebugSourceMap.documents] of the document
+  // this one was generated from, plus one; zero when it is an original.
+  int32 generated_from = 4 [(buf.validate.field).int32 = {gte: 0}];
+}
+
+// DebugSourceLocation is where one site came from.
+message DebugSourceLocation {
+  // Document indexes [DebugSourceMap.documents].
+  int32 document = 1 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Range is the text span, for a text document. Unset for a location that is
+  // not text.
+  SourceRange range = 2;
+
+  // NodeId is an opaque locator for a non-text frontend, such as a node on a
+  // visual canvas. Empty for text.
+  string node_id = 3 [(buf.validate.field).string = {max_len: 1024}];
+}
+
+// DebugSourceEntry maps one site to where it came from.
+message DebugSourceEntry {
+  DebugSite site = 1;
+  DebugSourceLocation location = 2;
+}
+
+// DebugSourceMap is a bounded sidecar relating a compiled program's sites to
+// its sources.
+//
+// It is never part of the program: it does not enter the executable
+// specification, a digest of it, workflow history, or replay. It is bound to
+// the program it describes by [ir_digest] and to each source by that
+// document's own digest, and a map whose binding does not hold is reported as
+// unverified rather than applied.
+message DebugSourceMap {
+  // IrDigest is the content digest of the deterministic encoding of the
+  // compiled workflow this map describes, as the producing build encodes it.
+  string ir_digest = 1 [(buf.validate.field).string = {max_len: 128}];
+
+  repeated DebugSourceDocument documents = 2 [(buf.validate.field).repeated = {max_items: 256}];
+
+  repeated DebugSourceEntry entries = 3 [(buf.validate.field).repeated = {max_items: 65536}];
+}
+
+// DebugFrame is one level of a stopped run's dynamic nesting, innermost first.
+//
+// A frame is the step the run is stopped before, or a container enclosing it:
+// a loop iteration, a parallel branch, a switch arm, or a call. It is not a
+// language stack frame, and a parallel run is described as the branch the stop
+// is in rather than as several threads.
+message DebugFrame {
+  // Id identifies the frame within one snapshot revision, from 1.
+  int32 id = 1 [(buf.validate.field).int32 = {gte: 1}];
+
+  // Label is the frame's display text. Never an identity.
+  string label = 2 [(buf.validate.field).string = {max_len: 1024}];
+
+  // Occurrence is the occurrence this frame stands for. For a container frame
+  // its site is the container step.
+  DebugOccurrence occurrence = 3;
+
+  // Source is where the frame's site came from, when a verified source map
+  // says so; unset otherwise.
+  DebugSourceLocation source = 4;
+
+  // Scoped marks the frame whose bindings [DebugInspectRequest] reads. Only
+  // the innermost frame is scoped: a container's own bindings are the ones in
+  // force at the stop.
+  bool scoped = 5;
+}
+
+// DebugRunState is where a debugged run stands.
+enum DebugRunState {
+  // Unspecified is never written.
+  DEBUG_RUN_STATE_UNSPECIFIED = 0;
+  // Running is executing between boundaries.
+  DEBUG_RUN_STATE_RUNNING = 1;
+  // PauseRequested is running with a pause asked for, which takes effect at
+  // the next boundary the run reaches. It may never take effect: a run that
+  // finishes first completes.
+  DEBUG_RUN_STATE_PAUSE_REQUESTED = 2;
+  // Held is stopped at a boundary.
+  DEBUG_RUN_STATE_HELD = 3;
+  // Completed is finished successfully.
+  DEBUG_RUN_STATE_COMPLETED = 4;
+  // Failed is finished with a failure, or ended by the session.
+  DEBUG_RUN_STATE_FAILED = 5;
+  // Expired is a durable session whose lease or absolute deadline lapsed; the
+  // run resumed on its own.
+  DEBUG_RUN_STATE_EXPIRED = 6;
+  // Detached is a session its controller ended; the run continues unobserved.
+  DEBUG_RUN_STATE_DETACHED = 7;
+}
+
+// DebugStopReason is why a run is held.
+enum DebugStopReason {
+  // Unspecified is written only when the run is not held.
+  DEBUG_STOP_REASON_UNSPECIFIED = 0;
+  // Entry is the first boundary of a session that stops on entry.
+  DEBUG_STOP_REASON_ENTRY = 1;
+  // Step is the boundary a step command ran to.
+  DEBUG_STOP_REASON_STEP = 2;
+  // Breakpoint is a breakpoint whose condition and hit condition held.
+  DEBUG_STOP_REASON_BREAKPOINT = 3;
+  // Pause is the first boundary after a pause request.
+  DEBUG_STOP_REASON_PAUSE = 4;
+  // Failure is a step that failed, stopped after its failure was recorded and
+  // before it propagated.
+  DEBUG_STOP_REASON_FAILURE = 5;
+  // Until is the target of a run-until command.
+  DEBUG_STOP_REASON_UNTIL = 6;
+  // Autopsy is a finished test case held open for questions.
+  DEBUG_STOP_REASON_AUTOPSY = 7;
+}
+
+// DebugCapabilities is what one backend actually does. A surface advertises
+// only what is set here, and refuses the rest explicitly.
+message DebugCapabilities {
+  bool step_in = 1;
+  bool step_over = 2;
+  bool step_out = 3;
+  // Pause stops at the next boundary. It never freezes work already
+  // dispatched: an activity, an HTTP call, or a timer keeps going.
+  bool pause = 4;
+  bool run_until = 5;
+  bool conditional_breakpoints = 6;
+  bool hit_conditions = 7;
+  bool logpoints = 8;
+  bool failure_breakpoints = 9;
+  bool source_breakpoints = 10;
+  // Inspect is read-only CEL evaluation against the held scope.
+  bool inspect = 11;
+  // ValueExpansion is paged child listing of maps and lists.
+  bool value_expansion = 12;
+  bool observations = 13;
+  // Terminate ends the run. Detaching never does.
+  bool terminate = 14;
+  // Reverse is backwards navigation. No backend offers it: a rerun is not
+  // history, and nothing here reconstructs one.
+  bool reverse = 15;
+}
+
+// DebugObservationKind is what a run reported between stops.
+enum DebugObservationKind {
+  DEBUG_OBSERVATION_KIND_UNSPECIFIED = 0;
+  // Finished is a step that produced its outputs.
+  DEBUG_OBSERVATION_KIND_FINISHED = 1;
+  // Skipped is a step whose `if:` evaluated false.
+  DEBUG_OBSERVATION_KIND_SKIPPED = 2;
+  // Failed is a step whose failure propagates.
+  DEBUG_OBSERVATION_KIND_FAILED = 3;
+  // Tolerated is a failure `continue_on_error:` absorbed.
+  DEBUG_OBSERVATION_KIND_TOLERATED = 4;
+  // Waiting is a step that began waiting for a signal or a timer.
+  DEBUG_OBSERVATION_KIND_WAITING = 5;
+  // Log is a logpoint's message. It never stopped the run.
+  DEBUG_OBSERVATION_KIND_LOG = 6;
+  // Notice is the session saying something about itself, such as a
+  // breakpoint condition that could not be evaluated.
+  DEBUG_OBSERVATION_KIND_NOTICE = 7;
+  // Task is a task's own account of its work, reported through
+  // `NoteTask` while a debugger is watching. Local runs only.
+  DEBUG_OBSERVATION_KIND_TASK = 8;
+}
+
+// DebugObservation is one thing the run did, recorded when it happened from
+// the runtime's own account. Nothing is re-evaluated to produce it.
+message DebugObservation {
+  // Sequence orders observations within a session, from 1.
+  uint64 sequence = 1;
+  DebugObservationKind kind = 2 [(buf.validate.field).enum.defined_only = true];
+  string step_id = 3 [(buf.validate.field).string = {max_len: 256}];
+  // Text is the rendered account, after the session's redaction.
+  string text = 4 [(buf.validate.field).string = {max_len: 16384}];
+  // Address is the occurrence address, when the backend knows it.
+  string address = 5 [(buf.validate.field).string = {max_len: 4096}];
+}
+
+// DebugSnapshot is one immutable view of a debug session.
+//
+// A snapshot is identified by its session and [revision]; a revision is never
+// reused, so a handle, frame id, or value read under one revision is refused
+// under another rather than silently answering about a different stop.
+message DebugSnapshot {
+  DebugSession session = 1;
+
+  // Revision increases on every change of state or position.
+  uint64 revision = 2;
+
+  DebugRunState state = 3 [(buf.validate.field).enum.defined_only = true];
+
+  // Reason is why the run is held. Unspecified unless [state] is held.
+  DebugStopReason reason = 4 [(buf.validate.field).enum.defined_only = true];
+
+  // Occurrence is where the run is held, or where it last was.
+  DebugOccurrence occurrence = 5;
+
+  // Frames are the stopped occurrence and its enclosing containers, innermost
+  // first. Empty unless held.
+  repeated DebugFrame frames = 6 [(buf.validate.field).repeated = {max_items: 256}];
+
+  // BreakpointIds names the breakpoints that caused a breakpoint stop.
+  repeated string breakpoint_ids = 7 [(buf.validate.field).repeated = {max_items: 1024}];
+
+  // Failure is the rendered failure for a failure stop, after redaction.
+  string failure = 8 [(buf.validate.field).string = {max_len: 16384}];
+
+  DebugCapabilities capabilities = 9;
+
+  // Message explains the state in a sentence where the state alone does not:
+  // why a session expired, what a run is waiting on.
+  string message = 10 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Observations are the most recent observations, oldest first, bounded.
+  repeated DebugObservation observations = 11 [(buf.validate.field).repeated = {max_items: 1024}];
+
+  // ObservationsDropped counts observations evicted before this snapshot could
+  // carry them.
+  uint64 observations_dropped = 12;
+
+  // Protocol is the durable debug protocol version the run's interpreter
+  // speaks. Zero for a local session.
+  int32 protocol = 13 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Breakpoints are the session's breakpoints as they stand, with their hit
+  // counts.
+  repeated DebugBreakpointState breakpoints = 14 [(buf.validate.field).repeated = {max_items: 1024}];
+
+  // Receipt is the outcome of the command a read named by request id, when it
+  // named one.
+  DebugReceipt receipt = 15;
+  // IrDigest is the content digest of the program the run executes, as its
+  // interpreter encodes it: what a client's source map must be bound to
+  // before its lines are trusted to describe this run.
+  string ir_digest = 16 [(buf.validate.field).string = {max_len: 128}];
+}
+
+// DebugResumeAction is what a resume asks the run to do next.
+enum DebugResumeAction {
+  DEBUG_RESUME_ACTION_UNSPECIFIED = 0;
+  // Continue runs to the next breakpoint, failure stop, or the end.
+  DEBUG_RESUME_ACTION_CONTINUE = 1;
+  // StepIn stops at the next boundary anywhere, including inside the body of
+  // the step being left.
+  DEBUG_RESUME_ACTION_STEP_IN = 2;
+  // StepOver stops at the next boundary at the same nesting or shallower: a
+  // loop, parallel, switch, or call step runs its whole body first.
+  DEBUG_RESUME_ACTION_STEP_OVER = 3;
+  // StepOut stops at the next boundary shallower than the current one.
+  DEBUG_RESUME_ACTION_STEP_OUT = 4;
+  // RunUntil runs to the boundary [DebugResumeRequest.until] names.
+  DEBUG_RESUME_ACTION_RUN_UNTIL = 5;
+  // Detach ends the session: breakpoints are cleared and the run continues.
+  // It never ends the run.
+  DEBUG_RESUME_ACTION_DETACH = 6;
+}
+
+// DebugCommandStatus is what became of one command.
+enum DebugCommandStatus {
+  DEBUG_COMMAND_STATUS_UNSPECIFIED = 0;
+  // Applied means the run acted on the command; the receipt's revision is the
+  // first one that reflects it.
+  DEBUG_COMMAND_STATUS_APPLIED = 1;
+  // Pending means the command was delivered and not yet applied. Delivery is
+  // not application: poll [WorkflowService.DebugGet] or retry with the same
+  // request id.
+  DEBUG_COMMAND_STATUS_PENDING = 2;
+  // Duplicate means this request id was already applied; nothing advanced
+  // twice, and the receipt repeats the original revision.
+  DEBUG_COMMAND_STATUS_DUPLICATE = 3;
+  // Stale means the command named a revision the session has moved past.
+  DEBUG_COMMAND_STATUS_STALE = 4;
+  // Conflict means another controller holds the session, or the session id
+  // does not match the one the run holds.
+  DEBUG_COMMAND_STATUS_CONFLICT = 5;
+  // Refused means the command is invalid in the current state, such as
+  // stepping a run that is not held.
+  DEBUG_COMMAND_STATUS_REFUSED = 6;
+  // Unsupported means this backend does not implement the command.
+  DEBUG_COMMAND_STATUS_UNSUPPORTED = 7;
+  // Incompatible means the run's interpreter predates the protocol the
+  // command needs; nothing was sent that it would misread.
+  DEBUG_COMMAND_STATUS_INCOMPATIBLE = 8;
+  // Ended means the session or the run is over.
+  DEBUG_COMMAND_STATUS_ENDED = 9;
+}
+
+// DebugReceipt is the outcome of one command.
+message DebugReceipt {
+  string request_id = 1 [(buf.validate.field).string = {max_len: 128}];
+  DebugCommandStatus status = 2 [(buf.validate.field).enum.defined_only = true];
+  uint64 revision = 3;
+  string message = 4 [(buf.validate.field).string = {max_len: 4096}];
+}
+
+// DebugBreakpoint is one breakpoint as a client asks for it.
+message DebugBreakpoint {
+  // Id is a client-chosen identifier, echoed in states and stop snapshots.
+  // Empty asks the backend to assign one.
+  string id = 1 [(buf.validate.field).string = {max_len: 128}];
+
+  // Step names where to stop: a bare step id, which arms every site with that
+  // id, or a site path `a/b/c`, which arms exactly one. Exactly one of [step]
+  // and [line] is set.
+  string step = 2 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Line names a source line, resolved through the session's source map to the
+  // innermost site whose span contains it.
+  DebugSourceLine line = 3;
+
+  // Condition is a CEL boolean, evaluated at each arrival in the step's own
+  // scope, exactly as an `if:` would be.
+  string condition = 4 [(buf.validate.field).string = {max_bytes: 65536}];
+
+  // HitCondition filters arrivals whose condition held, by their count: `5`
+  // or `>= 5` (from the fifth on), `== 5`, `> 5`, `< 5`, `<= 5`, or `% 5`
+  // (every fifth).
+  string hit_condition = 5 [(buf.validate.field).string = {max_len: 64}];
+
+  // LogMessage makes this a logpoint: it never stops, and records the message
+  // as an observation instead, with each `{expr}` replaced by that CEL
+  // expression's rendered value.
+  string log_message = 6 [(buf.validate.field).string = {max_bytes: 16384}];
+}
+
+// DebugSourceLine is one line of one source document.
+message DebugSourceLine {
+  string uri = 1 [(buf.validate.field).string = {max_len: 4096}];
+  uint32 line = 2 [(buf.validate.field).uint32 = {gte: 1}];
+}
+
+// DebugBreakpointState is what became of one requested breakpoint.
+message DebugBreakpointState {
+  string id = 1 [(buf.validate.field).string = {max_len: 128}];
+
+  // Verified means the breakpoint is armed. An unverified breakpoint is not
+  // armed, and [message] says why.
+  bool verified = 2;
+
+  string message = 3 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Hits counts arrivals whose condition held, before the hit condition.
+  uint64 hits = 4;
+
+  // Sites are the sites the breakpoint resolved to.
+  repeated DebugSite sites = 5 [(buf.validate.field).repeated = {max_items: 1024}];
+
+  // LastError is the most recent condition or log evaluation error, after
+  // redaction. Such an arrival does not stop the run.
+  string last_error = 6 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Source is where the resolved site came from, when a source map says so.
+  DebugSourceLocation source = 7;
+}
+
+// DebugFailureMode selects which step failures stop the run.
+enum DebugFailureMode {
+  // Unspecified leaves the mode unchanged; a new session starts with none.
+  DEBUG_FAILURE_MODE_UNSPECIFIED = 0;
+  // None never stops on a failure.
+  DEBUG_FAILURE_MODE_NONE = 1;
+  // Uncaught stops on a failure that will propagate.
+  DEBUG_FAILURE_MODE_UNCAUGHT = 2;
+  // All stops on every failure, including those `continue_on_error:`
+  // tolerates.
+  DEBUG_FAILURE_MODE_ALL = 3;
+}
+
+// DebugValue is one evaluated value, as presented.
+//
+// The evaluated value itself stays in the backend; this carries its type, its
+// rendering after redaction, and how to read its children. Redaction controls
+// what is printed. It is not a confidentiality boundary against whoever may
+// evaluate expressions: a predicate over a withheld value answers truthfully.
+message DebugValue {
+  // Type is the value's CEL type as a person reads it: `int`, `string`,
+  // `list`, `map`, `null_type`, a message name.
+  string type = 1 [(buf.validate.field).string = {max_len: 256}];
+
+  string rendered = 2 [(buf.validate.field).string = {max_len: 65536}];
+
+  // Truncated means [rendered] was cut to its bound.
+  bool truncated = 3;
+
+  // Children counts the value's direct children, for a map or list; zero for a
+  // leaf.
+  int32 children = 4 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Expression re-reads this value, and is what a child listing is asked for.
+  string expression = 5 [(buf.validate.field).string = {max_bytes: 65536}];
+}
+
+// DebugVariable is one named child of a scope or a value.
+message DebugVariable {
+  string name = 1 [(buf.validate.field).string = {max_len: 4096}];
+  DebugValue value = 2;
+}
+
+// DebugAttachRequest asks to hold a durable run at its next boundary under a
+// lease, or renews or re-pauses a session the caller already holds.
+message DebugAttachRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  string run_id = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.uuid = true
+  ];
+
+  // SessionId renews or re-pauses an existing session. Empty mints a new one.
+  string session_id = 3 [(buf.validate.field).string = {
+    max_len: 128
+    pattern: "^([A-Za-z0-9._:-]+)?$"
+  }];
+
+  // Lease is how long to hold, bounded by the engine's ceiling.
+  google.protobuf.Duration lease = 4;
+
+  // RequestId makes the ask retry-safe: a retry with the same id returns the
+  // original receipt and never pauses twice.
+  string request_id = 5 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9._:-]+$"
+    }
+  ];
+
+  // Wait bounds how long the server waits for the run to apply the ask before
+  // answering pending. At most 30s.
+  google.protobuf.Duration wait = 6;
+
+  // Renew extends the session's lease without asking for a hold: the
+  // heartbeat a client sends while the run executes with breakpoints armed.
+  // Requires [session_id].
+  bool renew = 7;
+}
+
+// DebugAttachResponse is the attach receipt and the session as it stands.
+message DebugAttachResponse {
+  DebugReceipt receipt = 1;
+  DebugSnapshot snapshot = 2;
+
+  // SessionId is the session the attach is for: the one the request named,
+  // or the one the server minted. Returned even while the attach is pending,
+  // so the caller can follow it before the run has reached a boundary.
+  string session_id = 3 [(buf.validate.field).string = {max_len: 128}];
+}
+
+// DebugGetRequest reads a durable run's debug state.
+message DebugGetRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  string run_id = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.uuid = true
+  ];
+
+  // AfterRevision waits, up to [wait], for a revision greater than this one.
+  uint64 after_revision = 3;
+
+  // Wait bounds the wait. At most 30s; unset answers at once.
+  google.protobuf.Duration wait = 4;
+}
+
+// DebugGetResponse is the session as it stands.
+message DebugGetResponse {
+  DebugSnapshot snapshot = 1;
+}
+
+// DebugResumeRequest releases a hold: continue, step, run until, or detach.
+message DebugResumeRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  string run_id = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.uuid = true
+  ];
+
+  // SessionId must be the session the run holds.
+  string session_id = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9._:-]+$"
+    }
+  ];
+
+  string request_id = 4 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9._:-]+$"
+    }
+  ];
+
+  // ExpectedRevision refuses the command as stale unless the session is still
+  // at this revision. Zero skips the check.
+  uint64 expected_revision = 5;
+
+  DebugResumeAction action = 6 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+
+  // Until is the step id or site path a run-until command runs to.
+  string until = 7 [(buf.validate.field).string = {max_len: 4096}];
+
+  google.protobuf.Duration wait = 8;
+}
+
+// DebugResumeResponse is the resume receipt and the session as it stands.
+message DebugResumeResponse {
+  DebugReceipt receipt = 1;
+  DebugSnapshot snapshot = 2;
+}
+
+// DebugSetBreakpointsRequest replaces a session's breakpoints.
+message DebugSetBreakpointsRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  string run_id = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.uuid = true
+  ];
+
+  string session_id = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9._:-]+$"
+    }
+  ];
+
+  string request_id = 4 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9._:-]+$"
+    }
+  ];
+
+  // Breakpoints is the whole set. The update is atomic: an invalid request
+  // leaves the previous set in force, and an individually unverifiable entry
+  // is reported unverified without disarming the others.
+  repeated DebugBreakpoint breakpoints = 5 [(buf.validate.field).repeated = {max_items: 1024}];
+
+  DebugFailureMode failure_mode = 6 [(buf.validate.field).enum.defined_only = true];
+
+  google.protobuf.Duration wait = 7;
+}
+
+// DebugSetBreakpointsResponse reports each breakpoint's state, in request
+// order.
+message DebugSetBreakpointsResponse {
+  DebugReceipt receipt = 1;
+  repeated DebugBreakpointState breakpoints = 2;
+  DebugSnapshot snapshot = 3;
+}
+
+// DebugInspectRequest evaluates a read-only CEL expression against a held run.
+message DebugInspectRequest {
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  string run_id = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.uuid = true
+  ];
+
+  string session_id = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9._:-]+$"
+    }
+  ];
+
+  // Revision is the snapshot the question is about. A question about a
+  // revision the session has left is refused as stale.
+  uint64 revision = 4;
+
+  // Expression is evaluated by the run's own evaluator under its cost bound.
+  // Empty lists the scope's roots instead.
+  string expression = 5 [(buf.validate.field).string = {max_bytes: 65536}];
+
+  // Children asks for the value's children, paged by [offset] and [limit].
+  bool children = 6;
+
+  int32 offset = 7 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Limit bounds the page. Zero means the backend's default; at most 500.
+  int32 limit = 8 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 500
+  }];
+}
+
+// DebugInspectResponse is one evaluation's answer.
+message DebugInspectResponse {
+  uint64 revision = 1;
+
+  // Value is the evaluated value. Unset when [error] is set, and when the
+  // request listed scope roots.
+  DebugValue value = 2;
+
+  repeated DebugVariable children = 3;
+
+  // Total is how many children exist, of which [children] is one page.
+  int32 total = 4 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Error is the evaluation failure, rendered after redaction.
+  string error = 5 [(buf.validate.field).string = {max_len: 16384}];
+}
+
+// DebugCarry is a durable debug session's state as the run itself holds it,
+// carried across Continue-As-New in [RunState.debug] so a session survives a
+// new segment. Everything here was decided by workflow code from recorded
+// signals, so a replay rebuilds it exactly; nothing here holds a value from the
+// run's scope.
+message DebugCarry {
+  // SessionId is the session attached, or empty after it ended.
+  string session_id = 1 [(buf.validate.field).string = {max_len: 256}];
+
+  // Holder is the attested caller who attached it.
+  WorkloadIdentity holder = 2;
+
+  google.protobuf.Timestamp attached_at = 3;
+
+  // Deadline is the absolute end of the session, however often it is renewed.
+  google.protobuf.Timestamp deadline = 4;
+
+  // LeaseExpiresAt is when the session lapses unless renewed.
+  google.protobuf.Timestamp lease_expires_at = 5;
+
+  // Lease is the duration each renewal buys.
+  google.protobuf.Duration lease = 6;
+
+  uint64 revision = 7;
+
+  // Next is what the next boundary does with the session attached.
+  DebugResumeAction next = 8 [(buf.validate.field).enum.defined_only = true];
+
+  // StepDepth is the call depth a step over or out left from.
+  int32 step_depth = 9;
+
+  string until = 10 [(buf.validate.field).string = {max_len: 4096}];
+
+  repeated DebugBreakpoint breakpoints = 11 [(buf.validate.field).repeated = {max_items: 1024}];
+
+  // Hits counts each breakpoint's arrivals, parallel to [breakpoints].
+  repeated uint64 hits = 12;
+
+  bool pause_requested = 13;
+
+  // Receipts are the most recent commands' outcomes, oldest first, so a retry
+  // after a lost response is answered from the run rather than applied twice.
+  repeated DebugReceipt receipts = 14 [(buf.validate.field).repeated = {max_items: 64}];
+
+  // Ended is how the last session ended, when none is attached.
+  DebugRunState ended = 15 [(buf.validate.field).enum.defined_only = true];
+
+  string message = 16 [(buf.validate.field).string = {max_len: 4096}];
 }

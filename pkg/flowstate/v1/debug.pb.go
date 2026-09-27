@@ -10,6 +10,7 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
@@ -164,6 +165,19 @@ const (
 	DebugCommandVerb_DEBUG_COMMAND_VERB_HELP DebugCommandVerb = 12
 	// List the current step and the `call:` chain that reached it.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_BACKTRACE DebugCommandVerb = 13
+	// Next is `next`: run this step, including anything inside it, and stop at
+	// the next step at this nesting or shallower.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_NEXT DebugCommandVerb = 14
+	// Finish is `finish`: run until the enclosing iteration, branch, switch
+	// arm, or call is left.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_FINISH DebugCommandVerb = 15
+	// Log is `log <step-id> <message>`: a logpoint.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_LOG DebugCommandVerb = 16
+	// Catch is `catch none|uncaught|all`: which step failures stop the run.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_CATCH DebugCommandVerb = 17
+	// Detach is `detach`: clear every breakpoint and let the run finish
+	// unattended.
+	DebugCommandVerb_DEBUG_COMMAND_VERB_DETACH DebugCommandVerb = 18
 )
 
 // Enum value maps for DebugCommandVerb.
@@ -183,6 +197,11 @@ var (
 		11: "DEBUG_COMMAND_VERB_QUIT",
 		12: "DEBUG_COMMAND_VERB_HELP",
 		13: "DEBUG_COMMAND_VERB_BACKTRACE",
+		14: "DEBUG_COMMAND_VERB_NEXT",
+		15: "DEBUG_COMMAND_VERB_FINISH",
+		16: "DEBUG_COMMAND_VERB_LOG",
+		17: "DEBUG_COMMAND_VERB_CATCH",
+		18: "DEBUG_COMMAND_VERB_DETACH",
 	}
 	DebugCommandVerb_value = map[string]int32{
 		"DEBUG_COMMAND_VERB_UNSPECIFIED": 0,
@@ -199,6 +218,11 @@ var (
 		"DEBUG_COMMAND_VERB_QUIT":        11,
 		"DEBUG_COMMAND_VERB_HELP":        12,
 		"DEBUG_COMMAND_VERB_BACKTRACE":   13,
+		"DEBUG_COMMAND_VERB_NEXT":        14,
+		"DEBUG_COMMAND_VERB_FINISH":      15,
+		"DEBUG_COMMAND_VERB_LOG":         16,
+		"DEBUG_COMMAND_VERB_CATCH":       17,
+		"DEBUG_COMMAND_VERB_DETACH":      18,
 	}
 )
 
@@ -227,6 +251,511 @@ func (x DebugCommandVerb) Number() protoreflect.EnumNumber {
 // Deprecated: Use DebugCommandVerb.Descriptor instead.
 func (DebugCommandVerb) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{1}
+}
+
+// DebugSegmentKind is how execution entered a nested part of the program.
+type DebugSegmentKind int32
+
+const (
+	// Unspecified is never written.
+	DebugSegmentKind_DEBUG_SEGMENT_KIND_UNSPECIFIED DebugSegmentKind = 0
+	// Call is a `call:` step running its callee.
+	DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL DebugSegmentKind = 1
+	// Iteration is one pass through a `for_each:` or `loop:` body.
+	DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION DebugSegmentKind = 2
+	// Branch is one branch of a `parallel:` step.
+	DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH DebugSegmentKind = 3
+	// Case is the arm a `switch:` step took.
+	DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE DebugSegmentKind = 4
+)
+
+// Enum value maps for DebugSegmentKind.
+var (
+	DebugSegmentKind_name = map[int32]string{
+		0: "DEBUG_SEGMENT_KIND_UNSPECIFIED",
+		1: "DEBUG_SEGMENT_KIND_CALL",
+		2: "DEBUG_SEGMENT_KIND_ITERATION",
+		3: "DEBUG_SEGMENT_KIND_BRANCH",
+		4: "DEBUG_SEGMENT_KIND_CASE",
+	}
+	DebugSegmentKind_value = map[string]int32{
+		"DEBUG_SEGMENT_KIND_UNSPECIFIED": 0,
+		"DEBUG_SEGMENT_KIND_CALL":        1,
+		"DEBUG_SEGMENT_KIND_ITERATION":   2,
+		"DEBUG_SEGMENT_KIND_BRANCH":      3,
+		"DEBUG_SEGMENT_KIND_CASE":        4,
+	}
+)
+
+func (x DebugSegmentKind) Enum() *DebugSegmentKind {
+	p := new(DebugSegmentKind)
+	*p = x
+	return p
+}
+
+func (x DebugSegmentKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugSegmentKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[2].Descriptor()
+}
+
+func (DebugSegmentKind) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[2]
+}
+
+func (x DebugSegmentKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugSegmentKind.Descriptor instead.
+func (DebugSegmentKind) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{2}
+}
+
+// DebugRunState is where a debugged run stands.
+type DebugRunState int32
+
+const (
+	// Unspecified is never written.
+	DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED DebugRunState = 0
+	// Running is executing between boundaries.
+	DebugRunState_DEBUG_RUN_STATE_RUNNING DebugRunState = 1
+	// PauseRequested is running with a pause asked for, which takes effect at
+	// the next boundary the run reaches. It may never take effect: a run that
+	// finishes first completes.
+	DebugRunState_DEBUG_RUN_STATE_PAUSE_REQUESTED DebugRunState = 2
+	// Held is stopped at a boundary.
+	DebugRunState_DEBUG_RUN_STATE_HELD DebugRunState = 3
+	// Completed is finished successfully.
+	DebugRunState_DEBUG_RUN_STATE_COMPLETED DebugRunState = 4
+	// Failed is finished with a failure, or ended by the session.
+	DebugRunState_DEBUG_RUN_STATE_FAILED DebugRunState = 5
+	// Expired is a durable session whose lease or absolute deadline lapsed; the
+	// run resumed on its own.
+	DebugRunState_DEBUG_RUN_STATE_EXPIRED DebugRunState = 6
+	// Detached is a session its controller ended; the run continues unobserved.
+	DebugRunState_DEBUG_RUN_STATE_DETACHED DebugRunState = 7
+)
+
+// Enum value maps for DebugRunState.
+var (
+	DebugRunState_name = map[int32]string{
+		0: "DEBUG_RUN_STATE_UNSPECIFIED",
+		1: "DEBUG_RUN_STATE_RUNNING",
+		2: "DEBUG_RUN_STATE_PAUSE_REQUESTED",
+		3: "DEBUG_RUN_STATE_HELD",
+		4: "DEBUG_RUN_STATE_COMPLETED",
+		5: "DEBUG_RUN_STATE_FAILED",
+		6: "DEBUG_RUN_STATE_EXPIRED",
+		7: "DEBUG_RUN_STATE_DETACHED",
+	}
+	DebugRunState_value = map[string]int32{
+		"DEBUG_RUN_STATE_UNSPECIFIED":     0,
+		"DEBUG_RUN_STATE_RUNNING":         1,
+		"DEBUG_RUN_STATE_PAUSE_REQUESTED": 2,
+		"DEBUG_RUN_STATE_HELD":            3,
+		"DEBUG_RUN_STATE_COMPLETED":       4,
+		"DEBUG_RUN_STATE_FAILED":          5,
+		"DEBUG_RUN_STATE_EXPIRED":         6,
+		"DEBUG_RUN_STATE_DETACHED":        7,
+	}
+)
+
+func (x DebugRunState) Enum() *DebugRunState {
+	p := new(DebugRunState)
+	*p = x
+	return p
+}
+
+func (x DebugRunState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugRunState) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[3].Descriptor()
+}
+
+func (DebugRunState) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[3]
+}
+
+func (x DebugRunState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugRunState.Descriptor instead.
+func (DebugRunState) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{3}
+}
+
+// DebugStopReason is why a run is held.
+type DebugStopReason int32
+
+const (
+	// Unspecified is written only when the run is not held.
+	DebugStopReason_DEBUG_STOP_REASON_UNSPECIFIED DebugStopReason = 0
+	// Entry is the first boundary of a session that stops on entry.
+	DebugStopReason_DEBUG_STOP_REASON_ENTRY DebugStopReason = 1
+	// Step is the boundary a step command ran to.
+	DebugStopReason_DEBUG_STOP_REASON_STEP DebugStopReason = 2
+	// Breakpoint is a breakpoint whose condition and hit condition held.
+	DebugStopReason_DEBUG_STOP_REASON_BREAKPOINT DebugStopReason = 3
+	// Pause is the first boundary after a pause request.
+	DebugStopReason_DEBUG_STOP_REASON_PAUSE DebugStopReason = 4
+	// Failure is a step that failed, stopped after its failure was recorded and
+	// before it propagated.
+	DebugStopReason_DEBUG_STOP_REASON_FAILURE DebugStopReason = 5
+	// Until is the target of a run-until command.
+	DebugStopReason_DEBUG_STOP_REASON_UNTIL DebugStopReason = 6
+	// Autopsy is a finished test case held open for questions.
+	DebugStopReason_DEBUG_STOP_REASON_AUTOPSY DebugStopReason = 7
+)
+
+// Enum value maps for DebugStopReason.
+var (
+	DebugStopReason_name = map[int32]string{
+		0: "DEBUG_STOP_REASON_UNSPECIFIED",
+		1: "DEBUG_STOP_REASON_ENTRY",
+		2: "DEBUG_STOP_REASON_STEP",
+		3: "DEBUG_STOP_REASON_BREAKPOINT",
+		4: "DEBUG_STOP_REASON_PAUSE",
+		5: "DEBUG_STOP_REASON_FAILURE",
+		6: "DEBUG_STOP_REASON_UNTIL",
+		7: "DEBUG_STOP_REASON_AUTOPSY",
+	}
+	DebugStopReason_value = map[string]int32{
+		"DEBUG_STOP_REASON_UNSPECIFIED": 0,
+		"DEBUG_STOP_REASON_ENTRY":       1,
+		"DEBUG_STOP_REASON_STEP":        2,
+		"DEBUG_STOP_REASON_BREAKPOINT":  3,
+		"DEBUG_STOP_REASON_PAUSE":       4,
+		"DEBUG_STOP_REASON_FAILURE":     5,
+		"DEBUG_STOP_REASON_UNTIL":       6,
+		"DEBUG_STOP_REASON_AUTOPSY":     7,
+	}
+)
+
+func (x DebugStopReason) Enum() *DebugStopReason {
+	p := new(DebugStopReason)
+	*p = x
+	return p
+}
+
+func (x DebugStopReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugStopReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[4].Descriptor()
+}
+
+func (DebugStopReason) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[4]
+}
+
+func (x DebugStopReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugStopReason.Descriptor instead.
+func (DebugStopReason) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{4}
+}
+
+// DebugObservationKind is what a run reported between stops.
+type DebugObservationKind int32
+
+const (
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_UNSPECIFIED DebugObservationKind = 0
+	// Finished is a step that produced its outputs.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED DebugObservationKind = 1
+	// Skipped is a step whose `if:` evaluated false.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED DebugObservationKind = 2
+	// Failed is a step whose failure propagates.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED DebugObservationKind = 3
+	// Tolerated is a failure `continue_on_error:` absorbed.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED DebugObservationKind = 4
+	// Waiting is a step that began waiting for a signal or a timer.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_WAITING DebugObservationKind = 5
+	// Log is a logpoint's message. It never stopped the run.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_LOG DebugObservationKind = 6
+	// Notice is the session saying something about itself, such as a
+	// breakpoint condition that could not be evaluated.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE DebugObservationKind = 7
+	// Task is a task's own account of its work, reported through
+	// `NoteTask` while a debugger is watching. Local runs only.
+	DebugObservationKind_DEBUG_OBSERVATION_KIND_TASK DebugObservationKind = 8
+)
+
+// Enum value maps for DebugObservationKind.
+var (
+	DebugObservationKind_name = map[int32]string{
+		0: "DEBUG_OBSERVATION_KIND_UNSPECIFIED",
+		1: "DEBUG_OBSERVATION_KIND_FINISHED",
+		2: "DEBUG_OBSERVATION_KIND_SKIPPED",
+		3: "DEBUG_OBSERVATION_KIND_FAILED",
+		4: "DEBUG_OBSERVATION_KIND_TOLERATED",
+		5: "DEBUG_OBSERVATION_KIND_WAITING",
+		6: "DEBUG_OBSERVATION_KIND_LOG",
+		7: "DEBUG_OBSERVATION_KIND_NOTICE",
+		8: "DEBUG_OBSERVATION_KIND_TASK",
+	}
+	DebugObservationKind_value = map[string]int32{
+		"DEBUG_OBSERVATION_KIND_UNSPECIFIED": 0,
+		"DEBUG_OBSERVATION_KIND_FINISHED":    1,
+		"DEBUG_OBSERVATION_KIND_SKIPPED":     2,
+		"DEBUG_OBSERVATION_KIND_FAILED":      3,
+		"DEBUG_OBSERVATION_KIND_TOLERATED":   4,
+		"DEBUG_OBSERVATION_KIND_WAITING":     5,
+		"DEBUG_OBSERVATION_KIND_LOG":         6,
+		"DEBUG_OBSERVATION_KIND_NOTICE":      7,
+		"DEBUG_OBSERVATION_KIND_TASK":        8,
+	}
+)
+
+func (x DebugObservationKind) Enum() *DebugObservationKind {
+	p := new(DebugObservationKind)
+	*p = x
+	return p
+}
+
+func (x DebugObservationKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugObservationKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[5].Descriptor()
+}
+
+func (DebugObservationKind) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[5]
+}
+
+func (x DebugObservationKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugObservationKind.Descriptor instead.
+func (DebugObservationKind) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{5}
+}
+
+// DebugResumeAction is what a resume asks the run to do next.
+type DebugResumeAction int32
+
+const (
+	DebugResumeAction_DEBUG_RESUME_ACTION_UNSPECIFIED DebugResumeAction = 0
+	// Continue runs to the next breakpoint, failure stop, or the end.
+	DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE DebugResumeAction = 1
+	// StepIn stops at the next boundary anywhere, including inside the body of
+	// the step being left.
+	DebugResumeAction_DEBUG_RESUME_ACTION_STEP_IN DebugResumeAction = 2
+	// StepOver stops at the next boundary at the same nesting or shallower: a
+	// loop, parallel, switch, or call step runs its whole body first.
+	DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OVER DebugResumeAction = 3
+	// StepOut stops at the next boundary shallower than the current one.
+	DebugResumeAction_DEBUG_RESUME_ACTION_STEP_OUT DebugResumeAction = 4
+	// RunUntil runs to the boundary [DebugResumeRequest.until] names.
+	DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL DebugResumeAction = 5
+	// Detach ends the session: breakpoints are cleared and the run continues.
+	// It never ends the run.
+	DebugResumeAction_DEBUG_RESUME_ACTION_DETACH DebugResumeAction = 6
+)
+
+// Enum value maps for DebugResumeAction.
+var (
+	DebugResumeAction_name = map[int32]string{
+		0: "DEBUG_RESUME_ACTION_UNSPECIFIED",
+		1: "DEBUG_RESUME_ACTION_CONTINUE",
+		2: "DEBUG_RESUME_ACTION_STEP_IN",
+		3: "DEBUG_RESUME_ACTION_STEP_OVER",
+		4: "DEBUG_RESUME_ACTION_STEP_OUT",
+		5: "DEBUG_RESUME_ACTION_RUN_UNTIL",
+		6: "DEBUG_RESUME_ACTION_DETACH",
+	}
+	DebugResumeAction_value = map[string]int32{
+		"DEBUG_RESUME_ACTION_UNSPECIFIED": 0,
+		"DEBUG_RESUME_ACTION_CONTINUE":    1,
+		"DEBUG_RESUME_ACTION_STEP_IN":     2,
+		"DEBUG_RESUME_ACTION_STEP_OVER":   3,
+		"DEBUG_RESUME_ACTION_STEP_OUT":    4,
+		"DEBUG_RESUME_ACTION_RUN_UNTIL":   5,
+		"DEBUG_RESUME_ACTION_DETACH":      6,
+	}
+)
+
+func (x DebugResumeAction) Enum() *DebugResumeAction {
+	p := new(DebugResumeAction)
+	*p = x
+	return p
+}
+
+func (x DebugResumeAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugResumeAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[6].Descriptor()
+}
+
+func (DebugResumeAction) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[6]
+}
+
+func (x DebugResumeAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugResumeAction.Descriptor instead.
+func (DebugResumeAction) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{6}
+}
+
+// DebugCommandStatus is what became of one command.
+type DebugCommandStatus int32
+
+const (
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED DebugCommandStatus = 0
+	// Applied means the run acted on the command; the receipt's revision is the
+	// first one that reflects it.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED DebugCommandStatus = 1
+	// Pending means the command was delivered and not yet applied. Delivery is
+	// not application: poll [WorkflowService.DebugGet] or retry with the same
+	// request id.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING DebugCommandStatus = 2
+	// Duplicate means this request id was already applied; nothing advanced
+	// twice, and the receipt repeats the original revision.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE DebugCommandStatus = 3
+	// Stale means the command named a revision the session has moved past.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE DebugCommandStatus = 4
+	// Conflict means another controller holds the session, or the session id
+	// does not match the one the run holds.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_CONFLICT DebugCommandStatus = 5
+	// Refused means the command is invalid in the current state, such as
+	// stepping a run that is not held.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED DebugCommandStatus = 6
+	// Unsupported means this backend does not implement the command.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSUPPORTED DebugCommandStatus = 7
+	// Incompatible means the run's interpreter predates the protocol the
+	// command needs; nothing was sent that it would misread.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_INCOMPATIBLE DebugCommandStatus = 8
+	// Ended means the session or the run is over.
+	DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED DebugCommandStatus = 9
+)
+
+// Enum value maps for DebugCommandStatus.
+var (
+	DebugCommandStatus_name = map[int32]string{
+		0: "DEBUG_COMMAND_STATUS_UNSPECIFIED",
+		1: "DEBUG_COMMAND_STATUS_APPLIED",
+		2: "DEBUG_COMMAND_STATUS_PENDING",
+		3: "DEBUG_COMMAND_STATUS_DUPLICATE",
+		4: "DEBUG_COMMAND_STATUS_STALE",
+		5: "DEBUG_COMMAND_STATUS_CONFLICT",
+		6: "DEBUG_COMMAND_STATUS_REFUSED",
+		7: "DEBUG_COMMAND_STATUS_UNSUPPORTED",
+		8: "DEBUG_COMMAND_STATUS_INCOMPATIBLE",
+		9: "DEBUG_COMMAND_STATUS_ENDED",
+	}
+	DebugCommandStatus_value = map[string]int32{
+		"DEBUG_COMMAND_STATUS_UNSPECIFIED":  0,
+		"DEBUG_COMMAND_STATUS_APPLIED":      1,
+		"DEBUG_COMMAND_STATUS_PENDING":      2,
+		"DEBUG_COMMAND_STATUS_DUPLICATE":    3,
+		"DEBUG_COMMAND_STATUS_STALE":        4,
+		"DEBUG_COMMAND_STATUS_CONFLICT":     5,
+		"DEBUG_COMMAND_STATUS_REFUSED":      6,
+		"DEBUG_COMMAND_STATUS_UNSUPPORTED":  7,
+		"DEBUG_COMMAND_STATUS_INCOMPATIBLE": 8,
+		"DEBUG_COMMAND_STATUS_ENDED":        9,
+	}
+)
+
+func (x DebugCommandStatus) Enum() *DebugCommandStatus {
+	p := new(DebugCommandStatus)
+	*p = x
+	return p
+}
+
+func (x DebugCommandStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugCommandStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[7].Descriptor()
+}
+
+func (DebugCommandStatus) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[7]
+}
+
+func (x DebugCommandStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugCommandStatus.Descriptor instead.
+func (DebugCommandStatus) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{7}
+}
+
+// DebugFailureMode selects which step failures stop the run.
+type DebugFailureMode int32
+
+const (
+	// Unspecified leaves the mode unchanged; a new session starts with none.
+	DebugFailureMode_DEBUG_FAILURE_MODE_UNSPECIFIED DebugFailureMode = 0
+	// None never stops on a failure.
+	DebugFailureMode_DEBUG_FAILURE_MODE_NONE DebugFailureMode = 1
+	// Uncaught stops on a failure that will propagate.
+	DebugFailureMode_DEBUG_FAILURE_MODE_UNCAUGHT DebugFailureMode = 2
+	// All stops on every failure, including those `continue_on_error:`
+	// tolerates.
+	DebugFailureMode_DEBUG_FAILURE_MODE_ALL DebugFailureMode = 3
+)
+
+// Enum value maps for DebugFailureMode.
+var (
+	DebugFailureMode_name = map[int32]string{
+		0: "DEBUG_FAILURE_MODE_UNSPECIFIED",
+		1: "DEBUG_FAILURE_MODE_NONE",
+		2: "DEBUG_FAILURE_MODE_UNCAUGHT",
+		3: "DEBUG_FAILURE_MODE_ALL",
+	}
+	DebugFailureMode_value = map[string]int32{
+		"DEBUG_FAILURE_MODE_UNSPECIFIED": 0,
+		"DEBUG_FAILURE_MODE_NONE":        1,
+		"DEBUG_FAILURE_MODE_UNCAUGHT":    2,
+		"DEBUG_FAILURE_MODE_ALL":         3,
+	}
+)
+
+func (x DebugFailureMode) Enum() *DebugFailureMode {
+	p := new(DebugFailureMode)
+	*p = x
+	return p
+}
+
+func (x DebugFailureMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DebugFailureMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_debug_proto_enumTypes[8].Descriptor()
+}
+
+func (DebugFailureMode) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_debug_proto_enumTypes[8]
+}
+
+func (x DebugFailureMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DebugFailureMode.Descriptor instead.
+func (DebugFailureMode) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{8}
 }
 
 // DebugPosition is where a paused debug session is holding a run.
@@ -1278,11 +1807,2475 @@ func (x *DebugSession) GetLeaseExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// DebugSite is a static execution site in the compiled program.
+type DebugSite struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Workflow is the name of the workflow that declares the step: the root
+	// workflow, or the callee a `call:` reached.
+	Workflow string `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	// Path is the chain of step ids from that workflow's top level down to and
+	// including the step: `["pages", "page"]` for a step `page` in the body of a
+	// loop `pages`. Ids are unique within a visibility domain rather than within a
+	// file, so the chain, not the last id, is what names one site.
+	Path []string `protobuf:"bytes,2,rep,name=path,proto3" json:"path,omitempty"`
+	// Kind is the step's kind as [DebugPosition.kind] spells it.
+	Kind          string `protobuf:"bytes,3,opt,name=kind,proto3" json:"kind,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSite) Reset() {
+	*x = DebugSite{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSite) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSite) ProtoMessage() {}
+
+func (x *DebugSite) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSite.ProtoReflect.Descriptor instead.
+func (*DebugSite) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DebugSite) GetWorkflow() string {
+	if x != nil {
+		return x.Workflow
+	}
+	return ""
+}
+
+func (x *DebugSite) GetPath() []string {
+	if x != nil {
+		return x.Path
+	}
+	return nil
+}
+
+func (x *DebugSite) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+// DebugSegment is one level of dynamic nesting between the run's top level and
+// an occurrence.
+type DebugSegment struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Kind says how this level was entered.
+	Kind DebugSegmentKind `protobuf:"varint,1,opt,name=kind,proto3,enum=flowstate.v1.DebugSegmentKind" json:"kind,omitempty"`
+	// StepId is the container step: the loop, the parallel, the switch, or the
+	// call step.
+	StepId string `protobuf:"bytes,2,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	// Workflow is the workflow that declares the container step.
+	Workflow string `protobuf:"bytes,3,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	// Index is the iteration, branch, or case index, counting from zero. Zero for
+	// a call.
+	Index int32 `protobuf:"varint,4,opt,name=index,proto3" json:"index,omitempty"`
+	// Callee is the workflow a call entered. Empty for every other kind.
+	Callee        string `protobuf:"bytes,5,opt,name=callee,proto3" json:"callee,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSegment) Reset() {
+	*x = DebugSegment{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSegment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSegment) ProtoMessage() {}
+
+func (x *DebugSegment) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSegment.ProtoReflect.Descriptor instead.
+func (*DebugSegment) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DebugSegment) GetKind() DebugSegmentKind {
+	if x != nil {
+		return x.Kind
+	}
+	return DebugSegmentKind_DEBUG_SEGMENT_KIND_UNSPECIFIED
+}
+
+func (x *DebugSegment) GetStepId() string {
+	if x != nil {
+		return x.StepId
+	}
+	return ""
+}
+
+func (x *DebugSegment) GetWorkflow() string {
+	if x != nil {
+		return x.Workflow
+	}
+	return ""
+}
+
+func (x *DebugSegment) GetIndex() int32 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *DebugSegment) GetCallee() string {
+	if x != nil {
+		return x.Callee
+	}
+	return ""
+}
+
+// DebugOccurrence is one dynamic arrival at a site.
+type DebugOccurrence struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Site is the static site reached.
+	Site *DebugSite `protobuf:"bytes,1,opt,name=site,proto3" json:"site,omitempty"`
+	// Segments are the dynamic levels enclosing the arrival, outermost first.
+	Segments []*DebugSegment `protobuf:"bytes,2,rep,name=segments,proto3" json:"segments,omitempty"`
+	// Address is the canonical text form of this occurrence: segments joined by
+	// `/`, an iteration written `id[3]`, a branch `id#1`, a case `id?0`, a call
+	// `id(callee)`, then the step id. It is what a person types and what a
+	// breakpoint may name; the structured fields above are what a program reads.
+	Address string `protobuf:"bytes,3,opt,name=address,proto3" json:"address,omitempty"`
+	// Arrival counts the boundaries this session has seen, starting at one, so
+	// two stops at the same address in a `loop:` that revisits it are ordered.
+	Arrival uint64 `protobuf:"varint,4,opt,name=arrival,proto3" json:"arrival,omitempty"`
+	// Continuation counts the Continue-As-New segments before the one this
+	// occurrence ran in. Always zero for a local run.
+	Continuation  int32 `protobuf:"varint,5,opt,name=continuation,proto3" json:"continuation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugOccurrence) Reset() {
+	*x = DebugOccurrence{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugOccurrence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugOccurrence) ProtoMessage() {}
+
+func (x *DebugOccurrence) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugOccurrence.ProtoReflect.Descriptor instead.
+func (*DebugOccurrence) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *DebugOccurrence) GetSite() *DebugSite {
+	if x != nil {
+		return x.Site
+	}
+	return nil
+}
+
+func (x *DebugOccurrence) GetSegments() []*DebugSegment {
+	if x != nil {
+		return x.Segments
+	}
+	return nil
+}
+
+func (x *DebugOccurrence) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *DebugOccurrence) GetArrival() uint64 {
+	if x != nil {
+		return x.Arrival
+	}
+	return 0
+}
+
+func (x *DebugOccurrence) GetContinuation() int32 {
+	if x != nil {
+		return x.Continuation
+	}
+	return 0
+}
+
+// DebugSourceDocument is one source document a program was produced from.
+type DebugSourceDocument struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Uri names the document as its producer knows it: a file path or URI for
+	// text, an opaque identifier for a visual canvas.
+	Uri string `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	// Digest is the content digest (`sha256:…`) of the exact bytes the map was
+	// computed from. A consumer holding different bytes must treat every
+	// location in this document as unverified rather than guess a line.
+	Digest string `protobuf:"bytes,2,opt,name=digest,proto3" json:"digest,omitempty"`
+	// Language names the frontend: `flowfile` for YAML+CEL, or any other token a
+	// generator or visual editor chooses.
+	Language string `protobuf:"bytes,3,opt,name=language,proto3" json:"language,omitempty"`
+	// GeneratedFrom is the index into [DebugSourceMap.documents] of the document
+	// this one was generated from, plus one; zero when it is an original.
+	GeneratedFrom int32 `protobuf:"varint,4,opt,name=generated_from,json=generatedFrom,proto3" json:"generated_from,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSourceDocument) Reset() {
+	*x = DebugSourceDocument{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSourceDocument) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSourceDocument) ProtoMessage() {}
+
+func (x *DebugSourceDocument) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSourceDocument.ProtoReflect.Descriptor instead.
+func (*DebugSourceDocument) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *DebugSourceDocument) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *DebugSourceDocument) GetDigest() string {
+	if x != nil {
+		return x.Digest
+	}
+	return ""
+}
+
+func (x *DebugSourceDocument) GetLanguage() string {
+	if x != nil {
+		return x.Language
+	}
+	return ""
+}
+
+func (x *DebugSourceDocument) GetGeneratedFrom() int32 {
+	if x != nil {
+		return x.GeneratedFrom
+	}
+	return 0
+}
+
+// DebugSourceLocation is where one site came from.
+type DebugSourceLocation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Document indexes [DebugSourceMap.documents].
+	Document int32 `protobuf:"varint,1,opt,name=document,proto3" json:"document,omitempty"`
+	// Range is the text span, for a text document. Unset for a location that is
+	// not text.
+	Range *SourceRange `protobuf:"bytes,2,opt,name=range,proto3" json:"range,omitempty"`
+	// NodeId is an opaque locator for a non-text frontend, such as a node on a
+	// visual canvas. Empty for text.
+	NodeId        string `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSourceLocation) Reset() {
+	*x = DebugSourceLocation{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSourceLocation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSourceLocation) ProtoMessage() {}
+
+func (x *DebugSourceLocation) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSourceLocation.ProtoReflect.Descriptor instead.
+func (*DebugSourceLocation) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *DebugSourceLocation) GetDocument() int32 {
+	if x != nil {
+		return x.Document
+	}
+	return 0
+}
+
+func (x *DebugSourceLocation) GetRange() *SourceRange {
+	if x != nil {
+		return x.Range
+	}
+	return nil
+}
+
+func (x *DebugSourceLocation) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+// DebugSourceEntry maps one site to where it came from.
+type DebugSourceEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Site          *DebugSite             `protobuf:"bytes,1,opt,name=site,proto3" json:"site,omitempty"`
+	Location      *DebugSourceLocation   `protobuf:"bytes,2,opt,name=location,proto3" json:"location,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSourceEntry) Reset() {
+	*x = DebugSourceEntry{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSourceEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSourceEntry) ProtoMessage() {}
+
+func (x *DebugSourceEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSourceEntry.ProtoReflect.Descriptor instead.
+func (*DebugSourceEntry) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *DebugSourceEntry) GetSite() *DebugSite {
+	if x != nil {
+		return x.Site
+	}
+	return nil
+}
+
+func (x *DebugSourceEntry) GetLocation() *DebugSourceLocation {
+	if x != nil {
+		return x.Location
+	}
+	return nil
+}
+
+// DebugSourceMap is a bounded sidecar relating a compiled program's sites to
+// its sources.
+//
+// It is never part of the program: it does not enter the executable
+// specification, a digest of it, workflow history, or replay. It is bound to
+// the program it describes by [ir_digest] and to each source by that
+// document's own digest, and a map whose binding does not hold is reported as
+// unverified rather than applied.
+type DebugSourceMap struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// IrDigest is the content digest of the deterministic encoding of the
+	// compiled workflow this map describes, as the producing build encodes it.
+	IrDigest      string                 `protobuf:"bytes,1,opt,name=ir_digest,json=irDigest,proto3" json:"ir_digest,omitempty"`
+	Documents     []*DebugSourceDocument `protobuf:"bytes,2,rep,name=documents,proto3" json:"documents,omitempty"`
+	Entries       []*DebugSourceEntry    `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSourceMap) Reset() {
+	*x = DebugSourceMap{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSourceMap) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSourceMap) ProtoMessage() {}
+
+func (x *DebugSourceMap) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSourceMap.ProtoReflect.Descriptor instead.
+func (*DebugSourceMap) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *DebugSourceMap) GetIrDigest() string {
+	if x != nil {
+		return x.IrDigest
+	}
+	return ""
+}
+
+func (x *DebugSourceMap) GetDocuments() []*DebugSourceDocument {
+	if x != nil {
+		return x.Documents
+	}
+	return nil
+}
+
+func (x *DebugSourceMap) GetEntries() []*DebugSourceEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+// DebugFrame is one level of a stopped run's dynamic nesting, innermost first.
+//
+// A frame is the step the run is stopped before, or a container enclosing it:
+// a loop iteration, a parallel branch, a switch arm, or a call. It is not a
+// language stack frame, and a parallel run is described as the branch the stop
+// is in rather than as several threads.
+type DebugFrame struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Id identifies the frame within one snapshot revision, from 1.
+	Id int32 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Label is the frame's display text. Never an identity.
+	Label string `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	// Occurrence is the occurrence this frame stands for. For a container frame
+	// its site is the container step.
+	Occurrence *DebugOccurrence `protobuf:"bytes,3,opt,name=occurrence,proto3" json:"occurrence,omitempty"`
+	// Source is where the frame's site came from, when a verified source map
+	// says so; unset otherwise.
+	Source *DebugSourceLocation `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	// Scoped marks the frame whose bindings [DebugInspectRequest] reads. Only
+	// the innermost frame is scoped: a container's own bindings are the ones in
+	// force at the stop.
+	Scoped        bool `protobuf:"varint,5,opt,name=scoped,proto3" json:"scoped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugFrame) Reset() {
+	*x = DebugFrame{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugFrame) ProtoMessage() {}
+
+func (x *DebugFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugFrame.ProtoReflect.Descriptor instead.
+func (*DebugFrame) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *DebugFrame) GetId() int32 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *DebugFrame) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *DebugFrame) GetOccurrence() *DebugOccurrence {
+	if x != nil {
+		return x.Occurrence
+	}
+	return nil
+}
+
+func (x *DebugFrame) GetSource() *DebugSourceLocation {
+	if x != nil {
+		return x.Source
+	}
+	return nil
+}
+
+func (x *DebugFrame) GetScoped() bool {
+	if x != nil {
+		return x.Scoped
+	}
+	return false
+}
+
+// DebugCapabilities is what one backend actually does. A surface advertises
+// only what is set here, and refuses the rest explicitly.
+type DebugCapabilities struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	StepIn   bool                   `protobuf:"varint,1,opt,name=step_in,json=stepIn,proto3" json:"step_in,omitempty"`
+	StepOver bool                   `protobuf:"varint,2,opt,name=step_over,json=stepOver,proto3" json:"step_over,omitempty"`
+	StepOut  bool                   `protobuf:"varint,3,opt,name=step_out,json=stepOut,proto3" json:"step_out,omitempty"`
+	// Pause stops at the next boundary. It never freezes work already
+	// dispatched: an activity, an HTTP call, or a timer keeps going.
+	Pause                  bool `protobuf:"varint,4,opt,name=pause,proto3" json:"pause,omitempty"`
+	RunUntil               bool `protobuf:"varint,5,opt,name=run_until,json=runUntil,proto3" json:"run_until,omitempty"`
+	ConditionalBreakpoints bool `protobuf:"varint,6,opt,name=conditional_breakpoints,json=conditionalBreakpoints,proto3" json:"conditional_breakpoints,omitempty"`
+	HitConditions          bool `protobuf:"varint,7,opt,name=hit_conditions,json=hitConditions,proto3" json:"hit_conditions,omitempty"`
+	Logpoints              bool `protobuf:"varint,8,opt,name=logpoints,proto3" json:"logpoints,omitempty"`
+	FailureBreakpoints     bool `protobuf:"varint,9,opt,name=failure_breakpoints,json=failureBreakpoints,proto3" json:"failure_breakpoints,omitempty"`
+	SourceBreakpoints      bool `protobuf:"varint,10,opt,name=source_breakpoints,json=sourceBreakpoints,proto3" json:"source_breakpoints,omitempty"`
+	// Inspect is read-only CEL evaluation against the held scope.
+	Inspect bool `protobuf:"varint,11,opt,name=inspect,proto3" json:"inspect,omitempty"`
+	// ValueExpansion is paged child listing of maps and lists.
+	ValueExpansion bool `protobuf:"varint,12,opt,name=value_expansion,json=valueExpansion,proto3" json:"value_expansion,omitempty"`
+	Observations   bool `protobuf:"varint,13,opt,name=observations,proto3" json:"observations,omitempty"`
+	// Terminate ends the run. Detaching never does.
+	Terminate bool `protobuf:"varint,14,opt,name=terminate,proto3" json:"terminate,omitempty"`
+	// Reverse is backwards navigation. No backend offers it: a rerun is not
+	// history, and nothing here reconstructs one.
+	Reverse       bool `protobuf:"varint,15,opt,name=reverse,proto3" json:"reverse,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugCapabilities) Reset() {
+	*x = DebugCapabilities{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugCapabilities) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugCapabilities) ProtoMessage() {}
+
+func (x *DebugCapabilities) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugCapabilities.ProtoReflect.Descriptor instead.
+func (*DebugCapabilities) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *DebugCapabilities) GetStepIn() bool {
+	if x != nil {
+		return x.StepIn
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetStepOver() bool {
+	if x != nil {
+		return x.StepOver
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetStepOut() bool {
+	if x != nil {
+		return x.StepOut
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetPause() bool {
+	if x != nil {
+		return x.Pause
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetRunUntil() bool {
+	if x != nil {
+		return x.RunUntil
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetConditionalBreakpoints() bool {
+	if x != nil {
+		return x.ConditionalBreakpoints
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetHitConditions() bool {
+	if x != nil {
+		return x.HitConditions
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetLogpoints() bool {
+	if x != nil {
+		return x.Logpoints
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetFailureBreakpoints() bool {
+	if x != nil {
+		return x.FailureBreakpoints
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetSourceBreakpoints() bool {
+	if x != nil {
+		return x.SourceBreakpoints
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetInspect() bool {
+	if x != nil {
+		return x.Inspect
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetValueExpansion() bool {
+	if x != nil {
+		return x.ValueExpansion
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetObservations() bool {
+	if x != nil {
+		return x.Observations
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetTerminate() bool {
+	if x != nil {
+		return x.Terminate
+	}
+	return false
+}
+
+func (x *DebugCapabilities) GetReverse() bool {
+	if x != nil {
+		return x.Reverse
+	}
+	return false
+}
+
+// DebugObservation is one thing the run did, recorded when it happened from
+// the runtime's own account. Nothing is re-evaluated to produce it.
+type DebugObservation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Sequence orders observations within a session, from 1.
+	Sequence uint64               `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Kind     DebugObservationKind `protobuf:"varint,2,opt,name=kind,proto3,enum=flowstate.v1.DebugObservationKind" json:"kind,omitempty"`
+	StepId   string               `protobuf:"bytes,3,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
+	// Text is the rendered account, after the session's redaction.
+	Text string `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"`
+	// Address is the occurrence address, when the backend knows it.
+	Address       string `protobuf:"bytes,5,opt,name=address,proto3" json:"address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugObservation) Reset() {
+	*x = DebugObservation{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugObservation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugObservation) ProtoMessage() {}
+
+func (x *DebugObservation) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugObservation.ProtoReflect.Descriptor instead.
+func (*DebugObservation) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DebugObservation) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *DebugObservation) GetKind() DebugObservationKind {
+	if x != nil {
+		return x.Kind
+	}
+	return DebugObservationKind_DEBUG_OBSERVATION_KIND_UNSPECIFIED
+}
+
+func (x *DebugObservation) GetStepId() string {
+	if x != nil {
+		return x.StepId
+	}
+	return ""
+}
+
+func (x *DebugObservation) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *DebugObservation) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+// DebugSnapshot is one immutable view of a debug session.
+//
+// A snapshot is identified by its session and [revision]; a revision is never
+// reused, so a handle, frame id, or value read under one revision is refused
+// under another rather than silently answering about a different stop.
+type DebugSnapshot struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Session *DebugSession          `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	// Revision increases on every change of state or position.
+	Revision uint64        `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	State    DebugRunState `protobuf:"varint,3,opt,name=state,proto3,enum=flowstate.v1.DebugRunState" json:"state,omitempty"`
+	// Reason is why the run is held. Unspecified unless [state] is held.
+	Reason DebugStopReason `protobuf:"varint,4,opt,name=reason,proto3,enum=flowstate.v1.DebugStopReason" json:"reason,omitempty"`
+	// Occurrence is where the run is held, or where it last was.
+	Occurrence *DebugOccurrence `protobuf:"bytes,5,opt,name=occurrence,proto3" json:"occurrence,omitempty"`
+	// Frames are the stopped occurrence and its enclosing containers, innermost
+	// first. Empty unless held.
+	Frames []*DebugFrame `protobuf:"bytes,6,rep,name=frames,proto3" json:"frames,omitempty"`
+	// BreakpointIds names the breakpoints that caused a breakpoint stop.
+	BreakpointIds []string `protobuf:"bytes,7,rep,name=breakpoint_ids,json=breakpointIds,proto3" json:"breakpoint_ids,omitempty"`
+	// Failure is the rendered failure for a failure stop, after redaction.
+	Failure      string             `protobuf:"bytes,8,opt,name=failure,proto3" json:"failure,omitempty"`
+	Capabilities *DebugCapabilities `protobuf:"bytes,9,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
+	// Message explains the state in a sentence where the state alone does not:
+	// why a session expired, what a run is waiting on.
+	Message string `protobuf:"bytes,10,opt,name=message,proto3" json:"message,omitempty"`
+	// Observations are the most recent observations, oldest first, bounded.
+	Observations []*DebugObservation `protobuf:"bytes,11,rep,name=observations,proto3" json:"observations,omitempty"`
+	// ObservationsDropped counts observations evicted before this snapshot could
+	// carry them.
+	ObservationsDropped uint64 `protobuf:"varint,12,opt,name=observations_dropped,json=observationsDropped,proto3" json:"observations_dropped,omitempty"`
+	// Protocol is the durable debug protocol version the run's interpreter
+	// speaks. Zero for a local session.
+	Protocol int32 `protobuf:"varint,13,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	// Breakpoints are the session's breakpoints as they stand, with their hit
+	// counts.
+	Breakpoints []*DebugBreakpointState `protobuf:"bytes,14,rep,name=breakpoints,proto3" json:"breakpoints,omitempty"`
+	// Receipt is the outcome of the command a read named by request id, when it
+	// named one.
+	Receipt *DebugReceipt `protobuf:"bytes,15,opt,name=receipt,proto3" json:"receipt,omitempty"`
+	// IrDigest is the content digest of the program the run executes, as its
+	// interpreter encodes it: what a client's source map must be bound to
+	// before its lines are trusted to describe this run.
+	IrDigest      string `protobuf:"bytes,16,opt,name=ir_digest,json=irDigest,proto3" json:"ir_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSnapshot) Reset() {
+	*x = DebugSnapshot{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSnapshot) ProtoMessage() {}
+
+func (x *DebugSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSnapshot.ProtoReflect.Descriptor instead.
+func (*DebugSnapshot) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DebugSnapshot) GetSession() *DebugSession {
+	if x != nil {
+		return x.Session
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *DebugSnapshot) GetState() DebugRunState {
+	if x != nil {
+		return x.State
+	}
+	return DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED
+}
+
+func (x *DebugSnapshot) GetReason() DebugStopReason {
+	if x != nil {
+		return x.Reason
+	}
+	return DebugStopReason_DEBUG_STOP_REASON_UNSPECIFIED
+}
+
+func (x *DebugSnapshot) GetOccurrence() *DebugOccurrence {
+	if x != nil {
+		return x.Occurrence
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetFrames() []*DebugFrame {
+	if x != nil {
+		return x.Frames
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetBreakpointIds() []string {
+	if x != nil {
+		return x.BreakpointIds
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetFailure() string {
+	if x != nil {
+		return x.Failure
+	}
+	return ""
+}
+
+func (x *DebugSnapshot) GetCapabilities() *DebugCapabilities {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *DebugSnapshot) GetObservations() []*DebugObservation {
+	if x != nil {
+		return x.Observations
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetObservationsDropped() uint64 {
+	if x != nil {
+		return x.ObservationsDropped
+	}
+	return 0
+}
+
+func (x *DebugSnapshot) GetProtocol() int32 {
+	if x != nil {
+		return x.Protocol
+	}
+	return 0
+}
+
+func (x *DebugSnapshot) GetBreakpoints() []*DebugBreakpointState {
+	if x != nil {
+		return x.Breakpoints
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetReceipt() *DebugReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+func (x *DebugSnapshot) GetIrDigest() string {
+	if x != nil {
+		return x.IrDigest
+	}
+	return ""
+}
+
+// DebugReceipt is the outcome of one command.
+type DebugReceipt struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Status        DebugCommandStatus     `protobuf:"varint,2,opt,name=status,proto3,enum=flowstate.v1.DebugCommandStatus" json:"status,omitempty"`
+	Revision      uint64                 `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	Message       string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugReceipt) Reset() {
+	*x = DebugReceipt{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugReceipt) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugReceipt) ProtoMessage() {}
+
+func (x *DebugReceipt) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugReceipt.ProtoReflect.Descriptor instead.
+func (*DebugReceipt) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *DebugReceipt) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *DebugReceipt) GetStatus() DebugCommandStatus {
+	if x != nil {
+		return x.Status
+	}
+	return DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED
+}
+
+func (x *DebugReceipt) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *DebugReceipt) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// DebugBreakpoint is one breakpoint as a client asks for it.
+type DebugBreakpoint struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Id is a client-chosen identifier, echoed in states and stop snapshots.
+	// Empty asks the backend to assign one.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Step names where to stop: a bare step id, which arms every site with that
+	// id, or a site path `a/b/c`, which arms exactly one. Exactly one of [step]
+	// and [line] is set.
+	Step string `protobuf:"bytes,2,opt,name=step,proto3" json:"step,omitempty"`
+	// Line names a source line, resolved through the session's source map to the
+	// innermost site whose span contains it.
+	Line *DebugSourceLine `protobuf:"bytes,3,opt,name=line,proto3" json:"line,omitempty"`
+	// Condition is a CEL boolean, evaluated at each arrival in the step's own
+	// scope, exactly as an `if:` would be.
+	Condition string `protobuf:"bytes,4,opt,name=condition,proto3" json:"condition,omitempty"`
+	// HitCondition filters arrivals whose condition held, by their count: `5`
+	// or `>= 5` (from the fifth on), `== 5`, `> 5`, `< 5`, `<= 5`, or `% 5`
+	// (every fifth).
+	HitCondition string `protobuf:"bytes,5,opt,name=hit_condition,json=hitCondition,proto3" json:"hit_condition,omitempty"`
+	// LogMessage makes this a logpoint: it never stops, and records the message
+	// as an observation instead, with each `{expr}` replaced by that CEL
+	// expression's rendered value.
+	LogMessage    string `protobuf:"bytes,6,opt,name=log_message,json=logMessage,proto3" json:"log_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugBreakpoint) Reset() {
+	*x = DebugBreakpoint{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugBreakpoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugBreakpoint) ProtoMessage() {}
+
+func (x *DebugBreakpoint) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugBreakpoint.ProtoReflect.Descriptor instead.
+func (*DebugBreakpoint) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *DebugBreakpoint) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DebugBreakpoint) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *DebugBreakpoint) GetLine() *DebugSourceLine {
+	if x != nil {
+		return x.Line
+	}
+	return nil
+}
+
+func (x *DebugBreakpoint) GetCondition() string {
+	if x != nil {
+		return x.Condition
+	}
+	return ""
+}
+
+func (x *DebugBreakpoint) GetHitCondition() string {
+	if x != nil {
+		return x.HitCondition
+	}
+	return ""
+}
+
+func (x *DebugBreakpoint) GetLogMessage() string {
+	if x != nil {
+		return x.LogMessage
+	}
+	return ""
+}
+
+// DebugSourceLine is one line of one source document.
+type DebugSourceLine struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uri           string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`
+	Line          uint32                 `protobuf:"varint,2,opt,name=line,proto3" json:"line,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSourceLine) Reset() {
+	*x = DebugSourceLine{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSourceLine) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSourceLine) ProtoMessage() {}
+
+func (x *DebugSourceLine) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSourceLine.ProtoReflect.Descriptor instead.
+func (*DebugSourceLine) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *DebugSourceLine) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *DebugSourceLine) GetLine() uint32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+// DebugBreakpointState is what became of one requested breakpoint.
+type DebugBreakpointState struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Verified means the breakpoint is armed. An unverified breakpoint is not
+	// armed, and [message] says why.
+	Verified bool   `protobuf:"varint,2,opt,name=verified,proto3" json:"verified,omitempty"`
+	Message  string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	// Hits counts arrivals whose condition held, before the hit condition.
+	Hits uint64 `protobuf:"varint,4,opt,name=hits,proto3" json:"hits,omitempty"`
+	// Sites are the sites the breakpoint resolved to.
+	Sites []*DebugSite `protobuf:"bytes,5,rep,name=sites,proto3" json:"sites,omitempty"`
+	// LastError is the most recent condition or log evaluation error, after
+	// redaction. Such an arrival does not stop the run.
+	LastError string `protobuf:"bytes,6,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	// Source is where the resolved site came from, when a source map says so.
+	Source        *DebugSourceLocation `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugBreakpointState) Reset() {
+	*x = DebugBreakpointState{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugBreakpointState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugBreakpointState) ProtoMessage() {}
+
+func (x *DebugBreakpointState) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugBreakpointState.ProtoReflect.Descriptor instead.
+func (*DebugBreakpointState) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *DebugBreakpointState) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DebugBreakpointState) GetVerified() bool {
+	if x != nil {
+		return x.Verified
+	}
+	return false
+}
+
+func (x *DebugBreakpointState) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *DebugBreakpointState) GetHits() uint64 {
+	if x != nil {
+		return x.Hits
+	}
+	return 0
+}
+
+func (x *DebugBreakpointState) GetSites() []*DebugSite {
+	if x != nil {
+		return x.Sites
+	}
+	return nil
+}
+
+func (x *DebugBreakpointState) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *DebugBreakpointState) GetSource() *DebugSourceLocation {
+	if x != nil {
+		return x.Source
+	}
+	return nil
+}
+
+// DebugValue is one evaluated value, as presented.
+//
+// The evaluated value itself stays in the backend; this carries its type, its
+// rendering after redaction, and how to read its children. Redaction controls
+// what is printed. It is not a confidentiality boundary against whoever may
+// evaluate expressions: a predicate over a withheld value answers truthfully.
+type DebugValue struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Type is the value's CEL type as a person reads it: `int`, `string`,
+	// `list`, `map`, `null_type`, a message name.
+	Type     string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Rendered string `protobuf:"bytes,2,opt,name=rendered,proto3" json:"rendered,omitempty"`
+	// Truncated means [rendered] was cut to its bound.
+	Truncated bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// Children counts the value's direct children, for a map or list; zero for a
+	// leaf.
+	Children int32 `protobuf:"varint,4,opt,name=children,proto3" json:"children,omitempty"`
+	// Expression re-reads this value, and is what a child listing is asked for.
+	Expression    string `protobuf:"bytes,5,opt,name=expression,proto3" json:"expression,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugValue) Reset() {
+	*x = DebugValue{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugValue) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugValue) ProtoMessage() {}
+
+func (x *DebugValue) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugValue.ProtoReflect.Descriptor instead.
+func (*DebugValue) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *DebugValue) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *DebugValue) GetRendered() string {
+	if x != nil {
+		return x.Rendered
+	}
+	return ""
+}
+
+func (x *DebugValue) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *DebugValue) GetChildren() int32 {
+	if x != nil {
+		return x.Children
+	}
+	return 0
+}
+
+func (x *DebugValue) GetExpression() string {
+	if x != nil {
+		return x.Expression
+	}
+	return ""
+}
+
+// DebugVariable is one named child of a scope or a value.
+type DebugVariable struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Value         *DebugValue            `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugVariable) Reset() {
+	*x = DebugVariable{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugVariable) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugVariable) ProtoMessage() {}
+
+func (x *DebugVariable) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugVariable.ProtoReflect.Descriptor instead.
+func (*DebugVariable) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *DebugVariable) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DebugVariable) GetValue() *DebugValue {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+// DebugAttachRequest asks to hold a durable run at its next boundary under a
+// lease, or renews or re-pauses a session the caller already holds.
+type DebugAttachRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// SessionId renews or re-pauses an existing session. Empty mints a new one.
+	SessionId string `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Lease is how long to hold, bounded by the engine's ceiling.
+	Lease *durationpb.Duration `protobuf:"bytes,4,opt,name=lease,proto3" json:"lease,omitempty"`
+	// RequestId makes the ask retry-safe: a retry with the same id returns the
+	// original receipt and never pauses twice.
+	RequestId string `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Wait bounds how long the server waits for the run to apply the ask before
+	// answering pending. At most 30s.
+	Wait *durationpb.Duration `protobuf:"bytes,6,opt,name=wait,proto3" json:"wait,omitempty"`
+	// Renew extends the session's lease without asking for a hold: the
+	// heartbeat a client sends while the run executes with breakpoints armed.
+	// Requires [session_id].
+	Renew         bool `protobuf:"varint,7,opt,name=renew,proto3" json:"renew,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugAttachRequest) Reset() {
+	*x = DebugAttachRequest{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugAttachRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugAttachRequest) ProtoMessage() {}
+
+func (x *DebugAttachRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugAttachRequest.ProtoReflect.Descriptor instead.
+func (*DebugAttachRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *DebugAttachRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *DebugAttachRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *DebugAttachRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DebugAttachRequest) GetLease() *durationpb.Duration {
+	if x != nil {
+		return x.Lease
+	}
+	return nil
+}
+
+func (x *DebugAttachRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *DebugAttachRequest) GetWait() *durationpb.Duration {
+	if x != nil {
+		return x.Wait
+	}
+	return nil
+}
+
+func (x *DebugAttachRequest) GetRenew() bool {
+	if x != nil {
+		return x.Renew
+	}
+	return false
+}
+
+// DebugAttachResponse is the attach receipt and the session as it stands.
+type DebugAttachResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Receipt  *DebugReceipt          `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt,omitempty"`
+	Snapshot *DebugSnapshot         `protobuf:"bytes,2,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	// SessionId is the session the attach is for: the one the request named,
+	// or the one the server minted. Returned even while the attach is pending,
+	// so the caller can follow it before the run has reached a boundary.
+	SessionId     string `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugAttachResponse) Reset() {
+	*x = DebugAttachResponse{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugAttachResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugAttachResponse) ProtoMessage() {}
+
+func (x *DebugAttachResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugAttachResponse.ProtoReflect.Descriptor instead.
+func (*DebugAttachResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *DebugAttachResponse) GetReceipt() *DebugReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+func (x *DebugAttachResponse) GetSnapshot() *DebugSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+func (x *DebugAttachResponse) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+// DebugGetRequest reads a durable run's debug state.
+type DebugGetRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// AfterRevision waits, up to [wait], for a revision greater than this one.
+	AfterRevision uint64 `protobuf:"varint,3,opt,name=after_revision,json=afterRevision,proto3" json:"after_revision,omitempty"`
+	// Wait bounds the wait. At most 30s; unset answers at once.
+	Wait          *durationpb.Duration `protobuf:"bytes,4,opt,name=wait,proto3" json:"wait,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugGetRequest) Reset() {
+	*x = DebugGetRequest{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugGetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugGetRequest) ProtoMessage() {}
+
+func (x *DebugGetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugGetRequest.ProtoReflect.Descriptor instead.
+func (*DebugGetRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *DebugGetRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *DebugGetRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *DebugGetRequest) GetAfterRevision() uint64 {
+	if x != nil {
+		return x.AfterRevision
+	}
+	return 0
+}
+
+func (x *DebugGetRequest) GetWait() *durationpb.Duration {
+	if x != nil {
+		return x.Wait
+	}
+	return nil
+}
+
+// DebugGetResponse is the session as it stands.
+type DebugGetResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Snapshot      *DebugSnapshot         `protobuf:"bytes,1,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugGetResponse) Reset() {
+	*x = DebugGetResponse{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugGetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugGetResponse) ProtoMessage() {}
+
+func (x *DebugGetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugGetResponse.ProtoReflect.Descriptor instead.
+func (*DebugGetResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *DebugGetResponse) GetSnapshot() *DebugSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+// DebugResumeRequest releases a hold: continue, step, run until, or detach.
+type DebugResumeRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// SessionId must be the session the run holds.
+	SessionId string `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	RequestId string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// ExpectedRevision refuses the command as stale unless the session is still
+	// at this revision. Zero skips the check.
+	ExpectedRevision uint64            `protobuf:"varint,5,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	Action           DebugResumeAction `protobuf:"varint,6,opt,name=action,proto3,enum=flowstate.v1.DebugResumeAction" json:"action,omitempty"`
+	// Until is the step id or site path a run-until command runs to.
+	Until         string               `protobuf:"bytes,7,opt,name=until,proto3" json:"until,omitempty"`
+	Wait          *durationpb.Duration `protobuf:"bytes,8,opt,name=wait,proto3" json:"wait,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugResumeRequest) Reset() {
+	*x = DebugResumeRequest{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugResumeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugResumeRequest) ProtoMessage() {}
+
+func (x *DebugResumeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugResumeRequest.ProtoReflect.Descriptor instead.
+func (*DebugResumeRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *DebugResumeRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *DebugResumeRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *DebugResumeRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DebugResumeRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *DebugResumeRequest) GetExpectedRevision() uint64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+func (x *DebugResumeRequest) GetAction() DebugResumeAction {
+	if x != nil {
+		return x.Action
+	}
+	return DebugResumeAction_DEBUG_RESUME_ACTION_UNSPECIFIED
+}
+
+func (x *DebugResumeRequest) GetUntil() string {
+	if x != nil {
+		return x.Until
+	}
+	return ""
+}
+
+func (x *DebugResumeRequest) GetWait() *durationpb.Duration {
+	if x != nil {
+		return x.Wait
+	}
+	return nil
+}
+
+// DebugResumeResponse is the resume receipt and the session as it stands.
+type DebugResumeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Receipt       *DebugReceipt          `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt,omitempty"`
+	Snapshot      *DebugSnapshot         `protobuf:"bytes,2,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugResumeResponse) Reset() {
+	*x = DebugResumeResponse{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugResumeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugResumeResponse) ProtoMessage() {}
+
+func (x *DebugResumeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugResumeResponse.ProtoReflect.Descriptor instead.
+func (*DebugResumeResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *DebugResumeResponse) GetReceipt() *DebugReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+func (x *DebugResumeResponse) GetSnapshot() *DebugSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+// DebugSetBreakpointsRequest replaces a session's breakpoints.
+type DebugSetBreakpointsRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	SessionId  string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	RequestId  string                 `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Breakpoints is the whole set. The update is atomic: an invalid request
+	// leaves the previous set in force, and an individually unverifiable entry
+	// is reported unverified without disarming the others.
+	Breakpoints   []*DebugBreakpoint   `protobuf:"bytes,5,rep,name=breakpoints,proto3" json:"breakpoints,omitempty"`
+	FailureMode   DebugFailureMode     `protobuf:"varint,6,opt,name=failure_mode,json=failureMode,proto3,enum=flowstate.v1.DebugFailureMode" json:"failure_mode,omitempty"`
+	Wait          *durationpb.Duration `protobuf:"bytes,7,opt,name=wait,proto3" json:"wait,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSetBreakpointsRequest) Reset() {
+	*x = DebugSetBreakpointsRequest{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSetBreakpointsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSetBreakpointsRequest) ProtoMessage() {}
+
+func (x *DebugSetBreakpointsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSetBreakpointsRequest.ProtoReflect.Descriptor instead.
+func (*DebugSetBreakpointsRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *DebugSetBreakpointsRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *DebugSetBreakpointsRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *DebugSetBreakpointsRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DebugSetBreakpointsRequest) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *DebugSetBreakpointsRequest) GetBreakpoints() []*DebugBreakpoint {
+	if x != nil {
+		return x.Breakpoints
+	}
+	return nil
+}
+
+func (x *DebugSetBreakpointsRequest) GetFailureMode() DebugFailureMode {
+	if x != nil {
+		return x.FailureMode
+	}
+	return DebugFailureMode_DEBUG_FAILURE_MODE_UNSPECIFIED
+}
+
+func (x *DebugSetBreakpointsRequest) GetWait() *durationpb.Duration {
+	if x != nil {
+		return x.Wait
+	}
+	return nil
+}
+
+// DebugSetBreakpointsResponse reports each breakpoint's state, in request
+// order.
+type DebugSetBreakpointsResponse struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Receipt       *DebugReceipt           `protobuf:"bytes,1,opt,name=receipt,proto3" json:"receipt,omitempty"`
+	Breakpoints   []*DebugBreakpointState `protobuf:"bytes,2,rep,name=breakpoints,proto3" json:"breakpoints,omitempty"`
+	Snapshot      *DebugSnapshot          `protobuf:"bytes,3,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugSetBreakpointsResponse) Reset() {
+	*x = DebugSetBreakpointsResponse{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugSetBreakpointsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugSetBreakpointsResponse) ProtoMessage() {}
+
+func (x *DebugSetBreakpointsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugSetBreakpointsResponse.ProtoReflect.Descriptor instead.
+func (*DebugSetBreakpointsResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *DebugSetBreakpointsResponse) GetReceipt() *DebugReceipt {
+	if x != nil {
+		return x.Receipt
+	}
+	return nil
+}
+
+func (x *DebugSetBreakpointsResponse) GetBreakpoints() []*DebugBreakpointState {
+	if x != nil {
+		return x.Breakpoints
+	}
+	return nil
+}
+
+func (x *DebugSetBreakpointsResponse) GetSnapshot() *DebugSnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+// DebugInspectRequest evaluates a read-only CEL expression against a held run.
+type DebugInspectRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	SessionId  string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Revision is the snapshot the question is about. A question about a
+	// revision the session has left is refused as stale.
+	Revision uint64 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Expression is evaluated by the run's own evaluator under its cost bound.
+	// Empty lists the scope's roots instead.
+	Expression string `protobuf:"bytes,5,opt,name=expression,proto3" json:"expression,omitempty"`
+	// Children asks for the value's children, paged by [offset] and [limit].
+	Children bool  `protobuf:"varint,6,opt,name=children,proto3" json:"children,omitempty"`
+	Offset   int32 `protobuf:"varint,7,opt,name=offset,proto3" json:"offset,omitempty"`
+	// Limit bounds the page. Zero means the backend's default; at most 500.
+	Limit         int32 `protobuf:"varint,8,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugInspectRequest) Reset() {
+	*x = DebugInspectRequest{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugInspectRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugInspectRequest) ProtoMessage() {}
+
+func (x *DebugInspectRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugInspectRequest.ProtoReflect.Descriptor instead.
+func (*DebugInspectRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *DebugInspectRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *DebugInspectRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *DebugInspectRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DebugInspectRequest) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *DebugInspectRequest) GetExpression() string {
+	if x != nil {
+		return x.Expression
+	}
+	return ""
+}
+
+func (x *DebugInspectRequest) GetChildren() bool {
+	if x != nil {
+		return x.Children
+	}
+	return false
+}
+
+func (x *DebugInspectRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *DebugInspectRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// DebugInspectResponse is one evaluation's answer.
+type DebugInspectResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Revision uint64                 `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Value is the evaluated value. Unset when [error] is set, and when the
+	// request listed scope roots.
+	Value    *DebugValue      `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	Children []*DebugVariable `protobuf:"bytes,3,rep,name=children,proto3" json:"children,omitempty"`
+	// Total is how many children exist, of which [children] is one page.
+	Total int32 `protobuf:"varint,4,opt,name=total,proto3" json:"total,omitempty"`
+	// Error is the evaluation failure, rendered after redaction.
+	Error         string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugInspectResponse) Reset() {
+	*x = DebugInspectResponse{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugInspectResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugInspectResponse) ProtoMessage() {}
+
+func (x *DebugInspectResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugInspectResponse.ProtoReflect.Descriptor instead.
+func (*DebugInspectResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *DebugInspectResponse) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *DebugInspectResponse) GetValue() *DebugValue {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *DebugInspectResponse) GetChildren() []*DebugVariable {
+	if x != nil {
+		return x.Children
+	}
+	return nil
+}
+
+func (x *DebugInspectResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *DebugInspectResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// DebugCarry is a durable debug session's state as the run itself holds it,
+// carried across Continue-As-New in [RunState.debug] so a session survives a
+// new segment. Everything here was decided by workflow code from recorded
+// signals, so a replay rebuilds it exactly; nothing here holds a value from the
+// run's scope.
+type DebugCarry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SessionId is the session attached, or empty after it ended.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Holder is the attested caller who attached it.
+	Holder     *WorkloadIdentity      `protobuf:"bytes,2,opt,name=holder,proto3" json:"holder,omitempty"`
+	AttachedAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=attached_at,json=attachedAt,proto3" json:"attached_at,omitempty"`
+	// Deadline is the absolute end of the session, however often it is renewed.
+	Deadline *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=deadline,proto3" json:"deadline,omitempty"`
+	// LeaseExpiresAt is when the session lapses unless renewed.
+	LeaseExpiresAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=lease_expires_at,json=leaseExpiresAt,proto3" json:"lease_expires_at,omitempty"`
+	// Lease is the duration each renewal buys.
+	Lease    *durationpb.Duration `protobuf:"bytes,6,opt,name=lease,proto3" json:"lease,omitempty"`
+	Revision uint64               `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
+	// Next is what the next boundary does with the session attached.
+	Next DebugResumeAction `protobuf:"varint,8,opt,name=next,proto3,enum=flowstate.v1.DebugResumeAction" json:"next,omitempty"`
+	// StepDepth is the call depth a step over or out left from.
+	StepDepth   int32              `protobuf:"varint,9,opt,name=step_depth,json=stepDepth,proto3" json:"step_depth,omitempty"`
+	Until       string             `protobuf:"bytes,10,opt,name=until,proto3" json:"until,omitempty"`
+	Breakpoints []*DebugBreakpoint `protobuf:"bytes,11,rep,name=breakpoints,proto3" json:"breakpoints,omitempty"`
+	// Hits counts each breakpoint's arrivals, parallel to [breakpoints].
+	Hits           []uint64 `protobuf:"varint,12,rep,packed,name=hits,proto3" json:"hits,omitempty"`
+	PauseRequested bool     `protobuf:"varint,13,opt,name=pause_requested,json=pauseRequested,proto3" json:"pause_requested,omitempty"`
+	// Receipts are the most recent commands' outcomes, oldest first, so a retry
+	// after a lost response is answered from the run rather than applied twice.
+	Receipts []*DebugReceipt `protobuf:"bytes,14,rep,name=receipts,proto3" json:"receipts,omitempty"`
+	// Ended is how the last session ended, when none is attached.
+	Ended         DebugRunState `protobuf:"varint,15,opt,name=ended,proto3,enum=flowstate.v1.DebugRunState" json:"ended,omitempty"`
+	Message       string        `protobuf:"bytes,16,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DebugCarry) Reset() {
+	*x = DebugCarry{}
+	mi := &file_flowstate_v1_debug_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DebugCarry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DebugCarry) ProtoMessage() {}
+
+func (x *DebugCarry) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_debug_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DebugCarry.ProtoReflect.Descriptor instead.
+func (*DebugCarry) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_debug_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *DebugCarry) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *DebugCarry) GetHolder() *WorkloadIdentity {
+	if x != nil {
+		return x.Holder
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetAttachedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.AttachedAt
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Deadline
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetLeaseExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LeaseExpiresAt
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetLease() *durationpb.Duration {
+	if x != nil {
+		return x.Lease
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *DebugCarry) GetNext() DebugResumeAction {
+	if x != nil {
+		return x.Next
+	}
+	return DebugResumeAction_DEBUG_RESUME_ACTION_UNSPECIFIED
+}
+
+func (x *DebugCarry) GetStepDepth() int32 {
+	if x != nil {
+		return x.StepDepth
+	}
+	return 0
+}
+
+func (x *DebugCarry) GetUntil() string {
+	if x != nil {
+		return x.Until
+	}
+	return ""
+}
+
+func (x *DebugCarry) GetBreakpoints() []*DebugBreakpoint {
+	if x != nil {
+		return x.Breakpoints
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetHits() []uint64 {
+	if x != nil {
+		return x.Hits
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetPauseRequested() bool {
+	if x != nil {
+		return x.PauseRequested
+	}
+	return false
+}
+
+func (x *DebugCarry) GetReceipts() []*DebugReceipt {
+	if x != nil {
+		return x.Receipts
+	}
+	return nil
+}
+
+func (x *DebugCarry) GetEnded() DebugRunState {
+	if x != nil {
+		return x.Ended
+	}
+	return DebugRunState_DEBUG_RUN_STATE_UNSPECIFIED
+}
+
+func (x *DebugCarry) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_flowstate_v1_debug_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/debug.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x16flowstate/v1/run.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb2\x01\n" +
+	"\x18flowstate/v1/debug.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x16flowstate/v1/run.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb2\x01\n" +
 	"\rDebugPosition\x12\x17\n" +
 	"\astep_id\x18\x01 \x01(\tR\x06stepId\x12\x1a\n" +
 	"\bworkflow\x18\x02 \x01(\tR\bworkflow\x12\x12\n" +
@@ -1341,7 +4334,232 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"attachedAt\x12\x14\n" +
 	"\x05local\x18\x05 \x01(\bR\x05local\x12I\n" +
 	"\x10lease_expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\x0eleaseExpiresAt\x88\x01\x01B\x13\n" +
-	"\x11_lease_expires_at*\xe4\x01\n" +
+	"\x11_lease_expires_at\"s\n" +
+	"\tDebugSite\x12$\n" +
+	"\bworkflow\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\bworkflow\x12#\n" +
+	"\x04path\x18\x02 \x03(\tB\x0f\xbaH\f\x92\x01\t\x10@\"\x05r\x03\x18\x80\x02R\x04path\x12\x1b\n" +
+	"\x04kind\x18\x03 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04kind\"\xd6\x01\n" +
+	"\fDebugSegment\x12<\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1e.flowstate.v1.DebugSegmentKindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\x12!\n" +
+	"\astep_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x06stepId\x12$\n" +
+	"\bworkflow\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\bworkflow\x12\x1d\n" +
+	"\x05index\x18\x04 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\x05index\x12 \n" +
+	"\x06callee\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x06callee\"\xec\x01\n" +
+	"\x0fDebugOccurrence\x12+\n" +
+	"\x04site\x18\x01 \x01(\v2\x17.flowstate.v1.DebugSiteR\x04site\x12A\n" +
+	"\bsegments\x18\x02 \x03(\v2\x1a.flowstate.v1.DebugSegmentB\t\xbaH\x06\x92\x01\x03\x10\x80\x01R\bsegments\x12\"\n" +
+	"\aaddress\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\aaddress\x12\x18\n" +
+	"\aarrival\x18\x04 \x01(\x04R\aarrival\x12+\n" +
+	"\fcontinuation\x18\x05 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\fcontinuation\"\xa8\x01\n" +
+	"\x13DebugSourceDocument\x12\x1a\n" +
+	"\x03uri\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x03uri\x12 \n" +
+	"\x06digest\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x06digest\x12#\n" +
+	"\blanguage\x18\x03 \x01(\tB\a\xbaH\x04r\x02\x18@R\blanguage\x12.\n" +
+	"\x0egenerated_from\x18\x04 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\rgeneratedFrom\"\x8e\x01\n" +
+	"\x13DebugSourceLocation\x12#\n" +
+	"\bdocument\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\bdocument\x12/\n" +
+	"\x05range\x18\x02 \x01(\v2\x19.flowstate.v1.SourceRangeR\x05range\x12!\n" +
+	"\anode_id\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x06nodeId\"~\n" +
+	"\x10DebugSourceEntry\x12+\n" +
+	"\x04site\x18\x01 \x01(\v2\x17.flowstate.v1.DebugSiteR\x04site\x12=\n" +
+	"\blocation\x18\x02 \x01(\v2!.flowstate.v1.DebugSourceLocationR\blocation\"\xc9\x01\n" +
+	"\x0eDebugSourceMap\x12%\n" +
+	"\tir_digest\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\birDigest\x12J\n" +
+	"\tdocuments\x18\x02 \x03(\v2!.flowstate.v1.DebugSourceDocumentB\t\xbaH\x06\x92\x01\x03\x10\x80\x02R\tdocuments\x12D\n" +
+	"\aentries\x18\x03 \x03(\v2\x1e.flowstate.v1.DebugSourceEntryB\n" +
+	"\xbaH\a\x92\x01\x04\x10\x80\x80\x04R\aentries\"\xd7\x01\n" +
+	"\n" +
+	"DebugFrame\x12\x17\n" +
+	"\x02id\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x01R\x02id\x12\x1e\n" +
+	"\x05label\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\bR\x05label\x12=\n" +
+	"\n" +
+	"occurrence\x18\x03 \x01(\v2\x1d.flowstate.v1.DebugOccurrenceR\n" +
+	"occurrence\x129\n" +
+	"\x06source\x18\x04 \x01(\v2!.flowstate.v1.DebugSourceLocationR\x06source\x12\x16\n" +
+	"\x06scoped\x18\x05 \x01(\bR\x06scoped\"\x94\x04\n" +
+	"\x11DebugCapabilities\x12\x17\n" +
+	"\astep_in\x18\x01 \x01(\bR\x06stepIn\x12\x1b\n" +
+	"\tstep_over\x18\x02 \x01(\bR\bstepOver\x12\x19\n" +
+	"\bstep_out\x18\x03 \x01(\bR\astepOut\x12\x14\n" +
+	"\x05pause\x18\x04 \x01(\bR\x05pause\x12\x1b\n" +
+	"\trun_until\x18\x05 \x01(\bR\brunUntil\x127\n" +
+	"\x17conditional_breakpoints\x18\x06 \x01(\bR\x16conditionalBreakpoints\x12%\n" +
+	"\x0ehit_conditions\x18\a \x01(\bR\rhitConditions\x12\x1c\n" +
+	"\tlogpoints\x18\b \x01(\bR\tlogpoints\x12/\n" +
+	"\x13failure_breakpoints\x18\t \x01(\bR\x12failureBreakpoints\x12-\n" +
+	"\x12source_breakpoints\x18\n" +
+	" \x01(\bR\x11sourceBreakpoints\x12\x18\n" +
+	"\ainspect\x18\v \x01(\bR\ainspect\x12'\n" +
+	"\x0fvalue_expansion\x18\f \x01(\bR\x0evalueExpansion\x12\"\n" +
+	"\fobservations\x18\r \x01(\bR\fobservations\x12\x1c\n" +
+	"\tterminate\x18\x0e \x01(\bR\tterminate\x12\x18\n" +
+	"\areverse\x18\x0f \x01(\bR\areverse\"\xd6\x01\n" +
+	"\x10DebugObservation\x12\x1a\n" +
+	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12@\n" +
+	"\x04kind\x18\x02 \x01(\x0e2\".flowstate.v1.DebugObservationKindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\x12!\n" +
+	"\astep_id\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x06stepId\x12\x1d\n" +
+	"\x04text\x18\x04 \x01(\tB\t\xbaH\x06r\x04\x18\x80\x80\x01R\x04text\x12\"\n" +
+	"\aaddress\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\aaddress\"\xf0\x06\n" +
+	"\rDebugSnapshot\x124\n" +
+	"\asession\x18\x01 \x01(\v2\x1a.flowstate.v1.DebugSessionR\asession\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x04R\brevision\x12;\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1b.flowstate.v1.DebugRunStateB\b\xbaH\x05\x82\x01\x02\x10\x01R\x05state\x12?\n" +
+	"\x06reason\x18\x04 \x01(\x0e2\x1d.flowstate.v1.DebugStopReasonB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06reason\x12=\n" +
+	"\n" +
+	"occurrence\x18\x05 \x01(\v2\x1d.flowstate.v1.DebugOccurrenceR\n" +
+	"occurrence\x12;\n" +
+	"\x06frames\x18\x06 \x03(\v2\x18.flowstate.v1.DebugFrameB\t\xbaH\x06\x92\x01\x03\x10\x80\x02R\x06frames\x120\n" +
+	"\x0ebreakpoint_ids\x18\a \x03(\tB\t\xbaH\x06\x92\x01\x03\x10\x80\bR\rbreakpointIds\x12#\n" +
+	"\afailure\x18\b \x01(\tB\t\xbaH\x06r\x04\x18\x80\x80\x01R\afailure\x12C\n" +
+	"\fcapabilities\x18\t \x01(\v2\x1f.flowstate.v1.DebugCapabilitiesR\fcapabilities\x12\"\n" +
+	"\amessage\x18\n" +
+	" \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\amessage\x12M\n" +
+	"\fobservations\x18\v \x03(\v2\x1e.flowstate.v1.DebugObservationB\t\xbaH\x06\x92\x01\x03\x10\x80\bR\fobservations\x121\n" +
+	"\x14observations_dropped\x18\f \x01(\x04R\x13observationsDropped\x12#\n" +
+	"\bprotocol\x18\r \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\bprotocol\x12O\n" +
+	"\vbreakpoints\x18\x0e \x03(\v2\".flowstate.v1.DebugBreakpointStateB\t\xbaH\x06\x92\x01\x03\x10\x80\bR\vbreakpoints\x124\n" +
+	"\areceipt\x18\x0f \x01(\v2\x1a.flowstate.v1.DebugReceiptR\areceipt\x12%\n" +
+	"\tir_digest\x18\x10 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\birDigest\"\xbb\x01\n" +
+	"\fDebugReceipt\x12'\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\trequestId\x12B\n" +
+	"\x06status\x18\x02 \x01(\x0e2 .flowstate.v1.DebugCommandStatusB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06status\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\x04R\brevision\x12\"\n" +
+	"\amessage\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\amessage\"\xff\x01\n" +
+	"\x0fDebugBreakpoint\x12\x18\n" +
+	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x02id\x12\x1c\n" +
+	"\x04step\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04step\x121\n" +
+	"\x04line\x18\x03 \x01(\v2\x1d.flowstate.v1.DebugSourceLineR\x04line\x12'\n" +
+	"\tcondition\x18\x04 \x01(\tB\t\xbaH\x06r\x04(\x80\x80\x04R\tcondition\x12,\n" +
+	"\rhit_condition\x18\x05 \x01(\tB\a\xbaH\x04r\x02\x18@R\fhitCondition\x12*\n" +
+	"\vlog_message\x18\x06 \x01(\tB\t\xbaH\x06r\x04(\x80\x80\x01R\n" +
+	"logMessage\"J\n" +
+	"\x0fDebugSourceLine\x12\x1a\n" +
+	"\x03uri\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x03uri\x12\x1b\n" +
+	"\x04line\x18\x02 \x01(\rB\a\xbaH\x04*\x02(\x01R\x04line\"\xa2\x02\n" +
+	"\x14DebugBreakpointState\x12\x18\n" +
+	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\x02id\x12\x1a\n" +
+	"\bverified\x18\x02 \x01(\bR\bverified\x12\"\n" +
+	"\amessage\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\amessage\x12\x12\n" +
+	"\x04hits\x18\x04 \x01(\x04R\x04hits\x128\n" +
+	"\x05sites\x18\x05 \x03(\v2\x17.flowstate.v1.DebugSiteB\t\xbaH\x06\x92\x01\x03\x10\x80\bR\x05sites\x12'\n" +
+	"\n" +
+	"last_error\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\tlastError\x129\n" +
+	"\x06source\x18\a \x01(\v2!.flowstate.v1.DebugSourceLocationR\x06source\"\xbf\x01\n" +
+	"\n" +
+	"DebugValue\x12\x1c\n" +
+	"\x04type\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x04type\x12%\n" +
+	"\brendered\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x18\x80\x80\x04R\brendered\x12\x1c\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12#\n" +
+	"\bchildren\x18\x04 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\bchildren\x12)\n" +
+	"\n" +
+	"expression\x18\x05 \x01(\tB\t\xbaH\x06r\x04(\x80\x80\x04R\n" +
+	"expression\"]\n" +
+	"\rDebugVariable\x12\x1c\n" +
+	"\x04name\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04name\x12.\n" +
+	"\x05value\x18\x02 \x01(\v2\x18.flowstate.v1.DebugValueR\x05value\"\xe0\x02\n" +
+	"\x12DebugAttachRequest\x12.\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12>\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tB\x1f\xbaH\x1cr\x1a\x18\x80\x012\x15^([A-Za-z0-9._:-]+)?$R\tsessionId\x12/\n" +
+	"\x05lease\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x05lease\x12@\n" +
+	"\n" +
+	"request_id\x18\x05 \x01(\tB!\xbaH\x1e\xc8\x01\x01r\x19\x10\x01\x18\x80\x012\x12^[A-Za-z0-9._:-]+$R\trequestId\x12-\n" +
+	"\x04wait\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\x04wait\x12\x14\n" +
+	"\x05renew\x18\a \x01(\bR\x05renew\"\xad\x01\n" +
+	"\x13DebugAttachResponse\x124\n" +
+	"\areceipt\x18\x01 \x01(\v2\x1a.flowstate.v1.DebugReceiptR\areceipt\x127\n" +
+	"\bsnapshot\x18\x02 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\x12'\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\tsessionId\"\xbb\x01\n" +
+	"\x0fDebugGetRequest\x12.\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12%\n" +
+	"\x0eafter_revision\x18\x03 \x01(\x04R\rafterRevision\x12-\n" +
+	"\x04wait\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\x04wait\"K\n" +
+	"\x10DebugGetResponse\x127\n" +
+	"\bsnapshot\x18\x01 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\"\xad\x03\n" +
+	"\x12DebugResumeRequest\x12.\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12@\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tB!\xbaH\x1e\xc8\x01\x01r\x19\x10\x01\x18\x80\x012\x12^[A-Za-z0-9._:-]+$R\tsessionId\x12@\n" +
+	"\n" +
+	"request_id\x18\x04 \x01(\tB!\xbaH\x1e\xc8\x01\x01r\x19\x10\x01\x18\x80\x012\x12^[A-Za-z0-9._:-]+$R\trequestId\x12+\n" +
+	"\x11expected_revision\x18\x05 \x01(\x04R\x10expectedRevision\x12C\n" +
+	"\x06action\x18\x06 \x01(\x0e2\x1f.flowstate.v1.DebugResumeActionB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x06action\x12\x1e\n" +
+	"\x05until\x18\a \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x05until\x12-\n" +
+	"\x04wait\x18\b \x01(\v2\x19.google.protobuf.DurationR\x04wait\"\x84\x01\n" +
+	"\x13DebugResumeResponse\x124\n" +
+	"\areceipt\x18\x01 \x01(\v2\x1a.flowstate.v1.DebugReceiptR\areceipt\x127\n" +
+	"\bsnapshot\x18\x02 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\"\xbc\x03\n" +
+	"\x1aDebugSetBreakpointsRequest\x12.\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12@\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tB!\xbaH\x1e\xc8\x01\x01r\x19\x10\x01\x18\x80\x012\x12^[A-Za-z0-9._:-]+$R\tsessionId\x12@\n" +
+	"\n" +
+	"request_id\x18\x04 \x01(\tB!\xbaH\x1e\xc8\x01\x01r\x19\x10\x01\x18\x80\x012\x12^[A-Za-z0-9._:-]+$R\trequestId\x12J\n" +
+	"\vbreakpoints\x18\x05 \x03(\v2\x1d.flowstate.v1.DebugBreakpointB\t\xbaH\x06\x92\x01\x03\x10\x80\bR\vbreakpoints\x12K\n" +
+	"\ffailure_mode\x18\x06 \x01(\x0e2\x1e.flowstate.v1.DebugFailureModeB\b\xbaH\x05\x82\x01\x02\x10\x01R\vfailureMode\x12-\n" +
+	"\x04wait\x18\a \x01(\v2\x19.google.protobuf.DurationR\x04wait\"\xd2\x01\n" +
+	"\x1bDebugSetBreakpointsResponse\x124\n" +
+	"\areceipt\x18\x01 \x01(\v2\x1a.flowstate.v1.DebugReceiptR\areceipt\x12D\n" +
+	"\vbreakpoints\x18\x02 \x03(\v2\".flowstate.v1.DebugBreakpointStateR\vbreakpoints\x127\n" +
+	"\bsnapshot\x18\x03 \x01(\v2\x1b.flowstate.v1.DebugSnapshotR\bsnapshot\"\xd1\x02\n" +
+	"\x13DebugInspectRequest\x12.\n" +
+	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
+	"workflowId\x12\"\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12@\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tB!\xbaH\x1e\xc8\x01\x01r\x19\x10\x01\x18\x80\x012\x12^[A-Za-z0-9._:-]+$R\tsessionId\x12\x1a\n" +
+	"\brevision\x18\x04 \x01(\x04R\brevision\x12)\n" +
+	"\n" +
+	"expression\x18\x05 \x01(\tB\t\xbaH\x06r\x04(\x80\x80\x04R\n" +
+	"expression\x12\x1a\n" +
+	"\bchildren\x18\x06 \x01(\bR\bchildren\x12\x1f\n" +
+	"\x06offset\x18\a \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\x06offset\x12 \n" +
+	"\x05limit\x18\b \x01(\x05B\n" +
+	"\xbaH\a\x1a\x05\x18\xf4\x03(\x00R\x05limit\"\xdb\x01\n" +
+	"\x14DebugInspectResponse\x12\x1a\n" +
+	"\brevision\x18\x01 \x01(\x04R\brevision\x12.\n" +
+	"\x05value\x18\x02 \x01(\v2\x18.flowstate.v1.DebugValueR\x05value\x127\n" +
+	"\bchildren\x18\x03 \x03(\v2\x1b.flowstate.v1.DebugVariableR\bchildren\x12\x1d\n" +
+	"\x05total\x18\x04 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\x05total\x12\x1f\n" +
+	"\x05error\x18\x05 \x01(\tB\t\xbaH\x06r\x04\x18\x80\x80\x01R\x05error\"\x9f\x06\n" +
+	"\n" +
+	"DebugCarry\x12'\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tsessionId\x126\n" +
+	"\x06holder\x18\x02 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\x06holder\x12;\n" +
+	"\vattached_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"attachedAt\x126\n" +
+	"\bdeadline\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bdeadline\x12D\n" +
+	"\x10lease_expires_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x0eleaseExpiresAt\x12/\n" +
+	"\x05lease\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\x05lease\x12\x1a\n" +
+	"\brevision\x18\a \x01(\x04R\brevision\x12=\n" +
+	"\x04next\x18\b \x01(\x0e2\x1f.flowstate.v1.DebugResumeActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04next\x12\x1d\n" +
+	"\n" +
+	"step_depth\x18\t \x01(\x05R\tstepDepth\x12\x1e\n" +
+	"\x05until\x18\n" +
+	" \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x05until\x12J\n" +
+	"\vbreakpoints\x18\v \x03(\v2\x1d.flowstate.v1.DebugBreakpointB\t\xbaH\x06\x92\x01\x03\x10\x80\bR\vbreakpoints\x12\x12\n" +
+	"\x04hits\x18\f \x03(\x04R\x04hits\x12'\n" +
+	"\x0fpause_requested\x18\r \x01(\bR\x0epauseRequested\x12@\n" +
+	"\breceipts\x18\x0e \x03(\v2\x1a.flowstate.v1.DebugReceiptB\b\xbaH\x05\x92\x01\x02\x10@R\breceipts\x12;\n" +
+	"\x05ended\x18\x0f \x01(\x0e2\x1b.flowstate.v1.DebugRunStateB\b\xbaH\x05\x82\x01\x02\x10\x01R\x05ended\x12\"\n" +
+	"\amessage\x18\x10 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\amessage*\xe4\x01\n" +
 	"\x0eDebugStepState\x12 \n" +
 	"\x1cDEBUG_STEP_STATE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18DEBUG_STEP_STATE_PENDING\x10\x01\x12\x1c\n" +
@@ -1349,7 +4567,7 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x15DEBUG_STEP_STATE_DONE\x10\x03\x12\x1e\n" +
 	"\x1aDEBUG_STEP_STATE_TOLERATED\x10\x04\x12\x1b\n" +
 	"\x17DEBUG_STEP_STATE_FAILED\x10\x05\x12\x1c\n" +
-	"\x18DEBUG_STEP_STATE_SKIPPED\x10\x06*\xcb\x03\n" +
+	"\x18DEBUG_STEP_STATE_SKIPPED\x10\x06*\xe0\x04\n" +
 	"\x10DebugCommandVerb\x12\"\n" +
 	"\x1eDEBUG_COMMAND_VERB_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DEBUG_COMMAND_VERB_STEP\x10\x01\x12\x1f\n" +
@@ -1365,7 +4583,70 @@ const file_flowstate_v1_debug_proto_rawDesc = "" +
 	"\x12\x1b\n" +
 	"\x17DEBUG_COMMAND_VERB_QUIT\x10\v\x12\x1b\n" +
 	"\x17DEBUG_COMMAND_VERB_HELP\x10\f\x12 \n" +
-	"\x1cDEBUG_COMMAND_VERB_BACKTRACE\x10\rB\xa9\x01\n" +
+	"\x1cDEBUG_COMMAND_VERB_BACKTRACE\x10\r\x12\x1b\n" +
+	"\x17DEBUG_COMMAND_VERB_NEXT\x10\x0e\x12\x1d\n" +
+	"\x19DEBUG_COMMAND_VERB_FINISH\x10\x0f\x12\x1a\n" +
+	"\x16DEBUG_COMMAND_VERB_LOG\x10\x10\x12\x1c\n" +
+	"\x18DEBUG_COMMAND_VERB_CATCH\x10\x11\x12\x1d\n" +
+	"\x19DEBUG_COMMAND_VERB_DETACH\x10\x12*\xb1\x01\n" +
+	"\x10DebugSegmentKind\x12\"\n" +
+	"\x1eDEBUG_SEGMENT_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17DEBUG_SEGMENT_KIND_CALL\x10\x01\x12 \n" +
+	"\x1cDEBUG_SEGMENT_KIND_ITERATION\x10\x02\x12\x1d\n" +
+	"\x19DEBUG_SEGMENT_KIND_BRANCH\x10\x03\x12\x1b\n" +
+	"\x17DEBUG_SEGMENT_KIND_CASE\x10\x04*\x82\x02\n" +
+	"\rDebugRunState\x12\x1f\n" +
+	"\x1bDEBUG_RUN_STATE_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17DEBUG_RUN_STATE_RUNNING\x10\x01\x12#\n" +
+	"\x1fDEBUG_RUN_STATE_PAUSE_REQUESTED\x10\x02\x12\x18\n" +
+	"\x14DEBUG_RUN_STATE_HELD\x10\x03\x12\x1d\n" +
+	"\x19DEBUG_RUN_STATE_COMPLETED\x10\x04\x12\x1a\n" +
+	"\x16DEBUG_RUN_STATE_FAILED\x10\x05\x12\x1b\n" +
+	"\x17DEBUG_RUN_STATE_EXPIRED\x10\x06\x12\x1c\n" +
+	"\x18DEBUG_RUN_STATE_DETACHED\x10\a*\x87\x02\n" +
+	"\x0fDebugStopReason\x12!\n" +
+	"\x1dDEBUG_STOP_REASON_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17DEBUG_STOP_REASON_ENTRY\x10\x01\x12\x1a\n" +
+	"\x16DEBUG_STOP_REASON_STEP\x10\x02\x12 \n" +
+	"\x1cDEBUG_STOP_REASON_BREAKPOINT\x10\x03\x12\x1b\n" +
+	"\x17DEBUG_STOP_REASON_PAUSE\x10\x04\x12\x1d\n" +
+	"\x19DEBUG_STOP_REASON_FAILURE\x10\x05\x12\x1b\n" +
+	"\x17DEBUG_STOP_REASON_UNTIL\x10\x06\x12\x1d\n" +
+	"\x19DEBUG_STOP_REASON_AUTOPSY\x10\a*\xd8\x02\n" +
+	"\x14DebugObservationKind\x12&\n" +
+	"\"DEBUG_OBSERVATION_KIND_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fDEBUG_OBSERVATION_KIND_FINISHED\x10\x01\x12\"\n" +
+	"\x1eDEBUG_OBSERVATION_KIND_SKIPPED\x10\x02\x12!\n" +
+	"\x1dDEBUG_OBSERVATION_KIND_FAILED\x10\x03\x12$\n" +
+	" DEBUG_OBSERVATION_KIND_TOLERATED\x10\x04\x12\"\n" +
+	"\x1eDEBUG_OBSERVATION_KIND_WAITING\x10\x05\x12\x1e\n" +
+	"\x1aDEBUG_OBSERVATION_KIND_LOG\x10\x06\x12!\n" +
+	"\x1dDEBUG_OBSERVATION_KIND_NOTICE\x10\a\x12\x1f\n" +
+	"\x1bDEBUG_OBSERVATION_KIND_TASK\x10\b*\x83\x02\n" +
+	"\x11DebugResumeAction\x12#\n" +
+	"\x1fDEBUG_RESUME_ACTION_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cDEBUG_RESUME_ACTION_CONTINUE\x10\x01\x12\x1f\n" +
+	"\x1bDEBUG_RESUME_ACTION_STEP_IN\x10\x02\x12!\n" +
+	"\x1dDEBUG_RESUME_ACTION_STEP_OVER\x10\x03\x12 \n" +
+	"\x1cDEBUG_RESUME_ACTION_STEP_OUT\x10\x04\x12!\n" +
+	"\x1dDEBUG_RESUME_ACTION_RUN_UNTIL\x10\x05\x12\x1e\n" +
+	"\x1aDEBUG_RESUME_ACTION_DETACH\x10\x06*\xf4\x02\n" +
+	"\x12DebugCommandStatus\x12$\n" +
+	" DEBUG_COMMAND_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
+	"\x1cDEBUG_COMMAND_STATUS_APPLIED\x10\x01\x12 \n" +
+	"\x1cDEBUG_COMMAND_STATUS_PENDING\x10\x02\x12\"\n" +
+	"\x1eDEBUG_COMMAND_STATUS_DUPLICATE\x10\x03\x12\x1e\n" +
+	"\x1aDEBUG_COMMAND_STATUS_STALE\x10\x04\x12!\n" +
+	"\x1dDEBUG_COMMAND_STATUS_CONFLICT\x10\x05\x12 \n" +
+	"\x1cDEBUG_COMMAND_STATUS_REFUSED\x10\x06\x12$\n" +
+	" DEBUG_COMMAND_STATUS_UNSUPPORTED\x10\a\x12%\n" +
+	"!DEBUG_COMMAND_STATUS_INCOMPATIBLE\x10\b\x12\x1e\n" +
+	"\x1aDEBUG_COMMAND_STATUS_ENDED\x10\t*\x90\x01\n" +
+	"\x10DebugFailureMode\x12\"\n" +
+	"\x1eDEBUG_FAILURE_MODE_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17DEBUG_FAILURE_MODE_NONE\x10\x01\x12\x1f\n" +
+	"\x1bDEBUG_FAILURE_MODE_UNCAUGHT\x10\x02\x12\x1a\n" +
+	"\x16DEBUG_FAILURE_MODE_ALL\x10\x03B\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"DebugProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
@@ -1381,41 +4662,130 @@ func file_flowstate_v1_debug_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_debug_proto_rawDescData
 }
 
-var file_flowstate_v1_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_flowstate_v1_debug_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
+var file_flowstate_v1_debug_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_flowstate_v1_debug_proto_goTypes = []any{
-	(DebugStepState)(0),           // 0: flowstate.v1.DebugStepState
-	(DebugCommandVerb)(0),         // 1: flowstate.v1.DebugCommandVerb
-	(*DebugPosition)(nil),         // 2: flowstate.v1.DebugPosition
-	(*DebugStackFrame)(nil),       // 3: flowstate.v1.DebugStackFrame
-	(*DebugBacktrace)(nil),        // 4: flowstate.v1.DebugBacktrace
-	(*DebugStep)(nil),             // 5: flowstate.v1.DebugStep
-	(*DebugStepWindow)(nil),       // 6: flowstate.v1.DebugStepWindow
-	(*DebugBinding)(nil),          // 7: flowstate.v1.DebugBinding
-	(*DebugScopeGroup)(nil),       // 8: flowstate.v1.DebugScopeGroup
-	(*DebugScope)(nil),            // 9: flowstate.v1.DebugScope
-	(*DebugCommand)(nil),          // 10: flowstate.v1.DebugCommand
-	(*DebugSession)(nil),          // 11: flowstate.v1.DebugSession
-	(*RunAddress)(nil),            // 12: flowstate.v1.RunAddress
-	(*WorkloadIdentity)(nil),      // 13: flowstate.v1.WorkloadIdentity
-	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(DebugStepState)(0),                 // 0: flowstate.v1.DebugStepState
+	(DebugCommandVerb)(0),               // 1: flowstate.v1.DebugCommandVerb
+	(DebugSegmentKind)(0),               // 2: flowstate.v1.DebugSegmentKind
+	(DebugRunState)(0),                  // 3: flowstate.v1.DebugRunState
+	(DebugStopReason)(0),                // 4: flowstate.v1.DebugStopReason
+	(DebugObservationKind)(0),           // 5: flowstate.v1.DebugObservationKind
+	(DebugResumeAction)(0),              // 6: flowstate.v1.DebugResumeAction
+	(DebugCommandStatus)(0),             // 7: flowstate.v1.DebugCommandStatus
+	(DebugFailureMode)(0),               // 8: flowstate.v1.DebugFailureMode
+	(*DebugPosition)(nil),               // 9: flowstate.v1.DebugPosition
+	(*DebugStackFrame)(nil),             // 10: flowstate.v1.DebugStackFrame
+	(*DebugBacktrace)(nil),              // 11: flowstate.v1.DebugBacktrace
+	(*DebugStep)(nil),                   // 12: flowstate.v1.DebugStep
+	(*DebugStepWindow)(nil),             // 13: flowstate.v1.DebugStepWindow
+	(*DebugBinding)(nil),                // 14: flowstate.v1.DebugBinding
+	(*DebugScopeGroup)(nil),             // 15: flowstate.v1.DebugScopeGroup
+	(*DebugScope)(nil),                  // 16: flowstate.v1.DebugScope
+	(*DebugCommand)(nil),                // 17: flowstate.v1.DebugCommand
+	(*DebugSession)(nil),                // 18: flowstate.v1.DebugSession
+	(*DebugSite)(nil),                   // 19: flowstate.v1.DebugSite
+	(*DebugSegment)(nil),                // 20: flowstate.v1.DebugSegment
+	(*DebugOccurrence)(nil),             // 21: flowstate.v1.DebugOccurrence
+	(*DebugSourceDocument)(nil),         // 22: flowstate.v1.DebugSourceDocument
+	(*DebugSourceLocation)(nil),         // 23: flowstate.v1.DebugSourceLocation
+	(*DebugSourceEntry)(nil),            // 24: flowstate.v1.DebugSourceEntry
+	(*DebugSourceMap)(nil),              // 25: flowstate.v1.DebugSourceMap
+	(*DebugFrame)(nil),                  // 26: flowstate.v1.DebugFrame
+	(*DebugCapabilities)(nil),           // 27: flowstate.v1.DebugCapabilities
+	(*DebugObservation)(nil),            // 28: flowstate.v1.DebugObservation
+	(*DebugSnapshot)(nil),               // 29: flowstate.v1.DebugSnapshot
+	(*DebugReceipt)(nil),                // 30: flowstate.v1.DebugReceipt
+	(*DebugBreakpoint)(nil),             // 31: flowstate.v1.DebugBreakpoint
+	(*DebugSourceLine)(nil),             // 32: flowstate.v1.DebugSourceLine
+	(*DebugBreakpointState)(nil),        // 33: flowstate.v1.DebugBreakpointState
+	(*DebugValue)(nil),                  // 34: flowstate.v1.DebugValue
+	(*DebugVariable)(nil),               // 35: flowstate.v1.DebugVariable
+	(*DebugAttachRequest)(nil),          // 36: flowstate.v1.DebugAttachRequest
+	(*DebugAttachResponse)(nil),         // 37: flowstate.v1.DebugAttachResponse
+	(*DebugGetRequest)(nil),             // 38: flowstate.v1.DebugGetRequest
+	(*DebugGetResponse)(nil),            // 39: flowstate.v1.DebugGetResponse
+	(*DebugResumeRequest)(nil),          // 40: flowstate.v1.DebugResumeRequest
+	(*DebugResumeResponse)(nil),         // 41: flowstate.v1.DebugResumeResponse
+	(*DebugSetBreakpointsRequest)(nil),  // 42: flowstate.v1.DebugSetBreakpointsRequest
+	(*DebugSetBreakpointsResponse)(nil), // 43: flowstate.v1.DebugSetBreakpointsResponse
+	(*DebugInspectRequest)(nil),         // 44: flowstate.v1.DebugInspectRequest
+	(*DebugInspectResponse)(nil),        // 45: flowstate.v1.DebugInspectResponse
+	(*DebugCarry)(nil),                  // 46: flowstate.v1.DebugCarry
+	(*RunAddress)(nil),                  // 47: flowstate.v1.RunAddress
+	(*WorkloadIdentity)(nil),            // 48: flowstate.v1.WorkloadIdentity
+	(*timestamppb.Timestamp)(nil),       // 49: google.protobuf.Timestamp
+	(*SourceRange)(nil),                 // 50: flowstate.v1.SourceRange
+	(*durationpb.Duration)(nil),         // 51: google.protobuf.Duration
 }
 var file_flowstate_v1_debug_proto_depIdxs = []int32{
-	3,  // 0: flowstate.v1.DebugBacktrace.frames:type_name -> flowstate.v1.DebugStackFrame
+	10, // 0: flowstate.v1.DebugBacktrace.frames:type_name -> flowstate.v1.DebugStackFrame
 	0,  // 1: flowstate.v1.DebugStep.state:type_name -> flowstate.v1.DebugStepState
-	5,  // 2: flowstate.v1.DebugStepWindow.steps:type_name -> flowstate.v1.DebugStep
-	7,  // 3: flowstate.v1.DebugScopeGroup.bindings:type_name -> flowstate.v1.DebugBinding
-	8,  // 4: flowstate.v1.DebugScope.groups:type_name -> flowstate.v1.DebugScopeGroup
+	12, // 2: flowstate.v1.DebugStepWindow.steps:type_name -> flowstate.v1.DebugStep
+	14, // 3: flowstate.v1.DebugScopeGroup.bindings:type_name -> flowstate.v1.DebugBinding
+	15, // 4: flowstate.v1.DebugScope.groups:type_name -> flowstate.v1.DebugScopeGroup
 	1,  // 5: flowstate.v1.DebugCommand.verb:type_name -> flowstate.v1.DebugCommandVerb
-	12, // 6: flowstate.v1.DebugSession.run:type_name -> flowstate.v1.RunAddress
-	13, // 7: flowstate.v1.DebugSession.attached_by:type_name -> flowstate.v1.WorkloadIdentity
-	14, // 8: flowstate.v1.DebugSession.attached_at:type_name -> google.protobuf.Timestamp
-	14, // 9: flowstate.v1.DebugSession.lease_expires_at:type_name -> google.protobuf.Timestamp
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	47, // 6: flowstate.v1.DebugSession.run:type_name -> flowstate.v1.RunAddress
+	48, // 7: flowstate.v1.DebugSession.attached_by:type_name -> flowstate.v1.WorkloadIdentity
+	49, // 8: flowstate.v1.DebugSession.attached_at:type_name -> google.protobuf.Timestamp
+	49, // 9: flowstate.v1.DebugSession.lease_expires_at:type_name -> google.protobuf.Timestamp
+	2,  // 10: flowstate.v1.DebugSegment.kind:type_name -> flowstate.v1.DebugSegmentKind
+	19, // 11: flowstate.v1.DebugOccurrence.site:type_name -> flowstate.v1.DebugSite
+	20, // 12: flowstate.v1.DebugOccurrence.segments:type_name -> flowstate.v1.DebugSegment
+	50, // 13: flowstate.v1.DebugSourceLocation.range:type_name -> flowstate.v1.SourceRange
+	19, // 14: flowstate.v1.DebugSourceEntry.site:type_name -> flowstate.v1.DebugSite
+	23, // 15: flowstate.v1.DebugSourceEntry.location:type_name -> flowstate.v1.DebugSourceLocation
+	22, // 16: flowstate.v1.DebugSourceMap.documents:type_name -> flowstate.v1.DebugSourceDocument
+	24, // 17: flowstate.v1.DebugSourceMap.entries:type_name -> flowstate.v1.DebugSourceEntry
+	21, // 18: flowstate.v1.DebugFrame.occurrence:type_name -> flowstate.v1.DebugOccurrence
+	23, // 19: flowstate.v1.DebugFrame.source:type_name -> flowstate.v1.DebugSourceLocation
+	5,  // 20: flowstate.v1.DebugObservation.kind:type_name -> flowstate.v1.DebugObservationKind
+	18, // 21: flowstate.v1.DebugSnapshot.session:type_name -> flowstate.v1.DebugSession
+	3,  // 22: flowstate.v1.DebugSnapshot.state:type_name -> flowstate.v1.DebugRunState
+	4,  // 23: flowstate.v1.DebugSnapshot.reason:type_name -> flowstate.v1.DebugStopReason
+	21, // 24: flowstate.v1.DebugSnapshot.occurrence:type_name -> flowstate.v1.DebugOccurrence
+	26, // 25: flowstate.v1.DebugSnapshot.frames:type_name -> flowstate.v1.DebugFrame
+	27, // 26: flowstate.v1.DebugSnapshot.capabilities:type_name -> flowstate.v1.DebugCapabilities
+	28, // 27: flowstate.v1.DebugSnapshot.observations:type_name -> flowstate.v1.DebugObservation
+	33, // 28: flowstate.v1.DebugSnapshot.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
+	30, // 29: flowstate.v1.DebugSnapshot.receipt:type_name -> flowstate.v1.DebugReceipt
+	7,  // 30: flowstate.v1.DebugReceipt.status:type_name -> flowstate.v1.DebugCommandStatus
+	32, // 31: flowstate.v1.DebugBreakpoint.line:type_name -> flowstate.v1.DebugSourceLine
+	19, // 32: flowstate.v1.DebugBreakpointState.sites:type_name -> flowstate.v1.DebugSite
+	23, // 33: flowstate.v1.DebugBreakpointState.source:type_name -> flowstate.v1.DebugSourceLocation
+	34, // 34: flowstate.v1.DebugVariable.value:type_name -> flowstate.v1.DebugValue
+	51, // 35: flowstate.v1.DebugAttachRequest.lease:type_name -> google.protobuf.Duration
+	51, // 36: flowstate.v1.DebugAttachRequest.wait:type_name -> google.protobuf.Duration
+	30, // 37: flowstate.v1.DebugAttachResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	29, // 38: flowstate.v1.DebugAttachResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	51, // 39: flowstate.v1.DebugGetRequest.wait:type_name -> google.protobuf.Duration
+	29, // 40: flowstate.v1.DebugGetResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	6,  // 41: flowstate.v1.DebugResumeRequest.action:type_name -> flowstate.v1.DebugResumeAction
+	51, // 42: flowstate.v1.DebugResumeRequest.wait:type_name -> google.protobuf.Duration
+	30, // 43: flowstate.v1.DebugResumeResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	29, // 44: flowstate.v1.DebugResumeResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	31, // 45: flowstate.v1.DebugSetBreakpointsRequest.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	8,  // 46: flowstate.v1.DebugSetBreakpointsRequest.failure_mode:type_name -> flowstate.v1.DebugFailureMode
+	51, // 47: flowstate.v1.DebugSetBreakpointsRequest.wait:type_name -> google.protobuf.Duration
+	30, // 48: flowstate.v1.DebugSetBreakpointsResponse.receipt:type_name -> flowstate.v1.DebugReceipt
+	33, // 49: flowstate.v1.DebugSetBreakpointsResponse.breakpoints:type_name -> flowstate.v1.DebugBreakpointState
+	29, // 50: flowstate.v1.DebugSetBreakpointsResponse.snapshot:type_name -> flowstate.v1.DebugSnapshot
+	34, // 51: flowstate.v1.DebugInspectResponse.value:type_name -> flowstate.v1.DebugValue
+	35, // 52: flowstate.v1.DebugInspectResponse.children:type_name -> flowstate.v1.DebugVariable
+	48, // 53: flowstate.v1.DebugCarry.holder:type_name -> flowstate.v1.WorkloadIdentity
+	49, // 54: flowstate.v1.DebugCarry.attached_at:type_name -> google.protobuf.Timestamp
+	49, // 55: flowstate.v1.DebugCarry.deadline:type_name -> google.protobuf.Timestamp
+	49, // 56: flowstate.v1.DebugCarry.lease_expires_at:type_name -> google.protobuf.Timestamp
+	51, // 57: flowstate.v1.DebugCarry.lease:type_name -> google.protobuf.Duration
+	6,  // 58: flowstate.v1.DebugCarry.next:type_name -> flowstate.v1.DebugResumeAction
+	31, // 59: flowstate.v1.DebugCarry.breakpoints:type_name -> flowstate.v1.DebugBreakpoint
+	30, // 60: flowstate.v1.DebugCarry.receipts:type_name -> flowstate.v1.DebugReceipt
+	3,  // 61: flowstate.v1.DebugCarry.ended:type_name -> flowstate.v1.DebugRunState
+	62, // [62:62] is the sub-list for method output_type
+	62, // [62:62] is the sub-list for method input_type
+	62, // [62:62] is the sub-list for extension type_name
+	62, // [62:62] is the sub-list for extension extendee
+	0,  // [0:62] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_debug_proto_init() }
@@ -1423,6 +4793,7 @@ func file_flowstate_v1_debug_proto_init() {
 	if File_flowstate_v1_debug_proto != nil {
 		return
 	}
+	file_flowstate_v1_diagnostics_proto_init()
 	file_flowstate_v1_identity_proto_init()
 	file_flowstate_v1_run_proto_init()
 	file_flowstate_v1_debug_proto_msgTypes[0].OneofWrappers = []any{}
@@ -1437,8 +4808,8 @@ func file_flowstate_v1_debug_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_debug_proto_rawDesc), len(file_flowstate_v1_debug_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   10,
+			NumEnums:      9,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

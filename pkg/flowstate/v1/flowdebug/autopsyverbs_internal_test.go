@@ -44,6 +44,11 @@ var notAtAutopsy = map[string]string{
 	"breakpoints": "listing them says nothing about a run that has finished",
 	"info":        "it describes the step the run is stopped at, and it is stopped at none",
 	"backtrace":   "the run is over, so there is no active call chain to list",
+	"next":        "the run is over, so there is no next step at any level; typing it leaves",
+	"finish":      "the run is over, so there is nothing enclosing to leave; typing it leaves",
+	"detach":      "the run is over, so there is nothing left to finish unattended; typing it leaves",
+	"log":         "a logpoint is a decision about arrivals that will not happen now",
+	"catch":       "a failure stop is a decision about failures that will not happen now",
 }
 
 // TestEveryVerbIsDecidedAtTheAutopsy reads [Session.Autopsy]'s switch out of the
