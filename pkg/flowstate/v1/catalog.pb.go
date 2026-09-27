@@ -476,7 +476,7 @@ type TaskDescription struct {
 	// facts, because they are the same four facts. That message is how a
 	// plugin's descriptors reach a host; these are how a host's reach a reader
 	// that cannot launch one — a checked-in catalog document, a browser
-	// authoring surface, a server-side validator (#710).
+	// authoring surface, a server-side validator.
 	//
 	// The `inputs` and `outputs` fields above are a *rendering* of these: field
 	// names, a type spelled as an author would write it, and constraint
@@ -970,7 +970,7 @@ type PluginDescription struct {
 	// can change on its own without disturbing the replay contract every
 	// already-durable run is pinned to. See
 	// `flowstatev1.ResolvedPlugin.claims_digest` for how a worker treats an
-	// old pin that predates this field (#763 review): it is not compared, not
+	// old pin that predates this field: it is not compared, not
 	// assumed safe, simply not asked.
 	ClaimsDigest  string `protobuf:"bytes,10,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
 	unknownFields protoimpl.UnknownFields

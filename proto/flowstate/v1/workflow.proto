@@ -691,8 +691,7 @@ message ResolvedPlugin {
 
   // ClaimsDigest is the pinned answer to [flowstatev1.PluginDescription]'s
   // field of the same name — the security-weight claims, hashed apart from
-  // task_schema_digest so the two can move independently (#712, #763
-  // review). Empty on a run resolved before this field existed: a worker
+  // task_schema_digest so the two can move independently. Empty on a run resolved before this field existed: a worker
   // checking this pin skips comparing it rather than refusing the run, since
   // there is nothing recorded to compare against and the alternative is a
   // routine host upgrade permanently failing every already-durable run
@@ -1071,7 +1070,7 @@ message InputDeclaration {
   // second vocabulary that duplicated one corner of the one expression
   // surface this schema has. `must: this == this.distinct()` is the identical
   // check: CEL's `distinct()` (a `lists` extension macro, part of this
-  // schema's own profile since #234's V1) returns the value's elements with
+  // schema's own profile) returns the value's elements with
   // duplicates removed, order preserved, so equality against the original
   // holds exactly when every element was already unique. See docs/DSL.md.
   //
@@ -1436,7 +1435,7 @@ message Node {
   // Async marks a step execution may depart from written order for, as
   // `async: true`.
   //
-  // The opt-in half of structured concurrency (issue #418). Flowstate already
+  // The opt-in half of structured concurrency. Flowstate already
   // carries every dependency edge in the most natural position there is —
   // `${steps.build.artifact}` *is* the edge, written at the point of use — so
   // the open question was never how an author states edges but when execution
@@ -1673,8 +1672,8 @@ message ForEach {
   //
   // Empty is the default, not a name, so the pattern is not applied to it:
   // both drivers bind `item` for an empty iterator, and a rule that refused
-  // the empty string refused every `for_each:` written without `iterator:`
-  // at submit while the compiler accepted it (picatz/flowstate#1757).
+  // the empty string would refuse at submit every `for_each:` written
+  // without `iterator:` that the compiler accepts.
   string iterator = 2 [(buf.validate.field) = {
     ignore: IGNORE_IF_UNPOPULATED
     string: {
@@ -2173,9 +2172,8 @@ message RetryPolicy {
   //
   // Zero is the default rather than a coefficient: both drivers substitute
   // their default for a value below one, and the compiler writes zero for a
-  // `retry:` without `backoff:`. The rule therefore skips zero, or every such
-  // retry was refused at submit while the compiler accepted it
-  // (picatz/flowstate#1757).
+  // `retry:` without `backoff:`. The rule therefore skips zero; otherwise
+  // submit would refuse every such retry that the compiler accepts.
   double backoff_coefficient = 3 [(buf.validate.field) = {
     ignore: IGNORE_IF_UNPOPULATED
     double: {gte: 1.0}

@@ -158,7 +158,7 @@ const mcpServeSessionStorage = "process_memory"
 func addMCPServeFlags(cmd *cobra.Command) {
 	cmd.Flags().String("listen", mcpServeDefaultListen,
 		"address to serve the MCP surface on. Anything but a loopback address requires "+
-			"--tls-cert-file/--tls-key-file, or --tls-terminated-upstream when a proxy in "+
+			"`--tls-cert-file`/`--tls-key-file`, or `--tls-terminated-upstream` when a proxy in "+
 			"front of this process already terminates TLS: a bearer token on a cleartext "+
 			"connection that leaves this machine is a credential handed to whatever is in between")
 
@@ -179,7 +179,7 @@ func addMCPServeFlags(cmd *cobra.Command) {
 
 	cmd.Flags().Int("max-session-requests", mcpServeDefaultMaxSessionRequests,
 		"how many requests one MCP session may have in flight in this process at once. A request past the limit "+
-			"is refused with 503: --max-sessions bounds how many sessions exist and says nothing "+
+			"is refused with 503: `--max-sessions` bounds how many sessions exist and says nothing "+
 			"about how many connections one of them is replayed over")
 
 	cmd.Flags().Duration("test-timeout", mcpServeDefaultTestTimeout,

@@ -141,7 +141,7 @@ flow test -o jsonl examples/`,
 	// mistaken for the file's green.
 	cmd.Flags().String("run", "",
 		"run only the cases whose name matches this regular expression; the output says how "+
-			"many cases were filtered out, and --coverage-required is refused alongside it, "+
+			"many cases were filtered out, and `--coverage-required` is refused alongside it, "+
 			"because a subset's coverage gaps are not the suite's")
 
 	// Off by default, and the default is the whole of the compatibility promise:
@@ -152,7 +152,7 @@ flow test -o jsonl examples/`,
 			"(`parallel:` branch order, where an `async:` step's work happens), and fail when a "+
 			"case's observables depend on which one ran; 0, the default, runs written order only")
 	cmd.Flags().Uint64("seed0", dst.DefaultSeed0,
-		"the first seed --seeds walks upward from, to move the search to a different part of "+
+		"the first seed `--seeds` walks upward from, to move the search to a different part of "+
 			"the seed space")
 	cmd.Flags().Uint64("seed", 0,
 		"replay exactly one schedule, the seed a reported divergence names, instead of searching")
@@ -163,8 +163,8 @@ flow test -o jsonl examples/`,
 	// runs a case many times, and a selection that is not exactly one case.
 	cmd.Flags().Bool("debug", false,
 		"stop before each step of one case and read commands from the terminal — step, "+
-			"continue, until, break, inspect, scope, quit; requires --run to name exactly "+
-			"one case, and is refused with --output json and with seeded exploration")
+			"continue, until, break, inspect, scope, quit; requires `--run` to name exactly "+
+			"one case, and is refused with `--output json` and with seeded exploration")
 
 	return cmd
 }

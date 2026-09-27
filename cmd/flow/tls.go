@@ -35,9 +35,9 @@ import (
 func addTLSFlags(cmd *cobra.Command) {
 	cmd.Flags().String("tls-cert-file", os.Getenv("FLOWSTATE_TLS_CERT_FILE"),
 		"PEM certificate (or chain) for the public listener; unset serves plain HTTP, which is "+
-			"refused on any address but loopback. Must be given with --tls-key-file")
+			"refused on any address but loopback. Must be given with `--tls-key-file`")
 	cmd.Flags().String("tls-key-file", os.Getenv("FLOWSTATE_TLS_KEY_FILE"),
-		"PEM private key matching --tls-cert-file")
+		"PEM private key matching `--tls-cert-file`")
 	cmd.Flags().String("tls-min-version", cmp.Or(os.Getenv("FLOWSTATE_TLS_MIN_VERSION"), "1.2"),
 		`minimum TLS protocol version to accept: "1.2" (the default and the floor) or "1.3"`)
 
@@ -189,8 +189,8 @@ func refusePlaintextListener(addr string, tlsConfig *tls.Config, tlsTerminatedUp
 	}
 
 	return fmt.Errorf("refusing to listen on %s over plain HTTP: this address reaches past this "+
-		"machine, and cmd/flow/credentials.go already refuses to send a bearer token to a "+
-		"plaintext address that is not loopback — the server takes the same position now. Three "+
+		"machine, and the flow client already refuses to send a bearer token to a plaintext "+
+		"address that is not loopback — the server takes the same position. Three "+
 		"ways forward: configure --tls-cert-file and --tls-key-file (or FLOWSTATE_TLS_CERT_FILE "+
 		"and FLOWSTATE_TLS_KEY_FILE) to terminate TLS here; bind loopback for local development; "+
 		"or, only when a reverse proxy, Ingress, load balancer or NAT boundary in front of this "+

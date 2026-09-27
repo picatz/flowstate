@@ -55,7 +55,7 @@ func addInputFlags(cmd *cobra.Command) {
 
 	cmd.Flags().String("input-file", "",
 		"a JSON object of arguments, keyed by input name. Values arrive with the types JSON "+
-			"gives them; a --input flag of the same name wins over the file")
+			"gives them; a `--input` flag of the same name wins over the file")
 }
 
 // runInputs assembles what a run is started with, from the flags and the file.

@@ -12,8 +12,8 @@ option go_package = "flowstatev1";
 // The audit record: what an authorization decision was, written where an
 // authorization decision is made.
 //
-// This is picatz/flowstate#1018's ratified answer, and each of its four parts
-// is a decision that would have to be undone rather than extended if it were
+// Each of the four parts below is a decision that would have to be undone
+// rather than extended if it were
 // wrong. They are recorded here because the schema is the only place a reader
 // of the record can reach.
 //
@@ -36,13 +36,13 @@ option go_package = "flowstatev1";
 // decision permits. The subject of the record is the *decision*, not the
 // effect: "this attested caller was authorized for workload.signal on run X
 // at server time T" is complete and permanently true the instant the check
-// returns, whether or not the signal then fails to deliver. #993 recorded the
-// effect ("accepted") before the effect existed, which is how an audit log
-// comes to hold a sentence that is false.
+// returns, whether or not the signal then fails to deliver. Recording the
+// effect ("accepted") before the effect exists is how an audit log comes to
+// hold a sentence that is false.
 //
 // The cost, stated: this record cannot answer "did the signal actually
 // deliver". It was never the artifact for that — the run's own timeline and
-// Temporal's history are — and conflating the two is what produced the wrong
+// Temporal's history are — and conflating the two produces a wrong
 // record. A crash between the record and the mutation leaves a true record of
 // an authorization that was granted, which is the safe direction; the unsafe
 // direction, a mutation with no record, is the one write-ahead closes.
@@ -73,8 +73,8 @@ option go_package = "flowstatev1";
 //
 // # Why this is in the schema at all
 //
-// CLAUDE.md's proto-first exception is for "a type defined by a boundary it
-// refuses to cross", and #993 claimed it: audit data must never enter a
+// The proto-first exception is for "a type defined by a boundary it refuses
+// to cross", and audit data qualifies in one sense: it must never enter a
 // workflow payload or history. That rule is about where a value may be *put*,
 // not about whether it may be *described*. An audit record's whole purpose is
 // to travel — to a sink somebody else reads — and a hand-written Go struct
@@ -87,8 +87,7 @@ option go_package = "flowstatev1";
 // # The worker's half
 //
 // Everything above describes a decision about a *caller*, made by the control
-// plane, keyed by AuthorizationAction. picatz/flowstate#1379 records the other
-// half: the decisions a worker makes about the workload it is already running
+// plane, keyed by AuthorizationAction. The other half is the decisions a worker makes about the workload it is already running
 // — whether this task may dispatch, whether this secret may be read, whether
 // this request may leave, whether this credential may be assumed.
 //
@@ -235,8 +234,7 @@ message AuditRecord {
 
   // The operator's own policy rule that decided, verbatim.
   //
-  // This is the provenance half of picatz/flowstate#353's principle 2 — a
-  // record that says a dispatch was refused and cannot say by *what* leaves
+  // This is the record's provenance — a record that says a dispatch was refused and cannot say by *what* leaves
   // the operator reading it exactly where they started — and it is the one
   // string in this message whose bytes were neither chosen by this deployment
   // at compile time nor bounded by another schema. It is admitted for the
@@ -268,8 +266,7 @@ message AuditRecord {
   // Recording only the first would be a guess that the first was recorded —
   // and under a required recorder a first attempt whose record could not be
   // written is exactly the attempt that gets retried, which would leave the
-  // work that then ran with no record at all
-  // (Codex, picatz/flowstate#1394).
+  // work that then ran with no record at all.
   //
   // The number is the substrate's own: Temporal's activity attempt durably,
   // the retry loop's counter locally, so the two agree without either one

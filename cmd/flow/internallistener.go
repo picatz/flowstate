@@ -59,7 +59,7 @@ func addInternalListenerFlags(cmd *cobra.Command) {
 	cmd.Flags().String("internal-listen", os.Getenv("FLOWSTATE_INTERNAL_ADDRESS"),
 		"address for health and pprof, on a private socket of this process's own; "+
 			"empty (the default) means no internal listener at all. Pass a loopback address, "+
-			"such as --internal-listen "+exampleInternalListenAddress+", to turn it on — "+
+			"such as `--internal-listen "+exampleInternalListenAddress+"`, to turn it on — "+
 			"nothing else is accepted: it serves pprof, whose profiles carry this process's "+
 			"memory and running goroutines (secret values resolved into it among them), and it "+
 			"carries no authentication and no TLS configuration of its own, so reach it over a "+

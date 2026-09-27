@@ -28,7 +28,7 @@ func addWebhookFlags(cmd *cobra.Command) {
 			"/webhooks/<workflow>/<trigger>. Repeatable. The file is compiled, its `verify:` keys "+
 			"are resolved, and this deployment's own checks are run against it at startup, so a "+
 			"workflow this deployment cannot serve stops the server rather than refusing deliveries "+
-			"later. Needs the --secret-* flags that reach the signing keys")
+			"later. Needs the `--secret-*` flags that reach the signing keys")
 
 	cmd.Flags().String("webhook-namespace", "",
 		"the Flowstate tenant a delivery's run belongs to, and the tenant its `verify:` keys are "+

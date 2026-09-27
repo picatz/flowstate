@@ -554,9 +554,9 @@ func addPluginFlags(cmd *cobra.Command) {
 			"pin, here or in `--plugin-pins`, launches unpinned, so pinning is adopted one plugin "+
 			"at a time")
 	cmd.Flags().String("plugin-pins", os.Getenv(pluginPinsEnv),
-		"path to a YAML pins file (default $"+pluginPinsEnv+"), the file form of --plugin-pin "+
+		"path to a YAML pins file (default $"+pluginPinsEnv+"), the file form of `--plugin-pin` "+
 			"for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; "+
-			"merged with any --plugin-pin, and a name given by both is refused")
+			"merged with any `--plugin-pin`, and a name given by both is refused")
 	cmd.Flags().StringArray("plugin-env", nil,
 		"configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches "+
 			"that plugin alone and nothing else this worker launches. A plugin environment is "+
@@ -564,8 +564,8 @@ func addPluginFlags(cmd *cobra.Command) {
 			"secret value")
 	cmd.Flags().String("plugin-env-file", os.Getenv(pluginEnvFileEnv),
 		"path to a YAML environment file (default $"+pluginEnvFileEnv+"), the file form of "+
-			"--plugin-env for a deployment configuring more than a couple of plugins: "+
-			"`env: {name: {KEY: VALUE}}`; merged with any --plugin-env, and a variable set by "+
+			"`--plugin-env` for a deployment configuring more than a couple of plugins: "+
+			"`env: {name: {KEY: VALUE}}`; merged with any `--plugin-env`, and a variable set by "+
 			"both is refused")
 }
 

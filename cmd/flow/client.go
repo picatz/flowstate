@@ -122,13 +122,13 @@ func addServerFlags(cmd *cobra.Command) {
 	// FLOWSTATE_TOKEN already do, but as a refusal rather than silent
 	// anonymity when the named source turns out empty.
 	cmd.Flags().String("credential-source", os.Getenv("FLOWSTATE_CREDENTIAL_SOURCE"),
-		"acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN "+
+		"acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN "+
 			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, "+
 			"terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous")
 
 	cmd.Flags().String("audience", os.Getenv("FLOWSTATE_AUDIENCE"),
 		"the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); "+
-			"required by --credential-source=github-actions, which mints a token for it. "+
+			"required by `--credential-source=github-actions`, which mints a token for it. "+
 			"gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience "+
 			"in the job or workspace configuration before the token exists — so for those it is "+
 			"checked against the token's own audience rather than requested, and a mismatch is "+

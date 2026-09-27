@@ -519,8 +519,7 @@ type AuditRecord struct {
 	EnforcementPoint AuditEnforcementPoint `protobuf:"varint,12,opt,name=enforcement_point,json=enforcementPoint,proto3,enum=flowstate.v1.AuditEnforcementPoint" json:"enforcement_point,omitempty"`
 	// The operator's own policy rule that decided, verbatim.
 	//
-	// This is the provenance half of picatz/flowstate#353's principle 2 — a
-	// record that says a dispatch was refused and cannot say by *what* leaves
+	// This is the record's provenance — a record that says a dispatch was refused and cannot say by *what* leaves
 	// the operator reading it exactly where they started — and it is the one
 	// string in this message whose bytes were neither chosen by this deployment
 	// at compile time nor bounded by another schema. It is admitted for the
@@ -551,8 +550,7 @@ type AuditRecord struct {
 	// Recording only the first would be a guess that the first was recorded —
 	// and under a required recorder a first attempt whose record could not be
 	// written is exactly the attempt that gets retried, which would leave the
-	// work that then ran with no record at all
-	// (Codex, picatz/flowstate#1394).
+	// work that then ran with no record at all.
 	//
 	// The number is the substrate's own: Temporal's activity attempt durably,
 	// the retry loop's counter locally, so the two agree without either one

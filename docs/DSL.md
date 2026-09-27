@@ -2499,7 +2499,7 @@ itself computed.** The enumeration this paragraph first gave was wrong and is co
 rather than quietly dropped: `http` and `for_each` are not the only producers, because a
 wait produces outputs too — every wait reports `timed_out`, and a `wait_for_signal:`
 additionally carries whatever the sender supplied under `payload.*`, which is what makes
-`${approval.timed_out}` and `${approval.payload.approved}` writable at all. `log`
+`${steps.approval.timed_out}` and `${steps.approval.payload.approved}` writable at all. `log`
 declares none by design, and what remains is control flow.
 
 The correction does not rescue the conclusion, though, because the outputs it adds are

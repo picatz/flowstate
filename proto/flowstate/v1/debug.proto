@@ -12,13 +12,10 @@ option go_package = "flowstatev1";
 // The step debugger's boundary-crossing shapes: where a run is held, what it
 // can name, which steps it may reach, and the commands that move it.
 //
-// This is stage 1 of picatz/flowstate#928's durable-debug arc — the wire
-// messages first, engine lease mechanics second, `flow debug attach` third. It
-// answers the criterion #1120's follow-up wrote down rather than leaving as
-// taste: "These become schema types in the PR that first puts them on a wire,
-// and that PR reconciles Position.Step with RunProgress.step_id." Nothing here
-// is an RPC; the service that carries these is stage 3's, and defining the
-// shapes before the transport is the sequencing the owner recorded.
+// These are schema types because they cross a wire, and Position.Step is
+// reconciled with RunProgress.step_id. Nothing here is an RPC; the service
+// that carries these messages is defined separately, and the shapes are
+// defined before the transport.
 //
 // # What is here and what deliberately is not
 //
@@ -74,7 +71,7 @@ option go_package = "flowstatev1";
 //
 // A callee's step ids belong to the callee (`eval.go:1804-1812`), so one
 // inventory flattening a caller and a callee holds rows nothing can tell apart
-// by name. #1186 answered the static half: the walk numbers each descent into a
+// by name. The static half is answered: the walk numbers each descent into a
 // `call:` into `DebugStep.declaration`, and that numbering *is* the engine's
 // structure rather than a proxy for it, because `runNodes` descends into a
 // callee exactly once per `call:` node (`eval.go:1734`).
@@ -412,7 +409,7 @@ message DebugBinding {
     // 4160 rather than the content bound of 4096, because the marker is part
     // of what travels and a bound that forgot it would refuse a value
     // *precisely when it was cut* — the one case this field exists to
-    // describe honestly (Codex, #1194). The 64 runes of headroom are provable
+    // describe honestly. The 64 runes of headroom are provable
     // rather than generous: the marker is `… (%d more)` and the number it
     // carries is a count of runes held in memory, so at most 19 digits, so at
     // most 28 runes.
@@ -583,8 +580,7 @@ message DebugCommand {
   // line — and neither is expressible here, because neither is a property of
   // this field alone. `flowdebug.CommandLine` makes both refusals where the
   // line is built, so a message that satisfies this rule and still cannot be
-  // delivered is refused before it is rendered rather than after (Codex,
-  // #1194).
+  // delivered is refused before it is rendered rather than after.
   //
   // `max_bytes` and not `max_len` here, the opposite unit from
   // `DebugBinding.rendered` and for the same reason — the resource being
@@ -658,8 +654,8 @@ message DebugSession {
   //
   // Unset means no lease, which is a real answer rather than a missing one: a
   // local run is the author's own process and holds itself for as long as they
-  // want it held, which is #928's recorded decision that local debugging is
-  // always-on. A durable session is leased because a run held paused by a
+  // want it held, so local debugging is always on. A durable session is
+  // leased because a run held paused by a
   // vanished debugger is an availability incident, and expiry resuming the run
   // is that decision's other half.
   optional google.protobuf.Timestamp lease_expires_at = 6;

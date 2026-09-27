@@ -70,11 +70,11 @@ func addACMEFlags(cmd *cobra.Command) {
 			"FLOWSTATE_TLS_ACME_HOSTS); required to turn ACME on, and the whole of what a "+
 			"certificate may be obtained for — refused empty rather than defaulting to "+
 			"issuing for whatever SNI a caller sends. Mutually exclusive with "+
-			"--tls-cert-file and --tls-terminated-upstream, and refused together with "+
-			"--internal-listen")
+			"`--tls-cert-file` and `--tls-terminated-upstream`, and refused together with "+
+			"`--internal-listen`")
 	cmd.Flags().String("tls-acme-cache", os.Getenv("FLOWSTATE_TLS_ACME_CACHE"),
 		"directory holding the ACME account key and issued certificates, required when "+
-			"--tls-acme-hosts is set. An in-memory-only cache re-issues on every restart, "+
+			"`--tls-acme-hosts` is set. An in-memory-only cache re-issues on every restart, "+
 			"which burns a CA's rate limit; this must be a real, persistent directory. "+
 			"Created with mode 0700 if it does not exist, and refused if it exists but is "+
 			"readable or writable by anyone but its owner — it holds private keys")
