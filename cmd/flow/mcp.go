@@ -238,8 +238,13 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd)),
 	}
 
-	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps,
-		stdioExtraTools(cmd, providers, remoteClient)...)
+	// The server's lifetime, which the retained debug sessions' sweeper
+	// shares: it stops when the server does.
+	serve, stop := context.WithCancel(cmd.Context())
+	defer stop()
+
+	return flowmcp.ServeTools(serve, flowmcp.NewServer(version), local, remoteClient, deps,
+		stdioExtraTools(serve, cmd, providers, remoteClient)...)
 }
 
 // stdioExtraTools is the three tools on this surface that are not RPCs, in one
@@ -250,7 +255,13 @@ func runMCP(cmd *cobra.Command, args []string) error {
 // None takes a timeout: stdio's single caller is the process that launched
 // this one, and this surface is unchanged by the bound `flow mcp serve`
 // applies for its own reasons. See [testToolHandler].
-func stdioExtraTools(cmd *cobra.Command, providers *localSecrets, remote func() flowstatev1connect.WorkflowServiceClient) []flowmcp.ToolRegistration {
+//
+// ctx is the server's lifetime: the retained sessions' sweeper runs until it
+// ends.
+func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSecrets, remote func() flowstatev1connect.WorkflowServiceClient) []flowmcp.ToolRegistration {
+	sessions := newDebugSessions(remote)
+	go sessions.keep(ctx)
+
 	return append([]flowmcp.ToolRegistration{
 		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd, providers)},
 		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
@@ -262,7 +273,7 @@ func stdioExtraTools(cmd *cobra.Command, providers *localSecrets, remote func() 
 		// process. `flow mcp serve` serializes the process-wide registry
 		// around every stubbed run, and a session held open for minutes
 		// would hold that lock against every other caller.
-		newDebugSessions(remote).tools()...)
+		sessions.tools()...)
 }
 
 // The one tool that is not an RPC.

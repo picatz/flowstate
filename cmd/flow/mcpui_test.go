@@ -641,7 +641,7 @@ func connectMCPAsUIHost(t *testing.T) *mcp.ClientSession {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
+	}, mcpDepsFor(posture), mcpExtraToolsFor(t.Context(), posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 

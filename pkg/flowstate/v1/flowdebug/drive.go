@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,20 +21,47 @@ import (
 // target, and what comes back is the target's own answer; the driver keeps only
 // the breakpoint set it last sent, because a target replaces the whole set at
 // once and a line adds or removes one.
+//
+// A target reports the breakpoints it holds by id, not by definition, so a
+// driver cannot rebuild a set another client — an earlier `flow debug do`, an
+// editor — installed. Rather than drop those in silence when it resends its
+// own, a line that would replace the set refuses while the target holds an id
+// this driver never sent and the line does not name, and says `clear` is the
+// way to discard them.
 type Driver struct {
 	target Target
 
 	breakpoints []*v1.DebugBreakpoint
 	failureMode v1.DebugFailureMode
 
+	// request and expected are the running line's [DoOptions].
+	request  string
+	expected uint64
+
 	// Wait bounds how long a movement waits for the next stop. Zero waits
 	// until ctx ends.
 	Wait time.Duration
 }
 
-// NewDriver returns a driver over target.
+// NewDriver returns a driver over target. It leaves the target's failure mode
+// as it finds it until a `catch` line names one.
 func NewDriver(target Target) *Driver {
-	return &Driver{target: target, failureMode: v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE}
+	return &Driver{target: target, failureMode: v1.DebugFailureMode_DEBUG_FAILURE_MODE_UNSPECIFIED}
+}
+
+// DoOptions carries what a caller that retries knows about one line.
+type DoOptions struct {
+	// RequestID is sent as the target request id of the call the line makes,
+	// so a retry under the same id is answered from the target's receipts
+	// instead of acting twice — a movement whose answer was lost after the
+	// target accepted it. Empty mints a fresh id per call.
+	RequestID string
+
+	// ExpectedRevision refuses the line as stale unless the session is at
+	// this revision. A movement carries it to the target, which answers a
+	// remembered request id before it judges staleness. Zero skips the
+	// check.
+	ExpectedRevision uint64
 }
 
 // DriveResult is one line's answer: whichever of the typed answers the line
@@ -58,6 +86,7 @@ break <step> [hit <n>] [if <expr>]   stop there, when the count and condition al
 log <step> <message>         record {expr} holes at every arrival, without stopping
 catch none|uncaught|all      stop where a step fails
 delete <step>                remove that breakpoint
+clear                        remove every breakpoint, including ones another client set
 breakpoints                  list breakpoints and their hit counts
 inspect, p <expr>            evaluate a read-only CEL expression at this stop
 expand <expr>                list a map's or list's children
@@ -68,12 +97,25 @@ help                         this list`
 
 // Do runs one line.
 func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
+	return d.DoWith(ctx, line, DoOptions{})
+}
+
+// DoWith runs one line with a caller's request id and expected revision.
+func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*DriveResult, error) {
 	line = strings.TrimSpace(line)
 	if line == "" || IsComment(line) {
 		return &DriveResult{}, nil
 	}
 	verb, rest := split(line)
 	rest = strings.TrimSpace(rest)
+
+	d.request, d.expected = opts.RequestID, opts.ExpectedRevision
+	defer func() { d.request, d.expected = "", 0 }()
+	if d.expected != 0 && !movement(verb) {
+		if stale, err := d.staleAt(ctx); stale != nil || err != nil {
+			return stale, err
+		}
+	}
 
 	switch verb {
 	case "status", "info":
@@ -102,7 +144,7 @@ func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH, "")
 
 	case "pause":
-		receipt, err := d.target.Pause(ctx, "")
+		receipt, err := d.target.Pause(ctx, d.request)
 		if err != nil {
 			return nil, err
 		}
@@ -128,15 +170,27 @@ func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
 			return nil, errors.New("log needs a step and a message: log <step> <message>")
 		}
 
-		return d.replace(ctx, append(d.without(target, true), &v1.DebugBreakpoint{
+		set := append(d.without(target, true), &v1.DebugBreakpoint{
 			Id: "log " + target, Step: target, LogMessage: strings.TrimSpace(message),
-		}), d.failureMode)
+		})
+		if err := d.keeps(ctx, set, "log "+target); err != nil {
+			return nil, err
+		}
+
+		return d.replace(ctx, set, d.failureMode)
 	case "delete", "d":
 		if rest == "" {
 			return nil, errors.New("delete needs a step: delete <step>")
 		}
 
-		return d.replace(ctx, d.without(rest, false), d.failureMode)
+		set := d.without(rest, false)
+		if err := d.keeps(ctx, set, rest); err != nil {
+			return nil, err
+		}
+
+		return d.replace(ctx, set, d.failureMode)
+	case "clear":
+		return d.replace(ctx, nil, d.failureMode)
 	case "catch":
 		modes := map[string]v1.DebugFailureMode{
 			"none": v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE, "uncaught": v1.DebugFailureMode_DEBUG_FAILURE_MODE_UNCAUGHT,
@@ -145,6 +199,10 @@ func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
 		mode, ok := modes[rest]
 		if !ok {
 			return nil, fmt.Errorf("catch takes none, uncaught, or all, not %q", rest)
+		}
+
+		if err := d.keeps(ctx, d.breakpoints); err != nil {
+			return nil, err
 		}
 
 		return d.replace(ctx, d.breakpoints, mode)
@@ -187,6 +245,37 @@ func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
 	}
 }
 
+// movement reports whether verb resumes the run, and so carries an expected
+// revision to the target rather than having the driver check it.
+func movement(verb string) bool {
+	switch verb {
+	case "step", "s", "next", "n", "finish", "fin", "out", "continue", "c", "until", "u", "detach":
+		return true
+	default:
+		return false
+	}
+}
+
+// staleAt answers a stale receipt when the session has left the revision the
+// line was meant for, and nil when it has not.
+func (d *Driver) staleAt(ctx context.Context) (*DriveResult, error) {
+	current, err := d.target.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if current.GetRevision() == d.expected {
+		return nil, nil
+	}
+	receipt := &v1.DebugReceipt{
+		RequestId: d.request,
+		Status:    v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE,
+		Revision:  current.GetRevision(),
+		Message:   fmt.Sprintf("the command was meant for revision %d, and the session is at %d", d.expected, current.GetRevision()),
+	}
+
+	return &DriveResult{Receipt: receipt, Snapshot: current, Text: FormatReceipt(receipt)}, nil
+}
+
 func accepted(receipt *v1.DebugReceipt) bool {
 	switch receipt.GetStatus() {
 	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE,
@@ -199,15 +288,19 @@ func accepted(receipt *v1.DebugReceipt) bool {
 
 // move resumes and waits for the run's next stop or end.
 func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until string) (*DriveResult, error) {
-	current, err := d.target.Snapshot(ctx)
-	if err != nil {
-		return nil, err
+	expected := d.expected
+	if expected == 0 {
+		current, err := d.target.Snapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		expected = current.GetRevision()
 	}
 	receipt, err := d.target.Resume(ctx, &v1.DebugResumeRequest{
-		RequestId:        newRequestID(),
+		RequestId:        cmp.Or(d.request, newRequestID()),
 		Action:           action,
 		Until:            until,
-		ExpectedRevision: current.GetRevision(),
+		ExpectedRevision: expected,
 	})
 	if err != nil {
 		return nil, err
@@ -229,6 +322,11 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 	return result, nil
 }
 
+// stillRunningRead bounds the read that reports a run still moving when a
+// movement's wait ends: a remote target that stops answering must not hold the
+// caller past the wait it asked for by more than this.
+const stillRunningRead = 5 * time.Second
+
 // waitForStop waits past revision for a hold or the end of the session.
 func (d *Driver) waitForStop(ctx context.Context, revision uint64) (*v1.DebugSnapshot, error) {
 	if d.Wait > 0 {
@@ -241,8 +339,16 @@ func (d *Driver) waitForStop(ctx context.Context, revision uint64) (*v1.DebugSna
 	for {
 		snapshot, err := d.target.WaitSnapshot(ctx, after)
 		if errors.Is(err, context.DeadlineExceeded) {
-			// Still running: say so rather than pretend a stop came.
-			return d.target.Snapshot(context.WithoutCancel(ctx))
+			// Still running: say so rather than pretend a stop came. The wait's
+			// own deadline has passed, so the read gets a bound of its own.
+			read, cancel := context.WithTimeout(context.WithoutCancel(ctx), stillRunningRead)
+			snapshot, err := d.target.Snapshot(read)
+			cancel()
+			if err != nil {
+				return nil, fmt.Errorf("the run had not stopped when the wait ended, and reading where it is failed: %w", err)
+			}
+
+			return snapshot, nil
 		}
 		if err != nil {
 			return nil, err
@@ -267,9 +373,14 @@ func (d *Driver) addBreakpoint(ctx context.Context, rest string) (*DriveResult, 
 		return nil, errors.New(usageBreak)
 	}
 
-	return d.replace(ctx, append(d.without(target, false), &v1.DebugBreakpoint{
+	set := append(d.without(target, false), &v1.DebugBreakpoint{
 		Id: target, Step: target, Condition: strings.TrimSpace(condition), HitCondition: hitText,
-	}), d.failureMode)
+	})
+	if err := d.keeps(ctx, set, target); err != nil {
+		return nil, err
+	}
+
+	return d.replace(ctx, set, d.failureMode)
 }
 
 // without is the current set less the breakpoint on target: the stopping one,
@@ -280,9 +391,38 @@ func (d *Driver) without(target string, logs bool) []*v1.DebugBreakpoint {
 	})
 }
 
+// keeps refuses a set that would drop a breakpoint this driver never sent.
+// named are the ids the line itself replaces or removes; any other id the
+// target holds and set lacks was installed by another client, whose
+// definition the target does not report. A client that installs a set between
+// this read and the send is not seen: the contract has no conditional replace.
+func (d *Driver) keeps(ctx context.Context, set []*v1.DebugBreakpoint, named ...string) error {
+	current, err := d.target.Snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	has := func(bps []*v1.DebugBreakpoint, id string) bool {
+		return slices.ContainsFunc(bps, func(bp *v1.DebugBreakpoint) bool { return bp.GetId() == id })
+	}
+	var unknown []string
+	for _, state := range current.GetBreakpoints() {
+		id := state.GetId()
+		if !has(d.breakpoints, id) && !has(set, id) && !slices.Contains(named, id) {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("this session holds breakpoints this driver did not set (%s); a target names them "+
+			"but does not say how they were defined, so replacing the set would drop them. `clear` removes every "+
+			"breakpoint, after which this driver's lines are the whole set", strings.Join(unknown, ", "))
+	}
+
+	return nil
+}
+
 func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1.DebugFailureMode) (*DriveResult, error) {
 	response, err := d.target.ReplaceBreakpoints(ctx, &v1.DebugSetBreakpointsRequest{
-		RequestId: newRequestID(), Breakpoints: set, FailureMode: mode,
+		RequestId: cmp.Or(d.request, newRequestID()), Breakpoints: set, FailureMode: mode,
 	})
 	if err != nil {
 		return nil, err

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,12 +30,13 @@ import (
 // script, which stays.
 //
 // A session is leased. Every call on it renews the lease; one nobody calls
-// lapses and is ended, which releases a durable run and lets a stubbed case
-// finish. The number of sessions one server holds is bounded. A command
-// carrying a request id is answered from memory when retried, so a lost
-// response never moves a run twice, and a start carrying one never starts a
-// second run: continuing a session is never silently replaced by restarting
-// it.
+// lapses and is ended by the server's sweeper, which releases a durable run
+// and lets a stubbed case finish. The number of sessions one server holds is
+// bounded. A command carrying a request id is answered from memory when
+// retried, and the id reaches the target too, so a response lost after the
+// target accepted it never moves a run twice; a start carrying one never
+// starts a second run: continuing a session is never silently replaced by
+// restarting it.
 
 const (
 	maxDebugSessions      = 8
@@ -42,6 +45,7 @@ const (
 	maxDebugSessionWait   = 30 * time.Second
 	maxSessionReceipts    = 64
 	debugSessionEndSettle = 5 * time.Second
+	debugSessionSweep     = time.Minute
 )
 
 // debugSessions is one server's retained sessions.
@@ -60,8 +64,13 @@ type debugSessionEntry struct {
 	local   *flowdebug.Session
 	started time.Time
 
-	// mu serializes calls on one session, so two commands never race to move
-	// one run.
+	// calls serializes commands on one session, so two never race to move
+	// one run. An observe waits outside it, so a command can produce the
+	// revision the observe is waiting for.
+	calls sync.Mutex
+
+	// mu guards the fields below it. It is never held across a call on the
+	// target.
 	mu       sync.Mutex
 	expires  time.Time
 	receipts map[string]json.RawMessage
@@ -101,8 +110,34 @@ func (t *lockedTranscript) since(cursor int) ([]debugFragment, int) {
 	return slices.Clone(t.fragments[cursor:]), len(t.fragments)
 }
 
+// note is the embedded note, read under the lock the run's goroutine writes
+// under.
+func (t *lockedTranscript) note() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.debugTranscript.note()
+}
+
 func newDebugSessions(remote func() flowstatev1connect.WorkflowServiceClient) *debugSessions {
 	return &debugSessions{remote: remote, sessions: map[string]*debugSessionEntry{}, starts: map[string]string{}}
+}
+
+// keep ends lapsed sessions on its own clock until ctx ends, so a session
+// nobody calls again is still released: a lease enforced only by the next
+// call is no lease on an idle server.
+func (r *debugSessions) keep(ctx context.Context) {
+	ticker := time.NewTicker(debugSessionSweep)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.sweep()
+		}
+	}
 }
 
 // sweep ends every session whose lease or lifetime has lapsed.
@@ -117,7 +152,7 @@ func (r *debugSessions) sweep() {
 		entry.mu.Unlock()
 		if expired {
 			lapsed = append(lapsed, entry)
-			delete(r.sessions, id)
+			r.forgetLocked(id)
 		}
 	}
 	r.mu.Unlock()
@@ -127,20 +162,51 @@ func (r *debugSessions) sweep() {
 	}
 }
 
-// register admits a new session, within the bound.
-func (r *debugSessions) register(entry *debugSessionEntry, request string) error {
+// forgetLocked drops a session and the start request ids that name it. The
+// caller holds r.mu.
+func (r *debugSessions) forgetLocked(id string) {
+	delete(r.sessions, id)
+	for request, started := range r.starts {
+		if started == id {
+			delete(r.starts, request)
+		}
+	}
+}
+
+// remove drops a session, reporting whether this caller was the one to, so a
+// session is ended once.
+func (r *debugSessions) remove(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	_, ok := r.sessions[id]
+	r.forgetLocked(id)
+
+	return ok
+}
+
+// register admits a new session, within the bound. A start request id is
+// reserved in the same critical section that admits the session, so two
+// starts under one id never both launch a run: the second is handed the
+// session the first admitted, and must discard its own.
+func (r *debugSessions) register(entry *debugSessionEntry, request string) (*debugSessionEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if request != "" {
+		if existing, ok := r.sessions[r.starts[request]]; ok {
+			return existing, nil
+		}
+	}
 	if len(r.sessions) >= maxDebugSessions {
-		return fmt.Errorf("this server already holds %d debug sessions; end one with %s", maxDebugSessions, debugSessionEndTool)
+		return nil, fmt.Errorf("this server already holds %d debug sessions; end one with %s", maxDebugSessions, debugSessionEndTool)
 	}
 	r.sessions[entry.id] = entry
 	if request != "" {
 		r.starts[request] = entry.id
 	}
 
-	return nil
+	return nil, nil
 }
 
 // lookup returns a live session and renews its lease.
@@ -151,7 +217,7 @@ func (r *debugSessions) lookup(id string) (*debugSessionEntry, error) {
 	entry, ok := r.sessions[id]
 	r.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("no debug session %q: it ended, its lease lapsed, or it never existed; start or attach a new one", id)
+		return nil, errNoDebugSession(id)
 	}
 
 	entry.mu.Lock()
@@ -159,6 +225,10 @@ func (r *debugSessions) lookup(id string) (*debugSessionEntry, error) {
 	entry.mu.Unlock()
 
 	return entry, nil
+}
+
+func errNoDebugSession(id string) error {
+	return fmt.Errorf("no debug session %q: it ended, its lease lapsed, or it never existed; start or attach a new one", id)
 }
 
 // end releases a session: a durable run is detached (or left attached when
@@ -250,7 +320,7 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 			Name: debugSessionCommandTool,
 			Description: "Run one debugger command in a retained session and answer with its typed result. Commands: " +
 				"step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, " +
-				"catch none|uncaught|all, delete <step>, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, " +
+				"catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, " +
 				"detach, status. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, " +
 				"so a command meant for a stop the run has left is refused as stale.",
 			InputSchema: object(map[string]any{
@@ -320,17 +390,45 @@ type sessionAnswer struct {
 	Note       string          `json:"note,omitempty"`
 }
 
+// answer reads the session: its snapshot, and the transcript since the last
+// answer. It takes e.mu itself, and only around the fields it guards.
 func (e *debugSessionEntry) answer(ctx context.Context) sessionAnswer {
-	answer := sessionAnswer{SessionID: e.id, Expires: e.expires.UTC().Format(time.RFC3339)}
+	answer := sessionAnswer{SessionID: e.id}
 	if snapshot, err := e.target.Snapshot(ctx); err == nil {
 		answer.Snapshot = schemaJSON(snapshot)
 	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	answer.Expires = e.expires.UTC().Format(time.RFC3339)
 	if e.transcript != nil {
 		answer.Transcript, e.cursor = e.transcript.since(e.cursor)
 		answer.Note = e.transcript.note()
 	}
 
 	return answer
+}
+
+// startedAgain answers a start whose request id already started entry.
+func startedAgain(ctx context.Context, entry *debugSessionEntry) *mcp.CallToolResult {
+	answer := entry.answer(ctx)
+	answer.Note = strings.TrimSpace("this request id already started this session; it was not started again. " + answer.Note)
+
+	return toolJSON(answer)
+}
+
+// targetRequestID is the request id a retained session's command carries to
+// its target: derived from the caller's retry key, so a retry reaches the
+// target under the same id and is answered from its receipts, and spelled in
+// the characters a target's request id allows. Empty stays empty.
+func targetRequestID(session, request string) string {
+	if request == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(session + "\x00" + request))
+
+	return "mcp-" + hex.EncodeToString(sum[:16])
 }
 
 func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -354,12 +452,8 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 			if err != nil {
 				return flowmcp.ToolError(err), nil
 			}
-			entry.mu.Lock()
-			defer entry.mu.Unlock()
-			answer := entry.answer(ctx)
-			answer.Note = strings.TrimSpace("this request id already started this session; it was not started again. " + answer.Note)
 
-			return toolJSON(answer), nil
+			return startedAgain(ctx, entry), nil
 		}
 	}
 
@@ -385,10 +479,19 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		transcript: transcript, cancel: cancel, done: make(chan struct{}),
 	}
 	entry.driver.Wait = maxDebugSessionWait
-	if err := r.register(entry, args.RequestID); err != nil {
+	existing, err := r.register(entry, args.RequestID)
+	if err != nil || existing != nil {
+		// Nothing was launched: this session never ran.
 		cancel()
+		_ = session.Close()
+		if err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+		if _, err := r.lookup(existing.id); err != nil {
+			return flowmcp.ToolError(err), nil
+		}
 
-		return flowmcp.ToolError(err), nil
+		return startedAgain(ctx, existing), nil
 	}
 
 	go func() {
@@ -418,9 +521,6 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		after = snapshot.GetRevision()
 	}
 
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-
 	return toolJSON(entry.answer(ctx)), nil
 }
 
@@ -449,14 +549,12 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
 	}
 	entry.driver.Wait = maxDebugSessionWait
-	if err := r.register(entry, ""); err != nil {
+	if _, err := r.register(entry, ""); err != nil {
 		_ = remote.Disconnect()
 
 		return flowmcp.ToolError(err), nil
 	}
 
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
 	answer := entry.answer(ctx)
 	answer.Receipt = schemaJSON(receipt)
 
@@ -476,9 +574,9 @@ func (r *debugSessions) observe(ctx context.Context, req *mcp.CallToolRequest) (
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
 
+	// No lock is held while waiting: the command that produces the revision
+	// this waits for must be able to run.
 	if args.WaitSeconds > 0 {
 		wait := min(time.Duration(args.WaitSeconds)*time.Second, maxDebugSessionWait)
 		waitCtx, cancel := context.WithTimeout(ctx, wait)
@@ -506,40 +604,37 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
+	entry.calls.Lock()
+	defer entry.calls.Unlock()
 
-	if cached, ok := entry.receipts[args.RequestID]; ok && args.RequestID != "" {
+	entry.mu.Lock()
+	cached, ok := entry.receipts[args.RequestID]
+	expires := entry.expires
+	entry.mu.Unlock()
+	if ok && args.RequestID != "" {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(cached)}}}, nil
 	}
 
-	answer := sessionAnswer{SessionID: entry.id, Command: args.Command, Expires: entry.expires.UTC().Format(time.RFC3339)}
-	if args.ExpectedRevision != 0 {
-		current, err := entry.target.Snapshot(ctx)
-		if err != nil {
-			return flowmcp.ToolError(err), nil
-		}
-		if current.GetRevision() != args.ExpectedRevision {
-			answer.Receipt = schemaJSON(&v1.DebugReceipt{
-				RequestId: args.RequestID,
-				Status:    v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE,
-				Revision:  current.GetRevision(),
-				Message:   fmt.Sprintf("the command was meant for revision %d, and the session is at %d", args.ExpectedRevision, current.GetRevision()),
-			})
-			answer.Snapshot = schemaJSON(current)
-
-			return toolJSON(answer), nil
-		}
-	}
-
-	result, err := entry.driver.Do(ctx, args.Command)
+	// The retry key reaches the target as its request id, so a retry after a
+	// response lost here — the target accepted the command and this call
+	// ended before answering — is answered from the target's receipts rather
+	// than moving the run again. The expected revision goes with it, and the
+	// target answers a remembered id before it judges staleness.
+	result, err := entry.driver.DoWith(ctx, args.Command, flowdebug.DoOptions{
+		RequestID:        targetRequestID(entry.id, args.RequestID),
+		ExpectedRevision: args.ExpectedRevision,
+	})
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
+	answer := sessionAnswer{SessionID: entry.id, Command: args.Command, Expires: expires.UTC().Format(time.RFC3339)}
 	answer.Text = result.Text
 	answer.Receipt = schemaJSON(result.Receipt)
 	answer.Snapshot = schemaJSON(result.Snapshot)
 	answer.Inspect = schemaJSON(result.Inspect)
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
 	if entry.transcript != nil {
 		answer.Transcript, entry.cursor = entry.transcript.since(entry.cursor)
 	}
@@ -572,18 +667,10 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
-
-	r.mu.Lock()
-	delete(r.sessions, entry.id)
-	for request, id := range r.starts {
-		if id == entry.id {
-			delete(r.starts, request)
-		}
+	if !r.remove(entry.id) {
+		// The sweeper or another end got there first, and ended it.
+		return flowmcp.ToolError(errNoDebugSession(entry.id)), nil
 	}
-	r.mu.Unlock()
-
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
 
 	entry.end(args.Keep)
 	answer := entry.answer(ctx)
