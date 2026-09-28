@@ -314,3 +314,32 @@ func TestAnUnroutedFallbackNeedsNoKeysButCannotWrite(t *testing.T) {
 	_, err = NewPool(t.Context(), Config{Address: devServer.FrontendHostPort(), Codec: codecs}, nil, nil)
 	require.ErrorContains(t, err, "no keys are configured", "a fallback that is the only client must be covered")
 }
+
+// TestTheFallbackConfigurationIsWhatAnyDialOfTheFallbackUses: a caller that
+// dials the fallback client itself, before building the pool, gets the same
+// answer NewPool does, because both take it from Config.Fallback. With a
+// mapping, an uncovered fallback builds and refuses every payload; without
+// one, it is refused.
+func TestTheFallbackConfigurationIsWhatAnyDialOfTheFallbackUses(t *testing.T) {
+	t.Parallel()
+
+	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
+	require.NoError(t, err)
+	cfg := Config{
+		Namespace: "unrouted",
+		Codec:     payloadcodec.Config{Codec: toy, Namespaces: map[string]payloadcodec.Codec{"team-a": toy}},
+	}
+
+	opts, err := cfg.Fallback(fakeMapper{temporal: map[string]string{"team-a": "team-a"}}).Options()
+	require.NoError(t, err, "an unused fallback without keys refused to build")
+	_, err = opts.DataConverter.ToPayload("plaintext")
+	require.ErrorContains(t, err, "no keys are configured", "the fallback encoded a payload it holds no key for")
+
+	for name, mapper := range map[string]NamespaceMapper{
+		"no mapper":        nil,
+		"a mapper of none": fakeMapper{mapsNothing: true},
+	} {
+		_, err := cfg.Fallback(mapper).Options()
+		require.ErrorContains(t, err, "no keys are configured", "%s: a fallback that is the only client must be covered", name)
+	}
+}

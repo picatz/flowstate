@@ -20,16 +20,15 @@ managed:
 # invoked against, and this plugin's proto genuinely needs the root
 # repository's proto/flowstate/v1/value.proto beside its own. The only
 # way to put both in one buf workspace is to run buf from a directory that
-# contains both, which means the repository root, which means borrowing its
-# buf.work.yaml for the duration of one command:
+# contains both, which means the repository root, which means declaring both
+# modules for the duration of one command with --config:
 #
 #   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
 #
 #   # from the repository root, with protoc-gen-go on $PATH:
-#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/sql/proto\n' > buf.work.yaml
 #   go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate \
+#     --config '{"version":"v2","modules":[{"path":"proto"},{"path":"plugins/sql/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' \
 #     --template plugins/sql/buf.gen.yaml --path plugins/sql/proto/sql -o plugins/sql
-#   git checkout -- buf.work.yaml
 plugins:
   - plugin: go
     out: gen

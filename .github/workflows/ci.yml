@@ -662,8 +662,8 @@ jobs:
           : "${BASE_SHA:?no breaking-check base from plan}"
           git fetch --no-tags --depth=1 origin "+$BASE_SHA:refs/remotes/origin/main"
 
-      # proto/buf.yaml has declared FILE and WIRE breaking rules from the start and
-      # nothing ran them.
+      # buf.yaml (proto/buf.yaml until #2149) has declared FILE and WIRE breaking
+      # rules from the start and nothing ran them.
       - name: Check for breaking changes
         run: go tool -modfile=tools/external/go.mod buf breaking --against '.git#branch=origin/main'
 
@@ -673,26 +673,24 @@ jobs:
       # regenerates. Several people editing one schema at once makes this likely
       # rather than theoretical.
       #
-      # Two artifacts, one pin. The second is the descriptor set the schema's
-      # comments travel in: protoc strips SourceCodeInfo from what a .pb.go
-      # embeds, so a runtime descriptor has shape and no prose, and `buf build`
-      # is the command that keeps the comments. It is written here, beside the
-      # generated code, so the same `git diff --exit-code` catches a set that
-      # describes a schema which has since moved. --exclude-imports keeps it to
-      # this repository's own schema rather than googleapis and protovalidate.
+      # The schema's comments are generated too (#2147): protoc strips
+      # SourceCodeInfo from what a .pb.go embeds, so protoc-gen-flowstate-doc,
+      # run by the same `buf generate`, writes them as Go source into
+      # pkg/flowstate/v1/protodoc, under the same pin as the types.
       #
-      # The third is the same artifact for the example plugin's own schema,
-      # which is what carries a plugin author's field comments to an editor
-      # (#723). It is a separate buf module, so it needs its own build; it is
-      # under the same pin, because a plugin's prose can go stale exactly the
-      # way the engine's can.
+      # The example plugin is a separate buf module, so it has its own
+      # generate: its .pb.go and the comments that carry a plugin author's
+      # field prose to an editor (#723, #2148), under the same pin, because a
+      # plugin's prose can go stale exactly the way the engine's can. --clean
+      # empties its gen/ first, so output whose .proto is gone cannot survive.
       - name: Verify generated code is current
         run: |
           go tool -modfile=tools/external/go.mod buf generate
-          go tool -modfile=tools/external/go.mod buf build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
-          go tool -modfile=tools/external/go.mod buf build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
+          E=pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
+          go tool -modfile=tools/external/go.mod buf generate "$E/proto" --template "$E/buf.gen.yaml" -o "$E" --clean
+          git add --intent-to-add -- .
           git diff --exit-code -- . || {
-            echo "::error::generated code does not match the schema; run 'make check' (or 'buf generate' plus the 'buf build' line beside it) and commit the result"
+            echo "::error::generated code does not match the schema; run 'make check' (or the two 'buf generate' lines above) and commit the result"
             exit 1
           }
 

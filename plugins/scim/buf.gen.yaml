@@ -15,10 +15,9 @@ managed:
 #   GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
 #
 #   # from the repository root, with protoc-gen-go on $PATH:
-#   printf 'version: v1\ndirectories:\n  - proto\n  - plugins/scim/proto\n' > buf.work.yaml
 #   go tool -modfile=tools/external/go.mod buf generate \
+#     --config '{"version":"v2","modules":[{"path":"proto"},{"path":"plugins/scim/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' \
 #     --template plugins/scim/buf.gen.yaml --path plugins/scim/proto/scim -o plugins/scim
-#   git checkout -- buf.work.yaml
 plugins:
   - plugin: go
     out: gen
