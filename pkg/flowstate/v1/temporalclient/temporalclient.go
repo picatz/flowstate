@@ -182,7 +182,7 @@ func (c Config) Options() (client.Options, error) {
 	if err := c.Codec.Validate(); err != nil {
 		return client.Options{}, err
 	}
-	codec, err := c.Codec.ForNamespace(opts.Namespace)
+	codec, err := c.Codec.ForWriting(opts.Namespace)
 	if err != nil {
 		if !c.refuseUncovered {
 			return client.Options{}, err

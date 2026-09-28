@@ -136,6 +136,11 @@ escrow_keys:
 `), 0o600))
 	_, _, err = runCLI(t, "codec", "status", "--payload-keyring", recovery)
 	require.NoError(t, err, "the documented recovery keyring does not start")
+
+	// It is a reader's keyring: a worker writes history, and is refused at
+	// startup rather than at its first write.
+	_, _, err = runCLI(t, "worker", "--allow-unversioned-interpreter", "--payload-keyring", recovery)
+	require.ErrorContains(t, err, "decode-only")
 }
 
 // TestCodecKeygenLeavesNoHalfAPair: an HPKE pair is written whole or not at
