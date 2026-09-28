@@ -637,3 +637,59 @@ func TestVariableHandlesAreReusedAndBoundedWithinAStop(t *testing.T) {
 	assert.Zero(t, evaluate("[-1]"), "a stop handed out more references than it may hold")
 	assert.Equal(t, first, evaluate("[1, 2]"), "a reference already issued stopped answering at the bound")
 }
+
+// TestASessionDebugsOneProgram is a client that launches twice: the second is
+// refused rather than replacing the first target, which would never be closed
+// and could hold its run for a debugger nobody can reach.
+func TestASessionDebugsOneProgram(t *testing.T) {
+	t.Parallel()
+
+	c, program, finished := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	require.Equal(t, true, c.await("response", "launch")["success"])
+
+	c.send(3, "launch", map[string]any{"program": program})
+	again := c.await("response", "launch")
+	assert.Equal(t, false, again["success"], "a second launch replaced the first")
+	assert.Contains(t, again["message"], "already")
+
+	c.send(4, "attach", map[string]any{"workflowId": "elsewhere"})
+	assert.Equal(t, false, c.await("response", "attach")["success"])
+
+	// The first program is still the one this session drives, to its end.
+	c.send(5, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+	c.send(6, "disconnect", map[string]any{})
+	c.await("response", "disconnect")
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first launch's run did not finish after the session detached")
+	}
+}
+
+// TestALineBeyondThirtyTwoBitsIsRefused keeps a line number the source map
+// cannot hold from wrapping onto a small line when it is narrowed.
+func TestALineBeyondThirtyTwoBitsIsRefused(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+
+	c.send(3, "setBreakpoints", map[string]any{
+		"source":      map[string]any{"path": program},
+		"breakpoints": []map[string]any{{"line": int64(1)<<32 + 13}},
+	})
+	assert.Equal(t, false, c.await("response", "setBreakpoints")["success"],
+		"a line past 2^32 was taken, and would have been set on line 13")
+}

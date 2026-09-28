@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -71,6 +72,10 @@ type Server struct {
 	// initialize said they start at 0 rather than DAP's default of 1. Every
 	// position is 1-based inside the adapter and translated at the edge.
 	linesFrom0, columnsFrom0 bool
+
+	// bound is set once a launch or attach has given the session its program;
+	// a second is refused rather than replacing a target nobody would close.
+	bound bool
 
 	launched chan struct{}
 	once     sync.Once
@@ -472,10 +477,16 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 		s.stopOnEntry = *asked.StopOnEntry
 	}
 	launcher := s.launcher
+	bound := s.bound
 	s.mu.Unlock()
 
 	if launcher == nil {
 		s.reply(request, nil)
+
+		return
+	}
+	if bound {
+		s.fail(request, errOneProgram.Error())
 
 		return
 	}
@@ -488,6 +499,7 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.bound = true
 	s.target = launched.Target
 	s.sourceMap = launched.SourceMap
 	s.start = launched.Start
@@ -515,6 +527,14 @@ func (s *Server) attach(ctx context.Context, request inbound) {
 		return
 	}
 	asked.Raw = request.Arguments
+	s.mu.Lock()
+	bound := s.bound
+	s.mu.Unlock()
+	if bound {
+		s.fail(request, errOneProgram.Error())
+
+		return
+	}
 
 	attached, err := s.attacher(ctx, asked)
 	if err != nil {
@@ -532,6 +552,7 @@ func (s *Server) attach(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.bound = true
 	s.target = attached.Target
 	s.sourceMap = attached.SourceMap
 	s.capabilities = snapshot.GetCapabilities()
@@ -1166,6 +1187,11 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 // refused with, which never quotes what was submitted.
 var errInvalidBreakpoints = errors.New("invalid breakpoint arguments")
 
+// errOneProgram refuses a second launch or attach in one session: the first
+// target would be replaced without being closed, and a run it held would
+// wait on a debugger nobody can reach.
+var errOneProgram = errors.New("flowdap: this session already launched or attached to a program; start another debug session for another")
+
 // errTooManyBreakpoints fails a request that alone names more breakpoints than
 // a session holds. It fails whole, before anything is built from it, rather
 // than answering each entry: a frame can carry far more compact entries than a
@@ -1200,7 +1226,7 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	lineBase, _ := s.clientBases()
 	wanted := make([]lineBreakpoint, 0, len(asked.Breakpoints))
 	for _, want := range asked.Breakpoints {
-		if want == nil || want.Line == nil || *want.Line < lineBase {
+		if want == nil || want.Line == nil || *want.Line < lineBase || int64(*want.Line)-int64(lineBase)+1 > math.MaxUint32 {
 			s.fail(request, errInvalidBreakpoints.Error())
 
 			return
