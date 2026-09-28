@@ -440,8 +440,10 @@ func (s *Session) hold(
 		scope: scope, step: node.GetId(), kind: kind, workflow: workflow,
 		backtrace: v1.ExecutingBacktraceFromContext(ctx, node.GetId(), kind),
 	})
-	s.enterHeld(occurrence, reason, hitIDs, failure)
 	defer s.prompting(promptSubject{})
+	if !s.enterHeld(occurrence, reason, hitIDs, failure) {
+		return nil
+	}
 
 	announce()
 
@@ -499,11 +501,17 @@ func (s *Session) hold(
 	}
 }
 
-// enterHeld records a stop in the typed state.
-func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopReason, hitIDs []string, failure string) {
+// enterHeld records a stop in the typed state, and reports false, recording
+// nothing, when the session has ended or detached: a terminal state is one a
+// session never leaves, so there is no stop to record and nobody to prompt.
+// Every hold goes through here, which is what makes that true.
+func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopReason, hitIDs []string, failure string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if terminal(s.contract.state) || s.contract.detached {
+		return false
+	}
 	s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_HELD
 	s.contract.reason = reason
 	s.contract.hitIDs = hitIDs
@@ -513,6 +521,8 @@ func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopR
 	s.contract.pauseAsked = false
 	s.contract.message = ""
 	s.bump()
+
+	return true
 }
 
 // leaveHeld records that the run left its stop.
@@ -741,7 +751,9 @@ func (s *Session) snapshotLocked() *v1.DebugSnapshot {
 	}
 	if c.state == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
 		snapshot.Reason = c.reason
-		snapshot.BreakpointIds = slices.Clone(c.hitIDs)
+		for _, id := range c.hitIDs {
+			snapshot.BreakpointIds = append(snapshot.BreakpointIds, s.redactTextLocked(id))
+		}
 		snapshot.Failure = c.failure
 		snapshot.Frames = s.framesLocked(c.occurrence)
 	}
@@ -1098,7 +1110,6 @@ func (s *Session) Pause(_ context.Context, requestID string) (*v1.DebugReceipt, 
 		return s.answer(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, "the run is already held"), nil
 	}
 	s.contract.pauseAsked = true
-	s.contract.detached = false
 	if state != v1.DebugRunState_DEBUG_RUN_STATE_PAUSE_REQUESTED {
 		s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_PAUSE_REQUESTED
 		s.bump()
@@ -1146,6 +1157,15 @@ func (s *Session) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpoi
 	}
 
 	s.mu.Lock()
+	// Checked again under the lock that installs the set: a detach landing
+	// while the set compiled has ended the session, and nothing re-arms it.
+	if terminal(s.contract.state) || s.contract.detached {
+		s.mu.Unlock()
+
+		return &v1.DebugSetBreakpointsResponse{
+			Receipt: s.answer(req.GetRequestId(), v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_ENDED, "the session is over"),
+		}, nil
+	}
 	// Hit counts belong to a breakpoint, and a client resends its whole set
 	// whenever one changes; an unchanged breakpoint keeps counting.
 	for key, at := range next {
@@ -1158,9 +1178,6 @@ func (s *Session) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpoi
 	clear(s.notedUnbound)
 	if mode := req.GetFailureMode(); mode != v1.DebugFailureMode_DEBUG_FAILURE_MODE_UNSPECIFIED {
 		s.contract.failureMode = mode
-	}
-	if len(next) > 0 {
-		s.contract.detached = false
 	}
 	for _, state := range states {
 		if at, ok := next[state.GetId()]; ok {

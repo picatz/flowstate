@@ -55,7 +55,8 @@ func FuzzBindRunInputs(f *testing.F) {
 // word parsers a Flowfile's fields go through (#1721), and the breakpoint
 // targets and hit conditions a remote debugger sends, and the typed debug ask
 // a signal carries into a durable run. Every input is an error or a value,
-// never both, and never a panic.
+// never both — except a typed ask, which reports what it read beside its
+// refusal so the run can answer under its request id — and never a panic.
 func FuzzRootParsers(f *testing.F) {
 	f.Add([]byte("deny:\n  - 'task == \"http\"'\n"))
 	f.Add([]byte("allow:\n  - 'identity.subject == \"ci\"'\ndeny:\n  - \"true\"\n"))
