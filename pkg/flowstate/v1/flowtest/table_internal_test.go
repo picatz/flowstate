@@ -127,7 +127,7 @@ func TestExpandingATableDoesNotNormalizeTheCallersClaims(t *testing.T) {
 		"the effective row did not retain the normalized claim")
 }
 
-// TestMergeRowKeepsSecretsWholeOrNothing pins docs/CLI.md's documented
+// TestMergeRowKeepsSecretsWholeOrNothing pins docs/TESTING.md's documented
 // contract unchanged: a row's own `secrets:` replaces the entry's binding
 // entirely, which is how a row exercises the "no matching secrets entry"
 // refusal for a secret its entry declares. [expandTableEntries]'s

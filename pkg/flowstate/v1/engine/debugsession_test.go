@@ -1,8 +1,10 @@
 package engine_test
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -310,4 +312,37 @@ func TestFailureStopsAreRefusedDurably(t *testing.T) {
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSUPPORTED, tl.reads["catch"].GetReceipt().GetStatus(),
 		"an unsupported request is refused explicitly, never silently ignored")
 	assert.False(t, tl.reads["catch"].GetCapabilities().GetFailureBreakpoints())
+}
+
+// TestATypedAskIsBoundedWhereTheRunReadsIt sends asks no RPC would accept,
+// the way a raw signal could: a request id past the schema's bound is refused
+// with nothing kept under it, and a refusal that quotes a long, bad verb keeps
+// a bounded message. A run carries its receipts across Continue-As-New, so an
+// unbounded one would be a way to fail the run from outside it.
+func TestATypedAskIsBoundedWhereTheRunReadsIt(t *testing.T) {
+	t.Parallel()
+
+	oversized := strings.Repeat("r", v1.MaxDebugRequestIDBytes+1)
+	tl := newTimeline(t)
+	tl.ask(30*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach"})
+	tl.ask(31*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: oversized,
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE})
+	tl.ask(32*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: strings.Repeat("é", 4*v1.MaxDebugReceiptMessageBytes), Session: "s1", Request: "garbled"})
+	tl.read(63*time.Second, "oversized", oversized)
+	tl.read(63*time.Second+time.Millisecond, "garbled", "garbled")
+	tl.ask(64*time.Second, "sre-1@example.com", &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: typedSpec("bounded")})
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	require.NotNil(t, tl.reads["oversized"], "the run ended before it was read")
+	assert.Nil(t, tl.reads["oversized"].GetReceipt(), "a receipt was kept under a request id past the schema's bound")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, tl.reads["oversized"].GetState(),
+		"a resume refused for its size moved the run")
+	garbled := tl.reads["garbled"].GetReceipt()
+	require.NotNil(t, garbled)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, garbled.GetStatus())
+	assert.LessOrEqual(t, len(garbled.GetMessage()), v1.MaxDebugReceiptMessageBytes)
+	assert.True(t, utf8.ValidString(garbled.GetMessage()), "a capped message was cut inside a rune")
 }

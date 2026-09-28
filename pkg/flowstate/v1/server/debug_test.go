@@ -170,6 +170,62 @@ func TestTheDurableDebuggerEndToEnd(t *testing.T) {
 		"a command for a closed run is answered ended, and nothing is sent")
 }
 
+// TestABreakpointConditionIsAnInspection: a condition is an expression
+// evaluated against the run's scope, and whether it held is a bit of what it
+// read, so setting one needs the inspect action, by the RPC and by a raw signal
+// alike. A plain breakpoint needs only the debug action. SignalWithStart is not
+// a door onto the debug channel at all.
+func TestABreakpointConditionIsAnInspection(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: debuggableWorkflow()}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	debugOnly := as(t.Context(), "sre-1@example.com", "workload.debug", "workload.signal")
+	conditional := []*v1.DebugBreakpoint{{Id: "peek", Step: "after", Condition: `steps.approval.payload.approved == true`}}
+
+	_, err = fixture.teamA.DebugSetBreakpoints(debugOnly, connect.NewRequest(&v1.DebugSetBreakpointsRequest{
+		WorkflowId: workflowID, SessionId: "s", RequestId: "conditional", Breakpoints: conditional,
+	}))
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "a condition was set without the inspect action")
+
+	_, err = fixture.teamA.DebugSetBreakpoints(debugOnly, connect.NewRequest(&v1.DebugSetBreakpointsRequest{
+		WorkflowId: workflowID, SessionId: "s", RequestId: "plain",
+		Breakpoints: []*v1.DebugBreakpoint{{Id: "plain", Step: "after"}},
+	}))
+	require.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err), "a plain breakpoint needs only the debug action")
+
+	payload, err := v1.NewTypedDebugAsk(&v1.DebugAsk{
+		Verb: v1.DebugVerbBreakpoints, Session: "s", Request: "raw",
+		Breakpoints: &v1.DebugSetBreakpointsRequest{Breakpoints: conditional},
+	})
+	require.NoError(t, err)
+	_, err = fixture.teamA.Signal(debugOnly, connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID, Name: v1.DebugSignal, Payload: payload,
+	}))
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "a raw signal carried a condition without the inspect action")
+
+	// The door that skipped the checks above: an existing entity signalled
+	// again with a workflow that declares `concurrency:`, which resolves the
+	// running entity and signals it directly.
+	entity := entityWorkflow(nil)
+	entity.Debug = debuggableWorkflow().GetDebug()
+	created, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "debug-door", Workflow: entity, Name: "update", Payload: updatePayload(1, false),
+	}))
+	require.NoError(t, err)
+	require.True(t, created.Msg.GetCreated())
+	entity.Concurrency = &v1.Concurrency{Key: v1.NewLiteral("prod-eu")}
+	_, err = fixture.teamA.SignalWithStart(as(t.Context(), "sre-1@example.com", "workload.run", "workload.signal"),
+		connect.NewRequest(&v1.SignalWithStartRequest{
+			EntityKey: "debug-door", Workflow: entity, Name: v1.DebugSignal, Payload: payload,
+		}))
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "SignalWithStart delivered onto the reserved debug channel")
+}
+
 func TestARunWithoutADebugPolicyCannotBeAttached(t *testing.T) {
 	t.Parallel()
 

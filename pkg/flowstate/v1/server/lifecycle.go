@@ -674,7 +674,7 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// `workload.signal`, so holding the one action the typed debug RPCs refuse
 	// cannot reach the same run through this verb (#2125).
 	if v1.IsDebugSignalName(req.Msg.GetName()) {
-		if err := s.authorizeDebugChannel(ctx, workflowID); err != nil {
+		if err := s.authorizeDebugChannel(ctx, workflowID, req.Msg.GetPayload()); err != nil {
 			return nil, err
 		}
 	}
@@ -769,6 +769,13 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	}
 	if err := v1.CheckSignalPayloadDepth(req.Msg.GetPayload()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	// No workflow may wait on a reserved name, so SignalWithStart has nothing
+	// to deliver one to, and it is not a second door onto the debug channel:
+	// that channel is reached through the debug RPCs or an authorized Signal.
+	if v1.IsReservedSignalName(req.Msg.GetName()) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("signal %q is reserved; SignalWithStart cannot deliver it", req.Msg.GetName()))
 	}
 
 	// Captured once, used both to compose the address and — inside

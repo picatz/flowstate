@@ -2012,7 +2012,11 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 	s.mu.Lock()
 	last := s.contract.occurrence
 	s.mu.Unlock()
-	s.enterHeld(last, v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY, nil, "")
+	// A session that detached or was closed has ended, and an autopsy would
+	// hold a run its debugger already let go of.
+	if !s.enterHeld(last, v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY, nil, "") {
+		return
+	}
 	// Leaving answers whichever typed command asked to leave; see
 	// [Session.acknowledge].
 	defer func() {

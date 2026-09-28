@@ -127,9 +127,10 @@ func callDepthOf(occurrence *v1.DebugOccurrence) int {
 
 // receipt records one command's outcome, bounded, and returns it.
 func (d *debugControl) receipt(request string, status v1.DebugCommandStatus, message string) {
-	if request == "" {
+	if request == "" || len(request) > v1.MaxDebugRequestIDBytes {
 		return
 	}
+	message = v1.TruncateDebugReceiptMessage(message)
 	d.carry.Receipts = append(d.carry.Receipts, &v1.DebugReceipt{
 		RequestId: request,
 		Status:    status,
