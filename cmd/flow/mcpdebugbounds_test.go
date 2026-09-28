@@ -216,10 +216,11 @@ func TestTheRetryCacheIsBoundedInBytes(t *testing.T) {
 	entry := &debugSessionEntry{receipts: map[string]json.RawMessage{}}
 	large := make([]byte, 1<<20)
 	for i := range 10 {
-		entry.rememberLocked(string(rune('a'+i)), large)
+		entry.rememberLocked(string(rune('a'+i)), "", large)
 	}
 	assert.LessOrEqual(t, entry.receiptBytes, maxSessionReceiptBytes)
 	assert.Len(t, entry.receipts, len(entry.order))
+	assert.Len(t, entry.commands, len(entry.order), "an evicted answer's command was kept")
 	assert.Contains(t, entry.receipts, "j", "the newest answer was dropped")
 	assert.NotContains(t, entry.receipts, "a", "the oldest answer was kept past the bound")
 
@@ -1013,4 +1014,48 @@ func TestARacingStartIsAnsweredOnlyForItsOwnCase(t *testing.T) {
 	existing, err = r.register(entry("b"), key)
 	require.ErrorIs(t, err, errReusedStartKey, "a start of another case was answered with the first session")
 	assert.Nil(t, existing)
+}
+
+// TestACommandKeyNamesOneCommand: a request id reused for another command, or
+// for another expected revision, is refused rather than answered with the
+// first command's result, which would say a `continue` ran when only the
+// earlier `next` did. The same command under it is still answered from memory,
+// and the target sees a different id for a different command, so it cannot
+// answer one from the other's receipt once the answer here is evicted.
+func TestACommandKeyNamesOneCommand(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	target := newStepTarget(true)
+	entry := addStepSession(t, r, target)
+	command := func(line string, expected uint64) *mcp.CallToolResult {
+		t.Helper()
+		result, err := r.command(t.Context(), toolRequest(t, map[string]any{
+			"session_id": entry.id, "command": line, "request_id": "k", "expected_revision": expected,
+		}))
+		require.NoError(t, err)
+
+		return result
+	}
+
+	first := command("next", 0)
+	require.False(t, first.IsError, replyOf(t, first).raw)
+	for _, other := range []struct {
+		line     string
+		expected uint64
+	}{{"continue", 0}, {"next", 7}} {
+		refused := command(other.line, other.expected)
+		require.True(t, refused.IsError, "%s@%d was answered with the result of next", other.line, other.expected)
+		assert.Contains(t, replyOf(t, refused).raw, "use a new request id")
+	}
+	again := command(" next ", 0)
+	require.False(t, again.IsError, replyOf(t, again).raw)
+	assert.Equal(t, replyOf(t, first).raw, replyOf(t, again).raw, "the same command was not answered from memory")
+
+	target.mu.Lock()
+	moves := target.moves
+	target.mu.Unlock()
+	assert.Equal(t, 1, moves, "a refused or retried command moved the run")
+	assert.NotEqual(t, commandRequestID(entry.id, "k", commandDigest("next", 0)),
+		commandRequestID(entry.id, "k", commandDigest("continue", 0)))
 }

@@ -106,6 +106,10 @@ type debugSessionEntry struct {
 	mu       sync.Mutex
 	expires  time.Time
 	receipts map[string]json.RawMessage
+	// commands is, for each request id in receipts, the [commandDigest] of
+	// the command its answer answers, so the id reused for another command
+	// is refused rather than answered with the first command's result.
+	commands map[string]string
 	order    []string
 	// receiptBytes is what receipts holds, for [maxSessionReceiptBytes].
 	receiptBytes int
@@ -1243,11 +1247,17 @@ func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry,
 		return flowmcp.ToolError(errNoDebugSession(entry.id)), nil
 	}
 
+	command := commandDigest(args.Command, args.ExpectedRevision)
 	entry.mu.Lock()
 	cached, ok := entry.receipts[args.RequestID]
+	answered := entry.commands[args.RequestID]
 	expires := entry.expires
 	entry.mu.Unlock()
 	if ok && args.RequestID != "" {
+		if answered != command {
+			return flowmcp.ToolError(errReusedCommandKey), nil
+		}
+
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(cached)}}}, nil
 	}
 
@@ -1255,9 +1265,11 @@ func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry,
 	// response lost here — the target accepted the command and this call
 	// ended before answering — is answered from the target's receipts rather
 	// than moving the run again. The expected revision goes with it, and the
-	// target answers a remembered id before it judges staleness.
+	// target answers a remembered id before it judges staleness. The id
+	// names the command too, so a key reused for another one after its
+	// answer here was evicted is never answered from the first's receipt.
 	result, err := entry.driver.DoWith(ctx, args.Command, flowdebug.DoOptions{
-		RequestID:        targetRequestID(entry.id, args.RequestID),
+		RequestID:        commandRequestID(entry.id, args.RequestID, command),
 		ExpectedRevision: args.ExpectedRevision,
 	})
 	if err != nil {
@@ -1280,11 +1292,34 @@ func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry,
 		return flowmcp.ToolError(err), nil
 	}
 	if args.RequestID != "" {
-		entry.rememberLocked(args.RequestID, encoded)
+		entry.rememberLocked(args.RequestID, command, encoded)
 	}
 
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
 }
+
+// commandDigest identifies a retained command — its line and the revision it
+// expects — so a request id names one command.
+func commandDigest(command string, expected uint64) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d", strings.TrimSpace(command), expected))
+
+	return hex.EncodeToString(sum[:16])
+}
+
+// commandRequestID is the request id a retained command carries to its
+// target: its session, the caller's retry key, and the command it names.
+// Empty when the caller sent no key.
+func commandRequestID(session, request, command string) string {
+	if request == "" {
+		return ""
+	}
+
+	return targetRequestID(session, request+"\x00"+command)
+}
+
+// errReusedCommandKey refuses a command whose request id already answered
+// another command.
+var errReusedCommandKey = errors.New("this request_id already answered another command or expected_revision; use a new request id")
 
 // attachIDs are the session id a new attach under the caller's retry key
 // creates, and the request id it sends: derived from the key, the run, and
@@ -1359,7 +1394,11 @@ func checkRequestID(id string) error {
 // rememberLocked keeps a command's answer for a retry under its request id,
 // dropping the oldest past [maxSessionReceipts] answers or
 // [maxSessionReceiptBytes] bytes. The caller holds e.mu.
-func (e *debugSessionEntry) rememberLocked(request string, encoded []byte) {
+func (e *debugSessionEntry) rememberLocked(request, command string, encoded []byte) {
+	if e.commands == nil {
+		e.commands = map[string]string{}
+	}
+	e.commands[request] = command
 	if previous, ok := e.receipts[request]; ok {
 		e.receiptBytes -= len(request) + len(previous)
 		e.order = slices.DeleteFunc(e.order, func(id string) bool { return id == request })
@@ -1371,6 +1410,7 @@ func (e *debugSessionEntry) rememberLocked(request string, encoded []byte) {
 		oldest := e.order[0]
 		e.receiptBytes -= len(oldest) + len(e.receipts[oldest])
 		delete(e.receipts, oldest)
+		delete(e.commands, oldest)
 		e.order = e.order[1:]
 	}
 }
