@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -689,4 +690,87 @@ func TestATerminateBeforeConfigurationReportsTheEnd(t *testing.T) {
 	require.Equal(t, true, c.await("response", "terminate")["success"])
 	c.await("event", "terminated")
 	assert.EqualValues(t, 1, body(c.await("event", "exited"))["exitCode"])
+}
+
+// TestBreakpointRequestsAreBoundedAtTheEdge is the adapter refusing, before it
+// keeps anything, what a breakpoint request could otherwise make it hold or
+// misplace: a missing array read as "clear this source", a line past the
+// uint32 the source map speaks wrapping onto a small one, and text across
+// sources that each request's own bounds would allow to accumulate.
+func TestBreakpointRequestsAreBoundedAtTheEdge(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+
+	seq := 3
+	set := func(path string, breakpoints any) map[string]any {
+		arguments := map[string]any{"source": map[string]any{"path": path}}
+		if breakpoints != nil {
+			arguments["breakpoints"] = breakpoints
+		}
+		c.send(seq, "setBreakpoints", arguments)
+		seq++
+
+		return c.await("response", "setBreakpoints")
+	}
+
+	require.Equal(t, true, set(program, []map[string]any{{"line": 13}})["success"])
+	assert.Equal(t, false, set(program, nil)["success"], "a request with no breakpoints array cleared the source")
+	kept := set(program, []map[string]any{{"line": 13}})
+	assert.Equal(t, true, body(kept)["breakpoints"].([]any)[0].(map[string]any)["verified"],
+		"the malformed request disturbed the installed set")
+
+	assert.Equal(t, false, set(program, []map[string]any{{"line": int64(1)<<32 + 13}})["success"],
+		"a line past 2^32 was taken, and would have been set on line 13")
+
+	condition := "true" + strings.Repeat(" ", 60<<10)
+	refused := false
+	for i := range flowdap.MaxBreakpointBytes/len(condition) + 2 {
+		answer := set(fmt.Sprintf("/elsewhere-%d.yaml", i), []map[string]any{{"line": 1, "condition": condition}})
+		if answer["success"] == false {
+			assert.Contains(t, answer["message"], "at most")
+			refused = true
+
+			break
+		}
+	}
+	assert.True(t, refused, "breakpoint text across sources grew past the adapter's bound")
+}
+
+// TestVariableHandlesAreBoundedByTheirText is a client spending the handle
+// table's bytes rather than its count: long, distinct expressions stop being
+// handed references once their text reaches the bound.
+func TestVariableHandlesAreBoundedByTheirText(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	padding := strings.Repeat(" ", 60<<10)
+	refused := false
+	for i := range flowdap.MaxVariableHandleBytes/len(padding) + 2 {
+		c.send(4+i, "evaluate", map[string]any{"expression": fmt.Sprintf("[%d%s]", i, padding), "frameId": 1})
+		answer := c.await("response", "evaluate")
+		require.Equal(t, true, answer["success"], answer)
+		if body(answer)["variablesReference"].(float64) == 0 {
+			refused = true
+
+			break
+		}
+	}
+	assert.True(t, refused, "long expressions kept being handed references past the byte bound")
 }

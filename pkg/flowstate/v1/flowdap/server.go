@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -29,6 +30,16 @@ const MaxScopeVariables = 500
 // past the bound come back without a reference, and so cannot be expanded,
 // until the run moves and the table is cleared.
 const MaxVariableHandles = 4096
+
+// MaxVariableHandleBytes bounds the expression text the references one stop
+// holds, which [MaxVariableHandles] alone does not: each expression may be as
+// long as a command.
+const MaxVariableHandleBytes = 4 << 20
+
+// MaxBreakpointBytes bounds the text the adapter keeps for the breakpoints it
+// holds — each source's path and every condition, hit condition and log
+// message — across all sources, which the count bound alone does not.
+const MaxBreakpointBytes = 1 << 20
 
 // Server is one editor's debug session, over the Debug Adapter Protocol.
 //
@@ -90,8 +101,10 @@ type Server struct {
 	held     *v1.DebugSnapshot
 	handles  map[int]handle
 	issued   map[handle]int
-	next     int
-	observed uint64
+	// issuedBytes is the expression text handles holds.
+	issuedBytes int
+	next        int
+	observed    uint64
 
 	lines       map[string][]lineBreakpoint
 	functions   []functionBreakpoint
@@ -800,6 +813,7 @@ func (s *Server) stopped(snapshot *v1.DebugSnapshot) {
 	s.held = snapshot
 	clear(s.handles)
 	clear(s.issued)
+	s.issuedBytes = 0
 	s.mu.Unlock()
 
 	body := stoppedBody{
@@ -874,6 +888,7 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 		s.mu.Lock()
 		clear(s.handles)
 		clear(s.issued)
+		s.issuedBytes = 0
 		s.held = nil
 		s.mu.Unlock()
 		if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE {
@@ -1047,7 +1062,8 @@ func (s *Server) clientBases() (line, column int) {
 
 // issue hands out a variables reference for an expression at a revision: the
 // one already issued for it at this stop, or a new one while the stop holds
-// fewer than [MaxVariableHandles], and otherwise none.
+// fewer than [MaxVariableHandles] and [MaxVariableHandleBytes] allows it, and
+// otherwise none.
 func (s *Server) issue(revision uint64, expression string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1056,12 +1072,13 @@ func (s *Server) issue(revision uint64, expression string) int {
 	if reference, ok := s.issued[key]; ok {
 		return reference
 	}
-	if len(s.handles) >= MaxVariableHandles {
+	if len(s.handles) >= MaxVariableHandles || s.issuedBytes+len(expression) > MaxVariableHandleBytes {
 		return 0
 	}
 	s.next++
 	s.handles[s.next] = key
 	s.issued[key] = s.next
+	s.issuedBytes += len(expression)
 
 	return s.next
 }
@@ -1221,7 +1238,9 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 			LogMessage   *string `json:"logMessage"`
 		} `json:"breakpoints"`
 	}
-	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" {
+	// A missing array is malformed, not an empty replacement: only an explicit
+	// empty set clears a source's breakpoints.
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" || asked.Breakpoints == nil {
 		s.fail(request, errInvalidBreakpoints.Error())
 
 		return
@@ -1235,12 +1254,19 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	lineBase, _ := s.clientBases()
 	wanted := make([]lineBreakpoint, 0, len(asked.Breakpoints))
 	for _, want := range asked.Breakpoints {
-		if want == nil || want.Line == nil || *want.Line < lineBase {
+		// Positions are uint32 past this edge: a larger line would wrap onto
+		// a small one rather than name no line.
+		if want == nil || want.Line == nil || *want.Line < lineBase || int64(*want.Line)-int64(lineBase)+1 > math.MaxUint32 {
 			s.fail(request, errInvalidBreakpoints.Error())
 
 			return
 		}
 		wanted = append(wanted, lineBreakpoint{line: *want.Line - lineBase + 1, condition: want.Condition, hitCondition: want.HitCondition, logText: want.LogMessage})
+	}
+	if s.retainedBytes(asked.Source.Path, false)+lineBytes(asked.Source.Path, wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
 	}
 	if s.totalBreakpoints(asked.Source.Path, len(wanted), -1) > flowdebug.MaxBreakpoints {
 		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
@@ -1311,6 +1337,11 @@ func (s *Server) setFunctionBreakpoints(ctx context.Context, request inbound) {
 			return
 		}
 		wanted = append(wanted, functionBreakpoint{name: strings.TrimSpace(*want.Name), condition: want.Condition, hitCondition: want.HitCondition})
+	}
+	if s.retainedBytes("", true)+functionBytes(wanted) > MaxBreakpointBytes {
+		s.fail(request, errBreakpointBytes.Error())
+
+		return
 	}
 	if s.totalBreakpoints("", 0, len(wanted)) > flowdebug.MaxBreakpoints {
 		s.reply(request, breakpointsBody{Breakpoints: refused(len(wanted),
@@ -1397,6 +1428,57 @@ func (s *Server) setExceptionBreakpoints(ctx context.Context, request inbound) {
 		return
 	}
 	s.reply(request, nil)
+}
+
+// errBreakpointBytes fails a request whose breakpoints would take the text the
+// adapter keeps past [MaxBreakpointBytes].
+var errBreakpointBytes = fmt.Errorf("flowdap: the breakpoints' paths, conditions and log messages may total at most %d bytes", MaxBreakpointBytes)
+
+// retainedBytes is the breakpoint text held for every source but skipPath,
+// and for the function breakpoints unless skipFunctions.
+func (s *Server) retainedBytes(skipPath string, skipFunctions bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	total := 0
+	for path, set := range s.lines {
+		if path != skipPath {
+			total += lineBytes(path, set)
+		}
+	}
+	if !skipFunctions {
+		total += functionBytes(s.functions)
+	}
+
+	return total
+}
+
+// lineBytes is the text a source's line breakpoints hold, its path included.
+func lineBytes(path string, set []lineBreakpoint) int {
+	total := len(path)
+	for _, b := range set {
+		total += textBytes(b.condition) + textBytes(b.hitCondition) + textBytes(b.logText)
+	}
+
+	return total
+}
+
+// functionBytes is the text a set of function breakpoints holds.
+func functionBytes(set []functionBreakpoint) int {
+	total := 0
+	for _, b := range set {
+		total += len(b.name) + textBytes(b.condition) + textBytes(b.hitCondition)
+	}
+
+	return total
+}
+
+func textBytes(text *string) int {
+	if text == nil {
+		return 0
+	}
+
+	return len(*text)
 }
 
 func (s *Server) totalBreakpoints(path string, lines, functions int) int {
