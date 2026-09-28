@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -232,17 +233,12 @@ func (p *Provider) login(ctx context.Context) (string, time.Duration, error) {
 const maxJWTBytes = 64 << 10
 
 // readBoundedRegular reads at most limit bytes of the regular file at path.
-// The path is checked before it is opened, so a FIFO or device named by
-// mistake is refused rather than blocking the open past every deadline, and
-// the opened file is checked again, so a swap between the two reads nothing
-// else.
+// It is opened with O_NONBLOCK, so a FIFO named by mistake, or swapped in
+// for the token, returns from the open instead of blocking login past every
+// deadline waiting for a writer, and the opened descriptor is what is checked.
+// O_NONBLOCK has no effect on an ordinary file.
 func readBoundedRegular(path string, limit int64) ([]byte, error) {
-	if info, err := os.Stat(path); err != nil {
-		return nil, err
-	} else if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%q is not a regular file", path)
-	}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"syscall"
 	"time"
 
 	"github.com/picatz/flowstate/internal/strictyaml"
@@ -351,8 +352,12 @@ func checkPublicFileMode(path string, info fs.FileInfo) error {
 // set, is given the opened file's own information before anything is read:
 // checking path first and opening it after would read whatever another
 // account renamed into place between the two.
+//
+// O_NONBLOCK makes opening a mistakenly named FIFO return, so the descriptor
+// is refused below instead of blocking startup, past every deadline, waiting
+// for a writer. It has no effect on an ordinary file.
 func readBounded(path string, limit int64, check func(fs.FileInfo) error) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
