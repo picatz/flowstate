@@ -184,7 +184,10 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 	holder := d.attached() && v1.QualifiedSubject(d.carry.GetHolder().GetIssuer(), d.carry.GetHolder().GetSubject()) ==
 		v1.QualifiedSubject(sender.GetIdentity().GetIssuer(), sender.GetIdentity().GetSubject())
 	mine := d.attached() && d.carry.GetSessionId() == ask.Session && holder
-	held := d.lease != nil && v1.DebugLeaseHeld(d.lease, now)
+	// Held is judged at the same fence as expiry: a renewal accepted while
+	// the lease still ran renews it, even when a long step kept the run from
+	// reading the renewal until after the old expiry.
+	held := d.lease != nil && v1.DebugLeaseHeld(d.lease, judged)
 
 	switch ask.Verb {
 	case v1.DebugVerbPause, v1.DebugVerbRenew:
@@ -482,7 +485,7 @@ func (e *executor) typedStop(occurrence *v1.DebugOccurrence) (v1.DebugStopReason
 			holds, cost, err := v1.EvalConditionInScopeWithCost(evalContext(), bp.condition, e.scope)
 			e.chargeWorkflowCost(cost)
 			if err != nil {
-				bp.state.LastError = err.Error()
+				bp.state.LastError = v1.TruncateDebugReceiptMessage(e.debugRedactText(err.Error()))
 
 				continue
 			}
@@ -543,6 +546,20 @@ func (e *executor) debugHoldEnded() {
 	e.endDebugSession(v1.DebugRunState_DEBUG_RUN_STATE_EXPIRED, "the session's lease lapsed while the run was held; the run resumed")
 }
 
+// debugRedactText withholds the declared-sensitive inputs of the workflow in
+// scope from text the run keeps for a debugger: a task's error can quote the
+// value it was given, and what a session reads back is a transcript like any
+// other. It is presentation, as inspection's redaction is, and deterministic,
+// since it reads only the recorded scope.
+func (e *executor) debugRedactText(text string) string {
+	sensitive := v1.SensitiveInputValues(e.scope.GetInputs(), v1.SensitiveInputNames(e.curSpec))
+	if sensitive.Empty() {
+		return text
+	}
+
+	return sensitive.RedactText(text, "[redacted]")
+}
+
 // observeForDebug records one step outcome for an attached session's
 // observations: the step and what became of it, never its values.
 func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, detail string) {
@@ -562,6 +579,7 @@ func (e *executor) observeForDebug(kind v1.DebugObservationKind, node *v1.Node, 
 	case v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED:
 		text += " failed, tolerated by continue_on_error: " + detail
 	}
+	text = e.debugRedactText(text)
 	if runes := []rune(text); len(runes) > maxDebugObservationRunes {
 		text = string(runes[:maxDebugObservationRunes]) + "…"
 	}
