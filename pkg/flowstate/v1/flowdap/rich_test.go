@@ -950,6 +950,32 @@ func TestARefusedSecondLaunchChangesNothing(t *testing.T) {
 		"the refused launch's stopOnEntry reached the first launch")
 }
 
+// TestALaunchWhoseArgumentsDoNotDecodeIsRefused: a launch configuration with a
+// field of the wrong shape — an `inputs` that is a list — is refused whole,
+// not read in part, so a program never runs on arguments nobody gave it. Its
+// other options are not recorded either: the launch after it still stops on
+// entry, as the default says.
+func TestALaunchWhoseArgumentsDoNotDecodeIsRefused(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program, "stopOnEntry": false, "inputs": []any{"release"}})
+	refused := c.await("response", "launch")
+	require.Equal(t, false, refused["success"], "a launch whose inputs are not an object was taken")
+	assert.Contains(t, refused["message"], "could not be read")
+
+	c.send(3, "launch", map[string]any{"program": program})
+	require.Equal(t, true, c.await("response", "launch")["success"])
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	assert.Equal(t, "entry", body(c.await("event", "stopped"))["reason"],
+		"the refused launch's stopOnEntry reached the next one")
+}
+
 // TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd is a replacement
 // the run applies while it keeps moving and never stops for — a breakpoint on
 // a step it refuses, say — so its next revision is its end: the editor hears

@@ -602,7 +602,17 @@ func localCapabilities() *v1.DebugCapabilities {
 
 func (s *Server) launch(ctx context.Context, request inbound) {
 	var asked LaunchArguments
-	_ = json.Unmarshal(request.Arguments, &asked)
+	// Refused rather than read in part: a field of the wrong shape — an
+	// `inputs` that is a list, a `stopOnEntry` that is a string — would
+	// otherwise be dropped while the rest launches, running the program with
+	// arguments nobody gave it.
+	if len(request.Arguments) > 0 {
+		if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+			s.fail(request, fmt.Sprintf("flowdap: the launch configuration could not be read: %v", err))
+
+			return
+		}
+	}
 	asked.Raw = request.Arguments
 
 	s.mu.Lock()
