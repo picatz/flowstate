@@ -865,6 +865,7 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 
 	s.mu.Lock()
 	sitesKnown, sites := s.contract.sitesKnown, s.contract.sites
+	program, inProgram := s.contract.program, s.contract.declaredInProgram
 	s.mu.Unlock()
 	if sitesKnown {
 		if len(target.Resolve(sites)) > 0 {
@@ -890,27 +891,51 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 
 		return noSiteMatches(id), true
 	}
+	address, qualified := id, strings.ContainsRune(id, '/')
 	id = target.Step()
 
 	// Built once at construction ([declaredStepIDs]); this is a lookup rather
 	// than a walk, because a refused command is not recorded and so may be
-	// repeated without bound.
-	_, known := s.declaredIDs[id]
+	// repeated without bound. A program whose sites were cut short answers
+	// from what it declares instead, as the durable driver does: its ids,
+	// built once too, refuse a step it never declares at once, and only a
+	// qualified target naming a declared step walks the program for the
+	// containers it names ([v1.DebugTarget.DeclaredIn]).
+	var known bool
+	if program != nil {
+		_, known = inProgram[id]
+		if known && qualified {
+			known = target.DeclaredIn(program)
+		}
+	} else {
+		_, known = s.declaredIDs[id]
+	}
 
 	s.mu.Lock()
 	// An id this session has watched go past is reachable whatever the
 	// inventory said, so it is admitted — but it never *makes* an inventory:
 	// what has run so far is not what the workflow declares, and reading it
 	// that way would refuse every step the run has not reached yet, which on
-	// an empty inventory is all of them.
-	if !known {
+	// an empty inventory is all of them. A program answers for itself: every
+	// id it has run is one it declares, so the fallback could only admit a
+	// qualified target the program has already refused.
+	if !known && program == nil {
 		_, known = s.seen[id]
 	}
 	s.mu.Unlock()
 
 	names := s.declared
-	if known || len(names) == 0 {
+	if known || (len(names) == 0 && inProgram == nil) {
 		return "", false
+	}
+	if qualified && program != nil {
+		// No declared step answers to the address as written — whether its
+		// step or the containers it names are what is missing — and a notice
+		// about the bare step alone would misstate which.
+		return noSiteMatches(address), true
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("no step named %q is declared by this workflow or a workflow it calls", id), true
 	}
 
 	// The suggestion is skipped for input too long to have been a typo of

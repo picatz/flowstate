@@ -267,17 +267,23 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				}
 				// A target the run can never stop at would release it to
 				// the end: refused, and the run stays held. A truncated
-				// enumeration cannot say a site is absent, so it judges
-				// nothing. Behind [untilRefusalChange], asked only where the
-				// answer differs, so a history that applied such a resume
-				// replays applying it.
-				if sites, truncated := v1.DebugStaticSites(e.spec); !truncated {
-					if _, why := durableSites(target, ask.Until, sites, false, "run until"); why != "" &&
-						workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-						d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
+				// enumeration cannot say a site is absent, so it asks the
+				// program as written instead, as the breakpoints do: a
+				// target it never declares is refused, one it declares
+				// past the cut is not. Behind [untilRefusalChange], asked
+				// only where the answer differs, so a history that applied
+				// such a resume replays applying it.
+				sites, truncated := v1.DebugStaticSites(e.spec)
+				why := ""
+				if !truncated {
+					_, why = durableSites(target, ask.Until, sites, false, "run until")
+				} else if !target.DeclaredIn(e.spec) {
+					why = fmt.Sprintf("no step %q is declared by this workflow or a workflow it calls", ask.Until)
+				}
+				if why != "" && workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
-						return
-					}
+					return
 				}
 			}
 			d.carry.Next = ask.Action
@@ -445,11 +451,12 @@ func (e *executor) parseDebugBreakpoints() {
 			resolved, why := durableSites(target, bp.GetStep(), sites, truncated, "break at")
 			// A truncated enumeration cannot say a step is absent either: a
 			// declared step matching nothing before the cut can match past it,
-			// so it is armed with no sites listed. A step the program never
-			// declares stays refused, as the local driver refuses it. Behind
+			// so it is armed with no sites listed. A target the program never
+			// declares — its step, within the containers it names — stays
+			// refused, as the local driver refuses it. Behind
 			// [truncatedArmChange], asked only where the answer differs, so a
 			// history that refused it replays refusing it.
-			if why != "" && truncated && v1.DebugDeclaresStep(e.spec, target.Step()) &&
+			if why != "" && truncated && target.DeclaredIn(e.spec) &&
 				workflow.GetVersion(e.ctx, truncatedArmChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 				why = ""
 			}

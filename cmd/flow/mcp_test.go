@@ -506,7 +506,7 @@ func mcpExtraToolsFor(ctx context.Context, posture *cobra.Command) []flowmcp.Too
 func mcpExtraToolsForWithProviders(ctx context.Context, posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	// The command's own list, not a copy of it: a tool registered for an agent
 	// and missing here is a tool no test ever calls.
-	return stdioExtraTools(ctx, posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil })
+	return stdioExtraTools(ctx, posture, providers, newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return nil }))
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a
@@ -524,11 +524,15 @@ func connectMCPWithProviders(t *testing.T, posture *cobra.Command, providers *lo
 
 	srv := flowmcp.NewServer("test")
 
+	// Wired as runMCP wires it: one set of sessions behind both the
+	// retained-session tools and the registry fence.
+	deps := mcpDepsFor(posture)
+	extra := stdioSurface(t.Context(), posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil }, &deps)
 	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, mcpDepsFor(posture), mcpExtraToolsForWithProviders(t.Context(), posture, providers)...)
+	}, deps, extra...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 

@@ -243,8 +243,33 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	serve, stop := context.WithCancel(cmd.Context())
 	defer stop()
 
-	return flowmcp.ServeTools(serve, flowmcp.NewServer(version), local, remoteClient, deps,
-		stdioExtraTools(serve, cmd, providers, remoteClient)...)
+	extra := stdioSurface(serve, cmd, providers, remoteClient, &deps)
+
+	return flowmcp.ServeTools(serve, flowmcp.NewServer(version), local, remoteClient, deps, extra...)
+}
+
+// stdioSurface is what stdio serves beside the RPC tools: the extra tools,
+// and on deps the fence their retained sessions need, over one set of
+// sessions. The tests stand their server up through it, so what they exercise
+// is the wiring an agent connects to.
+func stdioSurface(ctx context.Context, cmd *cobra.Command, providers *localSecrets,
+	remote func() flowstatev1connect.WorkflowServiceClient, deps *flowmcp.Deps,
+) []flowmcp.ToolRegistration {
+	sessions := newDebugSessions(remote)
+	fenceRegistryReaders(deps, sessions)
+
+	return stdioExtraTools(ctx, cmd, providers, sessions)
+}
+
+// fenceRegistryReaders sets deps to refuse what answers from the process-wide
+// task registry while one of sessions is a retained stubbed session, which
+// holds that registry, a synthetic task registered in it, across its pauses —
+// rather than advertising or compiling a task that vanishes when it ends. The
+// sessions are the ones [stdioExtraTools] serves, so the fence and the tools
+// agree about which sessions are open.
+func fenceRegistryReaders(deps *flowmcp.Deps, sessions *debugSessions) {
+	deps.WrapHandler = sessions.guardRegistryReaders
+	deps.WrapResourceHandler = sessions.guardRegistryResource
 }
 
 // stdioExtraTools is the three tools on this surface that are not RPCs, in one
@@ -258,12 +283,12 @@ func runMCP(cmd *cobra.Command, args []string) error {
 //
 // ctx is the server's lifetime: the retained sessions' sweeper runs until it
 // ends.
-func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSecrets, remote func() flowstatev1connect.WorkflowServiceClient) []flowmcp.ToolRegistration {
-	sessions := newDebugSessions(remote)
+func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSecrets, sessions *debugSessions) []flowmcp.ToolRegistration {
 	go sessions.keep(ctx)
 
 	return append([]flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd, providers)},
+		// Runs a workflow's tasks from the registry a stubbed session holds.
+		{Tool: flowmcp.RunLocalTool(), Handler: sessions.readsRegistry(runLocalToolHandler(cmd, providers))},
 		// Both run a stubbed case under the process-wide registry lock, so
 		// neither may run while a retained stubbed session holds it.
 		{Tool: flowmcp.TestTool(), Handler: sessions.unlessStubbed(testToolHandler(0))},

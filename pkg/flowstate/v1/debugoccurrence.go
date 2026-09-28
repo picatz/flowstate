@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 	"strings"
@@ -415,35 +416,168 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 	return sites, truncated
 }
 
-// DebugDeclaresStep reports whether wf, or a workflow it calls, declares a
-// step with this id anywhere: at a top level, or in a loop body, parallel
-// branch or switch arm. It is the question a truncated [DebugStaticSites]
-// leaves open, asked of the program as written rather than of its sites: the
-// walk visits each node the program holds once and stops at the first match,
-// so it is bounded by the program's own size, which is already in memory.
-func DebugDeclaresStep(wf *Workflow, id string) bool {
-	var declares func(nodes []*Node, depth int) bool
-	declares = func(nodes []*Node, depth int) bool {
+// DebugDeclaredSteps yields the id of every step wf declares, and every step a
+// workflow it calls declares: at a top level, or in a loop body, parallel
+// branch or switch arm, in document order, with repeats. It is the question a
+// truncated [DebugStaticSites] leaves open, asked of the program as written
+// rather than of its sites. A callee is walked again only from a shallower
+// call than any before, which may reach calls the deeper one could not: a
+// workflow built in memory may share one callee among many calls, and walking
+// it once per call would expand exponentially through [MaxCallDepth] levels.
+// So the walk is bounded by the program's own size, times the call depth. Calls
+// are followed to [MaxCallDepth], as [DebugStaticSites] follows them.
+func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		shallowest := map[*Workflow]int{}
+		var walk func(nodes []*Node, depth int) bool
+		walk = func(nodes []*Node, depth int) bool {
+			for _, node := range nodes {
+				if !yield(node.GetId()) {
+					return false
+				}
+				switch kind := node.GetKind().(type) {
+				case *Node_ForEach:
+					if !walk(kind.ForEach.GetBody(), depth) {
+						return false
+					}
+				case *Node_Loop:
+					if !walk(kind.Loop.GetBody(), depth) {
+						return false
+					}
+				case *Node_Parallel:
+					for _, branch := range kind.Parallel.GetBranches() {
+						if !walk(branch.GetSteps(), depth) {
+							return false
+						}
+					}
+				case *Node_Switch:
+					for _, arm := range kind.Switch.GetCases() {
+						if !walk(arm.GetSteps(), depth) {
+							return false
+						}
+					}
+					if !walk(kind.Switch.GetDefault().GetSteps(), depth) {
+						return false
+					}
+				case *Node_Call:
+					callee := kind.Call.GetWorkflow()
+					if seen, ok := shallowest[callee]; depth >= MaxCallDepth || (ok && seen <= depth+1) {
+						continue
+					}
+					shallowest[callee] = depth + 1
+					if !walk(callee.GetSteps(), depth+1) {
+						return false
+					}
+				}
+			}
+
+			return true
+		}
+		walk(wf.GetSteps(), 0)
+	}
+}
+
+// DeclaredIn reports whether wf, or a workflow it calls, declares a step this
+// target could name: one whose id is the target's step, inside containers
+// whose ids end with the target's qualifiers, each of the kind it names and a
+// call of the callee it names — `bogus/last` and `each#0/touch`, for a loop
+// `each`, name nothing however many steps are called `last` or `touch`. It is
+// the question a truncated [DebugStaticSites] leaves open, asked of the
+// program as written. A callee is walked once for each depth and each chain of
+// containers the target's qualifiers can see around it, since the answer
+// inside depends on nothing else: a workflow built in memory may share one
+// callee among many calls, and walking it once per call would expand
+// exponentially through [MaxCallDepth] levels. Only indices, which no program declares, are not compared, so it may accept
+// a target [DebugTarget.Resolve] would not, never the reverse. Calls are
+// followed to [MaxCallDepth], as the sites are.
+func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
+	if len(t.parts) == 0 {
+		return false
+	}
+	step, qualifiers := t.parts[len(t.parts)-1].id, t.parts[:len(t.parts)-1]
+	// matches reports whether the chain's last len(parts) segments are the
+	// containers parts name, in order.
+	matches := func(chain []*DebugSegment, parts []targetPart) bool {
+		if len(chain) < len(parts) {
+			return false
+		}
+		tail := chain[len(chain)-len(parts):]
+		for i, part := range parts {
+			switch {
+			case tail[i].GetStepId() != part.id:
+				return false
+			case part.kind != DebugSegmentKind_DEBUG_SEGMENT_KIND_UNSPECIFIED && part.kind != tail[i].GetKind():
+				return false
+			case part.callee != "" && part.callee != tail[i].GetCallee():
+				return false
+			}
+		}
+
+		return true
+	}
+	qualified := func(chain []*DebugSegment) bool { return matches(chain, qualifiers) }
+
+	// visited is each callee walked, with the depth it was walked at and
+	// how the chain around it can still complete the qualifiers: for each j,
+	// whether its last j segments are the first j qualifiers, which is all a
+	// match deeper inside depends on. Keyed by that rather than by the
+	// segments themselves, so a target with many qualifiers cannot make every
+	// path its own key. A walk that found the target returned at once, so
+	// each recorded one found nothing.
+	type visit struct {
+		callee *Workflow
+		depth  int
+		open   string
+	}
+	visited := map[visit]bool{}
+	open := func(chain []*DebugSegment) string {
+		var b strings.Builder
+		for j := 1; j <= len(qualifiers) && j <= len(chain); j++ {
+			if matches(chain, qualifiers[:j]) {
+				fmt.Fprintf(&b, "%d,", j)
+			}
+		}
+
+		return b.String()
+	}
+
+	var walk func(nodes []*Node, chain []*DebugSegment, depth int) bool
+	walk = func(nodes []*Node, chain []*DebugSegment, depth int) bool {
 		for _, node := range nodes {
-			if node.GetId() == id {
+			if node.GetId() == step && qualified(chain) {
 				return true
+			}
+			into := func(kind DebugSegmentKind, callee string) []*DebugSegment {
+				return append(slices.Clip(chain), &DebugSegment{Kind: kind, StepId: node.GetId(), Callee: callee})
 			}
 			var found bool
 			switch kind := node.GetKind().(type) {
 			case *Node_ForEach:
-				found = declares(kind.ForEach.GetBody(), depth)
+				found = walk(kind.ForEach.GetBody(), into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, ""), depth)
 			case *Node_Loop:
-				found = declares(kind.Loop.GetBody(), depth)
+				found = walk(kind.Loop.GetBody(), into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, ""), depth)
 			case *Node_Parallel:
+				inner := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH, "")
 				found = slices.ContainsFunc(kind.Parallel.GetBranches(), func(branch *Parallel_Branch) bool {
-					return declares(branch.GetSteps(), depth)
+					return walk(branch.GetSteps(), inner, depth)
 				})
 			case *Node_Switch:
+				inner := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, "")
 				found = slices.ContainsFunc(kind.Switch.GetCases(), func(arm *Switch_Case) bool {
-					return declares(arm.GetSteps(), depth)
-				}) || declares(kind.Switch.GetDefault().GetSteps(), depth)
+					return walk(arm.GetSteps(), inner, depth)
+				}) || walk(kind.Switch.GetDefault().GetSteps(), inner, depth)
 			case *Node_Call:
-				found = depth < MaxCallDepth && declares(kind.Call.GetWorkflow().GetSteps(), depth+1)
+				if depth >= MaxCallDepth {
+					break
+				}
+				callee := kind.Call.GetWorkflow()
+				inner := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL, callee.GetName())
+				key := visit{callee: callee, depth: depth + 1, open: open(inner)}
+				if visited[key] {
+					break
+				}
+				visited[key] = true
+				found = walk(callee.GetSteps(), inner, depth+1)
 			}
 			if found {
 				return true
@@ -453,7 +587,7 @@ func DebugDeclaresStep(wf *Workflow, id string) bool {
 		return false
 	}
 
-	return declares(wf.GetSteps(), 0)
+	return walk(wf.GetSteps(), nil, 0)
 }
 
 // Resolve returns the static sites this target can ever match, in document

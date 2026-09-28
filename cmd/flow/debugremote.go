@@ -135,6 +135,11 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	// Every way out below releases the run unless it has already been
+	// detached or deliberately left attached: a failed write, a bound
+	// reached, an error from the target. Close after Disconnect or Close is
+	// a no-op, so this only acts where no path chose.
+	defer func() { _ = remote.Close() }()
 	surface := newSurface(cmd)
 	answers := &driveAnswers{out: surface.Out, format: format}
 	defer func() { err = errors.Join(err, answers.flush()) }()
@@ -150,10 +155,10 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	driver.Wait = wait
 
 	// The first stop, or the news that the run has not reached a boundary.
+	// A failure here detaches through the deferred Close: nothing has told
+	// the caller the session's id, so there is nobody to rejoin it.
 	first, err := driver.Do(ctx, "status")
 	if err != nil {
-		_ = remote.Disconnect()
-
 		return err
 	}
 	if first.Snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
@@ -211,6 +216,14 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 			if ctx.Err() != nil {
 				break
 			}
+			// A person at a terminal reads the error and types the line
+			// again. A script cannot, and the lines after this one were
+			// written assuming it ran, so the attach fails — and the run is
+			// released on the way out — rather than exiting 0 on a script
+			// that ran in part.
+			if !interactive {
+				return fmt.Errorf("%q: %w", line, err)
+			}
 			fmt.Fprintf(surface.Err, "%v\n", err)
 
 			continue
@@ -218,7 +231,24 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		if err := answers.add(line, result); err != nil {
 			return err
 		}
-		if line == "detach" || terminalDebugState(result.Snapshot.GetState()) {
+		if line == "detach" {
+			// A detach the run did not accept leaves it held; Close sends
+			// one that cannot be refused as stale, rather than walking
+			// away from it.
+			if !flowdebug.Accepted(result.Receipt) {
+				return remote.Close()
+			}
+
+			return remote.Disconnect()
+		}
+		// The same holds for a line the run answered but did not do: a
+		// refused command, or a breakpoint it would not arm.
+		if !interactive {
+			if err := notDone(result); err != nil {
+				return fmt.Errorf("%q: %w", line, err)
+			}
+		}
+		if terminalDebugState(result.Snapshot.GetState()) {
 			return remote.Disconnect()
 		}
 	}
@@ -320,14 +350,27 @@ func runDebugDo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if receipt := result.Receipt; receipt != nil && receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED &&
-		receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE && receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+	if err := notDone(result); err != nil {
 		_ = writeDriveResult(newSurface(cmd).Out, format, line, result)
 
-		return errors.New("the command was not applied: " + strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
+		return err
 	}
 
 	return writeDriveResult(newSurface(cmd).Out, format, line, result)
+}
+
+// notDone is why a line the target answered did not do what it asked: a
+// receipt refusing the command, or a breakpoint the line set that the target
+// took but would not arm. Nil when the line was done, or is pending.
+func notDone(result *flowdebug.DriveResult) error {
+	if receipt := result.Receipt; receipt != nil && !flowdebug.Accepted(receipt) {
+		return errors.New("the command was not applied: " + strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
+	}
+	if state := result.Unarmed; state != nil {
+		return fmt.Errorf("the breakpoint %s was not armed: %s", state.GetId(), state.GetMessage())
+	}
+
+	return nil
 }
 
 // driveAnswers writes an attach's answers as its format asks: each rendering or
@@ -337,7 +380,13 @@ type driveAnswers struct {
 	out    io.Writer
 	format OutputFormat
 	held   [][]byte
+	// heldBytes is what held holds, for [maxAttachJSONBytes].
+	heldBytes int
 }
+
+// maxAttachJSONBytes bounds the `-o json` document an attach holds until it
+// ends. A session long enough to pass it is one to stream with `-o jsonl`.
+const maxAttachJSONBytes = 16 << 20
 
 func (a *driveAnswers) add(command string, result *flowdebug.DriveResult) error {
 	if a.format != FormatJSON {
@@ -347,7 +396,11 @@ func (a *driveAnswers) add(command string, result *flowdebug.DriveResult) error 
 	if err != nil {
 		return err
 	}
+	if a.heldBytes+len(encoded) > maxAttachJSONBytes {
+		return fmt.Errorf("the -o json document would pass %d bytes; stream a session this long with -o jsonl", maxAttachJSONBytes)
+	}
 	a.held = append(a.held, encoded)
+	a.heldBytes += len(encoded)
 
 	return nil
 }

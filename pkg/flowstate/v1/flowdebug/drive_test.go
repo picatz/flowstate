@@ -1,6 +1,7 @@
 package flowdebug_test
 
 import (
+	"cmp"
 	"context"
 	"sync"
 	"testing"
@@ -36,8 +37,22 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 
 	armed := do("break each/touch if item == 2")
 	assert.Contains(t, armed.Text, "breakpoint at each/touch")
-	assert.Contains(t, do("log touch saw {item}").Text, "breakpoint at touch")
-	assert.Contains(t, do("break nowhere").Text, "not armed: nowhere")
+	assert.Nil(t, armed.Unarmed, "an armed breakpoint was reported unarmed")
+	logged := do("log touch saw {item}")
+	assert.Contains(t, logged.Text, "breakpoint at touch")
+	assert.Nil(t, logged.Unarmed, "an armed logpoint was reported unarmed")
+	refused := do("break nowhere")
+	assert.Contains(t, refused.Text, "not armed: nowhere")
+	require.NotNil(t, refused.Unarmed, "a breakpoint the run refused was not reported unarmed")
+	assert.Equal(t, "nowhere", refused.Unarmed.GetId())
+	unlogged := do("log nowhere saw {item}")
+	require.NotNil(t, unlogged.Unarmed, "a logpoint the run refused was not reported unarmed")
+	assert.Equal(t, "log nowhere", unlogged.Unarmed.GetId())
+	malformed := do("break touch if (")
+	require.NotNil(t, malformed.Unarmed, "a condition that does not compile was not reported unarmed")
+	assert.Equal(t, "touch", malformed.Unarmed.GetId())
+	cleared := do("delete touch")
+	assert.Nil(t, cleared.Unarmed, "a line that sets no breakpoint reported one unarmed")
 
 	stop := do("continue")
 	require.NotNil(t, stop.Snapshot)
@@ -132,6 +147,170 @@ func TestADriverRefusesToDropABreakpointItCannotRebuild(t *testing.T) {
 	require.NoError(t, err, "a line naming the breakpoint may replace it")
 	_, err = flowdebug.NewDriver(target).Do(t.Context(), "clear")
 	require.NoError(t, err)
+}
+
+// TestABreakKeepsAnotherClientsBreakpointOnTheSameStep: the typed contract
+// allows several breakpoints on one step under different ids, so `break build`
+// replaces only the breakpoint the driver owns under id `build`, and keeps a
+// conditional one an editor set on the same step as `dap-7`.
+func TestABreakKeepsAnotherClientsBreakpointOnTheSameStep(t *testing.T) {
+	t.Parallel()
+
+	theirs := &v1.DebugBreakpoint{Id: "dap-7", Step: "build", Condition: "attempt > 2"}
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{
+		Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD,
+		Breakpoints: []*v1.DebugBreakpointState{{Id: "dap-7", Verified: true, Definition: theirs}},
+	}}
+	_, err := flowdebug.NewDriver(target).Do(t.Context(), "break build")
+	require.NoError(t, err)
+	require.Len(t, target.sets, 1)
+	ids := make([]string, 0, 2)
+	for _, bp := range target.sets[0] {
+		ids = append(ids, bp.GetId())
+	}
+	assert.ElementsMatch(t, []string{"dap-7", "build"}, ids, "break dropped another client's breakpoint on its step")
+}
+
+// TestADetachedDriverChangesNothing: once a detach is accepted the session is
+// over. A durable pause after it would attach the run anew, so a line that
+// would change the session is refused before it reaches the target, and a
+// read still answers.
+func TestADetachedDriverChangesNothing(t *testing.T) {
+	t.Parallel()
+
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}}
+	driver := flowdebug.NewDriver(target)
+	_, err := driver.Do(t.Context(), "detach")
+	require.NoError(t, err)
+	sent := len(target.requests)
+
+	for _, line := range []string{"pause", "next", "break build", "clear"} {
+		_, err := driver.Do(t.Context(), line)
+		require.Error(t, err, "%s was accepted after the session was detached", line)
+	}
+	assert.Len(t, target.requests, sent, "a refused line reached the target")
+	_, err = driver.Do(t.Context(), "status")
+	assert.NoError(t, err, "a read was refused after a detach")
+}
+
+// TestAPendingSetIsNotReportedUnarmed: a set the target has not applied yet
+// answers with the states from before it, so the breakpoint the line set is
+// not yet refused — nor armed — and the driver does not call it unarmed.
+func TestAPendingSetIsNotReportedUnarmed(t *testing.T) {
+	t.Parallel()
+
+	for status, unarmed := range map[v1.DebugCommandStatus]bool{
+		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING: false,
+		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED: true,
+	} {
+		target := &scriptedTarget{
+			snapshot:  &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING},
+			setStatus: status,
+		}
+		result, err := flowdebug.NewDriver(target).Do(t.Context(), "break build if (")
+		require.NoError(t, err)
+		assert.Equal(t, unarmed, result.Unarmed != nil, "%s", status)
+	}
+}
+
+// honestTarget is a [scriptedTarget] whose WaitSnapshot waits for a revision
+// past the one asked about, as a real target's does.
+type honestTarget struct{ *scriptedTarget }
+
+func (h honestTarget) WaitSnapshot(ctx context.Context, after uint64) (*v1.DebugSnapshot, error) {
+	h.mu.Lock()
+	snapshot := h.snapshot
+	h.mu.Unlock()
+	if snapshot.GetRevision() > after {
+		return snapshot, nil
+	}
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+// TestAPauseOfAHeldRunAnswersAtOnce: a run already held answers a pause at the
+// revision it is held at, without moving, so the stop it is at is the answer,
+// not one to wait for past it until the wait runs out.
+func TestAPauseOfAHeldRunAnswersAtOnce(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		target := honestTarget{&scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}}}
+		driver := flowdebug.NewDriver(target)
+		driver.Wait = time.Minute
+
+		start := time.Now()
+		result, err := driver.Do(t.Context(), "pause")
+		require.NoError(t, err)
+		assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, result.Snapshot.GetState())
+		assert.Zero(t, time.Since(start), "a pause of a held run waited for a stop past the one it is at")
+	})
+}
+
+// TestADetachIsNeverStaleUnlessPinned: a detach lets the run go wherever it
+// has got to, so a driver sends it without the revision it last read — a stop
+// landing in between must not leave the run held. A refused detach leaves the
+// driver able to try again.
+func TestADetachIsNeverStaleUnlessPinned(t *testing.T) {
+	t.Parallel()
+
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 4, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING}}
+	target.resumeStatus = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED
+	driver := flowdebug.NewDriver(target)
+	_, err := driver.Do(t.Context(), "detach")
+	require.NoError(t, err)
+	assert.Zero(t, target.expected, "a detach was pinned to the revision the driver read")
+
+	target.resumeStatus = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED
+	_, err = driver.Do(t.Context(), "detach")
+	require.NoError(t, err, "a refused detach left the driver refusing to try again")
+
+	_, err = flowdebug.NewDriver(target).DoWith(t.Context(), "detach", flowdebug.DoOptions{ExpectedRevision: 4})
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), target.expected, "a caller's pinned revision was dropped")
+}
+
+// TestARetryIsAnsweredFromTheTargetNotJudgedStale: a line sent under a request
+// id whose answer was lost moved the run, so its retry — the same id, the same
+// expected revision — reaches the target, which answers from its receipts,
+// rather than being refused here as stale for the revision the first sending
+// moved. A new id is still judged against the revision it names.
+func TestARetryIsAnsweredFromTheTargetNotJudgedStale(t *testing.T) {
+	t.Parallel()
+
+	target := &scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}}
+	driver := flowdebug.NewDriver(target)
+	_, err := driver.DoWith(t.Context(), "pause", flowdebug.DoOptions{RequestID: "p-1", ExpectedRevision: 1})
+	require.NoError(t, err)
+
+	// The pause moved the run on; its answer never reached the caller.
+	target.mu.Lock()
+	target.snapshot = &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}
+	target.mu.Unlock()
+
+	retried, err := driver.DoWith(t.Context(), "pause", flowdebug.DoOptions{RequestID: "p-1", ExpectedRevision: 1})
+	require.NoError(t, err)
+	assert.NotEqual(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, retried.Receipt.GetStatus(),
+		"a retry was judged stale instead of reaching the target")
+	assert.Equal(t, []string{"p-1", "p-1"}, target.requests, "the retry did not reach the target under its id")
+
+	fresh, err := driver.DoWith(t.Context(), "pause", flowdebug.DoOptions{RequestID: "p-2", ExpectedRevision: 1})
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, fresh.Receipt.GetStatus(),
+		"a new line meant for a revision the run has left was not refused")
+
+	// A line that failed before reaching the target was never sent: its id
+	// repeated is a new line, judged stale like any other.
+	_, err = driver.DoWith(t.Context(), "brek build", flowdebug.DoOptions{RequestID: "b-1", ExpectedRevision: 2})
+	require.Error(t, err)
+	target.mu.Lock()
+	target.snapshot = &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}
+	target.mu.Unlock()
+	again, err := driver.DoWith(t.Context(), "break build", flowdebug.DoOptions{RequestID: "b-1", ExpectedRevision: 2})
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, again.Receipt.GetStatus(),
+		"a line that never reached the target was let through as a retry")
 }
 
 // TestAFreshDriverLeavesTheFailureModeAlone: a driver that has not been told
@@ -232,10 +411,16 @@ type scriptedTarget struct {
 	mu              sync.Mutex
 	snapshot        *v1.DebugSnapshot
 	hangAfterResume bool
-	hang            bool
-	requests        []string
-	modes           []v1.DebugFailureMode
-	expected        uint64
+	// resumeStatus, when set, is the status every resume is answered with.
+	resumeStatus v1.DebugCommandStatus
+	hang         bool
+	requests     []string
+	modes        []v1.DebugFailureMode
+	sets         [][]*v1.DebugBreakpoint
+	expected     uint64
+	// setStatus, when set, is the status every breakpoint set is answered
+	// with, each breakpoint in it reported unverified.
+	setStatus v1.DebugCommandStatus
 }
 
 func (s *scriptedTarget) read(ctx context.Context) (*v1.DebugSnapshot, error) {
@@ -264,7 +449,7 @@ func (s *scriptedTarget) Resume(_ context.Context, req *v1.DebugResumeRequest) (
 	s.expected = req.GetExpectedRevision()
 	s.hang = s.hangAfterResume
 
-	return &v1.DebugReceipt{RequestId: req.GetRequestId(), Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, Revision: 1}, nil
+	return &v1.DebugReceipt{RequestId: req.GetRequestId(), Status: cmp.Or(s.resumeStatus, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED), Revision: 1}, nil
 }
 
 func (s *scriptedTarget) Pause(_ context.Context, id string) (*v1.DebugReceipt, error) {
@@ -280,6 +465,15 @@ func (s *scriptedTarget) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetB
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, req.GetRequestId())
 	s.modes = append(s.modes, req.GetFailureMode())
+	s.sets = append(s.sets, req.GetBreakpoints())
+	if s.setStatus != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED {
+		states := make([]*v1.DebugBreakpointState, 0, len(req.GetBreakpoints()))
+		for _, bp := range req.GetBreakpoints() {
+			states = append(states, &v1.DebugBreakpointState{Id: bp.GetId(), Message: "not yet armed"})
+		}
+
+		return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: s.setStatus}, Breakpoints: states}, nil
+	}
 
 	return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}}, nil
 }

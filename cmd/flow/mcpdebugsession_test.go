@@ -362,11 +362,21 @@ func TestAnAnswerReadsTheTranscriptNoteUnderItsLock(t *testing.T) {
 		}
 	})
 	for range 50 {
-		_ = entry.answer(t.Context())
+		_, _ = entry.answer(t.Context())
 		_ = entry.transcript.note()
 	}
 	wg.Wait()
-	assert.Contains(t, entry.answer(t.Context()).Note, "were dropped")
+
+	// Answers free what they carry, so how many of the writes above were
+	// dropped depends on how the two interleaved. An overflow no answer
+	// reads in between is dropped whatever the schedule, and the note —
+	// read under the lock — says so.
+	for range maxDebugFragments + 1 {
+		entry.transcript.add("x", flowdebug.ToneInfo)
+	}
+	answer, err := entry.answer(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, answer.Note, "were dropped")
 }
 
 func toolRequest(t *testing.T, args map[string]any) *mcp.CallToolRequest {
@@ -580,12 +590,14 @@ func TestEndingACaseThatCannotStopReturns(t *testing.T) {
 		}
 
 		start := time.Now()
-		assert.False(t, entry.end(false), "a case that never stopped was reported finished")
+		finished, _ := entry.end(false)
+		assert.False(t, finished, "a case that never stopped was reported finished")
 		assert.True(t, cancelled)
 		assert.Equal(t, 2*debugSessionEndSettle, time.Since(start))
 
 		close(entry.done)
-		assert.True(t, entry.end(false))
+		finished, _ = entry.end(false)
+		assert.True(t, finished)
 	})
 }
 

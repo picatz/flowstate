@@ -176,7 +176,9 @@ func mcpToolDocs() []docsgen.MCPTool {
 		tools = append(tools, docsgen.MCPTool{
 			Name:        registration.Tool.Name,
 			Description: registration.Tool.Description,
-			Local:       true,
+			// Attach drives a durable run on the configured server; the
+			// others work a session of either kind in this process.
+			Local: registration.Tool.Name != debugSessionAttachTool,
 		})
 	}
 
