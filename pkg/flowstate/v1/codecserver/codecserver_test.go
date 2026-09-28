@@ -217,11 +217,19 @@ func TestTwoTenantsCannotReadEachOther(t *testing.T) {
 	require.NotContains(t, trail, markerA)
 	require.NotContains(t, trail, markerB)
 	var allows, denies int
+	forgedRecorded := false
 	for line := range strings.SplitSeq(strings.TrimSpace(trail), "\n") {
 		var rec v1.AuditRecord
 		require.NoError(t, protojson.Unmarshal([]byte(line), &rec), line)
 		require.NoError(t, v1.Validate(&rec))
 		require.Contains(t, []string{codecserver.DecodeEndpoint, codecserver.EncodeEndpoint}, rec.GetHttpEndpoint())
+		// The resource is the Temporal namespace addressed, not the
+		// caller's tenant, so a forged header names what it reached for.
+		require.Contains(t, []string{"ns-a", "ns-b"}, rec.GetResourceKey(), line)
+		if rec.GetIdentity().GetSubject() == "alice" && rec.GetResourceKey() == "ns-b" &&
+			rec.GetDecision() == v1.AuditDecision_AUDIT_DECISION_DENY {
+			forgedRecorded = true
+		}
 		if id := rec.GetIdentity(); id.GetSubject() != "" {
 			// The coordinates an RPC record carries for the same caller, so
 			// the two correlate: issuer and subject apart, never joined.
@@ -239,6 +247,7 @@ func TestTwoTenantsCannotReadEachOther(t *testing.T) {
 	// The missing-header request is refused as a malformed request before any
 	// authorization decision, so it is not on the trail; the other six are.
 	require.Equal(t, 6, denies)
+	require.True(t, forgedRecorded, "the forged header's denial did not name the namespace it addressed")
 }
 
 func TestSharedNamespacesAreRefusedUnlessAllowed(t *testing.T) {
