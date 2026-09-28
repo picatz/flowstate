@@ -35,7 +35,7 @@ func TestCodecServeAuthenticatesWithTheTrustPolicy(t *testing.T) {
 		Issuers: []auth.TrustedIssuer{{
 			Name:           "ci",
 			Issuer:         issuer.URL(),
-			Audiences:      []string{"flowstate-codec"},
+			Audiences:      []string{"https://codec.example.com", "https://rpc.example.com"},
 			NamespaceClaim: "tenant",
 			Actions:        []string{"payload.decode"},
 		}},
@@ -57,7 +57,9 @@ func TestCodecServeAuthenticatesWithTheTrustPolicy(t *testing.T) {
 		AllowedOrigins: []string{"https://temporal.example.com"},
 	})
 	require.NoError(t, err)
-	srv := httptest.NewServer(codecServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), verifier, handler))
+	resource, err := resolveCodecResource("https://codec.example.com", authFlags{policyPath: "policy.yaml"}, &policy)
+	require.NoError(t, err)
+	srv := httptest.NewServer(codecServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), verifier, resource, handler))
 	t.Cleanup(srv.Close)
 
 	nsA, err := codecs.ForNamespace("ns-a")
@@ -81,7 +83,7 @@ func TestCodecServeAuthenticatesWithTheTrustPolicy(t *testing.T) {
 	}
 	tokenFor := func(tenant string) string {
 		return issuer.MintToken(map[string]any{"tenant": tenant},
-			authtest.WithSubject("person-"+tenant), authtest.WithAudience("flowstate-codec"))
+			authtest.WithSubject("person-"+tenant), authtest.WithAudience("https://codec.example.com"))
 	}
 
 	require.Equal(t, http.StatusOK, post(tokenFor("team-a"), "ns-a"))
@@ -90,6 +92,14 @@ func TestCodecServeAuthenticatesWithTheTrustPolicy(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, post("", "ns-a"))
 	require.Equal(t, http.StatusUnauthorized, post(issuer.MintToken(map[string]any{"tenant": "team-a"},
 		authtest.WithSubject("x"), authtest.WithAudience("someone-else")), "ns-a"), "a token for another audience was accepted")
+	// The issuer's entry admits the RPC audience too, and a token minted for
+	// that surface must not be spendable here, where it would release history.
+	require.Equal(t, http.StatusUnauthorized, post(issuer.MintToken(map[string]any{"tenant": "team-a"},
+		authtest.WithSubject("person-team-a"), authtest.WithAudience("https://rpc.example.com")), "ns-a"),
+		"a token minted for the RPC surface was spent on the codec server")
+
+	_, err = resolveCodecResource("", authFlags{policyPath: "policy.yaml"}, &policy)
+	require.ErrorContains(t, err, "--codec-resource")
 
 	pre, err := http.NewRequest(http.MethodOptions, srv.URL+"/decode", nil)
 	require.NoError(t, err)

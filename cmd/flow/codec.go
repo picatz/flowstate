@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -76,18 +75,12 @@ var resolvePayloadCodec = func(flags payloadEncryptionFlags) (payloadcodec.Confi
 	return keyring.PayloadCodecConfig(), nil
 }
 
-// payloadKeyringOpenTimeout bounds opening a keyring: reading its keys, asking
-// every key provider to describe its keys, and wrapping each namespace's first
-// data key. A provider that has not answered by then is one this process
-// cannot start against.
-const payloadKeyringOpenTimeout = 30 * time.Second
-
-// openPayloadKeyring opens the keyring file at path under
-// payloadKeyringOpenTimeout.
+// openPayloadKeyring opens the keyring file at path. Opening reads its keys,
+// asks every key provider to describe its keys, and wraps each namespace's
+// first data key, bounded by [envelope.StartupBudget]: a provider that has
+// not answered by then is one this process cannot start against.
 func openPayloadKeyring(path string) (*envelope.Keyring, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), payloadKeyringOpenTimeout)
-	defer cancel()
-	keyring, err := envelope.LoadFile(ctx, path)
+	keyring, err := envelope.LoadFile(context.Background(), path)
 	if err != nil {
 		return nil, fmt.Errorf("payload keyring: %w", err)
 	}

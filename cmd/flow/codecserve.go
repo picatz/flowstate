@@ -41,6 +41,7 @@ func newCodecServeCommand() *cobra.Command {
 		Example: `# Serve Temporal Web on temporal.example.com, behind TLS:
 flow codec serve --listen 0.0.0.0:8089 \
   --auth-policy /etc/flowstate/auth.yaml \
+  --codec-resource https://codec.example.com \
   --payload-keyring /etc/flowstate/payload-keyring.yaml \
   --cors-origin https://temporal.example.com \
   --tls-cert-file codec.crt --tls-key-file codec.key
@@ -68,6 +69,11 @@ flow codec serve --insecure-no-auth --payload-keyring keyring.yaml \
 	cmd.Flags().String("temporal-namespace", "",
 		"the Temporal namespace tenants the trust policy does not map run in (default: TEMPORAL_NAMESPACE, "+
 			"the Temporal profile, or \"default\")")
+	cmd.Flags().String("codec-resource", os.Getenv("FLOWSTATE_CODEC_RESOURCE"),
+		"canonical resource URI required in the aud claim of every bearer token spent on this server "+
+			"(default $FLOWSTATE_CODEC_RESOURCE); an absolute HTTPS URI listed among a kind: oidc issuer's "+
+			"audiences, and distinct from the RPC and MCP resources. Required whenever --auth-policy trusts "+
+			"an issuer that mints bearer tokens")
 	addPayloadEncryptionFlags(cmd)
 	addTLSFlags(cmd)
 	addAuditRequiredFlag(cmd)
@@ -107,6 +113,11 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	codecResource, _ := cmd.Flags().GetString("codec-resource")
+	resource, err := resolveCodecResource(codecResource, authCfg, policy)
+	if err != nil {
+		return err
+	}
 
 	auditRequired, _ := cmd.Flags().GetBool(auditRequiredFlag)
 	recorder, err := startAudit(cmd.Context(), auditRequired)
@@ -139,7 +150,7 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	mux := codecServeHandler(logger, verifier, handler)
+	mux := codecServeHandler(logger, verifier, resource, handler)
 
 	httpServer := &http.Server{
 		Addr:                listen,
@@ -197,8 +208,12 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 // codec handler sees it. The handler's own headers go on first, so an
 // authentication refusal reaches an allowed browser origin as a readable 401
 // rather than an opaque CORS failure.
-func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, handler *codecserver.Handler) http.Handler {
+//
+// resource is the audience a bearer token must name to be spent here
+// ([auth.WithExpectedResource]), or empty where there is no bearer issuer.
+func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, resource string, handler *codecserver.Handler) http.Handler {
 	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier,
+		auth.WithExpectedResource(resource),
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "codec server: rejected unauthenticated request",
 				"peer", req.RemoteAddr, "reason", auth.PublicReason(err))
@@ -236,4 +251,30 @@ func codecWriteTimeout(codecs payloadcodec.Config) time.Duration {
 		provider = (1 + envelope.MaxEscrow) * timed.ProviderTimeout()
 	}
 	return codecserver.DefaultWorkTimeout + provider + margin
+}
+
+// resolveCodecResource is [resolveRPCResource] for the codec server: the
+// audience a bearer token must name to be spent here, so that a token a
+// trusted issuer minted for another Flowstate surface, which its entry's
+// audience list also admits, cannot release plaintext history. Required
+// wherever there is a bearer issuer to bind to, and with no migration flag,
+// since no deployment of this surface predates it.
+func resolveCodecResource(resource string, authCfg authFlags, policy *auth.Policy) (string, error) {
+	if authCfg.insecure || !auth.AdmitsBearerTokens(policy) {
+		if resource != "" {
+			return "", errors.New("--codec-resource binds bearer tokens to an audience, and this server " +
+				"admits none: it runs with --insecure-no-auth, or its trust policy has no kind: oidc issuer")
+		}
+		return "", nil
+	}
+	if resource == "" {
+		return "", fmt.Errorf("--codec-resource (or FLOWSTATE_CODEC_RESOURCE) is required with --auth-policy: "+
+			"the trust policy in %s trusts an issuer that mints bearer tokens, and without a resource a token "+
+			"it minted for any audience it is trusted for, such as this deployment's RPC or MCP surface, "+
+			"could be spent here to decode history", authCfg.policyPath)
+	}
+	if err := auth.ValidateResourceAudience(resource, policy); err != nil {
+		return "", fmt.Errorf("--codec-resource: %w", err)
+	}
+	return resource, nil
 }

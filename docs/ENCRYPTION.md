@@ -296,7 +296,7 @@ decode action explicitly:
 issuers:
   - name: sso
     issuer: https://sso.example.com
-    audiences: [flowstate-codec]
+    audiences: [https://codec.example.com]
     namespace_claim: team
     actions: [workload.read, payload.decode]
 tenancy:
@@ -308,6 +308,7 @@ tenancy:
 ```sh
 flow codec serve --listen 0.0.0.0:8089 \
   --auth-policy /etc/flowstate/auth.yaml \
+  --codec-resource https://codec.example.com \
   --payload-keyring /etc/flowstate/payload-keyring.yaml \
   --cors-origin https://temporal.example.com \
   --tls-cert-file codec.crt --tls-key-file codec.key
@@ -319,6 +320,11 @@ passing the user's access token. With the CLI, pass `--codec-endpoint` and
 
 The server's rules:
 
+- **Its own audience.** A bearer token must name `--codec-resource` in its
+  `aud` claim. An issuer trusted for several of this deployment's surfaces
+  lists all their audiences, and without this a token minted for the RPC or
+  MCP surface could be spent here to decode history. It is required whenever
+  the trust policy trusts a token issuer.
 - **Explicit action.** The caller's policy entry must list `payload.decode`
   (or `payload.encode` to encrypt what someone types into the UI). An entry
   that lists no actions is *not* granted it. This differs from the RPC

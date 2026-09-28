@@ -241,6 +241,7 @@ Examples:
 # Serve Temporal Web on temporal.example.com, behind TLS:
 flow codec serve --listen 0.0.0.0:8089 \
   --auth-policy /etc/flowstate/auth.yaml \
+  --codec-resource https://codec.example.com \
   --payload-keyring /etc/flowstate/payload-keyring.yaml \
   --cors-origin https://temporal.example.com \
   --tls-cert-file codec.crt --tls-key-file codec.key
@@ -255,6 +256,7 @@ flow codec serve --insecure-no-auth --payload-keyring keyring.yaml \
 | `--allow-shared-namespaces` | `bool` | `false` | — | decode in a Temporal namespace several tenants share, accepting that any tenant authorized there can read every tenant's payloads in it |
 | `--audit-required` | `bool` | `false` | — | fail an operation whose authorization or enforcement decision could not be written to every audit sink, trading availability for a complete trail: an operator's collector outage becomes an outage of this service rather than a gap in the record. Auditing itself is always on — stderr carries every decision unconditionally, and OTEL_LOGS_EXPORTER/OTEL_EXPORTER_OTLP_LOGS_ENDPOINT add an OTel sink — this flag only decides what a sink's own failure does to the caller |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the trust policy (YAML) that authenticates callers, assigns their actions, and maps each tenant to its Temporal namespace (default $FLOWSTATE_AUTH_POLICY) |
+| `--codec-resource <string>` | `string` | — | — | canonical resource URI required in the aud claim of every bearer token spent on this server (default $FLOWSTATE_CODEC_RESOURCE); an absolute HTTPS URI listed among a kind: oidc issuer's audiences, and distinct from the RPC and MCP resources. Required whenever --auth-policy trusts an issuer that mints bearer tokens |
 | `--cors-origin <string,...>` | `stringArray` | — | — | a browser origin allowed to call this server, exactly, such as https://temporal.example.com (repeatable); unset admits no browser |
 | `--insecure-no-auth` | `bool` | `false` | — | serve any caller with no authentication or authorization, for local development: refused on any address but loopback |
 | `--listen <string>` | `string` | `127.0.0.1:8089` | `FLOWSTATE_CODEC_ADDRESS` | address to listen on (default $FLOWSTATE_CODEC_ADDRESS, or loopback) |
