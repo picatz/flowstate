@@ -599,9 +599,9 @@ func (a sessionAnswer) encode() ([]byte, error) {
 				if len(encoded) <= flowmcp.MaxResultBytes || budget < 1 {
 					break
 				}
-				reduced, err := renderTestResultWithin(a.report, budget)
-				if err != nil {
-					return nil, err
+				reduced, renderErr := renderTestResultWithin(a.report, budget)
+				if renderErr != nil {
+					return nil, renderErr
 				}
 				a.Report = json.RawMessage(reduced)
 				encoded, err = encode()
