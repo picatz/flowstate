@@ -84,6 +84,16 @@ type Server struct {
 	// position is 1-based inside the adapter and translated at the edge.
 	linesFrom0, columnsFrom0 bool
 
+	// bound is set once a launch or attach has given the session its program;
+	// a second is refused rather than replacing a target nobody would close.
+	bound bool
+
+	// pending are the breakpoints a durable run accepted but has not yet
+	// applied — it installs a replacement at its next step boundary — by id,
+	// with the source line each was set on. Each is reported to the editor
+	// once a snapshot shows it applied.
+	pending map[string]uint32
+
 	launched chan struct{}
 	once     sync.Once
 
@@ -286,8 +296,22 @@ func (s *Server) Serve(ctx context.Context) error {
 	// client that has gone is a broken pipe that kills the process under it.
 	defer s.hangUp()
 
+	// A read blocked on the client does not see ctx end, so ending it closes
+	// the stream under the read: the loop then leaves as for a client gone.
+	stop := context.AfterFunc(ctx, func() {
+		s.hangUp()
+		_ = s.stream.Close()
+	})
+	defer stop()
+
 	for {
 		if err := ctx.Err(); err != nil {
+			// Ended from outside: the session detaches as it does when the
+			// client goes, rather than leave a durable target renewing its
+			// lease for a conversation that is over.
+			s.hangUp()
+			s.end(false)
+
 			return err
 		}
 
@@ -300,7 +324,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.hangUp()
 			s.end(false)
 
-			return nil
+			return ctx.Err()
 		}
 		if request.Type != "request" {
 			continue
@@ -509,10 +533,16 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 		s.stopOnEntry = *asked.StopOnEntry
 	}
 	launcher := s.launcher
+	bound := s.bound
 	s.mu.Unlock()
 
 	if launcher == nil {
 		s.reply(request, nil)
+
+		return
+	}
+	if bound {
+		s.fail(request, errOneProgram.Error())
 
 		return
 	}
@@ -525,6 +555,7 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.bound = true
 	s.target = launched.Target
 	s.sourceMap = launched.SourceMap
 	s.start = launched.Start
@@ -552,6 +583,14 @@ func (s *Server) attach(ctx context.Context, request inbound) {
 		return
 	}
 	asked.Raw = request.Arguments
+	s.mu.Lock()
+	bound := s.bound
+	s.mu.Unlock()
+	if bound {
+		s.fail(request, errOneProgram.Error())
+
+		return
+	}
 
 	attached, err := s.attacher(ctx, asked)
 	if err != nil {
@@ -569,6 +608,7 @@ func (s *Server) attach(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.bound = true
 	s.target = attached.Target
 	s.sourceMap = attached.SourceMap
 	s.capabilities = snapshot.GetCapabilities()
@@ -729,6 +769,7 @@ func (s *Server) watch(ctx context.Context) {
 		failures = 0
 		after = snapshot.GetRevision()
 		s.relayObservations(snapshot)
+		s.relayBreakpoints(snapshot)
 
 		switch state := snapshot.GetState(); {
 		case state == v1.DebugRunState_DEBUG_RUN_STATE_HELD:
@@ -1231,6 +1272,11 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 // refused with, which never quotes what was submitted.
 var errInvalidBreakpoints = errors.New("invalid breakpoint arguments")
 
+// errOneProgram refuses a second launch or attach in one session: the first
+// target would be replaced without being closed, and a run it held would
+// wait on a debugger nobody can reach.
+var errOneProgram = errors.New("flowdap: this session already launched or attached to a program; start another debug session for another")
+
 // errTooManyBreakpoints fails a request that alone names more breakpoints than
 // a session holds. It fails whole, before anything is built from it, rather
 // than answering each entry: a frame can carry far more compact entries than a
@@ -1585,7 +1631,56 @@ func (s *Server) applyBreakpoints(ctx context.Context) (map[string]*v1.DebugBrea
 		states[id] = state
 	}
 
+	// A replacement the run accepted but will install only at its next step
+	// boundary: what it has not applied yet is remembered, so the editor
+	// hears when it has rather than showing it unverified for good.
+	pending := map[string]uint32{}
+	if response.GetReceipt().GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
+		for _, want := range set {
+			if !states[want.GetId()].GetVerified() {
+				pending[want.GetId()] = want.GetLine().GetLine()
+			}
+		}
+	}
+	s.mu.Lock()
+	s.pending = pending
+	s.mu.Unlock()
+
 	return states, nil
+}
+
+// relayBreakpoints tells the editor about each pending breakpoint a snapshot
+// shows the run has now applied.
+func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
+	s.mu.Lock()
+	if len(s.pending) == 0 {
+		s.mu.Unlock()
+
+		return
+	}
+	type applied struct {
+		id    string
+		line  uint32
+		state *v1.DebugBreakpointState
+	}
+	var ready []applied
+	for _, state := range snapshot.GetBreakpoints() {
+		if line, ok := s.pending[state.GetId()]; ok && state.GetVerified() {
+			ready = append(ready, applied{id: state.GetId(), line: line, state: state})
+			delete(s.pending, state.GetId())
+		}
+	}
+	s.mu.Unlock()
+
+	lineBase, _ := s.clientBases()
+	for _, bp := range ready {
+		answer := answerFor(bp.state)
+		answer.ID = s.breakpointID(bp.id)
+		if bp.line > 0 {
+			answer.Line = new(toClient(bp.line, lineBase))
+		}
+		s.emit("breakpoint", map[string]any{"reason": "changed", "breakpoint": answer})
+	}
 }
 
 func deref(text *string) string {

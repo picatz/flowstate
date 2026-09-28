@@ -800,3 +800,108 @@ func TestVariableHandlesAreBoundedByTheirText(t *testing.T) {
 	}
 	assert.True(t, refused, "long expressions kept being handed references past the byte bound")
 }
+
+// pendingRemote is a durable target that accepts a breakpoint replacement for
+// its next step boundary, then reports it applied in the next snapshot.
+type pendingRemote struct {
+	fakeRemote
+	applied chan *v1.DebugSnapshot
+}
+
+func (p *pendingRemote) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpointsRequest) (*v1.DebugSetBreakpointsResponse, error) {
+	states := make([]*v1.DebugBreakpointState, 0, len(req.GetBreakpoints()))
+	verified := make([]*v1.DebugBreakpointState, 0, len(req.GetBreakpoints()))
+	for _, bp := range req.GetBreakpoints() {
+		states = append(states, &v1.DebugBreakpointState{Id: bp.GetId(), Message: "the run has not applied this breakpoint yet"})
+		verified = append(verified, &v1.DebugBreakpointState{Id: bp.GetId(), Verified: true})
+	}
+	p.applied <- &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Breakpoints: verified}
+
+	return &v1.DebugSetBreakpointsResponse{
+		Receipt:     &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING},
+		Breakpoints: states,
+	}, nil
+}
+
+func (p *pendingRemote) WaitSnapshot(ctx context.Context, after uint64) (*v1.DebugSnapshot, error) {
+	select {
+	case snapshot := <-p.applied:
+		return snapshot, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestAPendingBreakpointIsReportedOnceApplied is a durable run inside a long
+// step: it accepts a breakpoint for its next boundary, and the editor hears
+// the breakpoint verified once a snapshot shows it applied, rather than
+// showing unverified a breakpoint that will stop the run.
+func TestAPendingBreakpointIsReportedOnceApplied(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	remote := &pendingRemote{
+		fakeRemote: fakeRemote{snapshot: &v1.DebugSnapshot{
+			Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities(),
+		}},
+		applied: make(chan *v1.DebugSnapshot, 1),
+	}
+	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+		return &flowdap.Attachment{Target: remote}, nil
+	}))
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
+
+	c.send(3, "setFunctionBreakpoints", map[string]any{"breakpoints": []map[string]any{{"name": "deploy"}}})
+	set := body(c.await("response", "setFunctionBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)
+	require.Equal(t, false, set["verified"], "a breakpoint the run has not applied was reported verified")
+
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	changed := body(c.await("event", "breakpoint"))["breakpoint"].(map[string]any)
+	assert.Equal(t, true, changed["verified"], "the applied breakpoint was never reported")
+	assert.Equal(t, set["id"], changed["id"], "the change named a different breakpoint")
+}
+
+// TestEndingServeDetachesTheTarget is an embedding process that cancels the
+// adapter while it waits on its client: the session detaches, as it does for
+// a client that goes, rather than leave a durable target renewing its lease.
+func TestEndingServeDetachesTheTarget(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	remote := &fakeRemote{snapshot: &v1.DebugSnapshot{
+		Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities(),
+	}}
+	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+		return &flowdap.Attachment{Target: remote}, nil
+	}))
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(ctx) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
+
+	c.send(3, "attach", map[string]any{"workflowId": "wf-2"})
+	assert.Equal(t, false, c.await("response", "attach")["success"], "a second attach replaced the first target")
+
+	cancel()
+	select {
+	case err := <-served:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(20 * time.Second):
+		t.Fatal("Serve did not return once its context ended")
+	}
+	assert.True(t, remote.closed, "the target was left attached after Serve's context ended")
+}
