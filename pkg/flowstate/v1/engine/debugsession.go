@@ -444,11 +444,12 @@ func (e *executor) parseDebugBreakpoints() {
 			// that never comes.
 			resolved, why := durableSites(target, bp.GetStep(), sites, truncated, "break at")
 			// A truncated enumeration cannot say a step is absent either: a
-			// target matching nothing before the cut can match past it, so it
-			// is armed with no sites listed. Behind [truncatedArmChange], asked
-			// only where the answer differs, so a history that refused it
-			// replays refusing it.
-			if why != "" && truncated &&
+			// declared step matching nothing before the cut can match past it,
+			// so it is armed with no sites listed. A step the program never
+			// declares stays refused, as the local driver refuses it. Behind
+			// [truncatedArmChange], asked only where the answer differs, so a
+			// history that refused it replays refusing it.
+			if why != "" && truncated && v1.DebugDeclaresStep(e.spec, target.Step()) &&
 				workflow.GetVersion(e.ctx, truncatedArmChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 				why = ""
 			}

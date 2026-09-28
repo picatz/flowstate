@@ -177,12 +177,18 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		in, interactive = file, false
 	}
 
+	// The prompt is for the person typing, never part of the answers: with a
+	// machine format it goes to stderr, so stdout stays the JSON it promises.
+	prompt := surface.Out
+	if format.Machine() {
+		prompt = surface.Err
+	}
 	keep := false
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 4096), flowdebug.MaxCommandBytes+1)
 	for {
 		if interactive {
-			fmt.Fprint(surface.Out, flowdebug.Prompt)
+			fmt.Fprint(prompt, flowdebug.Prompt)
 		}
 		if !scanner.Scan() {
 			break
