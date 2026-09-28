@@ -169,8 +169,8 @@ const (
 	// Next is `next`: run this step, including anything inside it, and stop at
 	// the next step at this nesting or shallower.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_NEXT DebugCommandVerb = 14
-	// Finish is `finish`: run until the enclosing iteration, branch, switch
-	// arm, or call is left.
+	// Finish is `finish`: run until the loop, parallel, switch, or call around
+	// this step is left. It does not stop at a sibling iteration or branch.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_FINISH DebugCommandVerb = 15
 	// Log is `log <step-id> <message>`: a logpoint.
 	DebugCommandVerb_DEBUG_COMMAND_VERB_LOG DebugCommandVerb = 16

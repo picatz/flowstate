@@ -551,8 +551,8 @@ enum DebugCommandVerb {
   // the next step at this nesting or shallower.
   DEBUG_COMMAND_VERB_NEXT = 14;
 
-  // Finish is `finish`: run until the enclosing iteration, branch, switch
-  // arm, or call is left.
+  // Finish is `finish`: run until the loop, parallel, switch, or call around
+  // this step is left. It does not stop at a sibling iteration or branch.
   DEBUG_COMMAND_VERB_FINISH = 15;
 
   // Log is `log <step-id> <message>`: a logpoint.
