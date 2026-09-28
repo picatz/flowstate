@@ -1095,6 +1095,12 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	remote, receipt, err := flowdebug.AttachRemote(ctx, r.remote(), args.WorkflowID, args.RunID, opts)
 	if err != nil {
+		// The run remembers the answer under this request id, so a retry
+		// under it gets the same one.
+		if receipt != nil && args.RequestID != "" {
+			err = fmt.Errorf("%w; a retry under this request_id gets the same answer, so use a new one to try again", err)
+		}
+
 		return flowmcp.ToolError(err), nil
 	}
 
@@ -1106,8 +1112,13 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	entry.driver.Wait = maxDebugSessionWait
 	existing, err := r.register(entry, key)
 	if err != nil || existing != nil {
+		// made is whether this call created the session. A duplicate is the
+		// run answering an attach it applied before — a keyed retry, whose
+		// session may be one the caller ended with keep to rejoin later —
+		// and is never this call's to detach.
+		made := args.SessionID == "" && receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE
 		switch {
-		case err != nil && args.SessionID == "", existing != nil && existing.id != remote.SessionID():
+		case made && (err != nil || existing.id != remote.SessionID()):
 			// A session this call attached, which no entry will hold — the
 			// server refused it, or a concurrent retry under this request
 			// id attached first: it is detached, so a run is never left
