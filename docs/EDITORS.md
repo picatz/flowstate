@@ -645,7 +645,7 @@ It advertises what the backend reports, and refuses the rest by name.
 | Request | Launch (local) | Attach (durable) |
 | --- | --- | --- |
 | `next` | steps over: a loop, parallel, switch or call runs whole | the same, at the boundaries a durable run holds |
-| `stepIn`, `stepOut` | into and out of loop iterations, parallel branches, switch arms and calls | into and out of calls |
+| `stepIn`, `stepOut` | `stepIn` enters loop iterations, parallel branches, switch arms and calls; `stepOut` leaves the whole loop, parallel, switch or call around the step | into and out of calls |
 | `pause` | holds at the next step boundary; work already running finishes | the same |
 | Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | unverified, saying to name the step instead |
 | Function breakpoints | a step id or an address, such as `orders/charge` or `checks#1/fraud` | the same, but one inside a loop body, branch or arm is unverified, saying to break at the enclosing step |

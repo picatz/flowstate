@@ -131,8 +131,10 @@ outputs:
 // TestADebugRefusalSaysWhyItRefused: a workflow that declares something
 // sensitive and one whose declarations could not be fully inspected are both
 // refused without --reveal-sensitive, each saying which it is; only one whose
-// values may be shown is not refused. The second cannot be reached from a
-// compiled file, whose calls nest far shallower than the scan's bound.
+// values may be shown is not refused. The second cannot be reached through
+// `flow run local`: [v1.ResolvePlugins] walks the specification under the same
+// bound first, and refuses one too deep to inspect before the reveal is
+// decided.
 func TestADebugRefusalSaysWhyItRefused(t *testing.T) {
 	t.Parallel()
 

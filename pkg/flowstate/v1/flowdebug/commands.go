@@ -67,7 +67,7 @@ var commands = []command{
 	{verb: "next", aliases: []string{"n"}, completes: completesNothing,
 		help: "run this step, including anything inside it, and stop at the next step at this level or above"},
 	{verb: "finish", aliases: []string{"fin", "out"}, completes: completesNothing,
-		help: "run until the enclosing loop iteration, branch, switch arm, or call is left"},
+		help: "run until the loop, parallel, switch, or call around this step is left"},
 	{verb: "continue", aliases: []string{"c"}, completes: completesNothing,
 		help: "run until the next breakpoint, or to the end"},
 	{verb: "until", aliases: []string{"u"}, argument: "<step-id> [if <expr>]", completes: completesStep,

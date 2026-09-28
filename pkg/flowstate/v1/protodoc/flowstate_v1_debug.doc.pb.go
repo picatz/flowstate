@@ -1225,8 +1225,8 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.DEBUG_COMMAND_VERB_FINISH",
-			Leading: " Finish is `finish`: run until the enclosing iteration, branch, switch\n" +
-				" arm, or call is left.\n",
+			Leading: " Finish is `finish`: run until the loop, parallel, switch, or call around\n" +
+				" this step is left. It does not stop at a sibling iteration or branch.\n",
 		},
 		{
 			Name:    "flowstate.v1.DEBUG_COMMAND_VERB_LOG",

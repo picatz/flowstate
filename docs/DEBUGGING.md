@@ -96,7 +96,7 @@ nothing here is worth learning twice. `help` lists it.
 | --- | --- |
 | `step`, `s` | run to the next step anywhere, including inside this one. An empty line does the same at the prompt. |
 | `next`, `n` | run this step whole, including a loop, parallel, switch or call; stop at the next step at this level or above |
-| `finish`, `out` | run until the enclosing iteration, branch, switch arm or call is left |
+| `finish`, `out` | run until the loop, parallel, switch or call around this step is left, stopping at the next step outside it — not at the next iteration or branch, which `next` reaches |
 | `continue`, `c` | run to the next breakpoint, or to the end |
 | `until <step>`, `u` | run to that step without stopping in between |
 | `until <step> if <expr>` | run to that step, stopping only where the expression holds |
@@ -403,9 +403,9 @@ applies here rather than a second, weaker one.
 - `flow dap` makes the same refusal before starting the local run. An editor can
   state the deliberate reveal as `"revealSensitive": true` in its launch
   configuration, or whoever starts the adapter can pass `--reveal-sensitive`.
-- `embed.Debug` makes it too, before anything runs, unless the embedding
-  program sets `DebugOptions.RevealSensitive`, and refuses a workflow whose
-  declarations cannot be read.
+- `embed.Debug` makes it too, before anything runs: a workflow that declares
+  sensitive values, or whose declarations cannot be read, is refused unless the
+  embedding program sets `DebugOptions.RevealSensitive`.
 - Under `flow test --debug` and `flowstate_debug`, the case's own redaction
   posture applies to **everything the session prints** — each step's account as
   it arrives, every `inspect` answer, and the autopsy's failures — so a

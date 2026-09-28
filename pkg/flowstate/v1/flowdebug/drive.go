@@ -103,7 +103,7 @@ const maxRememberedRequests = 64
 const DriverHelp = `status, info                 where the run is, and why
 step, s                      run to the next step anywhere, including inside this one
 next, n                      run this step whole; stop at the next step at this level or above
-finish, out                  run until the enclosing iteration, branch, arm, or call is left
+finish, out                  run until the loop, parallel, switch, or call around this step is left
 continue, c                  run to the next breakpoint, or the end
 until <step>                 run to that step (an id or an address like pages[2]/page)
 pause                        hold at the next step boundary
