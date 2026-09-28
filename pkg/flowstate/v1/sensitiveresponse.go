@@ -463,8 +463,20 @@ func RedactGetResponse(response *GetResponse, workflow *Workflow, reveal bool) *
 		return response
 	}
 
-	sensitive := SensitiveOutputNames(workflow)
-	carried := DecideCarriedValues(workflow, reveal)
+	return RedactGetResponseDecided(response, SensitiveOutputNames(workflow), DecideCarriedValues(workflow, reveal))
+}
+
+// RedactGetResponseDecided is [RedactGetResponse] from the two answers it
+// derives from a specification rather than from the specification itself:
+// which output names are sensitive (nil for none known, the fail-closed
+// case) and what may be done with carried values. A caller that answers
+// the same question for many responses, as `flow server` does for every Get
+// of one run, keeps the two small answers rather than the specification they
+// came from.
+func RedactGetResponseDecided(response *GetResponse, sensitive map[string]bool, carried CarriedValues) *GetResponse {
+	if response == nil {
+		return nil
+	}
 
 	clone, ok := proto.Clone(response).(*GetResponse)
 	if !ok {

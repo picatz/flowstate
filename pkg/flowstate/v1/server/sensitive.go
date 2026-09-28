@@ -1,7 +1,6 @@
 package server
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,8 +8,10 @@ import (
 	"sync"
 
 	"connectrpc.com/connect"
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
-	"go.temporal.io/sdk/client"
+	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/api/workflowservice/v1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -62,7 +63,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 	}
 
 	out := resp.Msg
-	decl := s.sensitiveDeclarationsOf(ctx, out.GetWorkflowId(), cmp.Or(out.GetFirstRunId(), out.GetRunId()))
+	decl := s.sensitiveDeclarationsOf(ctx, out.GetWorkflowId(), out.GetRunId())
 	if !decl.declares {
 		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED
 		return resp, nil
@@ -79,7 +80,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 		}
 	}
 
-	withheld := v1.RedactGetResponse(out, decl.workflow, false)
+	withheld := v1.RedactGetResponseDecided(out, decl.outputs, decl.carried)
 	withheld = v1.RedactGetResponseFailures(withheld, decl.values)
 	withheld.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD
 	return connect.NewResponse(withheld), nil
@@ -96,7 +97,7 @@ func (s *FlowstateServer) GetTimeline(ctx context.Context, req *connect.Request[
 	}
 
 	out := resp.Msg
-	decl := s.sensitiveDeclarationsOf(ctx, req.Msg.GetWorkflowId(), cmp.Or(out.GetFirstRunId(), out.GetRunId()))
+	decl := s.sensitiveDeclarationsOf(ctx, req.Msg.GetWorkflowId(), out.GetRunId())
 	if !decl.declares {
 		out.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED
 		return resp, nil
@@ -150,25 +151,38 @@ func (s *FlowstateServer) revealAuthorized(ctx context.Context, rpc, field, work
 }
 
 // sensitiveDeclarations is what a run's executed specification says about
-// sensitive values: whether it declares any, the specification to redact
-// against, and the sensitive input values to remove from failure text.
+// sensitive values, reduced to the answers redaction needs: whether it
+// declares any, which output names are sensitive, what may be done with
+// carried values, and the sensitive input values to remove from failure text.
+// The specification itself is not kept: a cache of a thousand of these must
+// not pin a thousand specifications of up to MaxSpecBytes each.
 //
-// Read from the run's own start input, the RunState the engine was started
-// with, which is the specification that ran (a deployment-registered copy
-// included) and the inputs it was bound with. When it cannot be read, the
-// answer is the fail-closed one: declares, no specification (every declared
-// output and the whole transcript withheld), and failure text withheld.
+// Read from the start input of the segment being reported, the RunState the
+// engine was started with, which is the specification that ran (a
+// deployment-registered copy included) and the inputs it was bound with.
+// Every segment carries the same two unchanged across Continue-As-New
+// (engine/workflow.go), and the reported segment's history lives as long as
+// the segment does, where the first segment's may already be gone. When it
+// cannot be read, the answer is the fail-closed one.
 type sensitiveDeclarations struct {
 	declares bool
-	workflow *v1.Workflow
+	outputs  map[string]bool
+	carried  v1.CarriedValues
 	values   v1.SensitiveValues
 }
 
-var failClosedDeclarations = sensitiveDeclarations{declares: true, values: v1.WithheldSensitiveValues()}
+// failClosedDeclarations withholds every declared output, the whole
+// transcript and carried state, and failure text.
+var failClosedDeclarations = sensitiveDeclarations{
+	declares: true,
+	carried:  v1.CarriedValuesUnverified,
+	values:   v1.WithheldSensitiveValues(),
+}
 
-// maxCachedDeclarations bounds the per-run cache. A run's start input never
-// changes, so an entry is never stale, only evicted; `flow watch` polling one
-// run reads its history once.
+// maxCachedDeclarations bounds the per-run cache. An entry holds output names
+// and a sensitive-value set, both bounded by the specification's own limits,
+// never the specification. A segment's start input never changes, so an entry
+// is never stale, only evicted; `flow watch` polling one run reads it once.
 const maxCachedDeclarations = 1024
 
 type declarationCache struct {
@@ -192,30 +206,27 @@ func (c *declarationCache) put(key string, d sensitiveDeclarations) {
 	c.entries[key] = d
 }
 
-func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowID, firstRunID string) sensitiveDeclarations {
+func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowID, runID string) sensitiveDeclarations {
 	namespace := s.identityFor(ctx).GetNamespace()
-	key := namespace + "\x00" + workflowID + "\x00" + firstRunID
+	key := namespace + "\x00" + workflowID + "\x00" + runID
 	if d, ok := s.declarations.get(key); ok {
 		return d
 	}
 
-	// The client authorization chose for this caller, as [FlowstateServer.get]
-	// used, so the history read is the run that was checked.
-	temporal, err := s.clientFor(namespace)
-	if err != nil {
+	state, err := s.startedRunState(ctx, namespace, workflowID, runID)
+	if err != nil || state.GetWorkflow() == nil {
 		return failClosedDeclarations
 	}
-	state, err := s.startedRunState(ctx, temporal, workflowID, firstRunID)
-	if err != nil {
-		return failClosedDeclarations
-	}
-
-	d := sensitiveDeclarations{workflow: state.GetWorkflow()}
 	declares, err := v1.DeclaresSensitiveValues(state.GetWorkflow())
 	if err != nil {
 		return failClosedDeclarations
 	}
-	d.declares = declares
+
+	d := sensitiveDeclarations{
+		declares: declares,
+		outputs:  v1.SensitiveOutputNames(state.GetWorkflow()),
+		carried:  v1.DecideCarriedValues(state.GetWorkflow(), false),
+	}
 	if names := v1.SensitiveInputNames(state.GetWorkflow()); len(names) > 0 {
 		d.values = v1.SensitiveInputValues(state.GetInputs(), names)
 	}
@@ -224,19 +235,46 @@ func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowI
 	return d
 }
 
-// startedRunState reads the RunState a run's first segment was started with.
-func (s *FlowstateServer) startedRunState(ctx context.Context, temporal client.Client, workflowID, firstRunID string) (*v1.RunState, error) {
-	iter := temporal.GetWorkflowHistory(ctx, workflowID, firstRunID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-	if iter == nil || !iter.HasNext() {
+// startedRunState reads the RunState a segment was started with, through the
+// client authorization chose for this caller, as [FlowstateServer.get] did,
+// so the history read is of the run that was checked. It asks for one event,
+// the start, rather than a page of history it would discard.
+func (s *FlowstateServer) startedRunState(ctx context.Context, namespace, workflowID, runID string) (*v1.RunState, error) {
+	var event *historypb.HistoryEvent
+	if temporal, temporalNamespace, err := s.clientAndTemporalNamespaceFor(namespace); err == nil {
+		resp, err := temporal.WorkflowService().GetWorkflowExecutionHistory(ctx, &workflowservice.GetWorkflowExecutionHistoryRequest{
+			Namespace:       temporalNamespace,
+			Execution:       &commonpb.WorkflowExecution{WorkflowId: workflowID, RunId: runID},
+			MaximumPageSize: 1,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if events := resp.GetHistory().GetEvents(); len(events) > 0 {
+			event = events[0]
+		}
+	} else {
+		// A server built without its Temporal namespace named (an embedding
+		// that never passed WithTemporalNamespace) reads through the SDK's
+		// iterator instead, which fetches a page.
+		temporal, err := s.clientFor(namespace)
+		if err != nil {
+			return nil, err
+		}
+		iter := temporal.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+		if iter == nil || !iter.HasNext() {
+			return nil, errors.New("the run has no history")
+		}
+		if event, err = iter.Next(); err != nil {
+			return nil, err
+		}
+	}
+	if event == nil {
 		return nil, errors.New("the run has no history")
 	}
-	event, err := iter.Next()
-	if err != nil {
-		return nil, err
-	}
-	started := event.GetWorkflowExecutionStartedEventAttributes()
-	payloads := started.GetInput().GetPayloads()
-	if started == nil || len(payloads) == 0 {
+
+	payloads := event.GetWorkflowExecutionStartedEventAttributes().GetInput().GetPayloads()
+	if len(payloads) == 0 {
 		return nil, fmt.Errorf("the run's first event is %s, not a start with an input", event.GetEventType())
 	}
 	var state v1.RunState

@@ -8,10 +8,12 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -166,4 +168,59 @@ func TestARunDeclaringNothingSensitiveIsUntouched(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_NONE_DECLARED, resp.Msg.GetSensitiveDisclosure())
 	require.Equal(t, revealToken, resp.Msg.GetRunOutputs().GetValues()["echo"].GetLiteral().GetStringValue())
+}
+
+// TestAContinuedRunIsDecidedByTheSegmentReported: after Continue-As-New, Get
+// reports the latest segment, and the decision is read from that segment's
+// own start input, which carries the same specification and inputs.
+func TestAContinuedRunIsDecidedByTheSegmentReported(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+	s := mustNew(t, temporal)
+
+	wf := revealWorkflow(t, `edition: v2026.3
+name: segmented
+inputs:
+  token:
+    type: string
+    sensitive: true
+steps:
+  - id: grow
+    loop:
+      as: acc
+      init: 0
+      update: ${acc + 1}
+      until: ${acc >= 3}
+      max_iterations: 10
+      steps:
+        - id: tick
+          log:
+            message: tick
+outputs:
+  echo:
+    value: ${inputs.token}
+    sensitive: true
+`)
+	run, err := temporal.ExecuteWorkflow(t.Context(),
+		client.StartWorkflowOptions{
+			TaskQueue: engine.RunTaskQueueName,
+			// The default tenant's own, as the server records it on Run.
+			Memo: map[string]any{"flowstate.namespace": ""},
+		},
+		engine.RunWorkflowType, &v1.RunState{
+			Workflow:    wf,
+			Inputs:      map[string]*v1.Value{"token": v1.NewLiteral(revealToken)},
+			StepsBudget: 1,
+		})
+	require.NoError(t, err)
+	firstRunID := run.GetRunID()
+	require.NoError(t, run.Get(t.Context(), nil))
+
+	resp, err := s.Get(caller(t.Context(), "workload.read"), connect.NewRequest(&v1.GetRequest{WorkflowId: run.GetID()}))
+	require.NoError(t, err)
+	require.NotEqual(t, firstRunID, resp.Msg.GetRunId(), "the run never continued as new, so a later segment was not exercised")
+	require.Equal(t, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD, resp.Msg.GetSensitiveDisclosure())
+	require.Equal(t, "[redacted: echo]", resp.Msg.GetRunOutputs().GetValues()["echo"].GetLiteral().GetStringValue())
 }

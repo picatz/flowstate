@@ -198,8 +198,9 @@ func noteWithheldDespiteReveal(surface *ui.UI, response *v1.GetResponse) {
 	if response.GetSensitiveDisclosure() != v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD {
 		return
 	}
-	fmt.Fprintf(surface.Err, "%s the server withheld this run's sensitive values: revealing them needs the "+
-		"workload.reveal_sensitive action, listed explicitly in the caller's trust policy entry\n",
+	fmt.Fprintf(surface.Err, "%s the server withheld this run's sensitive values: revealing them needs an "+
+		"authenticated caller whose trust policy entry lists the workload.reveal_sensitive action explicitly "+
+		"(a server without authentication never reveals them)\n",
 		surface.ErrTheme.Pill(ui.ToneWarning, "withheld"))
 }
 

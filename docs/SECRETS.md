@@ -59,7 +59,11 @@ test output, and the MCP server show `[redacted: <name>]` unless the reader
 passes `--reveal-sensitive`, and `flow server` withholds the values from its
 `Get` and `GetTimeline` answers unless the caller asks and holds the
 `workload.reveal_sensitive` action, listed explicitly in their trust policy
-entry. Use a secret reference for anything that must stay out of history.
+entry. A server running without authentication has no caller to grant it to,
+so it never reveals them; `flow server dev` grants it to its developer
+identity. An agent reaching Flowstate through `flow mcp` cannot ask for them
+unless the operator started it with `--reveal-sensitive`. Use a secret
+reference for anything that must stay out of history.
 
 ## How a reference is resolved
 

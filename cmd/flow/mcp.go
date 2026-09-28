@@ -233,6 +233,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		Redact: func(response *v1.GetResponse) *v1.GetResponse {
 			return redactGetResponse(response, nil, revealSensitiveRequested(cmd))
 		},
+		RevealSensitive: revealSensitiveRequested(cmd),
 
 		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
 		DecorateRPCError:     mcpRPCErrorDecorator(flags, addressExplicitlyConfigured(cmd)),
