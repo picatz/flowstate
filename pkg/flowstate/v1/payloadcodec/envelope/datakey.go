@@ -205,6 +205,7 @@ type cacheEntry struct {
 	key     [sha256.Size]byte
 	dataKey []byte
 	expires time.Time
+	timer   *time.Timer // removes the entry at expires even if nothing asks for it again
 }
 
 type negativeEntry struct {
@@ -291,6 +292,10 @@ func (c *decodeCache) get(key [sha256.Size]byte) ([]byte, error, bool) {
 // put stores a copy of dataKey under key until ttl from now, evicting the
 // least recently used entry when full. The ttl is the caching namespace's own,
 // so one namespace's short window is not stretched by another's long one.
+//
+// The entry is removed and its key cleared when the ttl passes, whether or
+// not anything asks for it again: an idle namespace's data key does not stay
+// in memory past the window that bounds a disabled wrapping key.
 func (c *decodeCache) put(key [sha256.Size]byte, dataKey []byte, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -300,7 +305,19 @@ func (c *decodeCache) put(key [sha256.Size]byte, dataKey []byte, ttl time.Durati
 	for c.order.Len() >= c.capacity {
 		c.remove(c.order.Back())
 	}
-	c.entries[key] = c.order.PushFront(&cacheEntry{key: key, dataKey: clone(dataKey), expires: c.now().Add(ttl)})
+	e := &cacheEntry{key: key, dataKey: clone(dataKey), expires: c.now().Add(ttl)}
+	el := c.order.PushFront(e)
+	c.entries[key] = el
+	e.timer = time.AfterFunc(ttl, func() { c.expire(el) })
+}
+
+// expire removes el if it is still the entry cached under its key.
+func (c *decodeCache) expire(el *list.Element) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.entries[el.Value.(*cacheEntry).key]; ok && cur == el {
+		c.remove(el)
+	}
 }
 
 // refuse remembers a definitive refusal for a few seconds. When full, it
@@ -327,6 +344,7 @@ func (c *decodeCache) refuse(key [sha256.Size]byte, err error) {
 // remove drops an entry and clears its data key.
 func (c *decodeCache) remove(el *list.Element) {
 	e := c.order.Remove(el).(*cacheEntry)
+	e.timer.Stop()
 	clear(e.dataKey)
 	delete(c.entries, e.key)
 }

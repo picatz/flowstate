@@ -132,6 +132,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -278,6 +279,10 @@ type Codec struct {
 	// get it at once instead of each waiting out a provider timeout.
 	retryAt time.Time
 	lastErr error
+
+	// retire, guarded by rollover, drops the active key when its window
+	// closes. Each rollover stops the previous one.
+	retire *time.Timer
 }
 
 // rolloverBackoff is how long a failed rollover's answer stands before the
@@ -652,6 +657,21 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 		if next, err = c.newActive(ctx, now); err == nil {
 			c.lastErr, c.retryAt = nil, time.Time{}
 			c.active.Store(next)
+			// Past max_age + stale_grace no seal may use it, so an idle codec
+			// lets it go then rather than at its next seal; the cleanup
+			// newActive registered clears it once no in-flight seal holds it.
+			// The timer holds it weakly: a stopped timer can stay on the
+			// runtime's heap for a while, and must not keep every key a busy
+			// codec rolled past alive for the whole window.
+			if c.retire != nil {
+				c.retire.Stop()
+			}
+			wp := weak.Make(next)
+			c.retire = time.AfterFunc(c.policy.maxAge+c.policy.staleGrace, func() {
+				if a := wp.Value(); a != nil {
+					c.active.CompareAndSwap(a, nil)
+				}
+			})
 			// A fresh key's budget holds any payload seal admits: max_bytes
 			// is at least the blob limit, and max_messages at least one.
 			if !next.reserve(c.policy, size) {
