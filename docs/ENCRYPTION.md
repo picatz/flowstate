@@ -199,7 +199,7 @@ Each namespace can also set:
 | `decrypt_suites` | every suite this process may use | What is read. Narrow it to retire a suite |
 | `escrow` | none | Up to three `escrow_keys` every data key is also wrapped to |
 | `data_key.max_age` | `600s` | How long one data key seals, and how long an unwrapped one is cached. Durations are written in seconds |
-| `data_key.max_messages`, `data_key.max_bytes` | 2²⁰, 64 GiB | The other two bounds on one data key |
+| `data_key.max_messages`, `data_key.max_bytes` | 2²⁰, 64 GiB | The other two bounds on one data key; `max_bytes` is at least 2 MiB, so any payload fits a fresh key |
 | `data_key.stale_grace` | `0s` | How long past `max_age` a data key keeps sealing while the provider is unreachable |
 | `data_key.decode_cache_entries` | 4096 | How many unwrapped data keys a process keeps for reading |
 
@@ -410,6 +410,7 @@ parked at an approval and finishes it on the new fleet.
 | The keyring is gone and encryption is required | Nothing starts | Restore the keyring. Never turn encryption off to "get running": new plaintext would sit beside history no one can read |
 | Vault is unreachable at startup | The process refuses to start, naming the key | Restore Vault or the network path; `flow codec status` shows when it works |
 | Vault becomes unreachable while running | Reads of data keys already cached continue. Writes continue until the current data key's window closes, plus `stale_grace`, then fail and are retried by Temporal; nothing is written in plaintext. The codec server answers 503 | Restore Vault. Set `stale_grace` if you prefer availability over how quickly a disabled key takes effect |
+| Vault is unreachable when a run receives a signal under a data key the worker has not read | The run fails, naming the unavailable provider, rather than dropping the signal: Temporal would discard a signal it cannot decode as corrupt, and the approval would be lost. The signal stays in the run's history | Restore Vault, then reset the run to before the signal (`temporal workflow reset`). A provider that answers within its `timeout` never trips Temporal's deadlock detector, whatever the timeout |
 | A Vault key must stop working now | Disable it, raise its minimum version, or revoke the policy. Running processes stop within `data_key.max_age` (plus `stale_grace`), as cached data keys expire | This is crypto-shredding with a bounded delay; lower `max_age` if the delay matters |
 | Vault refuses the key at startup because it "does not bind the encryption context" | The server drops `associated_data`, so a wrap it made would unwrap for any namespace. Flowstate probes for this at startup | Upgrade to Vault 1.13 or later, or OpenBao |
 | Many payloads arrive with data keys nobody wrapped | A process asks its providers to unwrap at most 200 unseen data keys a second (bursts of 2000); past that the read is refused as unavailable and retried, so a flood does not become a flood of Vault calls | Find who is writing them; legitimate history misses once per data key |

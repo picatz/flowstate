@@ -11,6 +11,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -329,4 +330,18 @@ func TestValidateChecksTheSizeOfTheCarriedRunState(t *testing.T) {
 	}.Validate())
 
 	require.Equal(t, []int{v1.MaxRunStateBytes + v1.PayloadEnvelopeReserveBytes}, asked)
+}
+
+// TestACodecConverterDoesNotTripTheDeadlockDetector: workflow code decodes
+// through the configured converter, and a codec may wait on a key provider
+// for longer than the SDK's deadlock budget. The converter pauses the detector
+// for its calls, which it can only do bound to the workflow, so it is
+// context-aware.
+func TestACodecConverterDoesNotTripTheDeadlockDetector(t *testing.T) {
+	t.Parallel()
+
+	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
+	require.NoError(t, err)
+	_, ok := payloadcodec.Config{Codec: toy}.DataConverter().(workflow.ContextAware)
+	require.True(t, ok)
 }

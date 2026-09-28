@@ -1,11 +1,16 @@
 package engine
 
 import (
+	"context"
+	"errors"
+	"fmt"
+
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/workflow"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 )
 
 // withSignalDeliveryCompat wraps ctx's data converter so a signal channel can
@@ -76,6 +81,28 @@ type signalDeliveryCompatConverter struct {
 	converter.DataConverter
 }
 
+// WithWorkflowContext forwards the SDK's per-context binding to the wrapped
+// converter. Embedding the interface does not promote it, and without it the
+// converter [payloadcodec.Config.DataConverter] returns never learns which
+// workflow it decodes for, so its pause of the deadlock detector during a
+// key provider call is a no-op (go.temporal.io/sdk@v1.48.0
+// internal/internal_workflow.go getDataConverterFromWorkflowContext).
+func (c *signalDeliveryCompatConverter) WithWorkflowContext(ctx workflow.Context) converter.DataConverter {
+	if aware, ok := c.DataConverter.(workflow.ContextAware); ok {
+		return &signalDeliveryCompatConverter{DataConverter: aware.WithWorkflowContext(ctx)}
+	}
+	return c
+}
+
+// WithContext is [signalDeliveryCompatConverter.WithWorkflowContext]'s other
+// half of [workflow.ContextAware], for a binding made outside a workflow.
+func (c *signalDeliveryCompatConverter) WithContext(ctx context.Context) converter.DataConverter {
+	if aware, ok := c.DataConverter.(workflow.ContextAware); ok {
+		return &signalDeliveryCompatConverter{DataConverter: aware.WithContext(ctx)}
+	}
+	return c
+}
+
 // FromPayloads must be overridden explicitly rather than left to embedding:
 // the default converter's own FromPayloads calls its *own* FromPayload
 // internally, not whatever a wrapper around it overrides — Go does not dispatch
@@ -107,8 +134,18 @@ func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, v
 	}
 
 	// The current shape, tried first: what every up-to-date server sends.
-	if err := c.DataConverter.FromPayload(payload, delivery); err == nil {
+	err := c.DataConverter.FromPayload(payload, delivery)
+	if err == nil {
 		return nil
+	}
+	if errors.Is(err, payloadcodec.ErrUnavailable) {
+		// The codec could not reach a key provider: the signal is not
+		// corrupt, and an error returned here is one the channel drops as if
+		// it were, losing an approval. Nothing workflow code can do makes the
+		// task retry instead (every panic meets the worker's panic policy), so
+		// the run fails, loudly and recoverably, with the signal still in its
+		// history: see panicpolicy.go.
+		panic(fmt.Errorf("decoding a signal: %w", err))
 	}
 
 	// Falls back to the shape every signal used before #194. Sender is left

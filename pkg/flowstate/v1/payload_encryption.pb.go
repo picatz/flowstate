@@ -908,7 +908,9 @@ type PayloadDataKeyPolicy struct {
 	MaxAge *durationpb.Duration `protobuf:"bytes,1,opt,name=max_age,json=maxAge,proto3" json:"max_age,omitempty"`
 	// How many payloads one data key seals. Unset is 2^20.
 	MaxMessages uint64 `protobuf:"varint,2,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"`
-	// How many plaintext bytes one data key seals. Unset is 64 GiB.
+	// How many plaintext bytes one data key seals. Unset is 64 GiB. At least
+	// Temporal's 2 MiB blob limit, so that every payload fits a fresh key's
+	// budget and the bound holds from a key's first payload.
 	MaxBytes uint64 `protobuf:"varint,3,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
 	// How long past max_age a data key keeps sealing when its successor
 	// cannot be wrapped because the key provider is unreachable. Unset is
@@ -1512,11 +1514,12 @@ const file_flowstate_v1_payload_encryption_proto_rawDesc = "" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04role\x128\n" +
 	"\x05mount\x18\x02 \x01(\tB\"\xbaH\x1fr\x1d2\x1b^([A-Za-z0-9._/-]{1,128})?$R\x05mount\x12'\n" +
 	"\n" +
-	"token_file\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\ttokenFile\"\xaf\x02\n" +
+	"token_file\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\ttokenFile\"\xbe\x02\n" +
 	"\x14PayloadDataKeyPolicy\x12B\n" +
 	"\amax_age\x18\x01 \x01(\v2\x19.google.protobuf.DurationB\x0e\xbaH\v\xaa\x01\b\"\x04\b\x80\xa3\x052\x00R\x06maxAge\x12.\n" +
-	"\fmax_messages\x18\x02 \x01(\x04B\v\xbaH\b2\x06\x18\x80\x80\x80\x80\x10R\vmaxMessages\x12\x1b\n" +
-	"\tmax_bytes\x18\x03 \x01(\x04R\bmaxBytes\x12I\n" +
+	"\fmax_messages\x18\x02 \x01(\x04B\v\xbaH\b2\x06\x18\x80\x80\x80\x80\x10R\vmaxMessages\x12*\n" +
+	"\tmax_bytes\x18\x03 \x01(\x04B\r\xbaH\n" +
+	"\xd8\x01\x012\x05(\x80\x80\x80\x01R\bmaxBytes\x12I\n" +
 	"\vstale_grace\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\r\xbaH\n" +
 	"\xaa\x01\a\"\x03\b\x90\x1c2\x00R\n" +
 	"staleGrace\x12;\n" +

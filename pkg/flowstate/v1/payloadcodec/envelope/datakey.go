@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider"
 )
 
@@ -47,9 +48,16 @@ const (
 )
 
 // ErrProviderUnavailable is a data key that could not be wrapped or unwrapped
-// because the key provider did not answer. Transient: Temporal retries the
-// task that needed it, and nothing is written unsealed meanwhile.
-var ErrProviderUnavailable = errors.New("envelope: the key provider is unavailable")
+// because the key provider did not answer. Transient, and nothing is written
+// unsealed meanwhile. It matches [payloadcodec.ErrUnavailable], which is how
+// workflow-side decoding tells it from a corrupt payload.
+var ErrProviderUnavailable error = providerUnavailable{}
+
+type providerUnavailable struct{}
+
+func (providerUnavailable) Error() string { return "envelope: the key provider is unavailable" }
+
+func (providerUnavailable) Is(target error) bool { return target == payloadcodec.ErrUnavailable }
 
 // dataKeyPolicy is a PayloadDataKeyPolicy with its defaults applied.
 type dataKeyPolicy struct {
@@ -140,13 +148,6 @@ func (k *activeKey) reserve(p dataKeyPolicy, size int) bool {
 			return true
 		}
 	}
-}
-
-// charge is reserve without the bounds, for a key's first payload: a key just
-// wrapped for a payload larger than max_bytes still seals it, once.
-func (k *activeKey) charge(size int) {
-	k.messages.Add(1)
-	k.bytes.Add(uint64(size))
 }
 
 // release returns a reservation that was not used.
