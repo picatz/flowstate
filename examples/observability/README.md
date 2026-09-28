@@ -236,7 +236,7 @@ $ docker compose -f examples/observability/docker-compose.yaml up -d --build
 ```
 
 First run builds the Flowstate image from this repository's `go.mod` (one build,
-two services) and pulls eight images. Wait for Temporal to report healthy — the
+two services) and pulls eight service images. Wait for Temporal to report healthy — the
 Flowstate services depend on it and will not start before it does:
 
 ```console

@@ -39,10 +39,10 @@ macOS may prompt for authorization to read the entry the first time; that is the
 keychain doing its job; there is nothing this provider does to suppress it.
 
 This is the one backend genuinely unavailable off its platform.
-[`workflow.test.yaml`](workflow.test.yaml) still runs everywhere, because its two
-cases bind `keychain:github-token` in a `secrets:` block instead of shelling out to
-`security`: one checks the bound value reaches the step, the other that an unbound
-reference is refused rather than resolved empty. The provider itself cannot run
+[`workflow.test.yaml`](workflow.test.yaml) still runs everywhere, because it never
+shells out to `security`: its first case binds `keychain:github-token` in a
+`secrets:` block and checks the bound value reaches the step, and its second leaves
+the reference unbound and checks it is refused rather than resolved empty. The provider itself cannot run
 here: this repository's CI runs on Linux, where `--secret-keychain` refuses at
 startup with a message naming the platform rather than the generic "tool missing" a
 machine without `security` would otherwise report —
