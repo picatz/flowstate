@@ -195,7 +195,7 @@ func newReader(byNamespace map[string]*Codec, cache *decodeCache) *Codec {
 // LoadFile parses the keyring configuration at path and opens it, resolving
 // relative paths against the file's directory.
 func LoadFile(ctx context.Context, path string) (*Keyring, error) {
-	data, err := readBounded(path, MaxConfigBytes)
+	data, err := readBounded(path, MaxConfigBytes, nil)
 	if err != nil {
 		return nil, fmt.Errorf("envelope: reading keyring configuration %q: %w", path, err)
 	}
@@ -270,12 +270,11 @@ func (l keyLoader) material(file, env string, secret bool) ([]byte, error) {
 		return []byte(text), nil
 	}
 	path := l.resolve(file)
+	var check func(fs.FileInfo) error
 	if secret {
-		if err := checkKeyFileMode(path); err != nil {
-			return nil, err
-		}
+		check = func(info fs.FileInfo) error { return checkKeyFileMode(path, info) }
 	}
-	text, err := readBounded(path, MaxKeyFileBytes)
+	text, err := readBounded(path, MaxKeyFileBytes, check)
 	if err != nil {
 		return nil, fmt.Errorf("reading %q: %w", path, err)
 	}
@@ -291,15 +290,9 @@ func (l keyLoader) resolve(path string) string {
 
 // checkKeyFileMode refuses a key file others can reach, the way ssh refuses a
 // private key with loose permissions: a wrapping key readable by the group is
-// a key the group holds.
-func checkKeyFileMode(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%q is not a regular file", path)
-	}
+// a key the group holds. info is the opened file's own, never a second lookup
+// of path, so what is checked is what is read.
+func checkKeyFileMode(path string, info fs.FileInfo) error {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%q has mode %04o; a key file must be accessible by its owner only (chmod 600)",
 			path, info.Mode().Perm())
@@ -307,7 +300,11 @@ func checkKeyFileMode(path string) error {
 	return nil
 }
 
-func readBounded(path string, limit int64) ([]byte, error) {
+// readBounded reads at most limit bytes of the regular file at path. check, if
+// set, is given the opened file's own information before anything is read:
+// checking path first and opening it after would read whatever another
+// account renamed into place between the two.
+func readBounded(path string, limit int64, check func(fs.FileInfo) error) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -320,6 +317,11 @@ func readBounded(path string, limit int64) ([]byte, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, &fs.PathError{Op: "read", Path: path, Err: errors.New("not a regular file")}
+	}
+	if check != nil {
+		if err := check(info); err != nil {
+			return nil, err
+		}
 	}
 
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
