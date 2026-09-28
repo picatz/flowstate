@@ -3,15 +3,23 @@
 // durably against a Temporal worker the embedding program owns, and register
 // the program's own Go functions as tasks a workflow can call.
 //
-// # This package is the stable one, v1 is not
+// # This package is the one meant to stay stable, v1 is not
 //
 // [pkg/flowstate/v1] is the interpreter and the generated schema types "v1"
 // names the edition of, not a Go compatibility promise — see its own doc.
-// This package is: a deliberately small, curated surface built for an
-// embedder to hold onto across an upgrade, reaching into v1 on that
-// embedder's behalf so it does not have to import v1 directly. Prefer it,
-// even where v1 could do the same thing more directly — that directness is
-// exactly what breaks silently on the next interpreter refactor.
+// This package is meant to be one: a deliberately small, curated surface built
+// for an embedder to hold onto across an upgrade, reaching into v1 on that
+// embedder's behalf. Prefer it, even where v1 could do the same thing more
+// directly — that directness is exactly what breaks silently on the next
+// interpreter refactor.
+//
+// Two limits on that, stated so nobody relies on more. It does not spare an
+// embedder v1's types: a [Task]'s Fn is a v1.TaskFunc, [RunOptions] takes a
+// v1.Clock and a v1.SignalWaiter, [RunLocal] answers with a
+// *v1.Workflow_StepOutputs, and a durable run is started with engine.Run over
+// a v1.RunState. And nothing is tagged or released yet — SUPPORT.md makes no
+// compatibility promise for this module — so "stable" is the intent this
+// package is held to, not a versioned guarantee; pin a module revision.
 //
 // # The four things an embedder does
 //

@@ -7,10 +7,10 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
-// ExampleParse compiles a Flowfile from bytes into a workflow. Parse decides a
-// step's task purely from its shape, so a well-formed file compiles here even
-// if a task name is one this build does not register; that "does the build know
-// this task" question belongs to [flowfile.Validate], not to Parse.
+// ExampleParse compiles a Flowfile from bytes into a workflow. Parse does not
+// refuse a task name this build does not register, so a well-formed file
+// compiles here even then; that "does the build know this task" question
+// belongs to [flowfile.Validate], not to Parse.
 func ExampleParse() {
 	workflow, _, err := flowfile.Parse([]byte(`
 edition: v2026.3

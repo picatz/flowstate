@@ -64,10 +64,11 @@ import (
 // characters, so `ceil(size(result) * StringTraversalCostFactor)` *is* cel-go's
 // `AddString` formula, arrived at without copying the switch that computes it.
 // Where they differ, they differ in the direction that closes the hole: cel-go
-// has no runtime cost estimator for the strings extension at all, so `repeat`,
-// `join` and `replace` are charged 1 unit even on a checked AST, and those
-// three are the sharpest amplifiers in the vocabulary. `"x".repeat(50000000)`
-// is one call.
+// has no runtime cost estimator for the strings extension at all, so `join` and
+// `replace` are charged 1 unit even on a checked AST, and those two are the
+// sharpest amplifiers in the vocabulary (the pinned strings extension has no
+// `repeat`). `s.replace("x", s)` on a string of `x`s squares its length in one
+// call.
 //
 // The estimator returns nil for every call producing neither a string, bytes,
 // nor a list, which leaves cel-go's own pricing in force for all of them. That

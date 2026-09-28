@@ -999,7 +999,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as",
 			Message: fmt.Sprintf(
-				"%q is the built-in naming the moment a wait is evaluated, which a loop variable of the same name would shadow inside a wait's own expressions (`sleep:`, `wait_until:`, a signal's `timeout:`); choose another iterator",
+				"%q is the built-in naming the moment a wait is evaluated, which a loop variable of the same name would shadow inside a wait's own expressions (`sleep:`, `wait_until:`, a wait's `timeout:`, `prompt:` and `outputs:`); choose another iterator",
 				iterator),
 		})
 	}
@@ -1021,10 +1021,10 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 //
 // placement is the scope this loop step itself sits in, composed for the body
 // through [v1.UndoScope.IntoLoop] rather than assumed to be [v1.UndoScopeLoop].
-// A loop body accepts an `undo:` since #253, and a `loop:` may be written inside
-// a `for_each` body — so a body that claimed [v1.UndoScopeLoop] unconditionally
-// would validate a compensation the engine refuses, which is invariant 3's exact
-// shape pointed at the validator.
+// A `loop:` may be written inside a `for_each` body, where the concurrent scope
+// still refuses `async:` ([v1.CheckAsyncPlacement]) — so a body that claimed
+// [v1.UndoScopeLoop] unconditionally would validate an `async:` the engine
+// refuses, which is invariant 3's exact shape pointed at the validator.
 func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index int, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
@@ -1236,7 +1236,7 @@ func validateLoopStateName(stepID, state string, enclosing refScope) Diagnostics
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as", Value: state,
 			Message: fmt.Sprintf(
-				"%q is the built-in naming the moment a wait is evaluated, which a loop's carried state of the same name would shadow inside a wait's own expressions (`sleep:`, `wait_until:`, a signal's `timeout:`); choose another name",
+				"%q is the built-in naming the moment a wait is evaluated, which a loop's carried state of the same name would shadow inside a wait's own expressions (`sleep:`, `wait_until:`, a wait's `timeout:`, `prompt:` and `outputs:`); choose another name",
 				state),
 		})
 	}
@@ -1462,12 +1462,13 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 //
 // # Where
 //
-// [v1.CheckUndoPlacement] owns the placement rules — allowed at the top level and
-// inside a `call:`, refused inside a `for_each` body, a `parallel` branch, or a
-// `loop:` body — because both drivers enforce them too and a rule spelled once
-// cannot disagree with itself. What this adds is a position: an author meets the
-// refusal in their editor, on the `undo:` key, rather than as a run that fails on
-// its first step.
+// [v1.CheckUndoPlacement] owns the placement rules — accepted at the top level,
+// inside a `call:`'s body, a `loop:` body, a `for_each` body and a `parallel`
+// branch, and refused on a step with no effect of its own to take back (control
+// flow, a `value:`, or the `call:` step itself) — because both drivers enforce
+// them too and a rule spelled once cannot disagree with itself. What this adds is
+// a position: an author meets the refusal in their editor, on the `undo:` key,
+// rather than as a run that fails on its first step.
 //
 // # What its expressions may name
 //
@@ -1756,12 +1757,15 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// contradiction — the step is a wait, and `now` is still not in scope —
 			// because both drivers evaluate the condition before entering the node
 			// (`runNodes` in eval.go, the durable driver's execute.go), so at that
-			// moment the wait has not started and there is no moment to bind. An
-			// input is the older story: it is resolved inside an activity, which has
-			// no clock that survives a retry.
-			rest := "a task input is resolved inside an activity, which has no clock that " +
-				"survives a retry, so compute the moment or the length in the wait itself, or " +
-				"pass the time in as an input"
+			// moment the wait has not started and there is no moment to bind.
+			// Everywhere else the reason is [v1.NowIdentifier]'s: most task inputs
+			// are resolved in workflow code, but one may be resolved inside an
+			// activity, where every retry would read a different time — so outside
+			// a wait there is no moment that is replay-safe in every case.
+			rest := "outside a wait there is no replay-safe moment to bind it to (a task input " +
+				"may be resolved inside an activity, where each retry would read a different " +
+				"time), so compute the moment or the length in the wait itself, or pass the " +
+				"time in as an input"
 			if inputName == "if" {
 				rest = "a step's `if:` is evaluated before the step is entered, so even on a wait " +
 					"there is no moment to bind yet; move the comparison into the wait's own " +
@@ -1770,8 +1774,8 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
 				Message: "`now` is only available inside a wait (`sleep:`, `wait_until:`, and a " +
-					"signal's `timeout:`) where the engine binds it to the moment the wait is " +
-					"evaluated; " + rest,
+					"wait's `timeout:`, `prompt:` and `outputs:`) where the engine binds it to the " +
+					"moment the wait is evaluated; " + rest,
 			})
 			continue
 		}
@@ -2481,7 +2485,7 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 	// input is still reported: there is no clock behind it there, and a name that
 	// resolves in one place and not another has to say so.
 	//
-	// All three of a wait's expressions, not just `wait_until:`. The clock is the
+	// Every expression a wait carries, not just `wait_until:`. The clock is the
 	// node kind's, not the field's — see [v1.NowIdentifier] — so a scope built per
 	// field here would be the place the two disagreed.
 	waiting := scope.withLocal(v1.NowIdentifier)

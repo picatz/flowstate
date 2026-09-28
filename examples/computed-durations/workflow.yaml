@@ -29,7 +29,7 @@ inputs:
     example: growth
     must: this in ["starter", "growth", "enterprise"]
 
-  # A string rather than a duration, because there is no duration among the six
+  # A string rather than a duration, because there is no duration among the seven
   # types an input may declare: those are the shapes a *caller* can send, and
   # JSON has no duration. So a duration arrives as text and the expression reads
   # it - which is why `30s` and `7d` mean here exactly what they mean written

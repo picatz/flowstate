@@ -15,7 +15,7 @@ everything else is `general`, and that is documented rather than pretended away.
 | `unresolved-reference` | An expression reads a var, an input, a step, or a run field the workflow does not declare, or a step whose outputs are not available yet. |
 | `type-mismatch` | A value's type is wrong for where it is written — a literal a task's schema rejects, or an expression with no matching operator overload. |
 | `constraint-violation` | A value has the right type but violates a rule the schema declares on it, such as a required shape, a pattern, or a bound on size. |
-| `placement-refusal` | A construct is refused at the position it is written — an `undo:` the engine cannot order, a loop nested inside another loop. |
+| `placement-refusal` | A construct is refused at the position it is written — an `undo:` on a step with no effect of its own to take back, an `async:` inside a `for_each` body or a `parallel` branch, a loop nested inside another loop. |
 | `retired-key` | A bare name is the pre-rooting spelling of a step reference; `flow fix` rewrites it rather than an author needing to decide what to write. |
 | `sensitive-in-log` | An input declared `sensitive:` is written directly into a `log:` message, where it would be recorded in run history and stdout in the clear; log a value derived from it instead of the value itself. |
 | `expectation-unmet` | A claim a `*.test.yaml` case made is one the run contradicted — a step it said would run and did not, a `check:` that came back false, an outcome it named and the run did not reach. The case is well-formed and wrong. |
@@ -41,7 +41,7 @@ with a `Diagnostic` carrying an edit that renames it:
 steps:
   - id: notify
     retryy:
-      max_attempts: 3
+      attempts: 3
     log:
       message: hello
 ```
