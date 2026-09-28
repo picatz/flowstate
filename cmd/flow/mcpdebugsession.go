@@ -59,6 +59,10 @@ const (
 // debugSessions is one server's retained sessions.
 type debugSessions struct {
 	remote func() flowstatev1connect.WorkflowServiceClient
+	// secret is drawn once per process, so the session and request ids an
+	// attach derives from a caller's retry key ([debugSessions.attachIDs])
+	// are the same on a retry and unpredictable to anyone else.
+	secret string
 
 	mu       sync.Mutex
 	sessions map[string]*debugSessionEntry
@@ -172,7 +176,7 @@ func (t *lockedTranscript) note() string {
 
 func newDebugSessions(remote func() flowstatev1connect.WorkflowServiceClient) *debugSessions {
 	return &debugSessions{
-		remote: remote, sessions: map[string]*debugSessionEntry{}, starts: map[string]string{},
+		remote: remote, secret: uuid.NewString(), sessions: map[string]*debugSessionEntry{}, starts: map[string]string{},
 		ending: map[string]*debugSessionEntry{}, registry: semaphore.NewWeighted(registryReaders),
 	}
 }
@@ -642,7 +646,8 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 				"step, next, finish, continue, until <step>, pause, break <step> [hit <n>] [if <expr>], log <step> <msg>, " +
 				"catch none|uncaught|all, delete <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, backtrace, " +
 				"detach, status. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, " +
-				"so a command meant for a stop the run has left is refused as stale.",
+				"so a command meant for a stop the run has left is refused as stale: a movement or an inspection is " +
+				"judged by the run in the same step as the command; any other command is checked just before it is sent.",
 			InputSchema: object(map[string]any{
 				"session_id":        session,
 				"command":           str("One debugger command line."),
@@ -1084,8 +1089,11 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 	}
 
-	remote, receipt, err := flowdebug.AttachRemote(ctx, r.remote(), args.WorkflowID, args.RunID,
-		flowdebug.RemoteOptions{SessionID: args.SessionID, Wait: 5 * time.Second})
+	opts := flowdebug.RemoteOptions{SessionID: args.SessionID, Wait: 5 * time.Second}
+	if args.RequestID != "" {
+		opts.NewSessionID, opts.RequestID = r.attachIDs(args.WorkflowID, args.RunID, args.SessionID, args.RequestID)
+	}
+	remote, receipt, err := flowdebug.AttachRemote(ctx, r.remote(), args.WorkflowID, args.RunID, opts)
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
@@ -1254,6 +1262,20 @@ func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry,
 	}
 
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
+}
+
+// attachIDs are the session id a new attach under the caller's retry key
+// creates, and the request id it sends: derived from the key, the run, and
+// the process's secret. An attach whose answer was lost — the server applied
+// it, the response never came, so nothing here registered it — is retried by
+// sending the same attach, which the run answers from its receipts with the
+// session the first made, rather than refusing a second session while the
+// first holds it until its lease lapses.
+func (r *debugSessions) attachIDs(workflowID, runID, rejoin, request string) (session, target string) {
+	sum := sha256.Sum256([]byte(strings.Join([]string{r.secret, workflowID, runID, rejoin, request}, "\x00")))
+	id := hex.EncodeToString(sum[:16])
+
+	return "mcp-" + id, targetRequestID(id, "attach")
 }
 
 // retryKey is the key a request id is remembered under for tool: each tool's
