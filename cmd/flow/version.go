@@ -121,8 +121,8 @@ func newVersionCommand() *cobra.Command {
 			"compilation.\n\n" +
 			"Answered entirely from what this binary already carries, no network " +
 			"call, so it works the same offline as everything else here. When " +
-			"nothing was stamped (a plain `go build` with no -ldflags and no module " +
-			"information) it says so honestly: \"devel\" for the version, \"unknown\" " +
+			"nothing was stamped (no -ldflags, built outside a git checkout or with " +
+			"-buildvcs=false) it says so honestly: \"devel\" for the version, \"unknown\" " +
 			"for the commit and its date, rather than a number invented for the " +
 			"occasion.",
 		Args: cobra.NoArgs,
@@ -133,7 +133,7 @@ flow version
 # The same answer, addressable by field:
 flow version -o json | jq -r .commit
 
-# Gate a script on this being a real build rather than one compiled by hand:
+# Gate a script on this build having a version stamped into it at all:
 flow version -o json | jq -e '.version != "devel"'`,
 	}
 

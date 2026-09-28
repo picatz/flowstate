@@ -72,7 +72,7 @@ func newBreakingCommand() *cobra.Command {
 			"what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as " +
 			"`validate`.\n\n" +
 			"A named file is taken as given; a directory is walked for Flowfiles, the same walk " +
-			"`validate` and `test` use. The `--against` ref must be present in the local git " +
+			"`fix` and `lint` use. The `--against` ref must be present in the local git " +
 			"history, so fetch the base branch first.\n\n" +
 			"A workflow is its path: two files declaring one `name:` in different directories are " +
 			"two workflows, each compared against the file at its own path at the ref. A file that " +
@@ -132,7 +132,7 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 		return err
 	}
 
-	// The working-tree (HEAD) side: the same walk validate and test use.
+	// The working-tree (HEAD) side: the same walk fix, lint, and audit use.
 	files, err := collectFlowfiles(paths)
 	if err != nil {
 		return err

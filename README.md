@@ -176,7 +176,7 @@ COMPLETED workflow my-workflow
 ```
 
 Run it durably. `flow server dev` starts a Temporal development server, the
-Flowstate API server, and a worker in one process on loopback; the first launch
+Flowstate API server, and a worker from one command on loopback; the first launch
 downloads the Temporal CLI. In another terminal:
 
 ```console

@@ -57,9 +57,9 @@ func newAuditCommand() *cobra.Command {
 			"and a sub-expression that occurs exactly as often as an expression containing it is " +
 			"dropped in favour of the larger one.\n\n" +
 			"A named file is taken as given; a directory is walked for Flowfiles, the same walk " +
-			"`validate` and `test` use. A file that does not compile is counted out rather than " +
-			"measured, and named in the machine format, since `validate` is the verb that has " +
-			"something to say about it.",
+			"`fix` and `lint` use. A file that does not compile as a workflow, a `*.test.yaml` " +
+			"beside one included, is counted out rather than measured, and named in the machine " +
+			"format, since `validate` is the verb that has something to say about it.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -274,7 +274,9 @@ func writeAuditText(surface *ui.UI, report auditReport) error {
 	// workflow which genuinely will not compile.
 	if len(report.Skipped) > 0 {
 		fmt.Fprintf(out, "%s\n", theme.Muted.Render(fmt.Sprintf(
-			"%d files read did not compile and were not counted; `flow validate` is the verb with something to say about that",
+			"%d file(s) the walk found are not workflows this could read, a `*.test.yaml` "+
+				"beside a workflow most often, and were not counted; `flow validate` is the verb "+
+				"with something to say about one that should have been",
 			len(report.Skipped))))
 	}
 
