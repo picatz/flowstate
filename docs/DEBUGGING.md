@@ -365,7 +365,10 @@ returns.
 `expected_revision` refuses a command meant for a stop the run has already left,
 rather than applying it to the next one. A command carrying a `request_id` is
 answered from memory when retried, so a lost response never moves a run twice,
-and a start carrying one never starts a second run.
+a start carrying one never starts a second run, and an attach carrying one
+answers with the session it attached, whose id the lost response carried,
+rather than attaching again beside it. The key names one call: reused for
+another workflow, it is refused.
 
 `start` takes the workflow and tests as text, like `flowstate_debug`, so a
 `call:` to a relative path has no directory to resolve against and the case
@@ -624,7 +627,13 @@ applied
 `flow debug attach` reads commands from the terminal or `--script`, and prints
 each answer as text; with `-o jsonl` each answer is a line of the schema's JSON,
 and with `-o json` they are one array, written when the session ends; with
-either, the prompt goes to stderr. It renews the
+either, the prompt goes to stderr. At a terminal a line that fails prints why
+and the prompt returns. A script's later lines assume its earlier ones did
+what they said, so with `--script` such a line fails the attach and releases
+the run: one that errors, one the run refuses, such as a stale movement, or a
+`break` or `log` the run takes but will not arm, such as a condition that does
+not compile. A set still pending has no verdict yet, so it does not fail the
+script. `flow debug do` fails on the same lines. It renews the
 session's lease while it runs. `detach`, `quit`, or the end of input releases
 the run; `disconnect` leaves the session attached, and prints how to rejoin it
 with `--session` before the lease lapses. `--program <file>` names the Flowfile
