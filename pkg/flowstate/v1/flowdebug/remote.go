@@ -31,6 +31,7 @@ type Remote struct {
 	runID      string
 	session    string
 	lease      time.Duration
+	wait       time.Duration
 	sourceMap  *v1.DebugSourceMap
 
 	mu      sync.Mutex
@@ -66,7 +67,10 @@ type RemoteOptions struct {
 	// the lease, or every 30 seconds without one.
 	Heartbeat time.Duration
 
-	// Wait bounds how long each command waits for the run to apply it.
+	// Wait bounds how long each command waits for the run to apply it: the
+	// attach, and every resume, pause and breakpoint set after it that does
+	// not carry a wait of its own. Zero answers each at once, pending until
+	// the run's next step boundary; the server bounds it either way.
 	Wait time.Duration
 
 	// SourceMap relates the program to its sources. It is used only when its
@@ -121,6 +125,7 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 		runID:      runID,
 		session:    response.Msg.GetSessionId(),
 		lease:      opts.Lease,
+		wait:       opts.Wait,
 		last:       response.Msg.GetSnapshot(),
 		stopped:    make(chan struct{}),
 	}
@@ -174,6 +179,16 @@ func (r *Remote) renew(ctx context.Context, every time.Duration) {
 }
 
 func newRequestID() string { return "r-" + uuid.NewString() }
+
+// waitOf is the wait a command carries to the server: its own, or the one
+// [RemoteOptions.Wait] set for every command.
+func (r *Remote) waitOf(asked *durationpb.Duration) *durationpb.Duration {
+	if asked != nil || r.wait <= 0 {
+		return asked
+	}
+
+	return durationpb.New(r.wait)
+}
 
 func requestID(id string) string {
 	if id == "" {
@@ -254,7 +269,7 @@ func (r *Remote) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v1.De
 		ExpectedRevision: req.GetExpectedRevision(),
 		Action:           req.GetAction(),
 		Until:            req.GetUntil(),
-		Wait:             req.GetWait(),
+		Wait:             r.waitOf(req.GetWait()),
 	}))
 	if err != nil {
 		return nil, err
@@ -268,6 +283,7 @@ func (r *Remote) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v1.De
 func (r *Remote) Pause(ctx context.Context, id string) (*v1.DebugReceipt, error) {
 	request := &v1.DebugAttachRequest{
 		WorkflowId: r.workflowID, RunId: r.runID, SessionId: r.session, RequestId: requestID(id),
+		Wait: r.waitOf(nil),
 	}
 	if r.lease > 0 {
 		request.Lease = durationpb.New(r.lease)
@@ -320,7 +336,7 @@ func (r *Remote) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBreakpo
 		RequestId:   requestID(req.GetRequestId()),
 		Breakpoints: sent,
 		FailureMode: req.GetFailureMode(),
-		Wait:        req.GetWait(),
+		Wait:        r.waitOf(req.GetWait()),
 	}))
 	if err != nil {
 		return nil, err
