@@ -507,3 +507,54 @@ func TestAnEndThatCouldNotDetachSaysSo(t *testing.T) {
 	assert.Contains(t, ended.Note, "was not detached")
 	assert.Contains(t, ended.Note, debugSessionAttachTool, "the end did not say how to release the run")
 }
+
+// TestARetainedSessionKnowsTheStepsOfItsCase: a retained session judges a
+// target against the program its case runs. With nothing to judge by it
+// would refuse nothing, and `until typo` would release the case to its end.
+func TestARetainedSessionKnowsTheStepsOfItsCase(t *testing.T) {
+	t.Parallel()
+
+	client := connectMCP(t, defaultLocalRunPosture())
+	result, started := callSession(t, client, debugSessionStartTool, map[string]any{"workflow": debugWorkflow, "tests": sessionTests})
+	require.False(t, result.IsError, started.raw)
+
+	_, refused := callSession(t, client, debugSessionCommandTool, map[string]any{
+		"session_id": started.SessionID, "command": "until typo",
+	})
+	_, observed := callSession(t, client, debugSessionObserveTool, map[string]any{"session_id": started.SessionID})
+	// Ended before asserting: a stubbed case holds the process-wide task
+	// registry until it stops, so one left open would stall every later
+	// stubbed run in this process.
+	callSession(t, client, debugSessionEndTool, map[string]any{"session_id": started.SessionID})
+
+	assert.Equal(t, "DEBUG_COMMAND_STATUS_REFUSED", refused.Receipt.Status, "an until naming no step was accepted: %s", refused.raw)
+	assert.Contains(t, refused.raw, "typo")
+	assert.Equal(t, "DEBUG_RUN_STATE_HELD", observed.Snapshot.State, "the refused until moved the case")
+}
+
+// TestAStartThatCannotClaimTheRegistryLeavesNothingBehind: a stubbed start
+// waits for readers in flight only as long as its caller does. One that gives
+// up is not left registered, holding a slot, and takes no share of the
+// registry with it.
+func TestAStartThatCannotClaimTheRegistryLeavesNothingBehind(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	// A reader in flight.
+	require.True(t, r.registry.TryAcquire(1))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	result, err := r.start(ctx, toolRequest(t, map[string]any{"workflow": debugWorkflow, "tests": sessionTests, "request_id": "gave-up"}))
+	require.NoError(t, err)
+	require.True(t, result.IsError, "a start that never had the registry was answered as started")
+
+	r.mu.Lock()
+	sessions, starts := len(r.sessions), len(r.starts)
+	r.mu.Unlock()
+	assert.Zero(t, sessions, "a start that gave up left its session registered")
+	assert.Zero(t, starts, "a start that gave up left its request id reserved")
+
+	r.registry.Release(1)
+	assert.True(t, r.registry.TryAcquire(registryReaders), "a start that gave up kept a share of the registry")
+}

@@ -267,17 +267,23 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				}
 				// A target the run can never stop at would release it to
 				// the end: refused, and the run stays held. A truncated
-				// enumeration cannot say a site is absent, so it judges
-				// nothing. Behind [untilRefusalChange], asked only where the
-				// answer differs, so a history that applied such a resume
-				// replays applying it.
-				if sites, truncated := v1.DebugStaticSites(e.spec); !truncated {
-					if _, why := durableSites(target, ask.Until, sites, false, "run until"); why != "" &&
-						workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-						d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
+				// enumeration cannot say a site is absent, so it asks the
+				// program as written instead, as the breakpoints do: a
+				// target it never declares is refused, one it declares
+				// past the cut is not. Behind [untilRefusalChange], asked
+				// only where the answer differs, so a history that applied
+				// such a resume replays applying it.
+				sites, truncated := v1.DebugStaticSites(e.spec)
+				why := ""
+				if !truncated {
+					_, why = durableSites(target, ask.Until, sites, false, "run until")
+				} else if !target.DeclaredIn(e.spec) {
+					why = fmt.Sprintf("no step %q is declared by this workflow or a workflow it calls", ask.Until)
+				}
+				if why != "" && workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
-						return
-					}
+					return
 				}
 			}
 			d.carry.Next = ask.Action

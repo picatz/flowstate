@@ -22,6 +22,7 @@ import (
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -409,16 +410,34 @@ func (r *debugSessions) readingRegistry(ctx context.Context) (release func(), er
 		return nil, err
 	}
 	if !r.registry.TryAcquire(1) {
-		holder := "starting"
 		if id, open := r.stubbed(); open {
-			holder = id
+			return nil, fmt.Errorf("retained debug session %s is running a stubbed case that holds this "+
+				"process's task registry; end it with %s first", id, debugSessionEndTool)
 		}
 
-		return nil, fmt.Errorf("retained debug session %s is running a stubbed case that holds this "+
-			"process's task registry; end it with %s first", holder, debugSessionEndTool)
+		// A stubbed session between taking the registry and registering,
+		// or one whose case is still stopping.
+		return nil, errors.New("a retained debug session is starting or stopping a stubbed case, which " +
+			"holds this process's task registry; try again")
 	}
 
 	return func() { r.registry.Release(1) }, nil
+}
+
+// claimRegistry takes the whole task registry for a stubbed session, waiting
+// within [maxDebugSessionWait] for readers in flight.
+func (r *debugSessions) claimRegistry(ctx context.Context) error {
+	if r.registry.TryAcquire(registryReaders) {
+		return nil
+	}
+	claim, stop := context.WithTimeout(ctx, maxDebugSessionWait)
+	defer stop()
+	if err := r.registry.Acquire(claim, registryReaders); err != nil {
+		return fmt.Errorf("a tool reading this process's task registry is still running, and a stubbed "+
+			"session needs it alone; try again: %w", err)
+	}
+
+	return nil
 }
 
 // readsRegistry wraps a tool that answers from the task registry, so it runs
@@ -867,34 +886,17 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return flowmcp.ToolError(err), nil
 	}
 
-	// The whole registry, held until the case stops: after every reader in
-	// flight, and before any that would overlap the case's registrations.
-	// A reader never waits for it, so the wait is bounded by theirs.
-	// Another stubbed session holding it is refused at once, as register
-	// would refuse it, rather than waited on for as long as that session
-	// runs.
-	if !r.registry.TryAcquire(registryReaders) {
-		if id, open := r.stubbed(); open {
-			return flowmcp.ToolError(fmt.Errorf("this server runs one stubbed debug session at a time, and %s is "+
-				"open; end it with %s before starting another", id, debugSessionEndTool)), nil
-		}
-		claim, stopClaim := context.WithTimeout(ctx, maxDebugSessionWait)
-		claimed := r.registry.Acquire(claim, registryReaders)
-		stopClaim()
-		if claimed != nil {
-			return flowmcp.ToolError(fmt.Errorf("a tool reading this process's task registry is still running, "+
-				"and a stubbed session needs it alone; try again: %w", claimed)), nil
-		}
+	// The program the case runs, so the session judges a target against it:
+	// with no program and no inventory it refuses nothing, and `until typo`
+	// would release the case to its end. A source that does not parse here
+	// fails the run itself, which says why.
+	var program *v1.Workflow
+	var steps []flowdebug.Step
+	if workflow, _, err := flowfile.Parse([]byte(args.Workflow)); err == nil {
+		program, steps = workflow, stepList(workflow)
 	}
-	launched := false
-	defer func() {
-		if !launched {
-			r.registry.Release(registryReaders)
-		}
-	}()
-
 	transcript := &lockedTranscript{}
-	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Emit: transcript.add})
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Emit: transcript.add, Workflow: program, Steps: steps})
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
@@ -921,7 +923,24 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return startedAgain(ctx, existing), nil
 	}
 
-	launched = true
+	// The whole registry, held until the case stops: after every reader in
+	// flight, and before any that would overlap the case's registrations.
+	// Claimed once admitted, so a second start under this request id — or a
+	// second stubbed session — is answered by register rather than left
+	// waiting here on a registry this session will hold for its whole life.
+	// Nothing touches the registry before the case launches below, and a
+	// reader never waits for the claim, so the wait is bounded by theirs.
+	if err := r.claimRegistry(ctx); err != nil {
+		cancel()
+		_ = session.Close()
+		close(entry.done)
+		if r.remove(entry.id) {
+			r.release(entry)
+		}
+
+		return flowmcp.ToolError(err), nil
+	}
+
 	go func() {
 		defer close(entry.done)
 		// Released before done closes, so a call settling on this session's

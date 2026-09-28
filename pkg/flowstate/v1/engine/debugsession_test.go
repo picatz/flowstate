@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -503,4 +504,53 @@ func TestATypedSessionIsNotReleasedByAMalformedOrLegacyResume(t *testing.T) {
 	assert.Equal(t, "s1", after.GetSession().GetSessionId())
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, after.GetReceipt().GetStatus(),
 		"a typed resume naming no action was applied")
+}
+
+// TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares: past
+// [v1.MaxDebugStaticSites] the sites cannot say a step is absent, but the
+// program as written still can. An `until` naming a step no workflow declares
+// would release the held run to its end, so it is refused, as the local driver
+// refuses it; one naming a declared step is not.
+func TestATruncatedDurableUntilRefusesAStepTheProgramNeverDeclares(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.read(65*time.Second, "held", "attach")
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "nowhere",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "bogus"})
+	tl.read(71*time.Second, "refused", "nowhere")
+	tl.ask(80*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "to-second",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "second"})
+	tl.read(81*time.Second, "arrived", "to-second")
+	tl.ask(90*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	// Enough sites to pass the cap, in an arm the run never takes.
+	wide := &v1.Workflow{Name: "wide", Profile: v1.CurrentProfile}
+	for i := range 512 {
+		wide.Steps = append(wide.Steps, logStep(fmt.Sprintf("s%d", i), "x"))
+	}
+	var calls []*v1.Node
+	for i := range v1.MaxDebugStaticSites/len(wide.Steps) + 1 {
+		calls = append(calls, &v1.Node{Id: fmt.Sprintf("call%d", i), Kind: &v1.Node_Call{Call: &v1.Call{Workflow: wide}}})
+	}
+	spec := typedSpec("until-truncated")
+	spec.Steps = append(spec.Steps, &v1.Node{Id: "never", Kind: &v1.Node_Switch{Switch: &v1.Switch{
+		Value: v1.NewLiteral("live"),
+		Cases: []*v1.Switch_Case{{Values: []*v1.Value{v1.NewLiteral("never")}, Steps: calls}},
+	}}})
+	_, truncated := v1.DebugStaticSites(spec)
+	require.True(t, truncated, "the program did not pass the cap, so this proves nothing")
+
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	held, refused := tl.reads["held"], tl.reads["refused"]
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, refused.GetReceipt().GetStatus())
+	assert.Contains(t, refused.GetReceipt().GetMessage(), `no step "bogus"`)
+	assert.Equal(t, held.GetRevision(), refused.GetRevision(), "a refused until moved the run")
+	assert.Equal(t, "second", tl.reads["arrived"].GetOccurrence().GetAddress(), "a declared until was refused")
 }
