@@ -1,6 +1,8 @@
 package protodoc
 
 import (
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,20 +43,32 @@ func TestEveryLinkedSchemaFileRegistersItsComments(t *testing.T) {
 	}
 }
 
-// Every flowstate_*.doc.pb.go in this package must come from a linked .proto.
-// buf generate never deletes output whose source is gone, so a deleted or
-// renamed .proto would otherwise leave its old file registering comments: for
-// declarations that no longer exist, or, after a rename, as a second
-// registration that makes every name in it ambiguous. The drift pin cannot see
-// such a file, because nothing regenerates it.
-func TestEveryGeneratedDocFileHasALinkedSource(t *testing.T) {
+// Every flowstate_*.doc.pb.go in this package must come from a .proto in the
+// schema's source tree. buf generate never deletes output whose source is gone,
+// so a deleted or renamed .proto would otherwise leave its old file registering
+// comments: for declarations that no longer exist, or, after a rename, as a
+// second registration that makes every name in it ambiguous. The drift pin
+// cannot see such a file, because nothing regenerates it. The source tree is
+// read rather than the linked registry, because a deleted .proto's stale .pb.go
+// would still be linked and vouch for its stale doc file.
+func TestEveryGeneratedDocFileHasASource(t *testing.T) {
+	const protoRoot = "../../../../proto"
 	want := make(map[string]bool)
-	protoregistry.GlobalFiles.RangeFiles(func(file protoreflect.FileDescriptor) bool {
-		if strings.HasPrefix(file.Path(), "flowstate/") {
-			want[strings.ReplaceAll(strings.TrimSuffix(file.Path(), ".proto"), "/", "_")+".doc.pb.go"] = true
+	err := fs.WalkDir(os.DirFS(protoRoot), "flowstate", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		return true
+		if !d.IsDir() && strings.HasSuffix(path, ".proto") {
+			want[strings.ReplaceAll(strings.TrimSuffix(path, ".proto"), "/", "_")+".doc.pb.go"] = true
+		}
+		return nil
 	})
+	if err != nil {
+		t.Fatalf("reading the schema under %s: %v", protoRoot, err)
+	}
+	if len(want) == 0 {
+		t.Fatalf("found no .proto files under %s/flowstate", protoRoot)
+	}
 
 	generated, err := filepath.Glob("*.doc.pb.go")
 	if err != nil {
@@ -65,7 +79,7 @@ func TestEveryGeneratedDocFileHasALinkedSource(t *testing.T) {
 	}
 	for _, name := range generated {
 		if !want[name] {
-			t.Errorf("%s has no linked .proto; its source was deleted or renamed, so delete it and run `buf generate`", name)
+			t.Errorf("%s has no .proto under proto/flowstate; its source was deleted or renamed, so delete it and run `buf generate`", name)
 		}
 	}
 }
