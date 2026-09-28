@@ -122,11 +122,11 @@ func runCodecStatus(cmd *cobra.Command, _ []string) error {
 	// configuration those commands will accept.
 	status := &v1.PayloadEncryptionStatus{}
 	if flags.keyring == "" {
-		if _, err := payloadCodecConfig(flags); err != nil {
+		if _, err := payloadCodecConfig(cmd.Context(), flags); err != nil {
 			return err
 		}
 	} else {
-		keyring, err := openPayloadKeyring(flags.keyring)
+		keyring, err := openPayloadKeyring(cmd.Context(), flags.keyring)
 		if err != nil {
 			return err
 		}

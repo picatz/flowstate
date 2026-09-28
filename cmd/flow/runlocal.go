@@ -113,7 +113,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// cannot come up refuses the rehearsal exactly as it refuses the worker.
 	// See [localPayloadCodec] for the argument, which is deliberately an
 	// argument rather than an omission.
-	if _, err := localPayloadCodec(); err != nil {
+	if _, err := localPayloadCodec(cmd.Context()); err != nil {
 		return err
 	}
 

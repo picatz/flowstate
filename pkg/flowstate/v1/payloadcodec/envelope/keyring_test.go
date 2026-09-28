@@ -396,7 +396,24 @@ providers:
     vault: {address: 'https://vault.example.com', token_env: T, timeout: 60s}
 `))
 	require.NoError(t, err)
-	// One login, three calls per key, one wrap per writing namespace: 9 calls,
-	// each within twice the 60s request timeout.
-	require.Equal(t, 9*2*time.Minute, envelope.StartupBudget(vault))
+	// One login, four calls to describe each key, one wrap per writing
+	// namespace: 11 calls, each within twice the 60s request timeout.
+	require.Equal(t, 11*2*time.Minute, envelope.StartupBudget(vault))
+
+	// An escrow key a provider holds is described again by every namespace
+	// that names it.
+	shared, err := envelope.ParseConfig([]byte(`
+namespaces:
+  a: {current: a, keys: [{id: a, env: A}], escrow: [e]}
+  b: {current: b, keys: [{id: b, env: B}], escrow: [e]}
+escrow_keys:
+  - {id: e, vault: {provider: corp, key: e}}
+providers:
+  - name: corp
+    vault: {address: 'https://vault.example.com', token_env: T, timeout: 60s}
+`))
+	require.NoError(t, err)
+	// One login, four calls to describe e in each of two namespaces, two
+	// wraps in each: 13 calls.
+	require.Equal(t, 13*2*time.Minute, envelope.StartupBudget(shared))
 }

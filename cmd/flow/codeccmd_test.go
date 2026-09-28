@@ -145,10 +145,10 @@ escrow_keys:
 	// And a local run, which resolves the same keyring, refuses it the same
 	// way rather than approving what no worker could start with.
 	t.Setenv(payloadKeyringEnv, recovery)
-	_, err = localPayloadCodec()
+	_, err = localPayloadCodec(t.Context())
 	require.ErrorContains(t, err, "decode-only")
 	t.Setenv(payloadKeyringEnv, keyring)
-	_, err = localPayloadCodec()
+	_, err = localPayloadCodec(t.Context())
 	require.NoError(t, err, "a keyring that can write is not refused locally")
 }
 

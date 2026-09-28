@@ -38,8 +38,8 @@ import (
 // startup; `--require-payload-encryption` (FLOWSTATE_REQUIRE_PAYLOAD_ENCRYPTION)
 // turns that default into a refusal, so a production deployment cannot come up
 // in plaintext because a variable went missing. See docs/ENCRYPTION.md.
-func payloadCodecConfig(flags payloadEncryptionFlags) (payloadcodec.Config, error) {
-	cfg, err := resolvePayloadCodec(flags)
+func payloadCodecConfig(ctx context.Context, flags payloadEncryptionFlags) (payloadcodec.Config, error) {
+	cfg, err := resolvePayloadCodec(ctx, flags)
 	if err != nil {
 		return payloadcodec.Config{}, err
 	}
@@ -64,11 +64,11 @@ func payloadCodecConfig(flags payloadEncryptionFlags) (payloadcodec.Config, erro
 
 // resolvePayloadCodec is the lookup itself, held in a variable so that the
 // checking above it can be tested against a codec that fails it.
-var resolvePayloadCodec = func(flags payloadEncryptionFlags) (payloadcodec.Config, error) {
+var resolvePayloadCodec = func(ctx context.Context, flags payloadEncryptionFlags) (payloadcodec.Config, error) {
 	if flags.keyring == "" {
 		return payloadcodec.Config{}, nil
 	}
-	keyring, err := openPayloadKeyring(flags.keyring)
+	keyring, err := openPayloadKeyring(ctx, flags.keyring)
 	if err != nil {
 		return payloadcodec.Config{}, err
 	}
@@ -77,10 +77,11 @@ var resolvePayloadCodec = func(flags payloadEncryptionFlags) (payloadcodec.Confi
 
 // openPayloadKeyring opens the keyring file at path. Opening reads its keys,
 // asks every key provider to describe its keys, and wraps each namespace's
-// first data key, bounded by [envelope.StartupBudget]: a provider that has
-// not answered by then is one this process cannot start against.
-func openPayloadKeyring(path string) (*envelope.Keyring, error) {
-	keyring, err := envelope.LoadFile(context.Background(), path)
+// first data key, bounded by [envelope.StartupBudget] and cancelled with ctx,
+// the command's own: a provider that has not answered by then is one this
+// process cannot start against, and an interrupted command stops waiting.
+func openPayloadKeyring(ctx context.Context, path string) (*envelope.Keyring, error) {
+	keyring, err := envelope.LoadFile(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("payload keyring: %w", err)
 	}
@@ -116,8 +117,8 @@ func openPayloadKeyring(path string) (*envelope.Keyring, error) {
 // `flow worker` asks of its own ([payloadcodec.Config.ForWriting]); it asks
 // the one that can be answered without one, and refuses a keyring no
 // namespace of which can write, which no worker could start with.
-func localPayloadCodec() (payloadcodec.Config, error) {
-	cfg, err := payloadCodecConfig(payloadEncryptionFromEnv())
+func localPayloadCodec(ctx context.Context) (payloadcodec.Config, error) {
+	cfg, err := payloadCodecConfig(ctx, payloadEncryptionFromEnv())
 	if err != nil {
 		return payloadcodec.Config{}, err
 	}

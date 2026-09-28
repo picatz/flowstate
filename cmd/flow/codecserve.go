@@ -104,7 +104,7 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	flags := payloadEncryptionFlagsOf(cmd)
-	codecs, err := payloadCodecConfig(flags)
+	codecs, err := payloadCodecConfig(cmd.Context(), flags)
 	if err != nil {
 		return err
 	}
