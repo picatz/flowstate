@@ -43,6 +43,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 	"github.com/picatz/jose/pkg/jwk"
@@ -110,6 +111,10 @@ type temporalFlags struct {
 	// verbose says whether to describe the connection that was resolved, which is
 	// the one thing that makes a misconfigured TEMPORAL_* variable findable.
 	verbose bool
+
+	// payloadEncryption is the payload keyring and whether encryption is
+	// required. See [payloadCodecConfig].
+	payloadEncryption payloadEncryptionFlags
 }
 
 // temporalFlagsOf reads them off the command being run.
@@ -146,6 +151,7 @@ func temporalFlagsOf(cmd *cobra.Command) temporalFlags {
 		workerDeploymentName: workerDeploymentName,
 		buildID:              buildID,
 		verbose:              verbose,
+		payloadEncryption:    payloadEncryptionFlagsOf(cmd),
 	}
 }
 
@@ -259,13 +265,26 @@ func infraLogger() *slog.Logger {
 // client. The memo was a package variable guarding a second call that cannot
 // happen: the two callers are `flow worker` and `flow server`, and a process runs
 // one command. What it did do was outlive whatever set it.
-func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, error) {
+//
+// The codec configuration it returns is the one the client was built with, for
+// the namespace it was dialed for, which is what the interpreter must decode
+// with too (see [engine.TaskRuntimeConfig.WithDataConverter]).
+func initTemporalClient(ctx context.Context, flags temporalFlags) (client.Client, payloadcodec.Config, error) {
 	cfg, err := temporalConfig(ctx, flags)
 	if err != nil {
-		return nil, err
+		return nil, payloadcodec.Config{}, err
 	}
 
-	return temporalclient.Dial(ctx, cfg)
+	c, namespace, err := temporalclient.DialWithNamespace(ctx, cfg)
+	if err != nil {
+		return nil, payloadcodec.Config{}, err
+	}
+	codec, err := cfg.Codec.ForNamespace(namespace)
+	if err != nil {
+		c.Close()
+		return nil, payloadcodec.Config{}, err
+	}
+	return c, codec, nil
 }
 
 // temporalConfig resolves the connection configuration a command's flags describe,
@@ -298,10 +317,11 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	// this same value, one client per mapped Temporal namespace, and a codec
 	// that covered only the fallback client would leave every mapped tenant's
 	// payloads in plaintext. See [payloadCodecConfig].
-	codec, err := payloadCodecConfig()
+	codec, err := payloadCodecConfig(flags.payloadEncryption)
 	if err != nil {
 		return temporalclient.Config{}, err
 	}
+	announcePayloadEncryption(codec)
 
 	cfg := temporalclient.Config{
 		Address:        flags.address,
@@ -708,7 +728,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer closeSecretProviders()
 
-	c, err := initTemporalClient(cmd.Context(), flags)
+	c, workerCodec, err := initTemporalClient(cmd.Context(), flags)
 	if err != nil {
 		return err
 	}
@@ -737,18 +757,6 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	v1.SetDefaultEnforcementAuditor(recorder)
 
-	// The interpreter's own copy of the converter this client was built with.
-	// Workflow-side code replaces the context's converter to decode a signal in
-	// either wire shape, and the SDK offers no way to read the one it is
-	// replacing, so without this the wrapper would fall back to the default
-	// converter and quietly fail to decode every signal on a deployment with a
-	// codec. See engine/codec.go.
-	workerCodec, err := payloadCodecConfig()
-	if err != nil {
-		return err
-	}
-	engine.UseCodec(workerCodec)
-
 	// Before the worker starts polling, because a worker that accepted a step for
 	// a plugin task it has not registered yet would answer `unknown task` for a
 	// workflow that is correct — and Open is strict, so a plugin that cannot come
@@ -772,6 +780,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// process-wide, so the answer belongs to this worker and no other worker in
 	// this process can overwrite it. See engine/plugins.go.
 	runtime = runtime.WithPluginCatalog(pluginCatalog)
+
+	// The interpreter's own copy of the converter this client was built with,
+	// for the namespace it was dialed for. Workflow-side code replaces the
+	// context's converter to decode a signal in either wire shape, and the SDK
+	// offers no way to read the one it is replacing, so without this the
+	// wrapper would fall back to the default converter and quietly fail to
+	// decode every signal on a deployment with a codec. See engine/codec.go.
+	runtime = runtime.WithDataConverter(workerCodec.DataConverter())
 
 	interceptors := temporalWorkerInterceptors()
 	if flags.tenantSet {
@@ -2714,6 +2730,7 @@ flow server --insecure-no-auth`,
 	// own old --deployment-name, which the server still declares with another
 	// meaning (picatz/flowstate#2121).
 	for _, c := range []*cobra.Command{workerCmd, serverCmd} {
+		addPayloadEncryptionFlags(c)
 		c.Flags().String("temporal-address", "", "Temporal frontend address to dial (overrides environment configuration)")
 		c.Flags().String("temporal-namespace", "", "Temporal namespace (overrides environment configuration)")
 		c.Flags().String("temporal-profile", "", "Temporal configuration profile to use")

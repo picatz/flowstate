@@ -63,8 +63,8 @@ import (
 // the worker's, on purpose and in writing. `flow server` starts plugins with no
 // secret providers ([runServer]) and installs no egress or task policy at all
 // (see egress.go for why a policy on the server would change nothing it
-// answers); `flow worker` installs both process-wide and sets [engine.UseCodec],
-// which is process-global. Co-hosted, the worker's set wins, because it is the
+// answers); `flow worker` installs both process-wide. Co-hosted, the worker's
+// set wins, because it is the
 // superset and because it is the half that actually executes steps. The server
 // half is unaffected: it consults the task registry only for Validate and
 // GetCatalog, so a policy registered here narrows what runs, never what the
@@ -479,7 +479,10 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	// "which converter does this process run": the codec decides whether a memo
 	// this server writes is readable by the server that reads it back, and one
 	// configuration cannot disagree with itself.
-	cfg, err := temporalConfig(cmd.Context(), temporalFlags{namespace: devTemporalNamespace})
+	cfg, err := temporalConfig(cmd.Context(), temporalFlags{
+		namespace:         devTemporalNamespace,
+		payloadEncryption: payloadEncryptionFromEnv(),
+	})
 	if err != nil {
 		return err
 	}
@@ -553,8 +556,12 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	temporal := devServer.Client()
 	defer temporal.Close()
 
-	// Process-global, and the worker's. See this file's package comment.
-	engine.UseCodec(cfg.Codec)
+	// The embedded worker's interpreter decodes with the codec its client was
+	// built with, for the one namespace this stack uses.
+	workerCodec, err := cfg.Codec.ForNamespace(devTemporalNamespace)
+	if err != nil {
+		return err
+	}
 
 	// With the worker's argument rather than the server's nil: this process
 	// executes steps, so a plugin task here needs the secret providers a worker
@@ -583,7 +590,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	// matters most in exactly this command: co-locating a server and a worker is
 	// what this file does, and it is one restructuring away from co-locating two
 	// workers.
-	runtime = runtime.WithPluginCatalog(pluginCatalog)
+	runtime = runtime.WithPluginCatalog(pluginCatalog).WithDataConverter(workerCodec.DataConverter())
 
 	// Idempotent, once, before anything serves, and a warning rather than a
 	// refusal, exactly as in [runServer]: a dev server with no operator setup

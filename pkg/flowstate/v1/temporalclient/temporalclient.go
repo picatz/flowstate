@@ -168,10 +168,19 @@ func (c Config) Options() (client.Options, error) {
 	// nothing above can leave a client half-configured: a data converter with
 	// the codec and a failure converter without it is the fail-open pairing
 	// [payloadcodec.Config.Apply] exists to make unrepresentable.
+	//
+	// The codec is the one for the namespace this client is dialed for, which
+	// is resolved above from configuration and never from a caller: on a
+	// deployment that keys each namespace separately, a client for a namespace
+	// with no keys is refused rather than built in plaintext.
 	if err := c.Codec.Validate(); err != nil {
 		return client.Options{}, err
 	}
-	c.Codec.Apply(&opts)
+	codec, err := c.Codec.ForNamespace(opts.Namespace)
+	if err != nil {
+		return client.Options{}, err
+	}
+	codec.Apply(&opts)
 
 	return opts, nil
 }

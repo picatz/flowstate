@@ -58,14 +58,14 @@ import (
 //
 // # The converter it wraps
 //
-// [interpreterDataConverter], not [converter.GetDefaultDataConverter]. The
-// wrapper replaces the converter the SDK put on the context, so wrapping the
-// default one silently drops whatever the worker was actually configured with,
-// which, on a deployment with a payload codec, means handing ciphertext to a
-// converter that cannot read it and losing every signal. See engine/codec.go.
-func withSignalDeliveryCompat(ctx workflow.Context) workflow.Context {
+// The worker's own, dc, not [converter.GetDefaultDataConverter]. The wrapper
+// replaces the converter the SDK put on the context, so wrapping the default one
+// silently drops whatever the worker was actually configured with, which, on a
+// deployment with a payload codec, means handing ciphertext to a converter that
+// cannot read it and losing every signal. See engine/codec.go.
+func withSignalDeliveryCompat(ctx workflow.Context, dc converter.DataConverter) workflow.Context {
 	return workflow.WithDataConverter(ctx, &signalDeliveryCompatConverter{
-		DataConverter: interpreterDataConverter(),
+		DataConverter: orDefaultConverter(dc),
 	})
 }
 

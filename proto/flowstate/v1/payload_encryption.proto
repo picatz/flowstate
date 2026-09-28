@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// Payload encryption: the keyring configuration an operator writes, and the
+// status a process reports about the protection it is running with.
+//
+// # What this protects
+//
+// Everything a run writes to durable history through the Temporal client's
+// data converter: workflow and activity arguments and results, signals,
+// queries, updates, memos, heartbeat details, Continue-As-New state, schedule
+// actions, and failure messages and stack traces. Each payload is sealed with
+// AES-256-GCM under a content key derived by HKDF-SHA256 from the namespace's
+// current key and a fresh random salt, with the key id and the Temporal
+// namespace authenticated. The construction is documented, with the argument
+// for it, in pkg/flowstate/v1/payloadcodec/envelope.
+//
+// # What stays visible
+//
+// Search attributes, headers (trace context), workflow and activity types,
+// ids, task queues, timestamps, the shape of the history, each payload's size,
+// and the id of the key that sealed it. See docs/ENCRYPTION.md.
+//
+// # Why the configuration is a message
+//
+// The keyring configuration is read by the process that holds the keys and is
+// never sent anywhere, so it is not a wire shape in the usual sense. It is
+// defined here anyway because it is a shape an operator authors and several
+// tools read (every command that dials Temporal, `flow codec status`, the
+// codec server), and this schema is the one place in this repository where a
+// shape gets one definition, its rules, and its documentation together. It
+// names locations of key material, never material.
+
+// PayloadKeyring configures payload encryption for a deployment.
+//
+// Written as YAML (or JSON) and passed as `--payload-keyring` or
+// FLOWSTATE_PAYLOAD_KEYRING:
+//
+//	namespaces:
+//	  default:
+//	    current: default-2026-09
+//	    keys:
+//	      - id: default-2026-09
+//	        file: keys/default-2026-09.key
+//	      - id: default-2026-06
+//	        env: FLOWSTATE_PAYLOAD_KEY_DEFAULT_2026_06
+message PayloadKeyring {
+  // The keys for each Temporal namespace, keyed by the namespace's name.
+  //
+  // Every namespace a process dials must be listed: a client for a namespace
+  // with no keys is refused rather than built in plaintext. A key id names
+  // exactly one key in one namespace across the whole keyring, which is what
+  // lets a payload's key id alone say which namespace's key sealed it.
+  map<string, PayloadKeyringNamespace> namespaces = 1 [
+    (buf.validate.field).map.min_pairs = 1,
+    (buf.validate.field).map.max_pairs = 256,
+    (buf.validate.field).map.keys.string.min_len = 1,
+    (buf.validate.field).map.keys.string.max_len = 255
+  ];
+}
+
+// PayloadKeyringNamespace is one Temporal namespace's keys.
+message PayloadKeyringNamespace {
+  option (buf.validate.message).cel = {
+    id: "payload_keyring_namespace.current_is_listed"
+    message: "the current key must be one of this namespace's keys"
+    expression: "this.keys.exists(k, k.id == this.current)"
+  };
+  option (buf.validate.message).cel = {
+    id: "payload_keyring_namespace.unique_ids"
+    message: "each key id may be listed once"
+    expression: "this.keys.map(k, k.id).unique()"
+  };
+
+  // The id of the key new payloads are sealed under.
+  string current = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+
+  // Every key this namespace's history may be sealed under: the current key,
+  // and every retired key whose history must still be readable. Removing a key
+  // makes the history sealed under it permanently unreadable.
+  repeated PayloadKeySource keys = 2 [
+    (buf.validate.field).repeated.min_items = 1,
+    (buf.validate.field).repeated.max_items = 64
+  ];
+
+  // Read payloads that carry no encryption, for a namespace holding history
+  // written before encryption was turned on. It never affects what is written:
+  // everything written is still sealed. Off by default, and a namespace that
+  // requires encryption refuses unencrypted payloads on read, so a plaintext
+  // payload written into history by anything other than this deployment is not
+  // read back as though it were protected.
+  bool accept_unencrypted = 3;
+}
+
+// PayloadKeySource names one key and where its material is held.
+message PayloadKeySource {
+  // The key's id, stamped in plaintext on every payload sealed under it. It is
+  // not secret and must not be derived from the material.
+  string id = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+
+  // Where the key material is held: 32 random bytes as one line of standard
+  // base64, the form `flow codec keygen` writes.
+  oneof source {
+    option (buf.validate.oneof).required = true;
+
+    // A file holding the key. A relative path is resolved against the
+    // directory of the keyring file. On Unix the file must be accessible by
+    // its owner only (mode 0600 or stricter).
+    string file = 2 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 4096
+    }];
+
+    // An environment variable holding the key.
+    string env = 3 [(buf.validate.field).string.pattern = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"];
+  }
+}

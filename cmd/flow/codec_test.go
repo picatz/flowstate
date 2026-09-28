@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,6 +11,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
 )
 
 // The codec slot has two entry points in this binary, and the parity claim of
@@ -57,7 +60,7 @@ func withResolvedCodec(t *testing.T, codec payloadcodec.Codec) {
 	t.Helper()
 
 	previous := resolvePayloadCodec
-	resolvePayloadCodec = func() (payloadcodec.Config, error) {
+	resolvePayloadCodec = func(payloadEncryptionFlags) (payloadcodec.Config, error) {
 		return payloadcodec.Config{Codec: codec}, nil
 	}
 	t.Cleanup(func() { resolvePayloadCodec = previous })
@@ -137,7 +140,10 @@ func (fittingCodec) MaxEncodedSize(plain int) int { return plain + 128 }
 // this. The check is arithmetic rather than an exemption, so the way to know it
 // is arithmetic that comes out right is to run it.
 func TestTheDefaultResolutionStartsBothEntryPoints(t *testing.T) {
-	cfg, err := payloadCodecConfig()
+	t.Setenv(payloadKeyringEnv, "")
+	t.Setenv(requirePayloadEncryptionEnv, "")
+
+	cfg, err := payloadCodecConfig(payloadEncryptionFlags{})
 	require.NoError(t, err)
 	require.False(t, cfg.Enabled())
 
@@ -147,4 +153,86 @@ func TestTheDefaultResolutionStartsBothEntryPoints(t *testing.T) {
 		"the rehearsal resolved a different codec than the worker")
 
 	require.Equal(t, v1.MaxRunStateBytes, payloadcodec.Null().MaxEncodedSize(v1.MaxRunStateBytes))
+}
+
+// writeTestKeyring writes a keyring for the default namespace with one key, and
+// returns its path.
+func writeTestKeyring(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "default.key"), envelope.GenerateKey(), 0o600))
+	path := filepath.Join(dir, "keyring.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+namespaces:
+  default:
+    current: default-1
+    keys:
+      - id: default-1
+        file: default.key
+`), 0o600))
+	return path
+}
+
+// TestAKeyringResolvesTheSameForBothEntryPoints is the stock configuration
+// path: a keyring named in the environment is what the worker and the server
+// build their clients with, and what a local run validates.
+func TestAKeyringResolvesTheSameForBothEntryPoints(t *testing.T) {
+	t.Setenv(payloadKeyringEnv, writeTestKeyring(t))
+	t.Setenv(requirePayloadEncryptionEnv, "true")
+
+	cfg, err := payloadCodecConfig(payloadEncryptionFromEnv())
+	require.NoError(t, err)
+	require.True(t, cfg.Enabled())
+
+	one, err := cfg.ForNamespace("default")
+	require.NoError(t, err)
+	require.Equal(t, "default-1", one.Codec.CurrentKeyID())
+
+	tc, err := temporalConfig(t.Context(), temporalFlags{payloadEncryption: payloadEncryptionFromEnv()})
+	require.NoError(t, err)
+	opts, err := tc.Options()
+	require.NoError(t, err)
+	require.NotEqual(t, payloadcodec.Serializer(), opts.DataConverter, "the client was built without the codec")
+
+	// A client for a namespace nobody keyed is refused, not built in plaintext.
+	tc.Namespace = "somewhere-else"
+	_, err = tc.Options()
+	require.ErrorContains(t, err, `"somewhere-else"`)
+
+	_, _, err = runLocal(t, codecTestWorkflow)
+	require.NoError(t, err)
+}
+
+// TestRequiredEncryptionRefusesToStartWithoutAKeyring is the fail-closed mode:
+// a production deployment that lost its keyring variable must not come up
+// writing plaintext, and the rehearsal refuses the same way.
+func TestRequiredEncryptionRefusesToStartWithoutAKeyring(t *testing.T) {
+	t.Setenv(payloadKeyringEnv, "")
+	t.Setenv(requirePayloadEncryptionEnv, "1")
+
+	_, err := temporalConfig(t.Context(), temporalFlags{payloadEncryption: payloadEncryptionFromEnv()})
+	require.ErrorContains(t, err, "payload encryption is required")
+
+	_, _, err = runLocal(t, codecTestWorkflow)
+	require.ErrorContains(t, err, "payload encryption is required")
+
+	// A value that does not parse as a boolean requires rather than waives.
+	t.Setenv(requirePayloadEncryptionEnv, "yes-please")
+	require.True(t, payloadEncryptionFromEnv().required)
+}
+
+// TestABrokenKeyringRefusesBothEntryPoints: a keyring that names a key file
+// with loose permissions stops the worker and the rehearsal alike, rather than
+// starting in plaintext or with a partial ring.
+func TestABrokenKeyringRefusesBothEntryPoints(t *testing.T) {
+	path := writeTestKeyring(t)
+	require.NoError(t, os.Chmod(filepath.Join(filepath.Dir(path), "default.key"), 0o644))
+	t.Setenv(payloadKeyringEnv, path)
+	t.Setenv(requirePayloadEncryptionEnv, "")
+
+	_, err := temporalConfig(t.Context(), temporalFlags{payloadEncryption: payloadEncryptionFromEnv()})
+	require.ErrorContains(t, err, "chmod 600")
+
+	_, _, err = runLocal(t, codecTestWorkflow)
+	require.ErrorContains(t, err, "chmod 600")
 }

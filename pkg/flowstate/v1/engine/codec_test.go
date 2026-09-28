@@ -2,12 +2,15 @@ package engine_test
 
 import (
 	"bytes"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
+	"go.temporal.io/sdk/testsuite"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -22,11 +25,27 @@ import (
 // its result all cross the data converter, so a codec configured there is on the
 // path or it is not.
 //
-// These tests deliberately do not call t.Parallel. [engine.UseDataConverter]
-// sets a process value (see engine/codec.go for why the SDK leaves no
-// alternative) and Go runs serial tests alone, before any parallel test in the
-// package resumes. A parallel test here would run beside every other test in the
-// package with the codec still installed, and they would all lose their signals.
+// The interpreter's converter is bound to the worker registration that carries
+// it ([engine.TaskRuntimeConfig.WithDataConverter]), not held by the process, so
+// these tests run in parallel, including two workers with different codecs side
+// by side.
+
+// newCodecEnv is newWaitEnv with the interpreter registered the way a worker
+// registers it: bound to the converter in runtime.
+func newCodecEnv(t *testing.T, runtime engine.TaskRuntimeConfig) *testsuite.TestWorkflowEnvironment {
+	t.Helper()
+
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	engine.RegisterWorkflows(env, runtime)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	env.RegisterActivity(engine.WorkflowVars)
+
+	return env
+}
 
 // countingCodec wraps a codec and counts what passed through it, which is how
 // these tests tell "the value round-tripped" from "the value round-tripped
@@ -77,18 +96,45 @@ func gatedWorkflow() *v1.Workflow {
 // TestCodecCoversInputsSignalsAndOutputs is the round trip the codec slot
 // exists for.
 func TestCodecCoversInputsSignalsAndOutputs(t *testing.T) {
+	t.Parallel()
+
 	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
 	require.NoError(t, err)
 	counting := &countingCodec{inner: toy}
 
 	cfg := payloadcodec.Config{Codec: counting}
+	counting.requireApprovedThroughCodec(t, cfg)
+}
+
+// TestTwoWorkersWithDifferentCodecsCoexist is the embedding case the process
+// global could not serve: two workers in one process, each keyed differently,
+// each decoding its own signals. With the converter held by the process, the
+// second registration replaced the first's, and one of these two runs lost its
+// approval to a decode under the wrong key.
+func TestTwoWorkersWithDifferentCodecsCoexist(t *testing.T) {
+	t.Parallel()
+
+	for i, fill := range []byte{0x2a, 0x3b} {
+		t.Run(fmt.Sprintf("worker-%d", i), func(t *testing.T) {
+			t.Parallel()
+
+			toy, err := toycodec.New(bytes.Repeat([]byte{fill}, 32))
+			require.NoError(t, err)
+			counting := &countingCodec{inner: toy}
+			counting.requireApprovedThroughCodec(t, payloadcodec.Config{Codec: counting})
+		})
+	}
+}
+
+// requireApprovedThroughCodec runs the gated workflow on a worker whose client
+// and interpreter both use cfg, and asserts the approval arrived and the
+// payloads crossed c.
+func (c *countingCodec) requireApprovedThroughCodec(t *testing.T, cfg payloadcodec.Config) {
+	t.Helper()
 
 	// Both halves of a worker's construction, from one configuration: the
 	// client's converter and the interpreter's.
-	engine.UseCodec(cfg)
-	t.Cleanup(func() { engine.UseDataConverter(nil) })
-
-	env := newWaitEnv(t)
+	env := newCodecEnv(t, engine.TaskRuntimeConfig{}.WithDataConverter(cfg.DataConverter()))
 	env.SetDataConverter(cfg.DataConverter())
 
 	env.RegisterDelayedCallback(func() {
@@ -97,7 +143,7 @@ func TestCodecCoversInputsSignalsAndOutputs(t *testing.T) {
 		}))
 	}, time.Minute)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: gatedWorkflow()})
+	env.ExecuteWorkflow(engine.RunWorkflowType, &v1.RunState{Workflow: gatedWorkflow()})
 
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
@@ -116,8 +162,8 @@ func TestCodecCoversInputsSignalsAndOutputs(t *testing.T) {
 		"the gated step did not run")
 
 	// And the payloads genuinely went through the codec rather than around it.
-	require.Positive(t, counting.encoded.Load(), "nothing was ever encoded")
-	require.Positive(t, counting.decoded.Load(), "nothing was ever decoded")
+	require.Positive(t, c.encoded.Load(), "nothing was ever encoded")
+	require.Positive(t, c.decoded.Load(), "nothing was ever decoded")
 }
 
 // TestSignalsAreLostWhenTheInterpreterBypassesTheCodec is the negative
@@ -132,6 +178,8 @@ func TestCodecCoversInputsSignalsAndOutputs(t *testing.T) {
 // treats an undecodable signal as corrupted: it logs it and keeps waiting. The run
 // does not fail. The approval is simply gone.
 func TestSignalsAreLostWhenTheInterpreterBypassesTheCodec(t *testing.T) {
+	t.Parallel()
+
 	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
 	require.NoError(t, err)
 
@@ -139,9 +187,7 @@ func TestSignalsAreLostWhenTheInterpreterBypassesTheCodec(t *testing.T) {
 
 	// The client half configured and the interpreter half not: exactly the
 	// bypass, expressed as configuration rather than by editing code.
-	engine.UseDataConverter(nil)
-
-	env := newWaitEnv(t)
+	env := newCodecEnv(t, engine.TaskRuntimeConfig{})
 	env.SetDataConverter(cfg.DataConverter())
 
 	env.RegisterDelayedCallback(func() {
@@ -150,7 +196,7 @@ func TestSignalsAreLostWhenTheInterpreterBypassesTheCodec(t *testing.T) {
 		}))
 	}, time.Minute)
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: gatedWorkflow()})
+	env.ExecuteWorkflow(engine.RunWorkflowType, &v1.RunState{Workflow: gatedWorkflow()})
 
 	require.True(t, env.IsWorkflowCompleted())
 

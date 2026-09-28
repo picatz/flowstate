@@ -104,6 +104,8 @@ package payloadcodec
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/client"
@@ -363,7 +365,38 @@ func IsNull(c Codec) bool {
 // converter, which stays the SDK default.
 type Config struct {
 	// Codec encrypts payloads. Nil means [Null].
+	//
+	// When Namespaces is set, Codec is instead what reads across all of them:
+	// the codec a process uses to decode what several namespaces wrote, which
+	// may refuse to encode anything. See [Config.ForNamespace].
 	Codec Codec
+
+	// Namespaces, when non-empty, is a codec per Temporal namespace, so each
+	// namespace's history is sealed under its own keys. A client is built with
+	// the entry for the namespace it is dialed for, which is trusted
+	// configuration rather than anything a caller or a payload says, and a
+	// namespace with no entry is refused rather than left unencrypted.
+	Namespaces map[string]Codec
+}
+
+// ForNamespace is the configuration for a client dialed for one Temporal
+// namespace.
+//
+// Without per-namespace codecs it is c itself. With them it is that
+// namespace's codec, or an error: a process configured to encrypt per
+// namespace that dials one nobody configured must not fall through to
+// plaintext, nor to another namespace's keys.
+func (c Config) ForNamespace(namespace string) (Config, error) {
+	if len(c.Namespaces) == 0 {
+		return c, nil
+	}
+	codec, ok := c.Namespaces[namespace]
+	if !ok || codec == nil {
+		return Config{}, fmt.Errorf(
+			"payload codec: no keys are configured for Temporal namespace %q, and this deployment encrypts per "+
+				"namespace: add the namespace to the keyring, or dial one that is in it", namespace)
+	}
+	return Config{Codec: codec}, nil
 }
 
 // codec answers with the null codec rather than nil, so no caller here has to.
@@ -504,7 +537,33 @@ func (c Config) Apply(opts *client.Options) {
 // Called where configuration is loaded rather than where a payload is encoded,
 // which is the rule this repo applies to every policy surface: a codec that
 // cannot come up must stop the process, not fail the first run that reaches it.
+//
+// With per-namespace codecs, every namespace's codec is checked as though it
+// were the only one, and the cross-namespace reader must be a real codec: a
+// deployment that encrypts per namespace and reads its own records back in
+// plaintext has encrypted nothing it reads.
 func (c Config) Validate() error {
+	if len(c.Namespaces) > 0 {
+		if !c.Enabled() || c.codec().Name() == "" {
+			return fmt.Errorf("payload codec: per-namespace codecs need a named reader codec beside them, " +
+				"to decode what every namespace wrote")
+		}
+		for _, ns := range slices.Sorted(maps.Keys(c.Namespaces)) {
+			one, err := c.ForNamespace(ns)
+			if err != nil {
+				return err
+			}
+			if !one.Enabled() {
+				return fmt.Errorf("payload codec: namespace %q is configured with the null codec, beside "+
+					"namespaces that encrypt", ns)
+			}
+			if err := one.Validate(); err != nil {
+				return fmt.Errorf("namespace %q: %w", ns, err)
+			}
+		}
+		return nil
+	}
+
 	codec := c.codec()
 	if codec.Name() == "" {
 		return fmt.Errorf("payload codec: a codec must name itself, for diagnostics")
