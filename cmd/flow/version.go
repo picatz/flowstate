@@ -128,7 +128,7 @@ func newVersionCommand() *cobra.Command {
 			"the commit and its date come from that checkout's VCS stamp. What was " +
 			"not recorded is said honestly rather than invented: \"devel\" for a " +
 			"version nothing stamped, and \"unknown\" for the commit and its date " +
-			"when the build had no VCS stamp (outside a git checkout, or " +
+			"when the build had no VCS stamp (outside a git checkout, `go run`, or " +
 			"-buildvcs=false).",
 		Args: cobra.NoArgs,
 		RunE: runVersion,
