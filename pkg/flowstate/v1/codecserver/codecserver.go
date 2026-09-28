@@ -281,7 +281,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	subject := audit.Subject{
 		HTTPEndpoint: endpoint,
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_NAMESPACE,
-		ResourceKey:  principal.Namespace,
+		ResourceKey:  namespace,
 		IssuerName:   principal.IssuerName,
 		Role:         principal.Role,
 	}
