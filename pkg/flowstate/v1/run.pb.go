@@ -2130,7 +2130,12 @@ type RunState struct {
 	// a segment continued into by an interpreter that predates this field
 	// carries zero too, which is why the interpreter reads whether it continued
 	// from anything off its own history rather than from here.
-	Segment       uint32 `protobuf:"varint,16,opt,name=segment,proto3" json:"segment,omitempty"`
+	Segment uint32 `protobuf:"varint,16,opt,name=segment,proto3" json:"segment,omitempty"`
+	// Debug is the run's durable debug session, if one is attached, carried to
+	// the next segment: a serialized [DebugCarry]. Bytes rather than the message
+	// because `debug.proto` imports this file, and the carry is only ever read
+	// back by the engine that wrote it. Empty when no session is attached.
+	Debug         []byte `protobuf:"bytes,17,opt,name=debug,proto3" json:"debug,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2275,6 +2280,13 @@ func (x *RunState) GetSegment() uint32 {
 		return x.Segment
 	}
 	return 0
+}
+
+func (x *RunState) GetDebug() []byte {
+	if x != nil {
+		return x.Debug
+	}
+	return nil
 }
 
 // TimelineEntry is one thing a run did, read back from its own durable history.
@@ -2574,7 +2586,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
 	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x1a\n" +
 	"\brecorded\x18\x04 \x01(\tR\brecorded\x12,\n" +
-	"\x12recorded_from_task\x18\x05 \x01(\bR\x10recordedFromTask\"\xb3\b\n" +
+	"\x12recorded_from_task\x18\x05 \x01(\bR\x10recordedFromTask\"\xd4\b\n" +
 	"\bRunState\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bworkflow\x12\x1b\n" +
@@ -2594,7 +2606,8 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x14metric_workflow_name\x18\r \x01(\tR\x12metricWorkflowName\x12C\n" +
 	"\x15consumed_delivery_ids\x18\x0e \x03(\tB\x0f\xbaH\f\x92\x01\t\x10\x80\x01\"\x04r\x02\x18@R\x13consumedDeliveryIds\x12J\n" +
 	"\x13workload_started_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\x11workloadStartedAt\x12\x18\n" +
-	"\asegment\x18\x10 \x01(\rR\asegment\x1aL\n" +
+	"\asegment\x18\x10 \x01(\rR\asegment\x12\x1f\n" +
+	"\x05debug\x18\x11 \x01(\fB\t\xbaH\x06z\x04\x18\x80\x80\x10R\x05debug\x1aL\n" +
 	"\tVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aN\n" +

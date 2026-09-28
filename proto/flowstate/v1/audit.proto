@@ -361,6 +361,11 @@ message AuditRecord {
   // is the interval rather than the request.
   uint32 count = 19;
 
+  // Debug describes a debugger decision: which session and command it was
+  // about. Never the expression an inspection evaluated — that can hold a
+  // guessed value — only its digest.
+  AuditDebugDetail debug = 20;
+
   // There is deliberately no MCP session id or JSON-RPC request id. The
   // session id is a process-local bearer-like routing capability, and the
   // request id is caller-chosen, variably typed, and not exposed at the SDK's
@@ -604,4 +609,16 @@ enum AuditDenyCode {
   // or an input would not bind. The one refusal a key holder is told about
   // precisely, and recorded under their trigger's identity for that reason.
   AUDIT_DENY_CODE_BINDING_FAILED = 15;
+}
+
+// AuditDebugDetail is what a debugger decision was about.
+message AuditDebugDetail {
+  string session_id = 1 [(buf.validate.field).string = {max_len: 256}];
+  string request_id = 2 [(buf.validate.field).string = {max_len: 128}];
+  uint64 revision = 3;
+  // Operation names the command: `attach`, `get`, `resume/step_over`,
+  // `breakpoints`, `inspect`, `signal`.
+  string operation = 4 [(buf.validate.field).string = {max_len: 64}];
+  // ExpressionDigest is the content digest of an inspected expression.
+  string expression_digest = 5 [(buf.validate.field).string = {max_len: 128}];
 }

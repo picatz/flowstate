@@ -75,6 +75,7 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 		"mcp_tool", "issuer_name", "role", "enforcement_point", "rule",
 		"attempt", "dispatch_id", "correlation_id",
 		"delivery_id", "joined", "count",
+		"debug",
 	}
 
 	got := make([]string, 0, fields.Len())
@@ -87,12 +88,18 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 		"flowstate.v1.AuditRecord's fields changed; an audit record carries decisions, "+
 			"never payloads — see the redaction note in proto/flowstate/v1/audit.proto")
 
-	// Only two message types may appear, and both are bounded by their own
+	// debug (#2126) is the second kind: which session and request a debugger
+	// decision was about — ids restricted to a token alphabet at the door —
+	// the operation Flowstate names, a revision it counted, and a digest of an
+	// inspected expression, never the expression.
+	//
+	// Only three message types may appear, and all are bounded by their own
 	// schemas. Anything else — Struct, Any, Value — is a field a payload fits
 	// in.
 	allowedMessages := map[protoreflect.FullName]bool{
 		"flowstate.v1.WorkloadIdentity": true,
 		"google.protobuf.Timestamp":     true,
+		"flowstate.v1.AuditDebugDetail": true,
 	}
 
 	for i := range fields.Len() {
@@ -105,7 +112,7 @@ func TestTheRecordHasNoFieldAPayloadCouldGoIn(t *testing.T) {
 
 		if field.Kind() == protoreflect.MessageKind {
 			require.True(t, allowedMessages[field.Message().FullName()],
-				"%s carries %s, which is not one of the two bounded messages this record may hold",
+				"%s carries %s, which is not one of the three bounded messages this record may hold",
 				field.Name(), field.Message().FullName())
 		}
 	}

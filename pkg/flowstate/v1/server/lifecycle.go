@@ -669,6 +669,16 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 		return nil, err
 	}
 
+	// The reserved debug channel is the debugger's, whatever door a delivery
+	// arrives at: a raw Signal onto it needs `workload.debug` as well as
+	// `workload.signal`, so holding the one action the typed debug RPCs refuse
+	// cannot reach the same run through this verb (#2125).
+	if v1.IsDebugSignalName(req.Msg.GetName()) {
+		if err := s.authorizeDebugChannel(ctx, workflowID, req.Msg.GetPayload()); err != nil {
+			return nil, err
+		}
+	}
+
 	// Acted on through the client authorization used, so the run signalled is the
 	// run that was checked. resp is the same DescribeWorkflowExecution response
 	// authorizeRun already read to establish tenancy — its memo is where the
@@ -759,6 +769,13 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	}
 	if err := v1.CheckSignalPayloadDepth(req.Msg.GetPayload()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	// No workflow may wait on a reserved name, so SignalWithStart has nothing
+	// to deliver one to, and it is not a second door onto the debug channel:
+	// that channel is reached through the debug RPCs or an authorized Signal.
+	if v1.IsReservedSignalName(req.Msg.GetName()) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("signal %q is reserved; SignalWithStart cannot deliver it", req.Msg.GetName()))
 	}
 
 	// Captured once, used both to compose the address and — inside

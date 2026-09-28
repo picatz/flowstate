@@ -36,6 +36,11 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_list` | via a server | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
 | `flowstate_cancel` | via a server | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
 | `flowstate_terminate` | via a server | `flowstate.v1.TerminateRequest` | `flowstate.v1.TerminateResponse` |
+| `flowstate_debug_attach` | via a server | `flowstate.v1.DebugAttachRequest` | `flowstate.v1.DebugAttachResponse` |
+| `flowstate_debug_get` | via a server | `flowstate.v1.DebugGetRequest` | `flowstate.v1.DebugGetResponse` |
+| `flowstate_debug_resume` | via a server | `flowstate.v1.DebugResumeRequest` | `flowstate.v1.DebugResumeResponse` |
+| `flowstate_debug_set_breakpoints` | via a server | `flowstate.v1.DebugSetBreakpointsRequest` | `flowstate.v1.DebugSetBreakpointsResponse` |
+| `flowstate_debug_inspect` | via a server | `flowstate.v1.DebugInspectRequest` | `flowstate.v1.DebugInspectResponse` |
 | `flowstate_create_schedule` | via a server | `flowstate.v1.CreateScheduleRequest` | `flowstate.v1.CreateScheduleResponse` |
 | `flowstate_list_schedules` | via a server | `flowstate.v1.ListSchedulesRequest` | `flowstate.v1.ListSchedulesResponse` |
 | `flowstate_describe_schedule` | via a server | `flowstate.v1.DescribeScheduleRequest` | `flowstate.v1.DescribeScheduleResponse` |
@@ -142,6 +147,34 @@ Terminate stops a run immediately, running none of its cleanup.
 Use it only when a run must stop now or `Cancel` has not stopped it: nothing the workload would do on the way out is done, so any resource it was responsible for releasing is leaked. Give a `reason`; it is the only record of why the run stopped.
 
 `TerminateResponse` is empty: the run is already stopped by the time this returns, so a follow-up call to `Get` confirms status rather than awaiting it.
+
+## `flowstate_debug_attach`
+
+DebugAttach asks a durable run to hold at its next step boundary under a debug lease, or renews or re-pauses a session the caller already holds.
+
+The run must declare `debug:` naming the caller. The answer's receipt says whether the run applied the ask or it is still pending: a run executing a long step reaches its next boundary only when that step finishes, and a hold never freezes work already dispatched. Keep the returned `session_id`; every later command must carry it. Retry with the same `request_id`.
+
+## `flowstate_debug_get`
+
+DebugGet reads a durable run's debug session: state, stop reason, position, frames, capabilities, and recent observations. It changes nothing.
+
+Set `after_revision` and `wait` to wait for the next change instead of polling in a tight loop.
+
+## `flowstate_debug_resume`
+
+DebugResume releases a held durable run: continue, step in, step over, step out, run until a step, or detach.
+
+Only the session's holder may resume it, naming its `session_id`. Set `expected_revision` to the snapshot you acted on, so a command meant for a stop the run has already left is refused as stale rather than applied to the next one. Detach ends the session; it never ends the run.
+
+## `flowstate_debug_set_breakpoints`
+
+DebugSetBreakpoints replaces a durable session's breakpoints and failure stops, atomically. Only the session's holder may set them.
+
+## `flowstate_debug_inspect`
+
+DebugInspect evaluates a read-only CEL expression against a held durable run, or lists its scope, with typed, bounded, paged values.
+
+Evaluation is a disclosure: an expression can test any value in scope, including values whose rendering is redacted. It therefore needs its own authorization scope, only the session's holder may inspect, the run must be held at the named `revision`, and every request is audited. Inspection cannot dispatch a task, write history, or change what the run computes.
 
 ## `flowstate_create_schedule`
 

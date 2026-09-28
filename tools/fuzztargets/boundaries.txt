@@ -31,6 +31,7 @@ pkg/flowstate/v1                           ParseDescriptorProse         FuzzRoot
 pkg/flowstate/v1                           ParseDebugTarget             FuzzRootParsers
 pkg/flowstate/v1                           ParseDebugTargetOrStep       FuzzRootParsers
 pkg/flowstate/v1                           ParseDebugHitCondition       FuzzRootParsers
+pkg/flowstate/v1                           ParseTypedDebugAsk           FuzzRootParsers
 pkg/flowstate/v1                           ParseDuration                FuzzRootParsers
 pkg/flowstate/v1                           ParseErrorKind               FuzzRootParsers
 pkg/flowstate/v1                           ParseDeclaredType            FuzzRootParsers
