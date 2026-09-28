@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/v1/workflow.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/v1/workflow.proto", []protodocimpl.Comment{
 		{
 			Name: "flowstate.v1.Workflow",
 			Leading: " Workflow is a collection of steps that can be executed in a\n" +

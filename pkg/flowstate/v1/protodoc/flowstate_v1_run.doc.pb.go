@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/v1/run.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/v1/run.proto", []protodocimpl.Comment{
 		{
 			Name: "flowstate.v1.AttemptOutcome",
 			Leading: " AttemptOutcome records the independent facts established by one task attempt.\n" +

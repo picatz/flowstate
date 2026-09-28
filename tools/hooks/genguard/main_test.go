@@ -51,7 +51,7 @@ func TestGenerated(t *testing.T) {
 		"cmd/flow/internal/reference/sync.go",
 		// Siblings of the generated comments that are source.
 		"pkg/flowstate/v1/protodoc/protodoc.go",
-		"pkg/flowstate/v1/protodoc/registry/registry.go",
+		"pkg/flowstate/v1/protodoc/protodocimpl/protodocimpl.go",
 		"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/main.go",
 		"cmd/protoc-gen-flowstate-doc/main.go",
 		// A name that merely contains a guarded substring.

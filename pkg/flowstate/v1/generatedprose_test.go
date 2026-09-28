@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -32,12 +32,12 @@ func TestLookedUpSourceInfoAttachesEveryCommentToItsDeclaration(t *testing.T) {
 		files++
 
 		fdp := protodesc.ToFileDescriptorProto(linked)
-		fdp.SourceCodeInfo = lookedUpSourceInfo(linked, registry.Lookup)
+		fdp.SourceCodeInfo = lookedUpSourceInfo(linked, protodocimpl.Lookup)
 		rebuilt, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
 		require.NoError(t, err, linked.Path())
 
 		for d := range declarations(rebuilt) {
-			want, path, ok := registry.Lookup(d.FullName())
+			want, path, ok := protodocimpl.Lookup(d.FullName())
 			if !ok || path != linked.Path() {
 				want = ""
 			}
@@ -60,9 +60,9 @@ func TestLookedUpSourceInfoAttachesEveryCommentToItsDeclaration(t *testing.T) {
 func TestLookedUpSourceInfoForAnUndocumentedFileIsNil(t *testing.T) {
 	file, err := protoregistry.GlobalFiles.FindFileByPath("google/protobuf/struct.proto")
 	require.NoError(t, err)
-	assert.Nil(t, lookedUpSourceInfo(file, registry.Lookup))
-	assert.Nil(t, lookedUpSourceInfo(nil, registry.Lookup))
-	assert.Nil(t, DescriptorProseFrom(nil), "a nil lookup is nil prose")
+	assert.Nil(t, lookedUpSourceInfo(file, protodocimpl.Lookup))
+	assert.Nil(t, lookedUpSourceInfo(nil, protodocimpl.Lookup))
+	assert.Nil(t, lookedUpSourceInfo(file, nil), "a nil lookup attaches nothing")
 }
 
 // declarations yields every declaration of a file that a comment can attach to.

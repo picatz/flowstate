@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/v1/debug.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/v1/debug.proto", []protodocimpl.Comment{
 		{
 			Name: "flowstate.v1.DebugPosition",
 			Leading: " DebugPosition is where a paused debug session is holding a run.\n" +

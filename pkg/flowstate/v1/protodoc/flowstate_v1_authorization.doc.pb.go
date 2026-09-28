@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/v1/authorization.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/v1/authorization.proto", []protodocimpl.Comment{
 		{
 			Name: "flowstate.v1.AuthorizationActionBinding",
 			Leading: " AuthorizationActionBinding says which operations one action covers.\n" +

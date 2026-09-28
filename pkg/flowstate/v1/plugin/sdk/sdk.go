@@ -94,7 +94,7 @@ import (
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -137,36 +137,6 @@ type Plugin struct {
 
 	// Tasks are the tasks this plugin provides.
 	Tasks []Task
-
-	// SchemaProse, when set, is a descriptor set of this plugin's own .proto
-	// files built with source info retained (`buf build --exclude-imports`),
-	// whose comments are attached to the descriptors this plugin's manifest
-	// ships.
-	//
-	// Leave it unset. The comments an author writes on their task's fields
-	// reach an editor's hover and the engine's documentation when the plugin's
-	// schema is generated with protoc-gen-flowstate-doc beside protoc-gen-go:
-	//
-	//	plugins:
-	//	  - plugin: go
-	//	    out: gen
-	//	    opt: paths=source_relative
-	//	  - plugin: flowstate-doc
-	//	    path: [go, tool, protoc-gen-flowstate-doc]
-	//	    out: gen
-	//	    opt: paths=source_relative
-	//
-	// That writes the comments as Go source beside the .pb.go, which registers
-	// them when the package is linked, and the SDK attaches them by name
-	// (#2148). A descriptor set is a second build step whose output can
-	// describe an older schema than the one compiled in; a file whose
-	// declarations have drifted has all its comments dropped, because a
-	// sentence attached to the wrong field is worse than none. Bytes that are
-	// not a descriptor set fail at startup, where an author sees them.
-	//
-	// Deprecated: Generate the schema with protoc-gen-flowstate-doc instead.
-	// When SchemaProse is set it is used in place of the generated comments.
-	SchemaProse []byte
 
 	// Health reports whether the plugin can serve. Leaving it nil reports
 	// serving always, which is right for a plugin with nothing to be unable to
@@ -834,20 +804,6 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 		manifest.Schemes = slices.Clone(p.Secrets.Schemes)
 	}
 
-	// Read once for the whole manifest rather than once per task: it is one
-	// artifact describing one schema, and parsing it per task would report the
-	// same malformed set as many times as the plugin has tasks. Without one,
-	// the comments protoc-gen-flowstate-doc generated into this binary are
-	// used; a plugin that generated none ships what it always did.
-	prose := flowstatev1.DescriptorProseFrom(registry.Lookup)
-	if len(p.SchemaProse) > 0 {
-		parsed, err := flowstatev1.ParseDescriptorProse(p.SchemaProse)
-		if err != nil {
-			return nil, fmt.Errorf("sdk: SchemaProse: %w", err)
-		}
-		prose = parsed
-	}
-
 	if len(p.Tasks) > 0 {
 		manifest.Capabilities = append(manifest.Capabilities,
 			pluginv1.Capability_CAPABILITY_TASKS,
@@ -859,7 +815,7 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 			pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
 		)
 		for _, task := range p.Tasks {
-			entry, err := task.manifest(prose)
+			entry, err := task.manifest(protodocimpl.Lookup)
 			if err != nil {
 				return nil, err
 			}
@@ -876,17 +832,21 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 
 // manifest builds the engine's description of one task, including the serialized
 // descriptors that let it validate a workflow using the task.
-func (t Task) manifest(prose *flowstatev1.DescriptorProse) (*pluginv1.TaskManifest, error) {
+//
+// comments supplies the schema's comments for the descriptors: the plugin's own
+// Plugin.manifest passes the ones protoc-gen-flowstate-doc generated into this
+// binary, so a plugin that generated none ships what it always did.
+func (t Task) manifest(comments flowstatev1.CommentLookup) (*pluginv1.TaskManifest, error) {
 	if t.Fn == nil {
 		return nil, fmt.Errorf("sdk: task %q has no Fn", t.Name)
 	}
 
-	inputDescriptor, inputMessage, err := describeMessage(t.Input, prose)
+	inputDescriptor, inputMessage, err := describeMessage(t.Input, comments)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: task %q input: %w", t.Name, err)
 	}
 
-	outputDescriptor, outputMessage, err := describeMessage(t.Output, prose)
+	outputDescriptor, outputMessage, err := describeMessage(t.Output, comments)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: task %q output: %w", t.Name, err)
 	}
@@ -967,22 +927,35 @@ func (t Task) checkInputNames() error {
 // with it — without hardcoding an assumption about the engine that could quietly
 // stop being true.
 // The comments those descriptors carry are the plugin author's own, generated
-// by protoc-gen-flowstate-doc (or taken from [Plugin.SchemaProse]) and attached
-// here rather than sent beside the bytes: a descriptor set has always been able
-// to carry SourceCodeInfo, and what was missing was any comment to put in it,
-// since the compiled-in descriptor this reads had them stripped by protoc
-// (#723). A nil prose leaves the bytes exactly as they were before either
-// existed.
-func describeMessage(msg proto.Message, prose *flowstatev1.DescriptorProse) ([]byte, string, error) {
+// by protoc-gen-flowstate-doc and attached here rather than sent beside the
+// bytes: a descriptor has always been able to carry SourceCodeInfo, and what
+// was missing was any comment to put in it, since the compiled-in descriptor
+// this reads had them stripped by protoc (#723). Nil comments leave the bytes
+// exactly as they were before comments existed.
+//
+// The result is bounded by the same [flowstatev1.DefaultMaxDescriptorBytes] a
+// host applies to what arrives, because comments are text an author can grow
+// without limit: a descriptor too large for a host to accept is refused here,
+// at this plugin's own startup where its author sees it, rather than as an
+// opaque refusal at a host.
+func describeMessage(msg proto.Message, comments flowstatev1.CommentLookup) ([]byte, string, error) {
 	if msg == nil {
 		return nil, "", nil
 	}
 
-	return flowstatev1.MessageDescriptorBytesWithProse(
+	raw, name, err := flowstatev1.MessageDescriptorBytesWithComments(
 		msg.ProtoReflect().Descriptor(),
-		prose,
+		comments,
 		pluginv1.File_flowstate_plugin_v1_plugin_proto,
 	)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(raw) > flowstatev1.DefaultMaxDescriptorBytes {
+		return nil, "", fmt.Errorf("the descriptor of %s is %d bytes, over the %d byte limit a host accepts; shorten its schema's comments or split the schema",
+			name, len(raw), flowstatev1.DefaultMaxDescriptorBytes)
+	}
+	return raw, name, nil
 }
 
 // handler builds the HTTP handler serving this plugin's services.

@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/v1/diagnostics.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/v1/diagnostics.proto", []protodocimpl.Comment{
 		{
 			Name: "flowstate.v1.Diagnostic",
 			Leading: " Diagnostic is one problem found in a Flowfile, positioned in its source.\n" +

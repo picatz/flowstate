@@ -4,11 +4,11 @@
 package examplev1
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("example/v1/example.proto", []registry.Comment{
+	protodocimpl.RegisterFile("example/v1/example.proto", []protodocimpl.Comment{
 		{
 			Name:    "example.v1.GreetInputs",
 			Leading: " GreetInputs are the inputs to the greet task.\n",

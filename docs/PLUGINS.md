@@ -104,7 +104,7 @@ func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstate
 }
 ```
 
-`sdk.Main` is the whole of `func main` (`pkg/flowstate/v1/plugin/sdk/sdk.go:357-370`). The manifest the
+`sdk.Main` is the whole of `func main` (`pkg/flowstate/v1/plugin/sdk/sdk.go:327-340`). The manifest the
 engine sees is derived from that struct rather than written beside it, so a
 plugin built this way cannot advertise a capability it did not implement:
 `Secrets` being set
@@ -138,7 +138,7 @@ the binary's suffix and ignores everything without the prefix
 `flow plugins` will tell you the directory is empty. The suffix is also the
 qualifier a Flowfile writes — `hello.greet:` — and a plugin cannot choose or
 forge it, which is why two plugins may each provide `post` without colliding
-(`pkg/flowstate/v1/plugin/sdk/sdk.go:194-203`).
+(`pkg/flowstate/v1/plugin/sdk/sdk.go:164-173`).
 
 Run the binary from a shell and it explains itself rather than speaking a binary
 protocol at your terminal (`pkg/flowstate/v1/plugin/sdk/sdk.go`):
@@ -164,7 +164,7 @@ task's `Input` and `Output` are zero values of protobuf messages whose
 descriptors travel to the engine in the manifest, which is what lets the engine
 validate a workflow using your task, complete its fields in an editor, and
 document it — without compiling a line of your code
-(`pkg/flowstate/v1/plugin/sdk/sdk.go:209-217`, `pkg/flowstate/v1/plugin/descriptor.go:25-29`).
+(`pkg/flowstate/v1/plugin/sdk/sdk.go:179-187`, `pkg/flowstate/v1/plugin/descriptor.go:25-29`).
 
 So: a schema of your own. Three files beside the `main.go` you already have.
 
@@ -405,7 +405,7 @@ attached to the descriptors your manifest already shipped
 (`pkg/flowstate/v1/messagedescriptor.go`), and the language server's existing
 "prefer the descriptor's own source info" branch is what reads it.
 
-Three properties worth knowing, all of them the fail-closed direction:
+Four properties worth knowing, all of them the fail-closed direction:
 
 - **Omitting it costs only the paragraph.** A plugin that generates no comments
   behaves exactly as every plugin did before this existed. Hover renders one
@@ -418,11 +418,15 @@ Three properties worth knowing, all of them the fail-closed direction:
 - **A name registered twice with different text is not described at all**,
   rather than described by whichever copy happened to register first.
 
-`Plugin.SchemaProse`, which took a `buf build --exclude-imports` descriptor set
-for the same purpose, still works and is deprecated: it is a second build step
-whose output can describe an older schema than the one compiled in, and when it
-does the SDK has to drop every comment in that file. When it is set it is used
-in place of the generated comments.
+- **A descriptor too large for a host is refused at your startup.** Comments are
+  text you can grow without limit, so the SDK applies the host's descriptor size
+  limit to what it is about to send and fails at startup, naming the message,
+  rather than letting a host refuse the plugin later.
+
+Earlier versions of the SDK took a `buf build --exclude-imports` descriptor set
+through a `Plugin.SchemaProse` field instead. That field is gone: it was a second
+build step whose output could describe an older schema than the one compiled in.
+Delete the embedded file and the field, and add the generator to `buf.gen.yaml`.
 
 ## Where the contract catches authors out
 
@@ -432,7 +436,7 @@ a host, to somebody who may not be able to fix them.
 
 ### 1. Declaring no schema is a silent opt-out of the whole contract
 
-`Task.Input` and `Task.Output` may be nil (`pkg/flowstate/v1/plugin/sdk/sdk.go:258-259`), the host
+`Task.Input` and `Task.Output` may be nil (`pkg/flowstate/v1/plugin/sdk/sdk.go:228-229`), the host
 accepts a manifest that names no message for a side
 (`pkg/flowstate/v1/plugin/descriptor.go:34-36`), and `flow plugins` renders it as `inputs none`
 (`cmd/flow/tasks.go:592-596`, rendered from `cmd/flow/plugins.go:298-301`). Every
@@ -489,7 +493,7 @@ Two things follow that are worth knowing before you build on it:
   `pkg/flowstate/v1/plugin/sdk` pulls the module: 368 packages across 126 modules
   in the graph for the chapter-one plugin, and a 24 MB binary. That is a
   consequence of `TaskFunc` speaking in `flowstatev1.Value` and
-  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:346`), which is also what makes a plugin task
+  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:316`), which is also what makes a plugin task
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
@@ -595,7 +599,7 @@ it.** Setting it says this task reads an input named `outputs` as a mapping of
 name to expression and returns *those* names instead of its declared ones. The
 compiler, the validator and the language server all describe the step in those
 terms, so a task that sets it and returns its declared outputs anyway gets all
-three describing a step that produces something else (`pkg/flowstate/v1/plugin/sdk/sdk.go:315-334`).
+three describing a step that produces something else (`pkg/flowstate/v1/plugin/sdk/sdk.go:285-304`).
 False is the right answer for every ordinary task, including one that happens to
 have an input called `outputs`.
 
@@ -612,12 +616,12 @@ The fields not covered above, each a claim the engine acts on:
 
 | Field | What it says | Reference |
 | --- | --- | --- |
-| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `pkg/flowstate/v1/plugin/sdk/sdk.go:290-294` |
-| `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `pkg/flowstate/v1/plugin/sdk/sdk.go:261-269` |
-| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `pkg/flowstate/v1/plugin/sdk/sdk.go:271-288` |
-| `SecretInputs` | A Flowfile may write `${secret(...)}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference. | `pkg/flowstate/v1/plugin/sdk/sdk.go:296-306` |
-| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `pkg/flowstate/v1/plugin/sdk/sdk.go:315-334` |
-| `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `pkg/flowstate/v1/plugin/sdk/sdk.go:171-181` |
+| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `pkg/flowstate/v1/plugin/sdk/sdk.go:260-264` |
+| `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `pkg/flowstate/v1/plugin/sdk/sdk.go:231-239` |
+| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `pkg/flowstate/v1/plugin/sdk/sdk.go:241-258` |
+| `SecretInputs` | A Flowfile may write `${secret(...)}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference. | `pkg/flowstate/v1/plugin/sdk/sdk.go:266-276` |
+| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `pkg/flowstate/v1/plugin/sdk/sdk.go:285-304` |
+| `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `pkg/flowstate/v1/plugin/sdk/sdk.go:141-151` |
 
 `ExpressionInputs` is enforced by `flow validate` when the validator has been
 told about your plugin. Against the chapter-two plugin declaring `greeting` as
@@ -928,7 +932,7 @@ constructors rather than as a bare error (`pkg/flowstate/v1/plugin/sdk/errors.go
 > An error from a plugin is surfaced to users and written to workflow history,
 > which is durable and broadly readable. Never interpolate a secret, a token, or
 > a credential-bearing backend message into one. The same applies to stderr and
-> what a `Health` check returns, which the engine logs (`pkg/flowstate/v1/plugin/sdk/sdk.go:1097-1107`). As
+> what a `Health` check returns, which the engine logs (`pkg/flowstate/v1/plugin/sdk/sdk.go:1070-1080`). As
 > accidental containment, the host scrubs known resolved values and their common
 > encodings from plugin stderr, reserved post-handshake stdout, health text, and
 > manifest text. It retains at most 256 delivered values per plugin process while

@@ -13,7 +13,7 @@
 // shape and no prose. The prose is therefore generated separately, by
 // protoc-gen-flowstate-doc in the same `buf generate` run that writes the .pb.go:
 // the flowstate_*.doc.pb.go files beside this one register every file's leading
-// comments with [registry] at init. They are held by the same git diff
+// comments with [protodocimpl] at init. They are held by the same git diff
 // --exit-code pin as the types, so they cannot drift from the schema they
 // describe, and a comment change reviews as a text diff.
 //
@@ -29,7 +29,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -44,7 +44,7 @@ import (
 // and a caller that wants to know whether a symbol exists should ask
 // protoregistry.GlobalFiles.
 func Comment(name protoreflect.FullName) (string, bool) {
-	leading, _, ok := registry.Lookup(name)
+	leading, _, ok := protodocimpl.Lookup(name)
 	if !ok {
 		return "", false
 	}
@@ -72,7 +72,7 @@ func CommentOf(desc protoreflect.Descriptor) (string, bool) {
 	if text, ok := normalize(file.SourceLocations().ByDescriptor(desc).LeadingComments); ok {
 		return text, true
 	}
-	leading, path, ok := registry.Lookup(desc.FullName())
+	leading, path, ok := protodocimpl.Lookup(desc.FullName())
 	if !ok || path != file.Path() {
 		return "", false
 	}

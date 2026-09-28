@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/v1/catalog.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/v1/catalog.proto", []protodocimpl.Comment{
 		{
 			Name: "flowstate.v1.TaskCatalog",
 			Leading: " TaskCatalog is what this build can execute, described so that something other\n" +

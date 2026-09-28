@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/v1/service.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/v1/service.proto", []protodocimpl.Comment{
 		{
 			Name:    "flowstate.v1.RunRequest",
 			Leading: " RunRequest is the request message for running a workflow.\n",

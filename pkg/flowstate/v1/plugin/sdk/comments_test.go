@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,27 +81,25 @@ func TestGeneratedProseTravelsInTheTaskDescriptor(t *testing.T) {
 		commentOn(t, task.GetOutputDescriptor(), "GreetOutputs", "message"))
 }
 
-// TestSchemaProseStillTravelsAndWins keeps the deprecated field working for the
-// release it is deprecated in: a descriptor set an author hands over is used in
-// place of the generated comments, not merged with them.
-func TestSchemaProseStillTravelsAndWins(t *testing.T) {
+// TestCommentsThatOutgrowTheHostBoundFailAtStartup is the bound applied where
+// the bytes are produced: comments are text an author can grow without limit,
+// and a descriptor too large for a host to accept is refused at this plugin's
+// own startup, naming the message, rather than as an opaque refusal later.
+func TestCommentsThatOutgrowTheHostBoundFailAtStartup(t *testing.T) {
 	t.Parallel()
 
-	file := protodesc.ToFileDescriptorProto((&examplev1.GreetInputs{}).ProtoReflect().Descriptor().ParentFile())
-	file.SourceCodeInfo = &descriptorpb.SourceCodeInfo{Location: []*descriptorpb.SourceCodeInfo_Location{{
-		Path:            []int32{4, 0, 2, 0}, // message_type[0] (GreetInputs), field[0] (name)
-		Span:            []int32{0, 0, 0},
-		LeadingComments: proto.String(" From the descriptor set.\n"),
-	}}}
-	raw, err := proto.Marshal(&descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{file}})
-	require.NoError(t, err)
+	path := (&examplev1.GreetInputs{}).ProtoReflect().Descriptor().ParentFile().Path()
+	huge := strings.Repeat(" This sentence is long.\n", flowstatev1.DefaultMaxDescriptorBytes/20)
+	comments := func(name protoreflect.FullName) (string, string, bool) {
+		if name == "example.v1.GreetInputs.name" {
+			return huge, path, true
+		}
+		return "", "", false
+	}
 
-	manifest, err := Plugin{Name: "example", SchemaProse: raw, Tasks: []Task{exampleTask()}}.manifest()
-	require.NoError(t, err)
-	require.Len(t, manifest.GetTasks(), 1)
-
-	assert.Equal(t, " From the descriptor set.\n",
-		commentOn(t, manifest.GetTasks()[0].GetInputDescriptor(), "GreetInputs", "name"))
+	_, err := exampleTask().manifest(comments)
+	require.ErrorContains(t, err, "example.v1.GreetInputs")
+	require.ErrorContains(t, err, "byte limit")
 }
 
 // TestATaskWithNoProseShipsWhatItAlwaysDid is the fallback, which is the
@@ -115,19 +114,4 @@ func TestATaskWithNoProseShipsWhatItAlwaysDid(t *testing.T) {
 
 	assert.Empty(t, commentOn(t, manifest.GetInputDescriptor(), "GreetInputs", "name"),
 		"a task described without prose documents nothing, and nothing may be invented for it")
-}
-
-// TestSchemaProseThatIsNotADescriptorSetIsRefusedAtStartup keeps the one failure
-// an author can act on where they can see it: at [Main], naming the field, rather
-// than as a plugin that quietly documents nothing.
-func TestSchemaProseThatIsNotADescriptorSetIsRefusedAtStartup(t *testing.T) {
-	t.Parallel()
-
-	_, err := Plugin{
-		Name:        "example",
-		SchemaProse: []byte{0x0a, 0x7f}, // a length claiming more bytes than follow it
-		Tasks:       []Task{exampleTask()},
-	}.manifest()
-
-	require.ErrorContains(t, err, "SchemaProse")
 }

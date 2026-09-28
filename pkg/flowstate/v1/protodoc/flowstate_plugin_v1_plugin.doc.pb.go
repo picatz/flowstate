@@ -4,11 +4,11 @@
 package protodoc
 
 import (
-	registry "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	protodocimpl "github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 )
 
 func init() {
-	registry.RegisterFile("flowstate/plugin/v1/plugin.proto", []registry.Comment{
+	protodocimpl.RegisterFile("flowstate/plugin/v1/plugin.proto", []protodocimpl.Comment{
 		{
 			Name:    "flowstate.plugin.v1.PluginManifest",
 			Leading: " PluginManifest is what a plugin says about itself.\n",

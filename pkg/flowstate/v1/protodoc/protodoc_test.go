@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/registry"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc/protodocimpl"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -101,7 +101,7 @@ func registersAny(file protoreflect.FileDescriptor) bool {
 		decls = append(decls, file.Extensions().Get(i))
 	}
 	for _, d := range decls {
-		if _, path, ok := registry.Lookup(d.FullName()); ok && path == file.Path() {
+		if _, path, ok := protodocimpl.Lookup(d.FullName()); ok && path == file.Path() {
 			return true
 		}
 	}

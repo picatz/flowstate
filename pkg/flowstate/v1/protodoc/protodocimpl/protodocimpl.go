@@ -1,24 +1,24 @@
-// Package registry holds the schema comments that protoc-gen-flowstate-doc
-// generates, so a process can read them at run time.
+// Package protodocimpl is the run-time half of protoc-gen-flowstate-doc: the
+// table its generated .doc.pb.go files register a schema's comments into.
 //
-// The plugin writes one Go file per .proto file. Each registers that file's
-// leading comments here from an init function, the same way protoc-gen-go
+// It is for generated code only, the way google.golang.org/protobuf's protoimpl
+// is: hand-written code reads comments through
+// [github.com/picatz/flowstate/pkg/flowstate/v1/protodoc], and nothing here is a
+// stable API for any other use. It is public only because generated code in
+// other modules (a plugin author's) must be able to import it.
+//
+// The generator writes one Go file per .proto file, and each registers that
+// file's leading comments from an init function, the way protoc-gen-go
 // registers descriptors with protoregistry.GlobalFiles. Comments are recorded
-// raw, exactly as protoc reports them, so every reader gets the original text
-// and applies its own presentation;
-// [github.com/picatz/flowstate/pkg/flowstate/v1/protodoc] is the reader for
-// prose shown to people.
-//
-// The registry exists because protoc-gen-go strips SourceCodeInfo from the
-// descriptors it embeds in a .pb.go: the linked descriptors have a schema's
-// shape but none of its prose. Generating the comments as Go source keeps them
-// in the same `buf generate` run, and the same drift check, as the types they
-// describe, and lets them show up as text in a diff.
+// raw, exactly as protoc reports them, and presentation is left to the reader.
+// They exist as Go source because protoc-gen-go strips SourceCodeInfo from the
+// descriptors a .pb.go embeds, and generating them in the same `buf generate`
+// as the types keeps them under the same drift check and reviewable as text.
 //
 // This package is a leaf: it imports nothing from this module, so generated
-// code in any package, including a plugin author's, can register without
-// linking the engine's own schema documentation.
-package registry
+// code in any package can register without linking the engine's own schema
+// documentation.
+package protodocimpl
 
 import (
 	"sync"
