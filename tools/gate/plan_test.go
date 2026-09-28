@@ -340,11 +340,24 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
-			name:    "go.mod flips the module-wide switch",
+			// go.mod pins the buf.gen.yaml plugins through `tool`
+			// directives (#2149), so it is a generator input as well.
+			name:    "go.mod flips the module-wide switch and fires the proto leg",
 			changed: []string{"go.mod", "go.sum"},
 			want: plan{
 				moduleWide: true,
-				reasons:    map[string]string{"module": "go.mod"},
+				proto:      true,
+				reasons:    map[string]string{"module": "go.mod", "proto": "go.mod"},
+			},
+		},
+		{
+			// go.sum alone records hashes, not versions: no generator
+			// changes, so no regeneration.
+			name:    "go.sum alone does not fire the proto leg",
+			changed: []string{"go.sum"},
+			want: plan{
+				moduleWide: true,
+				reasons:    map[string]string{"module": "go.sum"},
 			},
 		},
 		{

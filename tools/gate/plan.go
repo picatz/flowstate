@@ -201,10 +201,17 @@ func buildPlan(changed []string) plan {
 			reason("ci", f)
 		}
 
-		// The module files move the whole graph.
+		// The module files move the whole graph. go.mod also pins every
+		// buf.gen.yaml plugin through a `tool` directive (#2149), so bumping
+		// protobuf or connect is a regeneration the proto leg must see, as
+		// CI's drift check does.
 		if f == "go.mod" || f == "go.sum" {
 			p.moduleWide = true
 			reason("module", f)
+			if f == "go.mod" {
+				p.proto = true
+				reason("proto", f)
+			}
 			continue
 		}
 
