@@ -728,6 +728,12 @@ func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("envelope: marshaling a header: %w", err)
 	}
+	// Startup checked that every header this codec writes fits; checked again
+	// here, against the constant Decode enforces, because the wrapped keys in
+	// it are what the providers returned.
+	if len(header) > MaxHeaderBytes {
+		return nil, fmt.Errorf("envelope: a %d-byte header is past the %d-byte limit Decode reads", len(header), MaxHeaderBytes)
+	}
 
 	framed := make([]byte, 0, len(magic)+binary.MaxVarintLen32+len(header)+spec.overhead+len(plaintext))
 	framed = append(framed, magic...)
