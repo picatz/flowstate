@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
@@ -235,4 +236,22 @@ func TestABrokenKeyringRefusesBothEntryPoints(t *testing.T) {
 
 	_, _, err = runLocal(t, codecTestWorkflow)
 	require.ErrorContains(t, err, "chmod 600")
+}
+
+type timedCodec struct {
+	payloadcodec.Codec
+	timeout time.Duration
+}
+
+func (c timedCodec) ProviderTimeout() time.Duration { return c.timeout }
+
+// TestTheCodecServerWaitsAsLongAsItsProvidersMay: a decode that must unwrap
+// through a provider may take that provider's deadline, twice over for a
+// login, and the response deadline leaves room for it.
+func TestTheCodecServerWaitsAsLongAsItsProvidersMay(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 30*time.Second, codecWriteTimeout(payloadcodec.Config{}))
+	require.Equal(t, 30*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: 5 * time.Second}}))
+	require.Equal(t, 130*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: time.Minute}}))
 }

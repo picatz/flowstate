@@ -16,6 +16,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/codecserver"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
 )
 
@@ -145,7 +146,7 @@ func runCodecServe(cmd *cobra.Command, _ []string) error {
 		TLSConfig:           tlsCfg,
 		ReadHeaderTimeout:   5 * time.Second,
 		ReadTimeout:         30 * time.Second,
-		WriteTimeout:        30 * time.Second,
+		WriteTimeout:        codecWriteTimeout(codecs),
 		IdleTimeout:         time.Minute,
 		MaxHeaderBytes:      64 << 10,
 		MaxHeaderValueCount: maxHeaderValueCount,
@@ -215,4 +216,20 @@ func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, handler *cod
 		authenticated.ServeHTTP(w, r)
 	}))
 	return mux
+}
+
+// codecWriteTimeout is how long `flow codec serve` gives a response: thirty
+// seconds, or enough for a decode that must first ask a key provider to
+// unwrap and may wait out a login and the call, whichever is longer.
+//
+// A request that unwraps more unseen data keys than that allows still has its
+// response cut off; the keys it unwrapped are cached, so the client's retry
+// is answered from them.
+func codecWriteTimeout(codecs payloadcodec.Config) time.Duration {
+	const floor = 30 * time.Second
+	timed, ok := codecs.Codec.(interface{ ProviderTimeout() time.Duration })
+	if !ok {
+		return floor
+	}
+	return max(floor, 2*timed.ProviderTimeout()+10*time.Second)
 }
