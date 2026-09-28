@@ -109,5 +109,5 @@ func TestATruncatedScriptIsCheckedAsItsSessionJudges(t *testing.T) {
 		}
 	}
 	assert.Equal(t, map[string]bool{"bogus/last": false, "call3/s7": true}, inventory.walked,
-		"a line was walked that a lookup answers, or an address walked more than once")
+		"a line was walked that a lookup answers")
 }

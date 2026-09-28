@@ -247,11 +247,8 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		//
 		// Refused before the terminal is touched, so a refusal cannot leave one
 		// in raw mode.
-		if decideCarriedValues(workflow, reveal) != carriedValuesShown {
-			return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
-				"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
-				"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug",
-				workflow.GetName())
+		if err := debugRevealRefusal(workflow.GetName(), decideCarriedValues(workflow, reveal)); err != nil {
+			return err
 		}
 
 		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
@@ -483,5 +480,25 @@ func interruptedStatus(interrupted error) v1.RunResponse_Status {
 
 	default:
 		return v1.RunResponse_STATUS_FAILED
+	}
+}
+
+// debugRevealRefusal is why `--debug` will not attach to the workflow named
+// name, given what its declarations decided: nil when its values may be shown.
+// A workflow that declares something sensitive and one whose declarations
+// could not be fully inspected are both refused, and told apart, since the
+// remedy is the same but the reason is not.
+func debugRevealRefusal(name string, decided carriedValues) error {
+	switch decided {
+	case carriedValuesShown:
+		return nil
+	case carriedValuesDeclared:
+		return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+			"%q declares sensitive inputs or outputs whose transcript this command would otherwise "+
+			"withhold; add --reveal-sensitive to debug it with values shown, or drop --debug", name)
+	default:
+		return fmt.Errorf("--debug narrates step values and evaluates expressions over them, and "+
+			"%q's sensitive-value declarations could not be fully inspected, so it is not debugged "+
+			"without explicit disclosure; add --reveal-sensitive to debug it with values shown, or drop --debug", name)
 	}
 }
