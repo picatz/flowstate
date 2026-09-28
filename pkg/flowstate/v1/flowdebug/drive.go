@@ -68,9 +68,13 @@ type DoOptions struct {
 	RequestID string
 
 	// ExpectedRevision refuses the line as stale unless the session is at
-	// this revision. A movement carries it to the target, which answers a
-	// remembered request id before it judges staleness. Zero skips the
-	// check.
+	// this revision. A movement and an inspection carry it to the target,
+	// which judges it in the same step as the command — a movement after
+	// answering a remembered request id — so neither is ever applied to a
+	// stop the run has left. Any other line is checked against a read just
+	// before it is sent: the contract carries no revision for a pause or a
+	// breakpoint change, neither of which is bound to a stop. Zero skips
+	// the check.
 	ExpectedRevision uint64
 }
 
@@ -329,6 +333,27 @@ func (d *Driver) staleAt(ctx context.Context) (*DriveResult, error) {
 	return &DriveResult{Receipt: receipt, Snapshot: current, Text: FormatReceipt(receipt)}, nil
 }
 
+// revisionAt is the revision an inspection is asked at: the caller's
+// expected one when it named one, so the target refuses the inspection if the
+// run has left it since the check before the line ran, and otherwise the one
+// just read.
+func (d *Driver) revisionAt(snapshot *v1.DebugSnapshot) uint64 {
+	return cmp.Or(d.expected, snapshot.GetRevision())
+}
+
+// staleOr answers an inspection the target refused as stale, against the
+// revision the caller expected, as the check before the line would have: a
+// STALE receipt with where the session is now. Any other error is returned.
+func (d *Driver) staleOr(ctx context.Context, err error) (*DriveResult, error) {
+	if d.expected != 0 && errors.Is(err, ErrStaleRevision) {
+		if stale, readErr := d.staleAt(ctx); stale != nil || readErr != nil {
+			return stale, readErr
+		}
+	}
+
+	return nil, err
+}
+
 // Accepted reports whether a target took the command its receipt answers:
 // applied, a duplicate of one it applied, or pending its next step boundary.
 func Accepted(receipt *v1.DebugReceipt) bool {
@@ -585,10 +610,10 @@ func (d *Driver) inspect(ctx context.Context, expression string, children bool) 
 		return nil, err
 	}
 	answer, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{
-		Revision: snapshot.GetRevision(), Expression: expression, Children: children,
+		Revision: d.revisionAt(snapshot), Expression: expression, Children: children,
 	})
 	if err != nil {
-		return nil, err
+		return d.staleOr(ctx, err)
 	}
 
 	result := &DriveResult{Inspect: answer}
@@ -619,18 +644,18 @@ func (d *Driver) scope(ctx context.Context) (*DriveResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	roots, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{Revision: snapshot.GetRevision()})
+	roots, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{Revision: d.revisionAt(snapshot)})
 	if err != nil {
-		return nil, err
+		return d.staleOr(ctx, err)
 	}
 
 	var b strings.Builder
 	for _, group := range roots.GetChildren() {
 		names, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{
-			Revision: snapshot.GetRevision(), Expression: group.GetValue().GetExpression(), Limit: MaxScopeNames,
+			Revision: d.revisionAt(snapshot), Expression: group.GetValue().GetExpression(), Limit: MaxScopeNames,
 		})
 		if err != nil {
-			return nil, err
+			return d.staleOr(ctx, err)
 		}
 		listed := make([]string, 0, len(names.GetChildren()))
 		for _, name := range names.GetChildren() {

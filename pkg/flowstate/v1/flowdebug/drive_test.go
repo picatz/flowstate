@@ -213,6 +213,63 @@ func TestAPendingSetIsNotReportedUnarmed(t *testing.T) {
 	}
 }
 
+// movingTarget is a held [scriptedTarget] that moves to the next stop once it
+// has been read once: the run advancing between the check a line runs before
+// it is sent and the command itself. Like the real targets, it refuses an
+// inspection asked at a revision it has left.
+type movingTarget struct {
+	*scriptedTarget
+
+	reads     int
+	inspected []uint64
+}
+
+func (m *movingTarget) Snapshot(context.Context) (*v1.DebugSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reads++
+
+	return &v1.DebugSnapshot{Revision: uint64(min(m.reads, 2)) + 4, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}, nil
+}
+
+func (m *movingTarget) Inspect(_ context.Context, req *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inspected = append(m.inspected, req.GetRevision())
+	if req.GetRevision() != 6 {
+		return nil, flowdebug.ErrStaleRevision
+	}
+
+	return &v1.DebugInspectResponse{Value: &v1.DebugValue{Rendered: "at 6"}}, nil
+}
+
+// TestAnInspectionCarriesTheExpectedRevisionToTheTarget: the check before a
+// line reads the session at the expected revision, and the run moves before
+// the inspection is asked. The inspection is asked at the expected revision,
+// so the target refuses it rather than answering about the stop the run moved
+// to, and the refusal is the same STALE answer the check gives.
+func TestAnInspectionCarriesTheExpectedRevisionToTheTarget(t *testing.T) {
+	t.Parallel()
+
+	for _, line := range []string{"inspect item", "expand item", "scope"} {
+		target := &movingTarget{scriptedTarget: &scriptedTarget{}}
+		result, err := flowdebug.NewDriver(target).DoWith(t.Context(), line, flowdebug.DoOptions{ExpectedRevision: 5})
+		require.NoError(t, err, line)
+		require.NotEmpty(t, target.inspected, "%s never reached the target", line)
+		assert.Equal(t, uint64(5), target.inspected[0], "%s was asked at the revision the run moved to", line)
+		assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, result.Receipt.GetStatus(),
+			"%s answered about a stop the caller did not expect", line)
+		assert.Equal(t, uint64(6), result.Receipt.GetRevision(), line)
+	}
+
+	// Without an expected revision it is asked where the session is.
+	target := &movingTarget{scriptedTarget: &scriptedTarget{}}
+	target.reads = 1
+	result, err := flowdebug.NewDriver(target).Do(t.Context(), "inspect item")
+	require.NoError(t, err)
+	assert.Equal(t, "at 6\n", result.Text)
+}
+
 // honestTarget is a [scriptedTarget] whose WaitSnapshot waits for a revision
 // past the one asked about, as a real target's does.
 type honestTarget struct{ *scriptedTarget }
