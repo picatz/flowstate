@@ -7,7 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
 
+	"bytes"
 	"github.com/picatz/flowstate/internal/testkit"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/toycodec"
 )
 
 // errNoMapping stands in for auth.ErrNoTemporalNamespace, so this package's tests
@@ -285,3 +288,29 @@ type countingClient struct {
 }
 
 func (c *countingClient) Close() { c.closes++ }
+
+// TestAnUnroutedFallbackNeedsNoKeysButCannotWrite: with every tenant mapped
+// to a namespace of its own, a keyring covering exactly those namespaces
+// starts, although the configured fallback has no keys; the fallback it
+// builds refuses every payload rather than writing one in plaintext. With no
+// mapping the fallback is the only client, and an uncovered one is still
+// refused at startup.
+func TestAnUnroutedFallbackNeedsNoKeysButCannotWrite(t *testing.T) {
+	t.Parallel()
+
+	namespace := newTemporalNamespace(t)
+	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
+	require.NoError(t, err)
+	codecs := payloadcodec.Config{Codec: toy, Namespaces: map[string]payloadcodec.Codec{namespace: toy}}
+
+	pool, err := NewPool(t.Context(), Config{Address: devServer.FrontendHostPort(), Codec: codecs},
+		fakeMapper{temporal: map[string]string{"team-a": namespace}}, nil)
+	require.NoError(t, err, "an unused fallback without keys refused startup")
+	t.Cleanup(pool.Close)
+
+	_, err = pool.fallback.ExecuteWorkflow(t.Context(), client.StartWorkflowOptions{TaskQueue: "none"}, "Run", "plaintext")
+	require.ErrorContains(t, err, "no keys are configured", "the fallback wrote a payload it holds no key for")
+
+	_, err = NewPool(t.Context(), Config{Address: devServer.FrontendHostPort(), Codec: codecs}, nil, nil)
+	require.ErrorContains(t, err, "no keys are configured", "a fallback that is the only client must be covered")
+}

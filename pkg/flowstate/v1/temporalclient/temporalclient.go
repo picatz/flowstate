@@ -113,6 +113,12 @@ type Config struct {
 	// The zero value is the null codec, which is byte-for-byte what a
 	// deployment had before this field existed.
 	Codec payloadcodec.Config
+
+	// refuseUncovered builds a client for a namespace the codec slot holds
+	// no keys for with a codec that refuses every payload, instead of
+	// refusing the client. Set only by NewPool, for a fallback client the
+	// tenancy mapping routes no tenant to.
+	refuseUncovered bool
 }
 
 // Options resolves c into Temporal client options.
@@ -178,7 +184,12 @@ func (c Config) Options() (client.Options, error) {
 	}
 	codec, err := c.Codec.ForNamespace(opts.Namespace)
 	if err != nil {
-		return client.Options{}, err
+		if !c.refuseUncovered {
+			return client.Options{}, err
+		}
+		// A client nothing is expected to use (see NewPool): built, but
+		// unable to write or read a payload, rather than built in plaintext.
+		codec = payloadcodec.Refusing(opts.Namespace)
 	}
 	codec.Apply(&opts)
 

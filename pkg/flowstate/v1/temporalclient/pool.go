@@ -122,7 +122,15 @@ func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper, logger *sl
 	// dial rather than Dial: the namespace this client is dialed for is read back
 	// from the options this very call resolved, rather than resolved a second
 	// time from cfg. See [dial].
-	fallback, opts, err := dial(ctx, cfg)
+	//
+	// When the mapping routes tenants to namespaces of their own, the fallback
+	// serves only a tenant the mapping leaves unrouted, and a deployment
+	// that encrypts per namespace may hold no keys for it. It is built anyway,
+	// with a codec that refuses every payload: fail-closed for the client
+	// nothing is expected to use, rather than a startup refusal over it.
+	fallbackCfg := cfg
+	fallbackCfg.refuseUncovered = mapper != nil && len(mapper.TemporalNamespaces()) > 0
+	fallback, opts, err := dial(ctx, fallbackCfg)
 	if err != nil {
 		return nil, err
 	}

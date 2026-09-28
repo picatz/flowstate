@@ -399,6 +399,38 @@ func (c Config) ForNamespace(namespace string) (Config, error) {
 	return Config{Codec: codec}, nil
 }
 
+// Refusing is the slot for a client dialed for a namespace this deployment
+// holds no keys for but must still construct: every Encode and Decode fails,
+// naming the namespace, so nothing reaches that namespace's history in
+// plaintext and nothing is read from it as though it were protected. It is
+// for a client nothing is expected to use, such as a tenancy pool's fallback
+// when every tenant is mapped elsewhere; a client that is used should be
+// refused at startup by [Config.ForNamespace] instead.
+func Refusing(namespace string) Config {
+	return Config{Codec: refusingCodec{namespace: namespace}}
+}
+
+type refusingCodec struct{ namespace string }
+
+func (refusingCodec) Name() string         { return "refusing" }
+func (refusingCodec) CurrentKeyID() string { return "" }
+func (refusingCodec) MaxEncodedSize(plain int) int {
+	return plain
+}
+
+func (r refusingCodec) Encode([]*commonpb.Payload) ([]*commonpb.Payload, error) {
+	return nil, r.refusal()
+}
+
+func (r refusingCodec) Decode([]*commonpb.Payload) ([]*commonpb.Payload, error) {
+	return nil, r.refusal()
+}
+
+func (r refusingCodec) refusal() error {
+	return fmt.Errorf("payload codec: no keys are configured for Temporal namespace %q, so nothing is written "+
+		"to or read from it; add it to the keyring if it is meant to be used", r.namespace)
+}
+
 // codec answers with the null codec rather than nil, so no caller here has to.
 func (c Config) codec() Codec {
 	if c.Codec == nil {
