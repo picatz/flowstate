@@ -245,13 +245,14 @@ type timedCodec struct {
 
 func (c timedCodec) ProviderTimeout() time.Duration { return c.timeout }
 
-// TestTheCodecServerWaitsAsLongAsItsProvidersMay: a decode that must unwrap
-// through a provider may take that provider's deadline, twice over for a
-// login, and the response deadline leaves room for it.
+// TestTheCodecServerWaitsAsLongAsItsProvidersMay: the handler stops starting
+// work at its budget, and the payload started just before may take a
+// provider's deadline twice over for a login; the response deadline leaves
+// room for both, so the answer is written rather than cut off.
 func TestTheCodecServerWaitsAsLongAsItsProvidersMay(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(t, 30*time.Second, codecWriteTimeout(payloadcodec.Config{}))
-	require.Equal(t, 30*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: 5 * time.Second}}))
-	require.Equal(t, 130*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: time.Minute}}))
+	require.Equal(t, 40*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: 5 * time.Second}}))
+	require.Equal(t, 150*time.Second, codecWriteTimeout(payloadcodec.Config{Codec: timedCodec{timeout: time.Minute}}))
 }

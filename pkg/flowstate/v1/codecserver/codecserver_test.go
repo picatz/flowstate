@@ -11,6 +11,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
@@ -404,4 +407,76 @@ func TestARequiredTrailThatCannotRecordIsAnOutage(t *testing.T) {
 		require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, name)
 		require.NotContains(t, body, jsonBase64(markerA), name)
 	}
+}
+
+// slowCodec takes a second to process each payload, as a provider unwrapping
+// data keys it has not seen would.
+type slowCodec struct {
+	payloadcodec.Codec
+	calls int
+}
+
+func (c *slowCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) {
+	c.calls++
+	time.Sleep(time.Second)
+	return p, nil
+}
+
+// TestOneRequestStartsBoundedWork: a decode needing more provider time than
+// its budget stops starting payloads once the budget has passed and answers
+// 503, rather than running on after its response deadline cut it off.
+func TestOneRequestStartsBoundedWork(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		env := map[string]string{"A": string(local.Generate())}
+		cfg, err := envelope.ParseConfig([]byte(`
+namespaces:
+  ns-a: {current: a-1, keys: [{id: a-1, env: A}]}
+`))
+		require.NoError(t, err)
+		kr, err := envelope.Open(t.Context(), cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
+		require.NoError(t, err)
+		sealer, _ := kr.Codec("ns-a")
+		slow := &slowCodec{Codec: sealer}
+
+		h, err := codecserver.New(codecserver.Options{
+			Codecs:      payloadcodec.Config{Codec: kr.Reader(), Namespaces: map[string]payloadcodec.Codec{"ns-a": slow}},
+			Insecure:    true,
+			WorkTimeout: 3 * time.Second,
+		})
+		require.NoError(t, err)
+
+		payloads := make([]*commonpb.Payload, 10)
+		for i := range payloads {
+			payloads[i] = &commonpb.Payload{Data: []byte("x")}
+		}
+		body, err := protojson.Marshal(&commonpb.Payloads{Payloads: payloads})
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/codec"+codecserver.DecodeEndpoint, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(codecserver.NamespaceHeader, "ns-a")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+		require.Equal(t, 3, slow.calls, "work was started past the request's budget")
+	})
+}
+
+// TestABodyThatCannotBeReadIsNotASizeRefusal: only the byte limit is a size
+// decision the trail records; a read that failed otherwise is a bad request.
+func TestABodyThatCannotBeReadIsNotASizeRefusal(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, nil)
+	h, err := codecserver.New(codecserver.Options{Codecs: f.codecs, Insecure: true})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/codec"+codecserver.DecodeEndpoint, iotest.ErrReader(errors.New("connection reset")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(codecserver.NamespaceHeader, "ns-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.NotContains(t, rec.Body.String(), "limit", "a failed read was reported as a size refusal")
 }

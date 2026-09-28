@@ -101,6 +101,7 @@ const (
 	DefaultMaxBodyBytes        = 4 << 20
 	DefaultMaxPayloads         = 256
 	DefaultRequestsPerMinute   = 600
+	DefaultWorkTimeout         = 20 * time.Second
 	defaultMaxTrackedCallers   = 10_000
 	rateWindow                 = time.Minute
 	maxNamespaceHeaderBytes    = 255
@@ -157,6 +158,13 @@ type Options struct {
 	MaxPayloads       int
 	RequestsPerMinute int
 
+	// WorkTimeout bounds the codec work one request may start: payloads are
+	// processed one at a time, and none is started once it has passed or the
+	// caller has gone. Zero is DefaultWorkTimeout. A server's response
+	// deadline must allow it plus one payload's provider call, so the refusal
+	// can still be written.
+	WorkTimeout time.Duration
+
 	// now is the clock, for tests.
 	now func() time.Time
 }
@@ -190,6 +198,7 @@ func New(opts Options) (*Handler, error) {
 	opts.MaxBodyBytes = cmp.Or(opts.MaxBodyBytes, DefaultMaxBodyBytes)
 	opts.MaxPayloads = cmp.Or(opts.MaxPayloads, DefaultMaxPayloads)
 	opts.RequestsPerMinute = cmp.Or(opts.RequestsPerMinute, DefaultRequestsPerMinute)
+	opts.WorkTimeout = cmp.Or(opts.WorkTimeout, DefaultWorkTimeout)
 	opts.Logger = cmp.Or(opts.Logger, slog.Default())
 	if opts.now == nil {
 		opts.now = time.Now
@@ -329,11 +338,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var out []*commonpb.Payload
-	if endpoint == DecodeEndpoint {
-		out, err = codec.Codec.Decode(payloads.GetPayloads())
-	} else {
-		out, err = codec.Codec.Encode(payloads.GetPayloads())
+	out, err := h.process(ctx, codec.Codec, endpoint, payloads.GetPayloads())
+	if errors.Is(err, errWorkSpent) {
+		// Authorized, and stopped for time rather than refused: the data keys
+		// already unwrapped are cached, so the retry goes further.
+		if err := h.allow(ctx, subject); err != nil {
+			http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
+			return
+		}
+		header.Set("Retry-After", "1")
+		http.Error(w, "this request needs more key provider calls than one response allows; retry", http.StatusServiceUnavailable)
+		return
 	}
 	if err != nil {
 		// Recorded as an allowed request that failed, since authorization
@@ -370,6 +385,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	header.Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// errWorkSpent is process stopping at the request's work budget.
+var errWorkSpent = errors.New("codec server: the request's work budget is spent")
+
+// process runs the codec over payloads one at a time, so the work one request
+// starts is bounded: none is started once the budget has passed or the caller
+// has gone. Each payload's own provider call is bounded by the codec.
+func (h *Handler) process(ctx context.Context, codec payloadcodec.Codec, endpoint string, payloads []*commonpb.Payload) ([]*commonpb.Payload, error) {
+	run := codec.Encode
+	if endpoint == DecodeEndpoint {
+		run = codec.Decode
+	}
+	deadline := h.opts.now().Add(h.opts.WorkTimeout)
+	out := make([]*commonpb.Payload, 0, len(payloads))
+	for _, p := range payloads {
+		if ctx.Err() != nil || !h.opts.now().Before(deadline) {
+			return nil, errWorkSpent
+		}
+		one, err := run([]*commonpb.Payload{p})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, one...)
+	}
+	return out, nil
 }
 
 // authorize answers 0 to proceed, or the status, message, and audit code of a
@@ -426,8 +467,13 @@ func (h *Handler) temporalNamespaceOf(tenant string) (string, bool, error) {
 // for size (the body or the payload count) rather than for shape.
 func (h *Handler) readPayloads(w http.ResponseWriter, r *http.Request) (*commonpb.Payloads, bool, error) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.opts.MaxBodyBytes))
+	if tooBig := (*http.MaxBytesError)(nil); errors.As(err, &tooBig) {
+		return nil, true, fmt.Errorf("the request body is over the %d byte limit", h.opts.MaxBodyBytes)
+	}
 	if err != nil {
-		return nil, true, fmt.Errorf("the request body is over the %d byte limit or could not be read", h.opts.MaxBodyBytes)
+		// A read that failed for another reason (a caller that went away) is
+		// not a size decision, and is not recorded as one.
+		return nil, false, errors.New("the request body could not be read")
 	}
 	var payloads commonpb.Payloads
 	if err := protojson.Unmarshal(body, &payloads); err != nil {
