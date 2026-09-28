@@ -3,11 +3,13 @@ package envelope
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+	"weak"
 
 	"github.com/stretchr/testify/require"
 	commonpb "go.temporal.io/api/common/v1"
@@ -310,4 +312,110 @@ func TestConcurrentSealsReserveTheBudget(t *testing.T) {
 	require.True(t, byBytes.fresh(bp, time.Now(), 20))
 	require.False(t, byBytes.fresh(bp, time.Now(), 10))
 	require.EqualValues(t, 1, byBytes.messages.Load(), "a refused reservation kept its message")
+}
+
+// TestAnIdleCachedDataKeyIsClearedWhenItsWindowCloses: a cached data key is
+// removed and zeroed when its ttl passes even if nothing asks for it again,
+// so an idle namespace does not keep a key in memory past the window that
+// bounds a disabled wrapping key.
+func TestAnIdleCachedDataKeyIsClearedWhenItsWindowCloses(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		c := newDecodeCache(0, time.Now, false)
+		var key [32]byte
+		c.put(key, bytes.Repeat([]byte{1}, keyprovider.DataKeyBytes), time.Minute)
+		c.mu.Lock()
+		held := c.entries[key].Value.(*cacheEntry).dataKey
+		c.mu.Unlock()
+
+		time.Sleep(time.Minute - time.Nanosecond)
+		synctest.Wait()
+		require.Equal(t, 1, cachedEntries(c), "the entry went before its window closed")
+
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		require.Zero(t, cachedEntries(c), "an idle entry outlived its window")
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		require.Equal(t, make([]byte, keyprovider.DataKeyBytes), held, "the expired data key was not cleared")
+	})
+}
+
+// TestAnIdleCodecLetsItsDataKeyGo: a codec that stops sealing drops its data
+// key once max_age + stale_grace has passed, rather than holding it until
+// its next seal, and seals under a fresh key afterwards while still reading
+// what the old one wrote.
+func TestAnIdleCodecLetsItsDataKeyGo(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		primary, err := local.Parse(local.Generate())
+		require.NoError(t, err)
+		c, err := New(t.Context(), Options{
+			Binding: "ns",
+			Current: "k1",
+			Keys:    []Recipient{{ID: "k1", Key: primary}},
+			DataKey: &v1.PayloadDataKeyPolicy{MaxAge: durationpb.New(time.Minute), StaleGrace: durationpb.New(30 * time.Second)},
+		})
+		require.NoError(t, err)
+		sealed, err := c.Encode([]*commonpb.Payload{{Data: []byte("x")}})
+		require.NoError(t, err)
+		first := c.active.Load()
+		require.NotNil(t, first)
+
+		time.Sleep(90*time.Second - time.Nanosecond)
+		synctest.Wait()
+		require.Same(t, first, c.active.Load(), "the data key went inside its grace")
+
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		require.Nil(t, c.active.Load(), "an idle codec held its data key past max_age + stale_grace")
+		require.Zero(t, cachedEntries(c.cache), "the codec's own copy outlived its window in the cache")
+
+		_, err = c.Encode([]*commonpb.Payload{{Data: []byte("y")}})
+		require.NoError(t, err)
+		require.NotSame(t, first, c.active.Load())
+		opened, err := c.Decode(sealed)
+		require.NoError(t, err)
+		require.Equal(t, []byte("x"), opened[0].Data)
+	})
+}
+
+// cachedEntries counts c's data keys under its lock.
+func cachedEntries(c *decodeCache) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.order.Len()
+}
+
+// TestARolledOverDataKeyIsNotKeptByItsTimer: a key replaced by a rollover on
+// its message bound becomes unreachable once no seal holds it, so its cleanup
+// can clear it. The timer that retires an idle key must not keep every key a
+// busy codec rolled past alive for the whole window.
+func TestARolledOverDataKeyIsNotKeptByItsTimer(t *testing.T) {
+	t.Parallel()
+
+	primary, err := local.Parse(local.Generate())
+	require.NoError(t, err)
+	c, err := New(t.Context(), Options{
+		Binding: "ns",
+		Current: "k1",
+		Keys:    []Recipient{{ID: "k1", Key: primary}},
+		DataKey: &v1.PayloadDataKeyPolicy{MaxMessages: 1},
+	})
+	require.NoError(t, err)
+
+	var replaced []weak.Pointer[activeKey]
+	for range 8 {
+		replaced = append(replaced, weak.Make(c.active.Load()))
+		_, err := c.Encode([]*commonpb.Payload{{Data: []byte("x")}})
+		require.NoError(t, err)
+	}
+	runtime.GC()
+	runtime.GC()
+	for i, w := range replaced {
+		require.Nil(t, w.Value(), "rolled-over key %d is still reachable", i)
+	}
+	require.NotNil(t, c.active.Load())
 }

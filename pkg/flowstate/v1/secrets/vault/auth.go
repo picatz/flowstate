@@ -226,12 +226,6 @@ func (p *Provider) login(ctx context.Context) (string, time.Duration, error) {
 	return payload.Auth.ClientToken, time.Duration(payload.Auth.LeaseDuration) * time.Second, nil
 }
 
-// readJWT reads the pod's projected service account token.
-//
-// It is read on every login rather than kept from construction because the kubelet
-// rotates a projected token in place, and a copy taken at startup stops being
-// accepted partway through a worker's life. The token's contents never leave this
-// function except in the login request body.
 // maxJWTBytes bounds the service account token read at each login. A
 // projected token is a few kilobytes; this is far more, and a bound on what a
 // misconfigured path costs.
@@ -268,6 +262,12 @@ func readBoundedRegular(path string, limit int64) ([]byte, error) {
 	return contents, nil
 }
 
+// readJWT reads the pod's projected service account token.
+//
+// It is read on every login rather than kept from construction because the kubelet
+// rotates a projected token in place, and a copy taken at startup stops being
+// accepted partway through a worker's life. The token's contents never leave this
+// function except in the login request body.
 func (p *Provider) readJWT() (string, error) {
 	contents, err := readBoundedRegular(p.jwtPath, maxJWTBytes)
 	if err != nil {
