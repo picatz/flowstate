@@ -491,6 +491,17 @@ func (e *executor) applyDebugAsk(delivery *v1.SignalDelivery, parked bool) (defe
 		// the hold is already over, and "you are not the holder" says somebody
 		// else has it. A diagnostic that misdescribes what happened is worse
 		// than no diagnostic, so the arm stays and the reason is here.
+		//
+		// While a typed session is attached, its commands own the hold: a
+		// legacy resume would clear the lease under a session that still
+		// believes it holds the run, and the session would then read as
+		// expired to the client driving it.
+		if e.debug.attached() {
+			logger.Warn("refusing a legacy debug resume: a typed debug session is attached",
+				"sender", who, "session", e.debug.carry.GetSessionId())
+
+			return false
+		}
 		if !held {
 			logger.Info("ignoring a debug resume: this run holds no debug lease",
 				"sender", who)

@@ -186,7 +186,13 @@ func ParseTypedDebugAsk(payload *Node_Outputs) (*DebugAsk, bool, error) {
 	}
 
 	switch ask.Verb {
-	case DebugVerbPause, DebugVerbRenew, DebugVerbResume, DebugVerbBreakpoints:
+	case DebugVerbPause, DebugVerbRenew, DebugVerbBreakpoints:
+	case DebugVerbResume:
+		// A resume says how to resume. One that does not is malformed, and a
+		// held run is never let go on a guess at what it meant.
+		if ask.Action == DebugResumeAction_DEBUG_RESUME_ACTION_UNSPECIFIED {
+			return ask, true, errors.New("a typed resume names no action")
+		}
 	default:
 		return ask, true, fmt.Errorf("debug verb %q is not one this build knows", ask.Verb)
 	}
