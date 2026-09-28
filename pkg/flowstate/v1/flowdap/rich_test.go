@@ -976,6 +976,30 @@ func TestALaunchWhoseArgumentsDoNotDecodeIsRefused(t *testing.T) {
 		"the refused launch's stopOnEntry reached the next one")
 }
 
+// TestALaunchTheLauncherRefusedLeavesNoOptionsBehind: a launch the launcher
+// refuses — here, a program that does not exist — records none of its options,
+// so the retry that corrects it and says nothing about `stopOnEntry` stops on
+// entry, as the default says, rather than inheriting the refused launch's
+// `false` and being released past a stop the editor never sees.
+func TestALaunchTheLauncherRefusedLeavesNoOptionsBehind(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program + ".missing", "stopOnEntry": false})
+	require.Equal(t, false, c.await("response", "launch")["success"], "a launch of a missing program was taken")
+
+	c.send(3, "launch", map[string]any{"program": program})
+	require.Equal(t, true, c.await("response", "launch")["success"])
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	assert.Equal(t, "entry", body(c.await("event", "stopped"))["reason"],
+		"the refused launch's stopOnEntry reached the retry")
+}
+
 // TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd is a replacement
 // the run applies while it keeps moving and never stops for — a breakpoint on
 // a step it refuses, say — so its next revision is its end: the editor hears

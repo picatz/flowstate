@@ -624,20 +624,19 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 
 		return
 	}
-	s.program = asked.Program
-	s.revealSensitive = asked.RevealSensitive
-	if asked.StopOnEntry != nil {
-		s.stopOnEntry = *asked.StopOnEntry
-	}
 	launcher := s.launcher
-	s.mu.Unlock()
-
 	if launcher == nil {
+		s.adoptLocked(asked)
+		s.mu.Unlock()
 		s.reply(request, nil)
 
 		return
 	}
+	s.mu.Unlock()
 
+	// The options are adopted only once the launch is taken: one the launcher
+	// refused, a missing input say, must not leave its `stopOnEntry` behind
+	// for the retry that corrects it.
 	launched, err := launcher(ctx, asked)
 	if err != nil {
 		s.fail(request, err.Error())
@@ -646,6 +645,7 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.adoptLocked(asked)
 	s.bound = true
 	s.target = launched.Target
 	s.sourceMap = launched.SourceMap
@@ -658,6 +658,15 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 
 	s.reply(request, nil)
 	s.reapply(ctx)
+}
+
+// adoptLocked records a taken launch's options. Callers hold s.mu.
+func (s *Server) adoptLocked(asked LaunchArguments) {
+	s.program = asked.Program
+	s.revealSensitive = asked.RevealSensitive
+	if asked.StopOnEntry != nil {
+		s.stopOnEntry = *asked.StopOnEntry
+	}
 }
 
 func (s *Server) attach(ctx context.Context, request inbound) {
