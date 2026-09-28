@@ -563,7 +563,7 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 			// machine-readable record an agent carries forward that
 			// refusedRunSensitiveValues' own doc names as the reason this
 			// exists. inputs is what runLocalToolInputs decoded before the
-			// failure — nil for a failure inputsFromJSON itself raised (a
+			// failure — nil for a failure decoding them raised (a
 			// numeric overflow, say), the bound map for one
 			// jsonRunInputs raised on top of it (a `must:` failure) — the
 			// same distinction the CLI's two call sites of
@@ -1065,11 +1065,10 @@ func runLocalSignalFlags(signals map[string]json.RawMessage) ([]string, error) {
 // runLocalToolInputs binds the tool's `inputs` object against the submitted
 // source's declarations.
 //
-// Reassembled into one document and handed to [inputsFromJSON] rather than
-// converted here, so this surface and `--input-file` read a value through one
-// decoder: the same reason [runLocalSignalFlags] renders signals as the flags the
-// CLI already parses. An agent and a person composing the same arguments get the
-// same run, or the same refusal.
+// Its values are read through [jsonRunInputs], with the decoder `--input-file`
+// uses ([inputsFromDecoded]): the same reason [runLocalSignalFlags] renders
+// signals as the flags the CLI already parses. An agent and a person composing
+// the same arguments get the same run, or the same refusal.
 //
 // The refusal is checked here rather than left to the driver for the reason the
 // CLI checks early: [v1.RunWithInputs] binds authoritatively a moment later, and
@@ -1083,7 +1082,7 @@ func runLocalToolInputs(workflow *v1.Workflow, submitted map[string]json.RawMess
 // most this many under `inputs:` (Workflow.declared_inputs, max_items) and a
 // started run carries at most this many (RunRequest.inputs, max_pairs). An
 // object naming more can never bind, so [jsonRunInputs] refuses it before
-// re-encoding and decoding an object whose size the sender chose.
+// decoding any of an object whose size the sender chose.
 const maxRunInputs = 64
 
 // jsonRunInputs binds a surface's JSON object of arguments against workflow's
@@ -1100,22 +1099,20 @@ func jsonRunInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage, 
 	// exactly as it is without the object.
 	if len(submitted) > 0 {
 		// Each value is decoded where it arrived rather than the object being
-		// re-encoded and read back whole: the same per-name decoder
-		// [inputsFromJSON] applies, in the same sorted order so two bad values
-		// report the same one first, without a second copy of whatever the
-		// sender chose to send.
-		declared := declaredInputs(workflow)
-		inputs = make(map[string]*v1.Value, len(submitted))
+		// re-encoded and read back whole, which would make a second copy of
+		// whatever the sender chose to send. Sorted, as [inputsFromDecoded]
+		// sorts, so two bad values report the same one first.
+		fields := make(map[string]any, len(submitted))
 		for _, name := range slices.Sorted(maps.Keys(submitted)) {
 			decoded, err := decodeInputJSON(string(submitted[name]))
 			if err != nil {
 				return nil, fmt.Errorf("%s: input %q: %w", source, name, err)
 			}
-			value, err := valueFromJSON(name, decoded, declared[name])
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", source, err)
-			}
-			inputs[name] = value
+			fields[name] = decoded
+		}
+		var err error
+		if inputs, err = inputsFromDecoded(source, fields, declaredInputs(workflow)); err != nil {
+			return nil, err
 		}
 	}
 	bound, err := v1.BindRunInputs(workflow, inputs)

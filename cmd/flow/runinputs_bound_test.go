@@ -39,8 +39,8 @@ func TestMaxRunInputsIsTheSchemasBound(t *testing.T) {
 
 // TestAnObjectNamingMoreInputsThanARunTakesIsRefusedUnread: a JSON object of
 // arguments naming more inputs than any run takes is refused by its count,
-// before it is re-encoded and decoded, on every surface that binds one. At the
-// bound it is read, and refused only for what it names.
+// before any of it is decoded, on every surface that binds one. At the bound
+// it is read, and refused only for what it names.
 func TestAnObjectNamingMoreInputsThanARunTakesIsRefusedUnread(t *testing.T) {
 	t.Parallel()
 
