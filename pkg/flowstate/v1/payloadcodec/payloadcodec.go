@@ -418,6 +418,25 @@ func (c Config) ForWriting(namespace string) (Config, error) {
 	return one, nil
 }
 
+// CanWrite reports whether any process could write history with c: it
+// encrypts nothing, or at least one of its codecs is not [DecodeOnly]. A
+// keyring for which it is false is a recovery keyring, usable only to read.
+func (c Config) CanWrite() bool {
+	if !c.Enabled() {
+		return true
+	}
+	if len(c.Namespaces) == 0 {
+		reader, ok := c.Codec.(DecodeOnly)
+		return !ok || !reader.DecodeOnly()
+	}
+	for _, codec := range c.Namespaces {
+		if reader, ok := codec.(DecodeOnly); !ok || !reader.DecodeOnly() {
+			return true
+		}
+	}
+	return false
+}
+
 // Refusing is the slot for a client dialed for a namespace this deployment
 // holds no keys for but must still construct: every Encode and Decode fails,
 // naming the namespace, so nothing reaches that namespace's history in

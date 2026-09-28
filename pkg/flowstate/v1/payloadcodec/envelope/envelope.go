@@ -308,7 +308,7 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 	if len(opts.Escrow) > MaxEscrow {
 		return nil, fmt.Errorf("envelope: %d escrow keys, and a data key is wrapped to at most %d", len(opts.Escrow), MaxEscrow)
 	}
-	suite, decrypt, err := resolveSuites(opts.Suite, opts.DecryptSuites)
+	suite, decrypt, err := resolveSuites(opts.Suite, opts.DecryptSuites, opts.Current != "")
 	if err != nil {
 		return nil, err
 	}

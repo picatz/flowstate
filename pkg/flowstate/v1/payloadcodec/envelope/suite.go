@@ -128,12 +128,18 @@ func usableSuites() []Suite {
 // resolveSuites is a namespace's encrypt suite and decrypt allow-list with
 // defaults applied, refused when either names a suite this process may not
 // use.
-func resolveSuites(encrypt Suite, decrypt []Suite) (Suite, []Suite, error) {
+//
+// writes is whether the codec has a current key. A decode-only codec never
+// encrypts, so an encrypt suite left at its default is not checked against
+// anything: a recovery namespace narrowed to the one suite its history uses
+// is not refused over a suite it will never write with.
+func resolveSuites(encrypt Suite, decrypt []Suite, writes bool) (Suite, []Suite, error) {
 	usable := usableSuites()
+	checkEncrypt := writes || encrypt != v1.PayloadSuite_PAYLOAD_SUITE_UNSPECIFIED
 	if encrypt == v1.PayloadSuite_PAYLOAD_SUITE_UNSPECIFIED {
 		encrypt = DefaultSuite
 	}
-	if !slices.Contains(usable, encrypt) {
+	if checkEncrypt && !slices.Contains(usable, encrypt) {
 		return 0, nil, unusableSuite(encrypt)
 	}
 	if len(decrypt) == 0 {
@@ -144,7 +150,7 @@ func resolveSuites(encrypt Suite, decrypt []Suite) (Suite, []Suite, error) {
 			return 0, nil, unusableSuite(s)
 		}
 	}
-	if !slices.Contains(decrypt, encrypt) {
+	if writes && !slices.Contains(decrypt, encrypt) {
 		return 0, nil, fmt.Errorf("envelope: the encrypt suite %s is not among the decrypt suites, "+
 			"so this namespace could not read what it writes", encrypt)
 	}

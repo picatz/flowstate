@@ -141,6 +141,15 @@ escrow_keys:
 	// startup rather than at its first write.
 	_, _, err = runCLI(t, "worker", "--allow-unversioned-interpreter", "--payload-keyring", recovery)
 	require.ErrorContains(t, err, "decode-only")
+
+	// And a local run, which resolves the same keyring, refuses it the same
+	// way rather than approving what no worker could start with.
+	t.Setenv(payloadKeyringEnv, recovery)
+	_, err = localPayloadCodec()
+	require.ErrorContains(t, err, "decode-only")
+	t.Setenv(payloadKeyringEnv, keyring)
+	_, err = localPayloadCodec()
+	require.NoError(t, err, "a keyring that can write is not refused locally")
 }
 
 // TestCodecKeygenLeavesNoHalfAPair: an HPKE pair is written whole or not at

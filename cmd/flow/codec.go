@@ -118,8 +118,22 @@ func openPayloadKeyring(path string) (*envelope.Keyring, error) {
 // `flow test` fixture written to disk, that state is a boundary, and the codec
 // belongs on it. That is the moment to change this function, and the reason to
 // come looking for it.
+//
+// A local run names no Temporal namespace, so it cannot ask the question
+// `flow worker` asks of its own ([payloadcodec.Config.ForWriting]); it asks
+// the one that can be answered without one, and refuses a keyring no
+// namespace of which can write, which no worker could start with.
 func localPayloadCodec() (payloadcodec.Config, error) {
-	return payloadCodecConfig(payloadEncryptionFromEnv())
+	cfg, err := payloadCodecConfig(payloadEncryptionFromEnv())
+	if err != nil {
+		return payloadcodec.Config{}, err
+	}
+	if !cfg.CanWrite() {
+		return payloadcodec.Config{}, errors.New("payload keyring: every namespace is decode-only (none names a " +
+			"current key), so no worker could start with it: this is a recovery keyring, for `flow codec serve` " +
+			"and `flow codec status` only")
+	}
+	return cfg, nil
 }
 
 const (
