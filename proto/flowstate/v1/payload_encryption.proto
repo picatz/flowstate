@@ -371,8 +371,13 @@ message PayloadDataKeyPolicy {
   // How many payloads one data key seals. Unset is 2^20.
   uint64 max_messages = 2 [(buf.validate.field).uint64.lte = 4294967296];
 
-  // How many plaintext bytes one data key seals. Unset is 64 GiB.
-  uint64 max_bytes = 3;
+  // How many plaintext bytes one data key seals. Unset is 64 GiB. At least
+  // Temporal's 2 MiB blob limit, so that every payload fits a fresh key's
+  // budget and the bound holds from a key's first payload.
+  uint64 max_bytes = 3 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).uint64.gte = 2097152
+  ];
 
   // How long past max_age a data key keeps sealing when its successor
   // cannot be wrapped because the key provider is unreachable. Unset is

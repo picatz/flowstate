@@ -245,8 +245,10 @@ func init() {
 			Leading: " How many payloads one data key seals. Unset is 2^20.\n",
 		},
 		{
-			Name:    "flowstate.v1.PayloadDataKeyPolicy.max_bytes",
-			Leading: " How many plaintext bytes one data key seals. Unset is 64 GiB.\n",
+			Name: "flowstate.v1.PayloadDataKeyPolicy.max_bytes",
+			Leading: " How many plaintext bytes one data key seals. Unset is 64 GiB. At least\n" +
+				" Temporal's 2 MiB blob limit, so that every payload fits a fresh key's\n" +
+				" budget and the bound holds from a key's first payload.\n",
 		},
 		{
 			Name: "flowstate.v1.PayloadDataKeyPolicy.stale_grace",

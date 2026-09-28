@@ -316,6 +316,11 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 	if len(opts.Escrow) > MaxEscrow {
 		return nil, fmt.Errorf("envelope: %d escrow keys, and a data key is wrapped to at most %d", len(opts.Escrow), MaxEscrow)
 	}
+	if opts.DataKey != nil {
+		if err := v1.Validate(opts.DataKey); err != nil {
+			return nil, fmt.Errorf("envelope: data key policy: %w", err)
+		}
+	}
 	suite, decrypt, err := resolveSuites(opts.Suite, opts.DecryptSuites, opts.Current != "")
 	if err != nil {
 		return nil, err
@@ -646,8 +651,12 @@ func (c *Codec) activeFor(ctx context.Context, size int) (*activeKey, error) {
 		var next *activeKey
 		if next, err = c.newActive(ctx, now); err == nil {
 			c.lastErr, c.retryAt = nil, time.Time{}
-			next.charge(size)
 			c.active.Store(next)
+			// A fresh key's budget holds any payload seal admits: max_bytes
+			// is at least the blob limit, and max_messages at least one.
+			if !next.reserve(c.policy, size) {
+				return nil, fmt.Errorf("envelope: a %d-byte payload does not fit a fresh data key's budget", size)
+			}
 			return next, nil
 		}
 		now = c.now()

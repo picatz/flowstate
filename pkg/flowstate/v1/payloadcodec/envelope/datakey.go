@@ -142,13 +142,6 @@ func (k *activeKey) reserve(p dataKeyPolicy, size int) bool {
 	}
 }
 
-// charge is reserve without the bounds, for a key's first payload: a key just
-// wrapped for a payload larger than max_bytes still seals it, once.
-func (k *activeKey) charge(size int) {
-	k.messages.Add(1)
-	k.bytes.Add(uint64(size))
-}
-
 // release returns a reservation that was not used.
 func (k *activeKey) release(size int) {
 	k.messages.Add(^uint64(0))

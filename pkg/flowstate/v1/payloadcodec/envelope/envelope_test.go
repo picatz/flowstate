@@ -128,27 +128,46 @@ func TestADataKeyRollsOverAtEachBound(t *testing.T) {
 	clock.Store(time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC).UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()) }
 
+	// The byte bound's floor is the blob limit, so its case seals a large
+	// payload first and a second large one past what is left.
+	const large = 1 << 20
+
 	for name, tc := range map[string]struct {
 		policy  *v1.PayloadDataKeyPolicy
 		advance func()
+		size    int
 	}{
 		"age":      {policy: &v1.PayloadDataKeyPolicy{MaxAge: durationpb.New(time.Minute)}, advance: func() { clock.Add(int64(time.Minute)) }},
 		"messages": {policy: &v1.PayloadDataKeyPolicy{MaxMessages: 2}, advance: func() {}},
-		"bytes":    {policy: &v1.PayloadDataKeyPolicy{MaxBytes: 200}, advance: func() {}},
+		"bytes":    {policy: &v1.PayloadDataKeyPolicy{MaxBytes: 2 << 20}, advance: func() {}, size: large},
 	} {
 		opts := oneKey(t, "ns")
 		opts.DataKey = tc.policy
 		envelope.SetClock(&opts, now)
 		c := newCodec(t, opts)
 
-		first := header(t, seal(t, c, marker)).GetWrappedKey()
+		first := header(t, seal(t, c, marker+strings.Repeat("a", tc.size))).GetWrappedKey()
 		require.Equal(t, first, header(t, seal(t, c, "x")).GetWrappedKey(), name)
 		tc.advance()
-		third := seal(t, c, strings.Repeat("y", 200))
+		third := seal(t, c, strings.Repeat("y", max(200, tc.size)))
 		require.NotEqual(t, first, header(t, third).GetWrappedKey(), "%s: the data key did not roll over", name)
 		_, err := c.Decode([]*commonpb.Payload{third})
 		require.NoError(t, err, name)
 	}
+}
+
+// A byte bound below the blob limit could not hold a payload a key is
+// rolled for, so it is refused rather than exceeded on each key's first use.
+func TestADataKeyByteBoundHoldsAnyPayload(t *testing.T) {
+	t.Parallel()
+
+	opts := oneKey(t, "ns")
+	opts.DataKey = &v1.PayloadDataKeyPolicy{MaxBytes: 1}
+	_, err := envelope.New(t.Context(), opts)
+	require.ErrorContains(t, err, "max_bytes")
+
+	opts.DataKey = &v1.PayloadDataKeyPolicy{MaxBytes: v1.TemporalDefaultBlobLimitBytes}
+	newCodec(t, opts)
 }
 
 // TestAnUnreachableProviderStopsWritesNotReads: while the provider is down,

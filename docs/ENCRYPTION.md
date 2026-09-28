@@ -199,7 +199,7 @@ Each namespace can also set:
 | `decrypt_suites` | every suite this process may use | What is read. Narrow it to retire a suite |
 | `escrow` | none | Up to three `escrow_keys` every data key is also wrapped to |
 | `data_key.max_age` | `600s` | How long one data key seals, and how long an unwrapped one is cached. Durations are written in seconds |
-| `data_key.max_messages`, `data_key.max_bytes` | 2²⁰, 64 GiB | The other two bounds on one data key |
+| `data_key.max_messages`, `data_key.max_bytes` | 2²⁰, 64 GiB | The other two bounds on one data key; `max_bytes` is at least 2 MiB, so any payload fits a fresh key |
 | `data_key.stale_grace` | `0s` | How long past `max_age` a data key keeps sealing while the provider is unreachable |
 | `data_key.decode_cache_entries` | 4096 | How many unwrapped data keys a process keeps for reading |
 
