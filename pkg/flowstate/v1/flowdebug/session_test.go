@@ -1012,6 +1012,31 @@ func TestAStopInsideALoopSaysWhichIteration(t *testing.T) {
 	assert.Contains(t, out, "iteration 7", "the backtrace did not say which iteration")
 }
 
+// TestAFailureStopInsideALoopSaysWhichIteration: a `catch` stop names the
+// failing arrival by its address too, not by a step id every iteration shares.
+func TestAFailureStopInsideALoopSaysWhichIteration(t *testing.T) {
+	t.Parallel()
+
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{In: strings.NewReader("catch all\ncontinue\ncontinue\n"), Out: &console})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	ctx := v1.NewContextWithDebugger(t.Context(), session)
+	_, runErr := v1.Run(ctx, &v1.Workflow{Name: "looping", Steps: []*v1.Node{{
+		Id: "each",
+		Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items:    v1.NewLiteralList(0, 1, 2, 3),
+			Iterator: "n",
+			Body:     []*v1.Node{{Id: "divide", Kind: &v1.Node_Value{Value: v1.NewExpr("10 / (n - 2)")}}},
+		}},
+	}}})
+	require.Error(t, runErr, "the fixture's failing iteration did not fail the run")
+
+	assert.Contains(t, console.String(), "stopped: each[2]/divide failed",
+		"the failure stop did not name the iteration that failed")
+}
+
 // TestAConditionThatIsNeverTrueNeverStops is the negative direction, and the
 // one a test asserting only "it stopped" would miss.
 func TestAConditionThatIsNeverTrueNeverStops(t *testing.T) {

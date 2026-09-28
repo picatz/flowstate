@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -304,7 +305,7 @@ func (s *Session) StepFailed(ctx context.Context, node *v1.Node, scope *v1.Scope
 	}
 
 	return s.hold(ctx, node, scope, occurrence, v1.DebugStopReason_DEBUG_STOP_REASON_FAILURE, nil, text, func() {
-		s.printfTone(ToneDanger, "stopped: %s %s: %s\n", node.GetId(), how, text)
+		s.printfTone(ToneDanger, "stopped: %s %s: %s\n", cmp.Or(occurrence.GetAddress(), node.GetId()), how, text)
 	})
 }
 
