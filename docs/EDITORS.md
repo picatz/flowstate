@@ -601,8 +601,10 @@ Stack frames name the current step and every loop, branch and `call:` around
 it. A run is one thread even where a `parallel:` block runs several steps at
 once, and the debugger does not stop inside a task.
 
-**What a launch can say.** A launch request reads `program` and
-`revealSensitive`, nothing else. The run starts with no inputs and no signals,
+**What a launch can say.** A launch request reads `program`,
+`revealSensitive` and `stopOnEntry`, nothing else. `stopOnEntry` defaults to
+`true`, which holds the run at its first step; `false` runs it to the first
+breakpoint, failure stop or `pause` instead. The run starts with no inputs and no signals,
 so a workflow with a required input that has no default cannot be debugged
 through a launch today, and a `wait_for_signal:` step can only time out. Use
 `flow test --debug` on a test case, which supplies both, or

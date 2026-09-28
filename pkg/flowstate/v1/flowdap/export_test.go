@@ -10,3 +10,11 @@ func ShortenWatchRetries(backoff time.Duration) (restore func()) {
 
 	return func() { watchRetryBackoff = previous }
 }
+
+// BreakpointIDs is how many editor breakpoint numbers s is holding.
+func BreakpointIDs(s *Server) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.ids)
+}

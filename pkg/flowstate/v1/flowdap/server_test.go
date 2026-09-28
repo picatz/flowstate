@@ -1198,3 +1198,50 @@ func TestAnUndeclaredBreakpointComesBackUnverified(t *testing.T) {
 	assert.Contains(t, missing["message"], `no step named "deploi"`,
 		"the unverified answer must say why, in the words the prompt uses")
 }
+
+// TestBreakpointNumbersGoWithTheirSlots is a client moving one breakpoint
+// across many files: each file's set is bounded, and the numbers of slots a
+// file no longer has are dropped rather than kept for the session's life,
+// while a slot that stays keeps its number.
+func TestBreakpointNumbersGoWithTheirSlots(t *testing.T) {
+	t.Parallel()
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(session, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+
+	seq := 2
+	set := func(path string, lines ...int) []any {
+		entries := make([]map[string]any, 0, len(lines))
+		for _, line := range lines {
+			entries = append(entries, map[string]any{"line": line})
+		}
+		c.send(seq, "setBreakpoints", map[string]any{"source": map[string]any{"path": path}, "breakpoints": entries})
+		seq++
+		answer := c.await("response", "setBreakpoints")
+		require.Equal(t, true, answer["success"], answer)
+
+		return body(answer)["breakpoints"].([]any)
+	}
+
+	kept := set("/kept.yaml", 3)[0].(map[string]any)["id"]
+	for i := range 2 * flowdebug.MaxBreakpoints {
+		path := fmt.Sprintf("/moving-%d.yaml", i)
+		set(path, 7)
+		set(path)
+	}
+	assert.LessOrEqual(t, flowdap.BreakpointIDs(server), 2,
+		"numbers for slots that are gone were kept for the session's life")
+	assert.Equal(t, kept, set("/kept.yaml", 3)[0].(map[string]any)["id"],
+		"a slot that stayed was renumbered")
+}

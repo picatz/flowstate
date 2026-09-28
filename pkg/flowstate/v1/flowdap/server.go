@@ -97,6 +97,7 @@ type Server struct {
 	functions   []functionBreakpoint
 	failureMode v1.DebugFailureMode
 	ids         map[string]int
+	idSeq       int
 
 	ended sync.Once
 	exit  int
@@ -592,9 +593,29 @@ func (s *Server) breakpointID(id string) int {
 	if n, ok := s.ids[id]; ok {
 		return n
 	}
-	s.ids[id] = len(s.ids) + 1
+	s.idSeq++
+	s.ids[id] = s.idSeq
 
-	return s.ids[id]
+	return s.idSeq
+}
+
+// forgetLines drops the editor numbers of path's line slots from the first
+// one its set no longer has, so a client moving breakpoints across files
+// does not grow the table with slots that are gone.
+func (s *Server) forgetLines(path string, from int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prefix := "line:" + path + ":"
+	for id := range s.ids {
+		slot, ok := strings.CutPrefix(id, prefix)
+		if !ok {
+			continue
+		}
+		if i, err := strconv.Atoi(slot); err == nil && i >= from {
+			delete(s.ids, id)
+		}
+	}
 }
 
 // release starts the run once the editor has configured it, and begins
@@ -1237,6 +1258,7 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 		return
 	}
 
+	s.forgetLines(asked.Source.Path, len(wanted))
 	answers := make([]breakpoint, 0, len(wanted))
 	for i, want := range wanted {
 		answer := answerFor(states[lineID(asked.Source.Path, i)])
