@@ -375,12 +375,17 @@ func (s *Session) showBacktrace() {
 	if len(trace.GetFrames()) == 0 {
 		return
 	}
-	snapshot, err := s.Snapshot(context.Background())
-	if err != nil {
-		s.printfTone(ToneWarning, "%s\n", err)
-		return
-	}
-	s.printf("%s", formatFrames(snapshot))
+	// Assembled unredacted from the held occurrence, then redacted once and
+	// whole by the redactor this pause was taken under, as
+	// [Session.BacktraceLabels] is: joined fields can recreate a protected
+	// substring, and the session's live redactor may already have changed.
+	redact := s.snapshotTextRedactor()
+	s.mu.Lock()
+	frames := Frames(s.contract.occurrence, func(site *v1.DebugSite) *v1.DebugSourceLocation {
+		return s.contract.sources[v1.DebugSiteKey(site)]
+	}, nil)
+	s.mu.Unlock()
+	s.printf("%s", applyText(redact, formatFrames(&v1.DebugSnapshot{Frames: frames})))
 }
 
 // split separates the first word of a line from the rest.

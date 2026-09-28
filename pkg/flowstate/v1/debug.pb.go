@@ -1437,9 +1437,10 @@ func (*DebugBinding_Error) isDebugBinding_Answer() {}
 // looking for which *kind* of name they can reach.
 type DebugScopeGroup struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Group is the root the names hang from as a reader sees it — `steps`,
-	// `vars`, the workflow's declared vars, and the bare bindings an autopsy
-	// adds.
+	// Group is the label a reader sees, named for how the names are reached:
+	// `steps`, `inputs`, `vars` (the workflow's declared `vars:`), `run`,
+	// `trigger`, `locals` (a loop's `as:` and a step's own `vars:`, bound
+	// bare), and `bound` (the bare bindings an autopsy adds).
 	Group string `protobuf:"bytes,1,opt,name=group,proto3" json:"group,omitempty"`
 	// Root is the expression prefix these names hang from — `steps`, `inputs`,
 	// `vars`, `run`, `trigger` — or empty where they are bound bare and resolve

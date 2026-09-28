@@ -339,9 +339,10 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.DebugScopeGroup.group",
-			Leading: " Group is the root the names hang from as a reader sees it — `steps`,\n" +
-				" `vars`, the workflow's declared vars, and the bare bindings an autopsy\n" +
-				" adds.\n",
+			Leading: " Group is the label a reader sees, named for how the names are reached:\n" +
+				" `steps`, `inputs`, `vars` (the workflow's declared `vars:`), `run`,\n" +
+				" `trigger`, `locals` (a loop's `as:` and a step's own `vars:`, bound\n" +
+				" bare), and `bound` (the bare bindings an autopsy adds).\n",
 		},
 		{
 			Name: "flowstate.v1.DebugScopeGroup.root",
