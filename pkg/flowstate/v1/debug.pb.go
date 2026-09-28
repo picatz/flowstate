@@ -3082,14 +3082,17 @@ type DebugBreakpointState struct {
 	// Sites are the sites the breakpoint resolved to.
 	Sites []*DebugSite `protobuf:"bytes,5,rep,name=sites,proto3" json:"sites,omitempty"`
 	// LastError is the most recent condition or log evaluation error, after
-	// redaction. Such an arrival does not stop the run.
+	// redaction. Such an arrival does not stop the run. Like [definition], it is
+	// withheld from a caller without `workload.debug_inspect`.
 	LastError string `protobuf:"bytes,6,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	// Source is where the resolved site came from, when a source map says so.
 	Source *DebugSourceLocation `protobuf:"bytes,7,opt,name=source,proto3" json:"source,omitempty"`
 	// Definition is the breakpoint as it was set, redacted as [id] is, so a
 	// client that did not set it can resend the whole set without dropping it:
 	// a set is replaced whole, and a state alone does not say how to rebuild
-	// the breakpoint it describes.
+	// the breakpoint it describes. A breakpoint with a condition or a log
+	// message is reported to a caller without `workload.debug_inspect` without
+	// it, its message, or its last error, since setting one needs that action.
 	Definition    *DebugBreakpoint `protobuf:"bytes,8,opt,name=definition,proto3" json:"definition,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

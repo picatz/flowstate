@@ -645,8 +645,9 @@ func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowI
 // does too: for a caller whose action list lacks it, every breakpoint that
 // carries one is reported without its definition — as a target too old to
 // report definitions would, so a client that would resend the set refuses
-// rather than drop the expression — and without its message, which for a
-// condition that did not compile can quote it. A caller with no action list
+// rather than drop the expression — and without its message or its last
+// error, which quote the condition when it did not compile and the values it
+// read when it failed to evaluate. A caller with no action list
 // keeps the legacy posture [FlowstateServer.requireDebugAction] documents.
 func expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSnapshot {
 	principal, ok := auth.PrincipalFromContext(ctx)
@@ -665,7 +666,7 @@ func expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSn
 	withheld := proto.CloneOf(snapshot)
 	for _, state := range withheld.GetBreakpoints() {
 		if carries(state) {
-			state.Definition = nil
+			state.Definition, state.LastError = nil, ""
 			state.Message = "its condition or log message needs " +
 				v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT) + " to read"
 		}

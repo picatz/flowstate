@@ -598,7 +598,7 @@ An attach reaches a server with the adapter's own `--address`, `--token-file`
 the durable session is the adapter's caller's: the run's `debug:` policy must
 name that identity, and its token must carry `workload.debug`, and
 `workload.debug_inspect` to evaluate, or to set a breakpoint carrying a
-condition or a log message.
+condition or a log message, or to read one back.
 
 **What a launch reads.** `program`, the workflow to run; `revealSensitive`, the
 deliberate reveal [Debugging](DEBUGGING.md#sensitive-values) describes; and
