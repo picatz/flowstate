@@ -294,6 +294,39 @@ func TestMaxEncodedSizeBoundsEveryPayload(t *testing.T) {
 	}
 }
 
+// The largest payload a codec accepts must still fit Temporal's blob limit
+// once sealed and framed, metadata included, and the next byte is refused
+// rather than written for Temporal to reject.
+func TestAnEncodedPayloadFitsTheBlobLimitWhole(t *testing.T) {
+	t.Parallel()
+
+	c := newCodec(t, oneKey(t, "ns"))
+	limit := v1.TemporalDefaultBlobLimitBytes
+	encodes := func(n int) ([]*commonpb.Payload, error) {
+		return c.Encode([]*commonpb.Payload{{Data: make([]byte, n)}})
+	}
+
+	// Binary search for the largest data field the codec seals.
+	lo, hi := limit-(64<<10), limit
+	_, err := encodes(lo)
+	require.NoError(t, err)
+	for lo+1 < hi {
+		mid := lo + (hi-lo)/2
+		if _, err := encodes(mid); err == nil {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+
+	out, err := encodes(lo)
+	require.NoError(t, err)
+	require.LessOrEqual(t, proto.Size(out[0]), limit, "the whole stored payload fits the blob limit")
+	require.Greater(t, len(out[0].GetData()), limit-(1<<10), "the bound is not needlessly tight")
+	_, err = encodes(lo + 1)
+	require.ErrorContains(t, err, "past the")
+}
+
 func TestPassesTheStartupCheck(t *testing.T) {
 	t.Parallel()
 
