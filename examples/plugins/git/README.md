@@ -91,7 +91,8 @@ network examples one level up.
 ## Running the private-read example
 
 Needs a real credential and a real private repository this token can read. Put
-the token in a file only you can read (mode 0600), `./plugin-env.yaml`:
+the token in a file only you can read (mode 0600), outside the checkout so it
+is never staged, `~/.config/flowstate/plugin-env.yaml`:
 
 ```yaml
 env:
@@ -102,7 +103,7 @@ env:
 ```console
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml \
-    --plugin-env-file ./plugin-env.yaml &
+    --plugin-env-file ~/.config/flowstate/plugin-env.yaml &
 $ flow run examples/plugins/git/ls-remote-private.yaml \
     --input url=https://github.com/your-org/your-private-repo.git
 ```
@@ -113,6 +114,15 @@ which starts empty, so the variable is named to the worker in
 reaches the plugin. `--plugin-env git=GIT_SECRET_0__TOKEN=...` works too, but
 puts the token in the worker's argv, which any local user can read, and in
 your shell history.
+
+Either way the token then sits in the plugin's environment, which anything
+running as the worker's user can read through `/proc/<pid>/environ` for as long
+as the plugin runs: the file protects it at rest, not there
+(`pkg/flowstate/v1/plugin/env_config.go`). On a host other users or processes
+share, resolve it worker-side instead. `token` is a secret input the host
+resolves for each call, so `token: ${secret('file:git-token')}`, with the worker
+started with `--secret-dir` naming a directory only it can read, hands the
+plugin the value for that call and keeps it out of the plugin's environment.
 
 Compare this file to `workflow.yaml` line by line: the only difference is
 `token: ${secret('git:token')}` on the `git.ls_remote:` step. Nothing about
@@ -163,13 +173,13 @@ exhaustion.
 ## Running the write example
 
 Do not run this against a repository you do not want a real commit pushed
-to. It needs a real credential, in the same `./plugin-env.yaml` as above, and a
-real target:
+to. It needs a real credential, in the same `~/.config/flowstate/plugin-env.yaml` as
+above, and a real target:
 
 ```console
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml \
-    --plugin-env-file ./plugin-env.yaml &
+    --plugin-env-file ~/.config/flowstate/plugin-env.yaml &
 $ flow run examples/plugins/git/commit-push.yaml \
     --input url=https://github.com/your-org/your-repo.git \
     --input branch=main \

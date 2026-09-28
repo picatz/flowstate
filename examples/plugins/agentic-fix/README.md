@@ -158,7 +158,7 @@ $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --plugin-env codex=FLOWSTATE_CODEX_GIT_BIN=/usr/bin/git \
     --plugin-env codex=FLOWSTATE_CODEX_BASE_CONFIG=/path/to/codex-base.toml \
     --plugin-env codex=FLOWSTATE_CODEX_WORKDIR_ROOT=/path/to/checkouts \
-    --plugin-env git=GIT_SECRET_0__TOKEN=... &
+    --plugin-env-file ~/.config/flowstate/plugin-env.yaml &
 $ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/agentic-fix/workflow.yaml \
     --input repo=https://github.com/your-org/your-repo.git \
@@ -171,7 +171,12 @@ $ flow run examples/plugins/agentic-fix/workflow.yaml \
 git plugin's `git:` scheme is another) refuses to start without an
 `--auth-policy` that has a `secrets:` section;
 [`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
-that allows every reference. The server takes `--plugin-dir` as well, because
+that allows every reference. The git token is in `~/.config/flowstate/plugin-env.yaml`
+(`env: {git: {GIT_SECRET_0__TOKEN: ...}}`, mode 0600) rather than a
+`--plugin-env` argument any local user could read; the
+[git example](../git/README.md#running-the-private-read-example) says why a
+shared host should resolve it worker-side instead. The server takes
+`--plugin-dir` as well, because
 it checks each task this file names, and its `plugins:` block, against the
 plugins it launched itself.
 

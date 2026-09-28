@@ -150,8 +150,15 @@ The plugin reads these from its own environment, which starts empty: name each
 to the worker in a `--plugin-env-file` only the worker's user can read
 (`env: {git: {GIT_SECRET_0__DEPLOY_TOKEN: ...}}`), since one exported in the
 worker's shell never reaches the plugin. `--plugin-env git=KEY=VALUE` also
-works, but puts the value in the worker's argv, which any local user can read. And because this plugin registers the `git:` scheme whether a
-Flowfile uses it or not, a worker that loads it needs `--auth-policy` with a
+works, but puts the value in the worker's argv, which any local user can read.
+Either way the value sits in the plugin's environment, readable through
+`/proc/<pid>/environ` by anything running as the worker's user
+(`pkg/flowstate/v1/plugin/env_config.go`); on a shared host, give `token` a
+worker-side reference such as `${secret('file:...')}` instead, which the host
+resolves for each call.
+
+And because this plugin registers the `git:` scheme whether a Flowfile uses it
+or not, a worker that loads it needs `--auth-policy` with a
 `secrets:` section: a worker holding a secret provider with no access policy
 refuses to start.
 

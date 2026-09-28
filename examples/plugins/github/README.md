@@ -62,7 +62,8 @@ workflow).
 Do not run this against a repository you do not want a bot comment posted
 to. It needs a real credential - see `plugins/github/README.md`,
 "Authentication," for how to configure one - and a real target. Put the token
-in a file only you can read (mode 0600), `./plugin-env.yaml`:
+in a file only you can read (mode 0600), outside the checkout so it is never
+staged, `~/.config/flowstate/plugin-env.yaml`:
 
 ```yaml
 env:
@@ -73,7 +74,7 @@ env:
 ```console
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --auth-policy examples/plugins/greet/auth.yaml \
-    --plugin-env-file ./plugin-env.yaml &
+    --plugin-env-file ~/.config/flowstate/plugin-env.yaml &
 $ flow run examples/plugins/github/issue-comment.yaml \
     --input owner=your-org --input repo=your-repo --input number=1 \
     --input body='posted by a flowstate workflow'
@@ -83,7 +84,14 @@ $ flow run examples/plugins/github/issue-comment.yaml \
 which starts empty: `GITHUB_TOKEN` (or a GitHub App's three variables) reaches
 it only through `--plugin-env-file` or `--plugin-env`, never by being exported
 in the shell that starts the worker. The file keeps the token out of the
-worker's argv, which any local user can read, and out of your shell history. The submission is refused by `flow run` today, as above.
+worker's argv, which any local user can read, and out of your shell history,
+but not out of the plugin's environment, which anything running as the worker's
+user can read through `/proc/<pid>/environ`
+(`pkg/flowstate/v1/plugin/env_config.go`). On a shared host, resolve `token`
+worker-side instead: it is a secret input the host resolves for each call, so
+`token: ${secret('file:github-token')}` with the worker's `--secret-dir` keeps
+it out of the plugin's environment. The submission is refused by `flow run`
+today, as above.
 
 ## Why github.* and not forge.*
 

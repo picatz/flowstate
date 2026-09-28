@@ -28,4 +28,4 @@ outputs:
     description: the digest the bytes hashed to, which is the one that was asked for
   predicate_type:
     value: ${steps.statement.json.?predicateType.orValue("")}
-    description: the statement's predicateType, or empty when the document has none
+    description: the statement's predicateType, or empty when the JSON object has none; a document that is not a JSON object fails the run
