@@ -1078,11 +1078,22 @@ func runLocalToolInputs(workflow *v1.Workflow, submitted map[string]json.RawMess
 		"arguments go in the `inputs` object of this call, keyed by the name the source declares under `inputs:`")
 }
 
+// maxRunInputs is how many arguments a run can take: a workflow declares at
+// most this many under `inputs:` (Workflow.declared_inputs, max_items) and a
+// started run carries at most this many (RunRequest.inputs, max_pairs). An
+// object naming more can never bind, so [jsonRunInputs] refuses it before
+// re-encoding and decoding an object whose size the sender chose.
+const maxRunInputs = 64
+
 // jsonRunInputs binds a surface's JSON object of arguments against workflow's
 // declarations, for a surface with no flags to correct: source names the
 // object in a refusal, and advice, which replaces the CLI's closing advice,
 // says where its arguments go.
 func jsonRunInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage, source, advice string) (map[string]*v1.Value, error) {
+	if len(submitted) > maxRunInputs {
+		return nil, fmt.Errorf("%s names %d inputs, and a run takes at most %d\n  %s", source, len(submitted), maxRunInputs, advice)
+	}
+
 	var inputs map[string]*v1.Value
 	// Absent rather than empty, so a source declaring no `inputs:` is run
 	// exactly as it is without the object.
