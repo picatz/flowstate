@@ -856,8 +856,11 @@ FLOWSTATE_SECRET_DIR=/etc/flowstate/secrets
 
 The worker unit is a template with one instance per build, because a promotion
 needs the old build's worker running beside the new one until the runs pinned
-to it finish. The instance name is the build id, and each build's binary lives
-in its own directory. `/etc/systemd/system/flowstate-worker@.service`:
+to it finish. The instance name is the build id, passed as `--build-id` so no
+`FLOWSTATE_BUILD_ID` left in `worker.env` can override it, and each build's
+binary lives in its own directory. Keep build ids to letters, digits, `.`, `_`,
+and `-`: systemd escapes anything else in an instance name, and the escaped form
+would no longer match the id you promote. `/etc/systemd/system/flowstate-worker@.service`:
 
 ```ini
 [Unit]
@@ -868,8 +871,7 @@ Wants=network-online.target
 [Service]
 Type=exec
 EnvironmentFile=/etc/flowstate/worker.env
-Environment=FLOWSTATE_BUILD_ID=%i
-ExecStart=/usr/local/lib/flowstate/%i/flow worker --plugin-dir /usr/local/lib/flowstate/plugins
+ExecStart=/usr/local/lib/flowstate/%i/flow worker --build-id %i --plugin-dir /usr/local/lib/flowstate/plugins
 Restart=on-failure
 RestartSec=5s
 User=flowstate-worker
@@ -885,8 +887,9 @@ ReadWritePaths=/var/lib/flowstate
 WantedBy=multi-user.target
 ```
 
-To deploy a build, install its binary and start its instance, then make it the
-current version (or ramp a share of new runs to it with `set-ramping-version`),
+To deploy a build, install its binary and start its instance, then, once its
+worker is polling (a version with no pollers is refused), make it the current
+version (or ramp a share of new runs to it with `set-ramping-version`),
 or it receives no new runs. The `temporal` CLI does not read the units'
 environment files, so give it the same Temporal address (and TLS or API-key
 options, if the units use them):
@@ -953,7 +956,7 @@ every worker that federates hold the same private key, and whoever holds it can
 sign an assertion for any subject or namespace
 ([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
 So a compromise of the server, or of any one tenant's worker, reaches every
-tenant's federated credentials. The per-user isolation below keeps secret files
+tenant's federated credentials. The per-user isolation above keeps secret files
 apart; it does not narrow federation.
 
 `FLOWSTATE_IDENTITY_KEY` holds one path, and a rotation needs two for its
@@ -968,7 +971,7 @@ $ sudo chmod 0640 /etc/flowstate/identity-2026-10.pem
 ```
 
 ```ini
-ExecStart=/usr/local/lib/flowstate/%i/flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+ExecStart=/usr/local/lib/flowstate/%i/flow worker --build-id %i --plugin-dir /usr/local/lib/flowstate/plugins \
     --identity-key /etc/flowstate/identity-2026-10.pem \
     --identity-key /etc/flowstate/identity-2026-07.pem
 ```
