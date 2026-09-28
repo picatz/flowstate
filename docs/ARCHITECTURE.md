@@ -215,7 +215,7 @@ argument — and the `RegisterDynamicWorkflow` method on the registry fake in
 was decided.
 
 `engine.RegisterWorkflows` installs exactly one workflow function, `Run`, with
-`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:208`). `Run` takes
+`VersioningBehavior` pinned (`pkg/flowstate/v1/engine/versioning.go:228`). `Run` takes
 a `*v1.RunState` (`pkg/flowstate/v1/engine/workflow.go:313`), so the compiled specification travels as
 data, and the interpreter dispatches on node kind (`pkg/flowstate/v1/engine/execute.go:692-720`). Which
 workload runs is a value; how any workload runs is the function.
@@ -908,13 +908,15 @@ configured so error strings can't leak plaintext the codec was meant to hide, an
 validating worst-case ciphertext expansion against Temporal's blob limit at startup.
 History confidentiality, where a codec is configured, is therefore the codec's — not
 merely the cluster's database and filesystem encryption — and Flowstate still keeps
-secrets *out* of history regardless (invariant 7).
+secrets *out* of history regardless (invariant 7). The codec that ships is the envelope
+codec (`payloadcodec/envelope`), configured by a per-namespace payload keyring and
+decoded for Temporal's own tools by `flow codec serve`; [ENCRYPTION.md](ENCRYPTION.md)
+is its contract.
 
 Payload *offload* — the claim-check pattern, carrying a reference through history to a
 blob stored externally — is the part not yet solved *in this tree*: the seam a codec
 occupies is general enough to carry one, but no offloading codec ships today, only the
-null codec (`cmd/flow/codec.go` documents this as the deliberate current boundary; #113
-is the design record). Until an offloading codec lands, the honest answer to a payload
+encrypting one (#113 is the design record, #271 the gap). Until an offloading codec lands, the honest answer to a payload
 too large for history is the refusal `CheckRunStateSize` already gives. When one lands,
 this is the seam it occupies, not a new one.
 

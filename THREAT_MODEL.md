@@ -128,10 +128,12 @@ exists in this tree.
 section 5. Reaches whatever `flow mcp`'s process configuration permits, which is
 decided at process start-up and never per call (`cmd/flow/mcp.go:647-694`).
 
-**An insider with history read access.** Reads everything in asset 1 for every
-tenant in that namespace. Nothing in Flowstate mitigates this today; the encryption
-seam that would is specified in #353 A.1 and #113, not landed
-(`docs/ARCHITECTURE.md:663-678`, #271 tracks the gap).
+**An insider with history read access.** Without a payload keyring, reads everything
+in asset 1 for every tenant in that namespace. With one, reads ciphertext, payload
+sizes, search attributes (the tenant and workflow name among them) and Temporal's own
+scheduling metadata, and nothing a run computed (`docs/ENCRYPTION.md`,
+`pkg/flowstate/v1/server/encryption_e2e_test.go`). A payload keyring is opt-in;
+`--require-payload-encryption` makes it mandatory for a process.
 
 ## 4. Per boundary: enforcement, limits, planned hardening
 
@@ -198,7 +200,7 @@ refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read at `cmd/flow/main.go:220`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1758`;
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1774`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, `docs/DEPLOYMENT.md:306-311`).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
@@ -449,7 +451,16 @@ worker holds for every tenant it serves (`docs/DEPLOYMENT.md:48-51`). Per-tenant
 history and per-tenant blast radius are Tier 2 properties requiring separate
 namespaces and separate fleets, not policy-rule properties.
 
-**Planned.** Per-tenant crypto-shredding keys, #353 A.2, not landed.
+**Today, with a payload keyring.** Each Temporal namespace is sealed under its own
+keys, with the namespace authenticated into every payload, so a tenant mapped to its
+own namespace is separated cryptographically as well as by Temporal's ACLs, and a
+worker given only its tenant's keyring holds no key that reads another tenant's
+history (`pkg/flowstate/v1/payloadcodec/envelope/keyring.go`). A shared namespace
+shares keys: encryption does not separate tenants inside one.
+
+**Planned.** Per-subject keys and a `flow shred` that records a key's destruction,
+#353 A.2, not landed. Removing a key from a keyring already makes what it sealed
+unreadable, but nothing records that it happened.
 
 ### Run to history
 
@@ -461,22 +472,32 @@ constructor because heartbeat details are written into history
 (`docs/ARCHITECTURE.md:235`). Containment is tested across `%v`, `%+v`, `%#v` and
 `%s`, on the value, in a struct, and in a slice (`CLAUDE.md`).
 
-**Limits.** Everything that legitimately goes into history goes in unsealed. History
-confidentiality today is whatever the cluster's database and filesystem encryption
-provide. The codec seam is a prototype: one resolution point (`cmd/flow/codec.go`)
-feeds the Temporal client options `flow server` and `flow worker` build, with
-failure-path encoding forced on whenever a codec is configured
-(`pkg/flowstate/v1/payloadcodec`, the payload paragraphs of `docs/ARCHITECTURE.md`),
-but the lookup behind it always returns the null codec and no flag or plugin
-supplies another, so a stock deployment cannot configure history encryption until
-that lookup ships. `flow run local` resolves and validates the same configuration
-and applies it nowhere, because an in-process run has no persisted boundary for a
-codec to sit on. Nothing is forgettable: there is no erasure path.
+**Today, with a payload keyring.** Everything that legitimately goes into history
+goes in sealed: start input and result, activity arguments and results, signals,
+queries, updates, memos, heartbeat details, Continue-As-New state, schedule actions,
+and failure messages, stacks and details, under AES-256-GCM with a per-payload key
+derived from the namespace's key (`pkg/flowstate/v1/payloadcodec/envelope`). Decode
+refuses unencrypted payloads unless a namespace opts in to reading pre-encryption
+history, so a plaintext payload written into history by anything else is not read
+back as protected. `flow server`, `flow worker` and `flow server dev` resolve the
+keyring at one point (`cmd/flow/codec.go`); `flow run local` validates it and applies
+it nowhere, because an in-process run has no persisted boundary.
+`flow codec serve` releases plaintext to Temporal's UI and CLI only to callers holding
+`payload.decode` explicitly, for their own tenant's unshared namespace, audited per
+decision (`pkg/flowstate/v1/codecserver`).
 
-**Planned.** A shipped encrypting codec, and a claim-check offload codec for
-payloads too large for history — the seam they occupy landed; the codecs are #353
-A.1 (design record #113, gap #271), not landed. `flow shred` and crypto-shredding,
-#353 A.2, not landed.
+**Limits.** Without a keyring, which is the default, history is plaintext and its
+confidentiality is whatever the cluster's database and filesystem encryption provide.
+With one: search attributes and headers are never encrypted; sizes, types, ids and
+timing are visible; a payload is bound to its namespace but not to its run, so a party
+able to rewrite history can move or replay one within a namespace; `flow server`'s own
+memo reads use a reader holding every namespace's keys and cannot detect a memo moved
+between two of them; the codec server authorizes per namespace, never per run; and a
+process holding keys, or its logs, holds plaintext. Keys are files or environment
+variables; no KMS integration ships. A lost key is lost history.
+
+**Planned.** A claim-check offload codec for payloads too large for history, and
+`flow shred` (#353 A.2), not landed.
 
 ### Editor and agent tooling to workspace
 
@@ -656,10 +677,12 @@ accepting that everything it signed stops verifying as each relying party's cach
 key set expires.
 
 **What is not bounded.** There is no revocation of an already-minted assertion inside
-its lifetime, no threshold or HSM custody, and no separation between the codec keys
-#353 A.1 would introduce and the signing keys here. #353's anti-goals state that
-codec keys, signing keys and issuer keys are one custody design or the design is
-wrong. The broader identity program is #337; none of its four directions beyond what
+its lifetime, and no threshold or HSM custody. Payload encryption keys
+(`docs/ENCRYPTION.md`) share this custody's shape (owner-only files written with
+`O_EXCL`, bounded reads, material held in closures, rotation by naming a new key and
+keeping the old one for verification or decryption) and never its material: they are
+separate 256-bit symmetric keys, generated by `flow codec keygen`, and every value
+derived from one is domain-separated from every other use. The broader identity program is #337; none of its four directions beyond what
 is already in `pkg/flowstate/v1/auth/` has landed.
 
 ## 8. Non-goals and honest gaps
@@ -678,10 +701,14 @@ is already in `pkg/flowstate/v1/auth/` has landed.
 
 **Honest gaps, all present-tense.**
 
-1. No history confidentiality by default. The codec seam exists
-   (`pkg/flowstate/v1/payloadcodec`) and only the null codec ships; an encrypting or
-   offloading codec is #113, #271; #353 A.1 specifies it.
-2. No erasure. Nothing forgets (#353 A.2).
+1. No history confidentiality by default. An encrypting codec and a codec server ship
+   (`docs/ENCRYPTION.md`), but a deployment without a payload keyring writes plaintext;
+   `--require-payload-encryption` is the operator's way to make that impossible. No
+   offloading codec ships (#271). Encryption binds a payload to its namespace, not to
+   its run.
+2. No recorded erasure. Removing a key from the keyring makes what it sealed
+   unreadable, but nothing records that it happened, and it is per key, never per
+   person (#353 A.2).
 3. `flow server` serves plaintext when given no certificate, and refuses to do so off
    loopback unless `--tls-terminated-upstream` asserts a terminator or another
    reachability boundary in front — an assertion it cannot verify
