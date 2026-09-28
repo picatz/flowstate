@@ -44,4 +44,8 @@ func TestATruncatedProgramRefusesAStepItNeverDeclares(t *testing.T) {
 	notice, unknown := session.unknownStepNotice("lsat")
 	assert.True(t, unknown, "a step the program never declares was accepted")
 	assert.Contains(t, notice, `"lsat"`)
+	_, unknown = session.unknownStepNotice("call3/s7")
+	assert.False(t, unknown, "a callee's step under the call that declares it was refused")
+	_, unknown = session.unknownStepNotice("bogus/last")
+	assert.True(t, unknown, "a declared step under a container the program does not have was accepted")
 }

@@ -156,12 +156,15 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, err
 		}
 		result := &DriveResult{Receipt: receipt}
-		if !accepted(receipt) {
+		if !Accepted(receipt) {
 			result.Text = FormatReceipt(receipt)
 
 			return result, nil
 		}
-		result.Snapshot, err = d.waitForStop(ctx, receipt.GetRevision())
+		// From the revision before the receipt's: a run already held
+		// answers a pause at its current revision without moving, and that
+		// stop is the answer, not one to wait past.
+		result.Snapshot, err = d.waitForStop(ctx, max(receipt.GetRevision(), 1)-1)
 		if err != nil {
 			return nil, err
 		}
@@ -292,7 +295,9 @@ func (d *Driver) staleAt(ctx context.Context) (*DriveResult, error) {
 	return &DriveResult{Receipt: receipt, Snapshot: current, Text: FormatReceipt(receipt)}, nil
 }
 
-func accepted(receipt *v1.DebugReceipt) bool {
+// Accepted reports whether a target took the command its receipt answers:
+// applied, a duplicate of one it applied, or pending its next step boundary.
+func Accepted(receipt *v1.DebugReceipt) bool {
 	switch receipt.GetStatus() {
 	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE,
 		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
@@ -327,10 +332,10 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 	}
 
 	result := &DriveResult{Receipt: receipt}
-	if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH && accepted(receipt) {
+	if action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH && Accepted(receipt) {
 		d.detached = true
 	}
-	if !accepted(receipt) || action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH {
+	if !Accepted(receipt) || action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH {
 		result.Text = FormatReceipt(receipt)
 
 		return result, nil
@@ -478,7 +483,7 @@ func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1
 	if err != nil {
 		return nil, err
 	}
-	if !accepted(response.GetReceipt()) && response.GetReceipt().GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED {
+	if !Accepted(response.GetReceipt()) && response.GetReceipt().GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_UNSPECIFIED {
 		return &DriveResult{Receipt: response.GetReceipt(), Text: FormatReceipt(response.GetReceipt())}, nil
 	}
 	d.breakpoints, d.failureMode = set, mode

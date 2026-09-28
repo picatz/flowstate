@@ -864,7 +864,8 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	target := v1.ParseDebugTargetOrStep(id)
 
 	s.mu.Lock()
-	sitesKnown, sites, inProgram := s.contract.sitesKnown, s.contract.sites, s.contract.declaredInProgram
+	sitesKnown, sites := s.contract.sitesKnown, s.contract.sites
+	program, inProgram := s.contract.program, s.contract.declaredInProgram
 	s.mu.Unlock()
 	if sitesKnown {
 		if len(target.Resolve(sites)) > 0 {
@@ -890,16 +891,24 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 
 		return noSiteMatches(id), true
 	}
+	qualified := strings.ContainsRune(id, '/')
 	id = target.Step()
 
 	// Built once at construction ([declaredStepIDs]); this is a lookup rather
 	// than a walk, because a refused command is not recorded and so may be
 	// repeated without bound. A program whose sites were cut short answers
-	// from what it declares, built once too, so a step it never declares is
-	// refused here as the durable driver refuses it.
-	_, known := s.declaredIDs[id]
-	if !known && inProgram != nil {
+	// from what it declares instead, as the durable driver does: its ids,
+	// built once too, refuse a step it never declares at once, and only a
+	// qualified target naming a declared step walks the program for the
+	// containers it names ([v1.DebugTarget.DeclaredIn]).
+	var known bool
+	if program != nil {
 		_, known = inProgram[id]
+		if known && qualified {
+			known = target.DeclaredIn(program)
+		}
+	} else {
+		_, known = s.declaredIDs[id]
 	}
 
 	s.mu.Lock()

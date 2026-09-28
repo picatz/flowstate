@@ -117,29 +117,8 @@ func TestATruncatedProgramArmsABreakpointPastTheCut(t *testing.T) {
 	misspelled := parse(t, "lsat", false)
 	assert.False(t, misspelled.state.GetVerified(), "armed a step the program never declares")
 	assert.Contains(t, misspelled.state.GetMessage(), `no step matches "lsat"`)
-}
 
-// TestDebugDeclaresStepLooksEverywhereAStepCanBeWritten covers each place a
-// step id can be declared, and a callee's steps, so the truncated-program
-// check refuses only an id written nowhere.
-func TestDebugDeclaresStepLooksEverywhereAStepCanBeWritten(t *testing.T) {
-	t.Parallel()
-
-	step := func(id string) *v1.Node {
-		return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}
-	}
-	spec := &v1.Workflow{Name: "root", Steps: []*v1.Node{
-		{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Body: []*v1.Node{step("in-each")}}}},
-		{Id: "again", Kind: &v1.Node_Loop{Loop: &v1.Loop{Body: []*v1.Node{step("in-loop")}}}},
-		{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{{Steps: []*v1.Node{step("in-branch")}}}}}},
-		{Id: "pick", Kind: &v1.Node_Switch{Switch: &v1.Switch{
-			Cases:   []*v1.Switch_Case{{Steps: []*v1.Node{step("in-arm")}}},
-			Default: &v1.Switch_Default{Steps: []*v1.Node{step("in-default")}},
-		}}},
-		{Id: "sub", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{Name: "callee", Steps: []*v1.Node{step("in-callee")}}}}},
-	}}
-	for _, id := range []string{"each", "in-each", "in-loop", "in-branch", "in-arm", "in-default", "sub", "in-callee"} {
-		assert.True(t, v1.DebugDeclaresStep(spec, id), "%s is declared but not found", id)
-	}
-	assert.False(t, v1.DebugDeclaresStep(spec, "nowhere"))
+	// So is a declared step under a container the program does not have.
+	elsewhere := parse(t, "bogus/last", false)
+	assert.False(t, elsewhere.state.GetVerified(), "armed a step under a container the program never declares")
 }

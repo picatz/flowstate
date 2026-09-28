@@ -179,6 +179,41 @@ func TestADetachedDriverChangesNothing(t *testing.T) {
 	assert.NoError(t, err, "a read was refused after a detach")
 }
 
+// honestTarget is a [scriptedTarget] whose WaitSnapshot waits for a revision
+// past the one asked about, as a real target's does.
+type honestTarget struct{ *scriptedTarget }
+
+func (h honestTarget) WaitSnapshot(ctx context.Context, after uint64) (*v1.DebugSnapshot, error) {
+	h.mu.Lock()
+	snapshot := h.snapshot
+	h.mu.Unlock()
+	if snapshot.GetRevision() > after {
+		return snapshot, nil
+	}
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+// TestAPauseOfAHeldRunAnswersAtOnce: a run already held answers a pause at the
+// revision it is held at, without moving, so the stop it is at is the answer,
+// not one to wait for past it until the wait runs out.
+func TestAPauseOfAHeldRunAnswersAtOnce(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		target := honestTarget{&scriptedTarget{snapshot: &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}}}
+		driver := flowdebug.NewDriver(target)
+		driver.Wait = time.Minute
+
+		start := time.Now()
+		result, err := driver.Do(t.Context(), "pause")
+		require.NoError(t, err)
+		assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, result.Snapshot.GetState())
+		assert.Zero(t, time.Since(start), "a pause of a held run waited for a stop past the one it is at")
+	})
+}
+
 // TestADetachIsNeverStaleUnlessPinned: a detach lets the run go wherever it
 // has got to, so a driver sends it without the revision it last read — a stop
 // landing in between must not leave the run held. A refused detach leaves the

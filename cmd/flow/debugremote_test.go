@@ -130,3 +130,18 @@ func TestDebugAttachReleasesTheRunWhenItsDetachIsRefused(t *testing.T) {
 	require.NoError(t, res.Err)
 	assert.Equal(t, 2, recorder.detaches(), "a refused detach was walked away from, leaving the run held")
 }
+
+// TestDebugAttachReleasesTheRunWhenItCannotReadIt: an attach whose first read
+// of the run fails has told nobody the session's id, so there is nobody to
+// rejoin it; the session is detached rather than left holding the run.
+func TestDebugAttachReleasesTheRunWhenItCannotReadIt(t *testing.T) {
+	recorder := &detachRecorder{unreadable: true}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(recorder))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	res := runFlow(t, "debug", "attach", "w", "--address", srv.URL, "-o", "jsonl")
+	require.Error(t, res.Err)
+	assert.Equal(t, 1, recorder.detaches(), "an attach that could not read the run left it held")
+}

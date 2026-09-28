@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -33,6 +34,16 @@ type detachRecorder struct {
 	// refuseFirst answers the first resume refused, as a run that could not
 	// take it would.
 	refuseFirst bool
+	// unreadable fails every read of the run, as a server going away would.
+	unreadable bool
+}
+
+func (d *detachRecorder) DebugGet(ctx context.Context, req *connect.Request[v1.DebugGetRequest]) (*connect.Response[v1.DebugGetResponse], error) {
+	if d.unreadable {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("the server is unavailable"))
+	}
+
+	return d.heldRun.DebugGet(ctx, req)
 }
 
 func (d *detachRecorder) DebugResume(_ context.Context, req *connect.Request[v1.DebugResumeRequest]) (*connect.Response[v1.DebugResumeResponse], error) {
@@ -246,4 +257,37 @@ func TestAnEndedCasesReportIsFittedToo(t *testing.T) {
 	var document map[string]any
 	require.NoError(t, json.Unmarshal([]byte(text), &document))
 	assert.Contains(t, document, "report", "the verdict was dropped rather than reduced")
+}
+
+// TestAnEndWaitsForACommandInFlightAndRefusesTheNext: a command that found a
+// session just before it was ended must not act on it after — a durable pause
+// then would attach the run anew, held by a session nobody holds. The end
+// waits for a command already running, and one waiting to run is refused.
+func TestAnEndWaitsForACommandInFlightAndRefusesTheNext(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	target := newStepTarget(true)
+	entry := addStepSession(t, r, target)
+
+	// A command that has found the entry, waiting its turn behind one that
+	// holds the session.
+	entry.calls.Lock()
+	refused := make(chan *mcp.CallToolResult)
+	go func() {
+		result, _ := r.command(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id, "command": "next"}))
+		refused <- result
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// The session is retired while that command waits, then its turn comes.
+	require.True(t, r.remove(entry.id))
+	entry.calls.Unlock()
+	result := <-refused
+	require.True(t, result.IsError, "a command acted on a session that was ended under it")
+	entry.end(false)
+
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	assert.Zero(t, target.moves, "the ended session's run was moved")
 }

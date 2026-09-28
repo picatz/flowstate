@@ -154,10 +154,12 @@ type contractState struct {
 	// sitesKnown distinguishes "no program was given" from "the program has
 	// no such site".
 	sitesKnown bool
-	// declaredInProgram is every step id the program declares, when its
-	// sites were cut short at [v1.MaxDebugStaticSites]: what a target is then
-	// judged by, as the durable driver judges it ([v1.DebugDeclaredSteps]).
-	// Nil otherwise.
+	// program and declaredInProgram are the program and every step id it
+	// declares, when its sites were cut short at [v1.MaxDebugStaticSites]:
+	// what a target is then judged by, as the durable driver judges it
+	// ([v1.DebugTarget.DeclaredIn]). The ids answer a bare step at once, and
+	// the program a qualified one. Nil otherwise.
+	program           *v1.Workflow
 	declaredInProgram map[string]struct{}
 
 	sourceMap *v1.DebugSourceMap
@@ -187,6 +189,7 @@ func newContractState(opts Options) contractState {
 		c.sites, truncated = v1.DebugStaticSites(opts.Workflow)
 		c.sitesKnown = !truncated
 		if truncated {
+			c.program = opts.Workflow
 			c.declaredInProgram = map[string]struct{}{}
 			for id := range v1.DebugDeclaredSteps(opts.Workflow) {
 				c.declaredInProgram[id] = struct{}{}

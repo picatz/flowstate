@@ -155,10 +155,10 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	driver.Wait = wait
 
 	// The first stop, or the news that the run has not reached a boundary.
+	// A failure here detaches through the deferred Close: nothing has told
+	// the caller the session's id, so there is nobody to rejoin it.
 	first, err := driver.Do(ctx, "status")
 	if err != nil {
-		_ = remote.Disconnect()
-
 		return err
 	}
 	if first.Snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
@@ -227,7 +227,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 			// A detach the run did not accept leaves it held; Close sends
 			// one that cannot be refused as stale, rather than walking
 			// away from it.
-			if !debugReceiptAccepted(result.Receipt) {
+			if !flowdebug.Accepted(result.Receipt) {
 				return remote.Close()
 			}
 
@@ -263,18 +263,6 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	// The end of input releases the run: a debugger that is gone must not
 	// keep a production run held.
 	return remote.Close()
-}
-
-// debugReceiptAccepted reports whether the run took the command: applied, a
-// duplicate of one it applied, or pending its next step boundary.
-func debugReceiptAccepted(receipt *v1.DebugReceipt) bool {
-	switch receipt.GetStatus() {
-	case v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE,
-		v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING:
-		return true
-	default:
-		return false
-	}
 }
 
 func terminalDebugState(state v1.DebugRunState) bool {
@@ -347,7 +335,7 @@ func runDebugDo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if receipt := result.Receipt; receipt != nil && !debugReceiptAccepted(receipt) {
+	if receipt := result.Receipt; receipt != nil && !flowdebug.Accepted(receipt) {
 		_ = writeDriveResult(newSurface(cmd).Out, format, line, result)
 
 		return errors.New("the command was not applied: " + strings.TrimSpace(flowdebug.FormatReceipt(receipt)))

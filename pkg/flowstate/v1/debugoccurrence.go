@@ -469,16 +469,67 @@ func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
 	}
 }
 
-// DebugDeclaresStep reports whether [DebugDeclaredSteps] yields id, stopping
-// at the first match.
-func DebugDeclaresStep(wf *Workflow, id string) bool {
-	for declared := range DebugDeclaredSteps(wf) {
-		if declared == id {
-			return true
+// DeclaredIn reports whether wf, or a workflow it calls, declares a step this
+// target could name: one whose id is the target's step, inside containers
+// whose ids end with the target's qualifiers — `bogus/last` names nothing
+// however many steps are called `last`. It is the question a truncated
+// [DebugStaticSites] leaves open, asked of the program as written: each node
+// the program holds is visited once, so the walk is bounded by the program's
+// own size, not by what its calls expand to. Qualifier kinds and indices are
+// not compared, so it may accept a target [DebugTarget.Resolve] would not,
+// never the reverse. Calls are followed to [MaxCallDepth], as the sites are.
+func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
+	if len(t.parts) == 0 {
+		return false
+	}
+	step, qualifiers := t.parts[len(t.parts)-1].id, t.parts[:len(t.parts)-1]
+	qualified := func(chain []string) bool {
+		if len(chain) < len(qualifiers) {
+			return false
 		}
+		tail := chain[len(chain)-len(qualifiers):]
+		for i, part := range qualifiers {
+			if tail[i] != part.id {
+				return false
+			}
+		}
+
+		return true
 	}
 
-	return false
+	var walk func(nodes []*Node, chain []string, depth int) bool
+	walk = func(nodes []*Node, chain []string, depth int) bool {
+		for _, node := range nodes {
+			if node.GetId() == step && qualified(chain) {
+				return true
+			}
+			inner := append(slices.Clip(chain), node.GetId())
+			var found bool
+			switch kind := node.GetKind().(type) {
+			case *Node_ForEach:
+				found = walk(kind.ForEach.GetBody(), inner, depth)
+			case *Node_Loop:
+				found = walk(kind.Loop.GetBody(), inner, depth)
+			case *Node_Parallel:
+				found = slices.ContainsFunc(kind.Parallel.GetBranches(), func(branch *Parallel_Branch) bool {
+					return walk(branch.GetSteps(), inner, depth)
+				})
+			case *Node_Switch:
+				found = slices.ContainsFunc(kind.Switch.GetCases(), func(arm *Switch_Case) bool {
+					return walk(arm.GetSteps(), inner, depth)
+				}) || walk(kind.Switch.GetDefault().GetSteps(), inner, depth)
+			case *Node_Call:
+				found = depth < MaxCallDepth && walk(kind.Call.GetWorkflow().GetSteps(), inner, depth+1)
+			}
+			if found {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return walk(wf.GetSteps(), nil, 0)
 }
 
 // Resolve returns the static sites this target can ever match, in document

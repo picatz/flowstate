@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -75,9 +76,15 @@ type debugSessionEntry struct {
 	started time.Time
 
 	// calls serializes commands on one session, so two never race to move
-	// one run. An observe waits outside it, so a command can produce the
-	// revision the observe is waiting for.
+	// one run, and serializes them with the session's end. An observe waits
+	// outside it, so a command can produce the revision the observe is
+	// waiting for.
 	calls sync.Mutex
+	// retired is set when the session is forgotten, before it is ended, so
+	// a command that found the entry just before is refused once it holds
+	// calls rather than acting on a closed session — a durable pause then
+	// would attach the run anew, held by a session nobody holds.
+	retired atomic.Bool
 
 	// mu guards the fields below it. It is never held across a call on the
 	// target.
@@ -199,6 +206,7 @@ func (r *debugSessions) retireLocked(id string) *debugSessionEntry {
 		return nil
 	}
 	r.forgetLocked(id)
+	entry.retired.Store(true)
 	entry.released = make(chan struct{})
 	r.ending[id] = entry
 
@@ -392,6 +400,11 @@ func errNoDebugSession(id string) error {
 // waiting on the process-wide registry lock — is left to finish on its own
 // rather than hang the caller.
 func (e *debugSessionEntry) end(keep bool) bool {
+	// After any command in flight, and before any that found this entry:
+	// those see retired once they hold calls.
+	e.calls.Lock()
+	defer e.calls.Unlock()
+
 	if remote, ok := e.target.(*flowdebug.Remote); ok && keep {
 		_ = remote.Disconnect()
 	} else {
@@ -946,6 +959,9 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 	}
 	entry.calls.Lock()
 	defer entry.calls.Unlock()
+	if entry.retired.Load() {
+		return flowmcp.ToolError(errNoDebugSession(entry.id)), nil
+	}
 
 	entry.mu.Lock()
 	cached, ok := entry.receipts[args.RequestID]
