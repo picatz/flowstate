@@ -30,9 +30,10 @@ description: "A step the author has already weakened to `if: true`, refused anyw
 #   $ flow run local examples/task-shape-policy/workflow.yaml
 #
 # With it, `deploy` is refused even though nothing in *this file* gates it,
-# because a local run has no attested identity at all (`run.local` reads true,
-# every `identity.*` field reads empty) — and `identity.namespace != "platform"`
-# is true for an empty namespace exactly as it is for any other non-platform one:
+# because a local run has no attested identity (`run.local` reads true, and
+# `identity.namespace` is empty unless `--as-namespace` sets it) — and
+# `identity.namespace != "platform"` is true for an empty namespace exactly as
+# it is for any other non-platform one:
 #
 #   $ flow run local examples/task-shape-policy/workflow.yaml \
 #       --task-policy examples/task-shape-policy/task-policy.yaml

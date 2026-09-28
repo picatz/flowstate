@@ -1,8 +1,8 @@
 # CI: what runs, what decides, and what the owner has to switch on
 
-This document exists because half of the design lives in repository *settings*
-rather than in files, and a design half of which nobody can read is a design
-that gets undone by the next person to look at the settings page.
+Half of CI's design lives in repository *settings* rather than in files, so this
+page records both: what the workflows run, and what has to be switched on for
+them to mean anything.
 
 In short: every change runs one diff-scoped computation, `go run ./tools/gate`, at
 [three tiers](#one-computation-three-tiers). The rest of this page is why, and the
@@ -67,8 +67,8 @@ checks reject. It is the same reasoning that makes the merge queue ignore the
 plan entirely.
 
 `ciForceReason` carries that as its fourth forcing, beside the event, the
-harness and the module — because "must this ignore the diff" is one question and
-docs/CI.md's whole argument is that it has one answer. It is there for the
+harness and the module — because "must this ignore the diff" is one question
+with one answer. It is there for the
 *reason* rather than the scope: the whole tree would force a wide run through
 `ciWide` regardless, and a run told it is wide because the workflows changed
 sends a reader looking for a workflow diff that does not exist.
@@ -115,7 +115,7 @@ GitHub's semantics for a conditional required check fail in *both* directions,
 and the more dangerous one is the default:
 
 - A required job skipped by an `if:` reports the conclusion `skipped`, and a
-  required status check counts `skipped` as satisfied. Make the six
+  required status check counts `skipped` as satisfied. Make the
   conditional jobs required, and a plan that wrongly skips `test` produces a
   green tick on a pull request nothing tested. **A gate that passed on
   something it never looked at.**
@@ -190,12 +190,9 @@ supersession as the common case on a pull request rather than as the
 established fact — main and a merge group are excluded from
 `cancel-in-progress` above, so a cancellation there is never supersession —
 and it stops short of calling the cancellation innocent, since a timeout is
-exactly a cancellation that *is* evidence about the diff. An early draft of
-this fix both asserted supersession outright and called every cancellation
-harmless; review on #2058 (the pull request that carried this fix, not
-#2030 the issue) caught that a check whose whole design is "never report a
-pass it cannot justify" should not turn around and report a cause, or an
-innocence, it cannot justify either.
+exactly a cancellation that *is* evidence about the diff. A check whose whole
+design is "never report a pass it cannot justify" should not report a cause, or
+an innocence, it cannot justify either (#2058).
 
 ### The merge queue
 
@@ -228,8 +225,8 @@ removes is `govulncheck` being reported against the pull request that renamed a
 heading — which is the shape that made GO-2026-6061 look like an unrelated
 author's problem.
 
-Both `vulncheck` and `staticcheck` scan the root module **and** each of the six
-plugin modules under `plugins/*/`. The plugin modules carry the dependencies
+Both `vulncheck` and `staticcheck` scan the root module **and** every plugin
+module under `plugins/*/`. The plugin modules carry the dependencies
 with the largest attack surface in the tree (go-git, pgx, modernc.org/sqlite,
 go-github, the OpenAI client), and each has its own `go.mod` outside the root
 module graph — so `./...` from the root never reaches them.
@@ -253,10 +250,10 @@ longer one of the plan's outputs or one of `verdict`'s `needs:` — a workflow
 with no `pull_request` trigger never produces a check run for this repository's
 required-status-checks list to see, so it participates in neither.
 
-### Two more workflows outside the plan
+### Workflows outside the plan
 
-`editors.yml` (**Editors**) runs on pushes to `main` and on pull requests, in two
-jobs: *Neovim LSP smoke* drives a real, pinned Neovim through
+`editors.yml` (**Editors**) runs on every push to `main`, and on pull requests
+that touch the paths it lists, in two jobs: *Neovim LSP smoke* drives a real, pinned Neovim through
 `tools/editorsmoke/probe.lua` against `flow lsp` and asserts the fenced
 configuration in `docs/EDITORS.md` is byte-identical to the file it loads; *VS
 Code extension* builds and tests the extension. Neither is one of the plan's
@@ -269,6 +266,13 @@ a same-run payload; its publication job is interlocked off (`if: false && …`,
 with a sibling job that explains the interlock) until releases are switched on
 deliberately — #1216 carries that decision. It produces no check run for a pull
 request and is not in `verdict`'s `needs:`.
+
+`commitcheck.yml` (**Commit conventions**) runs whenever a pull request is
+opened, edited, or pushed to, and runs `go run ./tools/commitcheck -strict`
+over its title and body. Among its rules: a scope-prefixed lowercase subject, an
+issue reference or `No-Issue:` trailer, and a `Verification:` line or
+`Unverified:` trailer; `internal/commitcheck` holds the full list. It checks the
+words of the change, not its code, so it is not one of the plan's outputs.
 
 ### Parallel test lanes, and a fuzz job that runs what the diff reaches
 
@@ -283,8 +287,9 @@ which it cannot move (#1726).
 
 Since #1726:
 
-- `test` is three jobs: `test` (build, vet, gofmt, `make test`, and the
-  docs, examples, breaking and compose checks that need the root build),
+- #1726 split `test` into three jobs: `test` (build, vet, gofmt, `make test`,
+  and the docs, examples, breaking and compose checks that need the root build;
+  since split again into the lanes described next),
   `test-plugins` (`make test-plugins` and `make plugin-examples`) and
   `test-ordering` (`make test-ordering`). Each is `needs: plan` and nothing
   else, so the critical path is `plan` plus the root suite. `ciDecisions`
@@ -549,8 +554,8 @@ measured effect on run 31909221065: `vulncheck` scanned in **5s** against a warm
 from source and `proto` spent **52s** rebuilding `buf`, with nothing in the file
 explaining the difference.
 
-`proto`, `staticcheck`, and since #1726 the three test jobs, each name a file
-under `.github/cache-scope/` alongside `go.sum`, which gives each a key of its
+`proto`, `staticcheck`, and the test jobs (each `test` lane, `test-plugins`
+and `test-ordering`), each name a file under `.github/cache-scope/` alongside `go.sum`, which gives each a key of its
 own; `test-plugins` also keys on `plugins/*/go.sum`, so the plugin modules keep
 the warm cache they had when they shared the `test` job. The files' contents
 are arbitrary and are deliberately *not* version pins: the tool versions live
@@ -648,18 +653,15 @@ Inside `test`, the three long steps did not depend on one another:
 
 ### The same, after
 
-**Not measured.** The split and the per-target fuzz selection were authored
-without access to the Actions API, so there is no "after" column here yet. What
-the design predicts, from the numbers above: the critical path becomes `plan`
-plus the root `test` job, about 6 minutes against 12; `test-plugins` and
-`test-ordering` run beside it at about 2m30s and 3m; and `fuzz-smoke` on a
-flowfile diff runs seven targets rather than thirteen, which on the linear
-estimate the job's own comment uses is about 4 minutes rather than 9. Billed
-job-minutes should move by the setup overhead of two more jobs — a checkout, a
-`setup-go` restore and a toolchain report each, about a minute together —
-minus whatever the fuzz selection saves. The first two runs on `main` after
-the change are where those numbers come from, and this section should be
-filled in from them rather than from this paragraph.
+The split was observed on `main` before #1922: run `34069079624` (2026-09-07)
+took `test` 5m57s with `test-plugins` (3m06s) and `test-ordering` (2m34s)
+beside it, so `plan` plus `test` came to 6m17s, near the predicted six minutes.
+Push to `verdict` still took 9m52s against the 12m04s baseline: runs on `main`
+are forced wide, so every fuzz target runs, and `fuzz-smoke` (9m25s) was the
+longest job. For the same reason, the per-target fuzz selection on a narrowed
+diff has not been measured. #1922, merged 2026-09-09, made the root suite's
+packages run serially for deadline isolation, and its own `main` run,
+`34361369250`, took `test` 27m03s; the four-lane matrix above is the response.
 
 ### What the queue is worth
 
@@ -686,7 +688,8 @@ without it.
 
 ### 1. The ruleset that makes "nothing merges red" a mechanism
 
-There is no `required_status_checks` rule on this repository today. Create one.
+When this was last checked (2026-08-31), this repository had no
+`required_status_checks` rule. Create one.
 The existing `Copilot review for default branch` ruleset can stay as it is; this
 is a second ruleset, or these rules added to that one.
 
@@ -742,10 +745,11 @@ JSON
 Five parameters there are load-bearing and easy to get wrong:
 
 - **`required_status_checks` names `plan` and `verdict` and nothing else.**
-  Adding any of the six conditional jobs reintroduces exactly the fail-open
+  Adding any of the conditional jobs reintroduces exactly the fail-open
   case the design removes, because a skipped required check counts as
   satisfied. If you want more assurance, add it to `verdict`, not to this list.
-- **Do not add the `Editors` workflow's jobs** (`neovim`, `vscode`). That
+- **Do not add the `Editors` workflow's jobs** (*Neovim LSP smoke*, *VS Code
+  extension*). That
   workflow filters on `paths:`, so on a diff it does not match it produces no
   check runs at all, and a required check that never reports blocks the merge
   forever with no way to clear it. It is intentionally not required.
@@ -774,7 +778,7 @@ repository's merge-queue settings show `Squash and merge`, matching
 
 ### 3. Nothing else changes
 
-`allow_auto_merge` is currently `false` and can stay so — the queue's "merge
+`allow_auto_merge` was `false` when read through the public API on 2026-09-28 and can stay so — the queue's "merge
 when ready" replaces it. `delete_branch_on_merge` is unrelated.
 
 ### After applying
@@ -783,40 +787,23 @@ Open one throwaway pull request touching only a markdown file and check three
 things: `plan` reports and its summary table says every job is skipped;
 `verdict` reports green; and the pull request is mergeable via **Merge when
 ready** rather than a direct merge. Then open one touching a `.go` file and
-check that the same two checks are the only required ones while five to six
-jobs run beneath them.
+check that the same two checks are the only required ones while the jobs the
+plan selects run beneath them.
 
-## What could not be verified locally
+## What is still unverified
 
-Stated plainly, because a CI change that claims more verification than it had is
-the same category of mistake as a gate that passes without looking.
-
-- **The `pull_request` path has run; the merge queue has not.** `act` is not
-  available in the authoring environment, so nothing here was executed locally
-  — the YAML parses, `tools/gate -ci` was run against real diffs, and the
-  `verdict` script was executed by `tools/gate/verdict_test.go` under `bash`
-  and `jq` with synthetic inputs. But this PR's own `pull_request` runs have
-  since exercised the real thing: `plan`, all seven conditional jobs, and
-  `verdict` have each executed successfully on GitHub's runners. What remains
-  unverified is specifically the `merge_group` path — the full, unconditional
-  set the force branch in `ciForceReason` selects — since nothing merges
-  through a queue until this repository's branch protection is configured to
-  require one.
-- **The `after` numbers are computed, not observed.** They multiply *measured*
-  per-job durations from runs `31912978683` and `31909221065` by the plan's
-  decisions on *real* diffs. What is modelled is the `plan` job's own cost
-  (~30s, from a locally measured `go list` plus typical checkout and setup-go
-  timings on this repository's runs) and `verdict`'s (~10s, one bash step, no
-  checkout).
-- **The cache-key change is reasoned, not measured.** It rests on
-  `actions/setup-go` deriving its key from `hashFiles(cache-dependency-path)`.
-  If that reading is wrong, the keys stay shared and nothing is worse than
-  today. Confirm by comparing the `staticcheck` job's "Static analysis" step
-  against the 85s baseline after the second run on `main`.
+- **The merge queue has not run.** The `pull_request` path runs on every pull
+  request, and `tools/gate/verdict_test.go` executes the `verdict` script under
+  `bash` and `jq`. The `merge_group` path, the full unconditional set the force
+  branch in `ciForceReason` selects, runs only once this repository's settings
+  require a queue.
+- **The "after" numbers for #659 and the 12-file change are computed, not
+  observed.** They multiply measured per-job durations from runs `31912978683`
+  and `31909221065` by the plan's decisions on those diffs, plus modelled costs
+  for `plan` (~30s) and `verdict` (~10s).
 - **Merge-queue behaviour is from the documented contract**, not from watching a
-  queue run here. In particular, that required checks are evaluated against the
-  `merge_group` ref, and that batching follows `max_entries_to_build`, should be
-  confirmed on the first busy evening.
+  queue run here: in particular, that required checks are evaluated against the
+  `merge_group` ref, and that batching follows `max_entries_to_build`.
 
 ## The analysis workflows beside CI
 
@@ -869,7 +856,7 @@ listed.
   per commit. Codex is not configured through a repository ruleset and is not
   reachable from this repository's files.
 - **`appearance` running only when printed output can change.** Adopted, not
-  excluded: it is one of the six conditional jobs, and its trigger is the
+  excluded: it is one of the conditional jobs, and its trigger is the
   package question rather than the path one, for the reason `needsDocs` gives —
   the goldens record what the `cmd/flow` *binary* prints, so its dependency
   closure is the real source set.

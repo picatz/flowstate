@@ -124,7 +124,7 @@ steps:
   # And it is not retried, for a reason distinct from the turn's. A turn is not
   # repeated because a second one is a *different* turn; this write is not
   # repeated because a second one may be the *same* write, applied twice. The
-  # http task's default policy is five attempts and it retries a 5xx whatever
+  # http task's default policy is five attempts and it retries a 500 whatever
   # the method, so a tracker that created the patch and then answered 500 —
   # which is an ordinary way for a write to fail after succeeding — would get
   # the identical body posted again, and this endpoint offers no idempotency key

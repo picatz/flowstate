@@ -20,7 +20,8 @@ flow test examples/loop-accumulate/
   is a small map (`{n, sum}`), which is how one carried value holds several fields
   without a block of named accumulators.
 - **Do-while** — the body runs, then `until:` is checked, so `until:` reads what the
-  body (and `update:`) produced. A loop that carries nothing but drives `until:` from
+  body produced and the state the iteration started with; `update:` runs only when
+  the loop goes round again. A loop that carries nothing but drives `until:` from
   its own state, like this one, needs no task that returns a value.
 - **A mandatory bound** — `max_iterations:` is the ceiling. A loop that could run
   forever is one whose runaway the engine must be able to stop, so hitting the

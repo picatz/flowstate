@@ -38,10 +38,14 @@ $ flow run local examples/keychain-secret/workflow.yaml \
 macOS may prompt for authorization to read the entry the first time; that is the
 keychain doing its job; there is nothing this provider does to suppress it.
 
-This is the one backend genuinely unavailable off its platform, so it has no
-`*.test.yaml`: this repository's CI runs on Linux, where `--secret-keychain` refuses
-at startup with a message naming the platform rather than the generic "tool
-missing" a machine without `security` would otherwise report —
+This is the one backend genuinely unavailable off its platform.
+[`workflow.test.yaml`](workflow.test.yaml) still runs everywhere, because it never
+shells out to `security`: its first case binds `keychain:github-token` in a
+`secrets:` block and checks the bound value reaches the step, and its second leaves
+the reference unbound and checks it is refused rather than resolved empty. The provider itself cannot run
+here: this repository's CI runs on Linux, where `--secret-keychain` refuses at
+startup with a message naming the platform rather than the generic "tool missing" a
+machine without `security` would otherwise report —
 
 ```
 --secret-keychain only works on macOS (this worker is running on linux); the

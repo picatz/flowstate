@@ -32,10 +32,11 @@ answers with the same shape:
 $ flow run examples/ops-healthcheck/workflow.yaml -o json | jq .runOutputs
 ```
 
-A schedule created with `flow schedule create examples/ops-healthcheck/workflow.yaml`
-is what turns "run this once" into "run this every five minutes forever," not a
-rewrite of the file — see `examples/scheduled-report` for the `triggers:` block that
-would sit above `steps:` here to declare the cadence.
+A `triggers:` block above `steps:` declaring the cadence, then a schedule created
+with `flow schedule create examples/ops-healthcheck/workflow.yaml`, is what turns
+"run this once" into "run this every five minutes forever," not a rewrite of the
+file — see `examples/scheduled-report` for that block. As shipped this file declares
+no schedule, so `flow schedule create` refuses it and says what to add.
 
 ## The interesting lines
 
