@@ -218,18 +218,17 @@ func codecServeHandler(logger *slog.Logger, verifier auth.Verifier, handler *cod
 	return mux
 }
 
-// codecWriteTimeout is how long `flow codec serve` gives a response: thirty
-// seconds, or enough for a decode that must first ask a key provider to
-// unwrap and may wait out a login and the call, whichever is longer.
-//
-// A request that unwraps more unseen data keys than that allows still has its
-// response cut off; the keys it unwrapped are cached, so the client's retry
-// is answered from them.
+// codecWriteTimeout is how long `flow codec serve` gives a response: the
+// handler's work budget ([codecserver.DefaultWorkTimeout]), plus the one
+// payload that may have started just before it passed, which can wait out a
+// key provider's login and call, plus room to write. A request that needs
+// more than the budget is answered 503 inside this deadline rather than cut
+// off, and the data keys it unwrapped are cached for the retry.
 func codecWriteTimeout(codecs payloadcodec.Config) time.Duration {
-	const floor = 30 * time.Second
-	timed, ok := codecs.Codec.(interface{ ProviderTimeout() time.Duration })
-	if !ok {
-		return floor
+	const margin = 10 * time.Second
+	var provider time.Duration
+	if timed, ok := codecs.Codec.(interface{ ProviderTimeout() time.Duration }); ok {
+		provider = 2 * timed.ProviderTimeout()
 	}
-	return max(floor, 2*timed.ProviderTimeout()+10*time.Second)
+	return codecserver.DefaultWorkTimeout + provider + margin
 }
