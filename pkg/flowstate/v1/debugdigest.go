@@ -14,11 +14,20 @@ import "google.golang.org/protobuf/proto"
 // pin which versions and tasks the admitting deployment had; they add, move
 // or remove no step, so a source map computed from the file still names every
 // site the run can hold at, on the lines it was written on.
+//
+// Both are cleared on every workflow in the call tree, not only the root:
+// [ResolvePlugins] pins each callee against its own requirements. A tree
+// nested past what [walkEmbeddedWorkflows] inspects is refused at submission,
+// so what it leaves uncleared is never a run's program.
 func WorkflowIRDigest(workflow *Workflow) string {
-	if workflow.GetResolvedPlugins() != nil || workflow.GetResolvedTaskCapabilities() != nil {
+	if workflow != nil {
 		workflow = proto.CloneOf(workflow)
-		workflow.ResolvedPlugins = nil
-		workflow.ResolvedTaskCapabilities = nil
+		_ = walkEmbeddedWorkflows(workflow, 0, func(wf *Workflow) error {
+			wf.ResolvedPlugins = nil
+			wf.ResolvedTaskCapabilities = nil
+
+			return nil
+		})
 	}
 	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(workflow)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -499,4 +500,24 @@ func TestReplayGuardStillRefusesAClaimsSchemaVersionMismatchOnANewPin(t *testing
 			"identical claims digest was not refused; a digest match alone cannot tell two schema "+
 			"versions apart when a version bump redefines a field's meaning without changing its "+
 			"serialized value")
+}
+
+// TestTheProgramDigestIgnoresPinsAcrossTheCallTree: a durable run reports the
+// digest of the program it executes, which admission has pinned — the callee
+// against its own plugin requirement too. A client that compiled the same file
+// holds no pins, and must still name the same program.
+func TestTheProgramDigestIgnoresPinsAcrossTheCallTree(t *testing.T) {
+	compiled := calls("notify", requires("slack", "v2.1.0"))
+	admitted := proto.CloneOf(compiled)
+	require.NoError(t, v1.ResolvePlugins(admitted, catalogOf(describedPlugin("slack", "v2.1.7", "sha256:schema"))))
+	require.NoError(t, v1.ResolveTaskCapabilities(admitted, v1.DefaultRegistry()))
+	callee := admitted.GetSteps()[0].GetCall().GetWorkflow()
+	require.NotEmpty(t, callee.GetResolvedPlugins(), "the callee was not pinned, so this proves nothing")
+
+	require.Equal(t, v1.WorkflowIRDigest(compiled), v1.WorkflowIRDigest(admitted))
+	require.NotEmpty(t, callee.GetResolvedPlugins(), "the digest cleared the pins on the program itself")
+
+	// A change to a step is still a different program.
+	admitted.Steps[0].Id = "alert"
+	require.NotEqual(t, v1.WorkflowIRDigest(compiled), v1.WorkflowIRDigest(admitted))
 }
