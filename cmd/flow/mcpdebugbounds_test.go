@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -713,4 +714,92 @@ func TestARacingAttachIsAnsweredOnlyOnItsOwnRun(t *testing.T) {
 		require.ErrorIs(t, err, errReusedAttachKey, "an attach on %s/%s was answered with the first session", other.workflowID, other.runID)
 		assert.Nil(t, existing)
 	}
+}
+
+// TestAStartRetryWaitsForTheStartItRepeats: a retry that arrives after the
+// first start registered its session, but before that start has its first
+// answer, waits for it — rather than answering with a case that has not run,
+// or with one the first start is about to remove because it could not launch.
+func TestAStartRetryWaitsForTheStartItRepeats(t *testing.T) {
+	for name, failed := range map[string]error{"launched": nil, "failed": errors.New("the registry stayed busy")} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := newDebugSessions(nil)
+				target := newStepTarget(true)
+				first := &debugSessionEntry{
+					id: uuid.NewString(), target: target, driver: flowdebug.NewDriver(target),
+					started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
+					ready: make(chan struct{}),
+				}
+				_, err := r.register(first, retryKey(debugSessionStartTool, "k"))
+				require.NoError(t, err)
+
+				var result *mcp.CallToolResult
+				answered := make(chan struct{})
+				go func() {
+					defer close(answered)
+					result, err = r.start(t.Context(), toolRequest(t, map[string]any{
+						"workflow": debugWorkflow, "tests": sessionTests, "request_id": "k",
+					}))
+				}()
+				synctest.Wait()
+				select {
+				case <-answered:
+					t.Fatal("a retry was answered before the start it repeats had its answer")
+				default:
+				}
+
+				first.startErr = failed
+				close(first.ready)
+				<-answered
+				require.NoError(t, err)
+				reply := replyOf(t, result)
+				if failed != nil {
+					require.True(t, result.IsError, "a retry reported a start that failed as started: %s", reply.raw)
+					assert.Contains(t, reply.raw, failed.Error())
+
+					return
+				}
+				require.False(t, result.IsError, reply.raw)
+				assert.Equal(t, first.id, reply.SessionID)
+				assert.Contains(t, reply.Note, "not started again")
+			})
+		})
+	}
+}
+
+// TestAStartRetryIsToldTheStartFailed drives the real path: the first start
+// registers, then waits out its claim on a registry a reader holds, and fails.
+// A retry that arrived meanwhile is told so, rather than answered with the
+// session the failed start removes.
+func TestAStartRetryIsToldTheStartFailed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newDebugSessions(nil)
+		require.True(t, r.registry.TryAcquire(1), "a reader in flight")
+		start := func(results chan<- *mcp.CallToolResult) {
+			result, err := r.start(t.Context(), toolRequest(t, map[string]any{
+				"workflow": debugWorkflow, "tests": sessionTests, "request_id": "k",
+			}))
+			assert.NoError(t, err)
+			results <- result
+		}
+
+		first, retry := make(chan *mcp.CallToolResult, 1), make(chan *mcp.CallToolResult, 1)
+		go start(first)
+		synctest.Wait()
+		r.mu.Lock()
+		registered := len(r.sessions)
+		r.mu.Unlock()
+		require.Equal(t, 1, registered, "the first start had not registered, so this proves nothing")
+		go start(retry)
+
+		for name, result := range map[string]*mcp.CallToolResult{"first": <-first, "retry": <-retry} {
+			reply := replyOf(t, result)
+			assert.True(t, result.IsError, "the %s start was answered as started: %s", name, reply.raw)
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		assert.Empty(t, r.sessions)
+		r.registry.Release(1)
+	})
 }

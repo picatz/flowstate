@@ -118,6 +118,13 @@ type debugSessionEntry struct {
 
 	cancel context.CancelFunc
 	done   chan struct{}
+	// ready is closed once the start that registered this session has its
+	// first answer, or has failed to launch the case, startErr saying why:
+	// a retry of that start waits on it rather than answering with a
+	// session that has not run yet or is about to be removed. Nil for a
+	// session that is ready once registered.
+	ready    chan struct{}
+	startErr error
 	// released is closed once the session has finished ending; see
 	// [debugSessions.ending].
 	released chan struct{}
@@ -838,6 +845,16 @@ func (e *debugSessionEntry) answerAfter(ctx context.Context) sessionAnswer {
 
 // startedAgain answers a start whose request id already started entry.
 func startedAgain(ctx context.Context, entry *debugSessionEntry) *mcp.CallToolResult {
+	if entry.ready != nil {
+		select {
+		case <-entry.ready:
+		case <-ctx.Done():
+			return flowmcp.ToolError(fmt.Errorf("the start this request id names is still starting: %w", ctx.Err()))
+		}
+		if entry.startErr != nil {
+			return flowmcp.ToolError(fmt.Errorf("the start this request id names failed: %w", entry.startErr))
+		}
+	}
 	answer := entry.answerAfter(ctx)
 	answer.Note = strings.TrimSpace("this request id already started this session; it was not started again. " + answer.Note)
 
@@ -919,7 +936,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	entry := &debugSessionEntry{
 		id: uuid.NewString(), target: session, driver: flowdebug.NewDriver(session), local: session,
 		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
-		transcript: transcript, cancel: cancel, done: make(chan struct{}),
+		transcript: transcript, cancel: cancel, done: make(chan struct{}), ready: make(chan struct{}),
 	}
 	entry.driver.Wait = maxDebugSessionWait
 	existing, err := r.register(entry, key)
@@ -936,6 +953,9 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 
 		return startedAgain(ctx, existing), nil
 	}
+	// A retry registered behind this start waits for its answer, which the
+	// return below has settled by the time this runs.
+	defer close(entry.ready)
 
 	// The whole registry, held until the case stops: after every reader in
 	// flight, and before any that would overlap the case's registrations.
@@ -945,6 +965,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// Nothing touches the registry before the case launches below, and a
 	// reader never waits for the claim, so the wait is bounded by theirs.
 	if err := r.claimRegistry(ctx); err != nil {
+		entry.startErr = err
 		cancel()
 		_ = session.Close()
 		close(entry.done)

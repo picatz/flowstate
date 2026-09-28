@@ -438,7 +438,10 @@ func (e *executor) parseDebugBreakpoints() {
 			}
 			// Only a site the durable driver can hold at arms it: a
 			// breakpoint that reported armed elsewhere would claim a stop
-			// that never comes.
+			// that never comes. Refusing one needs no version marker: it
+			// could never match an arrival, which is only ever at a site
+			// the complete enumeration calls holdable, so a history that
+			// armed it recorded nothing it did.
 			resolved, why := durableSites(target, bp.GetStep(), e.spec, sites, truncated, "break at")
 			// Past a truncated enumeration a target matching no site before
 			// the cut, declared where a durable run holds, is armed. An
