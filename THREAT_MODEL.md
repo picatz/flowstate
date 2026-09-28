@@ -498,7 +498,7 @@ The reserved channel has no side door. The typed RPCs deliver on
 `workload.signal`, and the inspect action when it carries a condition or a log
 message, and
 `SignalWithStart` refuses every `flowstate_` name (`pkg/flowstate/v1/server/lifecycle.go`).
-Every debug decision, allowed or denied, is an audit record naming the session,
+Every debug authorization decision, allowed or denied, is an audit record naming the session,
 request id, revision and operation (`AuditDebugDetail` in
 `proto/flowstate/v1/audit.proto`); an inspection or a conditional breakpoint
 set is recorded by the digest of its expressions, never their text, because the
@@ -536,11 +536,18 @@ history (invariant 7).
 
 **Limits.** Redaction in a debugger is a transcript control, not a
 confidentiality boundary. A durable inspection renders declared-`sensitive:`
-inputs as `[redacted]`, and a local session applies the case's or run's own
-redaction to everything it prints, but a predicate over a withheld value answers
+inputs as `[redacted]`, and a test case's session (`flow test --debug`,
+`flowstate_debug`, the retained MCP sessions) applies the case's own redaction to
+everything it prints. A local run's session (`flow run local --debug`, `flow
+dap`'s launch, `embed.Debug`) redacts nothing, so it refuses a workflow that
+declares a sensitive value, or whose declarations cannot be read, unless
+disclosure is authorized: `--reveal-sensitive`, `"revealSensitive": true`, or
+`DebugOptions.RevealSensitive`. Either way a predicate over a withheld value answers
 truthfully: `inputs.token == "guess"` is a yes or no about the real value. That
-is what `workload.debug_inspect` gates, and a deployment that must not disclose
-a run's values to an operator does not grant it. A condition's or log message's
+is what `workload.debug_inspect` gates. A caller whose token carries no action
+list keeps the legacy posture and holds every action, this one included, so a
+deployment that must not disclose a run's values to an operator gives that
+operator's issuer an `actions:` list that omits it. A condition's or log message's
 text is written to history in the ask that carries it, readable by whoever can
 read history. A
 hold stops workflow code only: activities, timers and called work already

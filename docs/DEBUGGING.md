@@ -403,6 +403,9 @@ applies here rather than a second, weaker one.
 - `flow dap` makes the same refusal before starting the local run. An editor can
   state the deliberate reveal as `"revealSensitive": true` in its launch
   configuration, or whoever starts the adapter can pass `--reveal-sensitive`.
+- `embed.Debug` makes it too, before anything runs, unless the embedding
+  program sets `DebugOptions.RevealSensitive`; so does a workflow whose
+  declarations cannot be read.
 - Under `flow test --debug` and `flowstate_debug`, the case's own redaction
   posture applies to **everything the session prints** — each step's account as
   it arrives, every `inspect` answer, and the autopsy's failures — so a
@@ -713,7 +716,7 @@ a session follows the current one.
 | Where it stops | every step boundary, including loop bodies, parallel branches and switch arms | top-level steps of the run and of each called workflow |
 | `step`, `next`, `finish`, `until`, `pause` | yes | yes, at those boundaries |
 | Conditional and hit-count breakpoints | yes | yes; a condition needs `workload.debug_inspect` |
-| Logpoints (`log`) | yes | refused as unsupported |
+| Logpoints (`log`) | yes | taken with the set, but reported not armed |
 | Failure stops (`catch`) | yes | refused as unsupported |
 | A breakpoint or `until` inside a loop body, branch or arm | yes | the breakpoint is not armed and the `until` is refused |
 | Source-line breakpoints | when a source map is known | resolved by the client to a step, only through a source map that matches the run's program; `flow dap`'s attach has none |
@@ -734,7 +737,7 @@ Every command carries a request id, and the run answers each with a receipt:
 | `stale` | the command named a revision the session has left |
 | `conflict` | another caller holds the session, or the session id is not the one the run holds |
 | `refused` | not valid now, such as stepping a run that is not held |
-| `unsupported` | this backend does not do it — a logpoint or a failure stop, durably |
+| `unsupported` | this backend does not do it — a failure stop, durably. A logpoint is not refused this way: the set carrying it is applied and the logpoint is reported not armed |
 | `incompatible` | the run's interpreter predates the protocol the command needs; nothing was sent it would misread |
 | `ended` | the session or the run is over |
 
@@ -780,10 +783,11 @@ has the example.
 
 - Go backwards. Historical or reverse debugging is not implemented: every front
   reports `reverse` as unsupported, and a rerun is not history.
-- Stop a durable run where a step fails, or record a logpoint durably. Both are
-  refused as unsupported: the durable driver has no place to hold after a
-  failure is recorded, and a logpoint's expressions would be a second, unaudited
-  inspection channel.
+- Stop a durable run where a step fails, or record a logpoint durably. A
+  failure stop is refused as unsupported: the durable driver has no place to
+  hold after a failure is recorded. A logpoint is taken with the breakpoint set
+  but reported not armed, since its expressions would be a second, unaudited
+  inspection channel; a scripted `flow debug attach` fails on it.
 - Hold inside a step. Every driver holds between steps only: never inside a
   task, an HTTP call or a called activity, and never partway through a `sleep:`
   or a `wait_for_signal:`. A durable run holds at fewer boundaries still — see

@@ -263,11 +263,24 @@ if err != nil {
 	return err // a breakpoint that does not resolve or compile is refused here
 }
 
-held, _ := debugging.WaitSnapshot(ctx, 0) // loop until the state is HELD
-answer, _ := debugging.Inspect(ctx, &v1.DebugInspectRequest{
+// A revision can move before the hold is recorded, so wait through them.
+held, err := debugging.WaitSnapshot(ctx, 0)
+for err == nil && held.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_RUNNING {
+	held, err = debugging.WaitSnapshot(ctx, held.GetRevision())
+}
+if err != nil || held.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+	return fmt.Errorf("the run did not stop at the breakpoint: %v", err)
+}
+answer, err := debugging.Inspect(ctx, &v1.DebugInspectRequest{
 	Revision: held.GetRevision(), Expression: "amount * 2",
 })
-next, _ := debugging.Driver().Do(ctx, "next") // or Resume with a typed action
+if err != nil {
+	return err
+}
+next, err := debugging.Driver().Do(ctx, "next") // or Resume with a typed action
+if err != nil {
+	return err
+}
 
 _ = debugging.Close() // detach: breakpoints stop holding, the run finishes
 outputs, err := debugging.Wait(ctx)
@@ -284,6 +297,12 @@ changes the set, so `break` adds to them rather than replacing them.
 until something moves it or `Close` detaches. `Cancel`, or cancelling `ctx`,
 ends the run. `DebugOptions.Output` receives the session's narration, and
 `SourceMap` relates steps to lines when a program has one.
+
+A debugger is a reveal: the narration and every inspection show values
+unredacted. So `Debug` refuses a workflow that declares a sensitive input or
+output — itself or in a workflow it calls — unless `DebugOptions.RevealSensitive`
+authorizes it, as `flow run local --debug` and `flow dap` refuse one without
+`--reveal-sensitive`.
 
 A custom task is opaque to a debugger: the run stops before it and after it,
 and nothing in between. `v1.NoteTask` is how its author says what happened in

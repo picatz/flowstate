@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -33,6 +34,14 @@ type DebugOptions struct {
 	// outcome, logpoints, and task notes. Nil discards it; the same account
 	// is in each snapshot's observations.
 	Output func(text string)
+
+	// RevealSensitive authorizes debugging a workflow that declares a
+	// sensitive input or output, itself or in a workflow it calls. A
+	// debugger is a reveal: the session narrates each step's values and an
+	// inspection reaches anything in scope, none of it redacted. Without
+	// this, [Debug] refuses such a workflow, as `flow run local --debug`
+	// and `flow dap` do without --reveal-sensitive.
+	RevealSensitive bool
 }
 
 // Debugging is one local run under a debugger: a [flowdebug.Target] an
@@ -62,6 +71,20 @@ type Debugging struct {
 // Cancel ctx, or call [Debugging.Cancel], to end the run; [Debugging.Close]
 // detaches the debugger and lets it finish on its own.
 func Debug(ctx context.Context, workflow *Workflow, opts DebugOptions) (*Debugging, error) {
+	// Refused before anything runs, and when the declarations cannot be
+	// read: disclosure is authorized, never assumed.
+	if !opts.RevealSensitive {
+		declares, err := v1.DeclaresSensitiveValues(workflow)
+		switch {
+		case err != nil:
+			return nil, fmt.Errorf("flowstate/embed: Debug: the workflow's sensitive-value declarations could not be "+
+				"inspected, so it is not debugged without DebugOptions.RevealSensitive: %w", err)
+		case declares:
+			return nil, errors.New("flowstate/embed: Debug: the workflow declares sensitive inputs or outputs, whose " +
+				"values a debugger narrates and inspects unredacted; set DebugOptions.RevealSensitive to debug it with values shown")
+		}
+	}
+
 	runCtx, err := localContext(ctx, workflow, opts.RunOptions, "Debug")
 	if err != nil {
 		return nil, err
