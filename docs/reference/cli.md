@@ -196,23 +196,33 @@ Payload encryption seals every payload a run writes to Temporal history under ke
 
 ## `flow codec keygen`
 
-Write a new 256-bit payload encryption key to a file
+Write a new payload wrapping key, or an HPKE escrow key pair
 
 ```
 flow codec keygen [flags]
 ```
 
-Write 32 random bytes, base64-encoded on one line, to `--out` at file mode 0600, and print nothing of the key. Refuses to overwrite an existing file: rotating a key is adding a new one to the keyring beside the old, which must stay while any history sealed under it is still needed.
+Without --hpke, write a local wrapping key: 32 random bytes, base64-encoded on one line, to `--out` at file mode 0600, printing nothing of the key.
+
+With --hpke, write an HPKE (RFC 9180) key pair for escrow: the private key to `--out` at mode 0600, to be kept offline and given only to a recovery process, and the public key beside it with a .pub suffix, which every worker's keyring names so each data key is also wrapped to it. The default KEM is the post-quantum hybrid ML-KEM-768 + X25519.
+
+Refuses to overwrite an existing file: rotating a key is adding a new one to the keyring beside the old, which must stay while any history sealed under it is needed.
 
 Examples:
 
 ```sh
-# A key for the default namespace, named for when it was made:
+# A local wrapping key for the default namespace, named for when it was made:
 flow codec keygen --out /etc/flowstate/payload-keys/default-2026-09.key
+
+# An escrow key pair: keep break-glass.key offline, and name
+# break-glass.key.pub in every worker's keyring.
+flow codec keygen --hpke --out break-glass.key
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--hpke` | `bool` | `false` | — | write an HPKE escrow key pair instead of a local wrapping key |
+| `--kem <uint16>` | `uint16` | `25722` | — | with --hpke, the HPKE KEM id: 0x647a (ML-KEM-768 + X25519), 0x0050 (ML-KEM-768 + P-256), 0x0020 (X25519), among others |
 | `--out <string>` | `string` | — | — | path to write the key to (required) |
 
 ## `flow codec serve`

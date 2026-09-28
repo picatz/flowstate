@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -67,11 +69,29 @@ var resolvePayloadCodec = func(flags payloadEncryptionFlags) (payloadcodec.Confi
 	if flags.keyring == "" {
 		return payloadcodec.Config{}, nil
 	}
-	keyring, err := envelope.LoadFile(flags.keyring)
+	keyring, err := openPayloadKeyring(flags.keyring)
 	if err != nil {
-		return payloadcodec.Config{}, fmt.Errorf("payload keyring: %w", err)
+		return payloadcodec.Config{}, err
 	}
 	return keyring.PayloadCodecConfig(), nil
+}
+
+// payloadKeyringOpenTimeout bounds opening a keyring: reading its keys, asking
+// every key provider to describe its keys, and wrapping each namespace's first
+// data key. A provider that has not answered by then is one this process
+// cannot start against.
+const payloadKeyringOpenTimeout = 30 * time.Second
+
+// openPayloadKeyring opens the keyring file at path under
+// payloadKeyringOpenTimeout.
+func openPayloadKeyring(path string) (*envelope.Keyring, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), payloadKeyringOpenTimeout)
+	defer cancel()
+	keyring, err := envelope.LoadFile(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("payload keyring: %w", err)
+	}
+	return keyring, nil
 }
 
 // localPayloadCodec resolves the codec for a local run, and applies it nowhere.

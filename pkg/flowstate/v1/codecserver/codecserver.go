@@ -346,6 +346,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, auditUnavailableMsg, http.StatusServiceUnavailable)
 			return
 		}
+		// A key provider that did not answer is an outage, not a bad
+		// request: the same request may succeed once it is back.
+		if errors.Is(err, envelope.ErrProviderUnavailable) {
+			header.Set("Retry-After", "5")
+			http.Error(w, "the key provider is unavailable; retry shortly", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, decodeFailureUserFacingMsg, http.StatusBadRequest)
 		return
 	}
@@ -488,6 +495,9 @@ func errorClass(err error) string {
 		{"unknown-key", envelope.ErrUnknownKey},
 		{"malformed", envelope.ErrMalformed},
 		{"authentication", envelope.ErrAuthentication},
+		{"suite-refused", envelope.ErrSuiteRefused},
+		{"key-denied", envelope.ErrKeyDenied},
+		{"provider-unavailable", envelope.ErrProviderUnavailable},
 		{"reader-cannot-encode", envelope.ErrReaderCannotEncode},
 	} {
 		if errors.Is(err, c.err) {

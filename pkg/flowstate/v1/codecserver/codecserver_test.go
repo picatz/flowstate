@@ -23,6 +23,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/codecserver"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 )
 
 const (
@@ -50,14 +51,14 @@ var principals = map[string]auth.Principal{
 func newFixture(t *testing.T, mutate func(*codecserver.Options)) *fixture {
 	t.Helper()
 
-	env := map[string]string{"A": string(envelope.GenerateKey()), "B": string(envelope.GenerateKey())}
+	env := map[string]string{"A": string(local.Generate()), "B": string(local.Generate())}
 	cfg, err := envelope.ParseConfig([]byte(`
 namespaces:
   ns-a: {current: a-1, keys: [{id: a-1, env: A}]}
   ns-b: {current: b-1, keys: [{id: b-1, env: B}]}
 `))
 	require.NoError(t, err)
-	kr, err := envelope.Open(cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
+	kr, err := envelope.Open(t.Context(), cfg, envelope.OpenOptions{Getenv: func(n string) string { return env[n] }})
 	require.NoError(t, err)
 
 	trail := &bytes.Buffer{}

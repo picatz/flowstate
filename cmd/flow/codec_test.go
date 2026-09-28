@@ -11,7 +11,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 )
 
 // The codec slot has two entry points in this binary, and the parity claim of
@@ -160,7 +160,7 @@ func TestTheDefaultResolutionStartsBothEntryPoints(t *testing.T) {
 func writeTestKeyring(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "default.key"), envelope.GenerateKey(), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "default.key"), local.Generate(), 0o600))
 	path := filepath.Join(dir, "keyring.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
 namespaces:

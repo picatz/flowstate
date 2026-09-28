@@ -121,12 +121,6 @@ func TestTheCollapsedWrappersAreTheOnesTheSchemaHas(t *testing.T) {
 		// protojson whole — so this entry records that the rule sees it, not that
 		// a document is affected by it.
 		"flowstate.v1.Value.Structure.Map",
-
-		// Also never in a run's answer: the payload keyring an operator
-		// writes, whose only field is its `namespaces` map. It is decoded from
-		// its file with protojson, which the rendering does not touch, so the
-		// rule seeing it changes no document.
-		"flowstate.v1.PayloadKeyring",
 	}, collapsed,
 		"the set of wrapper messages the run document collapses has changed. That moves "+
 			"or restores a level in every jq expression that reads through it, so it is a "+

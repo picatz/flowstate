@@ -180,6 +180,13 @@
 // around a vault client, and which a hand-rolled one lets us do without.
 //
 // A Provider is safe for concurrent use by every task execution on a worker.
+//
+// # Transit
+//
+// [NewTransit] returns a client for the Transit secrets engine instead, over the
+// same transport, authentication, and error classification, for callers that
+// need Vault to encrypt with a key it keeps: the payload envelope's Vault key
+// provider is one.
 package vault
 
 import (

@@ -3,28 +3,47 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
 
 option go_package = "flowstatev1";
 
-// Payload encryption: the keyring configuration an operator writes, and the
-// status a process reports about the protection it is running with.
+// Payload encryption: the keyring configuration an operator writes, the
+// envelope every sealed payload carries, and the status a process reports
+// about the protection it is running with.
 //
 // # What this protects
 //
 // Everything a run writes to durable history through the Temporal client's
 // data converter: workflow and activity arguments and results, signals,
 // queries, updates, memos, heartbeat details, Continue-As-New state, schedule
-// actions, and failure messages and stack traces. Each payload is sealed with
-// AES-256-GCM under a content key derived by HKDF-SHA256 from the namespace's
-// current key and a fresh random salt, with the key id and the Temporal
-// namespace authenticated. The construction is documented, with the argument
-// for it, in pkg/flowstate/v1/payloadcodec/envelope.
+// actions, and failure messages and stack traces.
+//
+// # The key hierarchy
+//
+// Envelope encryption, in three layers:
+//
+//	wrapping key   held by a key provider: a local key file, a Vault or
+//	               OpenBao Transit key, or an HPKE recipient. Never leaves it.
+//	data key       32 random bytes a process generates for one namespace,
+//	               wrapped by the wrapping key once, and reused for a bounded
+//	               window (PayloadDataKeyPolicy). The wrapped copy travels in
+//	               every payload it seals, so history is self-describing.
+//	content key    derived per payload from the data key and a fresh salt. The
+//	               only key an AEAD is ever keyed with.
+//
+// A provider is consulted once per data key, not once per payload, so a
+// Temporal workflow task never waits on a KMS round trip it did not need, and
+// disabling the wrapping key at the provider makes everything sealed under it
+// unreadable once the data keys already unwrapped age out of memory. The
+// construction, with its argument, is documented in
+// pkg/flowstate/v1/payloadcodec/envelope.
 //
 // # What stays visible
 //
 // Search attributes, headers (trace context), workflow and activity types,
 // ids, task queues, timestamps, the shape of the history, each payload's size,
-// and the id of the key that sealed it. See docs/ENCRYPTION.md.
+// the suite it was sealed with, and the id of the key that wrapped its data
+// key. See docs/ENCRYPTION.md.
 //
 // # Why the configuration is a message
 //
@@ -46,47 +65,106 @@ option go_package = "flowstatev1";
 //	    current: default-2026-09
 //	    keys:
 //	      - id: default-2026-09
-//	        file: keys/default-2026-09.key
+//	        vault: {provider: corp, key: flowstate-default}
 //	      - id: default-2026-06
-//	        env: FLOWSTATE_PAYLOAD_KEY_DEFAULT_2026_06
+//	        file: keys/default-2026-06.key
+//	    escrow: [break-glass]
+//	providers:
+//	  - name: corp
+//	    vault:
+//	      address: https://vault.internal:8200
+//	      kubernetes: {role: flowstate}
+//	escrow_keys:
+//	  - id: break-glass
+//	    hpke: {public_key: {file: keys/break-glass.pub}}
 message PayloadKeyring {
+  option (buf.validate.message).cel = {
+    id: "payload_keyring.provider_names_unique"
+    message: "each provider name may be listed once"
+    expression: "this.providers.map(p, p.name).unique()"
+  };
+  option (buf.validate.message).cel = {
+    id: "payload_keyring.escrow_ids_unique"
+    message: "each escrow key id may be listed once"
+    expression: "this.escrow_keys.map(k, k.id).unique()"
+  };
+  option (buf.validate.message).cel = {
+    id: "payload_keyring.vault_keys_name_a_provider"
+    message: "a vault key must name a provider listed under providers"
+    expression:
+      "this.namespaces.all(ns, this.namespaces[ns].keys.all(k, !has(k.vault) || this.providers.exists(p, p.name == k.vault.provider)))"
+      " && this.escrow_keys.all(k, !has(k.vault) || this.providers.exists(p, p.name == k.vault.provider))"
+  };
+  option (buf.validate.message).cel = {
+    id: "payload_keyring.escrow_names_an_escrow_key"
+    message: "a namespace's escrow must name keys listed under escrow_keys"
+    expression: "this.namespaces.all(ns, this.namespaces[ns].escrow.all(e, this.escrow_keys.exists(k, k.id == e)))"
+  };
+
   // The keys for each Temporal namespace, keyed by the namespace's name.
   //
   // Every namespace a process dials must be listed: a client for a namespace
   // with no keys is refused rather than built in plaintext. A key id names
-  // exactly one key in one namespace across the whole keyring, which is what
-  // lets a payload's key id alone say which namespace's key sealed it.
+  // exactly one key across the whole keyring, which is what lets a payload's
+  // key id alone say which namespace's key sealed it.
   map<string, PayloadKeyringNamespace> namespaces = 1 [
     (buf.validate.field).map.min_pairs = 1,
     (buf.validate.field).map.max_pairs = 256,
     (buf.validate.field).map.keys.string.min_len = 1,
     (buf.validate.field).map.keys.string.max_len = 255
   ];
+
+  // Named connections to key services, which keys refer to by name.
+  repeated PayloadKeyProvider providers = 2 [(buf.validate.field).repeated.max_items = 32];
+
+  // Keys a data key is additionally wrapped to, for recovery: a lost or
+  // destroyed primary does not take history with it while an escrow key's
+  // holder can still unwrap. Typically an HPKE public key whose private half
+  // is kept offline; only a process holding that private half can use one to
+  // read. A namespace opts in by listing ids under its own escrow.
+  repeated PayloadKey escrow_keys = 3 [(buf.validate.field).repeated.max_items = 8];
+
+  reserved 4;
+  reserved "plugins";
 }
 
-// PayloadKeyringNamespace is one Temporal namespace's keys.
+// PayloadKeyringNamespace is one Temporal namespace's keys and policy.
 message PayloadKeyringNamespace {
   option (buf.validate.message).cel = {
     id: "payload_keyring_namespace.current_is_listed"
     message: "the current key must be one of this namespace's keys"
-    expression: "this.keys.exists(k, k.id == this.current)"
+    expression: "this.current == '' || this.keys.exists(k, k.id == this.current)"
   };
   option (buf.validate.message).cel = {
     id: "payload_keyring_namespace.unique_ids"
     message: "each key id may be listed once"
     expression: "this.keys.map(k, k.id).unique()"
   };
+  option (buf.validate.message).cel = {
+    id: "payload_keyring_namespace.keys_authenticate"
+    message: "an hpke key can only be an escrow key: anyone holding its public key can wrap to it, so it cannot vouch for who sealed a payload"
+    expression: "this.keys.all(k, !has(k.hpke))"
+  };
+  option (buf.validate.message).cel = {
+    id: "payload_keyring_namespace.escrow_unique"
+    message: "each escrow id may be listed once"
+    expression: "this.escrow.unique()"
+  };
+  option (buf.validate.message).cel = {
+    id: "payload_keyring_namespace.decrypt_suites_unique"
+    message: "each decrypt suite may be listed once"
+    expression: "this.decrypt_suites.unique()"
+  };
 
-  // The id of the key new payloads are sealed under.
-  string current = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+  // The id of the key new data keys are wrapped under. Empty makes the
+  // namespace decode-only: a recovery process, holding an escrow private key
+  // and nothing that can seal, lists namespaces this way.
+  string current = 1 [(buf.validate.field).string.pattern = "^([A-Za-z0-9._-]{1,64})?$"];
 
   // Every key this namespace's history may be sealed under: the current key,
   // and every retired key whose history must still be readable. Removing a key
-  // makes the history sealed under it permanently unreadable.
-  repeated PayloadKeySource keys = 2 [
-    (buf.validate.field).repeated.min_items = 1,
-    (buf.validate.field).repeated.max_items = 64
-  ];
+  // makes the history sealed under it unreadable except through escrow.
+  repeated PayloadKey keys = 2 [(buf.validate.field).repeated.max_items = 64];
 
   // Read payloads that carry no encryption, for a namespace holding history
   // written before encryption was turned on. It never affects what is written:
@@ -95,35 +173,268 @@ message PayloadKeyringNamespace {
   // payload written into history by anything other than this deployment is not
   // read back as though it were protected.
   bool accept_unencrypted = 3;
+
+  // Ids from PayloadKeyring.escrow_keys every new data key is also wrapped
+  // to. At most three: each adds its wrapped copy to every payload.
+  repeated string escrow = 4 [
+    (buf.validate.field).repeated.max_items = 3,
+    (buf.validate.field).repeated.items.string.pattern = "^[A-Za-z0-9._-]{1,64}$"
+  ];
+
+  // The suite new payloads are sealed with. Unset is AES-256-GCM.
+  PayloadSuite suite = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // The suites Decode accepts. Empty accepts every suite this build
+  // implements, except under FIPS 140-3 mode, where only approved ones are.
+  // Narrowing it is how a suite is retired once no history needs it.
+  repeated PayloadSuite decrypt_suites = 6 [
+    (buf.validate.field).repeated.max_items = 8,
+    (buf.validate.field).repeated.items.enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+
+  // How long, and for how much, one data key is reused.
+  PayloadDataKeyPolicy data_key = 7;
 }
 
-// PayloadKeySource names one key and where its material is held.
-message PayloadKeySource {
-  // The key's id, stamped in plaintext on every payload sealed under it. It is
+// PayloadKey names one key and where it is held.
+message PayloadKey {
+  // The key's id, stamped on every payload whose data key it wrapped. It is
   // not secret and must not be derived from the material.
   string id = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
 
-  // Where the key material is held: 32 random bytes as one line of standard
-  // base64, the form `flow codec keygen` writes.
   oneof source {
     option (buf.validate.oneof).required = true;
 
-    // A file holding the key. A relative path is resolved against the
-    // directory of the keyring file. On Unix the file must be accessible by
-    // its owner only (mode 0600 or stricter).
+    // A local wrapping key in a file: 32 random bytes as one line of
+    // standard base64, the form `flow codec keygen` writes. A relative path
+    // is resolved against the directory of the keyring file. On Unix the file
+    // must be accessible by its owner only (mode 0600 or stricter).
     string file = 2 [(buf.validate.field).string = {
       min_len: 1
       max_len: 4096
     }];
 
-    // An environment variable holding the key.
+    // A local wrapping key in an environment variable, in the same form.
     string env = 3 [(buf.validate.field).string.pattern = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"];
+
+    // A Vault or OpenBao Transit key.
+    PayloadVaultKey vault = 4;
+
+    // An HPKE (RFC 9180) recipient: data keys are sealed to its public key,
+    // and only a holder of the private key can unwrap them. An escrow key
+    // only: anyone holding the public key can wrap to it, so a wrap under it
+    // does not show who made it.
+    PayloadHPKEKey hpke = 5;
   }
 }
 
+// PayloadVaultKey is a Transit key on a configured provider.
+message PayloadVaultKey {
+  // The name of a PayloadKeyring.providers entry with a vault connection.
+  string provider = 1 [(buf.validate.field).string.pattern = "^[a-z0-9][a-z0-9-]{0,31}$"];
+
+  // The Transit key's name. Its type must be aes256-gcm96 or
+  // chacha20-poly1305.
+  string key = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,128}$"];
+}
+
+// PayloadHPKEKey is an HPKE recipient: a public key data keys are sealed to
+// and, where this process may unwrap, the private key.
+message PayloadHPKEKey {
+  // The recipient's public key, in the text form `flow codec keygen --hpke`
+  // writes: `flowstate-hpke-v1:<kem id in hex>:<base64 public key>`.
+  PayloadKeyMaterial public_key = 1 [(buf.validate.field).required = true];
+
+  // The private key, in the same text form with a `-private` suffix on the
+  // prefix. Set only in a process that must read with this key, typically a
+  // recovery process. A worker that only writes never needs it.
+  PayloadKeyMaterial private_key = 2;
+}
+
+// PayloadKeyMaterial is where some key text is held.
+message PayloadKeyMaterial {
+  oneof source {
+    option (buf.validate.oneof).required = true;
+
+    // A file, resolved as PayloadKey.file is and held to the same mode
+    // requirement when it holds a private key.
+    string file = 1 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 4096
+    }];
+
+    // An environment variable.
+    string env = 2 [(buf.validate.field).string.pattern = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"];
+  }
+}
+
+// PayloadKeyProvider is a named connection to a key service.
+message PayloadKeyProvider {
+  string name = 1 [(buf.validate.field).string.pattern = "^[a-z0-9][a-z0-9-]{0,31}$"];
+
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    PayloadVaultProvider vault = 2;
+  }
+}
+
+// PayloadVaultProvider is a Vault or OpenBao server whose Transit engine
+// wraps and unwraps data keys. Only the encrypt and decrypt endpoints of the
+// named keys are used, and reading the key's metadata at startup.
+message PayloadVaultProvider {
+  // The server's address. https is required except to a loopback address.
+  string address = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 2048
+  }];
+
+  // The Transit engine's mount path. Unset is "transit".
+  string mount = 2 [(buf.validate.field).string.pattern = "^([A-Za-z0-9._/-]{1,128})?$"];
+
+  // A Vault Enterprise or OpenBao namespace, sent as X-Vault-Namespace.
+  string vault_namespace = 3 [(buf.validate.field).string.max_len = 255];
+
+  // A PEM bundle of roots to verify the server with, in place of the system
+  // roots. Resolved as PayloadKey.file is.
+  string ca_file = 4 [(buf.validate.field).string.max_len = 4096];
+
+  oneof auth {
+    option (buf.validate.oneof).required = true;
+
+    // An environment variable holding a Vault token.
+    string token_env = 5 [(buf.validate.field).string.pattern = "^[A-Za-z_][A-Za-z0-9_]{0,127}$"];
+
+    // Kubernetes auth: the pod's service account token is exchanged for a
+    // Vault token under role, and renewed.
+    PayloadVaultKubernetesAuth kubernetes = 6;
+  }
+
+  // How long one Transit call may take. Unset is five seconds.
+  google.protobuf.Duration timeout = 7 [(buf.validate.field).duration = {
+    gte: {}
+    lte: {seconds: 60}
+  }];
+}
+
+// PayloadVaultKubernetesAuth is Vault's Kubernetes auth method.
+message PayloadVaultKubernetesAuth {
+  string role = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+
+  // The auth method's mount path. Unset is "kubernetes".
+  string mount = 2 [(buf.validate.field).string.pattern = "^([A-Za-z0-9._/-]{1,128})?$"];
+
+  // The service account token file. Unset is the in-cluster default.
+  string token_file = 3 [(buf.validate.field).string.max_len = 4096];
+}
+
+// PayloadSuite is the AEAD a payload is sealed with. The key derivation,
+// HKDF-SHA256, and the key commitment are the same for every suite; a
+// different derivation would be a different suite.
+enum PayloadSuite {
+  PAYLOAD_SUITE_UNSPECIFIED = 0;
+
+  // AES-256-GCM with a random 96-bit nonce under a single-use content key
+  // (NIST SP 800-38D). FIPS 140-3 approved, and the default.
+  PAYLOAD_SUITE_AES256_GCM = 1;
+
+  // XChaCha20-Poly1305 with a random 192-bit nonce (draft-irtf-cfrg-xchacha).
+  // Fast without AES hardware; not FIPS 140-3 approved.
+  PAYLOAD_SUITE_XCHACHA20_POLY1305 = 2;
+
+  // Reserved for AES-256-GCM-SIV (RFC 8452) and XAES-256-GCM (C2SP).
+  reserved 3, 4;
+}
+
+// PayloadDataKeyPolicy bounds how long, and for how much, one data key seals.
+// A data key rolls over at whichever bound it reaches first. Unset fields take
+// the defaults named on each.
+message PayloadDataKeyPolicy {
+  // How long a data key seals new payloads, and how long an unwrapped data
+  // key is kept for reading. Also the latest a disabled wrapping key keeps
+  // being usable in a running process. Unset is ten minutes.
+  google.protobuf.Duration max_age = 1 [(buf.validate.field).duration = {
+    gte: {}
+    lte: {seconds: 86400}
+  }];
+
+  // How many payloads one data key seals. Unset is 2^20.
+  uint64 max_messages = 2 [(buf.validate.field).uint64.lte = 4294967296];
+
+  // How many plaintext bytes one data key seals. Unset is 64 GiB.
+  uint64 max_bytes = 3;
+
+  // How long past max_age a data key keeps sealing when its successor
+  // cannot be wrapped because the key provider is unreachable. Unset is
+  // zero: sealing stops and the write fails, and is retried, rather than
+  // stretching the window. A deployment that prefers availability sets this,
+  // and the time it buys is added to how long a disabled wrapping key keeps
+  // working.
+  google.protobuf.Duration stale_grace = 4 [(buf.validate.field).duration = {
+    gte: {}
+    lte: {seconds: 3600}
+  }];
+
+  // How many unwrapped data keys a process keeps for reading, across every
+  // namespace. Unset is 4096.
+  uint32 decode_cache_entries = 5 [(buf.validate.field).uint32.lte = 65536];
+}
+
+// PayloadEnvelopeHeader is the authenticated header at the front of every
+// sealed payload's data, after the four bytes "FSE1" and its own length as a
+// varint. The header is authenticated as the bytes on the wire, never as a
+// re-serialization, so a field this build does not know is still covered.
+message PayloadEnvelopeHeader {
+  // The PayloadSuite the payload is sealed with.
+  uint32 suite = 1 [(buf.validate.field).uint32.gt = 0];
+
+  // The id of the key that wrapped the data key, in the keyring.
+  string key_id = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+
+  // The content key's HKDF salt: 32 random bytes per payload.
+  bytes salt = 3 [(buf.validate.field).bytes.len = 32];
+
+  // The key commitment: 32 bytes derived from the data key beside the content
+  // key, checked before the AEAD is opened, so no ciphertext opens under two
+  // keys.
+  bytes commitment = 4 [(buf.validate.field).bytes.len = 32];
+
+  // The data key, wrapped by key_id's provider, opaque to everything else.
+  bytes wrapped_key = 5 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  // The provider's version of key_id that wrapped the data key, where the
+  // provider versions keys (a Vault Transit key's vN); zero otherwise.
+  uint32 key_version = 6;
+
+  // The same data key wrapped to each of the namespace's escrow keys.
+  repeated PayloadEscrowRecipient escrow = 7 [(buf.validate.field).repeated.max_items = 3];
+}
+
+// PayloadEscrowRecipient is one escrow key's wrapped copy of the data key.
+message PayloadEscrowRecipient {
+  string key_id = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+
+  bytes wrapped_key = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  uint32 key_version = 3;
+}
+
 // PayloadEncryptionStatus is what a process reports about the payload
-// protection it runs with, safe to print, log, and send anywhere: key ids and
-// one-way fingerprints, never material. `flow codec status` writes it.
+// protection it runs with, safe to print, log, and send anywhere: key ids,
+// providers and one-way fingerprints, never material. `flow codec status`
+// writes it.
 message PayloadEncryptionStatus {
   // Whether a keyring is configured, so payloads are written encrypted.
   bool enabled = 1;
@@ -134,6 +445,10 @@ message PayloadEncryptionStatus {
 
   // Each Temporal namespace the keyring covers, in name order.
   repeated PayloadEncryptionNamespaceStatus namespaces = 3 [(buf.validate.field).repeated.max_items = 256];
+
+  // Whether this process runs in FIPS 140-3 mode (GODEBUG=fips140), which
+  // narrows the suites it seals and opens with.
+  bool fips140 = 4;
 }
 
 // PayloadEncryptionNamespaceStatus is one namespace's keys as the process holds
@@ -144,24 +459,51 @@ message PayloadEncryptionNamespaceStatus {
     max_len: 255
   }];
 
-  // The id of the key new payloads are sealed under.
-  string current_key_id = 2 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
+  // The id of the key new data keys are wrapped under; empty for a
+  // decode-only namespace.
+  string current_key_id = 2 [(buf.validate.field).string.pattern = "^([A-Za-z0-9._-]{1,64})?$"];
 
-  // Every key this namespace's history can be read with, current first.
-  repeated PayloadKeyStatus keys = 3 [(buf.validate.field).repeated.max_items = 64];
+  // Every key this namespace's history can be read with, current first, then
+  // escrow keys.
+  repeated PayloadKeyStatus keys = 3 [(buf.validate.field).repeated.max_items = 72];
 
   // Whether unencrypted payloads are read, for pre-encryption history.
   bool accept_unencrypted = 4;
+
+  // The suite new payloads are sealed with, and the suites Decode accepts.
+  PayloadSuite suite = 5;
+  repeated PayloadSuite decrypt_suites = 6 [(buf.validate.field).repeated.max_items = 8];
+
+  // The data key bounds in force, with defaults filled in.
+  PayloadDataKeyPolicy data_key = 7;
 }
 
 // PayloadKeyStatus identifies one key without revealing it.
 message PayloadKeyStatus {
   string id = 1 [(buf.validate.field).string.pattern = "^[A-Za-z0-9._-]{1,64}$"];
 
-  // Sixteen hex characters of a one-way, domain-separated digest of the key
-  // material. Two processes whose fingerprints for one id differ hold different
-  // keys under that id, and each will refuse the other's payloads.
-  string fingerprint = 2 [(buf.validate.field).string.pattern = "^[0-9a-f]{16}$"];
+  // Sixteen hex characters of a one-way, domain-separated digest of a local
+  // key's material, or of an HPKE key's public key. Two processes whose
+  // fingerprints for one id differ hold different keys under that id. Empty
+  // for a key held by a key service, which the process never sees.
+  string fingerprint = 2 [(buf.validate.field).string.pattern = "^([0-9a-f]{16})?$"];
 
   bool current = 3;
+
+  // Where the key is held: "local", "vault", or "hpke".
+  string kind = 4 [
+    (buf.validate.field).string.in = "local",
+    (buf.validate.field).string.in = "vault",
+    (buf.validate.field).string.in = "hpke"
+  ];
+
+  // Whether this process can unwrap with the key, and so read what it
+  // sealed. An HPKE escrow key a worker holds only the public half of cannot.
+  bool can_unwrap = 5;
+
+  // Whether the key is an escrow key rather than one of the namespace's own.
+  bool escrow = 6;
+
+  // The provider's current version of the key, where it versions keys.
+  uint32 version = 7;
 }
