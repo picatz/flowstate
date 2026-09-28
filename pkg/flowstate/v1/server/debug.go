@@ -92,10 +92,13 @@ func (r *debugRun) refresh(ctx context.Context) {
 	}
 	if resp.GetWorkflowExecutionInfo().GetStatus() == enums.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW {
 		current, err := r.temporal.DescribeWorkflowExecution(ctx, r.workflowID, "")
-		if err == nil && current.GetWorkflowExecutionInfo().GetFirstRunId() == resp.GetWorkflowExecutionInfo().GetFirstRunId() {
-			resp = current
-			r.runID = current.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+		if err != nil || current.GetWorkflowExecutionInfo().GetFirstRunId() != resp.GetWorkflowExecutionInfo().GetFirstRunId() {
+			// The chain goes on somewhere this read could not follow; the
+			// segment that continued is not the run closing.
+			return
 		}
+		resp = current
+		r.runID = current.GetWorkflowExecutionInfo().GetExecution().GetRunId()
 	}
 	r.describe = resp
 }

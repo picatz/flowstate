@@ -78,6 +78,12 @@ type debugControl struct {
 	// [v1.DebugSession] so the record is complete on its own.
 	run *v1.RunAddress
 
+	// rootSensitive is the run's own declared-sensitive inputs, taken once at
+	// the top of the segment. Sensitivity belongs to a value's origin, so text
+	// kept for a debugger inside a callee is withheld against these as well as
+	// against the callee's own declarations.
+	rootSensitive v1.SensitiveValues
+
 	// lease is the hold, or nil when nothing holds this run. It is
 	// [v1.DebugSession] rather than a struct of its own because that message
 	// is the schema's answer to "who is debugging which run, and until when",
