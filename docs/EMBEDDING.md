@@ -268,8 +268,11 @@ held, err := debugging.WaitSnapshot(ctx, 0)
 for err == nil && held.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_RUNNING {
 	held, err = debugging.WaitSnapshot(ctx, held.GetRevision())
 }
-if err != nil || held.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
-	return fmt.Errorf("the run did not stop at the breakpoint: %v", err)
+if err != nil {
+	return err
+}
+if held.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+	return errors.New("the run ended without stopping at the breakpoint")
 }
 answer, err := debugging.Inspect(ctx, &v1.DebugInspectRequest{
 	Revision: held.GetRevision(), Expression: "amount * 2",

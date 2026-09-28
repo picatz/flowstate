@@ -128,6 +128,27 @@ outputs:
 	assert.Contains(t, revealed.Stderr, "break at mint")
 }
 
+// TestADebugRefusalSaysWhyItRefused: a workflow that declares something
+// sensitive and one whose declarations could not be fully inspected are both
+// refused without --reveal-sensitive, each saying which it is; only one whose
+// values may be shown is not refused. The second cannot be reached from a
+// compiled file, whose calls nest far shallower than the scan's bound.
+func TestADebugRefusalSaysWhyItRefused(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, debugRevealRefusal("w", carriedValuesShown))
+	declared := debugRevealRefusal("w", carriedValuesDeclared)
+	require.Error(t, declared)
+	assert.Contains(t, declared.Error(), "declares sensitive inputs or outputs")
+	unverified := debugRevealRefusal("w", carriedValuesUnverified)
+	require.Error(t, unverified)
+	assert.Contains(t, unverified.Error(), "could not be fully inspected")
+	assert.NotContains(t, unverified.Error(), "declares sensitive", "an unread workflow was said to declare what nobody read")
+	for _, refusal := range []error{declared, unverified} {
+		assert.Contains(t, refusal.Error(), "--reveal-sensitive")
+	}
+}
+
 // TestRunLocalWithoutDebugHasNoConsole is the shape of the cost: no flag, no
 // session, and the run is the run it always was.
 func TestRunLocalWithoutDebugHasNoConsole(t *testing.T) {

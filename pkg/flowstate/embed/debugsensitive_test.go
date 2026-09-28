@@ -2,10 +2,13 @@ package embed
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // TestDebugRefusesASensitiveWorkflowUnlessRevealed: a debugger is a reveal —
@@ -44,4 +47,24 @@ steps:
 	echoed, ok := StepOutputString(outputs, "echo", "value")
 	require.True(t, ok)
 	assert.Equal(t, "hunter2", echoed)
+}
+
+// TestDebugRefusesAWorkflowWhoseDeclarationsCannotBeRead: a workflow built in
+// memory can nest calls past what a specification is scanned to, so whether it
+// declares anything sensitive cannot be told. Disclosure is authorized, never
+// assumed: it is refused without RevealSensitive, as one that declares
+// something is.
+func TestDebugRefusesAWorkflowWhoseDeclarationsCannotBeRead(t *testing.T) {
+	deep := &v1.Workflow{Name: "leaf", Steps: []*v1.Node{{Id: "leaf", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}}}
+	for i := range v1.MaxStructureDepth + 2 {
+		deep = &v1.Workflow{Name: fmt.Sprintf("level%d", i), Steps: []*v1.Node{
+			{Id: "down", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: deep}}},
+		}}
+	}
+	_, err := v1.DeclaresSensitiveValues(deep)
+	require.Error(t, err, "the chain did not pass the scan's bound, so this proves nothing")
+
+	_, err = Debug(context.Background(), deep, DebugOptions{Continue: true})
+	require.Error(t, err, "a workflow whose declarations could not be read was debugged without authorization")
+	assert.Contains(t, err.Error(), "could not be inspected")
 }

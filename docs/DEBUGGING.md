@@ -404,7 +404,7 @@ applies here rather than a second, weaker one.
   state the deliberate reveal as `"revealSensitive": true` in its launch
   configuration, or whoever starts the adapter can pass `--reveal-sensitive`.
 - `embed.Debug` makes it too, before anything runs, unless the embedding
-  program sets `DebugOptions.RevealSensitive`; so does a workflow whose
+  program sets `DebugOptions.RevealSensitive`, and refuses a workflow whose
   declarations cannot be read.
 - Under `flow test --debug` and `flowstate_debug`, the case's own redaction
   posture applies to **everything the session prints** — each step's account as
