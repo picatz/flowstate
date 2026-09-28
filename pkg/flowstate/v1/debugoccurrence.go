@@ -415,6 +415,47 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 	return sites, truncated
 }
 
+// DebugDeclaresStep reports whether wf, or a workflow it calls, declares a
+// step with this id anywhere: at a top level, or in a loop body, parallel
+// branch or switch arm. It is the question a truncated [DebugStaticSites]
+// leaves open, asked of the program as written rather than of its sites: the
+// walk visits each node the program holds once and stops at the first match,
+// so it is bounded by the program's own size, which is already in memory.
+func DebugDeclaresStep(wf *Workflow, id string) bool {
+	var declares func(nodes []*Node, depth int) bool
+	declares = func(nodes []*Node, depth int) bool {
+		for _, node := range nodes {
+			if node.GetId() == id {
+				return true
+			}
+			var found bool
+			switch kind := node.GetKind().(type) {
+			case *Node_ForEach:
+				found = declares(kind.ForEach.GetBody(), depth)
+			case *Node_Loop:
+				found = declares(kind.Loop.GetBody(), depth)
+			case *Node_Parallel:
+				found = slices.ContainsFunc(kind.Parallel.GetBranches(), func(branch *Parallel_Branch) bool {
+					return declares(branch.GetSteps(), depth)
+				})
+			case *Node_Switch:
+				found = slices.ContainsFunc(kind.Switch.GetCases(), func(arm *Switch_Case) bool {
+					return declares(arm.GetSteps(), depth)
+				}) || declares(kind.Switch.GetDefault().GetSteps(), depth)
+			case *Node_Call:
+				found = depth < MaxCallDepth && declares(kind.Call.GetWorkflow().GetSteps(), depth+1)
+			}
+			if found {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return declares(wf.GetSteps(), 0)
+}
+
 // Resolve returns the static sites this target can ever match, in document
 // order. A qualifier that names the wrong kind of container matches nothing.
 func (t DebugTarget) Resolve(sites []DebugStaticSite) []DebugStaticSite {

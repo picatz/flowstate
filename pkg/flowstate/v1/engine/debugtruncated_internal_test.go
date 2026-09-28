@@ -78,7 +78,7 @@ func TestATruncatedProgramArmsABreakpointPastTheCut(t *testing.T) {
 	t.Parallel()
 
 	spec := truncatedProgram(t)
-	parse := func(t *testing.T, before bool) parsedBreakpoint {
+	parse := func(t *testing.T, step string, before bool) parsedBreakpoint {
 		t.Helper()
 
 		var suite testsuite.WorkflowTestSuite
@@ -89,7 +89,7 @@ func TestATruncatedProgramArmsABreakpointPastTheCut(t *testing.T) {
 		var parsed []parsedBreakpoint
 		env.ExecuteWorkflow(func(ctx workflow.Context) error {
 			e := &executor{ctx: ctx, spec: spec, debug: &debugControl{carry: &v1.DebugCarry{
-				Breakpoints: []*v1.DebugBreakpoint{{Id: "last", Step: "last"}},
+				Breakpoints: []*v1.DebugBreakpoint{{Id: step, Step: step}},
 			}}}
 			e.parseDebugBreakpoints()
 			parsed = e.debug.parsed
@@ -102,13 +102,44 @@ func TestATruncatedProgramArmsABreakpointPastTheCut(t *testing.T) {
 		return parsed[0]
 	}
 
-	armed := parse(t, false)
+	armed := parse(t, "last", false)
 	assert.True(t, armed.state.GetVerified(), "refused a step past the cut: %s", armed.state.GetMessage())
 	assert.Empty(t, armed.state.GetSites(), "listed sites the enumeration never reached")
 	assert.True(t, armed.target.Matches(v1.NewDebugOccurrence("fanout", nil, "last", "task")),
 		"the breakpoint does not match the step past the cut")
 
-	replayed := parse(t, true)
+	replayed := parse(t, "last", true)
 	assert.False(t, replayed.state.GetVerified(), "a history from before the change replays into a hold it never had")
 	assert.Contains(t, replayed.state.GetMessage(), `no step matches "last"`)
+
+	// A step the program never declares is refused, as the local driver
+	// refuses it, rather than armed on the chance it lies past the cut.
+	misspelled := parse(t, "lsat", false)
+	assert.False(t, misspelled.state.GetVerified(), "armed a step the program never declares")
+	assert.Contains(t, misspelled.state.GetMessage(), `no step matches "lsat"`)
+}
+
+// TestDebugDeclaresStepLooksEverywhereAStepCanBeWritten covers each place a
+// step id can be declared, and a callee's steps, so the truncated-program
+// check refuses only an id written nowhere.
+func TestDebugDeclaresStepLooksEverywhereAStepCanBeWritten(t *testing.T) {
+	t.Parallel()
+
+	step := func(id string) *v1.Node {
+		return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}
+	}
+	spec := &v1.Workflow{Name: "root", Steps: []*v1.Node{
+		{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Body: []*v1.Node{step("in-each")}}}},
+		{Id: "again", Kind: &v1.Node_Loop{Loop: &v1.Loop{Body: []*v1.Node{step("in-loop")}}}},
+		{Id: "fan", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{{Steps: []*v1.Node{step("in-branch")}}}}}},
+		{Id: "pick", Kind: &v1.Node_Switch{Switch: &v1.Switch{
+			Cases:   []*v1.Switch_Case{{Steps: []*v1.Node{step("in-arm")}}},
+			Default: &v1.Switch_Default{Steps: []*v1.Node{step("in-default")}},
+		}}},
+		{Id: "sub", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: &v1.Workflow{Name: "callee", Steps: []*v1.Node{step("in-callee")}}}}},
+	}}
+	for _, id := range []string{"each", "in-each", "in-loop", "in-branch", "in-arm", "in-default", "sub", "in-callee"} {
+		assert.True(t, v1.DebugDeclaresStep(spec, id), "%s is declared but not found", id)
+	}
+	assert.False(t, v1.DebugDeclaresStep(spec, "nowhere"))
 }
