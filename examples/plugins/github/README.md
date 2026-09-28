@@ -1,6 +1,6 @@
 # Tasks a plugin provides: github.pull_request_get and github.issue_comment
 
-This directory has two files:
+This directory has four files:
 
 - [`workflow.yaml`](workflow.yaml) reads a real, public pull request's state
   with `github.pull_request_get:` - read-only, needs no credential, and safe
@@ -10,8 +10,14 @@ This directory has two files:
   `github.issue_comment:` - a mutation, requires `inputs:` naming a real
   repository and issue/PR number, and a credential. It cannot run by
   accident: there is no default owner, repo, or number to post to.
+- [`triage.yaml`](triage.yaml) runs the read/audit tier - open pull
+  requests, the files one touches, open issues, and one issue's full
+  record - against a public repository, with no arguments.
+- [`list-resume.yaml`](list-resume.yaml) reads open issues in two bounded
+  pages, chained through `github.issue_list`'s `next_cursor` -> `cursor`,
+  with no arguments.
 
-Both are tasks the `github` plugin provides - see
+All four use tasks the `github` plugin provides - see
 [`plugins/github`](../../../plugins/github) for the source, and its
 `README.md` for what authentication modes it supports and, just as
 importantly, what this plugin deliberately does not do yet.
@@ -22,10 +28,24 @@ importantly, what this plugin deliberately does not do yet.
 $ mkdir -p ./plugins
 $ go -C plugins/github build -o ../../plugins/flowstate-plugin-github .
 $ flow plugins --plugin-dir ./plugins
-$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml &
 $ flow server --insecure-no-auth &
 $ flow run examples/plugins/github/workflow.yaml
 ```
+
+`--auth-policy` is needed although this file reads no secret: the plugin
+registers the `github:` secret scheme, and a worker holding any secret provider
+refuses to start without a policy that has a `secrets:` section.
+[`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
+that allows every reference.
+
+`flow run` refuses these files today (#1548): it checks a file against its own
+build's task registry, takes no `--plugin-dir`, and so reports every `github.*`
+task as one nothing registered before the server sees it. Until that is fixed,
+`flow run local` with the same `--plugin-dir` and `--auth-policy` runs one in a
+single process, and an agent host running `flow mcp --plugin-dir ./plugins`
+submits it to this server with `flowstate_compile` then `flowstate_run`.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
 the server authenticates every caller as anonymous, which is only ever right on
@@ -44,11 +64,18 @@ to. It needs a real credential - see `plugins/github/README.md`,
 "Authentication," for how to configure one - and a real target:
 
 ```console
-$ export GITHUB_TOKEN=ghp_...   # or configure a GitHub App - see plugins/github/README.md
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --auth-policy examples/plugins/greet/auth.yaml \
+    --plugin-env github=GITHUB_TOKEN=ghp_... &
 $ flow run examples/plugins/github/issue-comment.yaml \
     --input owner=your-org --input repo=your-repo --input number=1 \
     --input body='posted by a flowstate workflow'
 ```
+
+`${secret('github:token')}` is resolved by the plugin from its own environment,
+which starts empty: `GITHUB_TOKEN` (or a GitHub App's three variables) reaches
+it only through `--plugin-env`, never by being exported in the shell that
+starts the worker. The submission is refused by `flow run` today, as above.
 
 ## Why github.* and not forge.*
 
@@ -76,7 +103,7 @@ argument.
 plugin's equivalent of `TestAFlowfileCanNameAPluginTask` for
 `examples/plugins/greet` in `pkg/flowstate/v1/plugin`: it builds this plugin
 as a real, separately compiled binary, opens a
-[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates both
+[`plugin.Host`](../../../pkg/flowstate/v1/plugin) over it, and validates all four
 files here from disk before and after registration - each refused with a
 diagnostic naming its task beforehand, accepted afterward, inputs checked
 against the descriptors the plugin actually shipped. It lives in its own

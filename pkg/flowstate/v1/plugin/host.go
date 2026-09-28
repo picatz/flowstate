@@ -306,8 +306,10 @@ func (h *Host) Names() []string {
 	return slices.Sorted(maps.Keys(h.plugins))
 }
 
-// Plugins returns the running plugins, sorted by name. It is what `flow plugins`
-// reports: each one's state, health, and what it advertises.
+// Plugins returns the running plugins, sorted by name: each one's state, health,
+// and what it advertises. `flow plugins` prints [Host.Catalog] instead, which
+// carries no health; a plugin's health reaches an operator as the worker's log
+// line at each check.
 func (h *Host) Plugins() []*Plugin {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

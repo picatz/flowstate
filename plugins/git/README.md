@@ -18,14 +18,16 @@ the argument that named the split.
 
 An example that runs the read tasks lives at
 [`examples/plugins/git`](../../examples/plugins/git); read that first if you
-want to see it work rather than read about it. Five files live there: a
-public read that runs with no arguments (`workflow.yaml`), the identical
-read against a private repository with one more field filled in
+want to see it work rather than read about it. Six Flowfiles and a test live
+there: a public read that runs with no arguments (`workflow.yaml`), the
+identical read against a private repository with one more field filled in
 (`ls-remote-private.yaml`), the read/audit tier chained into a real audit
-question - who last touched a file, and what does it contain now
+question - who last touched a file, and what did it contain at that commit
 (`log-and-read-file.yaml`, also runs with no arguments) - `git.log`'s own
 cursor-resume shape, two calls chained through `next_cursor` -> `cursor`
-(`log-resume.yaml`, also runs with no arguments) - and the write task
+(`log-resume.yaml`, also runs with no arguments) - the same cursor carried by
+a bounded `loop:` until the history is exhausted (`log-paginate.yaml`, with
+`log-paginate.test.yaml` walking a stubbed history) - and the write task
 (`commit-push.yaml`) - the private-read and write files are parameterized
 and cannot run by accident.
 
@@ -47,6 +49,13 @@ one resolves against `plugins/git`.
 | `git.log` | reads | yes | only for a private repository |
 | `git.read_file` | reads | yes | only for a private repository |
 | `git.commit_push` | writes | **yes, by construction** | always |
+
+| Task | Inputs (all also take `url`, `token`, `username`) | Outputs |
+| --- | --- | --- |
+| `git.ls_remote` | `prefix` | `refs` (each `name`, `sha`), `truncated` |
+| `git.log` | `ref`, `max_commits`, `path`, `since`, `cursor` | `commits`, `resolved_ref`, `truncated`, `next_cursor` |
+| `git.read_file` | `ref`, `path` | `content`, `size`, `mode`, `binary` |
+| `git.commit_push` | `branch`, `base_ref`, `message`, `files` and/or `patch`, `author_name`, `author_email`, `timestamp` | `sha`, `landed_previously`, `changed` |
 
 ### Execution-mode posture
 
@@ -136,6 +145,14 @@ GIT_SECRET_0__DEPLOY_TOKEN=<https-password>
 # the same reference, run by a caller the server placed in tenant team-a:
 GIT_SECRET_6_TEAM_A_DEPLOY_TOKEN=<https-password>
 ```
+
+The plugin reads these from its own environment, which starts empty: name each
+to the worker with `--plugin-env git=GIT_SECRET_0__DEPLOY_TOKEN=...` (or in
+`--plugin-env-file`), since one exported in the worker's shell never reaches
+the plugin. And because this plugin registers the `git:` scheme whether a
+Flowfile uses it or not, a worker that loads it needs `--auth-policy` with a
+`secrets:` section: a worker holding a secret provider with no access policy
+refuses to start.
 
 Used, unconditionally, as the *password* half of HTTP Basic auth
 (`githttp.BasicAuth{Username: <resolved username>, Password: <resolved
@@ -346,11 +363,11 @@ own egress policy — granted to this process at launch, the same one `plugins/v
 takes — governs every destination, and this plugin's clone-sized response bound
 is stated over it (`sdk.EgressPolicyWithBounds`), so every response byte crossing
 go-git's HTTP transport is bounded on every status code, for both reads and the
-write's own clone-then-push. What it does not bound is
-decompressed size - a small pack that inflates to an enormous object graph
-("pack bomb") is a real class of attack neither go-git nor this plugin
-closes today. Said plainly here rather than left for someone to discover,
-per doc.go's own "Bounds this plugin cannot fully close."
+write's own clone-then-push. That bound is on compressed bytes; what a pack
+decompresses into ("pack bomb") is bounded separately, summed across every
+object at `maxInflatedBytes` (512 MiB), and the one residual - a single
+object's own size while it is being decoded - is stated under "Packfile
+inflation," below.
 
 **Every output carries a sha.** `git.ls_remote` returns each ref's current
 hash alongside its name, `git.log` returns `resolved_ref` (what a relative
@@ -363,7 +380,8 @@ same lesson a mutable release tag teaches in a forge API.
 **`git.log` and `git.read_file` are bounded on every resource an
 attacker-chosen repository controls.** A repository this task reads is
 untrusted input the same way `git.commit_push`'s `base_ref` tree is - see
-CLAUDE.md's "Bound anything that consumes untrusted input." `git.log` bounds
+`AGENT_FIELD_NOTES_LEGACY.md`'s "Bound anything that consumes untrusted
+input." `git.log` bounds
 commit *count* (`max_commits`, ceiling `maxMaxCommits`, refused rather than
 silently clamped over it), per-commit *message size*
 (`maxLogMessageBytes`), and, independently of both, the *sum* of every
@@ -376,8 +394,8 @@ bounds file content (`maxReadFileBytes`) by refusing outright, never
 truncating, when a blob exceeds it - a truncated file that looks whole is a
 worse failure than a clear refusal naming the actual size. Both reuse
 `packBoundedStorer` (`packbound.go`) for the clone itself, the same
-packfile-inflation bound `git.commit_push` and `git.ls_remote` already
-depend on.
+packfile-inflation bound `git.commit_push` already depends on (`git.ls_remote`
+clones nothing, so it has no pack to bound).
 
 **`git.read_file` refuses a traversal path outright, the same check
 `git.commit_push` writes through.** `path` is validated with the same
@@ -442,7 +460,8 @@ once its context stops matching either way.
 **Compare-and-swap, never force.** Every push requires the remote branch to
 be exactly base_ref (go-git's `PushOptions.RequireRemoteRefs`) and never sets
 `Force`. A remote that has moved is refused with [`sdk.Conflict`] - a
-distinct, non-retried classification a workflow's `dispatch:` can react to
+distinct, non-retried classification a workflow can tolerate with
+`continue_on_error:` and read as `${steps.<id>.error}` before reacting
 deliberately (re-fetch, recompute, retry on purpose) - rather than an
 ordinary failure or, worse, a forced overwrite. See `doc.go`'s "Concurrency"
 section for exactly where this plugin's design departs from the write-ops
@@ -450,17 +469,20 @@ design comment's own wording: go-git's `Force`/`ForceWithLease` pairing is
 not the CLI's single `--force-with-lease` flag, and this plugin uses neither —
 `RequireRemoteRefs` is what actually gives a non-force compare-and-swap.
 
-**`git.ls_remote` is `git.commit_push`'s own probe, exposed.** Resolving a
-remote's current refs without a clone is cheap, and the write task's
-idempotency and compare-and-swap logic needs exactly that lookup - so it is
-one function (`listRemoteRefs`), used by both.
+**`git.ls_remote` answers the question `git.commit_push`'s probe asks.**
+Resolving a remote's current refs without a clone is cheap, and it is what a
+workflow uses to learn a `base_ref` before a write. The write itself does not
+call it: its idempotency and compare-and-swap checks read the branch's tip
+from the clone it already made, and `listRemoteRefs` serves `git.ls_remote`
+alone.
 
 ## What was proven to bite
 
-CLAUDE.md's own rule: a bound or a refusal is worth exactly as much as the
-evidence that it was tested to actually refuse, not merely declared. Every
-item below was broken, run red, and restored, rather than left as an
-assertion - not only the ones CLAUDE.md's own house gate demanded up front:
+The rule this section follows: a bound or a refusal is worth exactly as much
+as the evidence that it was tested to actually refuse, not merely declared
+(the surviving statement of it is `AGENT_FIELD_NOTES_LEGACY.md`'s "Assert
+where the answers differ"). Every item below was broken, run red, and
+restored, rather than left as an assertion:
 
 1. **The no-timestamp idempotency probe.** `commit_push.go`'s
    content-match fallback (`commitMatches`) was disabled with a literal
@@ -772,7 +794,8 @@ bite") once that source can be a multi-root frontier. `pathFilteringCommitIter`
 (`cursor.go`) diffs a commit against its own actual parents instead, looked
 up directly, with no lookahead into anything.
 `TestGitLogCursorPagesReachEveryCommitExactlyOnce` is the acceptance test
-this claim rests on (CLAUDE.md, "Test the traversal, not just the step"): a
+this claim rests on (`AGENT_FIELD_NOTES_LEGACY.md`, "Test the traversal, not
+just the step"): a
 23-commit fixture, half touching a filtered path and half not, walked to
 exhaustion at `max_commits: 4` (5+ pages), asserting the union of every page
 equals the full filtered set with every commit reached exactly once and the
@@ -799,16 +822,14 @@ actionable `InvalidInput` naming the ceiling reached and what to do next
 (narrow with `since`/`path`, or accept the walk as complete) - an honest
 refusal, never a broken or silently incomplete page.
 
-**What this does not do.** `examples/plugins/git/log-resume.yaml`
-demonstrates exactly one resume - page one, then page two - not a loop to
-exhaustion: Flowstate's own workflow language has no loop primitive yet
-(issue #157 is still design-only), so walking an entire history to
-completion from a Flowfile is not yet expressible; only Go code (the tests
-above) can do that today. This is issue #216's "layer 1": the task grows a
-resume position a caller driving it from outside (an MCP agent, a script
-calling `flow run` repeatedly) can already thread. "Layer 2" - the language
-itself carrying a cursor from one iteration to the next - is a separate,
-larger piece of work this change does not attempt.
+**Walking to exhaustion from a Flowfile.**
+`examples/plugins/git/log-resume.yaml` demonstrates exactly one resume - page
+one, then page two - so the chaining stays legible.
+`examples/plugins/git/log-paginate.yaml` is issue #216's "layer 2": a `loop:`
+carries `next_cursor` as its state into each next call until a page reports
+`truncated: false`, bounded by `max_iterations:`, and `log-paginate.test.yaml`
+walks a stubbed three-page history to prove every commit is reached exactly
+once.
 
 **What was proven to bite (review findings on this feature specifically).**
 Two P1s, both found by review against the very first version of this
@@ -866,6 +887,4 @@ field, which carried a single sha and resumed at that commit's own
   is the only way to write non-text content today, and even that is
   untested beyond gitdiff's own coverage.
 - **Signing (`sign:`/`verify:`).** Explicitly deferred to issue #163.
-- **The decompression-bomb gap.** See "Bounded egress," above.
-- **A multi-tenant secret namespace.** Same gap `plugins/vcs` has, for the
-  same reason.
+- **The single-object decompression gap.** See "Packfile inflation," above.

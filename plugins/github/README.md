@@ -32,7 +32,7 @@ one resolves against `plugins/github`.
 
 ## Examples, kept honest
 
-All three files below are pasted in whole, not summarized, and
+All four files below are pasted in whole, not summarized, and
 `TestReadmeExamplesMatchTheFilesOnDisk` in this package holds them to the real
 files byte for byte in both directions - a file added under
 [`examples/plugins/github`](../../examples/plugins/github) with no matching
@@ -277,6 +277,15 @@ separate `go.mod` and `replace` directive in this plugin achieve.
 | `github.issue_get` | reads | yes | only for a private repository |
 | `github.issue_list` | reads | yes | only for a private repository |
 | `github.issue_comment` | writes | **no** | always |
+
+| Task | Inputs (all also take `owner`, `repo`, `token`, `base_url`) | Outputs |
+| --- | --- | --- |
+| `github.pull_request_get` | `number` | `title`, `body`, `state`, `merged`, `mergeable_state`, `head_ref`, `head_sha`, `base_ref`, `html_url` |
+| `github.pull_request_list` | `state`, `base`, `head`, `max_results`, `sort`, `direction`, `cursor` | `pull_requests`, `truncated`, `next_cursor` |
+| `github.pull_request_files` | `number`, `max_results`, `cursor` | `files`, `truncated`, `next_cursor` |
+| `github.issue_get` | `number` | `title`, `body`, `state`, `state_reason`, `labels`, `comments`, `html_url`, `created_at`, `updated_at`, `closed_at`, `is_pull_request` |
+| `github.issue_list` | `state`, `labels`, `since`, `max_results`, `sort`, `direction`, `cursor` | `issues`, `next_cursor`, `truncated` |
+| `github.issue_comment` | `number`, `body` | `comment_id`, `html_url`, `created_at` |
 
 ### Execution-mode posture
 
@@ -583,8 +592,9 @@ input" reasoning as `pkg/flowstate/v1/server`'s own `List` RPC and its
   `TestPaginateBoundedStopsAtTheBoundaryWithoutSpendingAnExtraRequest` for
   proof that each bound is actually *reached*, not merely respected -
   `scanned <= maxListScan` is also satisfied by a listing that gave up after
-  one batch, and the tests here assert the ceiling was hit, per CLAUDE.md's
-  own "Bounds must be proven reached."
+  one batch, and the tests here assert the ceiling was hit, per
+  `AGENT_FIELD_NOTES_LEGACY.md`'s "Test the traversal, not just the step"
+  (when a bound exists, assert it was *reached* as well as not exceeded).
 
 Every list output also carries `truncated`: `false` only when GitHub itself
 said there was nothing more (`NextPage == 0`), never merely because this call
@@ -625,6 +635,15 @@ All three App variables must be set together or not at all - a
 half-configured App fails closed at startup (`checkHealth`) rather than
 silently falling back to a PAT and running every request as the wrong
 identity without saying so.
+
+The plugin reads every variable in this section from its own environment,
+which starts empty: name each to the worker with
+`--plugin-env github=GITHUB_TOKEN=...` (or in `--plugin-env-file`, which also
+holds a multi-line PEM more easily), since one exported in the worker's shell
+never reaches the plugin. And because this plugin registers the `github:`
+scheme whether a Flowfile uses it or not, a worker that loads it needs
+`--auth-policy` with a `secrets:` section: a worker holding a secret provider
+with no access policy refuses to start.
 
 The `github:` provider is a compatibility path for the worker-wide App/PAT
 configuration above. Because that configuration has no per-tenant selector,
@@ -668,8 +687,8 @@ classifier (`classifyMutationError` in `errors.go`) asks a different
 question first: could this failure mean the comment was already created?
 Anything where that is genuinely unknown - a 5xx after the request was
 sent, a context deadline mid-request, an unclassified network failure - is
-reported as permanent and says so in the message an operator reads ("may
-already have been applied, not retried automatically"), the same reasoning
+`sdk.OutcomeUnknown`, never retried automatically, and says so in the message
+an operator reads (it may or may not have been applied), the same reasoning
 the core `http` task's `retry_on_unknown_outcome` exists for. Only a clean,
 fully-processed rejection (a 404, a 422, a rate limit that never reached the
 server) is treated as unambiguous.

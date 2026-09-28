@@ -23,7 +23,7 @@ attempts produced.
 
 ## Why it is shaped this way
 
-Four decisions, each of which is a claim `workflow.test.yaml` checks:
+Six decisions, each of which is a claim `workflow.test.yaml` checks:
 
 **The budget is a `max_iterations:`, and running out of it is a branch.** The
 language treats a loop that spends its whole budget without its `until:` holding
@@ -51,9 +51,10 @@ plugin knows the other exists, and the type check that they agree happens before
 either process runs. That is the whole inter-plugin contract, and it is why the
 agent here is not given a shell and told to commit: what it produces is data the
 workflow decides what to do with. The turn runs `SANDBOX_MODE_WORKSPACE_WRITE`
-with a `working_context`, because that is the only configuration under which
-`codex.exec` produces a `patch` at all — a read-only turn has nothing to diff, so
-the commit step would have nothing to apply.
+with a `working_context`, because a writable mode with a `working_context` is
+the only configuration under which `codex.exec` produces a `patch` at all
+(`SANDBOX_MODE_DANGER_FULL_ACCESS` is the other, wider one) — a read-only turn
+has nothing to diff, so the commit step would have nothing to apply.
 
 **A build that is already green is left untouched.** The initial verification
 runs first; if it passes — a stale trigger, or a flaky failure that cleared — the
@@ -86,10 +87,12 @@ In CI, and on any machine, with no plugin, no model, no forge and no network:
 $ flow test examples/plugins/agentic-fix/
 ```
 
-Five cases: the one attempt fixes the build; it does not and a person takes over;
-it does not and nobody answers the gate either; an attempt that fails outright
-(the gateway down) reaching the same person by a different road; and a build that
-is already green, left untouched with nobody asked. The failure cases are why the
+Seven cases: the one attempt fixes the build; it does not and a person takes
+over; it does not and nobody answers the gate either; an attempt that fails
+outright (the gateway down) reaching the same person by a different road; a
+build that is already green, left untouched with nobody asked; a patch the
+output budget truncated, never committed; and a CI verdict nobody can read,
+handed to a person without an attempt or a write. The failure cases are why the
 attempt count is read through a `has(steps.attempt)` guard: a loop that spends
 its budget publishes an account of every attempt, a loop that fails part way
 through one publishes none, and a loop that was *skipped* leaves no `steps.attempt`
@@ -149,17 +152,36 @@ $ mkdir -p ./plugins
 $ go -C plugins/codex build -o ../../plugins/flowstate-plugin-codex .
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ export FLOWSTATE_SECRET_OPENAI_API_KEY=sk-...        # the worker's own env: provider
-$ flow worker --plugin-dir ./plugins \
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --secret-env OPENAI_API_KEY --auth-policy examples/plugins/greet/auth.yaml \
     --plugin-env codex=FLOWSTATE_CODEX_BIN=/path/to/codex \
     --plugin-env codex=FLOWSTATE_CODEX_GIT_BIN=/usr/bin/git \
     --plugin-env codex=FLOWSTATE_CODEX_BASE_CONFIG=/path/to/codex-base.toml \
     --plugin-env codex=FLOWSTATE_CODEX_WORKDIR_ROOT=/path/to/checkouts \
-    --plugin-env git=GIT_SECRET_0__TOKEN=...
+    --plugin-env git=GIT_SECRET_0__TOKEN=... &
+$ flow server --insecure-no-auth --plugin-dir ./plugins &
 $ flow run examples/plugins/agentic-fix/workflow.yaml \
     --input repo=https://github.com/your-org/your-repo.git \
     --input branch=agent/fix \
     --input workspace=repo
 ```
+
+`--secret-env` is what turns on the `env:` provider that reads
+`FLOWSTATE_SECRET_OPENAI_API_KEY`, and a worker holding a secret provider (the
+git plugin's `git:` scheme is another) refuses to start without an
+`--auth-policy` that has a `secrets:` section;
+[`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
+that allows every reference. The server takes `--plugin-dir` as well, because
+this file declares `plugins:` and the server resolves that block against the
+plugins it launched itself.
+
+`flow run` refuses this file today (#1548): it checks the file against its own
+build's task registry, takes no `--plugin-dir`, and so reports `codex.exec` and
+the `git.*` tasks as ones nothing registered before the server sees it. Until
+that is fixed, `flow run local` with the worker's plugin, secret and policy
+flags runs it in one process, and an agent host running
+`flow mcp --plugin-dir ./plugins` submits it to this server with
+`flowstate_compile` then `flowstate_run`.
 
 and answering the gate, when it is reached, is:
 

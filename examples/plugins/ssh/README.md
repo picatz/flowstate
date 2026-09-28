@@ -18,20 +18,35 @@ Run it:
 
 ```console
 $ mkdir -p ./plugins
-$ go build -o ./plugins/flowstate-plugin-ssh ./plugins/ssh
-$ flow worker --plugin-dir ./plugins \
+$ go -C plugins/ssh build -o ../../plugins/flowstate-plugin-ssh .
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --plugin-env ssh=FLOWSTATE_SSH_GRANTS=$PWD/examples/plugins/ssh/grants.yaml \
-    --egress-policy examples/plugins/ssh/egress-policy.yaml
+    --egress-policy examples/plugins/ssh/egress-policy.yaml &
+$ flow server --plugin-dir ./plugins --auth-policy /path/to/auth-policy.yaml \
+    --rpc-resource https://flowstate.example.com/rpc &
 $ flow run examples/plugins/ssh/workflow.yaml \
     --input host=web-prod \
     --input service=nginx.service \
     --input expected_approver=sre-oncall@example.com
 ```
 
+The server takes `--plugin-dir` too, because the file declares `plugins:` and
+the server resolves that block against the plugins it launched itself. It takes
+an `--auth-policy` trusting a real issuer, with the `--rpc-resource` its tokens
+are minted for, rather than `--insecure-no-auth`, because the approval below is
+a signal only an attested SRE other than the starter may send.
+
+`flow run` refuses this file today (#1548): it checks the file against its own
+build's task registry, takes no `--plugin-dir`, and so reports `ssh.run` as a
+task nothing registered before the server sees it. Until that is fixed,
+`flow run local` with the worker's plugin and policy flags runs it in one
+process, and an agent host running `flow mcp --plugin-dir ./plugins` submits it
+to this server with `flowstate_compile` then `flowstate_run`.
+
 The run reads the unit's status, then stops and waits for an SRE to approve:
 
 ```console
-$ flow signal <run> restart-approved --payload approved=true
+$ flow signal <run> restart-approved --data '{"approved": true}'
 ```
 
 ## Why the restart step sets `attempts: 1`
@@ -52,8 +67,9 @@ it and the remote shell:
 1. The grant's pattern, `[a-z0-9-]{1,64}\.service`, anchored to the whole value.
    `nginx.service; rm -rf /` fails it.
 2. Quoting. Even if the pattern were `.*`, the value arrives as exactly one
-   argument — the plugin's own tests assert this against a real SSH server for
-   separators, substitutions, backticks, redirections and newlines.
+   argument — the plugin's own tests assert this for separators,
+   substitutions, backticks, redirections and newlines, by splitting the
+   command line it builds the way a shell would.
 
 One of those should be redundant. That is the point of having both.
 

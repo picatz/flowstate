@@ -12,8 +12,12 @@ and bridging into signals remain the control-plane work tracked by #96.
 The example requires two deployment-owned controls that the Flowfile cannot
 grant itself:
 
-- `SLACK_BOT_TOKEN` must be admitted by the configured `env:` secret backend;
-  `token:` is a whole secret reference and literals are rejected.
+- `SLACK_BOT_TOKEN` must be admitted by the configured `env:` secret backend
+  (`--secret-env SLACK_BOT_TOKEN` on the worker, which reads
+  `FLOWSTATE_SECRET_SLACK_BOT_TOKEN`), and the worker then needs an
+  `--auth-policy` whose `secrets:` section allows it: a worker holding a
+  secret provider with no access policy refuses to start. `token:` is a
+  whole secret reference and literals are rejected.
 - [`egress-policy.yaml`](egress-policy.yaml) must be supplied through
   `--egress-policy`. It authorizes only Slack's HTTPS API endpoint. A plugin
   declaration is not destination authority.

@@ -42,8 +42,16 @@ one resolves against `plugins/oidc`.
 
 ```console
 $ flow worker --plugin-dir /path/to/plugins \
-    --plugin-env oidc=FLOWSTATE_OIDC_PROVIDERS=/etc/flowstate/oidc-providers.yaml
+    --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)" \
+    --plugin-env oidc=FLOWSTATE_OIDC_PROVIDERS=/etc/flowstate/oidc-providers.yaml \
+    --auth-policy /etc/flowstate/auth-policy.yaml
 ```
+
+A plugin inherits nothing of the worker's environment, so the providers file
+is named with `--plugin-env`. `--auth-policy` is required, and needs a
+`secrets:` section: this plugin registers the `oidc:` scheme, a worker holding a
+secret provider with no access policy refuses to start, and that section is
+what decides which workloads may resolve which `oidc:` reference.
 
 ```yaml
 providers:
@@ -60,17 +68,31 @@ The client secret is a **path, not a value**: a configuration document an
 operator diffs in review should not be one they have to redact, and the secret
 is read when it is needed rather than held for the life of the process.
 
-With no file this plugin mints nothing and says so, and `flow plugins` reports
-it unhealthy with the reason.
+The file is checked when the plugin starts:
+
+- a provider name is what a reference writes, so it is lower-case letters,
+  digits and interior hyphens, at most 64 characters;
+- `token_url` is HTTPS, and `client_id` and `client_secret_file` are
+  required, the file an absolute path (read at each resolution, at most
+  8 KiB);
+- `max_lifetime` defaults to 1h, with a ceiling of 12h;
+- `timeout` bounds one exchange, default 20s, ceiling 30s;
+- a scope holds no whitespace, and the file itself is at most 1 MiB.
+
+With no file, or one that fails these checks, this plugin mints nothing and
+says so: a running worker logs a warning naming the reason at each health
+check. `flow plugins` does not report health.
 
 ## Lifetimes
 
 Every token comes back with the lifetime the authorization server reported, less
-a refresh margin, and that travels to the host as `SecretResponse.ExpiresIn` —
-so the engine caches it no longer than the issuer considers it valid. **Nothing
-here caches a credential of its own**: a second cache would be a second answer
-about when a token stops being usable. `max_lifetime` is a ceiling on that
-caching, never a claim that a token stops working earlier.
+a refresh margin, and that travels to the host as `SecretResponse.ExpiresIn`.
+**Nothing caches the credential**: not this plugin, since a second cache would
+be a second answer about when a token stops being usable, and not the worker
+either, which wires no cache in front of a plugin's secret provider today, so
+every resolution mints a fresh token. `max_lifetime` is not a cap on a
+lifetime: an authorization server that reports an `expires_in` longer than it,
+or none at all, is refused (`PermissionDenied`) rather than shortened.
 
 ## Classification
 

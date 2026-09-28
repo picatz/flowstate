@@ -26,9 +26,9 @@ providers:
     # less than everything is this deployment's.
     scopes: [invoices.read]
 
-    # A ceiling on how long the engine may cache a token, never a claim that it
-    # stops working earlier. The authorization server's own expires_in wins when
-    # it is shorter.
+    # The longest expires_in this worker accepts (default 1h, at most 12h): a
+    # token reported as living longer, or with no expires_in at all, is refused
+    # rather than shortened. Nothing caches the token either way.
     max_lifetime: 1h
     timeout: 10s
 

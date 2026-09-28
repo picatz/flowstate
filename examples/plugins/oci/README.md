@@ -9,19 +9,36 @@ Run it:
 
 ```console
 $ mkdir -p ./plugins
-$ go build -o ./plugins/flowstate-plugin-oci ./plugins/oci
-$ flow worker --plugin-dir ./plugins --egress-policy examples/plugins/oci/egress-policy.yaml
+$ go -C plugins/oci build -o ../../plugins/flowstate-plugin-oci .
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
+    --egress-policy examples/plugins/oci/egress-policy.yaml &
+$ flow server --plugin-dir ./plugins --auth-policy /path/to/auth-policy.yaml \
+    --rpc-resource https://flowstate.example.com/rpc &
 $ flow run examples/plugins/oci/workflow.yaml \
     --input image=ghcr.io/acme/api:1.4.2 \
     --input platform=linux/amd64 \
     --input expected_approver=release-manager@example.com
 ```
 
+The server takes `--plugin-dir` too, because the file declares `plugins:` and
+the server resolves that block against the plugins it launched itself. It takes
+an `--auth-policy` trusting a real issuer, with the `--rpc-resource` its tokens
+are minted for, rather than `--insecure-no-auth`, because the approval below is
+a signal only an attested release manager other than the starter may send.
+
+`flow run` refuses this file today (#1548): it checks the file against its own
+build's task registry, takes no `--plugin-dir`, and so reports the `oci.*`
+tasks as ones nothing registered before the server sees it. Until that is
+fixed, `flow run local` with the worker's `--plugin-dir` and `--egress-policy`
+runs it in one process, and an agent host running
+`flow mcp --plugin-dir ./plugins` submits it to this server with
+`flowstate_compile` then `flowstate_run`.
+
 The run stops at `approval` and waits - durably, for up to a day - until someone
 answers:
 
 ```console
-$ flow signal <run> digest-approved --payload approved=true
+$ flow signal <run> digest-approved --data '{"approved": true}'
 ```
 
 ## The four steps, and why each is separate
@@ -36,10 +53,12 @@ $ flow signal <run> digest-approved --payload approved=true
    specific bytes - `oci.referrers` refuses a tag outright rather than answering
    about whatever the tag pointed at when the call landed.
 
-3. **`attestation`** (`oci.blob`) fetches the in-toto statement by its own
-   digest, and refuses it unless the bytes hash to that digest. This is the step
-   an `http:` call cannot stand in for: a generic client has no way to know what
-   the bytes were supposed to be.
+3. **`attestation`** (`oci.blob`) fetches the first referrer by its digest,
+   and refuses it unless the bytes hash to that digest. A referrer's digest
+   names its manifest, which points at the attestation in its layers, so what
+   comes back is that manifest rather than the in-toto statement itself. This
+   is the step an `http:` call cannot stand in for: a generic client has no way
+   to know what the bytes were supposed to be.
 
 4. **`approval`** (`wait_for_signal`) puts the digest in front of a person. The
    prompt names the pinned reference, so what a human approved and what a
