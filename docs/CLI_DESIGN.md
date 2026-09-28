@@ -1029,9 +1029,10 @@ line. What is not: everything below.
    - whether an unfinished activity is running, waiting to start, or backing
      off between attempts: the timeline cannot tell these apart, and
      `pending_activities` separates backing off but is not keyed to a node and
-     drops whether an attempt has started; history keeps no per-attempt
-     account, so a node's attempt history after it closes is its final attempt
-     and last failure;
+     drops whether an attempt has started; and Temporal documents that a
+     retried activity's start is written only when it closes, which would
+     leave a closed node only its final attempt and last failure (#2160
+     confirms this against a real history);
    - a task step's terminal outcome where workflow code decides it around the
      activity: an `if:`, input, or `vars:` evaluation failing, or the `async:`
      width being exceeded, before anything is scheduled, and `undo:`
