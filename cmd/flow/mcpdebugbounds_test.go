@@ -895,11 +895,17 @@ type answeringAttach struct {
 	*detachRecorder
 
 	status v1.DebugCommandStatus
+	// released answers as a run whose session has since been detached,
+	// naming no session.
+	released bool
 }
 
 func (a answeringAttach) DebugAttach(_ context.Context, req *connect.Request[v1.DebugAttachRequest]) (*connect.Response[v1.DebugAttachResponse], error) {
 	snapshot := a.snapshot()
 	snapshot.Session.SessionId = req.Msg.GetSessionId()
+	if a.released {
+		snapshot.Session, snapshot.State = nil, v1.DebugRunState_DEBUG_RUN_STATE_RUNNING
+	}
 
 	return connect.NewResponse(&v1.DebugAttachResponse{
 		SessionId: req.Msg.GetSessionId(), Snapshot: snapshot,
@@ -1058,4 +1064,48 @@ func TestACommandKeyNamesOneCommand(t *testing.T) {
 	assert.Equal(t, 1, moves, "a refused or retried command moved the run")
 	assert.NotEqual(t, commandRequestID(entry.id, "k", commandDigest("next", 0)),
 		commandRequestID(entry.id, "k", commandDigest("continue", 0)))
+}
+
+// TestADuplicateAttachWhoseSessionIsGoneIsNotAnAttach: the run remembers an
+// attach it applied under a request id after the session it made is gone —
+// detached because this server could not hold it, or lapsed. A retry under
+// that key is answered as a duplicate; it is refused rather than registered
+// as a session whose every command the run would answer ended.
+func TestADuplicateAttachWhoseSessionIsGoneIsNotAnAttach(t *testing.T) {
+	t.Parallel()
+
+	service := answeringAttach{detachRecorder: &detachRecorder{}, status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE, released: true}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(service))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+
+	result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w", "request_id": "k"}))
+	require.NoError(t, err)
+	reply := replyOf(t, result)
+	require.True(t, result.IsError, "a duplicate of an attach whose session is gone was registered: %s", reply.raw)
+	assert.Contains(t, reply.raw, "no longer holds the run")
+	assert.Contains(t, reply.raw, "use a new one")
+	r.mu.Lock()
+	assert.Empty(t, r.sessions)
+	r.mu.Unlock()
+
+	// A pending attach names no session yet either — the run has not reached
+	// a boundary to install it — and is an attach all the same.
+	pending := answeringAttach{detachRecorder: &detachRecorder{}, status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING, released: true}
+	mux = http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(pending))
+	later := httptest.NewServer(mux)
+	t.Cleanup(later.Close)
+	laterClient := flowstatev1connect.NewWorkflowServiceClient(later.Client(), later.URL)
+	r = newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return laterClient })
+	result, err = r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w", "request_id": "k"}))
+	require.NoError(t, err)
+	attached := replyOf(t, result)
+	require.False(t, result.IsError, "a pending attach was refused: %s", attached.raw)
+	result, err = r.end(t.Context(), toolRequest(t, map[string]any{"session_id": attached.SessionID, "keep": true}))
+	require.NoError(t, err)
+	require.False(t, result.IsError)
 }
