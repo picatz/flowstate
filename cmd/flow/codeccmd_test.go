@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -149,4 +150,22 @@ func TestCodecKeygenLeavesNoHalfAPair(t *testing.T) {
 	require.ErrorContains(t, err, "already exists")
 	_, err = os.Stat(private)
 	require.ErrorIs(t, err, os.ErrNotExist, "a private key was left without its public half")
+}
+
+// TestAKeyFileThatCannotBeFinishedIsNotLeftBehind: a key file created and
+// then not finished (a full disk, a refused mode) is removed, since a partial
+// key blocks every retry at the same path and protects nothing.
+func TestAKeyFileThatCannotBeFinishedIsNotLeftBehind(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "partial.key")
+	require.NoError(t, os.WriteFile(path, []byte("half a k"), 0o600))
+	cause := errors.New("no space left on device")
+
+	err := removeCreated(path, cause)
+	require.ErrorIs(t, err, cause)
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist, "the partial key was left behind")
+
+	require.ErrorIs(t, removeCreated(path, cause), cause, "a file already gone is not a second failure")
 }

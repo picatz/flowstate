@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"runtime"
 	"strings"
@@ -69,10 +71,7 @@ flow codec keygen --hpke --out break-glass.key`,
 				if err := writeFileExclusive(out+".pub", public, 0o644); err != nil {
 					// The private key was created by this call, so removing it
 					// destroys nothing that protects history.
-					if rmErr := os.Remove(out); rmErr != nil {
-						return fmt.Errorf("%w; removing the private key it was paired with: %w", err, rmErr)
-					}
-					return err
+					return removeCreated(out, err)
 				}
 				fmt.Fprintf(surface.Err, "wrote an HPKE private key to %s (mode 0600) and its public key to %s.pub; "+
 					"keep the private key offline and name the public key under escrow_keys\n", out, out)
@@ -210,31 +209,23 @@ func suiteNames(ss []v1.PayloadSuite) string {
 func writeKeyFile(path string, text []byte) error {
 	defer clear(text)
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if os.IsExist(err) {
+	if err := writeFileExclusive(path, text, 0o600); err != nil {
+		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("%s already exists; write a new key under a new file name instead of "+
 				"overwriting one that may still protect history", path)
 		}
-		return fmt.Errorf("creating %s: %w", path, err)
-	}
-	if _, err := file.Write(text); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("closing %s: %w", path, err)
+		return err
 	}
 
 	// See writePrivateKeyPEM for why Windows is exempt from this check.
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(path)
 		if err != nil {
-			return fmt.Errorf("verifying permissions of %s: %w", path, err)
+			return removeCreated(path, fmt.Errorf("verifying permissions of %s: %w", path, err))
 		}
 		if info.Mode().Perm() != 0o600 {
-			return fmt.Errorf("%s was created with mode %s instead of 0600; refusing to leave a key at that path",
-				path, info.Mode().Perm())
+			return removeCreated(path, fmt.Errorf("%s was created with mode %s instead of 0600; refusing to leave a key at that path",
+				path, info.Mode().Perm()))
 		}
 	}
 	return nil
@@ -243,6 +234,9 @@ func writeKeyFile(path string, text []byte) error {
 // writeFileExclusive creates path with mode and writes data to it, refusing
 // to replace a file that exists. For a public key: nothing secret, but a key
 // pair's halves should never silently disagree.
+//
+// A file it created and could not finish is removed, so a failed write (a full
+// disk) leaves nothing behind to block the retry.
 func writeFileExclusive(path string, data []byte, mode os.FileMode) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
@@ -250,7 +244,19 @@ func writeFileExclusive(path string, data []byte, mode os.FileMode) error {
 	}
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("writing %s: %w", path, err)
+		return removeCreated(path, fmt.Errorf("writing %s: %w", path, err))
 	}
-	return file.Close()
+	if err := file.Close(); err != nil {
+		return removeCreated(path, fmt.Errorf("closing %s: %w", path, err))
+	}
+	return nil
+}
+
+// removeCreated removes a file this process created and could not finish,
+// and returns cause, joined with any failure to remove it.
+func removeCreated(path string, cause error) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w; removing the partial %s: %w", cause, path, err)
+	}
+	return cause
 }
