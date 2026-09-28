@@ -106,6 +106,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_CODEC_RESOURCE",
+			value:   "unset",
+			purpose: "Default for `--codec-resource` on `flow codec serve`: the canonical resource URI required in every bearer token's `aud` claim there, so a token minted for another Flowstate surface cannot be spent to decode history. Required whenever `--auth-policy` trusts a `kind: oidc` issuer; distinct from the RPC and MCP resources.",
+			read:    "cmd/flow/codecserve.go",
+		},
+		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
 			value:   "unset",
 			purpose: "Default for `--credential-source`: acquire a credential from a named source (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
