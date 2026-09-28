@@ -35,7 +35,7 @@ import (
 // #1439), and anything longer narrows it — never a guess between two.
 
 // MaxDebugSegments bounds the dynamic nesting an occurrence carries, which is
-// the schema's own bound on [DebugOccurrence.segments].
+// the schema's own bound on [DebugOccurrence.Segments].
 const MaxDebugSegments = 128
 
 // MaxDebugAddressRunes is the schema's bound on an occurrence address. A longer

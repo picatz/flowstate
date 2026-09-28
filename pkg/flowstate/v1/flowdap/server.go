@@ -351,6 +351,9 @@ func (s *Server) end(terminate bool) {
 func (s *Server) capabilitiesBody() capabilities {
 	s.mu.Lock()
 	caps := s.capabilities
+	// Termination is the run owner's to offer, and an adapter that launches
+	// the run owns it; one that attached to a durable run does not.
+	terminable := s.launcher != nil
 	s.mu.Unlock()
 	if caps == nil {
 		// Before a launch or attach has said which backend this is, the
@@ -366,8 +369,8 @@ func (s *Server) capabilitiesBody() capabilities {
 		SupportsHitConditionalBreakpoints: caps.GetHitConditions(),
 		SupportsLogPoints:                 caps.GetLogpoints(),
 		SupportsEvaluateForHovers:         caps.GetInspect(),
-		SupportsTerminateRequest:          caps.GetTerminate(),
-		SupportTerminateDebuggee:          caps.GetTerminate(),
+		SupportsTerminateRequest:          terminable || caps.GetTerminate(),
+		SupportTerminateDebuggee:          terminable || caps.GetTerminate(),
 		SupportsDelayedStackTraceLoading:  true,
 		ExceptionBreakpointFilters:        []exceptionFilter{},
 	}
