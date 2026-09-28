@@ -655,12 +655,13 @@ Inside `test`, the three long steps did not depend on one another:
 
 The split was observed on `main` before #1922: run `34069079624` (2026-09-07)
 took `test` 5m57s with `test-plugins` (3m06s) and `test-ordering` (2m34s)
-beside it, a critical path near the predicted six minutes against the
-twelve-minute baseline. #1922, merged 2026-09-09, made the root suite's packages
-run serially for deadline isolation, and its own `main` run, `34361369250`, took
-`test` 27m03s; the four-lane matrix above is the response. The per-target fuzz
-selection on a narrowed diff has not been measured: runs on `main` are forced
-wide, so every target runs.
+beside it, so `plan` plus `test` came to 6m17s, near the predicted six minutes.
+Push to `verdict` still took 9m52s against the 12m04s baseline: runs on `main`
+are forced wide, so every fuzz target runs, and `fuzz-smoke` (9m25s) was the
+longest job. For the same reason, the per-target fuzz selection on a narrowed
+diff has not been measured. #1922, merged 2026-09-09, made the root suite's
+packages run serially for deadline isolation, and its own `main` run,
+`34361369250`, took `test` 27m03s; the four-lane matrix above is the response.
 
 ### What the queue is worth
 
