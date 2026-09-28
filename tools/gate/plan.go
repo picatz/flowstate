@@ -695,6 +695,15 @@ func pluginSkipNotices(p plan, moduleExists func(mod string) bool) []string {
 				mod+" (via examples/plugins/"+name+" data dependency, not a change under plugins/)")
 		}
 	}
+	// The schema, the comment generator and the example plugin all reach
+	// what plugins ship in their manifests, and examples/plugins/plugins.lock.json
+	// pins those descriptors, comments included: a change to any of them can
+	// move the catalog without touching a plugin (#2156). CI's test-plugins
+	// job runs plugin-examples; this says so locally.
+	if p.proto {
+		notices = append(notices,
+			"the schema or its generated code (via "+p.reasons["proto"]+"; plugin-examples pins the descriptors plugins ship)")
+	}
 	return notices
 }
 

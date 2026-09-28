@@ -547,7 +547,7 @@ func run(suppliedBase string) error {
 		return err == nil
 	})
 	if len(pluginNotices) > 0 {
-		g.skip("plugins", fmt.Sprintf("%s changed, but plugin modules are outside this gate; run `make test-plugins`", strings.Join(pluginNotices, ", ")))
+		g.skip("plugins", fmt.Sprintf("%s changed, but plugin modules are outside this gate; run `make test-plugins plugin-examples`", strings.Join(pluginNotices, ", ")))
 	}
 
 	return g.summary()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -871,6 +872,18 @@ func TestPluginSkipNotices(t *testing.T) {
 		want := []string{"plugins/vcs"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("pluginSkipNotices = %v, want %v (no duplicate entry)", got, want)
+		}
+	})
+
+	// A schema change moves the descriptors plugins ship without touching a
+	// plugin, which is how #2156 drifted examples/plugins/plugins.lock.json
+	// with the local gate silent about it.
+	t.Run("a schema change names the plugin catalog", func(t *testing.T) {
+		t.Parallel()
+		p := plan{proto: true, reasons: map[string]string{"proto": "buf.gen.yaml"}}
+		got := pluginSkipNotices(p, exists)
+		if len(got) != 1 || !strings.Contains(got[0], "via buf.gen.yaml") || !strings.Contains(got[0], "plugin-examples") {
+			t.Errorf("pluginSkipNotices = %v, want one notice naming the trigger and plugin-examples", got)
 		}
 	})
 
