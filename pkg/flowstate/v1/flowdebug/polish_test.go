@@ -176,3 +176,36 @@ func TestARunsReturnReportedTwiceSaysTheMissedUntilOnce(t *testing.T) {
 		assert.Equal(t, want, snapshot.GetState(), "reporting the run's return changed the verdict")
 	}
 }
+
+// A case that expects its run to fail passes, and its verdict — nil — reaches
+// [flowdebug.Session.Finished] after the run's own error reached
+// RunReturned. The first report is the run's, so a failed run is never said
+// to have completed past its `until`.
+func TestAFailedRunWhoseCasePassedIsNotCalledCompleted(t *testing.T) {
+	t.Parallel()
+
+	var out strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{In: strings.NewReader("until each[9]/body\n"), Out: &out})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	ctx := v1.NewContextWithDebugger(t.Context(), session)
+	_, runErr := v1.Run(ctx, &v1.Workflow{Name: "failing", Steps: []*v1.Node{
+		{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+			Items:    v1.NewLiteralList(0, 1),
+			Iterator: "n",
+			Body:     []*v1.Node{{Id: "body", Kind: &v1.Node_Value{Value: v1.NewExpr("n")}}},
+		}}},
+		{Id: "boom", Kind: &v1.Node_Value{Value: v1.NewExpr("1 / 0")}},
+	}})
+	require.Error(t, runErr)
+	session.RunReturned(runErr)
+	session.Finished(nil)
+
+	assert.NotContains(t, out.String(), "without stopping at", "a failed run was called completed")
+	snapshot, err := session.Snapshot(t.Context())
+	require.NoError(t, err)
+	for _, observation := range snapshot.GetObservations() {
+		assert.NotContains(t, observation.GetText(), "without stopping at", "a failed run was recorded as completed")
+	}
+}

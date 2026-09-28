@@ -628,14 +628,18 @@ func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value,
 // and without a word the run would simply end, as if it had. This says so,
 // once, on the prompt and as a notice observation for the structured fronts.
 // It changes no state, so a driver that learns the verdict later still
-// reports it through [Session.Finished], which calls this too. Every driver
+// reports it through [Session.Finished], which calls this too; only the first
+// report is heard, because it is the run's own error and a later one may be a
+// case's verdict, nil for a failure the case expected. Every driver
 // calls one or the other when its run returns; the prompt drivers, which
 // report no verdict to a session, call this, found on the context's debugger
 // the way flowtest finds its autopsy.
 func (s *Session) RunReturned(err error) {
 	s.mu.Lock()
+	first := !s.returnReported
+	s.returnReported = true
 	missed := ""
-	if err == nil && s.mode == modeUntil && !s.untilNoted && !terminal(s.contract.state) {
+	if first && err == nil && s.mode == modeUntil && !terminal(s.contract.state) {
 		// As it was asked: a conditional `until` can reach its target with
 		// the condition never holding, and naming the bare target would say
 		// the step was never reached.
@@ -643,7 +647,6 @@ func (s *Session) RunReturned(err error) {
 		if s.untilConditionText != "" {
 			missed += " if " + s.untilConditionText
 		}
-		s.untilNoted = true
 	}
 	s.mu.Unlock()
 	if missed == "" {

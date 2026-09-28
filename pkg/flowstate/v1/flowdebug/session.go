@@ -416,11 +416,13 @@ type Session struct {
 	// untilConditionText is untilCondition as it was written, for saying what
 	// was asked when the stop never came. Set and cleared with it.
 	untilConditionText string
-	// untilNoted records that [Session.RunReturned] has said an armed
-	// `until` was never reached, so a driver that reports the run's return and
-	// then its verdict ([Session.Finished]) says it once.
-	untilNoted  bool
-	breakpoints map[string]breakpoint
+	// returnReported records that [Session.RunReturned] has heard the run's
+	// own return. The first report decides whether a missed `until` is said:
+	// a driver that reports the return and then the case's verdict
+	// ([Session.Finished]) says it at most once, and a run that failed is
+	// never called completed because a case expecting the failure passed.
+	returnReported bool
+	breakpoints    map[string]breakpoint
 
 	// notedUnbound remembers which condition-gated stops — breakpoints and
 	// `until` — have already reported a condition they could not evaluate, so
