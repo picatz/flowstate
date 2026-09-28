@@ -96,7 +96,6 @@ type debugSessionEntry struct {
 	receiptBytes int
 
 	transcript *lockedTranscript
-	cursor     int
 
 	// run is the durable run a session attached to, so a rejoin under its
 	// id is checked to name the same run. Empty for a stubbed case.
@@ -125,15 +124,19 @@ func (t *lockedTranscript) add(text string, tone flowdebug.Tone) {
 	t.debugTranscript.add(text, tone)
 }
 
-func (t *lockedTranscript) since(cursor int) ([]debugFragment, int) {
+// take hands over every fragment not yet answered with, and frees the room
+// they held: a retained session is read many times over its life, so what an
+// answer has carried must stop counting against the transcript's bound, or a
+// long session would drop everything after its first few thousand fragments
+// however often it was read. The dropped count stays the session's total.
+func (t *lockedTranscript) take() []debugFragment {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if cursor > len(t.fragments) {
-		cursor = len(t.fragments)
-	}
+	taken := t.fragments
+	t.fragments, t.bytes = nil, 0
 
-	return slices.Clone(t.fragments[cursor:]), len(t.fragments)
+	return taken
 }
 
 // note is the embedded note, read under the lock the run's goroutine writes
@@ -679,7 +682,7 @@ func (e *debugSessionEntry) answer(ctx context.Context) (sessionAnswer, error) {
 	}
 	answer.snapshot, answer.Snapshot = snapshot, schemaJSON(snapshot)
 	if e.transcript != nil {
-		answer.Transcript, e.cursor = e.transcript.since(e.cursor)
+		answer.Transcript = e.transcript.take()
 		answer.Note = e.transcript.note()
 	}
 
@@ -992,7 +995,7 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	if entry.transcript != nil {
-		answer.Transcript, entry.cursor = entry.transcript.since(entry.cursor)
+		answer.Transcript = entry.transcript.take()
 	}
 
 	encoded, err := answer.encode()

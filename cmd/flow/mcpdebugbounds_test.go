@@ -130,9 +130,7 @@ func TestAnObserveThatCannotReadTheRunFails(t *testing.T) {
 	require.True(t, result.IsError, "an unreadable run was answered as an observation: %s", replyOf(t, result).raw)
 	assert.Contains(t, result.Content[0].(*mcp.TextContent).Text, "the server is unavailable")
 
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	assert.Zero(t, entry.cursor, "the transcript was consumed by an answer that was never given")
+	assert.Len(t, transcript.take(), 1, "the transcript was consumed by an answer that was never given")
 }
 
 // TestASessionAnswerIsFittedUnderTheResultBound: a retained session's answer is
@@ -290,4 +288,32 @@ func TestAnEndWaitsForACommandInFlightAndRefusesTheNext(t *testing.T) {
 	target.mu.Lock()
 	defer target.mu.Unlock()
 	assert.Zero(t, target.moves, "the ended session's run was moved")
+}
+
+// TestAReadTranscriptFreesItsRoom: a retained session is read many times, so
+// the fragments an answer carried stop counting against the transcript's bound
+// and a session read often keeps its later output, however long it runs.
+func TestAReadTranscriptFreesItsRoom(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	entry := addStepSession(t, r, newStepTarget(true))
+	transcript := &lockedTranscript{}
+	entry.mu.Lock()
+	entry.transcript = transcript
+	entry.mu.Unlock()
+
+	for round := range 3 {
+		said := fmt.Sprintf("round %d", round)
+		for range maxDebugFragments {
+			transcript.add(said, flowdebug.ToneInfo)
+		}
+		answer, err := entry.answer(t.Context())
+		require.NoError(t, err)
+		require.Len(t, answer.Transcript, maxDebugFragments, "round %d lost output a reader had made room for", round)
+		for _, fragment := range answer.Transcript {
+			require.Equal(t, said, fragment.Text, "an answer carried output an earlier one had already carried")
+		}
+	}
+	assert.Empty(t, transcript.note(), "fragments were dropped though every one was read")
 }
