@@ -39,13 +39,18 @@ import (
 // restarting it.
 
 const (
-	maxDebugSessions      = 8
-	debugSessionIdle      = 10 * time.Minute
-	debugSessionLifetime  = time.Hour
-	maxDebugSessionWait   = 30 * time.Second
-	maxSessionReceipts    = 64
-	debugSessionEndSettle = 5 * time.Second
-	debugSessionSweep     = time.Minute
+	maxDebugSessions     = 8
+	debugSessionIdle     = 10 * time.Minute
+	debugSessionLifetime = time.Hour
+	maxDebugSessionWait  = 30 * time.Second
+	maxSessionReceipts   = 64
+	// maxSessionReceiptBytes bounds what one session's retry cache holds,
+	// whatever its count: each answer is fitted under
+	// [flowmcp.MaxResultBytes], and this keeps sixty-four of them from
+	// being sixteen megabytes a session.
+	maxSessionReceiptBytes = 4 << 20
+	debugSessionEndSettle  = 5 * time.Second
+	debugSessionSweep      = time.Minute
 )
 
 // debugSessions is one server's retained sessions.
@@ -80,6 +85,8 @@ type debugSessionEntry struct {
 	expires  time.Time
 	receipts map[string]json.RawMessage
 	order    []string
+	// receiptBytes is what receipts holds, for [maxSessionReceiptBytes].
+	receiptBytes int
 
 	transcript *lockedTranscript
 	cursor     int
@@ -512,13 +519,72 @@ func decode(req *mcp.CallToolRequest, into any) error {
 	return decoder.Decode(into)
 }
 
-func toolJSON(value any) *mcp.CallToolResult {
-	encoded, err := json.Marshal(value)
+// result is the answer as a tool result, fitted by [sessionAnswer.encode].
+func (a sessionAnswer) result() *mcp.CallToolResult {
+	encoded, err := a.encode()
 	if err != nil {
 		return flowmcp.ToolError(err)
 	}
 
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}
+}
+
+// encode renders the answer under [flowmcp.MaxResultBytes]. A retained
+// session's answer is sized by the run — a transcript of every arrival, a
+// snapshot's observations and breakpoint definitions — so it is fitted as
+// every other answer on this surface is, dropping first what a caller can
+// most afford to lose and saying what went: the transcript's oldest fragments,
+// then the transcript, then the rendered text and the snapshot's observations,
+// and at the floor the snapshot and inspection themselves, which an observe
+// reads again.
+func (a sessionAnswer) encode() ([]byte, error) {
+	encode := func() ([]byte, error) { return json.Marshal(a) }
+	note := func(format string, args ...any) {
+		a.Note = strings.TrimSpace(a.Note + " " + fmt.Sprintf(format, args...))
+	}
+
+	encoded, _, err := flowmcp.FitResult(
+		encode,
+		func() ([]byte, error) {
+			if len(a.Transcript) > 1 {
+				kept := max(1, len(a.Transcript)/4)
+				note("The first %d transcript fragments were dropped, keeping the most recent %d: the answer exceeded %d bytes.",
+					len(a.Transcript)-kept, kept, flowmcp.MaxResultBytes)
+				a.Transcript = a.Transcript[len(a.Transcript)-kept:]
+			}
+
+			return encode()
+		},
+		func() ([]byte, error) {
+			if len(a.Transcript) > 0 {
+				note("The transcript was dropped: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
+				a.Transcript = nil
+			}
+
+			return encode()
+		},
+		func() ([]byte, error) {
+			a.Text = ""
+			if len(a.snapshot.GetObservations()) > 0 {
+				trimmed := proto.CloneOf(a.snapshot)
+				trimmed.ObservationsDropped += uint64(len(trimmed.GetObservations()))
+				trimmed.Observations = nil
+				a.Snapshot = schemaJSON(trimmed)
+			}
+			note("The rendered text and the snapshot's observations were dropped: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
+
+			return encode()
+		},
+		func() ([]byte, error) {
+			a.Snapshot, a.Inspect = nil, nil
+			note("The snapshot and any inspection were dropped: the answer exceeded %d bytes even reduced; "+
+				"observe the session to read its snapshot alone.", flowmcp.MaxResultBytes)
+
+			return encode()
+		},
+	)
+
+	return encoded, err
 }
 
 // schemaJSON renders a proto message the way every other tool answer does.
@@ -545,23 +611,48 @@ type sessionAnswer struct {
 	Transcript []debugFragment `json:"transcript,omitempty"`
 	Report     json.RawMessage `json:"report,omitempty"`
 	Note       string          `json:"note,omitempty"`
+
+	// snapshot is what Snapshot renders, kept so [sessionAnswer.encode] can
+	// reduce it.
+	snapshot *v1.DebugSnapshot
 }
 
 // answer reads the session: its snapshot, and the transcript since the last
 // answer. It takes e.mu itself, and only around the fields it guards.
-func (e *debugSessionEntry) answer(ctx context.Context) sessionAnswer {
+//
+// A snapshot that cannot be read is the answer's error, not an answer without
+// a snapshot: a caller acting on a session whose state it was not told would
+// act on nothing. The transcript is then left for the answer that can read the
+// run, so no fragment is handed out beside an error and lost.
+func (e *debugSessionEntry) answer(ctx context.Context) (sessionAnswer, error) {
 	answer := sessionAnswer{SessionID: e.id}
-	if snapshot, err := e.target.Snapshot(ctx); err == nil {
-		answer.Snapshot = schemaJSON(snapshot)
-	}
+	snapshot, err := e.target.Snapshot(ctx)
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	answer.Expires = e.expires.UTC().Format(time.RFC3339)
+	if err != nil {
+		return answer, fmt.Errorf("reading session %s's run: %w", e.id, err)
+	}
+	answer.snapshot, answer.Snapshot = snapshot, schemaJSON(snapshot)
 	if e.transcript != nil {
 		answer.Transcript, e.cursor = e.transcript.since(e.cursor)
 		answer.Note = e.transcript.note()
+	}
+
+	return answer, nil
+}
+
+// answerAfter is the answer of a call that has already acted on the session —
+// started, attached, rejoined or ended it. The action stands whether or not the
+// run can be read afterwards, so a failed read is said in the note rather than
+// returned as the call's error, which would hide the session id the caller
+// needs to observe it again.
+func (e *debugSessionEntry) answerAfter(ctx context.Context) sessionAnswer {
+	answer, err := e.answer(ctx)
+	if err != nil {
+		answer.Note = strings.TrimSpace(answer.Note + " " + err.Error() + "; observe the session to read it again.")
 	}
 
 	return answer
@@ -569,10 +660,10 @@ func (e *debugSessionEntry) answer(ctx context.Context) sessionAnswer {
 
 // startedAgain answers a start whose request id already started entry.
 func startedAgain(ctx context.Context, entry *debugSessionEntry) *mcp.CallToolResult {
-	answer := entry.answer(ctx)
+	answer := entry.answerAfter(ctx)
 	answer.Note = strings.TrimSpace("this request id already started this session; it was not started again. " + answer.Note)
 
-	return toolJSON(answer)
+	return answer.result()
 }
 
 // targetRequestID is the request id a retained session's command carries to
@@ -682,7 +773,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		after = snapshot.GetRevision()
 	}
 
-	return toolJSON(entry.answer(ctx)), nil
+	return entry.answerAfter(ctx).result(), nil
 }
 
 // caseFailure is why a case did not pass, for the session's snapshot: a case
@@ -747,26 +838,34 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	entry.driver.Wait = maxDebugSessionWait
 	existing, err := r.register(entry, "")
 	if err != nil || existing != nil {
-		// Detached from nothing: the session stays attached, renewed by
-		// the entry that already holds it.
-		_ = remote.Disconnect()
+		switch {
+		case err != nil && args.SessionID == "":
+			// A session this call attached, which no entry will hold: it is
+			// detached, so a refusal never leaves a run held by nobody
+			// until its lease lapses.
+			_ = remote.Close()
+		default:
+			// A session someone else holds — the entry already here, or
+			// the client that left it to be rejoined — stays attached.
+			_ = remote.Disconnect()
+		}
 		if err != nil {
 			return flowmcp.ToolError(err), nil
 		}
 		if _, err := r.lookup(existing.id); err != nil {
 			return flowmcp.ToolError(err), nil
 		}
-		answer := existing.answer(ctx)
+		answer := existing.answerAfter(ctx)
 		answer.Receipt = schemaJSON(receipt)
 		answer.Note = strings.TrimSpace("this server already holds this session; it was rejoined, not attached again. " + answer.Note)
 
-		return toolJSON(answer), nil
+		return answer.result(), nil
 	}
 
-	answer := entry.answer(ctx)
+	answer := entry.answerAfter(ctx)
 	answer.Receipt = schemaJSON(receipt)
 
-	return toolJSON(answer), nil
+	return answer.result(), nil
 }
 
 func (r *debugSessions) observe(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -791,8 +890,12 @@ func (r *debugSessions) observe(ctx context.Context, req *mcp.CallToolRequest) (
 		_, _ = entry.target.WaitSnapshot(waitCtx, args.AfterRevision)
 		cancel()
 	}
+	answer, err := entry.answer(ctx)
+	if err != nil {
+		return flowmcp.ToolError(err), nil
+	}
 
-	return toolJSON(entry.answer(ctx)), nil
+	return answer.result(), nil
 }
 
 func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -838,7 +941,7 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 	answer := sessionAnswer{SessionID: entry.id, Command: args.Command, Expires: expires.UTC().Format(time.RFC3339)}
 	answer.Text = result.Text
 	answer.Receipt = schemaJSON(result.Receipt)
-	answer.Snapshot = schemaJSON(result.Snapshot)
+	answer.snapshot, answer.Snapshot = result.Snapshot, schemaJSON(result.Snapshot)
 	answer.Inspect = schemaJSON(result.Inspect)
 
 	entry.mu.Lock()
@@ -847,20 +950,34 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 		answer.Transcript, entry.cursor = entry.transcript.since(entry.cursor)
 	}
 
-	encoded, err := json.Marshal(answer)
+	encoded, err := answer.encode()
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
 	if args.RequestID != "" {
-		entry.receipts[args.RequestID] = encoded
-		entry.order = append(entry.order, args.RequestID)
-		if len(entry.order) > maxSessionReceipts {
-			delete(entry.receipts, entry.order[0])
-			entry.order = entry.order[1:]
-		}
+		entry.rememberLocked(args.RequestID, encoded)
 	}
 
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
+}
+
+// rememberLocked keeps a command's answer for a retry under its request id,
+// dropping the oldest past [maxSessionReceipts] answers or
+// [maxSessionReceiptBytes] bytes. The caller holds e.mu.
+func (e *debugSessionEntry) rememberLocked(request string, encoded []byte) {
+	if previous, ok := e.receipts[request]; ok {
+		e.receiptBytes -= len(previous)
+		e.order = slices.DeleteFunc(e.order, func(id string) bool { return id == request })
+	}
+	e.receipts[request] = encoded
+	e.order = append(e.order, request)
+	e.receiptBytes += len(encoded)
+	for len(e.order) > maxSessionReceipts || (e.receiptBytes > maxSessionReceiptBytes && len(e.order) > 1) {
+		oldest := e.order[0]
+		e.receiptBytes -= len(e.receipts[oldest])
+		delete(e.receipts, oldest)
+		e.order = e.order[1:]
+	}
 }
 
 func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -882,7 +999,7 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 
 	finished := entry.end(args.Keep)
 	go r.release(entry)
-	answer := entry.answer(ctx)
+	answer := entry.answerAfter(ctx)
 	switch {
 	case entry.done == nil:
 	case finished && entry.report != nil:
@@ -891,5 +1008,5 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		answer.Note = strings.TrimSpace("the case was cancelled and has not yet stopped, so it has no report. " + answer.Note)
 	}
 
-	return toolJSON(answer), nil
+	return answer.result(), nil
 }

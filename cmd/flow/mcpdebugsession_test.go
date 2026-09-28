@@ -362,11 +362,13 @@ func TestAnAnswerReadsTheTranscriptNoteUnderItsLock(t *testing.T) {
 		}
 	})
 	for range 50 {
-		_ = entry.answer(t.Context())
+		_, _ = entry.answer(t.Context())
 		_ = entry.transcript.note()
 	}
 	wg.Wait()
-	assert.Contains(t, entry.answer(t.Context()).Note, "were dropped")
+	answer, err := entry.answer(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, answer.Note, "were dropped")
 }
 
 func toolRequest(t *testing.T, args map[string]any) *mcp.CallToolRequest {

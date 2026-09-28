@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 	"strings"
@@ -415,45 +416,69 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 	return sites, truncated
 }
 
-// DebugDeclaresStep reports whether wf, or a workflow it calls, declares a
-// step with this id anywhere: at a top level, or in a loop body, parallel
-// branch or switch arm. It is the question a truncated [DebugStaticSites]
-// leaves open, asked of the program as written rather than of its sites: the
-// walk visits each node the program holds once and stops at the first match,
-// so it is bounded by the program's own size, which is already in memory.
-func DebugDeclaresStep(wf *Workflow, id string) bool {
-	var declares func(nodes []*Node, depth int) bool
-	declares = func(nodes []*Node, depth int) bool {
-		for _, node := range nodes {
-			if node.GetId() == id {
-				return true
+// DebugDeclaredSteps yields the id of every step wf declares, and every step a
+// workflow it calls declares: at a top level, or in a loop body, parallel
+// branch or switch arm, in document order, with repeats. It is the question a
+// truncated [DebugStaticSites] leaves open, asked of the program as written
+// rather than of its sites: each node the program holds is visited once, so the
+// walk is bounded by the program's own size, which is already in memory, not
+// by what its calls expand to. Calls are followed to [MaxCallDepth], as
+// [DebugStaticSites] follows them.
+func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		var walk func(nodes []*Node, depth int) bool
+		walk = func(nodes []*Node, depth int) bool {
+			for _, node := range nodes {
+				if !yield(node.GetId()) {
+					return false
+				}
+				switch kind := node.GetKind().(type) {
+				case *Node_ForEach:
+					if !walk(kind.ForEach.GetBody(), depth) {
+						return false
+					}
+				case *Node_Loop:
+					if !walk(kind.Loop.GetBody(), depth) {
+						return false
+					}
+				case *Node_Parallel:
+					for _, branch := range kind.Parallel.GetBranches() {
+						if !walk(branch.GetSteps(), depth) {
+							return false
+						}
+					}
+				case *Node_Switch:
+					for _, arm := range kind.Switch.GetCases() {
+						if !walk(arm.GetSteps(), depth) {
+							return false
+						}
+					}
+					if !walk(kind.Switch.GetDefault().GetSteps(), depth) {
+						return false
+					}
+				case *Node_Call:
+					if depth < MaxCallDepth && !walk(kind.Call.GetWorkflow().GetSteps(), depth+1) {
+						return false
+					}
+				}
 			}
-			var found bool
-			switch kind := node.GetKind().(type) {
-			case *Node_ForEach:
-				found = declares(kind.ForEach.GetBody(), depth)
-			case *Node_Loop:
-				found = declares(kind.Loop.GetBody(), depth)
-			case *Node_Parallel:
-				found = slices.ContainsFunc(kind.Parallel.GetBranches(), func(branch *Parallel_Branch) bool {
-					return declares(branch.GetSteps(), depth)
-				})
-			case *Node_Switch:
-				found = slices.ContainsFunc(kind.Switch.GetCases(), func(arm *Switch_Case) bool {
-					return declares(arm.GetSteps(), depth)
-				}) || declares(kind.Switch.GetDefault().GetSteps(), depth)
-			case *Node_Call:
-				found = depth < MaxCallDepth && declares(kind.Call.GetWorkflow().GetSteps(), depth+1)
-			}
-			if found {
-				return true
-			}
-		}
 
-		return false
+			return true
+		}
+		walk(wf.GetSteps(), 0)
+	}
+}
+
+// DebugDeclaresStep reports whether [DebugDeclaredSteps] yields id, stopping
+// at the first match.
+func DebugDeclaresStep(wf *Workflow, id string) bool {
+	for declared := range DebugDeclaredSteps(wf) {
+		if declared == id {
+			return true
+		}
 	}
 
-	return declares(wf.GetSteps(), 0)
+	return false
 }
 
 // Resolve returns the static sites this target can ever match, in document

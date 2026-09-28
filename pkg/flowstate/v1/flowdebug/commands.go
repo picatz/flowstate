@@ -864,7 +864,7 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	target := v1.ParseDebugTargetOrStep(id)
 
 	s.mu.Lock()
-	sitesKnown, sites := s.contract.sitesKnown, s.contract.sites
+	sitesKnown, sites, inProgram := s.contract.sitesKnown, s.contract.sites, s.contract.declaredInProgram
 	s.mu.Unlock()
 	if sitesKnown {
 		if len(target.Resolve(sites)) > 0 {
@@ -894,8 +894,13 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 
 	// Built once at construction ([declaredStepIDs]); this is a lookup rather
 	// than a walk, because a refused command is not recorded and so may be
-	// repeated without bound.
+	// repeated without bound. A program whose sites were cut short answers
+	// from what it declares, built once too, so a step it never declares is
+	// refused here as the durable driver refuses it.
 	_, known := s.declaredIDs[id]
+	if !known && inProgram != nil {
+		_, known = inProgram[id]
+	}
 
 	s.mu.Lock()
 	// An id this session has watched go past is reachable whatever the
@@ -909,8 +914,11 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	s.mu.Unlock()
 
 	names := s.declared
-	if known || len(names) == 0 {
+	if known || (len(names) == 0 && inProgram == nil) {
 		return "", false
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("no step named %q is declared by this workflow or a workflow it calls", id), true
 	}
 
 	// The suggestion is skipped for input too long to have been a typo of
