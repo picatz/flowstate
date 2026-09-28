@@ -1102,6 +1102,14 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 // refused with, which never quotes what was submitted.
 var errInvalidBreakpoints = errors.New("invalid breakpoint arguments")
 
+// errTooManyBreakpoints fails a request that alone names more breakpoints than
+// a session holds. It fails whole, before anything is built from it, rather
+// than answering each entry: a frame can carry far more compact entries than a
+// session will ever hold, and one refusal apiece would make the response many
+// times the request. A set within the bound that only overflows with the other
+// sources installed is still answered entry by entry.
+var errTooManyBreakpoints = fmt.Errorf("a breakpoint request may name at most %d breakpoints", flowdebug.MaxBreakpoints)
+
 func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	var asked struct {
 		Source *struct {
@@ -1116,6 +1124,11 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	}
 	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" {
 		s.fail(request, errInvalidBreakpoints.Error())
+
+		return
+	}
+	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
+		s.fail(request, errTooManyBreakpoints.Error())
 
 		return
 	}
@@ -1180,6 +1193,11 @@ func (s *Server) setFunctionBreakpoints(ctx context.Context, request inbound) {
 	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Breakpoints == nil {
 		// A malformed replacement must not clear the installed set.
 		s.fail(request, errInvalidBreakpoints.Error())
+
+		return
+	}
+	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
+		s.fail(request, errTooManyBreakpoints.Error())
 
 		return
 	}

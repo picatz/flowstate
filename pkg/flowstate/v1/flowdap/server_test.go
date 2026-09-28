@@ -953,13 +953,34 @@ func TestARefusedBreakpointSetVerifiesNothing(t *testing.T) {
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 
-	// One past what a session holds, so the set is refused rather than trimmed.
-	asked := make([]map[string]any, 0, flowdebug.MaxBreakpoints+1)
+	// One request past what a session holds fails whole, with one bounded
+	// message rather than a refusal per entry: the entries are the client's to
+	// multiply, and the response must not grow with them.
+	tooMany := make([]map[string]any, 0, flowdebug.MaxBreakpoints+1)
 	for i := range flowdebug.MaxBreakpoints + 1 {
-		asked = append(asked, map[string]any{"name": fmt.Sprintf("step%04d", i)})
+		tooMany = append(tooMany, map[string]any{"name": fmt.Sprintf("step%04d", i)})
 	}
+	c.send(2, "setFunctionBreakpoints", map[string]any{"breakpoints": tooMany})
+	failed := c.await("response", "setFunctionBreakpoints")
+	assert.Equal(t, false, failed["success"])
+	assert.Contains(t, failed["message"], "at most")
+	assert.Nil(t, failed["body"], "a refused oversized set was answered entry by entry")
 
-	c.send(2, "setFunctionBreakpoints", map[string]any{"breakpoints": asked})
+	c.send(20, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": tooMany})
+	assert.Equal(t, false, c.await("response", "setBreakpoints")["success"])
+
+	// A set within the bound that overflows only beside another source's is
+	// refused entry by entry, where a client shows breakpoint state.
+	half := flowdebug.MaxBreakpoints/2 + 1
+	lines := make([]map[string]any, 0, half)
+	for i := range half {
+		lines = append(lines, map[string]any{"line": i + 1})
+	}
+	c.send(21, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": lines})
+	require.Equal(t, true, c.await("response", "setBreakpoints")["success"])
+
+	asked := tooMany[:half]
+	c.send(22, "setFunctionBreakpoints", map[string]any{"breakpoints": asked})
 	answer := c.await("response", "setFunctionBreakpoints")
 	assert.Equal(t, true, answer["success"],
 		"failing the request hides the reason where a client shows breakpoint state")
@@ -972,6 +993,9 @@ func TestARefusedBreakpointSetVerifiesNothing(t *testing.T) {
 			"breakpoint %d claims to be set from a set the session refused whole", i)
 		require.NotEmpty(t, entry["message"], "breakpoint %d was refused without saying why", i)
 	}
+
+	c.send(23, "setBreakpoints", map[string]any{"source": map[string]any{"path": "/w.yaml"}, "breakpoints": []any{}})
+	require.Equal(t, true, c.await("response", "setBreakpoints")["success"])
 
 	// And nothing was left behind: the refusal happened before the session's
 	// set was touched.
