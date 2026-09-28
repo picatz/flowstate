@@ -322,12 +322,12 @@ solvable at render time.** Nesting depends on slice 1/2's graph schema and
 model — reusing the same spec-to-tree join the graph gets, rather than a second
 implementation of it. Per-step duration and per-step terminal status (the
 `✓`/`✗`/`—` on a *finished* step, not only the one currently running) depend on
-slice 3's run-telemetry decision: for activity-backed steps both are derivable
-from `GetTimeline`'s event history, but a skipped step or one evaluated in
-workflow code records no timeline event, and no response carries them per step, and see the gap inventory for
-exactly what `RunProgress` and `StepOutputs` carry instead. Whichever source
-slice 3 settles on, it lands before slice 9 builds this renderer — see the gap
-inventory for the ordering.
+slice 3's run-telemetry work. For a task step both are derivable from
+`GetTimeline`'s event history; a skipped step, a `value:` step, and the
+control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record no
+step event there, and no response carries any of them per step — see the gap
+inventory for exactly what `RunProgress` and `StepOutputs` carry instead. Slice
+3 lands before slice 9 builds this renderer.
 
 ```
 ✓ RUN  deploy-frontend                         a3f9c21e  (took 2m14s)
@@ -649,13 +649,14 @@ built: `RunProgress` holds only the current top-level `step_id`, a partial
 carries either `outputs` (values only, no per-step status or timing) or an
 `error` (the whole run's outcome, not a per-step account). What does exist is
 an event history: `GetTimeline` returns the scheduled, completed, failed,
-timed-out, and canceled events of each step that runs an activity, with their
-times; a step skipped by `if:` or evaluated in workflow code, such as `value:`,
-records none. "Step X succeeded in
-12s while step Y is still running" can be *derived* from it, but no response
-carries that aggregate shape directly. Deciding whether the overlay derives its
-view from the timeline or a new aggregate message is added is therefore its own
-slice (gap inventory slice 3), settled and reviewed before any overlay code is
+timed-out, and canceled events of each task step, with their times, plus timer
+and signal events for waits. A skipped step, a `value:` step, and the
+control-flow nodes (`call`, `for_each`, `loop`, `parallel`, `switch`) record no
+step event. So "task X succeeded in 12s while task Y is still running" can be
+*derived* from the timeline, but a graph overlay also needs an outcome for every
+other node, and nothing carries that today. Supplying it, reusing the timeline
+for what it already records rather than restating it, is therefore its own slice
+(gap inventory slice 3), settled and reviewed before any overlay code is
 written, and every overlay-producing path in this
 document (6.2's `--run` variant, 6.3's outcome colouring, section 3's
 step/timeline view) is blocked on it. `NewGraph` in this slice takes a spec and
@@ -751,10 +752,11 @@ graph <id> --run <run-id>` (or `--run` reading the current run the way `flow
 get`'s `--run-id` does), producing the identical export with per-node status and
 duration folded in — nodes styled by outcome, the form worth having for a
 post-mortem: "show me the shape of this workflow, coloured by how the failed run
-actually went." This is blocked on the same run-telemetry decision 6.1 names
-(gap inventory slice 3) for the identical reason: a finished run's per-step
-status and duration are derivable from its timeline only for activity-backed
-steps, and which source this flag reads is that slice's call. The flag and its rendering are designed now so the exporter slice does not
+actually went." This is blocked on the same run-telemetry schema 6.1 names
+(gap inventory slice 3) for the identical reason: a finished run's status and
+duration are derivable from its timeline only for task steps, and the other
+nodes' outcomes are what that slice adds. The flag and its rendering are
+designed now so the exporter slice does not
 have to be revisited when the telemetry lands; the flag itself does not ship
 until slice 3 does.
 
@@ -799,7 +801,7 @@ The navigator's model is `NewGraph` (6.1) applied to compiling `--source`
 locally — the same compile `flow validate`/`flow compile` already perform, no
 new RPC, no new server-side capability — joined against the *position* fields
 `RunProgress` already provides for colouring the live step, and against nothing
-further until the run-telemetry decision (gap inventory slice 3) lands. A
+further until the run-telemetry schema (gap inventory slice 3) lands. A
 workflow that has never run works identically: `flow graph <path>
 --interactive` is the entry point that needs no run at all, and it is the same
 code path with `run` simply absent, per 6.1's "run-state overlay is optional"
@@ -843,7 +845,7 @@ a third palette invented for it would be precisely the bespoke-per-view styling
 section 5 refuses.
 
 Mockup, a `promote` call two nodes deep, `each-region` collapsed — **this depicts
-the state once slice 3's run-telemetry decision has landed; against a spec-only or
+the state once slice 3's run-telemetry schema has landed; against a spec-only or
 pre-slice-3 graph, the finished-step marks and durations below are not yet real
 data and would not yet be drawn**:
 
@@ -959,18 +961,18 @@ line. What is not: everything below.
    The dependency every other graph slice below sits on; nothing in 4 or 6 can
    start correctly before this one is settled and reviewed.
 
-3. **The run-telemetry decision.** Per-step status, per-step duration, and
-   per-step terminal outcome are derivable today from `GetTimeline`'s event
-   history for steps that run an activity; a skipped step or a workflow-side
-   step such as `value:` records no event there, and no response carries them
-   as an aggregate: `RunProgress` has
-   only the current top-level step, a partial path, and a segment-local
-   completed count, and `GetResponse` for a finished run carries output values
-   or an error. This slice decides whether the overlay derives its view from
-   the timeline (one source, no schema change) or whether an additive aggregate
-   message earns its place, and does not pre-decide the answer. Two
-   representations of one step outcome are what it must avoid. This slice
-   blocks the run-state overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step
+3. **The run-telemetry schema.** Status, duration, and terminal outcome are
+   derivable today from `GetTimeline`'s event history for task steps only. A
+   skipped step, a `value:` step, and the control-flow nodes (`call`,
+   `for_each`, `loop`, `parallel`, `switch`) record no step event, and no
+   response carries outcomes as an aggregate: `RunProgress` has only the
+   current top-level step, a partial path, and a segment-local completed
+   count, and `GetResponse` for a finished run carries output values or an
+   error. This slice adds what the timeline lacks, as additive fields or
+   events `buf breaking` accepts, and reuses the timeline for what it already
+   records; it does not pre-decide the message shape. Two representations of
+   one task step's outcome are what it must avoid. This slice blocks the
+   run-state overlay in 6.1/6.2/6.3 *and* the step/timeline tree's per-step
    duration in section 3 — both are named as blocked on it rather than
    re-solved independently, since it is one gap with two consumers.
 
