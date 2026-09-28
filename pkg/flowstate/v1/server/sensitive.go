@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	enumspb "go.temporal.io/api/enums/v1"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -182,31 +183,69 @@ var failClosedDeclarations = sensitiveDeclarations{
 	values:   v1.WithheldSensitiveValues(),
 }
 
-// maxCachedDeclarations bounds the per-run cache. An entry holds output names
-// and a sensitive-value set, both bounded by the specification's own limits,
-// never the specification. A segment's start input never changes, so an entry
-// is never stale, only evicted; `flow watch` polling one run reads it once.
-const maxCachedDeclarations = 1024
+// The per-run cache's bounds. An entry holds output names and a
+// sensitive-value set, never the specification, but the value set holds the
+// run's sensitive inputs, which a caller chose: counting entries alone would
+// let a caller who starts runs with near-limit inputs pin a gigabyte. So each
+// entry is costed by what it retains, an entry costing more than
+// maxDeclarationBytes is not cached at all (the next read of that run reads
+// its start event again), and the cache starts over when the total would pass
+// maxCachedDeclarationBytes. A segment's start input never changes, so an
+// entry is never stale, only evicted; `flow watch` polling one run reads it
+// once.
+const (
+	maxCachedDeclarations     = 1024
+	maxDeclarationBytes       = 256 << 10
+	maxCachedDeclarationBytes = 16 << 20
+)
 
 type declarationCache struct {
 	mu      sync.Mutex
-	entries map[string]sensitiveDeclarations
+	entries map[string]cachedDeclarations
+	bytes   int
+}
+
+type cachedDeclarations struct {
+	d    sensitiveDeclarations
+	cost int
 }
 
 func (c *declarationCache) get(key string) (sensitiveDeclarations, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	d, ok := c.entries[key]
-	return d, ok
+	e, ok := c.entries[key]
+	return e.d, ok
 }
 
-func (c *declarationCache) put(key string, d sensitiveDeclarations) {
+// put caches d under key at cost bytes, unless it alone is too large to keep.
+func (c *declarationCache) put(key string, d sensitiveDeclarations, cost int) {
+	if cost > maxDeclarationBytes {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.entries == nil || len(c.entries) >= maxCachedDeclarations {
-		c.entries = make(map[string]sensitiveDeclarations)
+	if c.entries == nil || len(c.entries) >= maxCachedDeclarations || c.bytes+cost > maxCachedDeclarationBytes {
+		c.entries = make(map[string]cachedDeclarations)
+		c.bytes = 0
 	}
-	c.entries[key] = d
+	if old, ok := c.entries[key]; ok {
+		c.bytes -= old.cost
+	}
+	c.entries[key] = cachedDeclarations{d: d, cost: cost}
+	c.bytes += cost
+}
+
+// declarationCost is what caching d for state retains: its output names, and
+// the sensitive input values its value set holds, as their encoded size.
+func declarationCost(state *v1.RunState, d sensitiveDeclarations) int {
+	cost := 0
+	for name := range d.outputs {
+		cost += len(name)
+	}
+	for name := range v1.SensitiveInputNames(state.GetWorkflow()) {
+		cost += proto.Size(state.GetInputs()[name])
+	}
+	return cost
 }
 
 func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowID, runID string) sensitiveDeclarations {
@@ -227,7 +266,7 @@ func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowI
 	// A callee's declarations reach the caller's values through expressions
 	// this cannot trace, so a run embedding one is withheld whole.
 	if callee, err := v1.CalleeDeclaresSensitiveValues(state.GetWorkflow()); err != nil || callee {
-		s.declarations.put(key, failClosedDeclarations)
+		s.declarations.put(key, failClosedDeclarations, 0)
 		return failClosedDeclarations
 	}
 
@@ -238,7 +277,7 @@ func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowI
 		values:   v1.RunFailureSensitiveValues(state.GetWorkflow(), state.GetInputs()),
 	}
 
-	s.declarations.put(key, d)
+	s.declarations.put(key, d, declarationCost(state, d))
 	return d
 }
 
