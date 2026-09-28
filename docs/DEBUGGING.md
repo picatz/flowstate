@@ -584,12 +584,15 @@ carries an action list must name the one the call needs:
 | Action | Covers |
 | --- | --- |
 | `workload.debug` | `DebugAttach`, `DebugGet`, `DebugResume`, `DebugSetBreakpoints`, and a raw `Signal` on the reserved `flowstate_debug` channel |
-| `workload.debug_inspect` | `DebugInspect`, and any breakpoint set carrying a condition or a log message |
+| `workload.debug_inspect` | `DebugInspect`, any breakpoint set carrying a condition or a log message, and reading those expressions back |
 
 Inspection is its own action because it is a disclosure: an expression can test
 any value in the held scope, whatever its rendering hides. A breakpoint
 condition is the same disclosure one bit at a time — whether the run stopped
-answers `inputs.token == "guess"` — so setting one needs the inspect action too.
+answers `inputs.token == "guess"` — so setting one needs the inspect action too,
+and so does reading one back: a caller without it sees such a breakpoint with
+no definition, and a client that would resend the set refuses rather than drop
+it.
 Only the session's holder may resume, set breakpoints on, or inspect it; a
 second caller's attach is refused rather than queued. Every decision, allowed
 or denied, is audited with the session, the request id and the operation, and
