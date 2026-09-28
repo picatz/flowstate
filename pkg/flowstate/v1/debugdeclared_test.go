@@ -91,6 +91,28 @@ func TestDeclaredInLooksEverywhereAStepCanBeWritten(t *testing.T) {
 	} {
 		assert.False(t, declared(text), "%s is not declared but was found", text)
 	}
+
+	// Outside bodies, only the top levels a durable run holds at count: the
+	// containers themselves and a callee's steps, never what is inside a
+	// body, a branch or an arm.
+	outside := func(text string) bool {
+		t.Helper()
+		target, err := v1.ParseDebugTarget(text)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", text, err)
+		}
+
+		return target.DeclaredOutsideBodiesIn(spec)
+	}
+	for _, text := range []string{"each", "again", "fan", "pick", "sub", "in-callee", "sub/in-callee", "sub(callee)/in-callee"} {
+		assert.True(t, outside(text), "%s is declared at a top level but not found", text)
+	}
+	for _, text := range []string{
+		"in-each", "in-loop", "in-branch", "in-arm", "in-default",
+		"each/in-each", "each[2]/in-each", "fan/in-branch", "pick/in-default", "nowhere",
+	} {
+		assert.False(t, outside(text), "%s is declared only inside a body but was found outside one", text)
+	}
 }
 
 // TestTheDeclarationWalksSurviveASharedCallee: a workflow built in memory may

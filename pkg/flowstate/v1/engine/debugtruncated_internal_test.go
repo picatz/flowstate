@@ -15,7 +15,8 @@ import (
 // truncatedProgram is a run whose site enumeration stops at
 // [v1.MaxDebugStaticSites] before its last top-level step, `last`: a loop
 // whose body is a `touch`, enough calls of a wide callee to pass the cap, then
-// a top-level `touch` and `last` past the cut.
+// a top-level `touch` and `last` past the cut, and a loop `tail` whose body is
+// `deep`, declared nowhere else.
 func truncatedProgram(t *testing.T) *v1.Workflow {
 	t.Helper()
 
@@ -37,7 +38,9 @@ func truncatedProgram(t *testing.T) *v1.Workflow {
 	for i := range v1.MaxDebugStaticSites/len(callee.Steps) + 1 {
 		spec.Steps = append(spec.Steps, &v1.Node{Id: fmt.Sprintf("call%d", i), Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}})
 	}
-	spec.Steps = append(spec.Steps, log("touch"), log("last"))
+	spec.Steps = append(spec.Steps, log("touch"), log("last"), &v1.Node{Id: "tail", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+		Items: v1.NewLiteralList(v1.NewLiteral("a")), Iterator: "item", Body: []*v1.Node{log("deep")},
+	}}})
 	sites, truncated := v1.DebugStaticSites(spec)
 	require.True(t, truncated, "the program did not pass the cap, so this proves nothing")
 	target, err := v1.ParseDebugTarget("last")
@@ -66,6 +69,7 @@ func TestATruncatedProgramJudgesBreakpointsByResolutionAlone(t *testing.T) {
 	require.Len(t, e.debug.parsed, 1)
 	state := e.debug.parsed[0].state
 	assert.True(t, state.GetVerified(), "refused as unholdable on a truncated enumeration: %s", state.GetMessage())
+	assert.Empty(t, state.GetSites(), "listed a site inside a loop body, where a durable run never holds")
 	assert.True(t, e.debug.parsed[0].target.Matches(v1.NewDebugOccurrence("fanout", nil, "touch", "task")),
 		"the breakpoint does not match the top-level step past the cut")
 }
@@ -121,4 +125,14 @@ func TestATruncatedProgramArmsABreakpointPastTheCut(t *testing.T) {
 	// So is a declared step under a container the program does not have.
 	elsewhere := parse(t, "bogus/last", false)
 	assert.False(t, elsewhere.state.GetVerified(), "armed a step under a container the program never declares")
+
+	// And a target the program declares only inside a loop body, which a
+	// durable run never holds in: before the cut, named through its loop,
+	// and past it, named bare. Armed, it would claim a stop that never
+	// comes.
+	for _, step := range []string{"each/touch", "each[0]/touch", "deep", "tail/deep"} {
+		unholdable := parse(t, step, false)
+		assert.False(t, unholdable.state.GetVerified(), "armed %s, which a durable run never holds at", step)
+		assert.Contains(t, unholdable.state.GetMessage(), "inside a loop body", step)
+	}
 }
