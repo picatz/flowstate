@@ -1015,9 +1015,10 @@ line. What is not: everything below.
    additive fields or events `buf breaking` accepts, and reuses what already
    exists: the timeline's activity and timer rows for what they record,
    `GetResponse.pending_activities` for a live activity's attempt and backoff,
-   and `RunProgress.pending_waits` for a parked wait's position. It starts from an inventory of what each
-   `Node` kind in `workflow.proto` records today and closes every gap that
-   finds, which includes at least:
+   `RunProgress.pending_waits` for a parked wait's position, and `StepOutputs`
+   for the values and failures a step recorded. It starts from an inventory of
+   what each `Node` kind in `workflow.proto` records today and closes every gap
+   that finds, which includes at least:
    - a canonical node identity that joins each step-scoped event to its
      `GraphNode.id` without loss, and a run-level class for the events that
      belong to no node: run `vars:` evaluation, plugin and task-capability
@@ -1053,8 +1054,12 @@ line. What is not: everything below.
      width being exceeded, before anything is scheduled, and `undo:`
      registration failing after the activity completed;
    - whether a failed step's failure was tolerated by `continue_on_error:` or
-     ended the run, which `recordOutcome` in `engine/execute.go` decides and
-     nothing reports per step;
+     ended the run, which `recordOutcome` in `engine/execute.go` decides.
+     `StepOutputs` already records the failure's `error` under the step on
+     both drivers, and slice 3 reuses that; what it lacks is the verdict,
+     because its shape cannot tell a tolerated failure from a successful step
+     that declares an output named `error` (the executors keep that fact in a
+     tolerated set, attached only to loop and `for_each` iteration records);
    - outcomes for the nodes that record none;
    - a bound on the work an overlay spends: `GetTimeline` stops at the
      server's scan budget and is per segment, so an overlay over a large or
