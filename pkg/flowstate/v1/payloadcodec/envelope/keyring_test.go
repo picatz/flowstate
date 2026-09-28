@@ -342,9 +342,11 @@ providers:
 		want    time.Duration
 	}{
 		// No timeout is the Vault client's default per request, not none.
-		{"", 2 * secretsvault.DefaultTimeout},
+		{"", 4 * secretsvault.DefaultTimeout},
 		{", timeout: 1s", envelope.DefaultProviderTimeout},
-		{", timeout: 30s", time.Minute},
+		// Four requests: a login, the call, and after a 403 on a renewable
+		// token a second login and the call again.
+		{", timeout: 30s", 2 * time.Minute},
 	} {
 		kr, err := load(t, t.TempDir(), config(tc.timeout))
 		require.NoError(t, err)
@@ -399,8 +401,8 @@ providers:
 `))
 	require.NoError(t, err)
 	// One login, four calls to describe each key, one wrap per writing
-	// namespace: 11 calls, each within twice the 60s request timeout.
-	require.Equal(t, 11*2*time.Minute, envelope.StartupBudget(vault))
+	// namespace: 11 calls, each within four of the 60s requests.
+	require.Equal(t, 11*4*time.Minute, envelope.StartupBudget(vault))
 
 	// An escrow key a provider holds is described again by every namespace
 	// that names it.
@@ -417,7 +419,7 @@ providers:
 	require.NoError(t, err)
 	// One login, four calls to describe e in each of two namespaces, two
 	// wraps in each: 13 calls.
-	require.Equal(t, 13*2*time.Minute, envelope.StartupBudget(shared))
+	require.Equal(t, 13*4*time.Minute, envelope.StartupBudget(shared))
 
 	// A provider that names no timeout still lets each request run for the
 	// Vault client's default, and the budget allows it that.
@@ -430,5 +432,5 @@ providers:
     vault: {address: 'https://vault.example.com', token_env: T}
 `))
 	require.NoError(t, err)
-	require.Equal(t, 11*2*secretsvault.DefaultTimeout, envelope.StartupBudget(defaulted))
+	require.Equal(t, 11*4*secretsvault.DefaultTimeout, envelope.StartupBudget(defaulted))
 }

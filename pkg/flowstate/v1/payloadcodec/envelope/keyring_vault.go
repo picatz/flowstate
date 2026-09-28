@@ -92,7 +92,7 @@ func StartupBudget(cfg *v1.PayloadKeyring) time.Duration {
 			longest = max(longest, vaultRequestTimeout(vc))
 		}
 	}
-	return startupBudget(cfg, max(DefaultProviderTimeout, 2*longest))
+	return startupBudget(cfg, max(DefaultProviderTimeout, requestsPerCall*longest))
 }
 
 // vaultRequestTimeout is how long one request to a Vault provider may take:
@@ -129,15 +129,21 @@ func startupBudget(cfg *v1.PayloadKeyring, perCall time.Duration) time.Duration 
 	return max(MinStartupBudget, time.Duration(calls)*perCall)
 }
 
+// requestsPerCall is how many requests to Vault one wrap, unwrap or startup
+// call can make, each within the provider's request timeout: a login when no
+// token is cached, the operation, and, when that is refused with 403 and the
+// token can be renewed, one more login and the operation again
+// (secrets/vault Provider.send).
+const requestsPerCall = 4
+
 // providerTimeout is the deadline a keyring's codecs put on one wrap or
-// unwrap: never shorter than a configured provider allows its own calls. A
-// configured timeout bounds one request, and a wrap may first have to log in,
-// so a call is given two of them; the default stays the floor, since a shorter
-// provider timeout already ends its own request first.
+// unwrap: never shorter than a configured provider allows its own calls, so
+// [requestsPerCall] of its requests. The default stays the floor, since a
+// shorter provider timeout already ends its own requests first.
 func providerTimeout(providers map[string]vaultConnection) time.Duration {
 	d := DefaultProviderTimeout
 	for _, c := range providers {
-		d = max(d, 2*c.timeout)
+		d = max(d, requestsPerCall*c.timeout)
 	}
 	return d
 }

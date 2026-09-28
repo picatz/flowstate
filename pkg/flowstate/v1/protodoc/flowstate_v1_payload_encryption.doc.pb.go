@@ -211,10 +211,11 @@ func init() {
 		{
 			Name: "flowstate.v1.PayloadVaultProvider.timeout",
 			Leading: " How long one request to the server may take. Unset is the Vault\n" +
-				" client's own bound of ten seconds per request. A wrap or unwrap that must\n" +
-				" log in first makes two requests, so a keyring's codecs give each call\n" +
-				" twice the largest timeout their providers allow, unset counting as ten\n" +
-				" seconds, and never less than five; startup is budgeted the same way.\n",
+				" client's own bound of ten seconds per request. A wrap or unwrap can make\n" +
+				" four requests (a login, the call, and after a 403 on a renewable token a\n" +
+				" second login and the call again), so a keyring's codecs give each call\n" +
+				" four times the largest timeout their providers allow, unset counting as\n" +
+				" ten seconds, and never less than five; startup is budgeted the same way.\n",
 		},
 		{
 			Name:    "flowstate.v1.PayloadVaultKubernetesAuth",

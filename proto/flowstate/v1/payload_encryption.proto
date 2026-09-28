@@ -314,10 +314,11 @@ message PayloadVaultProvider {
   }
 
   // How long one request to the server may take. Unset is the Vault
-  // client's own bound of ten seconds per request. A wrap or unwrap that must
-  // log in first makes two requests, so a keyring's codecs give each call
-  // twice the largest timeout their providers allow, unset counting as ten
-  // seconds, and never less than five; startup is budgeted the same way.
+  // client's own bound of ten seconds per request. A wrap or unwrap can make
+  // four requests (a login, the call, and after a 403 on a renewable token a
+  // second login and the call again), so a keyring's codecs give each call
+  // four times the largest timeout their providers allow, unset counting as
+  // ten seconds, and never less than five; startup is budgeted the same way.
   google.protobuf.Duration timeout = 7 [(buf.validate.field).duration = {
     gte: {}
     lte: {seconds: 60}
