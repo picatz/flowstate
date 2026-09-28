@@ -247,8 +247,34 @@ func (s *Session) Evaluate(ctx context.Context, expression string) (string, ref.
 // subject precisely because the engine resumes writing to the live one the
 // moment the pause ends.
 func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, expression string) (string, ref.Val, error) {
+	text, _, native, structured, err := evaluate(ctx, subject, expression)
+	if err != nil || !structured {
+		return text, nil, err
+	}
+
+	return text, v1.TypeAdapter.NativeToValue(native), nil
+}
+
+// evaluateTyped is evaluateIn answering with the value's CEL type name and its
+// redacted native form, for a caller describing and expanding a value rather
+// than printing it. The native form is nil where evaluate could not convert the
+// value, and where it may not be handed out structured: expanding it would
+// hand out, child by child, exactly the structure evaluate withholds.
+func evaluateTyped(ctx context.Context, subject promptSubject, expression string) (string, string, any, error) {
+	text, typeName, native, structured, err := evaluate(ctx, subject, expression)
+	if !structured {
+		native = nil
+	}
+
+	return text, typeName, native, err
+}
+
+// evaluate is the one evaluation every inspection runs through. structured
+// reports whether the native form may be handed out as a structured value; see
+// the comments below for when it may not.
+func evaluate(ctx context.Context, subject promptSubject, expression string) (text, typeName string, native any, structured bool, err error) {
 	if subject.scope == nil {
-		return "", nil, ErrNotPaused
+		return "", "", nil, false, ErrNotPaused
 	}
 
 	// Bounded before the parser sees it. A console reader owes
@@ -258,14 +284,14 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	// which is work that happens after a parse, so an expression large enough
 	// to be a problem is one the cost limit never gets to see (Codex, #1120).
 	if len(expression) > MaxCommandBytes {
-		return "", nil, fmt.Errorf(
+		return "", "", nil, false, fmt.Errorf(
 			"%w: an expression may be %d bytes and this one is %d",
 			ErrExpressionTooLarge, MaxCommandBytes, len(expression))
 	}
 
 	libs, err := v1.ProfileLibraries(subject.scope.GetProfile())
 	if err != nil {
-		return "", nil, fmt.Errorf("cannot inspect: %w", err)
+		return "", "", nil, false, fmt.Errorf("cannot inspect: %w", err)
 	}
 
 	activation := subject.scope.Activation(ctx)
@@ -275,8 +301,9 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 
 	out, err := v1.DefaultEvaluator().EvalString(ctx, expression, libs, activation)
 	if err != nil {
-		return "", nil, withheld(subject.redactText, err)
+		return "", "", nil, false, withheld(subject.redactText, err)
 	}
+	typeName = out.Type().TypeName()
 
 	// Redacted with the redactors this *pause* began under, taken from the
 	// subject snapshotted at the top rather than read from the session now.
@@ -287,13 +314,14 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	// One conversion, shared with the printing path, because a second one that
 	// reached for [ref.Val.Value] directly would redact a scalar and hand a map
 	// straight through. See [redactedNative].
-	native, converted := redactedNative(out, subject.redactValue)
+	converted := false
+	native, converted = redactedNative(out, subject.redactValue)
 	if !converted {
 		// Nothing structured to offer for a value the conversion cannot read.
 		// See [unrenderedText] for why the prose is only its type while this
 		// pause withholds anything.
 		withholding := subject.redactText != nil || subject.redactValue != nil
-		return capRunes(applyText(subject.redactText, unrenderedText(out, withholding)), MaxInspectRunes), nil, nil
+		return capRunes(applyText(subject.redactText, unrenderedText(out, withholding)), MaxInspectRunes), typeName, nil, false, nil
 	}
 
 	// Leaves are withheld before the tree is rendered, not after. The text
@@ -304,7 +332,7 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	// the raw leaves, it sees the value as it is; the pass over the rendered
 	// line stays as the backstop for anything a leaf walk cannot reach.
 	withheldNative := withheldLeaves(subject.redactText, native)
-	text := capRunes(applyText(subject.redactText, nativeText(withheldNative)), MaxInspectRunes)
+	text = capRunes(applyText(subject.redactText, nativeText(withheldNative)), MaxInspectRunes)
 
 	// The structured half is withheld entirely when this session cannot redact
 	// one. Told there is something to withhold, with no way to withhold it
@@ -314,7 +342,7 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	// (`flowtest/run.go:755-790`). The redacted text still comes back, so what
 	// is withheld is a representation rather than the answer.
 	if subject.redactValue == nil && subject.redactText != nil {
-		return text, nil, nil
+		return text, typeName, withheldNative, false, nil
 	}
 
 	// The second seam, which the structured half was missing. A value redactor
@@ -328,7 +356,7 @@ func (s *Session) evaluateIn(ctx context.Context, subject promptSubject, express
 	//
 	// Both seams, then, exactly as [Session.SetValueRedactor] says there are
 	// two questions: is this the value, and does this text contain it.
-	return text, v1.TypeAdapter.NativeToValue(withheldNative), nil
+	return text, typeName, withheldNative, true, nil
 }
 
 // withheldLeaves is native with the text redactor applied to every string and
@@ -498,13 +526,13 @@ func (s *Session) ScopeAtPause() ([]Names, uint64, error) {
 		return nil, 0, ErrNotPaused
 	}
 
-	return s.visibleScopeNames(subject), generation, nil
+	return visibleScopeNames(subject), generation, nil
 }
 
 // visibleScopeNames applies the pause's identifier-withholding posture to the
 // one shared scope collection consumed by local and wire renderers.
-func (s *Session) visibleScopeNames(subject promptSubject) []Names {
-	groups := s.scopeNames(subject.scope, subject.extra)
+func visibleScopeNames(subject promptSubject) []Names {
+	groups := scopeNames(subject.scope, subject.extra)
 	if subject.redactText == nil {
 		return groups
 	}

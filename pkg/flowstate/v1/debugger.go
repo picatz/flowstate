@@ -132,3 +132,31 @@ func debuggerBeforeStep(ctx context.Context, node *Node, scope *Scope) error {
 
 	return debugger.BeforeStep(ctx, node, scope)
 }
+
+// StepFailureDebugger is a [Debugger] that may also hold a run where a step
+// has just failed: after the failure is recorded under the step's id, so
+// `steps.<id>.error` reads it, and before it propagates or is tolerated.
+//
+// Optional, so a Debugger written before it existed keeps compiling and never
+// sees a failure stop. A cancellation is not a failure and is never offered.
+// Like BeforeStep, it may block for as long as the session holds the run, and a
+// non-nil error ends the run there. It must not edit the scope.
+type StepFailureDebugger interface {
+	Debugger
+
+	// StepFailed is called with the failure the step raised and whether
+	// `continue_on_error:` is about to tolerate it.
+	StepFailed(ctx context.Context, node *Node, scope *Scope, err error, tolerated bool) error
+}
+
+// debuggerStepFailed is the engine's call-site spelling of
+// [StepFailureDebugger.StepFailed]: nil-safe, and a no-op for a debugger that
+// does not implement it.
+func debuggerStepFailed(ctx context.Context, node *Node, scope *Scope, err error, tolerated bool) error {
+	debugger, ok := DebuggerFromContext(ctx).(StepFailureDebugger)
+	if !ok {
+		return nil
+	}
+
+	return debugger.StepFailed(ctx, node, scope, err, tolerated)
+}

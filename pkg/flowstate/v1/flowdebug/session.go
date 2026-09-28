@@ -254,6 +254,20 @@ type Options struct {
 	// at its first stop until [Session.Close]. That is the same bargain a
 	// terminal makes, and the same escape — see [Session.Control].
 	Controlled bool
+
+	// Workflow is the program being debugged. When set, breakpoint and
+	// run-until targets are resolved against its sites, so a target that can
+	// never match is refused rather than armed.
+	Workflow *v1.Workflow
+
+	// Continue starts the run running rather than holding it at its first
+	// step: it stops only at a breakpoint, a failure stop, or a pause.
+	Continue bool
+
+	// SourceMap relates the program's sites to its sources. Optional: without
+	// one, every site is still addressable, and a source-line breakpoint is
+	// reported unverified rather than guessed.
+	SourceMap *v1.DebugSourceMap
 }
 
 // Console is a line editor a session prompts through.
@@ -321,6 +335,12 @@ const (
 	// modeUntil stops at one named step, or at a breakpoint reached first:
 	// `until <id>`.
 	modeUntil
+	// modeOver stops at the next boundary no deeper than the one it left:
+	// `next`.
+	modeOver
+	// modeOut stops at the next boundary shallower than the one it left:
+	// `finish`.
+	modeOut
 )
 
 // A Session is one interactive debugging session over one local run.
@@ -386,7 +406,7 @@ type Session struct {
 
 	mu    sync.Mutex
 	mode  mode
-	until string
+	until v1.DebugTarget
 	// untilCondition optionally gates the stop `until` names, exactly as a
 	// breakpoint's condition gates its arrival: same compiler, same evaluator,
 	// same declined-arrival notice. One-shot with the mode that carries it —
@@ -528,6 +548,9 @@ type Session struct {
 	// that is still paused where it was, and must not read that as the answer.
 	pauseGen     uint64
 	pauseChanged chan struct{}
+
+	// contract is the typed state every surface reads; see contract.go.
+	contract contractState
 }
 
 // A promptSubject is what one prompt is about: the scope to answer questions
@@ -583,6 +606,17 @@ func New(opts Options) (*Session, error) {
 	if len(opts.Breakpoints) > MaxBreakpoints {
 		return nil, fmt.Errorf("a session may hold %d breakpoints, and %d were named", MaxBreakpoints, len(opts.Breakpoints))
 	}
+	// A source map names the program it describes. One for another program
+	// would verify line breakpoints that never match and point frames at the
+	// wrong lines, so it is refused rather than used.
+	if opts.SourceMap != nil {
+		if opts.Workflow == nil {
+			return nil, errors.New("a source map needs the workflow it describes")
+		}
+		if got, want := opts.SourceMap.GetIrDigest(), v1.WorkflowIRDigest(opts.Workflow); got != want {
+			return nil, fmt.Errorf("the source map describes program %s, and this session runs %s", got, want)
+		}
+	}
 
 	// The inventory's declaration numbers are checked here rather than where
 	// they are rendered, because here is the only place that can answer with an
@@ -617,6 +651,8 @@ func New(opts Options) (*Session, error) {
 		control:      make(chan controlRequest),
 		controlSlot:  make(chan struct{}, 1),
 		pauseChanged: make(chan struct{}),
+
+		contract: newContractState(opts),
 	}
 	if s.out == nil {
 		s.out = io.Discard
@@ -647,13 +683,13 @@ func New(opts Options) (*Session, error) {
 		if notice, unknown := s.unknownStepNotice(id); unknown {
 			return nil, fmt.Errorf("flowdebug: breakpoint: %s", notice)
 		}
-		s.breakpoints[id] = breakpoint{}
+		s.breakpoints[id] = breakpoint{source: id, id: id, target: v1.ParseDebugTargetOrStep(id)}
 	}
 
 	// Where the first stop lands, and why it depends on nothing else: an
 	// author who named a step asked to go there.
 	s.mode = modeStop
-	if len(s.breakpoints) > 0 {
+	if len(s.breakpoints) > 0 || opts.Continue {
 		s.mode = modeRun
 	}
 
@@ -785,111 +821,6 @@ func (s *Session) ScriptTruncated() bool {
 // person actually typed.
 var errQuit = fmt.Errorf("debug session ended by the `quit` command: %w", v1.ErrDebugSessionEnded)
 
-// BeforeStep implements [v1.Debugger]: the run is held here for as long as the
-// session's reader takes to say otherwise.
-func (s *Session) BeforeStep(ctx context.Context, node *v1.Node, scope *v1.Scope) error {
-	// Before shouldStop, deliberately: see [Session.promptMu]. Deciding to
-	// stop is a read-modify of the same mode a sibling branch is deciding
-	// against, and one script cannot answer two prompts.
-	s.promptMu.Lock()
-	defer s.promptMu.Unlock()
-
-	s.sawStep(node.GetId())
-
-	// Entered, said here because this is the only callback that means it — and
-	// said on every arrival, so a loop body the run has come back to reads as
-	// running rather than as whatever the last iteration left behind.
-	s.noteStep(node.GetId(), StepRunning)
-
-	stop, err := s.shouldStop(ctx, node.GetId(), scope)
-	if err != nil {
-		// Cancellation, and the only thing that reaches here as an error. It
-		// unwinds the run exactly as a cancellation at the prompt does: a
-		// person who interrupted a run while its condition was being evaluated
-		// asked for the same thing as one who interrupted it at the prompt.
-		return err
-	}
-	if !stop {
-		return nil
-	}
-
-	// What this prompt is about, so that a completion arriving from a console's
-	// own goroutine answers against the scope the run is actually held in.
-	// Cleared on the way out: a session that kept the last scope alive would
-	// answer questions about a position the run has left.
-	// The workflow whose steps are running here, taken from where the engine
-	// records it rather than from where the step was written: `runCall` moves
-	// the position across a call so that a consumer cannot "confus[e] equal
-	// step ids in two different workflow files" (`eval.go:1804-1812`), and a
-	// debugger holding a run inside a callee is exactly that consumer.
-	//
-	// Empty only where the engine never ran — a session an embedder drives
-	// through [v1.Debugger] itself — which a reader must treat as unsaid
-	// rather than as a name. See [Position.Workflow].
-	workflow, _ := v1.ExecutingWorkflowFromContext(ctx)
-
-	kind := v1.NodeKind(node)
-	s.prompting(promptSubject{
-		scope: scope, step: node.GetId(), kind: kind, workflow: workflow,
-		backtrace: v1.ExecutingBacktraceFromContext(ctx, node.GetId(), kind),
-	})
-	defer s.prompting(promptSubject{})
-
-	s.announce(node)
-
-	for {
-		line, ok, readErr := s.readCommand(ctx)
-		if readErr != nil {
-			// Cancelled mid-prompt: the person interrupted the run this
-			// session was holding, and the engine unwinds it as the
-			// cancellation it is rather than as a console that wandered off.
-			return readErr
-		}
-		if !ok {
-			// Interrupted at the prompt — ctrl-C at a terminal — which ends
-			// the run exactly as `quit` does. Checked before the arms below,
-			// because those resume the run, and answering "stop" by running
-			// the rest of somebody's workflow unattended is the one outcome
-			// this must not have. Recorded as `quit` so the replay script
-			// says what the session did.
-			if s.wasInterrupted() {
-				s.record("quit")
-				s.mu.Lock()
-				s.ended = true
-				s.mu.Unlock()
-				s.printfTone(ToneWarning, "(interrupted — ending the run here, as `quit` does)\n")
-
-				return errQuit
-			}
-
-			// The console is gone: a replay script that ran out, or a
-			// terminal that closed. The run resumes and finishes rather than
-			// being held by a debugger that is not there — #928's own answer
-			// to its question 4, that a run held paused by a vanished
-			// debugger is an availability incident. Said out loud, because a
-			// run that finished the rest of itself unattended is something
-			// the reader has to know happened.
-			if why := s.consoleEnded(); why != "" {
-				s.printfTone(ToneDanger,
-					"(%s — continuing to the end of the run, unattended)\n", why)
-			} else {
-				s.printfTone(ToneWarning, "(no more commands — continuing to the end of the run)\n")
-			}
-			s.resume(modeRun, "")
-
-			return nil
-		}
-
-		resumed, err := s.dispatch(ctx, line, node, scope)
-		if err != nil {
-			return err
-		}
-		if resumed {
-			return nil
-		}
-	}
-}
-
 // StepFinished implements [v1.RunObserver]. The account is what a session
 // prints after `step`: an author who advanced one step wants to see what it
 // produced, and this is the same record `flow test`'s transcript renders, from
@@ -917,6 +848,7 @@ func (s *Session) StepFinished(id string, outputs *v1.Node_Outputs, err error, t
 	}
 	s.noteStep(id, state)
 	s.printfTone(tone, "  %s %s\n", id, text)
+	s.observe(observationKind(state), id, id+" "+text)
 }
 
 // StepSkipped implements [v1.RunObserver]. A skipped step never reaches
@@ -930,59 +862,33 @@ func (s *Session) StepSkipped(id string) {
 	s.noteStep(id, StepSkipped)
 
 	s.printf("  %s skipped (`if:` was false)\n", id)
+	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_SKIPPED, id, id+" skipped (`if:` was false)")
 }
 
 // WaitStarted implements [v1.RunObserver], reporting a wait as it parks.
 func (s *Session) WaitStarted(id, signal string, timeout time.Duration, bounded bool) {
+	var text string
 	switch {
 	case signal == "":
-		s.printf("  %s waiting %s\n", id, timeout)
+		text = fmt.Sprintf("%s waiting %s", id, timeout)
 	case bounded:
-		s.printf("  %s waiting for signal %q (timeout %s)\n", id, signal, timeout)
+		text = fmt.Sprintf("%s waiting for signal %q (timeout %s)", id, signal, timeout)
 	default:
-		s.printf("  %s waiting for signal %q (no timeout)\n", id, signal)
+		text = fmt.Sprintf("%s waiting for signal %q (no timeout)", id, signal)
 	}
+	s.printf("  %s\n", text)
+	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_WAITING, id, text)
 }
 
-// shouldStop answers the mode question for one step id.
-//
-// A pure query, deliberately: every path out of [Session.BeforeStep] sets the
-// mode on its way — a command that resumes sets it, and the exhausted-console
-// path sets it too — so there is no state for this to carry forward and an
-// `until` cannot outlive its arrival. An earlier draft cleared the mode here
-// as well, which read like the thing keeping a stale `until` from stopping at
-// a step nobody named; it could not, because no boundary is reached without a
-// resume in between, and a mutation removing it failed no test. Answering the
-// question and changing nothing is the honest shape.
-func (s *Session) shouldStop(ctx context.Context, id string, scope *v1.Scope) (bool, error) {
-	s.mu.Lock()
-	at, isBreakpoint := s.breakpoints[id]
-	mode, until, untilCondition := s.mode, s.until, s.untilCondition
-	s.mu.Unlock()
-
-	if isBreakpoint {
-		holds, err := s.conditionHolds(ctx, declinedBreakpoint, id, at.condition, scope)
-		if err != nil {
-			return false, err
-		}
-		if holds {
-			return true, nil
-		}
-	}
-
-	switch mode {
-	case modeStop:
-		return true, nil
-	case modeUntil:
-		if until != id {
-			return false, nil
-		}
-		// The same gate a breakpoint's condition is, through the same
-		// function — `until x if e` and `break x if e` + `continue` cannot
-		// disagree about when a run is held.
-		return s.conditionHolds(ctx, declinedUntil, id, untilCondition, scope)
+// observationKind is the observation a finished step's state is.
+func observationKind(state StepState) v1.DebugObservationKind {
+	switch state {
+	case StepFailed:
+		return v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED
+	case StepTolerated:
+		return v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_TOLERATED
 	default:
-		return false, nil
+		return v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED
 	}
 }
 
@@ -1006,6 +912,23 @@ const (
 type breakpoint struct {
 	source    string
 	condition *v1.Value
+
+	// id is the name the breakpoint is reported under: the target text for a
+	// console breakpoint, the client's id for a typed one.
+	id string
+	// target is what it arms. Every occurrence it matches is an arrival.
+	target v1.DebugTarget
+	// hit filters arrivals whose condition held, by their count.
+	hit v1.DebugHitCondition
+	// log makes this a logpoint: it records instead of stopping.
+	log *logTemplate
+	// hits counts arrivals whose condition held.
+	hits uint64
+	// lastError is the most recent evaluation error, rendered.
+	lastError string
+	// site, when set, arms exactly one site by its key rather than a target:
+	// a source-line breakpoint resolved through the source map.
+	site string
 }
 
 // conditionHolds answers whether an arrival gated by a condition should stop —
@@ -1087,24 +1010,6 @@ func (s *Session) conditionHolds(ctx context.Context, what, id string, condition
 	return holds, nil
 }
 
-// resume sets what happens at the next boundary.
-func (s *Session) resume(m mode, until string) {
-	s.resumeUntil(m, until, nil)
-}
-
-// resumeUntil is resume carrying `until`'s optional condition. Every resume
-// writes the condition — nil from every other verb — because `until` is
-// one-shot: a condition that outlived its resume would turn some later
-// `continue` into a conditional stop nobody asked for.
-func (s *Session) resumeUntil(m mode, until string, condition *v1.Value) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.mode = m
-	s.until = until
-	s.untilCondition = condition
-}
-
 // announce prints where the run has stopped.
 func (s *Session) announce(node *v1.Node) {
 	at := ""
@@ -1143,7 +1048,17 @@ func (s *Session) announce(node *v1.Node) {
 // caller's io.Reader, and closing stdin under `flow test --debug` would end
 // far more than the session.
 func (s *Session) Close() error {
-	s.stopOnce.Do(func() { close(s.done) })
+	s.stopOnce.Do(func() {
+		close(s.done)
+
+		s.mu.Lock()
+		if !terminal(s.contract.state) {
+			s.contract.state = v1.DebugRunState_DEBUG_RUN_STATE_DETACHED
+			s.contract.message = "the debugger detached; the run continues unattended"
+			s.bump()
+		}
+		s.mu.Unlock()
+	})
 
 	return nil
 }
@@ -1322,6 +1237,7 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 			// for and the sender has to be told rather than left waiting.
 			s.mu.Lock()
 			taken := controlTaken{generation: s.pauseGen, autopsy: s.at.autopsy}
+			s.contract.ack, s.contract.ackRequest = request.ack, request.request
 			s.mu.Unlock()
 			request.at <- taken
 
@@ -1669,6 +1585,10 @@ func (s *Session) noteDeclined(what, id string, err error) {
 	}
 	_, already := s.notedUnbound[key]
 	s.notedUnbound[key] = struct{}{}
+	if at, ok := s.breakpoints[id]; ok && what == declinedBreakpoint {
+		at.lastError = capRunes(s.redactTextLocked(err.Error()), MaxInspectRunes)
+		s.breakpoints[id] = at
+	}
 	s.mu.Unlock()
 
 	if already {
@@ -1676,6 +1596,8 @@ func (s *Session) noteDeclined(what, id string, err error) {
 	}
 
 	s.printfTone(ToneWarning, "%s %s: the condition could not be evaluated here, so the run was not held: %v\n", what, id, err)
+	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "",
+		fmt.Sprintf("%s %s: the condition could not be evaluated here, so the run was not held: %v", what, id, err))
 }
 
 // consoleEnded says why the command stream stopped, in words an author can
@@ -2087,6 +2009,21 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 	s.prompting(promptSubject{scope: scope, extra: extra, autopsy: true})
 	defer s.prompting(promptSubject{})
 
+	s.mu.Lock()
+	last := s.contract.occurrence
+	s.mu.Unlock()
+	// A session that detached or was closed has ended, and an autopsy would
+	// hold a run its debugger already let go of.
+	if !s.enterHeld(last, v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY, nil, "") {
+		return
+	}
+	// Leaving answers whichever typed command asked to leave; see
+	// [Session.acknowledge].
+	defer func() {
+		s.leaveHeld()
+		s.acknowledge(true)
+	}()
+
 	s.printfTone(ToneBreak, "autopsy: the case failed %d expectation(s); the run is over, but its scope is still here\n", len(failures))
 	for _, failure := range failures {
 		s.printfTone(ToneDanger, "  %s\n", failure)
@@ -2126,7 +2063,8 @@ func (s *Session) Autopsy(ctx context.Context, scope *v1.Scope, extra map[string
 
 		verb, rest := split(line)
 		switch verb {
-		case "", "step", "s", "continue", "c", "until", "u", "quit", "q":
+		case "", "step", "s", "continue", "c", "until", "u", "quit", "q",
+			"next", "n", "finish", "fin", "out", "detach":
 			s.record("quit")
 
 			return
