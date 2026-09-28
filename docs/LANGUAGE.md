@@ -899,7 +899,10 @@ the step waits as long as the run lasts.
 
 **`prompt:`** is the question the gate asks, shown by `flow get`, `flow watch`,
 the `Get` RPC, and the MCP approval card. It is evaluated when the wait starts,
-cannot include a sensitive input or a secret, and is cut at 2 KiB.
+cannot include a sensitive input or a secret, and is cut at 2 KiB. In a
+workflow that declares a sensitive output, a reader who is not shown sensitive
+values sees `[prompt withheld: this run declares a sensitive output]` instead,
+because nothing checks that a prompt avoids what such an output reads.
 
 **A signal can arrive early.** One delivered before the run reaches the wait is
 held and consumed when it does, including across Continue-As-New.

@@ -515,6 +515,20 @@ func RedactGetResponseDecided(response *GetResponse, sensitive map[string]bool, 
 	// reached by another route.
 	clone.EntityState = RedactEntityState(clone.GetEntityState(), carried)
 
+	// A wait's prompt is a value the specification computed, and the compile-
+	// and submit-time checks in waitprompt.go keep it from reaching a sensitive
+	// *input*. Nothing traces a sensitive *output* back to its sources, so a
+	// prompt reading `steps.fetch.token` can show exactly what a sensitive output
+	// of the same step withholds. For the reason [redactStepValues] withholds
+	// the whole transcript rather than trace, a known specification declaring a
+	// sensitive output has its prompts withheld while carried values are not
+	// shown. With no specification at all, prompts pass through here, as the
+	// failure texts do below; a server that could not read the specification
+	// withholds them itself.
+	if carried != CarriedValuesShown && len(sensitive) > 0 {
+		WithholdPendingWaitPrompts(clone)
+	}
+
 	// [GetResponse.Starter] passes through untouched, deliberately, and it is
 	// worth saying so rather than leaving it to the absence of a line.
 	//
@@ -569,6 +583,24 @@ func RedactGetResponseDecided(response *GetResponse, sensitive map[string]bool, 
 	}
 
 	return clone
+}
+
+// PromptWithheldSensitive is what a pending wait's prompt becomes when the
+// run declares a sensitive output and the caller is not shown sensitive
+// values: nothing proves the prompt does not read what that output withholds.
+// Spelled like [PromptWithheldSecret], so it is unmistakably this system's
+// annotation.
+const PromptWithheldSensitive = "[prompt withheld: this run declares a sensitive output]"
+
+// WithholdPendingWaitPrompts replaces every pending wait's prompt in
+// response with [PromptWithheldSensitive], in place.
+func WithholdPendingWaitPrompts(response *GetResponse) {
+	for _, wait := range response.GetProgress().GetPendingWaits() {
+		if wait.GetPrompt() != "" {
+			wait.Prompt = PromptWithheldSensitive
+			wait.PromptTruncated = false
+		}
+	}
 }
 
 // FailureWithheldMarker is what a failure sentence becomes when the redaction

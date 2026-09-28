@@ -62,6 +62,28 @@ func TestAnUnreadableSpecificationWithholds(t *testing.T) {
 	require.NotContains(t, resp.Msg.GetPendingActivities()[0].GetLastFailure(), "synthetic-token-5d0c")
 }
 
+// TestAnUnreadableSpecificationWithholdsPrompts: a prompt may read what a
+// sensitive output of the same run withholds, and with no specification the
+// server cannot tell whether one is declared, so a running run's prompt is
+// withheld with its outputs.
+func TestAnUnreadableSpecificationWithholdsPrompts(t *testing.T) {
+	t.Parallel()
+
+	fake := runningFake(t)
+	fake.progress = &v1.RunProgress{StepId: "approve", PendingWaits: []*v1.PendingWait{
+		{StepId: "approve", SignalName: "go", Prompt: "approve synthetic-token-9e14?"},
+	}}
+	s := mustNew(t, fake)
+
+	resp, err := s.Get(revealer(t.Context(), "workload.read"), connect.NewRequest(&v1.GetRequest{WorkflowId: "orders-1"}))
+	require.NoError(t, err)
+	require.Equal(t, v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD, resp.Msg.GetSensitiveDisclosure())
+	waits := resp.Msg.GetProgress().GetPendingWaits()
+	require.Len(t, waits, 1)
+	require.Equal(t, "go", waits[0].GetSignalName(), "the gate itself is still reported")
+	require.Equal(t, v1.PromptWithheldSensitive, waits[0].GetPrompt())
+}
+
 // TestEveryRevealRequestIsAuditedUnderItsOwnAction: the read and the reveal
 // are two decisions, and each leaves one record; the reveal's names the field
 // that widened the call, allowed or not.

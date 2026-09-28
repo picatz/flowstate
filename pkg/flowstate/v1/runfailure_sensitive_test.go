@@ -168,3 +168,41 @@ func TestASensitiveBytesInputIsRedactedFromFailureText(t *testing.T) {
 	require.NotContains(t, values.RedactText(encoded, "withheld"), base64.StdEncoding.EncodeToString(secret),
 		"the base64 spelling was left")
 }
+
+// TestAPromptIsWithheldBesideASensitiveOutput: a prompt may read the same step
+// value a sensitive output does, and nothing traces the output to its source,
+// so a caller not shown sensitive values does not get the prompt either. A
+// workflow with only sensitive inputs keeps its prompts, which the prompt
+// checks already keep from reaching those inputs.
+func TestAPromptIsWithheldBesideASensitiveOutput(t *testing.T) {
+	t.Parallel()
+
+	const token = "synthetic-token-5c2d"
+	response := func() *v1.GetResponse {
+		return &v1.GetResponse{Progress: &v1.RunProgress{PendingWaits: []*v1.PendingWait{
+			{StepId: "approve", SignalName: "go", Prompt: "approve " + token + "?", PromptTruncated: true},
+		}}}
+	}
+	sensitiveOutput := &v1.Workflow{DeclaredOutputs: []*v1.OutputDeclaration{{Name: "token", Sensitive: true}}}
+	sensitiveInputOnly := &v1.Workflow{DeclaredInputs: []*v1.InputDeclaration{sensitiveInput("password")}}
+
+	for name, tc := range map[string]struct {
+		workflow *v1.Workflow
+		reveal   bool
+		withheld bool
+	}{
+		"a sensitive output": {workflow: sensitiveOutput, withheld: true},
+		"no specification, as a client with an older server": {workflow: nil},
+		"a sensitive output, shown":                          {workflow: sensitiveOutput, reveal: true},
+		"only a sensitive input":                             {workflow: sensitiveInputOnly},
+		"nothing sensitive":                                  {workflow: &v1.Workflow{}},
+	} {
+		got := v1.RedactGetResponse(response(), tc.workflow, tc.reveal).GetProgress().GetPendingWaits()[0]
+		if tc.withheld {
+			require.Equal(t, v1.PromptWithheldSensitive, got.GetPrompt(), name)
+			require.False(t, got.GetPromptTruncated(), name)
+			continue
+		}
+		require.Contains(t, got.GetPrompt(), token, name)
+	}
+}

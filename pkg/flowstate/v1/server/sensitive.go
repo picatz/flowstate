@@ -86,6 +86,12 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 
 	withheld := v1.RedactGetResponseDecided(out, decl.outputs, decl.carried)
 	withheld = v1.RedactGetResponseFailures(withheld, decl.values)
+	if decl.outputs == nil {
+		// The specification could not be read, so whether it declares a
+		// sensitive output a prompt could echo is unknown: withheld, as the
+		// outputs and transcript already are on this path.
+		v1.WithholdPendingWaitPrompts(withheld)
+	}
 	withheld.SensitiveDisclosure = v1.SensitiveDisclosure_SENSITIVE_DISCLOSURE_WITHHELD
 	return connect.NewResponse(withheld), nil
 }
