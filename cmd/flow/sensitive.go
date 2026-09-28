@@ -857,7 +857,7 @@ func redactFailureText(response *v1.GetResponse, sensitive v1.SensitiveValues) *
 // arguments the binder refuses. All four surfaces read the same `inputs:`
 // declarations the same way and refuse the same two calls — [runInputs] (or
 // the tool's own [runLocalToolInputs]) and [checkRunInputs] (or
-// [checkToolRunInputs]) — so one set serves every refusal rather than one per
+// [jsonRunInputs]) — so one set serves every refusal rather than one per
 // caller (#2076).
 //
 // cmd carries [sensitiveInputWords]'s one CLI-specific source, `--input

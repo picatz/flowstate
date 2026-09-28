@@ -165,10 +165,13 @@ type functionBreakpoint struct {
 
 // LaunchArguments are a launch request's arguments.
 type LaunchArguments struct {
-	Program         string          `json:"program"`
-	RevealSensitive bool            `json:"revealSensitive"`
-	StopOnEntry     *bool           `json:"stopOnEntry"`
-	Raw             json.RawMessage `json:"-"`
+	Program         string `json:"program"`
+	RevealSensitive bool   `json:"revealSensitive"`
+	StopOnEntry     *bool  `json:"stopOnEntry"`
+	// Inputs are the run's arguments, keyed by the name the workflow
+	// declares under `inputs:`, each a JSON value.
+	Inputs map[string]json.RawMessage `json:"inputs"`
+	Raw    json.RawMessage            `json:"-"`
 }
 
 // Launch is what a [LaunchFunc] prepared: the session to drive, the source
@@ -599,7 +602,17 @@ func localCapabilities() *v1.DebugCapabilities {
 
 func (s *Server) launch(ctx context.Context, request inbound) {
 	var asked LaunchArguments
-	_ = json.Unmarshal(request.Arguments, &asked)
+	// Refused rather than read in part: a field of the wrong shape — an
+	// `inputs` that is a list, a `stopOnEntry` that is a string — would
+	// otherwise be dropped while the rest launches, running the program with
+	// arguments nobody gave it.
+	if len(request.Arguments) > 0 {
+		if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+			s.fail(request, fmt.Sprintf("flowdap: the launch configuration could not be read: %v", err))
+
+			return
+		}
+	}
 	asked.Raw = request.Arguments
 
 	s.mu.Lock()
@@ -611,20 +624,19 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 
 		return
 	}
-	s.program = asked.Program
-	s.revealSensitive = asked.RevealSensitive
-	if asked.StopOnEntry != nil {
-		s.stopOnEntry = *asked.StopOnEntry
-	}
 	launcher := s.launcher
-	s.mu.Unlock()
-
 	if launcher == nil {
+		s.adoptLocked(asked)
+		s.mu.Unlock()
 		s.reply(request, nil)
 
 		return
 	}
+	s.mu.Unlock()
 
+	// The options are adopted only once the launch is taken: one the launcher
+	// refused, a missing input say, must not leave its `stopOnEntry` behind
+	// for the retry that corrects it.
 	launched, err := launcher(ctx, asked)
 	if err != nil {
 		s.fail(request, err.Error())
@@ -633,6 +645,7 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	}
 
 	s.mu.Lock()
+	s.adoptLocked(asked)
 	s.bound = true
 	s.target = launched.Target
 	s.sourceMap = launched.SourceMap
@@ -645,6 +658,15 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 
 	s.reply(request, nil)
 	s.reapply(ctx)
+}
+
+// adoptLocked records a taken launch's options. Callers hold s.mu.
+func (s *Server) adoptLocked(asked LaunchArguments) {
+	s.program = asked.Program
+	s.revealSensitive = asked.RevealSensitive
+	if asked.StopOnEntry != nil {
+		s.stopOnEntry = *asked.StopOnEntry
+	}
 }
 
 func (s *Server) attach(ctx context.Context, request inbound) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -564,7 +565,7 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 			// exists. inputs is what runLocalToolInputs decoded before the
 			// failure — nil for a failure inputsFromJSON itself raised (a
 			// numeric overflow, say), the bound map for one
-			// checkToolRunInputs raised on top of it (a `must:` failure) — the
+			// jsonRunInputs raised on top of it (a `must:` failure) — the
 			// same distinction the CLI's two call sites of
 			// refusedRunSensitiveValues draw between a collection failure and
 			// a bind failure (#2076).
@@ -1074,34 +1075,62 @@ func runLocalSignalFlags(signals map[string]json.RawMessage) ([]string, error) {
 // CLI checks early: [v1.RunWithInputs] binds authoritatively a moment later, and
 // its error would arrive wrapped in an account of a run that never started.
 func runLocalToolInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage) (map[string]*v1.Value, error) {
-	if len(submitted) == 0 {
-		// Absent rather than empty, so a source declaring no `inputs:` is run
-		// exactly as it is without this argument.
-		return nil, checkToolRunInputs(workflow, nil)
-	}
-
-	document, err := json.Marshal(submitted)
-	if err != nil {
-		return nil, fmt.Errorf("reading the inputs argument: %w", err)
-	}
-
-	inputs, err := inputsFromJSON("the inputs argument", document, declaredInputs(workflow))
-	if err != nil {
-		return nil, err
-	}
-
-	return inputs, checkToolRunInputs(workflow, inputs)
+	return jsonRunInputs(workflow, submitted, "the inputs argument",
+		"arguments go in the `inputs` object of this call, keyed by the name the source declares under `inputs:`")
 }
 
-// checkToolRunInputs is [checkRunInputs] with the CLI's closing advice replaced by
-// this surface's, since an agent has no flags to correct.
-func checkToolRunInputs(workflow *v1.Workflow, inputs map[string]*v1.Value) error {
-	if _, err := v1.BindRunInputs(workflow, inputs); err != nil {
-		return fmt.Errorf("%w\n  arguments go in the `inputs` object of this call, keyed by the name the "+
-			"source declares under `inputs:`", err)
+// maxRunInputs is how many arguments a run can take: a workflow declares at
+// most this many under `inputs:` (Workflow.declared_inputs, max_items) and a
+// started run carries at most this many (RunRequest.inputs, max_pairs). An
+// object naming more can never bind, so [jsonRunInputs] refuses it before
+// re-encoding and decoding an object whose size the sender chose.
+const maxRunInputs = 64
+
+// jsonRunInputs binds a surface's JSON object of arguments against workflow's
+// declarations, for a surface with no flags to correct: source names the
+// object in a refusal, and advice, which replaces the CLI's closing advice,
+// says where its arguments go.
+func jsonRunInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage, source, advice string) (map[string]*v1.Value, error) {
+	if len(submitted) > maxRunInputs {
+		return nil, fmt.Errorf("%s names %d inputs, and a run takes at most %d\n  %s", source, len(submitted), maxRunInputs, advice)
 	}
 
-	return nil
+	var inputs map[string]*v1.Value
+	// Absent rather than empty, so a source declaring no `inputs:` is run
+	// exactly as it is without the object.
+	if len(submitted) > 0 {
+		// Each value is decoded where it arrived rather than the object being
+		// re-encoded and read back whole: the same per-name decoder
+		// [inputsFromJSON] applies, in the same sorted order so two bad values
+		// report the same one first, without a second copy of whatever the
+		// sender chose to send.
+		declared := declaredInputs(workflow)
+		inputs = make(map[string]*v1.Value, len(submitted))
+		for _, name := range slices.Sorted(maps.Keys(submitted)) {
+			decoded, err := decodeInputJSON(string(submitted[name]))
+			if err != nil {
+				return nil, fmt.Errorf("%s: input %q: %w", source, name, err)
+			}
+			value, err := valueFromJSON(name, decoded, declared[name])
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", source, err)
+			}
+			inputs[name] = value
+		}
+	}
+	bound, err := v1.BindRunInputs(workflow, inputs)
+	if err != nil {
+		return inputs, fmt.Errorf("%w\n  %s", err, advice)
+	}
+	// Weighed as the run will carry it, defaults filled in: the same pair of
+	// checks the local driver's submit boundary makes ([v1.RunWithInputs]),
+	// made here so a submission that can never start is refused while the
+	// caller can still correct it, not at its first step.
+	if err := v1.CheckSubmissionSize(workflow, bound); err != nil {
+		return inputs, err
+	}
+
+	return inputs, nil
 }
 
 // runLocalResult is the document the tool answers with.

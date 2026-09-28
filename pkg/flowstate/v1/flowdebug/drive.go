@@ -168,6 +168,15 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		if rest == "" {
 			return nil, errors.New("until needs a step: until <step>")
 		}
+		// The prompt's conditional form, refused for what it is: a typed
+		// resume names a step and nothing more, so the condition cannot be
+		// carried, and dropping it would release the run to the first
+		// arrival. Read as a step id it would be refused for holding a
+		// space, which names the wrong problem.
+		if fields := strings.Fields(rest); len(fields) > 1 && fields[1] == "if" {
+			return nil, fmt.Errorf("until %s if ...: a typed resume names a step and no condition; "+
+				"set `break %s if <expr>` and `continue` for the same stop", fields[0], fields[0])
+		}
 
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, rest)
 	case "detach":

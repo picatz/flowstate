@@ -600,14 +600,20 @@ name that identity, and its token must carry `workload.debug`, and
 `workload.debug_inspect` to evaluate, or to set a breakpoint carrying a
 condition or a log message, or to read one back.
 
-**What a launch reads.** `program`, the workflow to run; `revealSensitive`, the
-deliberate reveal [Debugging](DEBUGGING.md#sensitive-values) describes; and
+**What a launch reads.** `program`, the workflow to run; `inputs`, the run's
+arguments as a JSON object keyed by the names the workflow declares under
+`inputs:`, read by the same decoder as `flow run local --input-file` and the
+MCP `flowstate_run_local` tool's `inputs`; `revealSensitive`, the deliberate
+reveal [Debugging](DEBUGGING.md#sensitive-values) describes; and
 `stopOnEntry`, true unless set false, which holds the run at its first step;
-false runs it to the first breakpoint, failure stop or `pause` instead.
-The run starts with no inputs and no signals, so a workflow with a required
-input that has no default cannot be launched this way today, and a
-`wait_for_signal:` step can only time out. Use `flow test --debug` on a test
-case, which supplies both, or `flow run local --debug` with `--input` and
+false runs it to the first breakpoint, failure stop or `pause` instead, and
+narrates no stop at the first step.
+
+The inputs are bound before anything runs, so a launch missing a required
+input, or giving one the wrong type, is a failed launch that says which input
+and where it goes, rather than a run that can only fail. The run starts with no
+signals, so a `wait_for_signal:` step can only time out; use `flow test
+--debug` on a test case, which scripts them, or `flow run local --debug` with
 `--signal`.
 
 **What an attach reads.** `workflowId`, required; `runId`, the first run id of

@@ -1261,6 +1261,7 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		}
 		at.site = v1.DebugSiteKey(site)
 		at.source = fmt.Sprintf("%s:%d", want.GetLine().GetUri(), want.GetLine().GetLine())
+		at.name = at.source
 		state.Sites = []*v1.DebugSite{redactSite(site, redact)}
 		state.Source = proto.CloneOf(location)
 
@@ -1274,6 +1275,7 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 		}
 		at.target = target
 		at.source = target.String()
+		at.name = at.source
 		s.mu.Lock()
 		resolved := target.Resolve(s.contract.sites)
 		for _, site := range resolved[:min(len(resolved), maxBreakpointSites)] {
