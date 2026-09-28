@@ -849,24 +849,27 @@ $ sudo chmod -R u=rwX,g=rX,o= /etc/flowstate/secrets
 TEMPORAL_ADDRESS=temporal.internal:7233
 TEMPORAL_NAMESPACE=production
 FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME=flowstate
-FLOWSTATE_BUILD_ID=2026.08.06-a1b2c3d
 FLOWSTATE_AUTH_POLICY=/etc/flowstate/policy.yaml
 FLOWSTATE_IDENTITY_KEY=/etc/flowstate/identity-2026-07.pem
 FLOWSTATE_SECRET_DIR=/etc/flowstate/secrets
 ```
 
-`/etc/systemd/system/flowstate-worker.service`:
+The worker unit is a template with one instance per build, because a promotion
+needs the old build's worker running beside the new one until the runs pinned
+to it finish. The instance name is the build id, and each build's binary lives
+in its own directory. `/etc/systemd/system/flowstate-worker@.service`:
 
 ```ini
 [Unit]
-Description=Flowstate worker
+Description=Flowstate worker, build %i
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
 EnvironmentFile=/etc/flowstate/worker.env
-ExecStart=/usr/local/bin/flow worker --plugin-dir /usr/local/lib/flowstate/plugins
+Environment=FLOWSTATE_BUILD_ID=%i
+ExecStart=/usr/local/lib/flowstate/%i/flow worker --plugin-dir /usr/local/lib/flowstate/plugins
 Restart=on-failure
 RestartSec=5s
 User=flowstate-worker
@@ -882,17 +885,23 @@ ReadWritePaths=/var/lib/flowstate
 WantedBy=multi-user.target
 ```
 
-Each build sets its own `FLOWSTATE_BUILD_ID`. Once the worker unit for a new
-build is running, make it the current version (or ramp a share of new runs to
-it with `set-ramping-version`), or it receives no new runs. The `temporal` CLI
-does not read the units' environment files, so give it the same Temporal
-address (and TLS or API-key options, if the units use them):
+To deploy a build, install its binary and start its instance, then make it the
+current version (or ramp a share of new runs to it with `set-ramping-version`),
+or it receives no new runs. The `temporal` CLI does not read the units'
+environment files, so give it the same Temporal address (and TLS or API-key
+options, if the units use them):
 
 ```console
+$ sudo install -D -m 0755 ./flow /usr/local/lib/flowstate/2026.08.06-a1b2c3d/flow
+$ sudo systemctl enable --now flowstate-worker@2026.08.06-a1b2c3d
 $ temporal worker deployment set-current-version --yes \
     --address temporal.internal:7233 --namespace production \
     --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
 ```
+
+Leave the previous build's instance running until `temporal worker deployment
+describe --name flowstate` (with the same connection options) shows it drained,
+then `sudo systemctl disable --now flowstate-worker@<previous-build-id>`.
 
 `/etc/flowstate/server.env`:
 
@@ -911,7 +920,7 @@ FLOWSTATE_RPC_RESOURCE=https://flowstate.example.com/rpc
 ```ini
 [Unit]
 Description=Flowstate API server
-After=network-online.target flowstate-worker.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -939,6 +948,14 @@ Either process refuses to start with `federation:` and no key, or a key and no
 files. [Secrets and credentials](SECRETS.md#signing-keys) covers rotation, which
 restarts both.
 
+Sharing that key is a trust boundary this recipe does not split. The server and
+every worker that federates hold the same private key, and whoever holds it can
+sign an assertion for any subject or namespace
+([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
+So a compromise of the server, or of any one tenant's worker, reaches every
+tenant's federated credentials. The per-user isolation below keeps secret files
+apart; it does not narrow federation.
+
 `FLOWSTATE_IDENTITY_KEY` holds one path, and a rotation needs two for its
 overlap, so for that window the keys go on each unit's command line, new first.
 Repeated `--identity-key` flags replace the variable's value rather than adding
@@ -951,17 +968,16 @@ $ sudo chmod 0640 /etc/flowstate/identity-2026-10.pem
 ```
 
 ```ini
-ExecStart=/usr/local/bin/flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
+ExecStart=/usr/local/lib/flowstate/%i/flow worker --plugin-dir /usr/local/lib/flowstate/plugins \
     --identity-key /etc/flowstate/identity-2026-10.pem \
     --identity-key /etc/flowstate/identity-2026-07.pem
 ```
 
-The server unit gets the same two flags. Restart the server first, so it
-publishes the new key before any worker signs with it; the worker unit's
-`After=` ordering would otherwise start the worker first when both restart
-together. After `federation.key_retention`, drop the flags, point
-`FLOWSTATE_IDENTITY_KEY` in both files at the new key, and restart both units
-again.
+The server unit gets the same two flags. After editing the units, run `sudo
+systemctl daemon-reload`, then restart the server before any worker instance,
+so it publishes the new key before a worker signs with it. After
+`federation.key_retention`, drop the flags, point `FLOWSTATE_IDENTITY_KEY` in
+both files at the new key, and reload and restart again.
 
 `FLOWSTATE_RPC_RESOURCE` is what this unit's `flow server` binds its Connect
 RPC audience to, and it is required because `policy.yaml` names a `kind: oidc`
@@ -985,11 +1001,11 @@ finish it, and this recipe assumes the first:
   needed — a certificate configured is what [blockers](#blockers) below calls
   the ordinary way past the refusal.
 
-To reach Tier 2 on this shape: run one worker unit per tenant, each as its own
-system user with its own secret and state directories (sharing only
-`flowstate-keys`, so one tenant's worker cannot read another's secrets), its
-own `TEMPORAL_NAMESPACE`, and its own `--egress-policy` / `--auth-policy`
-files, and map each tenant onto its namespace in the trust
+To reach Tier 2 on this shape: run a worker template per tenant, each as its
+own system user with its own secret and state directories (sharing only
+`flowstate-keys`, so one tenant's worker cannot read another's secrets, though
+federation stays shared as above), its own `TEMPORAL_NAMESPACE`, and its own
+`--egress-policy` / `--auth-policy` files, and map each tenant onto its namespace in the trust
 policy the server loads (`tenancy:` under `--auth-policy`, `auth.Tenancy` /
 `temporalclient.Pool`).
 

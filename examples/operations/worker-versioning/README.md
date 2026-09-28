@@ -62,7 +62,6 @@ do.
    ```console
    $ temporal worker deployment set-current-version --yes \
        --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
-   ...
    Successfully set the current worker deployment version
    ```
 
