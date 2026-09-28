@@ -268,6 +268,48 @@ func TestADurableBreakpointInsideABodyIsNotArmed(t *testing.T) {
 	assert.Equal(t, "second", stop.GetOccurrence().GetAddress())
 }
 
+// TestADurableUntilInsideABodyIsRefused: `until` a step the durable run never
+// holds at would release the run to its end. It is refused with the
+// breakpoint's reasoning, and the run stays held where it was.
+func TestADurableUntilInsideABodyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	tl := newTimeline(t)
+	const sre = "sre-1@example.com"
+	tl.ask(30*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "s1", Request: "attach", Lease: 5 * time.Minute})
+	tl.read(65*time.Second, "held", "attach")
+	tl.ask(70*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "into-body",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "each/touch"})
+	tl.read(71*time.Second, "refused", "into-body")
+	tl.ask(80*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "to-second",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL, Until: "second"})
+	tl.read(81*time.Second, "arrived", "to-second")
+	tl.ask(90*time.Second, sre, &v1.DebugAsk{Verb: v1.DebugVerbResume, Session: "s1", Request: "bye",
+		Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH})
+
+	spec := typedSpec("until-bodies")
+	spec.Steps = slices.Insert(spec.Steps, 3, &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+		Items: v1.NewLiteralList(v1.NewLiteral("a"), v1.NewLiteral("b")), Iterator: "item",
+		Body: []*v1.Node{logStep("touch", "touched")},
+	}}})
+	tl.env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: spec})
+	require.True(t, tl.env.IsWorkflowCompleted())
+	require.NoError(t, tl.env.GetWorkflowError())
+
+	held, refused := tl.reads["held"], tl.reads["refused"]
+	require.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, held.GetState())
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, refused.GetReceipt().GetStatus())
+	assert.Contains(t, refused.GetReceipt().GetMessage(), "inside a loop body, a parallel branch or a switch arm")
+	assert.Contains(t, refused.GetReceipt().GetMessage(), "run until the enclosing step instead")
+	assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_HELD, refused.GetState(), "a refused until moved the run")
+	assert.Equal(t, held.GetRevision(), refused.GetRevision())
+	assert.Equal(t, held.GetOccurrence().GetAddress(), refused.GetOccurrence().GetAddress())
+
+	arrived := tl.reads["arrived"]
+	assert.Equal(t, v1.DebugStopReason_DEBUG_STOP_REASON_UNTIL, arrived.GetReason())
+	assert.Equal(t, "second", arrived.GetOccurrence().GetAddress())
+}
+
 func TestATypedSessionExpiresAndTheRunResumes(t *testing.T) {
 	t.Parallel()
 

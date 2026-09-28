@@ -259,10 +259,22 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, "run until names no step")
 		default:
 			if ask.Action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
-				if _, err := v1.ParseDebugTarget(ask.Until); err != nil {
+				target, err := v1.ParseDebugTarget(ask.Until)
+				if err != nil {
 					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, err.Error())
 
 					return
+				}
+				// A target the run can never stop at would release it to
+				// the end: refused, and the run stays held. A truncated
+				// enumeration cannot say a site is absent, so it judges
+				// nothing.
+				if sites, truncated := v1.DebugStaticSites(e.spec); !truncated {
+					if _, why := durableSites(target, ask.Until, sites, "run until"); why != "" {
+						d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
+
+						return
+					}
 				}
 			}
 			d.carry.Next = ask.Action
@@ -351,6 +363,26 @@ func durablyHeld(site v1.DebugStaticSite) bool {
 	return true
 }
 
+// durableSites resolves target to the sites the durable driver can hold at,
+// or says why there are none: no site matches it, or every one it matches is
+// inside a loop body, a parallel branch or a switch arm, which is never an
+// arrival here. verb is how the refusal tells the reader to name the
+// enclosing step instead. Breakpoints and `until` both ask this, so a target
+// one refuses the other refuses in the same words.
+func durableSites(target v1.DebugTarget, text string, sites []v1.DebugStaticSite, verb string) ([]v1.DebugStaticSite, string) {
+	resolved := target.Resolve(sites)
+	if len(resolved) == 0 {
+		return nil, fmt.Sprintf("no step matches %q", text)
+	}
+	resolved = slices.DeleteFunc(resolved, func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
+	if len(resolved) == 0 {
+		return nil, fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
+			"executes as a unit and never holds in; %s the enclosing step instead", text, verb)
+	}
+
+	return resolved, ""
+}
+
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
 func (e *executor) parseDebugBreakpoints() {
 	d := e.debug
@@ -381,20 +413,12 @@ func (e *executor) parseDebugBreakpoints() {
 
 				break
 			}
-			resolved := target.Resolve(sites)
-			if len(resolved) == 0 {
-				refuse(fmt.Sprintf("no step matches %q", bp.GetStep()))
-
-				break
-			}
-			// Only a site the durable driver can hold at arms it: one inside
-			// a loop body, a parallel branch or a switch arm is never an
-			// arrival here, and a breakpoint there that reported armed would
-			// claim a stop that never comes.
-			resolved = slices.DeleteFunc(resolved, func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
-			if len(resolved) == 0 {
-				refuse(fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
-					"executes as a unit and never holds in; break at the enclosing step instead", bp.GetStep()))
+			// Only a site the durable driver can hold at arms it: a
+			// breakpoint that reported armed elsewhere would claim a stop
+			// that never comes.
+			resolved, why := durableSites(target, bp.GetStep(), sites, "break at")
+			if why != "" {
+				refuse(why)
 
 				break
 			}
