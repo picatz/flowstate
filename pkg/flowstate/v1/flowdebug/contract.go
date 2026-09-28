@@ -622,6 +622,23 @@ func (s *Session) resumeUntil(m mode, until v1.DebugTarget, condition *v1.Value)
 // Finished records how the run ended. A driver calls it when the run returns,
 // so a surface can say completed or failed rather than only "over".
 func (s *Session) Finished(err error) {
+	// An `until` still armed when the run completes named a stop the run
+	// never made — an address past the last iteration, a condition that never
+	// held — and without a word the run would simply end, as if it had.
+	// Said, and recorded for the structured fronts, before the run reads as
+	// over, so a reader of the final snapshot has it.
+	s.mu.Lock()
+	missed := ""
+	if err == nil && s.mode == modeUntil && !terminal(s.contract.state) {
+		missed = s.until.String()
+	}
+	s.mu.Unlock()
+	if missed != "" {
+		text := fmt.Sprintf("the run completed without stopping at `until %s`", missed)
+		s.printfTone(ToneWarning, "%s\n", text)
+		s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "", text)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

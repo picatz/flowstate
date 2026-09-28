@@ -767,12 +767,19 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 	s.record("break " + at.source)
+	// Echoed with the hit count as well as the condition: both decide when
+	// it stops, and an echo that drops one says the breakpoint is broader
+	// than it is.
+	armed := id
+	if hitText != "" {
+		armed += " hit " + hitText
+	}
 	if at.condition == nil {
-		s.printf("breakpoint at %s\n", id)
+		s.printf("breakpoint at %s\n", armed)
 
 		return
 	}
-	s.printf("breakpoint at %s if %s\n", id, strings.TrimSpace(condition))
+	s.printf("breakpoint at %s if %s\n", armed, strings.TrimSpace(condition))
 }
 
 // maxStepSuggestionInput bounds the typed id a did-you-mean is computed for:

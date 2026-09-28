@@ -821,7 +821,7 @@ func (s *Session) ScriptTruncated() bool {
 // from a failed one — see that sentinel for why the distinction decides a
 // verdict — while the message stays this session's own, naming the command the
 // person actually typed.
-var errQuit = fmt.Errorf("debug session ended by the `quit` command: %w", v1.ErrDebugSessionEnded)
+var errQuit = fmt.Errorf("%w by the `quit` command", v1.ErrDebugSessionEnded)
 
 // StepFinished implements [v1.RunObserver]. The account is what a session
 // prints after `step`: an author who advanced one step wants to see what it
@@ -1093,6 +1093,10 @@ func (s *Session) Close() error {
 // nobody asked for has taken it out of a stream the process may still own after
 // the session ends.
 func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err error) {
+	// drawn is a prompt already on the stream that no command has answered:
+	// a comment line consumes no prompt, so a script's comments do not stack
+	// an empty `debug> ` apiece in front of the command that follows them.
+	drawn := false
 	for {
 		s.mu.Lock()
 		closed, scanner, console, controlled := s.closed, s.in, s.console, s.controlled
@@ -1154,6 +1158,10 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 					return "", false, nil
 				}
 
+				if console == nil && IsComment(text) {
+					continue
+				}
+
 				return text, true, nil
 			default:
 			}
@@ -1175,8 +1183,9 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 				// Drawn with the request rather than with the boundary, for the
 				// same reason: a second `debug> ` for a line already being
 				// waited on is a prompt describing nothing.
-				if console == nil {
+				if console == nil && !drawn {
 					s.printfTone(TonePrompt, Prompt)
+					drawn = true
 				}
 			}
 		}
@@ -1191,6 +1200,9 @@ func (s *Session) readCommand(ctx context.Context) (line string, ok bool, err er
 				}
 
 				return "", false, nil
+			}
+			if console == nil && IsComment(text) {
+				continue
 			}
 
 			return text, true, nil
@@ -2113,6 +2125,14 @@ quit, q                     leave the autopsy (so do step/continue — the run i
 `)
 
 		default:
+			// A command the prompt knows is not a typo here: it has nothing
+			// left to act on, and saying "unknown" sends the author looking
+			// for a misspelling that is not there.
+			if c, known := resolve(verb); known {
+				s.printfTone(ToneWarning, "`%s` has nothing to act on at the autopsy: the run is over, and "+
+					"inspect, complete, scope and help are what answer here\n", c.verb)
+				continue
+			}
 			s.printfTone(ToneWarning, "unknown command %q — try `help`\n", verb)
 		}
 	}
