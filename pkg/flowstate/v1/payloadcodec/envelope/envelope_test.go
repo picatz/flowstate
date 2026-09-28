@@ -451,10 +451,10 @@ func TestEscrowRecoversWhatThePrimaryKeyCannot(t *testing.T) {
 	require.Len(t, header(t, sealed).GetEscrow(), 1)
 	require.NotContains(t, string(sealed.GetData()), marker)
 
-	// A worker whose primary key is gone cannot read through the public half.
-	lost := newCodec(t, envelope.Options{Binding: "ns", Escrow: []envelope.Recipient{{ID: "break-glass", Key: publicOnly}}})
-	_, err = lost.Decode([]*commonpb.Payload{sealed})
-	require.ErrorIs(t, err, envelope.ErrUnknownKey)
+	// A decode-only codec whose primary key is gone cannot read through the
+	// public half, and is refused when it is built rather than at every read.
+	_, err = envelope.New(t.Context(), envelope.Options{Binding: "ns", Escrow: []envelope.Recipient{{ID: "break-glass", Key: publicOnly}}})
+	require.ErrorContains(t, err, "holds no key that can unwrap")
 
 	recovery := newCodec(t, envelope.Options{Binding: "ns", Escrow: []envelope.Recipient{{ID: "break-glass", Key: withPrivate}}})
 	out, err := recovery.Decode([]*commonpb.Payload{sealed})
