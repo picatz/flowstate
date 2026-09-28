@@ -2,15 +2,12 @@ package engine
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/workflow"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 )
 
 // withSignalDeliveryCompat wraps ctx's data converter so a signal channel can
@@ -126,22 +123,20 @@ func (c *signalDeliveryCompatConverter) FromPayloads(payloads *commonpb.Payloads
 	return nil
 }
 
-// FromPayload is where the fallback lives, and where a payload this process
-// cannot read is kept from being taken for a corrupt one.
+// FromPayload is where the fallback lives.
 func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, valuePtr any) error {
 	delivery, ok := valuePtr.(*v1.SignalDelivery)
 	if !ok {
-		err := c.DataConverter.FromPayload(payload, valuePtr)
-		failIfUnreadableHere(err)
-		return err
+		return c.DataConverter.FromPayload(payload, valuePtr)
 	}
 
 	// The current shape, tried first: what every up-to-date server sends.
-	err := c.DataConverter.FromPayload(payload, delivery)
-	if err == nil {
+	// A payload this process cannot read never gets here: the worker's
+	// converter, bound to this workflow, fails the run on it first
+	// (payloadcodec's inWorkflowConverter), so what remains is a shape error.
+	if err := c.DataConverter.FromPayload(payload, delivery); err == nil {
 		return nil
 	}
-	failIfUnreadableHere(err)
 
 	// Falls back to the shape every signal used before #194. Sender is left
 	// nil rather than an empty-but-present SignalSender — nil is what
@@ -158,24 +153,4 @@ func (c *signalDeliveryCompatConverter) FromPayload(payload *commonpb.Payload, v
 
 	*delivery = v1.SignalDelivery{Payload: &legacy}
 	return nil
-}
-
-// failIfUnreadableHere fails the run when err says the payload could not be
-// decoded by this process rather than that it is wrong: a key provider that
-// did not answer, or a key or envelope version this worker lacks.
-//
-// Returned, such an error is taken for the payload's own. A signal channel
-// drops a signal it cannot decode as corrupt, losing an approval; an activity
-// or child result that fails to decode fails its step, which runs
-// `continue_on_error:` or `undo:` for a step that succeeded, and a replay on a
-// worker that can read it then takes the other branch. Either way the run's
-// decisions would depend on which worker read it and whether a provider
-// answered, not on its history. Workflow code cannot make the task retry
-// instead (every panic meets the worker's panic policy), so the run fails,
-// loudly and recoverably, with the payload still in its history: see
-// panicpolicy.go.
-func failIfUnreadableHere(err error) {
-	if errors.Is(err, payloadcodec.ErrUnavailable) || errors.Is(err, payloadcodec.ErrNotReadableHere) {
-		panic(fmt.Errorf("decoding a payload in workflow code: %w", err))
-	}
 }

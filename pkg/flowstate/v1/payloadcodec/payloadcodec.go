@@ -581,7 +581,10 @@ func (c Config) DataConverter() converter.DataConverter {
 	// a key provider. That call is bounded by the codec's own timeout, which
 	// may exceed the deadlock detector's budget; a provider answering within
 	// its timeout must not be mistaken for workflow code that stopped yielding.
-	return workflow.DataConverterWithoutDeadlockDetection(converter.NewCodecDataConverter(serializer, c.codec()))
+	// And a payload the codec cannot read here fails the run rather than being
+	// taken for a corrupt one: see [inWorkflowConverter].
+	return codecConverter{DataConverter: workflow.DataConverterWithoutDeadlockDetection(
+		converter.NewCodecDataConverter(serializer, c.codec()))}
 }
 
 // FailureConverter returns the failure converter that must accompany

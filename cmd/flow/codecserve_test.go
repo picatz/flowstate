@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -59,7 +61,7 @@ func TestCodecServeAuthenticatesWithTheTrustPolicy(t *testing.T) {
 	require.NoError(t, err)
 	resource, err := resolveCodecResource("https://codec.example.com", authFlags{policyPath: "policy.yaml"}, &policy)
 	require.NoError(t, err)
-	srv := httptest.NewServer(codecServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), verifier, resource, handler))
+	srv := httptest.NewServer(codecServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), verifier, nil, resource, handler))
 	t.Cleanup(srv.Close)
 
 	nsA, err := codecs.ForNamespace("ns-a")
@@ -139,4 +141,26 @@ func TestCodecServeRefusesInsecureModeOffLoopback(t *testing.T) {
 	_, _, err := runCLI(t, "codec", "serve", "--insecure-no-auth", "--listen", "0.0.0.0:0",
 		"--payload-keyring", writeTestKeyring(t))
 	require.ErrorContains(t, err, "not loopback")
+}
+
+// TestCodecServeResolvesClientCertificatesAsTheServerDoes: a trust policy's
+// kind: mtls entry is honoured by `flow codec serve` exactly as by `flow
+// server`. Without --tls-client-auth require nothing would ever ask for a
+// certificate, and a certificate-only policy would start and then refuse
+// every caller; it is refused at startup instead, naming the flag.
+func TestCodecServeResolvesClientCertificatesAsTheServerDoes(t *testing.T) {
+	t.Setenv(requirePayloadEncryptionEnv, "")
+	policy := filepath.Join(t.TempDir(), "policy.yaml")
+	require.NoError(t, os.WriteFile(policy, []byte(`issuers:
+  - name: mesh
+    kind: mtls
+    issuer: flowstate:mtls/mesh
+    client_ca_file: `+testClientCAFile(t)+`
+    subject_from: uri_san
+`), 0o600))
+
+	_, _, err := runCLI(t, "codec", "serve", "--listen", "127.0.0.1:0",
+		"--auth-policy", policy, "--payload-keyring", writeTestKeyring(t))
+	require.ErrorContains(t, err, "--tls-client-auth")
+	require.ErrorContains(t, err, "kind: mtls")
 }
