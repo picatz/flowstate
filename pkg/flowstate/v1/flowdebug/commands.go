@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
-	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -65,12 +64,20 @@ const (
 var commands = []command{
 	{verb: "step", aliases: []string{"s"}, completes: completesNothing,
 		help: "run this step and stop at the next (also: an empty line)"},
+	{verb: "next", aliases: []string{"n"}, completes: completesNothing,
+		help: "run this step, including anything inside it, and stop at the next step at this level or above"},
+	{verb: "finish", aliases: []string{"fin", "out"}, completes: completesNothing,
+		help: "run until the enclosing loop iteration, branch, switch arm, or call is left"},
 	{verb: "continue", aliases: []string{"c"}, completes: completesNothing,
 		help: "run until the next breakpoint, or to the end"},
 	{verb: "until", aliases: []string{"u"}, argument: "<step-id> [if <expr>]", completes: completesStep,
 		help: "run until the step with that id, optionally only where the condition holds"},
-	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [if <expr>]", completes: completesStep,
-		help: "stop at that step, always or when the expression holds"},
+	{verb: "break", aliases: []string{"b"}, argument: "<step-id> [hit <count>] [if <expr>]", completes: completesStep,
+		help: "stop at that step, always, when the expression holds, or from the given arrival count"},
+	{verb: "log", argument: "<step-id> <message>", completes: completesStep,
+		help: "record the message at every arrival without stopping; {expr} holes are CEL"},
+	{verb: "catch", argument: "none|uncaught|all", completes: completesNothing,
+		help: "stop where a step fails: never, when its failure propagates, or always"},
 	{verb: "delete", aliases: []string{"d"}, argument: "<step-id>", completes: completesBreakpoint,
 		help: "remove that breakpoint"},
 	{verb: "breakpoints", completes: completesNothing,
@@ -85,6 +92,8 @@ var commands = []command{
 		help: "describe the step the run is stopped at"},
 	{verb: "backtrace", aliases: []string{"bt"}, completes: completesNothing,
 		help: "list this step and the call chain that reached it"},
+	{verb: "detach", completes: completesNothing,
+		help: "clear every breakpoint and let the run finish unattended"},
 	{verb: "quit", aliases: []string{"q"}, completes: completesNothing,
 		help: "end the run here"},
 	{verb: "help", aliases: []string{"h", "?"}, completes: completesNothing,
@@ -176,15 +185,49 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 	switch verb {
 	case "step":
 		s.record("step")
-		s.resume(modeStop, "")
+		s.resume(modeStop, v1.DebugTarget{})
+
+		return true, nil
+
+	case "next":
+		s.record("next")
+		s.resume(modeOver, v1.DebugTarget{})
+
+		return true, nil
+
+	case "finish":
+		s.record("finish")
+		s.resume(modeOut, v1.DebugTarget{})
 
 		return true, nil
 
 	case "continue":
 		s.record("continue")
-		s.resume(modeRun, "")
+		s.resume(modeRun, v1.DebugTarget{})
 
 		return true, nil
+
+	case "detach":
+		s.record("detach")
+		s.mu.Lock()
+		clear(s.breakpoints)
+		s.contract.failureMode = v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE
+		s.contract.detached = true
+		s.mu.Unlock()
+		s.resume(modeRun, v1.DebugTarget{})
+		s.printfTone(ToneWarning, "(detached — the run finishes unattended)\n")
+
+		return true, nil
+
+	case "catch":
+		s.setFailureMode(strings.TrimSpace(rest))
+
+		return false, nil
+
+	case "log":
+		s.addLogpoint(strings.TrimSpace(rest))
+
+		return false, nil
 
 	case "until":
 		// The same grammar, compiler and refusals as `break`, sharing its
@@ -212,6 +255,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 
 			return false, nil
 		}
+		target := v1.ParseDebugTargetOrStep(id)
 
 		var compiled *v1.Value
 		if conditional {
@@ -229,7 +273,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		// silence, behind a prompt that said it was set (Copilot, #1274).
 		s.clearDeclined(declinedUntil, id)
 		s.record("until " + strings.TrimSpace(rest))
-		s.resumeUntil(modeUntil, id, compiled)
+		s.resumeUntil(modeUntil, target, compiled)
 
 		return true, nil
 
@@ -439,7 +483,7 @@ func (s *Session) showScope(scope *v1.Scope) {
 // `vars` and `run` while `inspect vars.x` answers would be a scope command
 // hiding exactly the names it is for discovering (Codex, #1109).
 func (s *Session) showScopeWith(scope *v1.Scope, extra map[string]ref.Val) {
-	groups := s.scopeNames(scope, extra)
+	groups := scopeNames(scope, extra)
 
 	steps := false
 	for _, group := range groups {
@@ -482,7 +526,7 @@ const (
 // variables pane wants every name and does its own paging, and applying a
 // display cap here would make the value surface quietly narrower than the run.
 // The cap lives in [namesLine], which is the renderer.
-func (s *Session) scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names {
+func scopeNames(scope *v1.Scope, extra map[string]ref.Val) []Names {
 	var groups []Names
 
 	// The root is the parameter and the listing is derived from it, rather
@@ -652,6 +696,19 @@ func (s *Session) showStep(node *v1.Node) {
 // condition gating whether something happens, and the parse is positional — a
 // step legally named `if` is still the id, since the first word always is.
 func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scope) {
+	rest, hitText, err := cutHitClause(rest)
+	if err != nil {
+		s.printfTone(ToneWarning, "break: %v\n", err)
+
+		return
+	}
+	hit, err := v1.ParseDebugHitCondition(hitText)
+	if err != nil {
+		s.printfTone(ToneWarning, "break: hit condition: %v\n", err)
+
+		return
+	}
+
 	id, condition, conditional, err := splitCondition(rest, grammarBreak)
 	if err != nil {
 		s.printfTone(ToneWarning, "break: %v\n", err)
@@ -670,7 +727,12 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 		return
 	}
 
-	at := breakpoint{source: rest}
+	target := v1.ParseDebugTargetOrStep(id)
+
+	at := breakpoint{source: rest, id: id, target: target, hit: hit}
+	if hitText != "" {
+		at.source = id + " hit " + hitText + strings.TrimPrefix(rest, id)
+	}
 	if conditional {
 		compiled, err := compileCondition(condition, scope, grammarBreak)
 		if err != nil {
@@ -688,7 +750,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 		return
 	}
-	s.record("break " + rest)
+	s.record("break " + at.source)
 	if at.condition == nil {
 		s.printf("breakpoint at %s\n", id)
 
@@ -795,6 +857,39 @@ func (s *Session) unknownStep(id string, redact func(string) string) (string, bo
 // nothing about what exists, and [checkStepArgument] takes that same silence
 // the same way: absence of evidence is not evidence a step is missing.
 func (s *Session) unknownStepNotice(id string) (string, bool) {
+	// A target in the address grammar: a site path is resolved against the
+	// program when there is one, and otherwise judged by its step.
+	target := v1.ParseDebugTargetOrStep(id)
+
+	s.mu.Lock()
+	sitesKnown, sites := s.contract.sitesKnown, s.contract.sites
+	s.mu.Unlock()
+	if sitesKnown {
+		if len(target.Resolve(sites)) > 0 {
+			return "", false
+		}
+
+		if !strings.ContainsRune(id, '/') {
+			ids := make([]string, 0, len(sites))
+			for _, site := range sites {
+				path := site.Site.GetPath()
+				ids = append(ids, path[len(path)-1])
+			}
+			slices.Sort(ids)
+			ids = slices.Compact(ids)
+			if utf8.RuneCountInString(id) <= maxStepSuggestionInput {
+				if suggestion, found := nearest.Name(id, ids); found {
+					return fmt.Sprintf("no step named %q: did you mean %q?", id, suggestion), true
+				}
+			}
+
+			return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(ids)), true
+		}
+
+		return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id), true
+	}
+	id = target.Step()
+
 	// Built once at construction ([declaredStepIDs]); this is a lookup rather
 	// than a walk, because a refused command is not recorded and so may be
 	// repeated without bound.
@@ -851,6 +946,10 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 func (s *Session) holdBreakpoint(id string, at breakpoint) (held bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if at.id == "" {
+		at.id = id
+	}
 
 	if _, replacing := s.breakpoints[id]; !replacing && len(s.breakpoints) >= MaxBreakpoints {
 		return false
@@ -924,135 +1023,7 @@ func compileCondition(expression string, scope *v1.Scope, grammar string) (*v1.V
 		return nil, fmt.Errorf(usageCondition, grammar)
 	}
 
-	env, err := v1.DefaultEvaluator().ProfileEnv(scope.GetProfile())
-	if err != nil {
-		return nil, err
-	}
-	ast, issues := env.Parse(expression)
-	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("parse condition: %w", issues.Err())
-	}
-
-	// Parsing is syntax only, so `1 + true` and `missing_function(n)` both
-	// parse — and an accepted condition that cannot be compiled fails at every
-	// arrival, which with the stop-on-error rule above means stopping at every
-	// iteration. That is the exact behaviour a condition is typed to escape,
-	// reached by a typo the prompt reported as accepted (Codex, #1116).
-	//
-	// Checked against an environment declaring the names *the expression
-	// itself mentions*, which is `flowfile`'s spelling for this same problem
-	// (`celcheck.go:177`, `envDeclaring(referencedNames(...))`) and the only
-	// one that works here. A breakpoint is usually set before the run reaches
-	// the step it names, so the binding a condition reads — a loop's `as:` —
-	// does not exist in the scope this is typed in. Declaring what is in scope
-	// now would reject `n == 7` typed at the first step, which is a false
-	// diagnostic about a condition that will be perfectly valid when it fires.
-	checked, err := checkedInScope(env, ast)
-	if err != nil {
-		return nil, err
-	}
-
-	// And it has to be a boolean, refused here rather than at the first
-	// arrival — the same shape `compileMustIn` uses for the other place this
-	// repository compiles an author's boolean rule (`constraints.go:238-245`).
-	if checked.OutputType() != cel.BoolType && checked.OutputType() != cel.DynType {
-		return nil, fmt.Errorf("a condition must be a boolean, and this one is %s", checked.OutputType())
-	}
-
-	parsed, err := cel.AstToParsedExpr(ast)
-	if err != nil {
-		return nil, fmt.Errorf("parse condition: %w", err)
-	}
-
-	return &v1.Value{Kind: &v1.Value_Expr{Expr: parsed}}, nil
-}
-
-// checkedInScope type-checks an expression against an environment extended
-// with every identifier it references, declared dynamically.
-//
-// Dynamic because nothing here knows the type: a step output's shape is the
-// task's, and a loop binding's is the collection's. What the check is for is
-// the errors that do not depend on those — an unknown function, an operator
-// applied to types that can never combine.
-func checkedInScope(env *cel.Env, ast *cel.Ast) (*cel.Ast, error) {
-	parsed, err := cel.AstToParsedExpr(ast)
-	if err != nil {
-		return nil, fmt.Errorf("parse condition: %w", err)
-	}
-
-	names := map[string]struct{}{}
-	collectIdentifiers(parsed.GetExpr(), names)
-
-	declarations := make([]cel.EnvOption, 0, len(names))
-	for name := range names {
-		declarations = append(declarations, cel.Variable(name, cel.DynType))
-	}
-
-	declaring, err := env.Extend(declarations...)
-	if err != nil {
-		// Extending failed, which is this build's problem rather than the
-		// author's, so the condition is accepted unchecked rather than
-		// refused: leaving the failure to evaluation is where it was before
-		// this check existed, and blaming an author for it is worse.
-		return ast, nil
-	}
-
-	checked, issues := declaring.Check(ast)
-	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("condition: %w", issues.Err())
-	}
-
-	return checked, nil
-}
-
-// collectIdentifiers gathers every bare name an expression reads, for the
-// environment the type check declares.
-//
-// Only the *root* of a selection: `steps.build.ok` reads the identifier
-// `steps`, and declaring `steps` dynamically is what makes the whole chain
-// legal without claiming to know its shape. Macro bindings are included on
-// purpose here — declaring one is harmless, and not declaring it would make
-// `items.exists(i, i > 2)` fail a check over a name CEL itself provides.
-//
-// This is deliberately not the same question as [conditionNames]: declaring a
-// name costs nothing, while *requiring* one to be bound at a step decides
-// whether the run stops there.
-func collectIdentifiers(e *expr.Expr, into map[string]struct{}) {
-	switch kind := e.GetExprKind().(type) {
-	case *expr.Expr_IdentExpr:
-		into[kind.IdentExpr.GetName()] = struct{}{}
-
-	case *expr.Expr_SelectExpr:
-		collectIdentifiers(kind.SelectExpr.GetOperand(), into)
-
-	case *expr.Expr_CallExpr:
-		collectIdentifiers(kind.CallExpr.GetTarget(), into)
-		for _, arg := range kind.CallExpr.GetArgs() {
-			collectIdentifiers(arg, into)
-		}
-
-	case *expr.Expr_ListExpr:
-		for _, element := range kind.ListExpr.GetElements() {
-			collectIdentifiers(element, into)
-		}
-
-	case *expr.Expr_StructExpr:
-		for _, entry := range kind.StructExpr.GetEntries() {
-			collectIdentifiers(entry.GetMapKey(), into)
-			collectIdentifiers(entry.GetValue(), into)
-		}
-
-	case *expr.Expr_ComprehensionExpr:
-		comprehension := kind.ComprehensionExpr
-		into[comprehension.GetIterVar()] = struct{}{}
-		into[comprehension.GetIterVar2()] = struct{}{}
-		into[comprehension.GetAccuVar()] = struct{}{}
-		collectIdentifiers(comprehension.GetIterRange(), into)
-		collectIdentifiers(comprehension.GetAccuInit(), into)
-		collectIdentifiers(comprehension.GetLoopCondition(), into)
-		collectIdentifiers(comprehension.GetLoopStep(), into)
-		collectIdentifiers(comprehension.GetResult(), into)
-	}
+	return v1.CompileDebugCondition(expression, scope.GetProfile())
 }
 
 func (s *Session) deleteBreakpoint(id string) {
@@ -1138,4 +1109,84 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(keys)
 
 	return keys
+}
+
+// cutHitClause removes a `hit <count>` clause written right after a break's
+// target, returning the rest and the clause's text.
+func cutHitClause(rest string) (string, string, error) {
+	id, tail := cutWord(strings.TrimLeft(rest, " \t"))
+	tail = strings.TrimLeft(tail, " \t")
+	keyword, after := cutWord(tail)
+	if keyword != "hit" {
+		return rest, "", nil
+	}
+
+	after = strings.TrimLeft(after, " \t")
+	clause, condition, found := strings.Cut(after, " if ")
+	clause = strings.TrimSpace(clause)
+	if clause == "" {
+		return "", "", fmt.Errorf("`hit` needs a count: %s", grammarBreak)
+	}
+	if !found {
+		return id, clause, nil
+	}
+
+	return id + " if " + condition, clause, nil
+}
+
+// setFailureMode is `catch`.
+func (s *Session) setFailureMode(word string) {
+	modes := map[string]v1.DebugFailureMode{
+		"none":     v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE,
+		"uncaught": v1.DebugFailureMode_DEBUG_FAILURE_MODE_UNCAUGHT,
+		"all":      v1.DebugFailureMode_DEBUG_FAILURE_MODE_ALL,
+	}
+	if word == "" {
+		word = "uncaught"
+	}
+	mode, ok := modes[word]
+	if !ok {
+		s.printfTone(ToneWarning, "catch takes none, uncaught, or all, not %q\n", word)
+
+		return
+	}
+
+	s.mu.Lock()
+	s.contract.failureMode = mode
+	s.mu.Unlock()
+
+	s.record("catch " + word)
+	s.printf("failure stops: %s\n", word)
+}
+
+// addLogpoint is `log <step-id> <message>`.
+func (s *Session) addLogpoint(rest string) {
+	id, message := cutWord(rest)
+	message = strings.TrimSpace(message)
+	if id == "" || message == "" {
+		s.printfTone(ToneWarning, "log needs a step id and a message: log <step-id> <message>\n")
+
+		return
+	}
+	if notice, unknown := s.unknownStepNotice(id); unknown {
+		s.printfTone(ToneWarning, "log: %s\n", notice)
+
+		return
+	}
+	target := v1.ParseDebugTargetOrStep(id)
+	template, err := parseLogTemplate(message)
+	if err != nil {
+		s.printfTone(ToneWarning, "log: %v\n", err)
+
+		return
+	}
+
+	source := id + " " + message
+	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template}) {
+		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
+
+		return
+	}
+	s.record("log " + source)
+	s.printf("logpoint at %s\n", id)
 }

@@ -57,6 +57,16 @@ type teeObserver struct {
 	second v1.RunObserver
 }
 
+// TaskNoted implements [v1.TaskNoter] for whichever listener wants notes, so
+// teeing a debugger with the recorder does not silence a task's own account.
+func (t teeObserver) TaskNoted(step, text string) {
+	for _, listener := range []v1.RunObserver{t.first, t.second} {
+		if noter, ok := listener.(v1.TaskNoter); ok {
+			noter.TaskNoted(step, text)
+		}
+	}
+}
+
 func (t teeObserver) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
 	t.first.StepFinished(id, outputs, err, tolerated)
 	t.second.StepFinished(id, outputs, err, tolerated)

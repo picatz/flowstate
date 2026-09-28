@@ -97,6 +97,12 @@ type Positions struct {
 	steps    map[string]string
 	triggers map[string]string
 
+	// stepAt is every step's id by its path, duplicates included: the
+	// inverse of steps, which keeps only the first declaration of an id. The
+	// debugger's source map reads it, because two sibling loops may each
+	// declare a body step with one id and both are sites.
+	stepAt map[string]string
+
 	// unfenced holds the paths whose scalar was read as CEL without the author
 	// writing a fence — `value: dhl`, or `value: "dhl"` — which is a fact the
 	// compiled expression cannot carry (the fence, if any, is gone) and one a
@@ -111,6 +117,7 @@ func newPositions() *Positions {
 		exprs:    make(map[string]Span),
 		steps:    make(map[string]string),
 		triggers: make(map[string]string),
+		stepAt:   make(map[string]string),
 		unfenced: make(map[string]bool),
 	}
 }
@@ -373,6 +380,7 @@ func (p *Positions) recordStep(id, path string) {
 	if id == "" {
 		return
 	}
+	p.stepAt[path] = id
 	if _, seen := p.steps[id]; !seen {
 		p.steps[id] = path
 	}
