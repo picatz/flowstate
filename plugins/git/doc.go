@@ -306,8 +306,11 @@
 // inflates to at maxInflatedBytes (512 MiB), so a small pack that expands to
 // an enormous object graph ("pack bomb") is refused once it passes that sum.
 // What it does not bound is one oversized object on its own: go-git inflates
-// an object before the storer sees it, so a single object's inflation is
-// bounded only by that total. This is the same shape of gap clone.go's vcs
-// counterpart documents for shallow depth versus blob size - named here
-// rather than left for someone to discover.
+// an object before the storer sees it, so the object that crosses the total
+// is already in memory, bounded only by maxResponseBytes times DEFLATE's own
+// expansion ceiling, not by maxInflatedBytes (packbound.go's "The gap this
+// closes, and the one it does not"). Until that closes, point this plugin
+// only at remotes the deployment trusts. This is the same shape of gap
+// clone.go's vcs counterpart documents for shallow depth versus blob size -
+// named here rather than left for someone to discover.
 package main

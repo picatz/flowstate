@@ -24,10 +24,11 @@ $ go -C plugins/docker build -o ../../plugins/flowstate-plugin-docker .
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --plugin-env docker=FLOWSTATE_DOCKER_GRANTS=$PWD/examples/plugins/docker/grants.yaml &
 $ flow server --plugin-dir ./plugins --auth-policy /path/to/auth-policy.yaml \
-    --rpc-resource https://flowstate.example.com/rpc &
+    --rpc-resource https://flowstate.example.com/rpc --identity-claim team &
 $ flow run examples/plugins/docker/workflow.yaml \
     --input suite=smoke \
-    --input expected_approver=release-manager@example.com
+    --input expected_approver=release-manager@example.com \
+    --token-file /path/to/starter.token
 ```
 
 The server takes `--plugin-dir` too, because the file declares `plugins:` and
@@ -36,6 +37,10 @@ an `--auth-policy` trusting a real issuer, with the `--rpc-resource` its tokens
 are minted for, rather than `--insecure-no-auth`, because the approval below is
 a signal only an attested release manager other than the starter may send, and
 without authentication every caller is the same anonymous one.
+It keeps the `team` claim (`--identity-claim team`), because the signal's rule
+reads it and a server persists only the claims it names. Every client command
+below authenticates with `--token-file` (or `--credential-source`): an
+authenticated server refuses an anonymous caller.
 
 `flow run` refuses this file today (#1548): it checks the file against its own
 build's task registry, takes no `--plugin-dir`, and so reports `docker.run` as a
@@ -43,15 +48,20 @@ task nothing registered before the server sees it. Until that is fixed,
 `flow run local` with the worker's `--plugin-dir` and `--plugin-env` runs it in
 one process, answering the gate up front with `--signal` and the
 `--signal-as-*` flags, and an agent host running
-`flow mcp --plugin-dir ./plugins` submits it to this server with
-`flowstate_compile` then `flowstate_run`.
+`flow mcp --plugin-dir ./plugins --token-file /path/to/starter.token` submits
+it to this server with `flowstate_compile` then `flowstate_run`.
 
 The run executes the container, then waits — durably, for up to a day — for
 someone to read the result and decide:
 
 ```console
-$ flow signal <run> release-approved --data '{"approved": true}'
+$ flow signal <run> release-approved --data '{"approved": true}' \
+    --token-file /path/to/approver.token
 ```
+
+The approver's token must be issued by `https://issuer.example.com` to the
+subject `expected_approver` names, with `team: release-managers`;
+`distinct_from_starter: true` refuses the starter's own.
 
 ## Why a failing suite is not a failing step
 

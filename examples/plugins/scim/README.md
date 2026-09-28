@@ -15,11 +15,12 @@ $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --egress-policy examples/plugins/scim/egress-policy.yaml \
     --secret-env SCIM_TOKEN --auth-policy /path/to/auth-policy.yaml &
 $ flow server --plugin-dir ./plugins --auth-policy /path/to/auth-policy.yaml \
-    --rpc-resource https://flowstate.example.com/rpc &
+    --rpc-resource https://flowstate.example.com/rpc --identity-claim team &
 $ flow run examples/plugins/scim/workflow.yaml \
     --input directory=https://example.okta.com/scim/v2 \
     --input user_id=2819c223-7f76-453a-919d-413861904646 \
-    --input expected_approver=compliance-lead@example.com
+    --input expected_approver=compliance-lead@example.com \
+    --token-file /path/to/starter.token
 ```
 
 `--secret-env SCIM_TOKEN` is what turns on the `env:` provider that reads
@@ -30,20 +31,30 @@ start without an `--auth-policy` that has a `secrets:` section allowing
 `--rpc-resource` its tokens are minted for, rather than `--insecure-no-auth`,
 because the decision below is a signal only an attested reviewer other than the
 starter may send.
+It keeps the `team` claim (`--identity-claim team`), because the signal's rule
+reads it and a server persists only the claims it names. Every client command
+below authenticates with `--token-file` (or `--credential-source`): an
+authenticated server refuses an anonymous caller.
 
 `flow run` refuses this file today (#1548): it checks the file against its own
 build's task registry, takes no `--plugin-dir`, and so reports the `scim.*`
 tasks as ones nothing registered before the server sees it. Until that is
 fixed, `flow run local` with the worker's plugin, secret and policy flags runs
-it in one process, and an agent host running `flow mcp --plugin-dir ./plugins`
+it in one process, and an agent host running
+`flow mcp --plugin-dir ./plugins --token-file /path/to/starter.token`
 submits it to this server with `flowstate_compile` then `flowstate_run`.
 
 The run stops at `decision` and waits - durably, for up to a week - until a
 compliance reviewer answers:
 
 ```console
-$ flow signal <run> review-decided --data '{"keep": false}'
+$ flow signal <run> review-decided --data '{"keep": false}' \
+    --token-file /path/to/approver.token
 ```
+
+The approver's token must be issued by `https://issuer.example.com` to the
+subject `expected_approver` names, with `team: compliance-reviewers`;
+`distinct_from_starter: true` refuses the starter's own.
 
 ## What each step is protecting
 
