@@ -180,6 +180,7 @@ func TestTheRepositoryWallClockSleepsOnlyGoDown(t *testing.T) {
 // work #1706 still asks for, and this table is how the count is kept honest
 // while it happens.
 var repositoryPolls = map[string]int{
+	"cmd/flow/debugworkerrestart_test.go":                                5,
 	"cmd/flow/main_test.go":                                              1,
 	"cmd/flow/workerinternallistener_test.go":                            1,
 	"cmd/flow/workershutdown_test.go":                                    2,
