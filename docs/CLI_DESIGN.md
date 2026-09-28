@@ -995,10 +995,11 @@ line. What is not: everything below.
    start correctly before this one is settled and reviewed.
 
 3. **The run-telemetry schema.** Status and duration are recorded today in
-   `GetTimeline`'s event history only for the activities task steps schedule,
-   and those events name their step by `TimelineEntry.step`, a display label
-   that is elided past 256 bytes and empty on runs started before labels
-   existed — not a node identity. An activity's outcome is not its step's
+   `GetTimeline`'s event history for the activities task steps schedule and
+   for the timers a `sleep:`, a `wait_until:`, or a signal wait's `timeout:`
+   starts (a started and a fired row, each timed), and those events name their
+   step by `TimelineEntry.step`, a display label that is elided past 256 bytes
+   and empty on runs started before labels existed — not a node identity. An activity's outcome is not its step's
    terminal outcome either: a step that fails evaluating its `if:`, resolving
    its inputs or `vars:`, or exceeding the `async:` width schedules nothing,
    and one whose `undo:` fails to register after its activity completed shows
@@ -1009,9 +1010,9 @@ line. What is not: everything below.
    path, and a segment-local completed count, and `GetResponse` for a finished
    run carries output values or an error. This slice adds what those lack, as
    additive fields or events `buf breaking` accepts, and reuses what already
-   exists: the timeline for what it records, `GetResponse.pending_activities`
-   for a live activity's attempt and backoff, and `RunProgress.pending_waits`
-   for a parked wait's position. It starts from an inventory of what each
+   exists: the timeline's activity and timer rows for what they record,
+   `GetResponse.pending_activities` for a live activity's attempt and backoff,
+   and `RunProgress.pending_waits` for a parked wait's position. It starts from an inventory of what each
    `Node` kind in `workflow.proto` records today and closes every gap that
    finds, which includes at least:
    - a canonical node identity that joins each step-scoped event to its
