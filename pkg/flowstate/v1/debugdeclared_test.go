@@ -117,6 +117,15 @@ func TestTheDeclarationWalksSurviveASharedCallee(t *testing.T) {
 	missing, err := v1.ParseDebugTarget("nowhere")
 	require.NoError(t, err)
 	assert.False(t, missing.DeclaredIn(level), "the walk answered for a step no workflow declares")
+
+	// As many qualifiers as the chain is deep, none of which match: keyed
+	// by the segments around each callee, every path would be its own key.
+	long, err := v1.ParseDebugTarget("q1/q2/q3/q4/q5/q6/q7/q8/q9/bottom")
+	require.NoError(t, err)
+	assert.False(t, long.DeclaredIn(level))
+	deep, err := v1.ParseDebugTarget("c1/c2/c3/c4/c5/c6/c7/c8/bottom")
+	require.NoError(t, err)
+	assert.True(t, deep.DeclaredIn(level), "a fully qualified path the program declares was not found")
 }
 
 // TestTheDeclarationWalkRevisitsACalleeFromShallower: a callee first reached at

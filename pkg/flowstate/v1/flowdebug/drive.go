@@ -135,12 +135,6 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return stale, err
 		}
 	}
-	if d.request != "" && !retry {
-		d.sent = append(d.sent, d.request)
-		if len(d.sent) > maxRememberedRequests {
-			d.sent = d.sent[1:]
-		}
-	}
 
 	switch verb {
 	case "status", "info":
@@ -169,6 +163,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH, "")
 
 	case "pause":
+		d.sending()
 		receipt, err := d.target.Pause(ctx, d.request)
 		if err != nil {
 			return nil, err
@@ -271,6 +266,20 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 	}
 }
 
+// sending records the running line's request id as sent, right before the
+// call that carries it to the target: a line that failed before reaching the
+// target — a usage error, a read that failed — is not a retry when repeated
+// under its id, and is judged stale like any new line.
+func (d *Driver) sending() {
+	if d.request == "" || slices.Contains(d.sent, d.request) {
+		return
+	}
+	d.sent = append(d.sent, d.request)
+	if len(d.sent) > maxRememberedRequests {
+		d.sent = d.sent[1:]
+	}
+}
+
 // changesSession reports whether verb changes the session rather than reads
 // it: a movement, a pause, or a change to its breakpoints.
 func changesSession(verb string) bool {
@@ -339,6 +348,7 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 		}
 		expected = current.GetRevision()
 	}
+	d.sending()
 	receipt, err := d.target.Resume(ctx, &v1.DebugResumeRequest{
 		RequestId:        cmp.Or(d.request, newRequestID()),
 		Action:           action,
@@ -495,6 +505,7 @@ func (d *Driver) adopt(ctx context.Context, named ...string) error {
 }
 
 func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1.DebugFailureMode) (*DriveResult, error) {
+	d.sending()
 	response, err := d.target.ReplaceBreakpoints(ctx, &v1.DebugSetBreakpointsRequest{
 		RequestId: cmp.Or(d.request, newRequestID()), Breakpoints: set, FailureMode: mode,
 	})

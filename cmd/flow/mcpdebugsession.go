@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
@@ -61,6 +62,15 @@ type debugSessions struct {
 	mu       sync.Mutex
 	sessions map[string]*debugSessionEntry
 	starts   map[string]string
+	// registry is shared by every call that reads the process-wide task
+	// registry, for as long as it runs, and held whole by a stubbed session
+	// for as long as its case can register a synthetic task in it: a lock
+	// spanning both, rather than a check that a session is open followed by
+	// a read that a session starting in between could see mid-swap. A
+	// semaphore rather than a sync.RWMutex so a start waits for readers
+	// within a bound, and a reader never waits at all.
+	registry *semaphore.Weighted
+
 	// ending are sessions no longer answered for, still being ended: a
 	// durable one's detach not yet sent, a stubbed case still holding the
 	// registry lock. A session is here from the moment it is forgotten until
@@ -155,9 +165,14 @@ func (t *lockedTranscript) note() string {
 func newDebugSessions(remote func() flowstatev1connect.WorkflowServiceClient) *debugSessions {
 	return &debugSessions{
 		remote: remote, sessions: map[string]*debugSessionEntry{}, starts: map[string]string{},
-		ending: map[string]*debugSessionEntry{},
+		ending: map[string]*debugSessionEntry{}, registry: semaphore.NewWeighted(registryReaders),
 	}
 }
+
+// registryReaders is [debugSessions.registry]'s weight: how many calls may
+// read the task registry at once. Only ever one or all of it, so its value
+// decides nothing but that a stubbed session excludes every reader.
+const registryReaders = 1 << 20
 
 // keep ends lapsed sessions on its own clock until ctx ends, so a session
 // nobody calls again is still released: a lease enforced only by the next
@@ -199,7 +214,9 @@ func (r *debugSessions) sweep() {
 	// it stays in [debugSessions.ending], where what depends on it waits.
 	for _, entry := range lapsed {
 		go func() {
-			entry.end(false)
+			// Nobody is there to tell of a detach that failed: the lease
+			// that lapsed is the one that now ends the hold.
+			_, _ = entry.end(false)
 			r.release(entry)
 		}()
 	}
@@ -383,16 +400,52 @@ func (r *debugSessions) unlessStubbed(handler mcp.ToolHandler) mcp.ToolHandler {
 	}
 }
 
+// readingRegistry takes a reader's share of the task registry for as long as
+// the caller holds it, or says why it cannot: a retained stubbed session holds
+// the registry, a synthetic task registered in it, for as long as its case
+// runs. A session that is ending is waited for, bounded, first.
+func (r *debugSessions) readingRegistry(ctx context.Context) (release func(), err error) {
+	if err := r.settle(ctx, stubbedEntry); err != nil {
+		return nil, err
+	}
+	if !r.registry.TryAcquire(1) {
+		holder := "starting"
+		if id, open := r.stubbed(); open {
+			holder = id
+		}
+
+		return nil, fmt.Errorf("retained debug session %s is running a stubbed case that holds this "+
+			"process's task registry; end it with %s first", holder, debugSessionEndTool)
+	}
+
+	return func() { r.registry.Release(1) }, nil
+}
+
+// readsRegistry wraps a tool that answers from the task registry, so it runs
+// holding a reader's share of it: refused while a stubbed session holds the
+// registry, and never overlapped by one starting.
+func (r *debugSessions) readsRegistry(handler mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		release, err := r.readingRegistry(ctx)
+		if err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+		defer release()
+
+		return handler(ctx, req)
+	}
+}
+
 // guardRegistryReaders is stdio's [flowmcp.Deps.WrapHandler]: the tools that
 // answer from this process's task registry — the RPCs this process answers
-// itself ([flowmcp.LocalTools]) — are refused while a retained stubbed session
-// holds that registry with a synthetic task in it, so none advertises or
-// compiles a task that vanishes when the session ends. Every other tool
-// dispatches to the deployment and is left as it is.
+// itself ([flowmcp.LocalTools]) — read it under [debugSessions.readsRegistry],
+// so none advertises or compiles a task a stubbed session registered and that
+// vanishes when it ends. Every other tool dispatches to the deployment and is
+// left as it is.
 func (r *debugSessions) guardRegistryReaders(tool string, next mcp.ToolHandler) mcp.ToolHandler {
 	for method := range flowmcp.LocalTools {
 		if flowmcp.ToolName(method) == tool {
-			return r.unlessStubbed(next)
+			return r.readsRegistry(next)
 		}
 	}
 
@@ -408,13 +461,11 @@ func (r *debugSessions) guardRegistryResource(uri string, next mcp.ResourceHandl
 	}
 
 	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		if err := r.settle(ctx, stubbedEntry); err != nil {
+		release, err := r.readingRegistry(ctx)
+		if err != nil {
 			return nil, err
 		}
-		if id, open := r.stubbed(); open {
-			return nil, fmt.Errorf("retained debug session %s is running a stubbed case that holds this "+
-				"process's task registry; end it with %s first", id, debugSessionEndTool)
-		}
+		defer release()
 
 		return next(ctx, req)
 	}
@@ -444,35 +495,38 @@ func errNoDebugSession(id string) error {
 
 // end releases a session: a durable run is detached (or left attached when
 // keep is set); a stubbed case is let finish, and cancelled if it cannot. It
-// reports whether the case has finished, and never waits longer than twice
+// reports whether the case has finished, and the error of a detach that did
+// not go through — the run is then still held, until its lease lapses or a
+// rejoin ends it — and never waits longer than twice
 // [debugSessionEndSettle]: a case blocked where cancellation does not reach —
 // waiting on the process-wide registry lock — is left to finish on its own
 // rather than hang the caller.
-func (e *debugSessionEntry) end(keep bool) bool {
+func (e *debugSessionEntry) end(keep bool) (bool, error) {
 	// After any command in flight, and before any that found this entry:
 	// those see retired once they hold calls.
 	e.calls.Lock()
 	defer e.calls.Unlock()
 
+	var detach error
 	if remote, ok := e.target.(*flowdebug.Remote); ok && keep {
 		_ = remote.Disconnect()
 	} else {
-		_ = e.target.Close()
+		detach = e.target.Close()
 	}
 	if e.done == nil {
-		return true
+		return true, detach
 	}
 	select {
 	case <-e.done:
-		return true
+		return true, detach
 	case <-time.After(debugSessionEndSettle):
 		e.cancel()
 	}
 	select {
 	case <-e.done:
-		return true
+		return true, detach
 	case <-time.After(debugSessionEndSettle):
-		return false
+		return false, detach
 	}
 }
 
@@ -813,6 +867,32 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return flowmcp.ToolError(err), nil
 	}
 
+	// The whole registry, held until the case stops: after every reader in
+	// flight, and before any that would overlap the case's registrations.
+	// A reader never waits for it, so the wait is bounded by theirs.
+	// Another stubbed session holding it is refused at once, as register
+	// would refuse it, rather than waited on for as long as that session
+	// runs.
+	if !r.registry.TryAcquire(registryReaders) {
+		if id, open := r.stubbed(); open {
+			return flowmcp.ToolError(fmt.Errorf("this server runs one stubbed debug session at a time, and %s is "+
+				"open; end it with %s before starting another", id, debugSessionEndTool)), nil
+		}
+		claim, stopClaim := context.WithTimeout(ctx, maxDebugSessionWait)
+		claimed := r.registry.Acquire(claim, registryReaders)
+		stopClaim()
+		if claimed != nil {
+			return flowmcp.ToolError(fmt.Errorf("a tool reading this process's task registry is still running, "+
+				"and a stubbed session needs it alone; try again: %w", claimed)), nil
+		}
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			r.registry.Release(registryReaders)
+		}
+	}()
+
 	transcript := &lockedTranscript{}
 	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Emit: transcript.add})
 	if err != nil {
@@ -841,8 +921,12 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return startedAgain(ctx, existing), nil
 	}
 
+	launched = true
 	go func() {
 		defer close(entry.done)
+		// Released before done closes, so a call settling on this session's
+		// end finds the registry free.
+		defer r.registry.Release(registryReaders)
 		defer cancel()
 
 		result := flowtest.RunSourceWith(runCtx, "<submitted>", []byte(args.Workflow), []byte(args.Tests),
@@ -1133,7 +1217,7 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		return flowmcp.ToolError(errNoDebugSession(entry.id)), nil
 	}
 
-	finished := entry.end(args.Keep)
+	finished, detach := entry.end(args.Keep)
 	go r.release(entry)
 	answer, err := entry.answer(ctx)
 	if err != nil {
@@ -1153,11 +1237,19 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		answer.Note = strings.TrimSpace("the case was cancelled and has not yet stopped, so it has no report. " + answer.Note)
 	}
 
+	if detach != nil {
+		// The session is forgotten either way, and the run is still held
+		// until its lease lapses: said as a failure, with the way to end it
+		// sooner, rather than reported as the end it was not.
+		answer.Note = strings.TrimSpace(fmt.Sprintf("the run was not detached: %v. It stays held until the "+
+			"session's lease lapses; rejoin it with %s (session_id %s) and end it again to release it now. %s",
+			detach, debugSessionAttachTool, entry.id, answer.Note))
+	}
 	result := answer.result()
 	// A case that did not pass is a failed call, as flowstate_test and the
 	// one-shot flowstate_debug report it, not a success whose report says
-	// otherwise.
-	if entry.report != nil && finished && testReportFailed(entry.report) {
+	// otherwise; so is an end that left the run held.
+	if (entry.report != nil && finished && testReportFailed(entry.report)) || detach != nil {
 		result.IsError = true
 	}
 

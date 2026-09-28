@@ -590,12 +590,14 @@ func TestEndingACaseThatCannotStopReturns(t *testing.T) {
 		}
 
 		start := time.Now()
-		assert.False(t, entry.end(false), "a case that never stopped was reported finished")
+		finished, _ := entry.end(false)
+		assert.False(t, finished, "a case that never stopped was reported finished")
 		assert.True(t, cancelled)
 		assert.Equal(t, 2*debugSessionEndSettle, time.Since(start))
 
 		close(entry.done)
-		assert.True(t, entry.end(false))
+		finished, _ = entry.end(false)
+		assert.True(t, finished)
 	})
 }
 

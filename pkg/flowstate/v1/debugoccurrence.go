@@ -495,12 +495,14 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 		return false
 	}
 	step, qualifiers := t.parts[len(t.parts)-1].id, t.parts[:len(t.parts)-1]
-	qualified := func(chain []*DebugSegment) bool {
-		if len(chain) < len(qualifiers) {
+	// matches reports whether the chain's last len(parts) segments are the
+	// containers parts name, in order.
+	matches := func(chain []*DebugSegment, parts []targetPart) bool {
+		if len(chain) < len(parts) {
 			return false
 		}
-		tail := chain[len(chain)-len(qualifiers):]
-		for i, part := range qualifiers {
+		tail := chain[len(chain)-len(parts):]
+		for i, part := range parts {
 			switch {
 			case tail[i].GetStepId() != part.id:
 				return false
@@ -513,20 +515,27 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 
 		return true
 	}
+	qualified := func(chain []*DebugSegment) bool { return matches(chain, qualifiers) }
 
-	// visited is each callee walked, with the depth it was walked at and the
-	// part of the chain around it a qualifier can reach; a walk that found
-	// the target returned at once, so each recorded one found nothing.
+	// visited is each callee walked, with the depth it was walked at and
+	// how the chain around it can still complete the qualifiers: for each j,
+	// whether its last j segments are the first j qualifiers, which is all a
+	// match deeper inside depends on. Keyed by that rather than by the
+	// segments themselves, so a target with many qualifiers cannot make every
+	// path its own key. A walk that found the target returned at once, so
+	// each recorded one found nothing.
 	type visit struct {
 		callee *Workflow
 		depth  int
-		around string
+		open   string
 	}
 	visited := map[visit]bool{}
-	around := func(chain []*DebugSegment) string {
+	open := func(chain []*DebugSegment) string {
 		var b strings.Builder
-		for _, segment := range chain[max(0, len(chain)-len(qualifiers)):] {
-			fmt.Fprintf(&b, "%s\x00%d\x00%s\x00", segment.GetStepId(), segment.GetKind(), segment.GetCallee())
+		for j := 1; j <= len(qualifiers) && j <= len(chain); j++ {
+			if matches(chain, qualifiers[:j]) {
+				fmt.Fprintf(&b, "%d,", j)
+			}
 		}
 
 		return b.String()
@@ -563,7 +572,7 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 				}
 				callee := kind.Call.GetWorkflow()
 				inner := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL, callee.GetName())
-				key := visit{callee: callee, depth: depth + 1, around: around(inner)}
+				key := visit{callee: callee, depth: depth + 1, open: open(inner)}
 				if visited[key] {
 					break
 				}

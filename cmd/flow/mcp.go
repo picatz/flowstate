@@ -288,7 +288,7 @@ func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSe
 
 	return append([]flowmcp.ToolRegistration{
 		// Runs a workflow's tasks from the registry a stubbed session holds.
-		{Tool: flowmcp.RunLocalTool(), Handler: sessions.unlessStubbed(runLocalToolHandler(cmd, providers))},
+		{Tool: flowmcp.RunLocalTool(), Handler: sessions.readsRegistry(runLocalToolHandler(cmd, providers))},
 		// Both run a stubbed case under the process-wide registry lock, so
 		// neither may run while a retained stubbed session holds it.
 		{Tool: flowmcp.TestTool(), Handler: sessions.unlessStubbed(testToolHandler(0))},

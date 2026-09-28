@@ -265,6 +265,18 @@ func TestARetryIsAnsweredFromTheTargetNotJudgedStale(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, fresh.Receipt.GetStatus(),
 		"a new line meant for a revision the run has left was not refused")
+
+	// A line that failed before reaching the target was never sent: its id
+	// repeated is a new line, judged stale like any other.
+	_, err = driver.DoWith(t.Context(), "brek build", flowdebug.DoOptions{RequestID: "b-1", ExpectedRevision: 2})
+	require.Error(t, err)
+	target.mu.Lock()
+	target.snapshot = &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD}
+	target.mu.Unlock()
+	again, err := driver.DoWith(t.Context(), "break build", flowdebug.DoOptions{RequestID: "b-1", ExpectedRevision: 2})
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_STALE, again.Receipt.GetStatus(),
+		"a line that never reached the target was let through as a retry")
 }
 
 // TestAFreshDriverLeavesTheFailureModeAlone: a driver that has not been told

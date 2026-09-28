@@ -374,6 +374,9 @@ func TestAStubbedSessionFencesTheRegistryReaders(t *testing.T) {
 	r.mu.Lock()
 	entry.local = session
 	r.mu.Unlock()
+	// As a started stubbed session holds it, for as long as its case runs.
+	require.NoError(t, r.registry.Acquire(t.Context(), registryReaders))
+	t.Cleanup(func() { r.registry.Release(registryReaders) })
 
 	for _, tool := range readers {
 		assert.False(t, call(tool), "%s answered from a registry a stubbed session holds", tool)
@@ -440,4 +443,67 @@ func TestAStubbedSessionFencesTheRegistryOverStdio(t *testing.T) {
 	// An ended session still ending is waited for, bounded, by the fence
 	// itself, so the next validate answers.
 	assert.False(t, validate().IsError, "validate stayed refused after the session ended")
+}
+
+// TestARegistryReaderHoldsItsShareForItsWholeRun: a reader holds its share of
+// the registry until it returns, so a stubbed session cannot take the registry
+// — and register a synthetic task in it — while a read is still in flight; and
+// a reader never waits for a session, it is refused.
+func TestARegistryReaderHoldsItsShareForItsWholeRun(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	inside := make(chan struct{})
+	leave := make(chan struct{})
+	reader := r.readsRegistry(func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		close(inside)
+		<-leave
+
+		return &mcp.CallToolResult{}, nil
+	})
+	done := make(chan *mcp.CallToolResult)
+	go func() {
+		result, _ := reader(t.Context(), toolRequest(t, map[string]any{}))
+		done <- result
+	}()
+	<-inside
+
+	assert.False(t, r.registry.TryAcquire(registryReaders), "a session took the registry while a read was in flight")
+	close(leave)
+	require.False(t, (<-done).IsError)
+	require.True(t, r.registry.TryAcquire(registryReaders), "the reader's share outlived its run")
+
+	// Held whole, as by a stubbed session: a reader is refused, not queued.
+	result, err := reader(t.Context(), toolRequest(t, map[string]any{}))
+	require.NoError(t, err)
+	assert.True(t, result.IsError, "a reader ran while a session held the registry")
+	r.registry.Release(registryReaders)
+}
+
+// TestAnEndThatCouldNotDetachSaysSo: an end whose detach the server refused
+// left the run held until its lease lapses. The session is forgotten either
+// way, so the end says it failed and how to end the hold sooner — a rejoin
+// and a second end — rather than reporting the end it was not.
+func TestAnEndThatCouldNotDetachSaysSo(t *testing.T) {
+	t.Parallel()
+
+	recorder := &detachRecorder{refuseFirst: true}
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(recorder))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+
+	result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w"}))
+	require.NoError(t, err)
+	attached := replyOf(t, result)
+	require.False(t, result.IsError, attached.raw)
+
+	result, err = r.end(t.Context(), toolRequest(t, map[string]any{"session_id": attached.SessionID}))
+	require.NoError(t, err)
+	ended := replyOf(t, result)
+	require.True(t, result.IsError, "an end that left the run held was reported as ended: %s", ended.raw)
+	assert.Contains(t, ended.Note, "was not detached")
+	assert.Contains(t, ended.Note, debugSessionAttachTool, "the end did not say how to release the run")
 }
