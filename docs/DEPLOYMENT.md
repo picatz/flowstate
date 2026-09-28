@@ -884,11 +884,14 @@ WantedBy=multi-user.target
 
 Each build sets its own `FLOWSTATE_BUILD_ID`. Once the worker unit for a new
 build is running, make it the current version (or ramp a share of new runs to
-it with `set-ramping-version`), or it receives no new runs:
+it with `set-ramping-version`), or it receives no new runs. The `temporal` CLI
+does not read the units' environment files, so give it the same Temporal
+address (and TLS or API-key options, if the units use them):
 
 ```console
 $ temporal worker deployment set-current-version --yes \
-    --namespace production --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
+    --address temporal.internal:7233 --namespace production \
+    --deployment-name flowstate --build-id 2026.08.06-a1b2c3d
 ```
 
 `/etc/flowstate/server.env`:
@@ -2185,8 +2188,9 @@ necessary.
 
 A versioned worker also receives **no new runs until its version is the
 deployment's current or ramping version**, and nothing in `flow` sets either.
-Promote each build once its workers are polling, in the Temporal namespace they
-poll:
+Promote each build once its workers are polling, against the same Temporal
+address and namespace they poll (`--address`, `--namespace`, and any TLS or
+API-key options; the CLI defaults to `localhost:7233`):
 
 ```console
 $ temporal worker deployment set-current-version --yes \
