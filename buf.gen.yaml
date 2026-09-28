@@ -19,6 +19,11 @@ managed:
   override:
     - file_option: go_package_prefix
       value: github.com/picatz/flowstate/pkg
+# The schema module only. buf.yaml names proto/ as the workspace's one
+# module, and naming it here too keeps a generate from the root scoped to it
+# explicitly: the plugins/*/proto schemas have recipes of their own.
+inputs:
+  - directory: proto
 plugins:
   # google.golang.org/protobuf
   - local: [go, tool, protoc-gen-go]
