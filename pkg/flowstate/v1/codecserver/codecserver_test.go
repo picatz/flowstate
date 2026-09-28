@@ -305,9 +305,16 @@ func TestBrowserOriginsAreExact(t *testing.T) {
 		require.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"), bad)
 	}
 
-	for _, origin := range []string{"*", "https://x.example/", ""} {
+	for _, origin := range []string{
+		"*", "https://x.example/", "", "null", "https://x.example/path", "https://user@x.example",
+		"ftp://x.example", "https://x.example?q=1", "https://x.example#f", "https://X.example", "x.example",
+	} {
 		_, err := codecserver.New(codecserver.Options{Codecs: f.codecs, AllowedOrigins: []string{origin}})
 		require.Error(t, err, "origin %q was accepted", origin)
+	}
+	for _, origin := range []string{"https://x.example", "http://localhost:8233", "https://[::1]:8080"} {
+		_, err := codecserver.New(codecserver.Options{Codecs: f.codecs, AllowedOrigins: []string{origin}})
+		require.NoError(t, err, "origin %q was refused", origin)
 	}
 }
 

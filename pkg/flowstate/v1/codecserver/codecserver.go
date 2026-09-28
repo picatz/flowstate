@@ -67,6 +67,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -190,9 +191,10 @@ func New(opts Options) (*Handler, error) {
 		}
 	}
 	for _, origin := range opts.AllowedOrigins {
-		if origin == "*" || origin == "" || strings.TrimRight(origin, "/") != origin {
-			return nil, fmt.Errorf("codec server: allowed origin %q must be an exact scheme://host[:port] with no "+
-				"trailing slash, and never a wildcard", origin)
+		if !isSerializedOrigin(origin) {
+			return nil, fmt.Errorf("codec server: allowed origin %q must be an exact lowercase http(s)://host[:port] "+
+				"as a browser sends it: no path, trailing slash, query, fragment, or userinfo, never a wildcard, "+
+				"and never the opaque origin null", origin)
 		}
 	}
 	opts.MaxBodyBytes = cmp.Or(opts.MaxBodyBytes, DefaultMaxBodyBytes)
@@ -208,6 +210,19 @@ func New(opts Options) (*Handler, error) {
 		opts:    opts,
 		limiter: &limiter{limit: opts.RequestsPerMinute, windows: map[string]*window{}, now: opts.now},
 	}, nil
+}
+
+// isSerializedOrigin reports whether origin is a tuple origin exactly as a
+// browser serializes it in an Origin header (RFC 6454 section 6.1): an http
+// or https scheme, a lowercase host and optional port, and nothing else. The
+// opaque origin "null" is refused: browsers send it for sandboxed frames and
+// local documents alike, so granting it grants all of them.
+func isSerializedOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	return origin == u.Scheme+"://"+strings.ToLower(u.Host)
 }
 
 // Headers sets the response headers every answer carries (no-store, and the
