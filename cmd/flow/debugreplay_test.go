@@ -73,7 +73,7 @@ func TestDebugReplayRunsTheScriptShippedBesideAnExample(t *testing.T) {
 		filepath.Join("..", "..", "examples", "loop-accumulate", "workflow.yaml"))
 	require.NoError(t, res.Err)
 
-	assert.Contains(t, res.Stderr, "break at term", "the conditional breakpoint never fired")
+	assert.Contains(t, res.Stderr, "break at countup[2]/term", "the conditional breakpoint never fired, or not at the iteration it names")
 	assert.Contains(t, res.Stderr, `{"n":3,"sum":3}`,
 		"the inspection did not answer with the carried value at the third pass")
 	assert.Contains(t, res.Stderr, "true", "the arithmetic the example's own output describes did not hold")
@@ -132,7 +132,7 @@ outputs: {}
 	res := runFlow(t, "debug", "replay", writeDebugScript(t, "break orders/charge\ncontinue\ncontinue\ncontinue\n"), path)
 	require.NoError(t, res.Err)
 	assert.Contains(t, res.Stderr, "breakpoint at orders/charge")
-	assert.Equal(t, 2, strings.Count(res.Stderr, "break at charge"), "the addressed breakpoint did not hold at each iteration")
+	assert.Equal(t, 2, strings.Count(res.Stderr, "]/charge ("), "the addressed breakpoint did not hold at each iteration")
 
 	res = runFlow(t, "debug", "replay", writeDebugScript(t, "break orders/refund\ncontinue\n"), path)
 	require.Error(t, res.Err)

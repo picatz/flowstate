@@ -458,15 +458,16 @@ func TestScopeGroupsCarryTheRootTheirNamesHangFrom(t *testing.T) {
 		roots[group.Group] = group.Root
 	}
 
-	// The rooted groups, and the two that are deliberately bare: `vars` here is
-	// a loop's `as:` and a step's own `vars:`, which resolve under no root at
-	// all, while the workflow's declared `vars:` are what `vars.` reaches.
+	// The rooted groups, and the one that is deliberately bare: `locals` is a
+	// loop's `as:` and a step's own `vars:`, which resolve under no root at
+	// all, while `vars` is the workflow's declared `vars:`, what `vars.`
+	// reaches.
 	assert.Equal(t, "steps", roots["steps"])
 	assert.Equal(t, "inputs", roots["inputs"])
-	assert.Equal(t, "vars", roots["workflow vars"])
+	assert.Equal(t, "vars", roots["vars"])
 	assert.Equal(t, "run", roots["run"])
 	assert.Equal(t, "trigger", roots["trigger"])
-	assert.Equal(t, "", roots["vars"], "a bare binding was given a root it cannot be reached through")
+	assert.Equal(t, "", roots["locals"], "a bare binding was given a root it cannot be reached through")
 
 	// And the root is the prefix that actually resolves, which is the claim a
 	// renderer is making when it uses one.

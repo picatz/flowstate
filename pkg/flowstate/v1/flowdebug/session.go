@@ -2,6 +2,7 @@ package flowdebug
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1014,8 +1015,10 @@ func (s *Session) conditionHolds(ctx context.Context, what, id string, condition
 	return holds, nil
 }
 
-// announce prints where the run has stopped.
-func (s *Session) announce(node *v1.Node) {
+// announce prints where the run has stopped, by its address: the step id
+// alone cannot say which iteration, branch or call arrival this is, and the
+// address is what `break` and `until` take to name it again.
+func (s *Session) announce(node *v1.Node, occurrence *v1.DebugOccurrence) {
 	at := ""
 	if s.clock != nil {
 		now := s.clock.Now()
@@ -1030,7 +1033,7 @@ func (s *Session) announce(node *v1.Node) {
 		at = fmt.Sprintf("   t=%s", elapsed)
 	}
 
-	s.printfTone(ToneBreak, "break at %s (%s)%s\n", node.GetId(), v1.NodeKind(node), at)
+	s.printfTone(ToneBreak, "break at %s (%s)%s\n", cmp.Or(occurrence.GetAddress(), node.GetId()), v1.NodeKind(node), at)
 }
 
 // Close releases the session's reader.

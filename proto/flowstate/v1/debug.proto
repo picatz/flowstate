@@ -439,9 +439,10 @@ message DebugBinding {
 // debug adapter renders one pane per group, and a person reading `scope` is
 // looking for which *kind* of name they can reach.
 message DebugScopeGroup {
-  // Group is the root the names hang from as a reader sees it — `steps`,
-  // `vars`, the workflow's declared vars, and the bare bindings an autopsy
-  // adds.
+  // Group is the label a reader sees, named for how the names are reached:
+  // `steps`, `inputs`, `vars` (the workflow's declared `vars:`), `run`,
+  // `trigger`, `locals` (a loop's `as:` and a step's own `vars:`, bound
+  // bare), and `bound` (the bare bindings an autopsy adds).
   string group = 1;
 
   // Root is the expression prefix these names hang from — `steps`, `inputs`,
@@ -543,7 +544,8 @@ enum DebugCommandVerb {
   // List the commands.
   DEBUG_COMMAND_VERB_HELP = 12;
 
-  // List the current step and the `call:` chain that reached it.
+  // List the current step and each iteration, branch, arm, and call around
+  // it, innermost first.
   DEBUG_COMMAND_VERB_BACKTRACE = 13;
 
   // Next is `next`: run this step, including anything inside it, and stop at
