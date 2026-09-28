@@ -396,9 +396,6 @@ func TestTheDocumentedKeyringsParse(t *testing.T) {
 	require.GreaterOrEqual(t, blocks, 6, "the keyring examples were not found, so nothing was checked")
 }
 
-// TestTheStartupBudgetCoversEveryStartupCall: a keyring whose providers were
-// given long timeouts gets the time its startup calls may take, so opening it
-// is not cut short by a fixed bound, and a local keyring keeps the floor.
 // TestAVaultCAFileIsCheckedLikeTheKeyring: a provider's CA bundle decides
 // which server receives the Vault token and every wrap, so it is read like
 // the keyring's other such files: bounded, and refused if another account
@@ -432,9 +429,12 @@ providers:
 	big := make([]byte, envelope.MaxCAFileBytes+1)
 	writeFile(t, dir, "big.pem", big, 0o644)
 	_, err = load(t, dir, config("big.pem"))
-	require.Error(t, err)
+	require.ErrorContains(t, err, "byte limit")
 }
 
+// TestTheStartupBudgetCoversEveryStartupCall: a keyring whose providers were
+// given long timeouts gets the time its startup calls may take, so opening it
+// is not cut short by a fixed bound, and a local keyring keeps the floor.
 func TestTheStartupBudgetCoversEveryStartupCall(t *testing.T) {
 	t.Parallel()
 

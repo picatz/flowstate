@@ -244,6 +244,10 @@ func New(opts Options) (*Handler, error) {
 				"and never the opaque origin null", origin)
 		}
 	}
+	if opts.MaxBodyBytes < 0 || opts.MaxPayloads < 0 || opts.RequestsPerMinute < 0 ||
+		opts.WorkTimeout < 0 || opts.MaxConcurrent < 0 {
+		return nil, errors.New("codec server: a limit is negative; each is a positive bound, or zero for its default")
+	}
 	opts.MaxBodyBytes = cmp.Or(opts.MaxBodyBytes, DefaultMaxBodyBytes)
 	opts.MaxPayloads = cmp.Or(opts.MaxPayloads, DefaultMaxPayloads)
 	opts.RequestsPerMinute = cmp.Or(opts.RequestsPerMinute, DefaultRequestsPerMinute)

@@ -576,3 +576,22 @@ func (b *heldBody) Read([]byte) (int, error) {
 	<-b.release
 	return 0, io.EOF
 }
+
+// TestNegativeLimitsAreRefused: a negative bound is a configuration error New
+// reports, not a value it builds with (a negative MaxConcurrent would panic).
+func TestNegativeLimitsAreRefused(t *testing.T) {
+	t.Parallel()
+
+	for name, mutate := range map[string]func(*codecserver.Options){
+		"MaxBodyBytes":      func(o *codecserver.Options) { o.MaxBodyBytes = -1 },
+		"MaxPayloads":       func(o *codecserver.Options) { o.MaxPayloads = -1 },
+		"RequestsPerMinute": func(o *codecserver.Options) { o.RequestsPerMinute = -1 },
+		"WorkTimeout":       func(o *codecserver.Options) { o.WorkTimeout = -time.Second },
+		"MaxConcurrent":     func(o *codecserver.Options) { o.MaxConcurrent = -1 },
+	} {
+		opts := codecserver.Options{Codecs: newFixture(t, nil).codecs}
+		mutate(&opts)
+		_, err := codecserver.New(opts)
+		require.ErrorContains(t, err, "negative", name)
+	}
+}
