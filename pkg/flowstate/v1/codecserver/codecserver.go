@@ -103,6 +103,7 @@ const (
 	DefaultMaxPayloads         = 256
 	DefaultRequestsPerMinute   = 600
 	DefaultWorkTimeout         = 20 * time.Second
+	DefaultMaxConcurrent       = 16
 	defaultMaxTrackedCallers   = 10_000
 	rateWindow                 = time.Minute
 	maxNamespaceHeaderBytes    = 255
@@ -159,6 +160,14 @@ type Options struct {
 	MaxPayloads       int
 	RequestsPerMinute int
 
+	// MaxConcurrent bounds the requests read and decoded at once, across
+	// every caller: past it a request is refused with 503 before its body is
+	// read. The per-caller rate bounds how many a caller sends in a minute,
+	// not how many are in memory together, and callers are many; this is
+	// what makes MaxConcurrent × MaxBodyBytes the most body this server
+	// holds. Zero is DefaultMaxConcurrent.
+	MaxConcurrent int
+
 	// WorkTimeout bounds the codec work one request may start: payloads are
 	// processed one at a time, and none is started once it has passed or the
 	// caller has gone. Zero is DefaultWorkTimeout. A server's response
@@ -174,6 +183,8 @@ type Options struct {
 type Handler struct {
 	opts    Options
 	limiter *limiter
+	// inFlight holds one token per request being read or decoded.
+	inFlight chan struct{}
 }
 
 // New returns a handler, or an error naming what is wrong with opts.
@@ -201,14 +212,16 @@ func New(opts Options) (*Handler, error) {
 	opts.MaxPayloads = cmp.Or(opts.MaxPayloads, DefaultMaxPayloads)
 	opts.RequestsPerMinute = cmp.Or(opts.RequestsPerMinute, DefaultRequestsPerMinute)
 	opts.WorkTimeout = cmp.Or(opts.WorkTimeout, DefaultWorkTimeout)
+	opts.MaxConcurrent = cmp.Or(opts.MaxConcurrent, DefaultMaxConcurrent)
 	opts.Logger = cmp.Or(opts.Logger, slog.Default())
 	if opts.now == nil {
 		opts.now = time.Now
 	}
 
 	return &Handler{
-		opts:    opts,
-		limiter: &limiter{limit: opts.RequestsPerMinute, windows: map[string]*window{}, now: opts.now},
+		opts:     opts,
+		limiter:  &limiter{limit: opts.RequestsPerMinute, windows: map[string]*window{}, now: opts.now},
+		inFlight: make(chan struct{}, opts.MaxConcurrent),
 	}, nil
 }
 
@@ -326,6 +339,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.limiter.allow(cmp.Or(principal.ID(), "anonymous")) {
 		header.Set("Retry-After", "60")
 		h.refuse(ctx, w, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED, http.StatusTooManyRequests, "too many requests")
+		return
+	}
+
+	// Taken before the body is read, and without waiting: a server at its
+	// bound refuses at once rather than queueing bodies it would then hold.
+	select {
+	case h.inFlight <- struct{}{}:
+		defer func() { <-h.inFlight }()
+	default:
+		header.Set("Retry-After", "1")
+		h.refuse(ctx, w, subject, v1.AuditDenyCode_AUDIT_DENY_CODE_RATE_LIMITED, http.StatusServiceUnavailable, "server busy")
 		return
 	}
 

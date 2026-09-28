@@ -17,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/hpke"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/vault/vaulttest"
+	secretsvault "github.com/picatz/flowstate/pkg/flowstate/v1/secrets/vault"
 )
 
 // writeFile writes data under dir with mode.
@@ -340,7 +341,8 @@ providers:
 		timeout string
 		want    time.Duration
 	}{
-		{"", envelope.DefaultProviderTimeout},
+		// No timeout is the Vault client's default per request, not none.
+		{"", 2 * secretsvault.DefaultTimeout},
 		{", timeout: 1s", envelope.DefaultProviderTimeout},
 		{", timeout: 30s", time.Minute},
 	} {
@@ -416,4 +418,17 @@ providers:
 	// One login, four calls to describe e in each of two namespaces, two
 	// wraps in each: 13 calls.
 	require.Equal(t, 13*2*time.Minute, envelope.StartupBudget(shared))
+
+	// A provider that names no timeout still lets each request run for the
+	// Vault client's default, and the budget allows it that.
+	defaulted, err := envelope.ParseConfig([]byte(`
+namespaces:
+  a: {current: a, keys: [{id: a, vault: {provider: corp, key: a}}]}
+  b: {current: b, keys: [{id: b, vault: {provider: corp, key: b}}]}
+providers:
+  - name: corp
+    vault: {address: 'https://vault.example.com', token_env: T}
+`))
+	require.NoError(t, err)
+	require.Equal(t, 11*2*secretsvault.DefaultTimeout, envelope.StartupBudget(defaulted))
 }

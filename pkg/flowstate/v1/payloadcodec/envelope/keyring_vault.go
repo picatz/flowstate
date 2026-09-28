@@ -57,7 +57,9 @@ func openProviders(cfgs []*v1.PayloadKeyProvider, opts OpenOptions) (map[string]
 		if vc.GetCaFile() != "" {
 			vopts = append(vopts, secretsvault.WithRootCAsFile(keyLoader{opts: opts}.resolve(vc.GetCaFile())))
 		}
-		var timeout time.Duration
+		// The client's own default when none is configured: that is what a
+		// request is allowed, and what the deadlines here must allow it.
+		timeout := secretsvault.DefaultTimeout
 		if d := vc.GetTimeout().AsDuration(); vc.GetTimeout() != nil && d > 0 {
 			timeout = d
 			vopts = append(vopts, secretsvault.WithTimeout(d))
@@ -86,9 +88,20 @@ const MinStartupBudget = 30 * time.Second
 func StartupBudget(cfg *v1.PayloadKeyring) time.Duration {
 	var longest time.Duration
 	for _, p := range cfg.GetProviders() {
-		longest = max(longest, p.GetVault().GetTimeout().AsDuration())
+		if vc := p.GetVault(); vc != nil {
+			longest = max(longest, vaultRequestTimeout(vc))
+		}
 	}
 	return startupBudget(cfg, max(DefaultProviderTimeout, 2*longest))
+}
+
+// vaultRequestTimeout is how long one request to a Vault provider may take:
+// its configured timeout, or the client's default when it names none.
+func vaultRequestTimeout(vc *v1.PayloadVaultProvider) time.Duration {
+	if d := vc.GetTimeout().AsDuration(); vc.GetTimeout() != nil && d > 0 {
+		return d
+	}
+	return secretsvault.DefaultTimeout
 }
 
 func startupBudget(cfg *v1.PayloadKeyring, perCall time.Duration) time.Duration {

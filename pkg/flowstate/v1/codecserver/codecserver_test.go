@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"testing/synctest"
@@ -37,9 +38,10 @@ const (
 // fixture is two tenants, each mapped to a Temporal namespace of its own, with
 // a keyring holding both namespaces' keys, and the server in front of it.
 type fixture struct {
-	codecs payloadcodec.Config
-	server *httptest.Server
-	trail  *bytes.Buffer
+	codecs  payloadcodec.Config
+	server  *httptest.Server
+	handler http.Handler
+	trail   *bytes.Buffer
 }
 
 // principals stand in for the trust policy's verifier: a bearer token names a
@@ -80,16 +82,17 @@ namespaces:
 	h, err := codecserver.New(opts)
 	require.NoError(t, err)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if p, ok := principals[token]; ok {
 			r = r.WithContext(auth.ContextWithPrincipal(r.Context(), p))
 		}
 		h.ServeHTTP(w, r)
-	}))
+	})
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	return &fixture{codecs: opts.Codecs, server: srv, trail: trail}
+	return &fixture{codecs: opts.Codecs, server: srv, handler: handler, trail: trail}
 }
 
 // seal is what a worker in namespace ns writes to history.
@@ -495,4 +498,51 @@ func TestABodyThatCannotBeReadIsNotASizeRefusal(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.NotContains(t, rec.Body.String(), "limit", "a failed read was reported as a size refusal")
+}
+
+// TestRequestsInFlightAreBoundedAcrossCallers: the per-caller rate bounds how
+// many requests a caller sends in a minute, not how many bodies the server
+// holds at once. Past MaxConcurrent, a request is refused before its body is
+// read, whoever sends it, and the slot is free again once a request is done.
+func TestRequestsInFlightAreBoundedAcrossCallers(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, func(o *codecserver.Options) { o.MaxConcurrent = 1 })
+	a := f.seal(t, "ns-a", markerA)
+
+	// Served in process, so the body is read by the handler itself: its
+	// first read says the request holds the one slot, and it holds it until
+	// released.
+	body := &heldBody{reading: make(chan struct{}), release: make(chan struct{})}
+	req := httptest.NewRequest(http.MethodPost, "/codec"+codecserver.DecodeEndpoint, body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer a-decoder")
+	req.Header.Set(codecserver.NamespaceHeader, "ns-a")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.handler.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-body.reading
+
+	resp, _ := f.post(t, codecserver.DecodeEndpoint, "b-decoder", "ns-b", f.seal(t, "ns-b", markerB))
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "another caller was served while the one slot was held")
+	require.Equal(t, "1", resp.Header.Get("Retry-After"))
+
+	close(body.release)
+	<-done
+	resp, _ = f.post(t, codecserver.DecodeEndpoint, "a-decoder", "ns-a", a)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "the slot was not given back")
+}
+
+// heldBody is a request body whose first read reports it, then waits.
+type heldBody struct {
+	reading, release chan struct{}
+	once             sync.Once
+}
+
+func (b *heldBody) Read([]byte) (int, error) {
+	b.once.Do(func() { close(b.reading) })
+	<-b.release
+	return 0, io.EOF
 }
