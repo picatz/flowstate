@@ -164,7 +164,8 @@ next step boundary, and never interrupts work in flight. The run held at
 `orders`, but a durable run holds only where it has one position — top-level
 steps and a callee's top-level steps — so `continue` ran the loop and the
 parallel block whole, and `step` from `receipt` entered the callee. A breakpoint
-on `orders/charge` would resolve and never hold here.
+on `orders/charge` is reported not armed here, saying to break at the enclosing
+step instead, and `until orders/charge` is refused with the run still held.
 
 `disconnect`, instead of `detach`, leaves the session attached for a later
 command. Each of these is one call, for a script or an agent:

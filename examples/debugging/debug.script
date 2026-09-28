@@ -5,20 +5,22 @@
 # A line starting with `#` is a comment and every other line is a command. There
 # are no blank lines: at a prompt an empty line means `step`.
 #
+# A step is named by its id or by its address, as at the prompt.
+#
 # Stop inside the loop at the one order over the threshold, not at every order.
 # `amount` is the loop's binding, in scope exactly where `charge` runs.
-break charge if amount > inputs.threshold
+break orders/charge if amount > inputs.threshold
 continue
 inspect amount
 # Record the remaining orders without stopping at them: a logpoint.
-delete charge
-log charge charging {amount}
+delete orders/charge
+log orders/charge charging {amount}
 # A step in the second branch of the parallel block.
-break fraud
+break checks#1/fraud
 continue
 inspect steps.flagged.value
 # Run to a step inside the called workflow, and see the call around it.
-until send
+until receipt/send
 backtrace
 inspect steps.compose.value
 continue
