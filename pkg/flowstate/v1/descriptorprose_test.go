@@ -185,11 +185,10 @@ func TestCommentsAlreadyOnADescriptorSurviveReserialization(t *testing.T) {
 	}, commentsOf(t, second))
 }
 
-// TestTheDescriptorBoundIsTheBoundAHostApplies is the agreement the constants
-// exist for: a descriptor the plugin SDK accepts at startup is one a host with
-// default configuration accepts, so an author cannot be refused at a host for a
-// size their own build called fine.
-func TestTheDescriptorBoundIsTheBoundAHostApplies(t *testing.T) {
+// TestTheDescriptorBoundsAreTheHostDefaults pins the defaults a host's plugin
+// Config applies, so changing what a default-configured host accepts is a
+// deliberate edit here rather than a side effect.
+func TestTheDescriptorBoundsAreTheHostDefaults(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, 1<<20, DefaultMaxDescriptorBytes)
