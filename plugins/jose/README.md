@@ -92,7 +92,7 @@ grant rather than beside it.
 | `issuer`, `subject` | the verified `iss` and `sub` |
 | `trust_name` | the policy entry that admitted the token |
 | `audience` | the verified `aud`, always a list |
-| `expires_at`, `issued_at` | the verified time claims, RFC 3339, empty when absent |
+| `expires_at`, `issued_at` | the verified `exp` and `iat`, RFC 3339; the verifier requires both, so a token missing either is refused and these are always set |
 | `claims` | the whole verified claim set, as a map |
 
 ## Verification is not authorization
