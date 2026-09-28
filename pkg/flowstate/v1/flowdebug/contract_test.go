@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -707,4 +708,47 @@ func TestAnEndedSessionIsNeverHeldAgain(t *testing.T) {
 			assert.Equal(t, v1.DebugRunState_DEBUG_RUN_STATE_DETACHED, final.GetState(), "an ended session left its terminal state")
 		})
 	}
+}
+
+// TestADeclinedTypedBreakpointIsNamedByWhereItWasSet: a typed breakpoint's id
+// is the client's own key — DAP's is an index into its request — so the notice
+// that its condition could not be evaluated names the step it was set on, not
+// the id, which names nothing the author wrote.
+func TestADeclinedTypedBreakpointIsNamedByWhereItWasSet(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var printed strings.Builder
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile},
+		func(opts *flowdebug.Options) {
+			opts.Emit = func(text string, _ flowdebug.Tone) {
+				mu.Lock()
+				defer mu.Unlock()
+				printed.WriteString(text)
+			}
+		})
+	target := flowdebug.Target(run.session)
+	waitHeld(t, target, 0)
+
+	response, err := target.ReplaceBreakpoints(t.Context(), &v1.DebugSetBreakpointsRequest{
+		RequestId: "bp",
+		Breakpoints: []*v1.DebugBreakpoint{
+			{Id: "function:1", Step: "each/touch", Condition: "steps.nothing.value == 1"},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, response.GetBreakpoints()[0].GetVerified(), response.GetBreakpoints()[0].GetMessage())
+
+	receipt, err := target.Resume(t.Context(), &v1.DebugResumeRequest{
+		RequestId: "go", ExpectedRevision: response.GetReceipt().GetRevision(), Action: v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, receipt.GetStatus(), receipt.GetMessage())
+	require.NoError(t, <-run.done)
+
+	mu.Lock()
+	out := printed.String()
+	mu.Unlock()
+	assert.Contains(t, out, "breakpoint at each/touch: the condition could not be evaluated here")
+	assert.NotContains(t, out, "function:1", "the notice named the client's key rather than the step")
 }

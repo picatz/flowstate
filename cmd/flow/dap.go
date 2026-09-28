@@ -41,7 +41,8 @@ func newDAPCommand() *cobra.Command {
 		Short: "Debug a workflow from an editor, over the Debug Adapter Protocol",
 		Long: "Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and " +
 			"continue buttons drive a Flowstate run.\n\n" +
-			"A `launch` request runs the Flowfile named as `program` locally. Breakpoints can be set " +
+			"A `launch` request runs the Flowfile named as `program` locally, with its `inputs` object as the " +
+			"run's arguments. Breakpoints can be set " +
 			"on its lines, or as *function* breakpoints named after a step (`build`, " +
 			"`pages/page`, `pages[2]/page`), with conditions, hit counts and log messages.\n\n" +
 			"An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run " +
@@ -235,6 +236,15 @@ func launchDebuggedRun(
 	if err := v1.ResolvePlugins(workflow, catalog); err != nil {
 		return nil, fmt.Errorf("flowdap: resolving plugins before this run: %w", err)
 	}
+	// The run's arguments, bound before anything runs and after the
+	// disclosure decision, so a refusal quoting one is shown only where
+	// values may be. A launch missing a required input could only fail, and
+	// the launch's own response is where an editor shows why.
+	inputs, err := jsonRunInputs(workflow, args.Inputs, "the launch configuration's inputs",
+		"arguments go in the `inputs` object of the launch configuration, keyed by the name the workflow declares under `inputs:`")
+	if err != nil {
+		return nil, fmt.Errorf("flowdap: %w", err)
+	}
 
 	sourceMap := source.sourceMap(workflow)
 	session, err := flowdebug.New(flowdebug.Options{
@@ -243,6 +253,11 @@ func launchDebuggedRun(
 		Emit:       func(text string, _ flowdebug.Tone) { console.write(text) },
 		Workflow:   workflow,
 		SourceMap:  sourceMap,
+		// Held at the first step only when the editor asked to be: the
+		// breakpoints are set before the run starts, so a run that is not
+		// to stop on entry need not hold there only to be released at once,
+		// narrating a stop the editor never shows.
+		Continue: args.StopOnEntry != nil && !*args.StopOnEntry,
 	})
 	if err != nil {
 		return nil, err
@@ -279,7 +294,7 @@ func launchDebuggedRun(
 				return
 			}
 
-			_, runErr := v1.RunWithInputs(ctx, workflow, nil)
+			_, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 			if runErr != nil {
 				exit = 1
 				server.Exited(exit)

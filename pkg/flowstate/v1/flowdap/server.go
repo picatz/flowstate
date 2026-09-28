@@ -165,10 +165,13 @@ type functionBreakpoint struct {
 
 // LaunchArguments are a launch request's arguments.
 type LaunchArguments struct {
-	Program         string          `json:"program"`
-	RevealSensitive bool            `json:"revealSensitive"`
-	StopOnEntry     *bool           `json:"stopOnEntry"`
-	Raw             json.RawMessage `json:"-"`
+	Program         string `json:"program"`
+	RevealSensitive bool   `json:"revealSensitive"`
+	StopOnEntry     *bool  `json:"stopOnEntry"`
+	// Inputs are the run's arguments, keyed by the name the workflow
+	// declares under `inputs:`, each a JSON value.
+	Inputs map[string]json.RawMessage `json:"inputs"`
+	Raw    json.RawMessage            `json:"-"`
 }
 
 // Launch is what a [LaunchFunc] prepared: the session to drive, the source

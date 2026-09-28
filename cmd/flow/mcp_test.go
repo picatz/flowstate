@@ -1052,7 +1052,7 @@ func TestTheRunLocalToolNumericOverflowLeavesAnOrdinaryFieldInTheClear(t *testin
 
 // TestTheRunLocalToolRedactsAMustFailureOnASensitiveInput is #2076's other
 // required case: a submitted value that binds to its declared type cleanly
-// and then fails its own `must:`, which is checkToolRunInputs' refusal
+// and then fails its own `must:`, which is jsonRunInputs' refusal
 // (v1.BindRunInputs) rather than inputsFromJSON's.
 func TestTheRunLocalToolRedactsAMustFailureOnASensitiveInput(t *testing.T) {
 	t.Parallel()

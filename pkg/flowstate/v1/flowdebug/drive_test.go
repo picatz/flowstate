@@ -54,6 +54,13 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 	cleared := do("delete touch")
 	assert.Nil(t, cleared.Unarmed, "a line that sets no breakpoint reported one unarmed")
 
+	// The prompt's conditional `until` has no typed form: refused for that,
+	// with the pair that makes the same stop, not as a step id with a space.
+	_, err := driver.Do(t.Context(), "until touch if item == 2")
+	require.Error(t, err, "a conditional until was accepted, so its condition was dropped")
+	assert.Contains(t, err.Error(), "break touch if <expr>")
+	assert.NotContains(t, err.Error(), "one word")
+
 	stop := do("continue")
 	require.NotNil(t, stop.Snapshot)
 	assert.Equal(t, "each[1]/touch", stop.Snapshot.GetOccurrence().GetAddress())
@@ -71,7 +78,7 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 	assert.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, detached.Receipt.GetStatus())
 	require.NoError(t, <-run.done)
 
-	_, err := driver.Do(t.Context(), "frobnicate")
+	_, err = driver.Do(t.Context(), "frobnicate")
 	require.Error(t, err)
 }
 

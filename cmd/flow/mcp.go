@@ -564,7 +564,7 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 			// exists. inputs is what runLocalToolInputs decoded before the
 			// failure — nil for a failure inputsFromJSON itself raised (a
 			// numeric overflow, say), the bound map for one
-			// checkToolRunInputs raised on top of it (a `must:` failure) — the
+			// jsonRunInputs raised on top of it (a `must:` failure) — the
 			// same distinction the CLI's two call sites of
 			// refusedRunSensitiveValues draw between a collection failure and
 			// a bind failure (#2076).
@@ -1074,34 +1074,32 @@ func runLocalSignalFlags(signals map[string]json.RawMessage) ([]string, error) {
 // CLI checks early: [v1.RunWithInputs] binds authoritatively a moment later, and
 // its error would arrive wrapped in an account of a run that never started.
 func runLocalToolInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage) (map[string]*v1.Value, error) {
-	if len(submitted) == 0 {
-		// Absent rather than empty, so a source declaring no `inputs:` is run
-		// exactly as it is without this argument.
-		return nil, checkToolRunInputs(workflow, nil)
-	}
-
-	document, err := json.Marshal(submitted)
-	if err != nil {
-		return nil, fmt.Errorf("reading the inputs argument: %w", err)
-	}
-
-	inputs, err := inputsFromJSON("the inputs argument", document, declaredInputs(workflow))
-	if err != nil {
-		return nil, err
-	}
-
-	return inputs, checkToolRunInputs(workflow, inputs)
+	return jsonRunInputs(workflow, submitted, "the inputs argument",
+		"arguments go in the `inputs` object of this call, keyed by the name the source declares under `inputs:`")
 }
 
-// checkToolRunInputs is [checkRunInputs] with the CLI's closing advice replaced by
-// this surface's, since an agent has no flags to correct.
-func checkToolRunInputs(workflow *v1.Workflow, inputs map[string]*v1.Value) error {
+// jsonRunInputs binds a surface's JSON object of arguments against workflow's
+// declarations, for a surface with no flags to correct: source names the
+// object in a refusal, and advice, which replaces the CLI's closing advice,
+// says where its arguments go.
+func jsonRunInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage, source, advice string) (map[string]*v1.Value, error) {
+	var inputs map[string]*v1.Value
+	// Absent rather than empty, so a source declaring no `inputs:` is run
+	// exactly as it is without the object.
+	if len(submitted) > 0 {
+		document, err := json.Marshal(submitted)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", source, err)
+		}
+		if inputs, err = inputsFromJSON(source, document, declaredInputs(workflow)); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := v1.BindRunInputs(workflow, inputs); err != nil {
-		return fmt.Errorf("%w\n  arguments go in the `inputs` object of this call, keyed by the name the "+
-			"source declares under `inputs:`", err)
+		return inputs, fmt.Errorf("%w\n  %s", err, advice)
 	}
 
-	return nil
+	return inputs, nil
 }
 
 // runLocalResult is the document the tool answers with.

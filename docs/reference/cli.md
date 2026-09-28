@@ -238,7 +238,7 @@ flow dap [flags]
 
 Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and continue buttons drive a Flowstate run.
 
-A `launch` request runs the Flowfile named as `program` locally. Breakpoints can be set on its lines, or as *function* breakpoints named after a step (`build`, `pages/page`, `pages[2]/page`), with conditions, hit counts and log messages.
+A `launch` request runs the Flowfile named as `program` locally, with its `inputs` object as the run's arguments. Breakpoints can be set on its lines, or as *function* breakpoints named after a step (`build`, `pages/page`, `pages[2]/page`), with conditions, hit counts and log messages.
 
 An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run through the server named by --address and this command's credentials, which need `workload.debug` (and `workload.debug_inspect` to inspect values or to set or read conditions). A durable run holds only at step boundaries, has no logpoints or failure stops, and shows step addresses rather than source lines; the editor is told which.
 

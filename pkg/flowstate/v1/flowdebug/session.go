@@ -2,6 +2,7 @@ package flowdebug
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -933,6 +934,11 @@ type breakpoint struct {
 	// definition is the breakpoint as it was set, which a snapshot reports so
 	// a client that did not set it can resend it.
 	definition *v1.DebugBreakpoint
+	// name is what a notice calls a typed breakpoint: the step or line it
+	// was set on, since its id is the client's own key — DAP's is an index
+	// into its request, which names nothing the author wrote. Empty for a
+	// console breakpoint, whose id already is its step.
+	name string
 }
 
 // conditionHolds answers whether an arrival gated by a condition should stop —
@@ -1589,9 +1595,11 @@ func (s *Session) noteDeclined(what, id string, err error) {
 	}
 	_, already := s.notedUnbound[key]
 	s.notedUnbound[key] = struct{}{}
+	name := id
 	if at, ok := s.breakpoints[id]; ok && what == declinedBreakpoint {
 		at.lastError = capRunes(s.redactTextLocked(err.Error()), MaxInspectRunes)
 		s.breakpoints[id] = at
+		name = cmp.Or(at.name, id)
 	}
 	s.mu.Unlock()
 
@@ -1599,9 +1607,9 @@ func (s *Session) noteDeclined(what, id string, err error) {
 		return
 	}
 
-	s.printfTone(ToneWarning, "%s %s: the condition could not be evaluated here, so the run was not held: %v\n", what, id, err)
+	s.printfTone(ToneWarning, "%s %s: the condition could not be evaluated here, so the run was not held: %v\n", what, name, err)
 	s.observe(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_NOTICE, "",
-		fmt.Sprintf("%s %s: the condition could not be evaluated here, so the run was not held: %v", what, id, err))
+		fmt.Sprintf("%s %s: the condition could not be evaluated here, so the run was not held: %v", what, name, err))
 }
 
 // consoleEnded says why the command stream stopped, in words an author can
