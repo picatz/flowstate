@@ -606,6 +606,18 @@ func (c Config) Validate() error {
 	return checkRunStateFits(codec)
 }
 
+// DecodeOnly is implemented by a codec that holds no key to write with, such
+// as a recovery keyring's: its Encode refuses every payload, so it writes
+// nothing a key id would have to attribute, and [Config.Validate] does not ask
+// it for one.
+//
+// Optional, unlike [Codec]'s methods, because leaving it out fails closed: a
+// codec that does not say it is decode-only is asked for a current key id and
+// refused without one.
+type DecodeOnly interface {
+	DecodeOnly() bool
+}
+
 // checkKeyID refuses a codec whose current key id is missing or unspellable,
 // before it has written a payload nobody can rotate off or shred.
 //
@@ -623,6 +635,9 @@ func checkKeyID(c Config) error {
 	id := codec.CurrentKeyID()
 
 	if !c.Enabled() {
+		return nil
+	}
+	if reader, ok := codec.(DecodeOnly); ok && reader.DecodeOnly() {
 		return nil
 	}
 

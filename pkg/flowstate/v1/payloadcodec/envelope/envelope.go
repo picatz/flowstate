@@ -465,6 +465,11 @@ func (c *Codec) CurrentKeyID() string {
 // reader, which serves every namespace, answers with the empty string.
 func (c *Codec) Binding() string { return c.binding }
 
+// DecodeOnly reports whether c has no current key, so that its Encode refuses
+// every payload: a keyring reader, or a namespace configured without
+// `current`, such as a recovery keyring's. See [payloadcodec.DecodeOnly].
+func (c *Codec) DecodeOnly() bool { return c.current == nil }
+
 // AcceptsUnencrypted reports whether Decode passes unencrypted payloads through.
 func (c *Codec) AcceptsUnencrypted() bool { return c.acceptUnencrypted }
 
@@ -552,8 +557,11 @@ func info(label string, suite uint32, keyID, binding string) string {
 
 // aad is the AEAD's associated data: the binding, then the payload's framing
 // and header exactly as they are on the wire.
+//
+// Sized by the fixed part alone: framed is at most a header's length on
+// decode, and appending it grows the buffer once.
 func aad(binding string, framed []byte) []byte {
-	b := make([]byte, 0, len(aadLabel)+1+2+len(binding)+len(framed))
+	b := make([]byte, 0, len(aadLabel)+1+2+len(binding))
 	b = append(b, aadLabel...)
 	b = append(b, 0)
 	b = appendPrefixed(b, binding)
@@ -686,7 +694,7 @@ func (c *Codec) seal(spec suiteSpec, plaintext []byte) ([]byte, error) {
 	// What Decode refuses on length is never written: a payload past the
 	// blob limit is one Temporal would refuse anyway, and bounding it here
 	// keeps every allocation below sized off a bounded value.
-	if len(plaintext) > maxSealedBytes-len(magic)-binary.MaxVarintLen32-c.maxHeader-spec.overhead {
+	if len(plaintext) > maxSealedBytes || len(plaintext) > maxSealedBytes-len(magic)-binary.MaxVarintLen32-c.maxHeader-spec.overhead {
 		return nil, fmt.Errorf("envelope: a %d-byte payload seals past the %d-byte limit history holds",
 			len(plaintext), maxSealedBytes)
 	}
@@ -939,4 +947,7 @@ func (c *Codec) unwrapperFor(h *v1.PayloadEnvelopeHeader) (ringEntry, string, []
 		"otherwise this process was started without it", ErrUnknownKey, h.GetKeyId())
 }
 
-var _ payloadcodec.Codec = (*Codec)(nil)
+var (
+	_ payloadcodec.Codec      = (*Codec)(nil)
+	_ payloadcodec.DecodeOnly = (*Codec)(nil)
+)
