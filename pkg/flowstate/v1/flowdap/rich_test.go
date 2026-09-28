@@ -812,13 +812,19 @@ func (p *pendingRemote) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBr
 	states := make([]*v1.DebugBreakpointState, 0, len(req.GetBreakpoints()))
 	verified := make([]*v1.DebugBreakpointState, 0, len(req.GetBreakpoints()))
 	for _, bp := range req.GetBreakpoints() {
-		states = append(states, &v1.DebugBreakpointState{Id: bp.GetId(), Message: "the run has not applied this breakpoint yet"})
+		// The installed set's state under the reused id: the old definition,
+		// already verified, which says nothing of the replacement.
+		states = append(states, &v1.DebugBreakpointState{Id: bp.GetId(), Verified: true})
 		verified = append(verified, &v1.DebugBreakpointState{Id: bp.GetId(), Verified: true})
 	}
-	p.applied <- &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Breakpoints: verified}
+	// First a snapshot of the run still moving, which shows the set it had —
+	// here, none — and says nothing of the replacement; then its next hold,
+	// with the replacement installed.
+	p.applied <- &v1.DebugSnapshot{Revision: 2, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING}
+	p.applied <- &v1.DebugSnapshot{Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD, Breakpoints: verified}
 
 	return &v1.DebugSetBreakpointsResponse{
-		Receipt:     &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING},
+		Receipt:     &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING, Revision: 1},
 		Breakpoints: states,
 	}, nil
 }
@@ -846,7 +852,7 @@ func TestAPendingBreakpointIsReportedOnceApplied(t *testing.T) {
 		fakeRemote: fakeRemote{snapshot: &v1.DebugSnapshot{
 			Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities(),
 		}},
-		applied: make(chan *v1.DebugSnapshot, 1),
+		applied: make(chan *v1.DebugSnapshot, 2),
 	}
 	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
 		return &flowdap.Attachment{Target: remote}, nil
@@ -904,4 +910,26 @@ func TestEndingServeDetachesTheTarget(t *testing.T) {
 		t.Fatal("Serve did not return once its context ended")
 	}
 	assert.True(t, remote.closed, "the target was left attached after Serve's context ended")
+}
+
+// TestARefusedSecondLaunchChangesNothing is a client that launches twice
+// before configuring: the second is refused, and its options do not reach the
+// first launch — which still stops on entry as it asked.
+func TestARefusedSecondLaunchChangesNothing(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	require.Equal(t, true, c.await("response", "launch")["success"])
+	c.send(3, "launch", map[string]any{"program": program, "stopOnEntry": false})
+	require.Equal(t, false, c.await("response", "launch")["success"], "a second launch was taken")
+
+	c.send(4, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	assert.Equal(t, "entry", body(c.await("event", "stopped"))["reason"],
+		"the refused launch's stopOnEntry reached the first launch")
 }

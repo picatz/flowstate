@@ -138,6 +138,11 @@ func runDAP(cmd *cobra.Command, _ []string) error {
 	console.attach(server)
 
 	err := server.Serve(cmd.Context())
+	// An interrupt is how an editor or an operator stops the adapter, not a
+	// failure of it: the session detached, and the command exits cleanly.
+	if errors.Is(err, context.Canceled) && cmd.Context().Err() != nil {
+		err = nil
+	}
 	// A disconnect that did not terminate a launched run detached from it,
 	// and it goes on: the plugins and secret providers deferred above stay
 	// open until it returns, rather than failing it midway.

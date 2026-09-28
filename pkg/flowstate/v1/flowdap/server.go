@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -66,7 +67,7 @@ type Server struct {
 	// out serializes outbound messages: their numbering and their writing,
 	// and hungUp, set once the client is gone and nothing more is written.
 	out    sync.Mutex
-	hungUp bool
+	hungUp atomic.Bool
 
 	target       flowdebug.Target
 	sourceMap    *v1.DebugSourceMap
@@ -93,6 +94,9 @@ type Server struct {
 	// with the source line each was set on. Each is reported to the editor
 	// once a snapshot shows it applied.
 	pending map[string]uint32
+	// pendingAfter is the revision the pending replacement was accepted at:
+	// the first hold past it is the run's answer to all of it.
+	pendingAfter uint64
 
 	launched chan struct{}
 	once     sync.Once
@@ -296,43 +300,71 @@ func (s *Server) Serve(ctx context.Context) error {
 	// client that has gone is a broken pipe that kills the process under it.
 	defer s.hangUp()
 
-	// A read blocked on the client does not see ctx end, so ending it closes
-	// the stream under the read: the loop then leaves as for a client gone.
+	// Ending ctx closes the stream, for a stream whose Close interrupts what
+	// is blocked on it; the loop below does not depend on that.
 	stop := context.AfterFunc(ctx, func() {
 		s.hangUp()
 		_ = s.stream.Close()
 	})
 	defer stop()
 
+	// Reads happen on a goroutine of their own, so a read blocked on the
+	// client never keeps ctx's end from detaching the session: an editor's
+	// stdin is a blocking pipe, and closing it does not interrupt a read.
+	reads := make(chan received)
+	quit := make(chan struct{})
+	defer close(quit)
+	go func() {
+		for {
+			var got received
+			got.err = s.stream.ReadObject(&got.request)
+			select {
+			case reads <- got:
+			case <-quit:
+				return
+			}
+			if got.err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
-		if err := ctx.Err(); err != nil {
+		select {
+		case <-ctx.Done():
 			// Ended from outside: the session detaches as it does when the
 			// client goes, rather than leave a durable target renewing its
 			// lease for a conversation that is over.
 			s.hangUp()
 			s.end(false)
 
-			return err
-		}
-
-		var request inbound
-		if err := s.stream.ReadObject(&request); err != nil {
-			// A client gone without a disconnect is one: the session detaches,
-			// so a run it left paused goes on rather than waiting for a
-			// command nobody can send, and [Server.Wait] returns. Nobody is
-			// left to read what the detach says.
-			s.hangUp()
-			s.end(false)
-
 			return ctx.Err()
-		}
-		if request.Type != "request" {
-			continue
-		}
-		if done := s.dispatch(ctx, request); done {
-			return nil
+
+		case got := <-reads:
+			if got.err != nil {
+				// A client gone without a disconnect is one: the session
+				// detaches, so a run it left paused goes on rather than
+				// waiting for a command nobody can send, and [Server.Wait]
+				// returns. Nobody is left to read what the detach says.
+				s.hangUp()
+				s.end(false)
+
+				return ctx.Err()
+			}
+			if got.request.Type != "request" {
+				continue
+			}
+			if done := s.dispatch(ctx, got.request); done {
+				return nil
+			}
 		}
 	}
+}
+
+// received is one read from the client: a request, or why there was none.
+type received struct {
+	request inbound
+	err     error
 }
 
 func (s *Server) currentTarget() flowdebug.Target {
@@ -527,22 +559,24 @@ func (s *Server) launch(ctx context.Context, request inbound) {
 	asked.Raw = request.Arguments
 
 	s.mu.Lock()
+	if s.bound && s.launcher != nil {
+		s.mu.Unlock()
+		// Refused before anything is recorded: a second launch must not
+		// change the first one's options, such as its stop on entry.
+		s.fail(request, errOneProgram.Error())
+
+		return
+	}
 	s.program = asked.Program
 	s.revealSensitive = asked.RevealSensitive
 	if asked.StopOnEntry != nil {
 		s.stopOnEntry = *asked.StopOnEntry
 	}
 	launcher := s.launcher
-	bound := s.bound
 	s.mu.Unlock()
 
 	if launcher == nil {
 		s.reply(request, nil)
-
-		return
-	}
-	if bound {
-		s.fail(request, errOneProgram.Error())
 
 		return
 	}
@@ -1634,42 +1668,61 @@ func (s *Server) applyBreakpoints(ctx context.Context) (map[string]*v1.DebugBrea
 	// A replacement the run accepted but will install only at its next step
 	// boundary: what it has not applied yet is remembered, so the editor
 	// hears when it has rather than showing it unverified for good.
+	//
+	// Every breakpoint of the replacement is pending, not only those the
+	// answer shows unverified: the states the run returned are of the set it
+	// has installed, and a verified one under a reused id is the old
+	// definition, not this one. One the target refused before sending keeps
+	// its reason now, and is settled with the rest.
 	pending := map[string]uint32{}
 	if response.GetReceipt().GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
 		for _, want := range set {
-			if !states[want.GetId()].GetVerified() {
-				pending[want.GetId()] = want.GetLine().GetLine()
+			pending[want.GetId()] = want.GetLine().GetLine()
+			if states[want.GetId()].GetVerified() {
+				states[want.GetId()] = &v1.DebugBreakpointState{Id: want.GetId(), Message: "the run applies this breakpoint at its next step boundary"}
 			}
 		}
 	}
 	s.mu.Lock()
 	s.pending = pending
+	s.pendingAfter = response.GetReceipt().GetRevision()
 	s.mu.Unlock()
 
 	return states, nil
 }
 
-// relayBreakpoints tells the editor about each pending breakpoint a snapshot
-// shows the run has now applied.
+// relayBreakpoints reports a pending replacement once the run has answered it.
+// A durable run installs a replacement whole, at its next step boundary, and
+// applies what it was sent there before it holds, so its first hold past the
+// acceptance shows exactly the set it installed: each breakpoint of the
+// replacement is there, with its state, or was not installed. A snapshot of a
+// run still moving shows the set it had, and says nothing of this one.
 func (s *Server) relayBreakpoints(snapshot *v1.DebugSnapshot) {
 	s.mu.Lock()
-	if len(s.pending) == 0 {
+	if len(s.pending) == 0 || snapshot.GetRevision() <= s.pendingAfter ||
+		snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
 		s.mu.Unlock()
 
 		return
+	}
+	installed := map[string]*v1.DebugBreakpointState{}
+	for _, state := range snapshot.GetBreakpoints() {
+		installed[state.GetId()] = state
 	}
 	type applied struct {
 		id    string
 		line  uint32
 		state *v1.DebugBreakpointState
 	}
-	var ready []applied
-	for _, state := range snapshot.GetBreakpoints() {
-		if line, ok := s.pending[state.GetId()]; ok && state.GetVerified() {
-			ready = append(ready, applied{id: state.GetId(), line: line, state: state})
-			delete(s.pending, state.GetId())
+	ready := make([]applied, 0, len(s.pending))
+	for id, line := range s.pending {
+		state, ok := installed[id]
+		if !ok {
+			state = &v1.DebugBreakpointState{Id: id, Message: "the run did not install this breakpoint"}
 		}
+		ready = append(ready, applied{id: id, line: line, state: state})
 	}
+	s.pending = nil
 	s.mu.Unlock()
 
 	lineBase, _ := s.clientBases()
@@ -1714,10 +1767,14 @@ func refused(n int, message string) []breakpoint {
 // taken under one lock and written under another could reach the client
 // behind a later one.
 func (s *Server) send(message func(seq int) any) {
+	if s.hungUp.Load() {
+		return
+	}
 	s.out.Lock()
 	defer s.out.Unlock()
 
-	if s.hungUp {
+	// Again under the lock: a hang-up while this waited for it stands.
+	if s.hungUp.Load() {
 		return
 	}
 	s.seq++
@@ -1725,12 +1782,10 @@ func (s *Server) send(message func(seq int) any) {
 }
 
 // hangUp stops every later write to the client.
-func (s *Server) hangUp() {
-	s.out.Lock()
-	defer s.out.Unlock()
-
-	s.hungUp = true
-}
+//
+// It takes no lock, so ending a conversation never waits behind a write that
+// is blocked on a client that stopped reading.
+func (s *Server) hangUp() { s.hungUp.Store(true) }
 
 func (s *Server) reply(request inbound, body any) {
 	s.send(func(seq int) any {

@@ -1,6 +1,7 @@
 package flowdap_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -1266,4 +1267,33 @@ func TestARequestIDIsTheAdaptersOwn(t *testing.T) {
 	assert.NotEqual(t, flowdap.RequestID(first, 4), flowdap.RequestID(second, 4),
 		"two adapters sent the same ID for their fourth request, so a reconnect replays an old receipt")
 	assert.LessOrEqual(t, len(flowdap.RequestID(first, 1<<31)), v1.MaxDebugRequestIDBytes)
+}
+
+// TestEndingServeInterruptsAWriteToAClientThatStoppedReading is a client that
+// keeps its connection but stops reading, so a response blocks while holding
+// the output lock. Ending Serve's context must still end it: the stream is
+// closed under the blocked write rather than waited behind it.
+func TestEndingServeInterruptsAWriteToAClientThatStoppedReading(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	server := flowdap.NewServer(nil, c)
+	ctx, cancel := context.WithCancel(t.Context())
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(ctx) }()
+
+	// More requests than the client buffers answers for, none of them read:
+	// the adapter blocks writing an answer, holding its output lock.
+	for seq := range cap(c.fromAdapter) + 8 {
+		c.send(seq+1, "threads", nil)
+	}
+
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Serve waited on a blocked write after its context ended")
+	}
 }
