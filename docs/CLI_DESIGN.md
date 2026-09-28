@@ -682,11 +682,12 @@ told apart from fatal ones, each consumed signal joined to the
 wait that consumed it (and a signal no wait consumes — a debug ask, an
 undeclared name, a dropped duplicate — marked as such), activity state beyond
 scheduled and finished, and a terminal outcome for every node. Nothing carries
-most of that today. Live state is the exception, and it is keyed by neither:
-`GetResponse.pending_activities` carries each in-flight activity's attempt,
-last failure, and next attempt time (which separates backing off from
-running), deliberately not named by step, and `RunProgress.pending_waits` names
-each parked wait by step id and path. Supplying the rest, reusing the timeline
+most of that today. Live state is the exception, though neither field gives a
+lossless node key: `GetResponse.pending_activities` carries each in-flight
+activity's attempt, last failure, and next attempt time (which separates
+backing off from running), deliberately not named by step, and
+`RunProgress.pending_waits` names each parked wait by step id and a path that
+is empty inside concurrent work and carries no iteration index. Supplying the rest, reusing the timeline
 and those live fields for what they already report rather than restating it,
 is therefore its own slice (gap inventory slice 3), settled and reviewed before any overlay code is written,
 and every overlay-producing path in this document (6.2's `--run` variant,
@@ -1039,7 +1040,7 @@ line. What is not: everything below.
      drops whether an attempt has started; and Temporal documents that a
      retried activity's start is written only when it closes, which would
      leave a closed node only its final attempt and last failure (#2160
-     confirms this against a real history);
+     tracks confirming this against a real history);
    - a task step's terminal outcome where workflow code decides it around the
      activity: an `if:`, input, or `vars:` evaluation failing, or the `async:`
      width being exceeded, before anything is scheduled, and `undo:`
