@@ -270,7 +270,7 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 				// [untilRefusalChange], asked only where the answer
 				// differs, so a history that applied such a resume replays
 				// applying it.
-				sites, truncated := v1.DebugStaticSites(e.spec)
+				sites, truncated := e.debugStaticSites()
 				_, why := durableSites(target, ask.Until, e.spec, sites, truncated, "run until")
 				if why != "" && workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
@@ -406,6 +406,20 @@ func durableSites(target v1.DebugTarget, text string, spec *v1.Workflow, sites [
 	}
 }
 
+// debugStaticSites is [v1.DebugStaticSites] of the run's specification,
+// enumerated on first use and kept for the segment. It is pure over a
+// specification the run never changes, so taking it once rather than per call
+// changes no answer and records nothing in history.
+func (e *executor) debugStaticSites() ([]v1.DebugStaticSite, bool) {
+	d := e.debug
+	if !d.sitesKnown {
+		d.sites, d.sitesTruncated = v1.DebugStaticSites(e.spec)
+		d.sitesKnown = true
+	}
+
+	return d.sites, d.sitesTruncated
+}
+
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
 func (e *executor) parseDebugBreakpoints() {
 	d := e.debug
@@ -413,7 +427,7 @@ func (e *executor) parseDebugBreakpoints() {
 		return
 	}
 
-	sites, truncated := v1.DebugStaticSites(e.spec)
+	sites, truncated := e.debugStaticSites()
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
 		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
@@ -475,7 +489,9 @@ func (e *executor) parseDebugBreakpoints() {
 			parsed.target, parsed.hit = target, hit
 			parsed.state.Verified = true
 			for _, site := range resolved {
-				parsed.state.Sites = append(parsed.state.Sites, site.Site)
+				// Cloned: the sites are the segment's, shared by every
+				// parse, and a state is the breakpoint's own.
+				parsed.state.Sites = append(parsed.state.Sites, proto.CloneOf(site.Site))
 			}
 		}
 		d.parsed = append(d.parsed, parsed)
