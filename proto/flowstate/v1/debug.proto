@@ -1148,7 +1148,8 @@ message DebugBreakpointState {
   repeated DebugSite sites = 5 [(buf.validate.field).repeated = {max_items: 1024}];
 
   // LastError is the most recent condition or log evaluation error, after
-  // redaction. Such an arrival does not stop the run.
+  // redaction. Such an arrival does not stop the run. Like [definition], it is
+  // withheld from a caller without `workload.debug_inspect`.
   string last_error = 6 [(buf.validate.field).string = {max_len: 4096}];
 
   // Source is where the resolved site came from, when a source map says so.
@@ -1157,7 +1158,9 @@ message DebugBreakpointState {
   // Definition is the breakpoint as it was set, redacted as [id] is, so a
   // client that did not set it can resend the whole set without dropping it:
   // a set is replaced whole, and a state alone does not say how to rebuild
-  // the breakpoint it describes.
+  // the breakpoint it describes. A breakpoint with a condition or a log
+  // message is reported to a caller without `workload.debug_inspect` without
+  // it, its message, or its last error, since setting one needs that action.
   DebugBreakpoint definition = 8;
 }
 

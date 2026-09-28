@@ -619,7 +619,7 @@ cannot change them.
 optionally a `runId`, of a run on the server the adapter was started with
 (`flow dap --address …` and the usual credential flags). The run must declare a
 `debug:` policy naming the caller, and the caller needs `workload.debug`, plus
-`workload.debug_inspect` to inspect values or set conditions. The editor is
+`workload.debug_inspect` to inspect values or to set or read conditions. The editor is
 told what a durable run offers: it holds only at step boundaries, has no
 logpoints or failure stops, and shows step addresses rather than source lines,
 since the run records no digest of the file it was compiled from. Disconnecting

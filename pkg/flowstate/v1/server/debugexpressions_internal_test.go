@@ -22,7 +22,9 @@ func TestBreakpointExpressionsNeedTheInspectAction(t *testing.T) {
 
 	snapshot := &v1.DebugSnapshot{Revision: 3, Breakpoints: []*v1.DebugBreakpointState{
 		{Id: "plain", Verified: true, Definition: &v1.DebugBreakpoint{Id: "plain", Step: "after"}},
-		{Id: "peek", Verified: true, Definition: &v1.DebugBreakpoint{Id: "peek", Step: "after", Condition: `secret == "hunter2"`}},
+		{Id: "peek", Verified: true, LastError: `no such key: hunter2`, Definition: &v1.DebugBreakpoint{
+			Id: "peek", Step: "after", Condition: `inputs.tokens["hunter2"] == 1`,
+		}},
 		{Id: "said", Message: `condition: ERROR: <input>:1:9: Syntax error | secret == "hunter2`, Definition: &v1.DebugBreakpoint{
 			Id: "said", Step: "after", LogMessage: `saw {secret}`,
 		}},
@@ -46,6 +48,7 @@ func TestBreakpointExpressionsNeedTheInspectAction(t *testing.T) {
 	for _, state := range withheld.GetBreakpoints()[1:] {
 		assert.Nil(t, state.GetDefinition(), "%s kept its definition", state.GetId())
 		assert.NotContains(t, state.GetMessage(), "hunter2", "%s kept a message quoting its expression", state.GetId())
+		assert.Empty(t, state.GetLastError(), "%s kept an evaluation error quoting what it read", state.GetId())
 		assert.Contains(t, state.GetMessage(), "workload.debug_inspect")
 	}
 	assert.True(t, withheld.GetBreakpoints()[1].GetVerified(), "withholding a definition changed whether it is armed")
