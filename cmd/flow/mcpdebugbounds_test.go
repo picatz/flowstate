@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -221,8 +222,8 @@ func TestTheRetryCacheIsBoundedInBytes(t *testing.T) {
 	assert.NotContains(t, entry.receipts, "a", "the oldest answer was kept past the bound")
 
 	total := 0
-	for _, encoded := range entry.receipts {
-		total += len(encoded)
+	for request, encoded := range entry.receipts {
+		total += len(request) + len(encoded)
 	}
 	assert.Equal(t, total, entry.receiptBytes, "the byte count drifted from what the cache holds")
 }
@@ -249,7 +250,9 @@ func TestAnEndedCasesReportIsFittedToo(t *testing.T) {
 
 	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id}))
 	require.NoError(t, err)
-	require.False(t, result.IsError)
+	// Every case failed, so the call did: as flowstate_test and the
+	// one-shot flowstate_debug report a case that did not pass.
+	require.True(t, result.IsError, "a failed case was answered as a successful call")
 	text := result.Content[0].(*mcp.TextContent).Text
 	assert.LessOrEqual(t, len(text), flowmcp.MaxResultBytes, "the ended case's report was returned unfitted")
 	var document map[string]any
@@ -257,31 +260,20 @@ func TestAnEndedCasesReportIsFittedToo(t *testing.T) {
 	assert.Contains(t, document, "report", "the verdict was dropped rather than reduced")
 }
 
-// TestAnEndWaitsForACommandInFlightAndRefusesTheNext: a command that found a
-// session just before it was ended must not act on it after — a durable pause
-// then would attach the run anew, held by a session nobody holds. The end
-// waits for a command already running, and one waiting to run is refused.
-func TestAnEndWaitsForACommandInFlightAndRefusesTheNext(t *testing.T) {
+// TestACommandOnARetiredSessionIsRefused: a command that found a session just
+// before it was ended must not act on it after — a durable pause then would
+// attach the run anew, held by a session nobody holds.
+func TestACommandOnARetiredSessionIsRefused(t *testing.T) {
 	t.Parallel()
 
 	r := newDebugSessions(nil)
 	target := newStepTarget(true)
 	entry := addStepSession(t, r, target)
 
-	// A command that has found the entry, waiting its turn behind one that
-	// holds the session.
-	entry.calls.Lock()
-	refused := make(chan *mcp.CallToolResult)
-	go func() {
-		result, _ := r.command(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id, "command": "next"}))
-		refused <- result
-	}()
-	time.Sleep(50 * time.Millisecond)
-
-	// The session is retired while that command waits, then its turn comes.
+	// Found, then retired before its turn came.
 	require.True(t, r.remove(entry.id))
-	entry.calls.Unlock()
-	result := <-refused
+	result, err := r.commandOn(t.Context(), entry, sessionCommand{SessionID: entry.id, Command: "next"})
+	require.NoError(t, err)
 	require.True(t, result.IsError, "a command acted on a session that was ended under it")
 	entry.end(false)
 
@@ -290,60 +282,102 @@ func TestAnEndWaitsForACommandInFlightAndRefusesTheNext(t *testing.T) {
 	assert.Zero(t, target.moves, "the ended session's run was moved")
 }
 
-// TestAReadTranscriptFreesItsRoom: a retained session is read many times, so
-// the fragments an answer carried stop counting against the transcript's bound
-// and a session read often keeps its later output, however long it runs.
-func TestAReadTranscriptFreesItsRoom(t *testing.T) {
-	t.Parallel()
-
-	r := newDebugSessions(nil)
-	entry := addStepSession(t, r, newStepTarget(true))
-	transcript := &lockedTranscript{}
-	entry.mu.Lock()
-	entry.transcript = transcript
-	entry.mu.Unlock()
-
-	for round := range 3 {
-		said := fmt.Sprintf("round %d", round)
-		for range maxDebugFragments {
-			transcript.add(said, flowdebug.ToneInfo)
-		}
-		answer, err := entry.answer(t.Context())
-		require.NoError(t, err)
-		require.Len(t, answer.Transcript, maxDebugFragments, "round %d lost output a reader had made room for", round)
-		for _, fragment := range answer.Transcript {
-			require.Equal(t, said, fragment.Text, "an answer carried output an earlier one had already carried")
-		}
-	}
-	assert.Empty(t, transcript.note(), "fragments were dropped though every one was read")
-}
-
 // TestAnEndCancelsACommandInFlight: a command waiting for the run's next stop
 // can wait maxDebugSessionWait. Ending the session cancels it rather than
 // waiting it out, so an end stays within its own bound.
 func TestAnEndCancelsACommandInFlight(t *testing.T) {
 	t.Parallel()
 
-	r := newDebugSessions(nil)
-	target := newStepTarget(false) // a move runs until arrive, which never comes
-	entry := addStepSession(t, r, target)
+	synctest.Test(t, func(t *testing.T) {
+		r := newDebugSessions(nil)
+		target := newStepTarget(false) // a move runs until arrive, which never comes
+		entry := addStepSession(t, r, target)
 
-	answered := make(chan *mcp.CallToolResult)
-	go func() {
-		result, _ := r.command(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id, "command": "next"}))
-		answered <- result
-	}()
-	require.Eventually(t, func() bool {
+		answered := make(chan *mcp.CallToolResult)
+		go func() {
+			result, _ := r.command(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id, "command": "next"}))
+			answered <- result
+		}()
+		// The command has moved the run and waits for a stop that never
+		// comes: in flight, holding the session.
+		synctest.Wait()
 		target.mu.Lock()
-		defer target.mu.Unlock()
+		moves := target.moves
+		target.mu.Unlock()
+		require.Equal(t, 1, moves, "the command never reached the target")
 
-		return target.moves == 1
-	}, 5*time.Second, time.Millisecond, "the command never reached the target")
+		start := time.Now()
+		result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id}))
+		require.NoError(t, err)
+		require.False(t, result.IsError, replyOf(t, result).raw)
+		assert.Zero(t, time.Since(start), "the end waited out the command's wait")
+		assert.True(t, (<-answered).IsError, "the cancelled command answered as though it had stopped")
+		synctest.Wait()
+	})
+}
 
-	start := time.Now()
-	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id}))
+// TestARetainedCommandRefusesAnOversizedRetryKey: a retry key is kept with its
+// answer for the session's life, so it is bounded as a target's request id is.
+func TestARetainedCommandRefusesAnOversizedRetryKey(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	target := newStepTarget(true)
+	entry := addStepSession(t, r, target)
+	result, err := r.command(t.Context(), toolRequest(t, map[string]any{
+		"session_id": entry.id, "command": "next", "request_id": strings.Repeat("k", v1.MaxDebugRequestIDBytes+1),
+	}))
 	require.NoError(t, err)
-	require.False(t, result.IsError, replyOf(t, result).raw)
-	assert.Less(t, time.Since(start), 2*debugSessionEndSettle, "the end waited out the command's wait")
-	assert.True(t, (<-answered).IsError, "the cancelled command answered as though it had stopped")
+	require.True(t, result.IsError, "an oversized retry key was kept")
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	assert.Zero(t, target.moves)
+}
+
+// TestAStubbedSessionFencesTheRegistryReaders: a retained stubbed session holds
+// the process-wide task registry, a synthetic task in it, across its pauses.
+// The tools and the resource that answer from that registry are refused until
+// it ends; the tools that dispatch to a deployment are not.
+func TestAStubbedSessionFencesTheRegistryReaders(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	ran := func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	}
+	read := func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	}
+	call := func(tool string) bool {
+		t.Helper()
+		result, err := r.guardRegistryReaders(tool, ran)(t.Context(), toolRequest(t, map[string]any{}))
+		require.NoError(t, err)
+
+		return !result.IsError
+	}
+	readCatalog := func() bool {
+		_, err := r.guardRegistryResource(flowmcp.CatalogResourceURI, read)(t.Context(), &mcp.ReadResourceRequest{})
+
+		return err == nil
+	}
+	readers := []string{flowmcp.ToolName("Validate"), flowmcp.ToolName("Compile"), flowmcp.ToolName("GetCatalog")}
+
+	for _, tool := range readers {
+		assert.True(t, call(tool), "%s was refused with no session open", tool)
+	}
+	assert.True(t, readCatalog())
+
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+	entry := addStepSession(t, r, session)
+	r.mu.Lock()
+	entry.local = session
+	r.mu.Unlock()
+
+	for _, tool := range readers {
+		assert.False(t, call(tool), "%s answered from a registry a stubbed session holds", tool)
+	}
+	assert.False(t, readCatalog(), "the catalog resource answered from a registry a stubbed session holds")
+	assert.True(t, call(flowmcp.ToolName("Get")), "a tool that dispatches to the deployment was refused")
 }

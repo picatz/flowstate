@@ -506,7 +506,7 @@ func mcpExtraToolsFor(ctx context.Context, posture *cobra.Command) []flowmcp.Too
 func mcpExtraToolsForWithProviders(ctx context.Context, posture *cobra.Command, providers *localSecrets) []flowmcp.ToolRegistration {
 	// The command's own list, not a copy of it: a tool registered for an agent
 	// and missing here is a tool no test ever calls.
-	return stdioExtraTools(ctx, posture, providers, func() flowstatev1connect.WorkflowServiceClient { return nil })
+	return stdioExtraTools(ctx, posture, providers, newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return nil }))
 }
 
 // connectMCP stands the server up over an in-memory transport and returns a

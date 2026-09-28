@@ -77,11 +77,16 @@ func TestDeclaredInLooksEverywhereAStepCanBeWritten(t *testing.T) {
 	}
 	for _, text := range []string{
 		"each", "in-each", "in-loop", "in-branch", "in-arm", "in-default", "sub", "in-callee",
-		"each/in-each", "each[2]/in-each", "fan/in-branch", "pick/in-default", "sub/in-callee",
+		"each/in-each", "each[2]/in-each", "fan/in-branch", "fan#1/in-branch", "pick/in-default",
+		"sub/in-callee", "sub(callee)/in-callee",
 	} {
 		assert.True(t, declared(text), "%s is declared but not found", text)
 	}
-	for _, text := range []string{"nowhere", "bogus/in-each", "fan/in-each", "each/sub/in-callee"} {
+	for _, text := range []string{
+		"nowhere", "bogus/in-each", "fan/in-each", "each/sub/in-callee",
+		// The right ids under the wrong kind of container, or another callee.
+		"each#0/in-each", "fan[1]/in-branch", "sub(other)/in-callee",
+	} {
 		assert.False(t, declared(text), "%s is not declared but was found", text)
 	}
 }

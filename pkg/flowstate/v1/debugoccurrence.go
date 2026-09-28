@@ -471,25 +471,32 @@ func DebugDeclaredSteps(wf *Workflow) iter.Seq[string] {
 
 // DeclaredIn reports whether wf, or a workflow it calls, declares a step this
 // target could name: one whose id is the target's step, inside containers
-// whose ids end with the target's qualifiers — `bogus/last` names nothing
-// however many steps are called `last`. It is the question a truncated
-// [DebugStaticSites] leaves open, asked of the program as written: each node
-// the program holds is visited once, so the walk is bounded by the program's
-// own size, not by what its calls expand to. Qualifier kinds and indices are
-// not compared, so it may accept a target [DebugTarget.Resolve] would not,
-// never the reverse. Calls are followed to [MaxCallDepth], as the sites are.
+// whose ids end with the target's qualifiers, each of the kind it names and a
+// call of the callee it names — `bogus/last` and `each#0/touch`, for a loop
+// `each`, name nothing however many steps are called `last` or `touch`. It is
+// the question a truncated [DebugStaticSites] leaves open, asked of the
+// program as written: each node the program holds is visited once, so the
+// walk is bounded by the program's own size, not by what its calls expand to.
+// Only indices, which no program declares, are not compared, so it may accept
+// a target [DebugTarget.Resolve] would not, never the reverse. Calls are
+// followed to [MaxCallDepth], as the sites are.
 func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 	if len(t.parts) == 0 {
 		return false
 	}
 	step, qualifiers := t.parts[len(t.parts)-1].id, t.parts[:len(t.parts)-1]
-	qualified := func(chain []string) bool {
+	qualified := func(chain []*DebugSegment) bool {
 		if len(chain) < len(qualifiers) {
 			return false
 		}
 		tail := chain[len(chain)-len(qualifiers):]
 		for i, part := range qualifiers {
-			if tail[i] != part.id {
+			switch {
+			case tail[i].GetStepId() != part.id:
+				return false
+			case part.kind != DebugSegmentKind_DEBUG_SEGMENT_KIND_UNSPECIFIED && part.kind != tail[i].GetKind():
+				return false
+			case part.callee != "" && part.callee != tail[i].GetCallee():
 				return false
 			}
 		}
@@ -497,29 +504,35 @@ func (t DebugTarget) DeclaredIn(wf *Workflow) bool {
 		return true
 	}
 
-	var walk func(nodes []*Node, chain []string, depth int) bool
-	walk = func(nodes []*Node, chain []string, depth int) bool {
+	var walk func(nodes []*Node, chain []*DebugSegment, depth int) bool
+	walk = func(nodes []*Node, chain []*DebugSegment, depth int) bool {
 		for _, node := range nodes {
 			if node.GetId() == step && qualified(chain) {
 				return true
 			}
-			inner := append(slices.Clip(chain), node.GetId())
+			into := func(kind DebugSegmentKind, callee string) []*DebugSegment {
+				return append(slices.Clip(chain), &DebugSegment{Kind: kind, StepId: node.GetId(), Callee: callee})
+			}
 			var found bool
 			switch kind := node.GetKind().(type) {
 			case *Node_ForEach:
-				found = walk(kind.ForEach.GetBody(), inner, depth)
+				found = walk(kind.ForEach.GetBody(), into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, ""), depth)
 			case *Node_Loop:
-				found = walk(kind.Loop.GetBody(), inner, depth)
+				found = walk(kind.Loop.GetBody(), into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, ""), depth)
 			case *Node_Parallel:
+				inner := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH, "")
 				found = slices.ContainsFunc(kind.Parallel.GetBranches(), func(branch *Parallel_Branch) bool {
 					return walk(branch.GetSteps(), inner, depth)
 				})
 			case *Node_Switch:
+				inner := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, "")
 				found = slices.ContainsFunc(kind.Switch.GetCases(), func(arm *Switch_Case) bool {
 					return walk(arm.GetSteps(), inner, depth)
 				}) || walk(kind.Switch.GetDefault().GetSteps(), inner, depth)
 			case *Node_Call:
-				found = depth < MaxCallDepth && walk(kind.Call.GetWorkflow().GetSteps(), inner, depth+1)
+				callee := kind.Call.GetWorkflow()
+				found = depth < MaxCallDepth &&
+					walk(callee.GetSteps(), into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL, callee.GetName()), depth+1)
 			}
 			if found {
 				return true

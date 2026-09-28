@@ -929,8 +929,9 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 		return "", false
 	}
 	if qualified && program != nil {
-		// The step is declared; the containers the address names are not
-		// around it, and a notice about the bare step would say otherwise.
+		// No declared step answers to the address as written — whether its
+		// step or the containers it names are what is missing — and a notice
+		// about the bare step alone would misstate which.
 		return noSiteMatches(address), true
 	}
 	if len(names) == 0 {

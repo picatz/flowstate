@@ -285,14 +285,14 @@ type Deps struct {
 	// registers — derived and caller-supplied alike — with the tool's own
 	// name in hand.
 	//
-	// Read only there, deliberately. It exists for a serving surface with
-	// several callers at once, where a tool that mutates process-wide state
-	// for the duration of one call needs that call serialized against every
-	// other tool that reads the same state — `flow mcp serve`'s guard around
-	// [v1.DefaultRegistry] (cmd/flow/mcpserve.go) is the whole reason it is
-	// here. Stdio has one caller and needs none of it, so [AddTools] ignores
-	// this field and the surface an agent host launches is byte for byte the
-	// one it always was.
+	// It exists for a tool that mutates process-wide state needing to be
+	// kept apart from every tool that reads the same state: `flow mcp
+	// serve`'s guard around [v1.DefaultRegistry] (cmd/flow/mcpserve.go),
+	// where several callers share one process, and stdio's refusal of the
+	// registry's readers while a retained stubbed debug session holds a
+	// synthetic task in it (cmd/flow/mcpdebugsession.go). [AddTools] applies
+	// it to the RPC tools only; the extra tools a caller passes are its own
+	// to wrap. Nil leaves every handler as it is.
 	WrapHandler func(tool string, next mcp.ToolHandler) mcp.ToolHandler
 
 	// WrapResourceHandler is [WrapHandler] for the read-only half of the
@@ -544,7 +544,11 @@ func AddTools(
 			method.Call = remoteCatalogCall(deps.RemoteCatalogAddress)
 		}
 
-		srv.AddTool(tool, dispatch(method, local, remote, deps))
+		handler := dispatch(method, local, remote, deps)
+		if deps.WrapHandler != nil {
+			handler = deps.WrapHandler(tool.Name, handler)
+		}
+		srv.AddTool(tool, handler)
 	}
 
 	for _, reg := range extra {

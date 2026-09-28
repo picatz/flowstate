@@ -52,7 +52,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_test` | locally | — | — |
 | `flowstate_debug` | locally | — | — |
 | `flowstate_debug_session_start` | locally | — | — |
-| `flowstate_debug_session_attach` | locally | — | — |
+| `flowstate_debug_session_attach` | via a server | — | — |
 | `flowstate_debug_session_observe` | locally | — | — |
 | `flowstate_debug_session_command` | locally | — | — |
 | `flowstate_debug_session_end` | locally | — | — |

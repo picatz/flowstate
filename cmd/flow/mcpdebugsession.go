@@ -375,11 +375,48 @@ func (r *debugSessions) unlessStubbed(handler mcp.ToolHandler) mcp.ToolHandler {
 			return flowmcp.ToolError(err), nil
 		}
 		if id, open := r.stubbed(); open {
-			return flowmcp.ToolError(fmt.Errorf("retained debug session %s is running a stubbed case, and this "+
-				"server runs one at a time; end it with %s first", id, debugSessionEndTool)), nil
+			return flowmcp.ToolError(fmt.Errorf("retained debug session %s is running a stubbed case that holds "+
+				"this process's task registry; end it with %s first", id, debugSessionEndTool)), nil
 		}
 
 		return handler(ctx, req)
+	}
+}
+
+// guardRegistryReaders is stdio's [flowmcp.Deps.WrapHandler]: the tools that
+// answer from this process's task registry — the RPCs this process answers
+// itself ([flowmcp.LocalTools]) — are refused while a retained stubbed session
+// holds that registry with a synthetic task in it, so none advertises or
+// compiles a task that vanishes when the session ends. Every other tool
+// dispatches to the deployment and is left as it is.
+func (r *debugSessions) guardRegistryReaders(tool string, next mcp.ToolHandler) mcp.ToolHandler {
+	for method := range flowmcp.LocalTools {
+		if flowmcp.ToolName(method) == tool {
+			return r.unlessStubbed(next)
+		}
+	}
+
+	return next
+}
+
+// guardRegistryResource is stdio's [flowmcp.Deps.WrapResourceHandler]: the
+// catalog resource answers from the same registry the catalog tool does, and
+// is refused on the same terms.
+func (r *debugSessions) guardRegistryResource(uri string, next mcp.ResourceHandler) mcp.ResourceHandler {
+	if uri != flowmcp.CatalogResourceURI {
+		return next
+	}
+
+	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		if err := r.settle(ctx, stubbedEntry); err != nil {
+			return nil, err
+		}
+		if id, open := r.stubbed(); open {
+			return nil, fmt.Errorf("retained debug session %s is running a stubbed case that holds this "+
+				"process's task registry; end it with %s first", id, debugSessionEndTool)
+		}
+
+		return next(ctx, req)
 	}
 }
 
@@ -467,6 +504,7 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 	session := str("The session id " + debugSessionStartTool + " or " + debugSessionAttachTool + " returned.")
 	request := str("Optional retry key. A call repeated with the same key is answered with the first call's answer, " +
 		"so a lost response never moves the run twice.")
+	request["maxLength"] = v1.MaxDebugRequestIDBytes
 
 	return []flowmcp.ToolRegistration{
 		{Tool: &mcp.Tool{
@@ -743,6 +781,9 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if err := decode(req, &args); err != nil {
 		return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", debugSessionStartTool, err)), nil
 	}
+	if err := checkRequestID(args.RequestID); err != nil {
+		return flowmcp.ToolError(err), nil
+	}
 	r.sweep()
 
 	if args.RequestID != "" {
@@ -952,15 +993,21 @@ func (r *debugSessions) observe(ctx context.Context, req *mcp.CallToolRequest) (
 	return answer.result(), nil
 }
 
+// sessionCommand is a command call's arguments.
+type sessionCommand struct {
+	SessionID        string `json:"session_id"`
+	Command          string `json:"command"`
+	ExpectedRevision uint64 `json:"expected_revision"`
+	RequestID        string `json:"request_id"`
+}
+
 func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args struct {
-		SessionID        string `json:"session_id"`
-		Command          string `json:"command"`
-		ExpectedRevision uint64 `json:"expected_revision"`
-		RequestID        string `json:"request_id"`
-	}
+	var args sessionCommand
 	if err := decode(req, &args); err != nil {
 		return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", debugSessionCommandTool, err)), nil
+	}
+	if err := checkRequestID(args.RequestID); err != nil {
+		return flowmcp.ToolError(err), nil
 	}
 	if len(args.Command) > flowdebug.MaxCommandBytes || strings.ContainsAny(args.Command, "\r\n") {
 		return flowmcp.ToolError(fmt.Errorf("a command is one line of at most %d bytes", flowdebug.MaxCommandBytes)), nil
@@ -969,6 +1016,13 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 	if err != nil {
 		return flowmcp.ToolError(err), nil
 	}
+
+	return r.commandOn(ctx, entry, args)
+}
+
+// commandOn runs a command on a session the call has already found — which
+// may have been retired since.
+func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry, args sessionCommand) (*mcp.CallToolResult, error) {
 	entry.calls.Lock()
 	defer entry.calls.Unlock()
 
@@ -1032,20 +1086,31 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
 }
 
+// checkRequestID refuses a retry key longer than a target's own request id may
+// be: each is kept, with its answer, for as long as the session is, so its
+// length is bounded where it is spent.
+func checkRequestID(id string) error {
+	if len(id) > v1.MaxDebugRequestIDBytes {
+		return fmt.Errorf("request_id is at most %d bytes", v1.MaxDebugRequestIDBytes)
+	}
+
+	return nil
+}
+
 // rememberLocked keeps a command's answer for a retry under its request id,
 // dropping the oldest past [maxSessionReceipts] answers or
 // [maxSessionReceiptBytes] bytes. The caller holds e.mu.
 func (e *debugSessionEntry) rememberLocked(request string, encoded []byte) {
 	if previous, ok := e.receipts[request]; ok {
-		e.receiptBytes -= len(previous)
+		e.receiptBytes -= len(request) + len(previous)
 		e.order = slices.DeleteFunc(e.order, func(id string) bool { return id == request })
 	}
 	e.receipts[request] = encoded
 	e.order = append(e.order, request)
-	e.receiptBytes += len(encoded)
+	e.receiptBytes += len(request) + len(encoded)
 	for len(e.order) > maxSessionReceipts || (e.receiptBytes > maxSessionReceiptBytes && len(e.order) > 1) {
 		oldest := e.order[0]
-		e.receiptBytes -= len(e.receipts[oldest])
+		e.receiptBytes -= len(oldest) + len(e.receipts[oldest])
 		delete(e.receipts, oldest)
 		e.order = e.order[1:]
 	}
@@ -1088,5 +1153,13 @@ func (r *debugSessions) end(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		answer.Note = strings.TrimSpace("the case was cancelled and has not yet stopped, so it has no report. " + answer.Note)
 	}
 
-	return answer.result(), nil
+	result := answer.result()
+	// A case that did not pass is a failed call, as flowstate_test and the
+	// one-shot flowstate_debug report it, not a success whose report says
+	// otherwise.
+	if entry.report != nil && finished && testReportFailed(entry.report) {
+		result.IsError = true
+	}
+
+	return result, nil
 }

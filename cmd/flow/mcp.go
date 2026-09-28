@@ -243,8 +243,16 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	serve, stop := context.WithCancel(cmd.Context())
 	defer stop()
 
+	// A retained stubbed session holds the process-wide task registry, a
+	// synthetic task registered in it, across its pauses: what answers from
+	// that registry is refused until the session ends, rather than
+	// advertising or compiling a task that vanishes with it.
+	sessions := newDebugSessions(remoteClient)
+	deps.WrapHandler = sessions.guardRegistryReaders
+	deps.WrapResourceHandler = sessions.guardRegistryResource
+
 	return flowmcp.ServeTools(serve, flowmcp.NewServer(version), local, remoteClient, deps,
-		stdioExtraTools(serve, cmd, providers, remoteClient)...)
+		stdioExtraTools(serve, cmd, providers, sessions)...)
 }
 
 // stdioExtraTools is the three tools on this surface that are not RPCs, in one
@@ -258,12 +266,12 @@ func runMCP(cmd *cobra.Command, args []string) error {
 //
 // ctx is the server's lifetime: the retained sessions' sweeper runs until it
 // ends.
-func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSecrets, remote func() flowstatev1connect.WorkflowServiceClient) []flowmcp.ToolRegistration {
-	sessions := newDebugSessions(remote)
+func stdioExtraTools(ctx context.Context, cmd *cobra.Command, providers *localSecrets, sessions *debugSessions) []flowmcp.ToolRegistration {
 	go sessions.keep(ctx)
 
 	return append([]flowmcp.ToolRegistration{
-		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd, providers)},
+		// Runs a workflow's tasks from the registry a stubbed session holds.
+		{Tool: flowmcp.RunLocalTool(), Handler: sessions.unlessStubbed(runLocalToolHandler(cmd, providers))},
 		// Both run a stubbed case under the process-wide registry lock, so
 		// neither may run while a retained stubbed session holds it.
 		{Tool: flowmcp.TestTool(), Handler: sessions.unlessStubbed(testToolHandler(0))},
