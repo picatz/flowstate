@@ -659,7 +659,7 @@ func TestATerminatedLaunchReportsItsEnd(t *testing.T) {
 	c.send(4, "terminate", map[string]any{})
 	require.Equal(t, true, c.await("response", "terminate")["success"])
 	c.await("event", "terminated")
-	c.await("event", "exited")
+	assert.EqualValues(t, 1, body(c.await("event", "exited"))["exitCode"], "a terminated run reported success")
 	select {
 	case <-finished:
 	case <-time.After(20 * time.Second):
@@ -669,4 +669,24 @@ func TestATerminatedLaunchReportsItsEnd(t *testing.T) {
 	c.send(5, "disconnect", map[string]any{})
 	assert.Equal(t, true, c.await("response", "disconnect")["success"],
 		"the adapter stopped answering after the terminate")
+}
+
+// TestATerminateBeforeConfigurationReportsTheEnd is a client that terminates a
+// launch it never configured: no run was started to report its own end, so the
+// adapter reports it, rather than leave the client waiting for `terminated`.
+func TestATerminateBeforeConfigurationReportsTheEnd(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+
+	c.send(3, "terminate", map[string]any{})
+	require.Equal(t, true, c.await("response", "terminate")["success"])
+	c.await("event", "terminated")
+	assert.EqualValues(t, 1, body(c.await("event", "exited"))["exitCode"])
 }

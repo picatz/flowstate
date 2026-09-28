@@ -375,8 +375,21 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 		// The run this adapter started is cancelled and the conversation
 		// goes on: the run's end arrives as `terminated` and `exited`, which a
 		// client waits for before it sends the `disconnect` that closes it.
+		//
+		// Under order, so the response precedes the events the cancellation
+		// causes, as a movement's does; with the exit code recorded first, so
+		// whichever path reports the end reports a run that did not finish.
+		s.order.Lock()
+		s.Exited(1)
 		s.end(true)
 		s.reply(request, nil)
+		s.order.Unlock()
+		// A run never released has no goroutine to report its end.
+		select {
+		case <-s.launched:
+		default:
+			s.Finished()
+		}
 
 	case "disconnect":
 		// Answered once the session is released, so a client that reads the
