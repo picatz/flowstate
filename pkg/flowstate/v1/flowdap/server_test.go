@@ -3,6 +3,7 @@ package flowdap_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -43,6 +44,10 @@ type client struct {
 
 	lateMu     sync.Mutex
 	lateEvents []string
+
+	// failWrites makes every write fail, as a client whose output half has
+	// closed while its input stays open.
+	failWrites atomic.Bool
 }
 
 func newClient(t *testing.T) *client {
@@ -64,6 +69,10 @@ func (c *client) ReadObject(v any) error {
 }
 
 func (c *client) WriteObject(v any) error {
+	if c.failWrites.Load() {
+		return errors.New("broken pipe")
+	}
+
 	encoded, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -1302,4 +1311,78 @@ func TestEndingServeInterruptsAWriteToAClientThatStoppedReading(t *testing.T) {
 		}
 		_ = c.Close()
 	})
+}
+
+// TestAFailedWriteDetachesTheTarget is a client whose output closed while its
+// input stays open: the adapter's next write fails, and the session detaches
+// rather than go on renewing a durable target nobody can hear about.
+func TestAFailedWriteDetachesTheTarget(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	remote := &detachRecorder{closed: make(chan struct{})}
+	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+		return &flowdap.Attachment{Target: remote}, nil
+	}))
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
+
+	c.failWrites.Store(true)
+	c.send(3, "threads", nil)
+
+	select {
+	case <-served:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Serve went on reading after its writes to the client failed")
+	}
+	select {
+	case <-remote.closed:
+	default:
+		t.Fatal("the target was left attached after the client's output was lost")
+	}
+}
+
+// detachRecorder is a durable target that records its detach.
+type detachRecorder struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (d *detachRecorder) Snapshot(context.Context) (*v1.DebugSnapshot, error) {
+	return &v1.DebugSnapshot{Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities()}, nil
+}
+
+func (d *detachRecorder) WaitSnapshot(ctx context.Context, _ uint64) (*v1.DebugSnapshot, error) {
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
+func (d *detachRecorder) Resume(context.Context, *v1.DebugResumeRequest) (*v1.DebugReceipt, error) {
+	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED}, nil
+}
+
+func (d *detachRecorder) Pause(context.Context, string) (*v1.DebugReceipt, error) {
+	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED}, nil
+}
+
+func (d *detachRecorder) ReplaceBreakpoints(context.Context, *v1.DebugSetBreakpointsRequest) (*v1.DebugSetBreakpointsResponse, error) {
+	return &v1.DebugSetBreakpointsResponse{Receipt: &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}}, nil
+}
+
+func (d *detachRecorder) Inspect(context.Context, *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
+	return nil, flowdebug.ErrNotPaused
+}
+
+func (d *detachRecorder) Close() error {
+	d.once.Do(func() { close(d.closed) })
+
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -84,6 +85,15 @@ type Server struct {
 	// initialize said they start at 0 rather than DAP's default of 1. Every
 	// position is 1-based inside the adapter and translated at the edge.
 	linesFrom0, columnsFrom0 bool
+
+	// uriPaths is set when the client's initialize asked for source paths as
+	// URIs rather than file system paths.
+	uriPaths bool
+
+	// lost is closed once a write to the client fails: the conversation is
+	// over, whether or not its input has noticed.
+	lost     chan struct{}
+	loseOnce sync.Once
 
 	// bound is set once a launch or attach has given the session its program;
 	// a second is refused rather than replacing a target nobody would close.
@@ -214,6 +224,7 @@ func NewServer(target flowdebug.Target, stream Stream, opts ...Option) *Server {
 		stream:      stream,
 		target:      target,
 		launched:    make(chan struct{}),
+		lost:        make(chan struct{}),
 		entered:     make(chan struct{}),
 		handles:     map[int]handle{},
 		issued:      map[handle]int{},
@@ -330,7 +341,23 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	for {
+		// A lost output ends the conversation before anything else is read.
 		select {
+		case <-s.lost:
+			s.end(false)
+			_ = s.stream.Close()
+
+			return nil
+		default:
+		}
+
+		select {
+		case <-s.lost:
+			s.end(false)
+			_ = s.stream.Close()
+
+			return nil
+
 		case <-ctx.Done():
 			// Ended from outside: the session detaches as it does when the
 			// client goes, rather than leave a durable target renewing its
@@ -378,13 +405,15 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	switch request.Command {
 	case "initialize":
 		var asked struct {
-			LinesStartAt1   *bool `json:"linesStartAt1"`
-			ColumnsStartAt1 *bool `json:"columnsStartAt1"`
+			LinesStartAt1   *bool  `json:"linesStartAt1"`
+			ColumnsStartAt1 *bool  `json:"columnsStartAt1"`
+			PathFormat      string `json:"pathFormat"`
 		}
 		_ = json.Unmarshal(request.Arguments, &asked)
 		s.mu.Lock()
 		s.linesFrom0 = asked.LinesStartAt1 != nil && !*asked.LinesStartAt1
 		s.columnsFrom0 = asked.ColumnsStartAt1 != nil && !*asked.ColumnsStartAt1
+		s.uriPaths = asked.PathFormat == "uri"
 		s.mu.Unlock()
 		s.reply(request, s.capabilitiesBody())
 		s.emit("initialized", nil)
@@ -1091,7 +1120,7 @@ func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
 // sourceOf is a location's document as an editor names it.
 func (s *Server) sourceOf(location *v1.DebugSourceLocation) *source {
 	s.mu.Lock()
-	sourceMap := s.sourceMap
+	sourceMap, uriPaths := s.sourceMap, s.uriPaths
 	s.mu.Unlock()
 
 	documents := sourceMap.GetDocuments()
@@ -1100,6 +1129,11 @@ func (s *Server) sourceOf(location *v1.DebugSourceLocation) *source {
 		return nil
 	}
 	path := strings.TrimPrefix(documents[index].GetUri(), "file://")
+	if uriPaths {
+		// In the form the client asked for, so a frame and a breakpoint it
+		// set name one document.
+		return &source{Name: filepath.Base(path), Path: (&url.URL{Scheme: "file", Path: path}).String()}
+	}
 
 	return &source{Name: filepath.Base(path), Path: path}
 }
@@ -1781,7 +1815,12 @@ func (s *Server) send(message func(seq int) any) {
 		return
 	}
 	s.seq++
-	_ = s.stream.WriteObject(message(s.seq))
+	if err := s.stream.WriteObject(message(s.seq)); err != nil {
+		// Nobody can hear the session any more: Serve detaches it rather than
+		// go on reading from a client whose output is gone.
+		s.hungUp.Store(true)
+		s.loseOnce.Do(func() { close(s.lost) })
+	}
 }
 
 // hangUp stops every later write to the client.

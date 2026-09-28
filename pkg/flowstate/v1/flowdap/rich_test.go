@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -976,4 +977,27 @@ func TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd(t *testing.T) {
 	assert.Equal(t, set["id"], changed["id"])
 	assert.Equal(t, false, changed["verified"], "a breakpoint the run never installed was reported verified")
 	assert.NotEmpty(t, changed["message"])
+}
+
+// TestAURIClientGetsURIPaths is an editor that initializes with pathFormat
+// "uri": the frames it is sent name their source as a file URI, the form it
+// names its own breakpoints in.
+func TestAURIClientGetsURIPaths(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate", "pathFormat": "uri"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(4, "stackTrace", map[string]any{"threadId": 1})
+	first := body(c.await("response", "stackTrace"))["stackFrames"].([]any)[0].(map[string]any)
+	path, _ := first["source"].(map[string]any)["path"].(string)
+	assert.Equal(t, (&url.URL{Scheme: "file", Path: program}).String(), path, "a URI client was sent a file system path")
 }
