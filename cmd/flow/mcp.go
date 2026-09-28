@@ -1106,8 +1106,16 @@ func jsonRunInputs(workflow *v1.Workflow, submitted map[string]json.RawMessage, 
 			return nil, err
 		}
 	}
-	if _, err := v1.BindRunInputs(workflow, inputs); err != nil {
+	bound, err := v1.BindRunInputs(workflow, inputs)
+	if err != nil {
 		return inputs, fmt.Errorf("%w\n  %s", err, advice)
+	}
+	// Weighed as the run will carry it, defaults filled in: the same pair of
+	// checks the local driver's submit boundary makes ([v1.RunWithInputs]),
+	// made here so a submission that can never start is refused while the
+	// caller can still correct it, not at its first step.
+	if err := v1.CheckSubmissionSize(workflow, bound); err != nil {
+		return inputs, err
 	}
 
 	return inputs, nil

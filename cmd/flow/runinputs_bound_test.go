@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
@@ -61,4 +62,27 @@ func TestAnObjectNamingMoreInputsThanARunTakesIsRefusedUnread(t *testing.T) {
 	_, err = jsonRunInputs(workflow, names(maxRunInputs), "the launch configuration's inputs", "where they go")
 	require.Error(t, err, "a workflow declaring no inputs bound an argument")
 	assert.NotContains(t, err.Error(), "a run takes at most", "an object at the bound was refused by its count")
+}
+
+// TestASubmissionPastItsSizeIsRefusedWhenBound: an argument that fits the
+// transport but makes the workflow and its inputs heavier than a run carries is
+// refused where the inputs are bound, as the local driver's submit boundary
+// refuses it, rather than accepted into a launch that fails at its first step.
+func TestASubmissionPastItsSizeIsRefusedWhenBound(t *testing.T) {
+	t.Parallel()
+
+	workflow := &v1.Workflow{Name: "heavy", DeclaredInputs: []*v1.InputDeclaration{{
+		Name: "blob", Type: v1.InputDeclaration_TYPE_STRING,
+	}}}
+	heavy, err := json.Marshal(strings.Repeat("x", v1.MaxSpecBytes+1))
+	require.NoError(t, err)
+
+	_, err = jsonRunInputs(workflow, map[string]json.RawMessage{"blob": heavy}, "the launch configuration's inputs", "where they go")
+	require.Error(t, err, "a submission past its size was bound")
+	assert.Contains(t, err.Error(), "over the")
+
+	light, err := json.Marshal("small")
+	require.NoError(t, err)
+	_, err = jsonRunInputs(workflow, map[string]json.RawMessage{"blob": light}, "the launch configuration's inputs", "where they go")
+	require.NoError(t, err, "a submission well inside its size was refused")
 }
