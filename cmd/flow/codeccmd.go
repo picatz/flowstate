@@ -45,7 +45,8 @@ func newCodecKeygenCommand() *cobra.Command {
 		Example: `# A local wrapping key for the default namespace, named for when it was made:
 flow codec keygen --out /etc/flowstate/payload-keys/default-2026-09.key
 
-# An escrow key pair; keep break-glass.key offline, distribute break-glass.key.pub:
+# An escrow key pair: keep break-glass.key offline, and name
+# break-glass.key.pub in every worker's keyring.
 flow codec keygen --hpke --out break-glass.key`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, _ := cmd.Flags().GetString("out")
