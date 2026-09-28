@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"encoding/base64"
 	"fmt"
 	"reflect"
 	"sort"
@@ -358,6 +359,19 @@ func SensitiveInputValues(inputs map[string]*Value, sensitiveNames map[string]bo
 				text := fmt.Sprint(value)
 				if n.root || utf8.RuneCountInString(text) >= minSensitiveSubstringRunes {
 					out.substrings = append(out.substrings, text)
+				}
+			case []byte:
+				// A bytes value reaches text two ways: raw, where a task
+				// writes it into a URL or a message as a string, and base64,
+				// the spelling protobuf JSON and CEL's string() of bytes give.
+				// Both join the backstop under the floor a string has.
+				raw := string(value)
+				if raw != "" && (n.root || utf8.RuneCountInString(raw) >= minSensitiveSubstringRunes) {
+					out.substrings = append(out.substrings, raw)
+				}
+				if encoded := base64.StdEncoding.EncodeToString(value); encoded != "" &&
+					(n.root || len(encoded) >= minSensitiveSubstringRunes) {
+					out.substrings = append(out.substrings, encoded)
 				}
 			case map[string]any:
 				// Keys are descendants too: sensitivity belongs to the whole

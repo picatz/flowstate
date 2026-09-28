@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
@@ -144,4 +145,26 @@ func TestAWithheldFailureDoesNotGrowPastWhatArrived(t *testing.T) {
 	resp := &v1.GetResponse{Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{Message: long}}}
 	v1.RedactGetResponseFailures(resp, values)
 	require.LessOrEqual(t, len(resp.GetError().GetMessage()), max(len(long), v1.RedactedEntityStateAllowance))
+}
+
+// TestASensitiveBytesInputIsRedactedFromFailureText: a task writes a bytes
+// input into text raw (an HTTP query) or as base64 (protobuf JSON), and
+// either spelling in a failure is removed as a string input's would be.
+func TestASensitiveBytesInputIsRedactedFromFailureText(t *testing.T) {
+	t.Parallel()
+
+	// A bytes value reaches an input as a struct's field: a struct binds with
+	// its leaves as they are, where a bare bytes literal does not bind at all
+	// and so already withholds failure text whole.
+	secret := []byte("synthetic-bytes-token-4f2e")
+	declared := &v1.InputDeclaration{Name: "creds", Type: v1.InputDeclaration_TYPE_STRUCT, Sensitive: true}
+	wf := &v1.Workflow{Name: "root", DeclaredInputs: []*v1.InputDeclaration{declared}}
+	values := v1.RunFailureSensitiveValues(wf, map[string]*v1.Value{"creds": v1.NewLiteralMap(map[string]any{"key": secret})})
+	require.False(t, values.WithholdAll(), "the set should be enumerable, or this proves nothing")
+
+	raw := "GET https://api.example/?k=" + string(secret) + " returned 403"
+	require.NotContains(t, values.RedactText(raw, "withheld"), string(secret), "the raw spelling was left")
+	encoded := "decoding " + base64.StdEncoding.EncodeToString(secret) + " failed"
+	require.NotContains(t, values.RedactText(encoded, "withheld"), base64.StdEncoding.EncodeToString(secret),
+		"the base64 spelling was left")
 }
