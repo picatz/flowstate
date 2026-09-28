@@ -13,6 +13,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/vault/vaulttest"
 )
@@ -278,9 +279,9 @@ providers:
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := openPayloadKeyring(ctx, path)
+	_, err := openPayloadKeyring(ctx, path, envelope.OpenOptions{})
 	require.ErrorIs(t, err, context.Canceled, "the keyring kept opening after its command was cancelled")
 
-	_, err = openPayloadKeyring(t.Context(), path)
+	_, err = openPayloadKeyring(t.Context(), path, envelope.OpenOptions{})
 	require.NoError(t, err)
 }

@@ -342,7 +342,7 @@ func New(ctx context.Context, opts Options) (*Codec, error) {
 		c.now = time.Now
 	}
 	if c.cache == nil {
-		c.cache = newDecodeCache(int(opts.DataKey.GetDecodeCacheEntries()), c.now)
+		c.cache = newDecodeCache(int(opts.DataKey.GetDecodeCacheEntries()), c.now, false)
 	}
 
 	seen := map[string]bool{}
@@ -829,11 +829,15 @@ var (
 
 	// ErrUnknownVersion is a payload marked as a version of this envelope
 	// this build cannot read.
-	ErrUnknownVersion = errors.New("envelope: payload uses an envelope version this build cannot read")
+	ErrUnknownVersion error = &classifiedError{
+		msg: "envelope: payload uses an envelope version this build cannot read", class: payloadcodec.ErrNotReadableHere,
+	}
 
 	// ErrUnknownKey is a payload whose data key this codec holds no key to
 	// unwrap.
-	ErrUnknownKey = errors.New("envelope: payload was sealed under a key this codec does not hold")
+	ErrUnknownKey error = &classifiedError{
+		msg: "envelope: payload was sealed under a key this codec does not hold", class: payloadcodec.ErrNotReadableHere,
+	}
 
 	// ErrSuiteRefused is a payload sealed with a suite the namespace does not
 	// accept.

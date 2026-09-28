@@ -124,6 +124,13 @@ import (
 // corrupt payload without knowing which codec is configured.
 var ErrUnavailable = errors.New("payload codec: unavailable")
 
+// ErrNotReadableHere is a codec that could not decode a payload because this
+// process lacks something another may have: a key it does not hold, or an
+// envelope version this build does not know, as during a rotation or an
+// upgrade rolled out one process at a time. Like [ErrUnavailable], it says
+// nothing is wrong with the payload.
+var ErrNotReadableHere = errors.New("payload codec: not readable by this process")
+
 // KeyIDMetadataKey is the payload metadata entry carrying the id of the key a
 // payload was encrypted under. One name, owned here, written by every codec and
 // read by every codec.

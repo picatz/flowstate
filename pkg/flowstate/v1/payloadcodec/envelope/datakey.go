@@ -37,12 +37,16 @@ const (
 	negativeCacheTTL          = 5 * time.Second
 	maxNegativeCacheEntries   = 1024
 
-	// unwrapRate and unwrapBurst bound how often a keyring asks providers to
-	// unwrap a data key it has not seen. Legitimate reads miss once per data
-	// key, which is one per namespace per window per writer; what exceeds
-	// this is a flood of wrapped keys nobody made, sent to turn the provider
-	// into a quota or audit-log sink. Past it, an unwrap is refused as
-	// unavailable, which Temporal and the codec server's callers retry.
+	// unwrapRate and unwrapBurst bound how often a keyring opened with
+	// [OpenOptions.LimitUnwraps] asks providers to unwrap a data key it has
+	// not seen. Legitimate reads miss once per data key, which is one per
+	// namespace per window per writer; what exceeds this is a flood of
+	// wrapped keys nobody made, sent to turn the provider into a quota or
+	// audit-log sink. Past it, an unwrap is refused as unavailable, which a
+	// codec server's caller retries. Only the codec server is limited: its
+	// callers choose what it unwraps, while a worker reads history that
+	// processes holding the keys wrote, where a replay burst after a restart
+	// is legitimate and a refusal would fail a run.
 	unwrapRate  = 200
 	unwrapBurst = 2000
 )
@@ -51,13 +55,21 @@ const (
 // because the key provider did not answer. Transient, and nothing is written
 // unsealed meanwhile. It matches [payloadcodec.ErrUnavailable], which is how
 // workflow-side decoding tells it from a corrupt payload.
-var ErrProviderUnavailable error = providerUnavailable{}
+var ErrProviderUnavailable error = &classifiedError{
+	msg: "envelope: the key provider is unavailable", class: payloadcodec.ErrUnavailable,
+}
 
-type providerUnavailable struct{}
+// classifiedError is one of this package's sentinels that also matches a
+// codec-neutral class in [payloadcodec], so a caller that knows only that
+// package can tell a payload this process cannot read from a corrupt one.
+type classifiedError struct {
+	msg   string
+	class error
+}
 
-func (providerUnavailable) Error() string { return "envelope: the key provider is unavailable" }
+func (e *classifiedError) Error() string { return e.msg }
 
-func (providerUnavailable) Is(target error) bool { return target == payloadcodec.ErrUnavailable }
+func (e *classifiedError) Is(target error) bool { return target == e.class }
 
 // dataKeyPolicy is a PayloadDataKeyPolicy with its defaults applied.
 type dataKeyPolicy struct {
@@ -182,7 +194,9 @@ type decodeCache struct {
 	negative map[[sha256.Size]byte]negativeEntry
 	flight   singleflight.Group
 
-	// tokens and refilled are a token bucket over provider unwraps.
+	// tokens and refilled are a token bucket over provider unwraps, spent
+	// only when limited.
+	limited  bool
 	tokens   float64
 	refilled time.Time
 }
@@ -198,7 +212,7 @@ type negativeEntry struct {
 	expires time.Time
 }
 
-func newDecodeCache(capacity int, now func() time.Time) *decodeCache {
+func newDecodeCache(capacity int, now func() time.Time, limited bool) *decodeCache {
 	if capacity <= 0 {
 		capacity = DefaultDecodeCacheEntries
 	}
@@ -208,14 +222,18 @@ func newDecodeCache(capacity int, now func() time.Time) *decodeCache {
 		entries:  make(map[[sha256.Size]byte]*list.Element),
 		order:    list.New(),
 		negative: make(map[[sha256.Size]byte]negativeEntry),
+		limited:  limited,
 		tokens:   unwrapBurst,
 		refilled: now(),
 	}
 }
 
 // admit takes one token for a provider unwrap, or reports that the bucket is
-// empty.
+// empty. An unlimited cache always admits.
 func (c *decodeCache) admit() bool {
+	if !c.limited {
+		return true
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()

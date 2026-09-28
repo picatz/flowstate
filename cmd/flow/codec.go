@@ -68,7 +68,7 @@ var resolvePayloadCodec = func(ctx context.Context, flags payloadEncryptionFlags
 	if flags.keyring == "" {
 		return payloadcodec.Config{}, nil
 	}
-	keyring, err := openPayloadKeyring(ctx, flags.keyring)
+	keyring, err := openPayloadKeyring(ctx, flags.keyring, envelope.OpenOptions{LimitUnwraps: flags.limitUnwraps})
 	if err != nil {
 		return payloadcodec.Config{}, err
 	}
@@ -80,8 +80,8 @@ var resolvePayloadCodec = func(ctx context.Context, flags payloadEncryptionFlags
 // first data key, bounded by [envelope.StartupBudget] and cancelled with ctx,
 // the command's own: a provider that has not answered by then is one this
 // process cannot start against, and an interrupted command stops waiting.
-func openPayloadKeyring(ctx context.Context, path string) (*envelope.Keyring, error) {
-	keyring, err := envelope.LoadFile(ctx, path)
+func openPayloadKeyring(ctx context.Context, path string, opts envelope.OpenOptions) (*envelope.Keyring, error) {
+	keyring, err := envelope.LoadFile(ctx, path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("payload keyring: %w", err)
 	}
@@ -141,6 +141,10 @@ const (
 type payloadEncryptionFlags struct {
 	keyring  string
 	required bool
+
+	// limitUnwraps opens the keyring with [envelope.OpenOptions.LimitUnwraps],
+	// which only `flow codec serve` sets: its callers choose what it decodes.
+	limitUnwraps bool
 }
 
 // addPayloadEncryptionFlags registers the two flags on a command that dials

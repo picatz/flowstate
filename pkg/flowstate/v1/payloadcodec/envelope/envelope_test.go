@@ -356,6 +356,18 @@ func TestAnUnreachableProviderIsUnavailable(t *testing.T) {
 	require.ErrorIs(t, wrapped, payloadcodec.ErrUnavailable)
 	require.ErrorIs(t, wrapped, envelope.ErrProviderUnavailable)
 	require.NotErrorIs(t, envelope.ErrMalformed, payloadcodec.ErrUnavailable)
+
+	// A key or version this process lacks is not a corrupt payload either:
+	// another worker may read it.
+	for _, lacking := range []error{envelope.ErrUnknownKey, envelope.ErrUnknownVersion} {
+		wrapped := fmt.Errorf("decoding: %w", lacking)
+		require.ErrorIs(t, wrapped, payloadcodec.ErrNotReadableHere)
+		require.ErrorIs(t, wrapped, lacking)
+	}
+	for _, wrong := range []error{envelope.ErrMalformed, envelope.ErrUnencrypted} {
+		require.NotErrorIs(t, wrong, payloadcodec.ErrNotReadableHere)
+		require.NotErrorIs(t, wrong, payloadcodec.ErrUnavailable)
+	}
 }
 
 func TestPassesTheStartupCheck(t *testing.T) {

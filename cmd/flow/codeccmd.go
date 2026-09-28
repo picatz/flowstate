@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/envelope"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/hpke"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec/keyprovider/local"
 )
@@ -126,7 +127,7 @@ func runCodecStatus(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	} else {
-		keyring, err := openPayloadKeyring(cmd.Context(), flags.keyring)
+		keyring, err := openPayloadKeyring(cmd.Context(), flags.keyring, envelope.OpenOptions{})
 		if err != nil {
 			return err
 		}

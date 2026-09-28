@@ -267,3 +267,47 @@ func TestASignalTheCodecCannotReachAKeyForFailsTheRun(t *testing.T) {
 	require.ErrorContains(t, env.GetWorkflowError(), "unavailable",
 		"the signal was dropped as corrupt and the gate carried on without it")
 }
+
+// resultUnreadableCodec reads everything but an activity's result, the way a
+// worker that did not seal it reads one while its key provider is down.
+type resultUnreadableCodec struct{ payloadcodec.Codec }
+
+func (c resultUnreadableCodec) Decode(p []*commonpb.Payload) ([]*commonpb.Payload, error) {
+	out, err := c.Codec.Decode(p)
+	if err != nil {
+		return nil, err
+	}
+	for _, decoded := range out {
+		if string(decoded.GetMetadata()["messageType"]) == "flowstate.v1.Node.Outputs" {
+			return nil, fmt.Errorf("toy key provider timed out: %w", payloadcodec.ErrUnavailable)
+		}
+	}
+	return out, nil
+}
+
+// TestAResultTheCodecCannotReadFailsTheRunNotTheStep: an activity's result
+// that this worker could not decode is not a failed step. Returned as one, a
+// step that succeeded would run its `continue_on_error:` or `undo:`, and a
+// replay on a worker that can read it would take the other branch; the run
+// fails instead, naming why.
+func TestAResultTheCodecCannotReadFailsTheRunNotTheStep(t *testing.T) {
+	t.Parallel()
+
+	toy, err := toycodec.New(bytes.Repeat([]byte{0x2a}, 32))
+	require.NoError(t, err)
+	cfg := payloadcodec.Config{Codec: resultUnreadableCodec{Codec: toy}}
+
+	step := logStep("tolerated", "a step whose failure would be tolerated")
+	step.Policy = &v1.StepPolicy{ContinueOnError: true}
+
+	env := newCodecEnv(t, engine.TaskRuntimeConfig{}.WithDataConverter(cfg.DataConverter()))
+	env.SetDataConverter(cfg.DataConverter())
+	env.ExecuteWorkflow(engine.RunWorkflowType, &v1.RunState{Workflow: &v1.Workflow{
+		Name:  "codec-result",
+		Steps: []*v1.Node{step},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.ErrorContains(t, env.GetWorkflowError(), "unavailable",
+		"the result was taken for a failed step and the run went on without it")
+}

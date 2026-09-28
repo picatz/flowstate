@@ -42,8 +42,10 @@ import "go.temporal.io/sdk/worker"
 // it would run on is the one that panicked — which is the same as before,
 // when the run never ended at all.
 //
-// One panic is deliberate and not deterministic: a signal whose payload codec
-// could not reach its key provider (signal_compat.go). Returned as an error,
-// the SDK would drop that signal as corrupt and the approval would be lost
-// without a trace; failing the run keeps it in history for a reset.
+// One panic is deliberate and not deterministic: a payload that workflow code
+// decodes (a signal, an activity or child result) and this worker cannot
+// read, because its key provider did not answer or it lacks the key
+// (signal_compat.go failIfUnreadableHere). Returned as an error, the SDK
+// would drop a signal as corrupt and a result would fail a step that
+// succeeded; failing the run keeps the payload in history for a reset.
 const WorkerWorkflowPanicPolicy = worker.FailWorkflow
