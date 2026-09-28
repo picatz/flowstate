@@ -81,7 +81,7 @@ type debugRun struct {
 
 // startDebugRun compiles files (the first is the root), and runs it under a
 // controlled session on its own goroutine.
-func startDebugRun(t *testing.T, root string, files map[string]string, configure func(*flowdebug.Options)) *debugRun {
+func startDebugRun(t *testing.T, root string, files map[string]string, configure func(*flowdebug.Options), before ...func(*flowdebug.Session)) *debugRun {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -91,10 +91,13 @@ func startDebugRun(t *testing.T, root string, files map[string]string, configure
 	workflow, _, err := flowfile.ParseFile(filepath.Join(dir, root))
 	require.NoError(t, err)
 
-	return startDebugWorkflow(t, workflow, configure)
+	return startDebugWorkflow(t, workflow, configure, before...)
 }
 
-func startDebugWorkflow(t *testing.T, workflow *v1.Workflow, configure func(*flowdebug.Options)) *debugRun {
+// startDebugWorkflow runs workflow under a new session; before, if given, runs
+// on the session ahead of the run, so that what it installs is in place for
+// the very first stop.
+func startDebugWorkflow(t *testing.T, workflow *v1.Workflow, configure func(*flowdebug.Options), before ...func(*flowdebug.Session)) *debugRun {
 	t.Helper()
 
 	opts := flowdebug.Options{Controlled: true, Out: &strings.Builder{}, Workflow: workflow}
@@ -103,6 +106,9 @@ func startDebugWorkflow(t *testing.T, workflow *v1.Workflow, configure func(*flo
 	}
 	session, err := flowdebug.New(opts)
 	require.NoError(t, err)
+	for _, prepare := range before {
+		prepare(session)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
@@ -578,8 +584,12 @@ func TestLineBreakpointsResolveThroughTheSourceMap(t *testing.T) {
 func TestTheTypedSurfaceIsRedacted(t *testing.T) {
 	t.Parallel()
 
-	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil)
-	run.session.SetRedactor(func(text string) string { return strings.ReplaceAll(text, "touch", "[redacted]") })
+	// Installed before the run starts: a pause keeps the redactor it began
+	// under, so one installed later would not reach the entry stop.
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": journeyFlowfile, "child.yaml": childFlowfile}, nil,
+		func(session *flowdebug.Session) {
+			session.SetRedactor(func(text string) string { return strings.ReplaceAll(text, "touch", "[redacted]") })
+		})
 	target := flowdebug.Target(run.session)
 	at := waitHeld(t, target, 0)
 
