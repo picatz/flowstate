@@ -421,8 +421,12 @@ issuers:
 ```
 
 These disjoint entries let the dashboard inspect and CI submit while neither may
-terminate. `actions` omitted preserves the pre-action-policy behavior and adds no
-restriction; `actions: []` grants no control-plane action. Grants match exactly:
+terminate. `actions` omitted preserves the pre-action-policy behavior for the RPC
+actions and adds no restriction there; `actions: []` grants no control-plane
+action. Disclosure actions are the exception: `payload.decode` and
+`payload.encode` ([Payload encryption](ENCRYPTION.md)) are granted only to an
+entry that lists them, so an entry written before they existed cannot decrypt
+history. Grants match exactly:
 `workload.run` does not imply cancel or terminate, and token `scope`/`scp` claims
 do not grant authority in this slice.
 
