@@ -654,3 +654,63 @@ func TestAnAttachRetryIsAnsweredWithTheSessionItAttached(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, result.IsError)
 }
+
+// TestARetryKeyAnswersOnlyItsOwnTool: a request id names one call to one tool.
+// A start under a key an attach already used starts its own stubbed case
+// rather than being handed the durable session the attach made — whose next
+// movement would move a production run.
+func TestARetryKeyAnswersOnlyItsOwnTool(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(heldRun{}))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := flowstatev1connect.NewWorkflowServiceClient(srv.Client(), srv.URL)
+	r := newDebugSessions(func() flowstatev1connect.WorkflowServiceClient { return client })
+
+	result, err := r.attach(t.Context(), toolRequest(t, map[string]any{"workflow_id": "w", "request_id": "k"}))
+	require.NoError(t, err)
+	attached := replyOf(t, result)
+	require.False(t, result.IsError, attached.raw)
+
+	result, err = r.start(t.Context(), toolRequest(t, map[string]any{"workflow": debugWorkflow, "tests": sessionTests, "request_id": "k"}))
+	require.NoError(t, err)
+	started := replyOf(t, result)
+	require.False(t, result.IsError, started.raw)
+	assert.NotEqual(t, attached.SessionID, started.SessionID, "a start was answered with the durable session an attach made")
+	assert.NotContains(t, started.Note, "already")
+
+	for _, id := range []string{started.SessionID, attached.SessionID} {
+		result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": id, "keep": true}))
+		require.NoError(t, err)
+		require.False(t, result.IsError, replyOf(t, result).raw)
+	}
+}
+
+// TestARacingAttachIsAnsweredOnlyOnItsOwnRun: an attach that registers after
+// another under the same key — the race the early retry check cannot see —
+// is handed the first session only when both asked for the same run.
+func TestARacingAttachIsAnsweredOnlyOnItsOwnRun(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	key := retryKey(debugSessionAttachTool, "k")
+	entry := func(id, workflow string, run ...string) *debugSessionEntry {
+		return &debugSessionEntry{id: id, workflowID: workflow, runID: strings.Join(run, ""), receipts: map[string]json.RawMessage{}}
+	}
+	first := entry("a", "w", "run-1")
+	existing, err := r.register(first, key)
+	require.NoError(t, err)
+	require.Nil(t, existing)
+
+	existing, err = r.register(entry("b", "w"), key)
+	require.NoError(t, err)
+	assert.Same(t, first, existing, "a retry on the same run was not answered with the first session")
+
+	for _, other := range []*debugSessionEntry{entry("c", "other"), entry("d", "w", "run-2")} {
+		existing, err = r.register(other, key)
+		require.ErrorIs(t, err, errReusedAttachKey, "an attach on %s/%s was answered with the first session", other.workflowID, other.runID)
+		assert.Nil(t, existing)
+	}
+}

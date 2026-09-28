@@ -311,16 +311,22 @@ func (r *debugSessions) remove(id string) bool {
 	return r.retireLocked(id) != nil
 }
 
-// register admits a new session, within the bound. A start request id is
-// reserved in the same critical section that admits the session, so two
-// starts under one id never both launch a run: the second is handed the
-// session the first admitted, and must discard its own.
+// register admits a new session, within the bound. A call's retry key
+// ([retryKey]) is reserved in the same critical section that admits the
+// session, so two starts under one key never both launch a run: the second is
+// handed the session the first admitted, and must discard its own.
 func (r *debugSessions) register(entry *debugSessionEntry, request string) (*debugSessionEntry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if request != "" {
 		if existing, ok := r.sessions[r.starts[request]]; ok {
+			// An attach racing another under its key: answered with the
+			// first only when both asked for the same run.
+			if entry.local == nil && !existing.onRun(entry.workflowID, entry.runID) {
+				return nil, errReusedAttachKey
+			}
+
 			return existing, nil
 		}
 	}
@@ -866,9 +872,10 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	r.sweep()
 
-	if args.RequestID != "" {
+	key := retryKey(debugSessionStartTool, args.RequestID)
+	if key != "" {
 		r.mu.Lock()
-		existing, started := r.starts[args.RequestID]
+		existing, started := r.starts[key]
 		r.mu.Unlock()
 		if started {
 			entry, err := r.lookup(existing)
@@ -915,7 +922,7 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 		transcript: transcript, cancel: cancel, done: make(chan struct{}),
 	}
 	entry.driver.Wait = maxDebugSessionWait
-	existing, err := r.register(entry, args.RequestID)
+	existing, err := r.register(entry, key)
 	if err != nil || existing != nil {
 		// Nothing was launched: this session never ran.
 		cancel()
@@ -1029,17 +1036,18 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	// A retry of an attach whose answer was lost is answered with the session
 	// it attached — whose id the caller never learned — rather than
 	// attaching again beside it.
-	if args.RequestID != "" {
+	key := retryKey(debugSessionAttachTool, args.RequestID)
+	if key != "" {
 		r.mu.Lock()
-		id, attached := r.starts[args.RequestID]
+		id, attached := r.starts[key]
 		r.mu.Unlock()
 		if attached {
 			entry, err := r.lookup(id)
 			if err != nil {
 				return flowmcp.ToolError(err), nil
 			}
-			if entry.workflowID != args.WorkflowID {
-				return flowmcp.ToolError(fmt.Errorf("request_id %q already attached a session to another workflow; use a new request id", args.RequestID)), nil
+			if !entry.onRun(args.WorkflowID, args.RunID) {
+				return flowmcp.ToolError(errReusedAttachKey), nil
 			}
 			answer := entry.answerAfter(ctx)
 			answer.Note = strings.TrimSpace("this request id already attached this session; it was not attached again. " + answer.Note)
@@ -1067,7 +1075,7 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 		workflowID: args.WorkflowID, runID: args.RunID,
 	}
 	entry.driver.Wait = maxDebugSessionWait
-	existing, err := r.register(entry, args.RequestID)
+	existing, err := r.register(entry, key)
 	if err != nil || existing != nil {
 		switch {
 		case err != nil && args.SessionID == "", existing != nil && existing.id != remote.SessionID():
@@ -1226,6 +1234,29 @@ func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry,
 
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}}}, nil
 }
+
+// retryKey is the key a request id is remembered under for tool: each tool's
+// keys are its own, so one tool's key never answers another's call — a
+// start is never handed the durable session an attach made. Empty when
+// request is.
+func retryKey(tool, request string) string {
+	if request == "" {
+		return ""
+	}
+
+	return tool + "\x00" + request
+}
+
+// onRun reports whether this durable session is on the run workflowID and
+// runID name, a run id either side leaves empty matching any, as a rejoin
+// judges it.
+func (e *debugSessionEntry) onRun(workflowID, runID string) bool {
+	return e.local == nil && e.workflowID == workflowID && (e.runID == "" || runID == "" || e.runID == runID)
+}
+
+// errReusedAttachKey refuses an attach whose request id already attached a
+// session to another run: the key names that call, not this one.
+var errReusedAttachKey = errors.New("this request_id already attached a session to another run; use a new request id")
 
 // checkSessionID refuses a session id longer than any session's: one that
 // matches nothing is echoed in the refusal, so it is bounded before it is.
