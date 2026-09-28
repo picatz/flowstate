@@ -2,6 +2,7 @@ package flowdap
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,6 +86,13 @@ type Server struct {
 
 	launched chan struct{}
 	once     sync.Once
+
+	// nonce names this adapter in the request IDs it sends. A client's
+	// sequence numbers restart with each connection, and a durable run keeps
+	// the receipts of the commands it applied: an editor reconnecting to the
+	// same session would otherwise send an ID the run already answered, and
+	// have a new movement taken for a retry of an old one.
+	nonce string
 
 	// running counts the launched run the adapter started, so [Server.Wait]
 	// can outlive the client of a run it let go of.
@@ -197,6 +205,7 @@ func NewServer(target flowdebug.Target, stream Stream, opts ...Option) *Server {
 		issued:      map[handle]int{},
 		lines:       map[string][]lineBreakpoint{},
 		stopOnEntry: true,
+		nonce:       rand.Text(),
 	}
 	if session, ok := target.(*flowdebug.Session); ok {
 		s.capabilities = session.Capabilities()
@@ -872,7 +881,7 @@ func (s *Server) move(ctx context.Context, request inbound, action v1.DebugResum
 	s.mu.Unlock()
 
 	receipt, err := target.Resume(ctx, &v1.DebugResumeRequest{
-		RequestId:        fmt.Sprintf("dap-%d", request.Seq),
+		RequestId:        s.requestID(request.Seq),
 		Action:           action,
 		ExpectedRevision: revision,
 	})
@@ -938,7 +947,7 @@ func (s *Server) pause(ctx context.Context, request inbound) {
 	s.order.Lock()
 	defer s.order.Unlock()
 
-	receipt, err := target.Pause(ctx, fmt.Sprintf("dap-%d", request.Seq))
+	receipt, err := target.Pause(ctx, s.requestID(request.Seq))
 	if err != nil {
 		s.fail(request, err.Error())
 
@@ -1042,6 +1051,10 @@ func toClient(position uint32, base int) int {
 
 	return int(position) - 1 + base
 }
+
+// requestID is the retry key for the command a client request carries: stable
+// for that request, and distinct from every other adapter's.
+func (s *Server) requestID(seq int) string { return fmt.Sprintf("dap-%s-%d", s.nonce, seq) }
 
 // clientBases is the first line and column number in the client's
 // coordinates: 1 unless its initialize said 0.

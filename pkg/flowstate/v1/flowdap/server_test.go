@@ -1251,3 +1251,19 @@ func TestBreakpointNumbersGoWithTheirSlots(t *testing.T) {
 	assert.Equal(t, kept, set("/kept.yaml", 3)[0].(map[string]any)["id"],
 		"a slot that stayed was renumbered")
 }
+
+// TestARequestIDIsTheAdaptersOwn is an editor reconnecting to a live durable
+// session: its sequence numbers start over, so the adapter's own nonce is what
+// keeps a new movement from reusing an ID the run already answered, while one
+// request keeps a single ID for its retries.
+func TestARequestIDIsTheAdaptersOwn(t *testing.T) {
+	t.Parallel()
+
+	first := flowdap.NewServer(nil, newClient(t))
+	second := flowdap.NewServer(nil, newClient(t))
+
+	assert.Equal(t, flowdap.RequestID(first, 4), flowdap.RequestID(first, 4), "one request's retries must share an ID")
+	assert.NotEqual(t, flowdap.RequestID(first, 4), flowdap.RequestID(second, 4),
+		"two adapters sent the same ID for their fourth request, so a reconnect replays an old receipt")
+	assert.LessOrEqual(t, len(flowdap.RequestID(first, 1<<31)), v1.MaxDebugRequestIDBytes)
+}
