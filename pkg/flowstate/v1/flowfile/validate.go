@@ -2195,21 +2195,32 @@ func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
 		return nil, nil, err
 	}
 
+	wf, _, ds, err := ParseAndValidateSourceAt(data, path)
+
+	return wf, ds, err
+}
+
+// ParseAndValidateSourceAt is [ParseAndValidateFile] for bytes already read,
+// resolving a `call:` step relative to path's directory, and answering the
+// positions of the same compilation too. A caller that needs both the program
+// and where its steps are written — a debugger's source map — gets them from
+// one read, so the lines cannot belong to a different revision of the file.
+func ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Positions, Diagnostics, error) {
 	wf, positions, err := parse(data, path, nil, new(int))
 	if err != nil {
 		var gate Diagnostics
 		if errors.As(err, &gate) && isEditionGate(gate) {
 			if _, verr := validateThroughEdition(data, path); verr != nil {
-				return nil, nil, verr
+				return nil, nil, nil, verr
 			}
 		}
 	}
 
 	ds, err := validateParsed(wf, positions, err)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return wf, ds, nil
+	return wf, positions, ds, nil
 }
 
 // ValidateSourceAt is [ValidateSource] for data that is not necessarily what
