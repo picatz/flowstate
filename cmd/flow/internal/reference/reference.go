@@ -5,7 +5,9 @@
 // `go install` and run from a home directory, a container, or a CI job with no
 // checkout anywhere near it — so a resource handler that read ../../docs/DSL.md
 // would serve the reference on a maintainer's laptop and a "not found" for
-// everybody else. The documents are therefore compiled in.
+// everybody else. The documents are therefore compiled in: the language guide
+// (docs/LANGUAGE.md), the record of its design decisions (docs/DSL.md), and
+// every example workflow.
 //
 // The go:embed directive cannot reach outside the package directory, so the
 // compiled-in copies live here in mirror/ rather than being embedded from docs/
@@ -38,15 +40,32 @@ import (
 //go:embed mirror
 var mirror embed.FS
 
-// DSLPath and examplesDir are where the mirror keeps each kind, named once so
-// the generator and the readers cannot disagree about a path.
+// languagePath, dslPath and examplesDir are where the mirror keeps each kind,
+// named once so the generator and the readers cannot disagree about a path.
 const (
-	dslPath     = "mirror/DSL.md"
-	examplesDir = "mirror/examples"
+	languagePath = "mirror/LANGUAGE.md"
+	dslPath      = "mirror/DSL.md"
+	examplesDir  = "mirror/examples"
 )
 
-// DSL returns the Flowfile language reference — the content of docs/DSL.md as of
-// the build.
+// Language returns the Flowfile language guide — the content of
+// docs/LANGUAGE.md as of the build. It is the document to author from: every
+// construct, its defaults and limits, and where each expression root is in
+// scope.
+func Language() string {
+	data, err := mirror.ReadFile(languagePath)
+	if err != nil {
+		// Unreachable: the file is embedded, so a failure here is a build that
+		// should not have linked.
+		panic("flow: the embedded language guide is missing: " + err.Error())
+	}
+
+	return string(data)
+}
+
+// DSL returns the record of the language's design decisions — the content of
+// docs/DSL.md as of the build. It explains why each construct is shaped the
+// way it is; [Language] is what an author reads to write one.
 func DSL() string {
 	data, err := mirror.ReadFile(dslPath)
 	if err != nil {

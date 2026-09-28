@@ -238,9 +238,7 @@ func shownWorkflows(t *testing.T, doc string) []shownWorkflow {
 
 	var out []shownWorkflow
 	taken := map[string]bool{}
-	for _, block := range completeWorkflow.FindAllStringSubmatch(string(data), -1) {
-		source := block[1]
-
+	for _, source := range shownWorkflowSources(string(data)) {
 		name := "unnamed"
 		for line := range strings.SplitSeq(source, "\n") {
 			if rest, found := strings.CutPrefix(line, "name:"); found {

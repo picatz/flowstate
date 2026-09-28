@@ -1,120 +1,112 @@
 # Flowstate documentation
 
-Every document in this directory, what it is for, and which of them are generated.
-A reader who lands here should never have to guess whether a file exists, or which
-of two similarly named files answers their question.
+Flowstate runs workloads that have to finish correctly despite crashes, network
+failures, and long waits. You describe one in a YAML Flowfile with CEL
+expressions; Flowstate checks it, compiles it to a typed specification, and runs
+it on your machine or durably on Temporal, under policy about who may start it,
+answer it, and reach what.
 
-[README.md](../README.md) in the repository root is the front door: what Flowstate
-is, a worked example, and a quickstart. This page is the map of everything behind
-it.
+Start with the first section, then follow the one that matches what you are
+doing. [The repository README](../README.md) is the one-page overview.
 
-## Writing workflows
+## Start here
 
-| Document | What it covers |
+| Document | Read it to |
 | --- | --- |
-| [DSL.md](DSL.md) | The Flowfile language, as a record of decisions: what each construct is, what was refused, and why. Long; it opens with a contents list. |
-| [STYLE.md](STYLE.md) | The style charter: one obvious spelling per construct, the rule that decides each argument, and the tier that enforces it. What is *good*, where DSL.md is what is *legal*. |
-| [reference/tasks.md](reference/tasks.md) | *Generated.* Every task this build can execute, with typed inputs, outputs and a step to copy. |
-| [reference/cel.md](reference/cel.md) | *Generated.* Every CEL function and macro an expression may call, with call forms and the cost limit they spend against. |
-| [reference/diagnostics.md](reference/diagnostics.md) | *Generated.* Every stable diagnostic `code` `flow validate` can report, so a program can branch on a failure without parsing prose. |
-| [EDITORS.md](EDITORS.md) | `flow lsp`: diagnostics, hover and completion in an editor, and how to wire it up per editor. |
-| [DEBUGGING.md](DEBUGGING.md) | The step debugger: holding a run at each step and asking it questions, at a terminal or as an agent. The tool for *why* a case failed, where `flow test` answers *that* it did. |
-| [EMBEDDING.md](EMBEDDING.md) | `pkg/flowstate/embed`: compiling and running Flowfiles from your own Go program, and registering Go functions as tasks. |
-| [PLUGINS.md](PLUGINS.md) | Writing a plugin from outside this repository: empty directory to a task in `flow plugins`, and the five places the SDK contract is implicit. |
-| [USE_CASES.md](USE_CASES.md) | Four worked enterprise workloads end to end — the index to `examples/enterprise-*/`. |
+| [Get started](GETTING_STARTED.md) | Write a workflow, test it, step through it, and run it locally and then durably, in about twenty minutes. |
+| [How Flowstate works](CONCEPTS.md) | Understand the building blocks and how they fit together, with orientation if you know GitHub Actions or Temporal. |
+| [Why Flowstate, and when not](COMPARISON.md) | Compare it with the Temporal SDK, Argo, Step Functions, CI systems, and durable functions, including the workloads it does not fit. |
+| [Use cases](USE_CASES.md) | See four production-shaped workflows (settlement, access review, incident response, onboarding) and what each does not do. |
+| [Examples](../examples/README.md) | Find a tested workflow for each feature, arranged as learning journeys. |
 
-## Running it
+## Write workflows
 
-| Document | What it covers |
+| Document | Read it to |
 | --- | --- |
-| [CLI.md](CLI.md) | The contract the `flow` binary holds itself to: two audiences (a terminal and a pipe), exit codes, colour, what goes on stdout. The *philosophy*. |
-| [CLI_DESIGN.md](CLI_DESIGN.md) | The layer under CLI.md: the actual design tokens, views and symbols a new command or view is checked against. The *design language*. |
-| [reference/cli.md](reference/cli.md) | *Generated.* Every command and flag, derived from the cobra tree the binary builds. |
-| [reference/envvars.md](reference/envvars.md) | *Generated.* Every environment variable this build reads, held to the tree by a test. |
-| [reference/task-policy.md](reference/task-policy.md) | *Generated.* The task-shape policy YAML fields, derived from the exact Go struct the strict decoder reads. |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Putting Flowstate somewhere real: the four-tier isolation model, and each topology as commands and unit files. Read it before sharing a Temporal namespace. |
-| [AUTHORIZATION_FRESHNESS.md](AUTHORIZATION_FRESHNESS.md) | How a deployment orders policy changes, detects rollback and split-brain across a fleet, and what the protected-resource route may and may not reveal about the policy behind it. |
-| [MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md) | Authorizing an agent when `flow mcp` is reachable over HTTP rather than over stdio. |
-| [WORKLOAD_IDENTITY_FEDERATION.md](WORKLOAD_IDENTITY_FEDERATION.md) | The two metadata documents an issuer publishes, what each is for, and what each cloud consumer actually requires. Read it before changing anything a relying party parses. |
-| [reference/mcp.md](reference/mcp.md) | *Generated.* Every MCP tool `flow mcp` serves, derived from the service descriptor. |
+| [The Flowfile language](LANGUAGE.md) | Look up any construct: values, expressions, tasks, control flow, waits, retries, compensation, triggers, policy, and limits. |
+| [Style](STYLE.md) | Choose among legal spellings: the one canonical form for each construct, and the rule that decides it. |
+| [Task reference](reference/tasks.md) | *Generated.* Every built-in task's inputs, outputs, and bounds. |
+| [CEL reference](reference/cel.md) | *Generated.* Every function and macro an expression may call. |
+| [Diagnostics reference](reference/diagnostics.md) | *Generated.* The stable `code` of every `flow validate` diagnostic. |
 
-## How it is built, and where it is going
+## Test, debug, and edit
 
-| Document | What it covers |
+| Document | Read it to |
 | --- | --- |
-| [COMPARISON.md](COMPARISON.md) | Why Flowstate and when not: one row per alternative (the Temporal SDK, Argo, Step Functions, CI, durable functions in code, script runners), what each is better at, and the workloads that are not a fit. Read it first if you are deciding whether to start. |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | The six layers, the invariants a change is checked against, and the tenancy, secret and plugin models. Read the invariants before a structural change. |
-| [VISION.md](VISION.md) | Intent that is *not built yet*, recorded so it survives the sessions that had it. |
-| [CI.md](CI.md) | What the three verification tiers run, what decides it, and the repository settings the design depends on. |
-| [agents/README.md](agents/README.md) | The shared Claude Code, Codex, and Amp configuration layers, where guidance lives, and the structural checks that keep them aligned. |
+| [Testing workflows](TESTING.md) | Write `*.test.yaml` cases with stubbed tasks, scripted signals, and a virtual clock. |
+| [Debugging a workflow](DEBUGGING.md) | Hold a run at any step and inspect it, locally, in an editor, or as an agent; and pause a durable run. |
+| [Editor setup](EDITORS.md) | Get diagnostics, completion, and hover from `flow lsp` in VS Code, Neovim, Helix, Zed, or Emacs. |
+| [Using Flowstate from an agent](MCP.md) | Connect Claude Code, Codex, or another MCP client to `flow mcp`, and learn the authoring loop it supports. |
+| [MCP tool reference](reference/mcp.md) | *Generated.* Every tool `flow mcp` serves. |
 
-## Outside this directory
+## Run and operate
 
-A few documents live beside what they describe rather than here.
-
-| Document | What it covers |
+| Document | Read it to |
 | --- | --- |
-| [examples/README.md](../examples/README.md) | Every example workflow, what each one demonstrates, and the first commands to run. |
-| [plugins/](../plugins/) | One `plugins/<name>/README.md` per first-party plugin: its tasks, bounds, and how to build it. |
-| [THREAT_MODEL.md](../THREAT_MODEL.md) | The trust boundaries, what enforces each, and the gaps the design does not cover yet. |
-| [SECURITY.md](../SECURITY.md) | How to report a vulnerability, what to expect, and the analysis that runs on every change. |
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | How to propose and land a change: issues, pull requests, and the gate they pass. |
+| [Deployment](DEPLOYMENT.md) | Run a server and workers for a team: isolation tiers, topologies, health, metrics, audit, capacity, and upgrades. Read the first section before sharing a Temporal namespace. |
+| [Secrets and credentials](SECRETS.md) | Configure secret providers and access policy, and mint short-lived credentials instead of storing long-lived ones. |
+| [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md) | Understand the metadata documents Flowstate publishes as an issuer, and what each cloud's relying party requires. |
+| [MCP over HTTP](MCP_AUTHORIZATION.md) | Authorize agents that reach `flow mcp serve` over HTTP. |
+| [Authorization freshness](AUTHORIZATION_FRESHNESS.md) | The design for ordering policy changes across a fleet. Mostly not yet implemented. |
+| [Command reference](reference/cli.md) | *Generated.* Every command and flag. |
+| [Environment variables](reference/envvars.md) | *Generated.* Every environment variable the binary reads. |
+| [Task policy reference](reference/task-policy.md) | *Generated.* The fields of a `--task-policy` file. |
 
-## Internal
+Also in the repository root: the [threat model](../THREAT_MODEL.md), with each
+trust boundary, what enforces it, and the known gaps; and the
+[security policy](../SECURITY.md) for reporting a vulnerability.
 
-[plans/](plans/) is agent-orchestration process, not product documentation: how a
-dispatching session routes work, a retro ledger, and a past week's plan kept for
-comparison against what shipped. Nothing there describes Flowstate to a user, and
-nothing outside it depends on it. Each file carries a banner saying so.
+## Build on Flowstate
 
-## Conventions
-
-Four house rules, so a page written next year reads like the ones written last
-year.
-
-**Generated pages are never hand-edited.** Everything under `reference/` carries a
-`Generated by` banner and is derived from the task registry, the cobra tree, the
-service descriptor and the schema. Edit the source and regenerate:
-
-```console
-$ go run ./cmd/flow docs generate          # docs/reference/
-$ go generate ./cmd/flow/internal/reference # the compiled-in DSL.md mirror + its contents list
-```
-
-Editing [DSL.md](DSL.md) requires the second command too — `flow mcp` serves a
-copy compiled into the binary, and a test fails on drift.
-
-**Diagrams where structure is the point.** Mermaid, rendered by GitHub with no
-build step, in the style [the root README](../README.md#from-file-to-durable-run)
-established: a `flowchart`, short node labels, and `classDef` to mark the one
-element the picture is about. A diagram earns its place by showing a shape prose
-has to spend a paragraph on — layers and what derives from what
-([ARCHITECTURE.md](ARCHITECTURE.md#layers)), what each isolation tier adds
-([DEPLOYMENT.md](DEPLOYMENT.md#the-four-tier-isolation-model)), a protocol
-exchange ([MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md)). It is not a decoration
-for a page that already reads clearly.
-
-**Callouts are rationed.** GitHub's `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` /
-`[!WARNING]` / `[!CAUTION]` render as coloured boxes, and a page where three
-things are shouting is a page where nothing is. So they are reserved, not
-sprinkled:
-
-| Callout | Reserved for |
+| Document | Read it to |
 | --- | --- |
-| `[!WARNING]` | An aside where ignoring it costs isolation, a secret, or data — the reader has to see it even while skimming. |
-| `[!IMPORTANT]` | A prerequisite the surrounding section is wrong without. |
-| `[!TIP]` | A shortcut or a one-liner that saves real work, where missing it costs only time. |
-| `[!NOTE]` | Context about the document itself, such as the internal-only banners under [plans/](plans/). |
+| [The control-plane API](API.md) | Call the ConnectRPC API from curl, Go, or another language, and see which surfaces are stable. |
+| [Embedding](EMBEDDING.md) | Compile and run workflows inside a Go program with `pkg/flowstate/embed`, and register Go functions as tasks. |
+| [Writing a plugin](PLUGINS.md) | Add tasks or secret providers as a separate executable, from an empty directory to a task a worker runs. |
+| [First-party plugins](../plugins/) | See what each in-tree plugin provides and bounds: Docker, Git, GitHub, JOSE, OCI, OIDC, SCIM, Slack, SQL, SSH, VCS, and Codex. |
 
-One rule decides the rest: a callout is for something a reader must not skim past
-*and* that the surrounding prose cannot make loud enough on its own — a hazard, a
-prerequisite, a shortcut. Ordinary emphasis is still the tool for the argument a
-section is making. Promoting every strong claim to a box does not make it louder;
-it makes the boxes quieter.
+## Design and direction
 
-**This index is complete, and a test says so.** The prose above is hand-written,
-but the *set* is not left to memory: `TestTheDocsIndexListsEveryDocument` in
-`cmd/flow` fails when a document under `docs/` is added, renamed or removed
-without this page moving with it, and fails equally when this page links to a
-document that does not exist. An index nobody checks is how a reader learns that
-a file exists by accident.
+| Document | Read it to |
+| --- | --- |
+| [Architecture](ARCHITECTURE.md) | Learn the layers, the invariants every change is checked against, and the tenancy, secret, and plugin models. |
+| [Language design decisions](DSL.md) | Understand why each construct is shaped as it is, and what was refused. A record of decisions, not a tutorial. |
+| [The command line contract](CLI.md) | See the rules every `flow` command follows: streams, colour, errors, and exit statuses. |
+| [CLI design language](CLI_DESIGN.md) | The concrete tokens, symbols, and views a new command is checked against. |
+| [Vision](VISION.md) | Directions the project intends to take. Nothing there is shipped. |
+
+## Contributing
+
+| Document | Read it to |
+| --- | --- |
+| [Contributing](../CONTRIBUTING.md) | Propose and land a change. |
+| [CI](CI.md) | Understand what the verification tiers run and how the gate decides. |
+| [Agent configuration](agents/README.md) | See how Claude Code, Codex, and Amp are configured to work on this repository. |
+| [plans/](plans/) | Internal: agent-orchestration process and past plans. Not product documentation. |
+
+### Writing documentation here
+
+- **Generated pages are never edited by hand.** Everything under `reference/`
+  carries a banner naming its source. Change the source, then regenerate:
+
+  ```console
+  $ go run ./cmd/flow docs generate          # docs/reference/
+  $ go generate ./cmd/flow/internal/reference # the copies of LANGUAGE.md, DSL.md, and the examples compiled into flow
+  ```
+
+  Editing [LANGUAGE.md](LANGUAGE.md), [DSL.md](DSL.md), or an example's
+  `workflow.yaml` needs the second command: `flow mcp` serves compiled-in
+  copies, and a test fails when they drift.
+- **Complete Flowfiles in pages are tested.** A fenced `yaml` block that starts
+  with `edition:` in a page listed in `shownDocs`
+  (`pkg/flowstate/v1/flowfile/shown_test.go`) must compile, lint clean, and be
+  in `flow fmt` form; a test file must load. A block preceded by
+  `<!-- mirrors: path -->` must match that file exactly. Fence a sketch of
+  something that does not exist yet as `yaml (proposed)`.
+- **Diagrams are Mermaid,** used where a shape would otherwise take a paragraph,
+  with the essential meaning also in the text.
+- **Callouts are rare.** `[!WARNING]` for a risk to isolation, a secret, or
+  data; `[!IMPORTANT]` for a prerequisite; `[!TIP]` for a real shortcut;
+  `[!NOTE]` for context the reader should not skim past.
+- **This index lists every page.** `TestTheDocsIndexListsEveryDocument` fails
+  when a page under `docs/` is added or removed without an entry here.
