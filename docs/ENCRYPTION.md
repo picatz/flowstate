@@ -315,7 +315,9 @@ namespaces:
 ```
 
 Everything written is still sealed. Remove the setting once the namespace's
-retention has passed.
+retention has passed. While it is set, anything able to write a plaintext
+payload into that namespace's history is read back as though it were
+protected, which is exactly what the default refusal prevents.
 
 > [!WARNING]
 > `flow server` reads its own memos (a run's tenant, starter, labels) through
@@ -324,9 +326,7 @@ retention has passed.
 > namespaces, set `accept_unencrypted` on all of them for the migration, or the
 > server will treat pre-encryption runs in the migrating namespace as not found
 > even though workers can still finish them. Per-namespace server reads are
-> [#2163](https://github.com/picatz/flowstate/issues/2163). While it is set, anything able to write a plaintext
-payload into that namespace's history is read back as though it were
-protected, which is exactly what the default refusal prevents.
+> [#2163](https://github.com/picatz/flowstate/issues/2163).
 
 ## Embedding
 
