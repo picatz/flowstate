@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -419,4 +420,48 @@ func (f *fakeRemote) Close() error {
 	f.closed = true
 
 	return nil
+}
+
+// TestAnUnreadableAttachedRunIsLetGoAndTheEditorTold: when a durable run
+// cannot be read, the adapter retries, and if it stays unreadable it detaches,
+// releasing the lease that would otherwise keep the run held, and ends the
+// editor's session with a failure rather than leaving it waiting in silence.
+func TestAnUnreadableAttachedRunIsLetGoAndTheEditorTold(t *testing.T) {
+	restore := flowdap.ShortenWatchRetries(time.Millisecond)
+	t.Cleanup(restore)
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+
+	remote := &unreadableRemote{fakeRemote: fakeRemote{snapshot: &v1.DebugSnapshot{
+		Revision: 1, State: v1.DebugRunState_DEBUG_RUN_STATE_RUNNING, Capabilities: v1.DurableDebugCapabilities(),
+	}}}
+	server := flowdap.NewServer(nil, c, flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+		return &flowdap.Attachment{Target: remote}, nil
+	}))
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+
+	exited := body(c.await("event", "exited"))
+	assert.EqualValues(t, 1, exited["exitCode"], "an abandoned run was reported as a clean exit")
+	assert.True(t, remote.closed, "the adapter kept the session, and so the lease, of a run it could not read")
+	assert.GreaterOrEqual(t, remote.reads.Load(), int32(2), "the adapter gave up without retrying")
+}
+
+// unreadableRemote is a fakeRemote whose every wait fails.
+type unreadableRemote struct {
+	fakeRemote
+	reads atomic.Int32
+}
+
+func (u *unreadableRemote) WaitSnapshot(context.Context, uint64) (*v1.DebugSnapshot, error) {
+	u.reads.Add(1)
+
+	return nil, errors.New("the server did not answer")
 }

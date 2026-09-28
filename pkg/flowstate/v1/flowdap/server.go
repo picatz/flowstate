@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -565,6 +566,14 @@ func (s *Server) release(ctx context.Context) {
 	})
 }
 
+// How long watch keeps trying to read a target whose reads fail: a few
+// attempts, each waiting a little longer, before it gives the run up.
+const maxWatchRetries = 5
+
+// watchRetryBackoff is the first wait between reads; each retry waits one
+// more of it. A variable only so a test can shorten it.
+var watchRetryBackoff = time.Second
+
 // watch reports every stop the target reaches, in order, and the run's end.
 func (s *Server) watch(ctx context.Context) {
 	target := s.currentTarget()
@@ -572,17 +581,47 @@ func (s *Server) watch(ctx context.Context) {
 		return
 	}
 
-	var after uint64
+	var (
+		after    uint64
+		failures int
+	)
 	for {
 		snapshot, err := target.WaitSnapshot(ctx, after)
 		if err != nil {
-			if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-				s.emit("output", map[string]string{"category": "stderr", "output": "flowdap: " + err.Error() + "\n"})
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, flowdebug.ErrRunOver) {
+				s.enteredAt.Do(func() { close(s.entered) })
+
+				return
 			}
+			// A read that failed is not a session that ended: a durable
+			// run's server can be briefly unreachable. Try again a few times,
+			// and if it stays unreachable, let the run go rather than leave
+			// it held behind a lease this adapter keeps renewing while the
+			// editor hears nothing.
+			failures++
+			if failures == 1 {
+				s.emit("output", map[string]string{"category": "stderr", "output": "flowdap: " + err.Error() + "; retrying\n"})
+			}
+			if failures <= maxWatchRetries {
+				select {
+				case <-time.After(time.Duration(failures) * watchRetryBackoff):
+					continue
+				case <-ctx.Done():
+					s.enteredAt.Do(func() { close(s.entered) })
+
+					return
+				}
+			}
+			s.emit("output", map[string]string{"category": "stderr",
+				"output": "flowdap: the run could not be read, so the session detached and the run continues\n"})
+			_ = target.Close()
 			s.enteredAt.Do(func() { close(s.entered) })
+			s.Exited(1)
+			s.Finished()
 
 			return
 		}
+		failures = 0
 		after = snapshot.GetRevision()
 		s.relayObservations(snapshot)
 

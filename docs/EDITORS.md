@@ -580,34 +580,47 @@ server. Pass an absolute plugin directory in the editor's adapter arguments:
 $ flow dap --plugin-dir /usr/local/lib/flowstate/plugins
 ```
 
-The adapter launches those plugins before it validates the `program` from the
-launch request and holds them for the debug session. It deliberately ignores
+The adapter starts those plugins on the first `launch`, before it validates the
+`program`, and holds them for the debug session; an `attach` never starts them. It deliberately ignores
 `$FLOWSTATE_PLUGIN_DIR` and refuses relative directories: an opened workspace
 must not choose which executable an editor launches. `flow dap` executes the
 debuggee, so it does not accept `--plugin-catalog`; catalog-only task definitions
 cannot execute.
 
-**Breakpoints are step ids, not source lines.** The debugger is handed steps and
-not files — the engine calls it with a node, and a node carries an `id` and no
-position — so there is nothing to hang a gutter dot on. Set them as *function*
-breakpoints named after a step. A line breakpoint is answered rather than
-ignored, unverified and carrying that reason, so an editor shows a hollow marker
-instead of a filled one you would wait at forever.
+**Breakpoints.** On a launch, set them on a Flowfile's lines: the adapter maps
+each line to the step written there, answers a line that holds no step
+unverified with the reason, and moves a breakpoint set before the launch to
+verified once the program is known. Function breakpoints name a step by its
+address (`build`, `pages/page` for the `page` in loop `pages`, `pages[2]/page`
+for one iteration). Conditions, hit counts (`== 3`, `>= 2`, `% 10`) and log
+messages work on both, and the `uncaught` and `all` exception filters stop
+where a step fails. `next` steps over a `call:`, `stepIn` enters it, `stepOut`
+finishes it, and `pause` holds the run at its next step boundary.
 
-Two more consequences of the same seam: stack frames name the current step and
-every `call:` site that reached it, but cannot be navigated to; only the
-innermost frame has a readable scope because it is the one actually paused. A
-run is one thread even where a `parallel:` block is running several steps at
-once, and the debugger does not stop inside one.
+Stack frames name the current step and every loop, branch and `call:` around
+it. A run is one thread even where a `parallel:` block runs several steps at
+once, and the debugger does not stop inside a task.
 
 **What a launch can say.** A launch request reads `program` and
 `revealSensitive`, nothing else. The run starts with no inputs and no signals,
 so a workflow with a required input that has no default cannot be debugged
-through `flow dap` today, and a `wait_for_signal:` step can only time out. Use
+through a launch today, and a `wait_for_signal:` step can only time out. Use
 `flow test --debug` on a test case, which supplies both, or
-`flow run local --debug` with `--input` and `--signal`. `attach` is treated as
-`launch`: it starts a local run, and cannot attach to a durable one. The
-debugger inspects values but cannot change them.
+`flow run local --debug` with `--input` and `--signal`. A refused launch (a
+file that does not validate, or sensitive values without `revealSensitive`)
+fails with the reason rather than starting. The debugger inspects values but
+cannot change them.
+
+**Attaching to a durable run.** An `attach` request names a `workflowId`, and
+optionally a `runId`, of a run on the server the adapter was started with
+(`flow dap --address …` and the usual credential flags). The run must declare a
+`debug:` policy naming the caller, and the caller needs `workload.debug`, plus
+`workload.debug_inspect` to inspect values or set conditions. The editor is
+told what a durable run offers: it holds only at step boundaries, has no
+logpoints or failure stops, and shows step addresses rather than source lines,
+since the run records no digest of the file it was compiled from. Disconnecting
+detaches and the run continues; the adapter cannot terminate a run it did not
+start, and says so.
 
 ### Visual Studio Code
 
@@ -622,6 +635,12 @@ Add to `.vscode/launch.json`:
       "request": "launch",
       "name": "Debug this Flowfile",
       "program": "${workspaceFolder}/examples/hello-world/workflow.yaml"
+    },
+    {
+      "type": "flowstate",
+      "request": "attach",
+      "name": "Attach to a durable run",
+      "workflowId": "the-workflow-id-to-attach-to"
     }
   ]
 }
