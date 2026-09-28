@@ -1357,7 +1357,16 @@ func sourcePath(uri string) string {
 	if strings.HasPrefix(uri, "file:") {
 		path = strings.TrimPrefix(uri, "file://")
 		if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
-			path = parsed.Path
+			switch host := parsed.Host; {
+			case host == "":
+				path = parsed.Path
+			case len(host) == 2 && host[1] == ':' && isDriveLetter(host[0]):
+				// file://C:/dir/x.yaml: the drive parsed as an authority.
+				path = host + parsed.Path
+			default:
+				// A share on another machine stays distinct from a local path.
+				path = "//" + host + parsed.Path
+			}
 		}
 	}
 

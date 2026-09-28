@@ -1054,3 +1054,34 @@ func TestBreakpointsInAModifiedSourceAreNotBound(t *testing.T) {
 	c.await("response", "continue")
 	assert.Equal(t, "breakpoint", body(c.await("event", "stopped"))["reason"], "the set installed before the edit was dropped")
 }
+
+// TestAnEditedFileCanClearItsBreakpoints is an editor that removes the last
+// breakpoint of a file it edited: the empty set names no line, so it clears
+// the source rather than leave an invisible breakpoint armed.
+func TestAnEditedFileCanClearItsBreakpoints(t *testing.T) {
+	t.Parallel()
+
+	c, program, finished := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program, "stopOnEntry": false})
+	c.await("response", "launch")
+
+	c.send(3, "setBreakpoints", map[string]any{"source": map[string]any{"path": program}, "breakpoints": []map[string]any{{"line": 13}}})
+	require.Equal(t, true, body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)["verified"])
+	c.send(4, "setBreakpoints", map[string]any{
+		"source": map[string]any{"path": program}, "breakpoints": []map[string]any{}, "sourceModified": true,
+	})
+	require.Equal(t, true, c.await("response", "setBreakpoints")["success"])
+
+	// Nothing is left to stop the run: it goes to its end.
+	c.send(5, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a breakpoint the editor cleared still held the run")
+	}
+}

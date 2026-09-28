@@ -1397,8 +1397,9 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	// Lines in a file edited since the program was compiled are not the lines
 	// the source map knows: set through it, a breakpoint would stop on
 	// another step or never. They are answered unverified, and the set
-	// already installed stands.
-	if asked.SourceModified {
+	// already installed stands. An empty set names no line, and clears the
+	// source's breakpoints as it would for an unedited file.
+	if asked.SourceModified && len(asked.Breakpoints) > 0 {
 		s.reply(request, breakpointsBody{Breakpoints: refused(len(asked.Breakpoints),
 			"the file changed since the program was compiled, so its lines no longer name the steps that run; restart the debug session to break on the edited file")})
 
