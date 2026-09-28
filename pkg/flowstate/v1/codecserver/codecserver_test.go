@@ -194,6 +194,17 @@ func TestTwoTenantsCannotReadEachOther(t *testing.T) {
 		require.NotContains(t, body, jsonBase64(markerA), c.name)
 		require.NotContains(t, body, jsonBase64(markerB), c.name)
 		require.Equal(t, "no-store", resp.Header.Get("Cache-Control"), c.name)
+
+		// A scope challenge only where a new token would help: the action is
+		// missing. A caller holding it who named another tenant's namespace
+		// is not told to go and get a scope it already has.
+		challenge := resp.Header.Get("WWW-Authenticate")
+		switch c.name {
+		case "read action is not decode", "no action list is not decode", "encode-less caller cannot encode":
+			require.Contains(t, challenge, `error="insufficient_scope"`, c.name)
+		case "forged namespace header":
+			require.Empty(t, challenge, c.name)
+		}
 	}
 
 	// Every decision is on the trail, by endpoint, and the trail holds no

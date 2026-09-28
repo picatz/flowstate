@@ -85,3 +85,8 @@ FuzzParsePinsConfig          pkg/flowstate/v1/plugin                     deep
 FuzzParseEnvConfig           pkg/flowstate/v1/plugin                     deep
 FuzzBindRunInputs            pkg/flowstate/v1                            deep
 FuzzRootParsers              pkg/flowstate/v1                            deep
+
+# The payload envelope decoder reads bytes out of Temporal history, which
+# anyone able to write history controls. Deep only, for the budget reason the
+# header gives.
+FuzzDecodeNeverPanicsOrEchoes pkg/flowstate/v1/payloadcodec/envelope    deep

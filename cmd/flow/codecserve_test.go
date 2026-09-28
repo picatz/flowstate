@@ -97,6 +97,28 @@ func TestCodecServeAuthenticatesWithTheTrustPolicy(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	// A browser at an allowed origin whose token was refused must be able to
+	// read the refusal: without the CORS grant on the 401, it sees only an
+	// opaque network failure.
+	browser := func(origin string) *http.Response {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/decode", bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Origin", origin)
+		req.Header.Set(codecserver.NamespaceHeader, "ns-a")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		return resp
+	}
+	refused := browser("https://temporal.example.com")
+	require.Equal(t, http.StatusUnauthorized, refused.StatusCode)
+	require.Equal(t, "https://temporal.example.com", refused.Header.Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "no-store", refused.Header.Get("Cache-Control"))
+
+	foreign := browser("https://elsewhere.example.com")
+	require.Equal(t, http.StatusForbidden, foreign.StatusCode, "an origin not allowed reached authentication")
+	require.Empty(t, foreign.Header.Get("Access-Control-Allow-Origin"))
 }
 
 // TestCodecServeRefusesInsecureModeOffLoopback: the unauthenticated development

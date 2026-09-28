@@ -454,6 +454,13 @@ func (c *Codec) Encode(payloads []*commonpb.Payload) ([]*commonpb.Payload, error
 		if err != nil {
 			return nil, fmt.Errorf("envelope: marshaling a payload: %w", err)
 		}
+		// What Decode refuses on length is never written: a payload past the
+		// blob limit is one Temporal would refuse anyway, and bounding it here
+		// keeps the allocation below from sizing itself off an unbounded value.
+		if len(plaintext) > maxSealedBytes-saltBytes-tagBytes {
+			return nil, fmt.Errorf("envelope: a %d-byte payload seals past the %d-byte limit history holds",
+				len(plaintext), maxSealedBytes)
+		}
 
 		data := make([]byte, saltBytes, saltBytes+len(plaintext)+tagBytes)
 		_, _ = rand.Read(data)
