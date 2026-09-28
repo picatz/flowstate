@@ -154,6 +154,13 @@ type contractState struct {
 	// sitesKnown distinguishes "no program was given" from "the program has
 	// no such site".
 	sitesKnown bool
+	// program and declaredInProgram are the program and every step id it
+	// declares, when its sites were cut short at [v1.MaxDebugStaticSites]:
+	// what a target is then judged by, as the durable driver judges it
+	// ([v1.DebugTarget.DeclaredIn]). The ids answer a bare step at once, and
+	// the program a qualified one. Nil otherwise.
+	program           *v1.Workflow
+	declaredInProgram map[string]struct{}
 
 	sourceMap *v1.DebugSourceMap
 	sources   map[string]*v1.DebugSourceLocation
@@ -181,6 +188,13 @@ func newContractState(opts Options) contractState {
 		var truncated bool
 		c.sites, truncated = v1.DebugStaticSites(opts.Workflow)
 		c.sitesKnown = !truncated
+		if truncated {
+			c.program = opts.Workflow
+			c.declaredInProgram = map[string]struct{}{}
+			for id := range v1.DebugDeclaredSteps(opts.Workflow) {
+				c.declaredInProgram[id] = struct{}{}
+			}
+		}
 		if profile := opts.Workflow.GetProfile(); profile != "" {
 			c.profile = profile
 		}
@@ -629,6 +643,22 @@ func (s *Session) Finished(err error) {
 	s.bump()
 }
 
+// redactedDefinitionLocked is a breakpoint's definition with its text
+// redacted as its id is. The caller holds s.mu.
+func (s *Session) redactedDefinitionLocked(definition *v1.DebugBreakpoint) *v1.DebugBreakpoint {
+	if definition == nil {
+		return nil
+	}
+	redacted := proto.CloneOf(definition)
+	redacted.Id = s.redactTextLocked(redacted.GetId())
+	redacted.Step = s.redactTextLocked(redacted.GetStep())
+	redacted.Condition = s.redactTextLocked(redacted.GetCondition())
+	redacted.HitCondition = s.redactTextLocked(redacted.GetHitCondition())
+	redacted.LogMessage = s.redactTextLocked(redacted.GetLogMessage())
+
+	return redacted
+}
+
 // redactTextLocked is redactText for a caller holding s.mu.
 func (s *Session) redactTextLocked(text string) string {
 	return applyText(s.redact, text)
@@ -744,10 +774,11 @@ func (s *Session) snapshotLocked() *v1.DebugSnapshot {
 	for _, key := range slices.Sorted(maps.Keys(s.breakpoints)) {
 		at := s.breakpoints[key]
 		snapshot.Breakpoints = append(snapshot.Breakpoints, &v1.DebugBreakpointState{
-			Id:        s.redactTextLocked(at.id),
-			Verified:  true,
-			Hits:      at.hits,
-			LastError: at.lastError,
+			Id:         s.redactTextLocked(at.id),
+			Verified:   true,
+			Hits:       at.hits,
+			LastError:  at.lastError,
+			Definition: s.redactedDefinitionLocked(at.definition),
 		})
 	}
 	if c.state == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
@@ -1284,6 +1315,8 @@ func (s *Session) compileBreakpoint(want *v1.DebugBreakpoint, profile string, re
 	}
 
 	state.Verified = true
+	at.definition = proto.CloneOf(want)
+	at.definition.Id = state.GetId()
 
 	return at, state
 }

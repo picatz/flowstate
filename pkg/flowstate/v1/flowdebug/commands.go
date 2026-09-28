@@ -729,7 +729,8 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 
 	target := v1.ParseDebugTargetOrStep(id)
 
-	at := breakpoint{source: rest, id: id, target: target, hit: hit}
+	at := breakpoint{source: rest, id: id, target: target, hit: hit,
+		definition: &v1.DebugBreakpoint{Id: id, Step: id, HitCondition: hitText}}
 	if hitText != "" {
 		at.source = id + " hit " + hitText + strings.TrimPrefix(rest, id)
 	}
@@ -741,6 +742,7 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 			return
 		}
 		at.condition = compiled
+		at.definition.Condition = strings.TrimSpace(condition)
 	}
 
 	full := !s.holdBreakpoint(id, at)
@@ -863,6 +865,7 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 
 	s.mu.Lock()
 	sitesKnown, sites := s.contract.sitesKnown, s.contract.sites
+	program, inProgram := s.contract.program, s.contract.declaredInProgram
 	s.mu.Unlock()
 	if sitesKnown {
 		if len(target.Resolve(sites)) > 0 {
@@ -886,29 +889,53 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 			return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(ids)), true
 		}
 
-		return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id), true
+		return noSiteMatches(id), true
 	}
+	address, qualified := id, strings.ContainsRune(id, '/')
 	id = target.Step()
 
 	// Built once at construction ([declaredStepIDs]); this is a lookup rather
 	// than a walk, because a refused command is not recorded and so may be
-	// repeated without bound.
-	_, known := s.declaredIDs[id]
+	// repeated without bound. A program whose sites were cut short answers
+	// from what it declares instead, as the durable driver does: its ids,
+	// built once too, refuse a step it never declares at once, and only a
+	// qualified target naming a declared step walks the program for the
+	// containers it names ([v1.DebugTarget.DeclaredIn]).
+	var known bool
+	if program != nil {
+		_, known = inProgram[id]
+		if known && qualified {
+			known = target.DeclaredIn(program)
+		}
+	} else {
+		_, known = s.declaredIDs[id]
+	}
 
 	s.mu.Lock()
 	// An id this session has watched go past is reachable whatever the
 	// inventory said, so it is admitted — but it never *makes* an inventory:
 	// what has run so far is not what the workflow declares, and reading it
 	// that way would refuse every step the run has not reached yet, which on
-	// an empty inventory is all of them.
-	if !known {
+	// an empty inventory is all of them. A program answers for itself: every
+	// id it has run is one it declares, so the fallback could only admit a
+	// qualified target the program has already refused.
+	if !known && program == nil {
 		_, known = s.seen[id]
 	}
 	s.mu.Unlock()
 
 	names := s.declared
-	if known || len(names) == 0 {
+	if known || (len(names) == 0 && inProgram == nil) {
 		return "", false
+	}
+	if qualified && program != nil {
+		// No declared step answers to the address as written — whether its
+		// step or the containers it names are what is missing — and a notice
+		// about the bare step alone would misstate which.
+		return noSiteMatches(address), true
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("no step named %q is declared by this workflow or a workflow it calls", id), true
 	}
 
 	// The suggestion is skipped for input too long to have been a typo of
@@ -932,6 +959,12 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	// inventory on every refusal is work a redirected stdin chooses the
 	// amount of, and refused commands are not recorded (Codex, #1347).
 	return fmt.Sprintf("no step named %q: this workflow declares %s", id, stepList(names)), true
+}
+
+// noSiteMatches is the refusal of an address no site of the program matches,
+// in the words the prompt and a script check share.
+func noSiteMatches(id string) string {
+	return fmt.Sprintf("no step matches %q: its last part names the step, and each part before it an enclosing loop, parallel, switch, or call", id)
 }
 
 // holdBreakpoint puts one breakpoint in the set, reporting whether there was
@@ -1182,7 +1215,8 @@ func (s *Session) addLogpoint(rest string) {
 	}
 
 	source := id + " " + message
-	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template}) {
+	if !s.holdBreakpoint("log "+id, breakpoint{source: "log " + source, id: "log " + id, target: target, log: template,
+		definition: &v1.DebugBreakpoint{Id: "log " + id, Step: id, LogMessage: message}}) {
 		s.printfTone(ToneWarning, "a session holds at most %d breakpoints\n", MaxBreakpoints)
 
 		return

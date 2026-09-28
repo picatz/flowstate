@@ -46,7 +46,7 @@ func newDAPCommand() *cobra.Command {
 			"`pages/page`, `pages[2]/page`), with conditions, hit counts and log messages.\n\n" +
 			"An `attach` request with a `workflowId` (and optionally `runId`) debugs a durable run " +
 			"through the server named by --address and this command's credentials, which need " +
-			"`workload.debug` (and `workload.debug_inspect` to inspect values or set conditions). " +
+			"`workload.debug` (and `workload.debug_inspect` to inspect values or to set or read conditions). " +
 			"A durable run holds only at step boundaries, has no logpoints or failure stops, and " +
 			"shows step addresses rather than source lines; the editor is told which.",
 		Args: cobra.NoArgs,

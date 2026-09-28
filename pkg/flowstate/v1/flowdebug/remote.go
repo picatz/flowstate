@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -47,6 +48,16 @@ type RemoteOptions struct {
 	// the reconnect after a client restart.
 	SessionID string
 
+	// NewSessionID names the session a new attach creates, when SessionID is
+	// empty; empty lets the server mint one. With RequestID it makes an attach
+	// retryable: a retry whose first answer was lost sends the same attach,
+	// which the run answers from its receipts with the same session, rather
+	// than a second session the run refuses while the first holds it.
+	NewSessionID string
+
+	// RequestID is the attach's request id; empty mints a fresh one.
+	RequestID string
+
 	// Lease is how long each renewal holds the session. Zero asks the engine
 	// for its default; the engine bounds it either way.
 	Lease time.Duration
@@ -71,8 +82,8 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 	request := &v1.DebugAttachRequest{
 		WorkflowId: workflowID,
 		RunId:      runID,
-		SessionId:  opts.SessionID,
-		RequestId:  newRequestID(),
+		SessionId:  cmp.Or(opts.SessionID, opts.NewSessionID),
+		RequestId:  cmp.Or(opts.RequestID, newRequestID()),
 		Renew:      opts.SessionID != "",
 	}
 	if opts.Lease > 0 {
@@ -94,6 +105,14 @@ func AttachRemote(ctx context.Context, client flowstatev1connect.WorkflowService
 	default:
 		return nil, receipt, fmt.Errorf("flowdebug: attach %s: %s",
 			strings.ToLower(strings.TrimPrefix(receipt.GetStatus().String(), "DEBUG_COMMAND_STATUS_")), receipt.GetMessage())
+	}
+	// A duplicate is the run's memory of an attach it applied under this
+	// request id, not an attach now: that session may since have been
+	// detached, or its lease lapsed. It is an attach only while the run still
+	// names it as its session.
+	if session := response.Msg.GetSessionId(); receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DUPLICATE &&
+		response.Msg.GetSnapshot().GetSession().GetSessionId() != session {
+		return nil, receipt, fmt.Errorf("flowdebug: attach: this request already attached session %s, which no longer holds the run; attach under a new request id", session)
 	}
 
 	remote := &Remote{

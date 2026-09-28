@@ -860,11 +860,21 @@ func init() {
 		{
 			Name: "flowstate.v1.DebugBreakpointState.last_error",
 			Leading: " LastError is the most recent condition or log evaluation error, after\n" +
-				" redaction. Such an arrival does not stop the run.\n",
+				" redaction. Such an arrival does not stop the run. Like [definition], it is\n" +
+				" withheld from a caller without `workload.debug_inspect`.\n",
 		},
 		{
 			Name:    "flowstate.v1.DebugBreakpointState.source",
 			Leading: " Source is where the resolved site came from, when a source map says so.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugBreakpointState.definition",
+			Leading: " Definition is the breakpoint as it was set, redacted as [id] is, so a\n" +
+				" client that did not set it can resend the whole set without dropping it:\n" +
+				" a set is replaced whole, and a state alone does not say how to rebuild\n" +
+				" the breakpoint it describes. A breakpoint with a condition or a log\n" +
+				" message is reported to a caller without `workload.debug_inspect` without\n" +
+				" it, its message, or its last error, since setting one needs that action.\n",
 		},
 		{
 			Name: "flowstate.v1.DebugValue",

@@ -259,8 +259,21 @@ func (e *executor) applyTypedAsk(ask *v1.DebugAsk, parseErr error, sender *v1.Si
 			d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, "run until names no step")
 		default:
 			if ask.Action == v1.DebugResumeAction_DEBUG_RESUME_ACTION_RUN_UNTIL {
-				if _, err := v1.ParseDebugTarget(ask.Until); err != nil {
+				target, err := v1.ParseDebugTarget(ask.Until)
+				if err != nil {
 					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, err.Error())
+
+					return
+				}
+				// A target the run can never stop at would release it to
+				// the end: refused, and the run stays held. Behind
+				// [untilRefusalChange], asked only where the answer
+				// differs, so a history that applied such a resume replays
+				// applying it.
+				sites, truncated := v1.DebugStaticSites(e.spec)
+				_, why := durableSites(target, ask.Until, e.spec, sites, truncated, "run until")
+				if why != "" && workflow.GetVersion(e.ctx, untilRefusalChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+					d.receipt(ask.Request, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
 
 					return
 				}
@@ -324,6 +337,75 @@ func (e *executor) refuseForeign(ask *v1.DebugAsk) {
 	}
 }
 
+// debugBreakpointDefined is the state of the i-th carried breakpoint before it
+// is compiled: its id, assigned when the client left it empty, and its
+// definition under that id. A durable session redacts no breakpoint text, its
+// ids included; the definition is what the attached client sent.
+func debugBreakpointDefined(bp *v1.DebugBreakpoint, i int) *v1.DebugBreakpointState {
+	state := &v1.DebugBreakpointState{Id: bp.GetId(), Definition: proto.CloneOf(bp)}
+	if state.Id == "" {
+		state.Id = fmt.Sprintf("bp-%d", i+1)
+		state.Definition.Id = state.Id
+	}
+
+	return state
+}
+
+// durablyHeld reports whether the durable driver holds at site: at the top
+// level of the run or of a called workflow, where a run has one position. Every
+// other container runs its body at `susp > 0` (see debuglease.go).
+func durablyHeld(site v1.DebugStaticSite) bool {
+	for _, segment := range site.Chain {
+		if segment.GetKind() != v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL {
+			return false
+		}
+	}
+
+	return true
+}
+
+// untilRefusalChange is the [workflow.GetVersion] changeID guarding the
+// refusal of a durable `until` whose target the run can never stop at. An
+// engine before it applied such a resume and released the run, and a history
+// it recorded has the resume applied and the run moving on; replaying that
+// history into a refusal would park the run where history has it running, a
+// nondeterminism error. A history without the marker keeps applying it.
+const untilRefusalChange = "engine.debug.refuseUnholdableUntil"
+
+// truncatedArmChange is the [workflow.GetVersion] changeID guarding the arming
+// of a breakpoint that matches no enumerated site when the enumeration stopped
+// at [v1.MaxDebugStaticSites]. An engine before it refused such a breakpoint,
+// and a history it recorded has the run passing the step unheld; replaying
+// that history into a hold would be a nondeterminism error.
+const truncatedArmChange = "engine.debug.armPastTruncatedSites"
+
+// durableSites resolves target to the sites the durable driver can hold at,
+// or says why there are none: no site matches it, or every one it matches is
+// inside a loop body, a parallel branch or a switch arm, which is never an
+// arrival here. verb is how the refusal tells the reader to name the
+// enclosing step instead. Breakpoints and `until` both ask this, so a target
+// one refuses the other refuses in the same words.
+//
+// truncated says sites stopped at [v1.MaxDebugStaticSites]. A step past the
+// cut can still be an arrival the target matches, so there the program as
+// written decides: a target it declares where a durable run holds
+// ([v1.DebugTarget.DeclaredOutsideBodiesIn]) is kept, with only the sites
+// enumerated before the cut listed — none, when its only match lies past it —
+// and any other is refused as the complete enumeration would refuse it.
+func durableSites(target v1.DebugTarget, text string, spec *v1.Workflow, sites []v1.DebugStaticSite, truncated bool, verb string) ([]v1.DebugStaticSite, string) {
+	resolved := target.Resolve(sites)
+	held := slices.DeleteFunc(slices.Clone(resolved), func(site v1.DebugStaticSite) bool { return !durablyHeld(site) })
+	switch {
+	case len(held) > 0 || truncated && target.DeclaredOutsideBodiesIn(spec):
+		return held, ""
+	case len(resolved) > 0 || truncated && target.DeclaredIn(spec):
+		return nil, fmt.Sprintf("%q is inside a loop body, a parallel branch or a switch arm, which a durable run "+
+			"executes as a unit and never holds in; %s the enclosing step instead", text, verb)
+	default:
+		return nil, fmt.Sprintf("no step matches %q", text)
+	}
+}
+
 // parseDebugBreakpoints compiles the carried breakpoints once per segment.
 func (e *executor) parseDebugBreakpoints() {
 	d := e.debug
@@ -331,13 +413,10 @@ func (e *executor) parseDebugBreakpoints() {
 		return
 	}
 
-	sites, _ := v1.DebugStaticSites(e.spec)
+	sites, truncated := v1.DebugStaticSites(e.spec)
 	d.parsed = make([]parsedBreakpoint, 0, len(d.carry.GetBreakpoints()))
 	for i, bp := range d.carry.GetBreakpoints() {
-		parsed := parsedBreakpoint{state: &v1.DebugBreakpointState{Id: bp.GetId()}}
-		if parsed.state.Id == "" {
-			parsed.state.Id = fmt.Sprintf("bp-%d", i+1)
-		}
+		parsed := parsedBreakpoint{state: debugBreakpointDefined(bp, i)}
 		refuse := func(message string) {
 			parsed.state.Verified = false
 			parsed.state.Message = message
@@ -357,9 +436,24 @@ func (e *executor) parseDebugBreakpoints() {
 
 				break
 			}
-			resolved := target.Resolve(sites)
-			if len(resolved) == 0 {
-				refuse(fmt.Sprintf("no step matches %q", bp.GetStep()))
+			// Only a site the durable driver can hold at arms it: a
+			// breakpoint that reported armed elsewhere would claim a stop
+			// that never comes. Refusing one needs no version marker: it
+			// could never match an arrival, which is only ever at a site
+			// the complete enumeration calls holdable, so a history that
+			// armed it recorded nothing it did.
+			resolved, why := durableSites(target, bp.GetStep(), e.spec, sites, truncated, "break at")
+			// Past a truncated enumeration a target matching no site before
+			// the cut, declared where a durable run holds, is armed. An
+			// engine before [truncatedArmChange] refused it, as matching
+			// nothing, and a history it recorded replays refusing it: asked
+			// only where the answer differs.
+			if why == "" && len(resolved) == 0 && len(target.Resolve(sites)) == 0 &&
+				workflow.GetVersion(e.ctx, truncatedArmChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+				why = fmt.Sprintf("no step matches %q", bp.GetStep())
+			}
+			if why != "" {
+				refuse(why)
 
 				break
 			}
@@ -648,6 +742,15 @@ func (d *debugControl) debugSnapshot(now time.Time, request string) *v1.DebugSna
 				state.Hits = d.carry.GetHits()[i]
 			}
 			snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+		}
+		if d.parsed == nil {
+			// Carried but not yet compiled in this segment: reported with
+			// their definitions, so a client resending the set keeps them.
+			for i, bp := range d.carry.GetBreakpoints() {
+				state := debugBreakpointDefined(bp, i)
+				state.Message = "not yet compiled; the run compiles its breakpoints at its next step boundary"
+				snapshot.Breakpoints = append(snapshot.Breakpoints, state)
+			}
 		}
 		switch {
 		case held && d.held.scope != nil:
