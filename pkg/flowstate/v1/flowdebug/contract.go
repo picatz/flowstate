@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -1361,14 +1362,52 @@ func siteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.Deb
 }
 
 // SameSourceURI reports whether two spellings name one source: equal, or equal
-// once a `file://` scheme is removed from either.
+// once each is read as a path — a `file:` URI decoded to the path it names,
+// so a client that sends `file:///my%20flows/x.yaml` names `/my flows/x.yaml`.
 func SameSourceURI(a, b string) bool {
-	trim := func(uri string) string {
-		return strings.TrimPrefix(uri, "file://")
+	return sourcePath(a) == sourcePath(b)
+}
+
+// sourcePath is the path a source spelling names: a `file:` URI's decoded
+// path, or the spelling itself. A URI that does not parse is compared as
+// written, with only its scheme removed.
+func sourcePath(uri string) string {
+	path := uri
+	if strings.HasPrefix(uri, "file:") {
+		path = strings.TrimPrefix(uri, "file://")
+		if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
+			switch host := parsed.Host; {
+			case host == "" || strings.EqualFold(host, "localhost"):
+				// No authority, or localhost, is this machine (RFC 8089 §2).
+				path = parsed.Path
+			case len(host) == 2 && host[1] == ':' && isDriveLetter(host[0]):
+				// file://C:/dir/x.yaml: the drive parsed as an authority.
+				path = host + parsed.Path
+			default:
+				// A share on another machine stays distinct from a local path.
+				path = "//" + host + parsed.Path
+			}
+		}
 	}
 
-	return trim(a) == trim(b)
+	return driveForm(path)
 }
+
+// driveForm spells a Windows drive path one way, whichever way it arrived: a
+// URI's "/c:/dir/x.yaml" and a path's `C:\dir\x.yaml` both become
+// "c:/dir/x.yaml". Any other path is returned as it is.
+func driveForm(path string) string {
+	if len(path) >= 3 && path[0] == '/' && path[2] == ':' && isDriveLetter(path[1]) {
+		path = path[1:]
+	}
+	if len(path) < 2 || path[1] != ':' || !isDriveLetter(path[0]) {
+		return path
+	}
+
+	return strings.ToLower(path[:1]) + strings.ReplaceAll(path[1:], `\`, "/")
+}
+
+func isDriveLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
 
 // matches reports whether an arrival is one this breakpoint arms.
 func (b breakpoint) matches(occurrence *v1.DebugOccurrence) bool {

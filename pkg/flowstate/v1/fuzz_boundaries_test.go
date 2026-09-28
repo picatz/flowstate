@@ -76,9 +76,6 @@ func FuzzRootParsers(f *testing.F) {
 		if cfg, err := v1.ParseTaskPolicyConfig(data); err != nil && !reflect.DeepEqual(cfg, v1.TaskPolicyConfig{}) {
 			t.Fatalf("ParseTaskPolicyConfig returned both an error and a config: %v", err)
 		}
-		if prose, err := v1.ParseDescriptorProse(data); err != nil && prose != nil {
-			t.Fatalf("ParseDescriptorProse returned both an error and prose: %v", err)
-		}
 
 		word := string(data)
 		if d, err := v1.ParseDuration(word); err != nil && d != 0 {

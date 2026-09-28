@@ -28,40 +28,96 @@ a shipped capability depends on the guarantee rather than merely benefiting from
 
 ## Run it
 
-```console
-$ flow server --insecure-no-auth &
-$ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
-```
+You need the `flow` binary, the [Temporal CLI](https://docs.temporal.io/cli), and
+four terminals: one for Temporal, one for each of two workers, and one for the
+commands. The Temporal CLI is what makes a build current, which `flow` does not
+do.
 
-`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
-the server authenticates every caller as anonymous, which is only ever right on
-a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
-`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
+1. Start a Temporal development server:
 
-The build id is what has to be unique per build; the commit is the obvious source
-and the one the flag's own help suggests. The startup line echoes both:
+   ```console
+   $ temporal server start-dev
+   ```
 
-> starting worker  task_queue=flowstate-run-task-queue deployment=flowstate build_id=1a2b3c4
+2. In a second terminal, start a Flowstate server and a versioned worker:
 
-Then submit a run long enough to still be going when you deploy again — anything
-with a durable wait will do:
+   ```console
+   $ flow server --insecure-no-auth &
+   $ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+   ```
 
-```console
-$ flow run examples/wait-timeout/workflow.yaml
-```
+   `--insecure-no-auth` makes this a rehearsal rather than a deployment: the
+   server authenticates every caller as anonymous, which is only ever right on a
+   machine nobody else can reach. A real one passes `--auth-policy` instead,
+   plus `--rpc-resource` when that policy trusts an issuer minting bearer
+   tokens.
 
-An existing example rather than one shipped here, per
-[the note in the parent README](../README.md#why-these-are-here-and-not-somewhere-else).
+   The build id has to be unique per build; the commit is the obvious source and
+   the one the flag's own help suggests. The startup line echoes both:
 
-Now start a second worker at a different build id, as a deploy would, and watch what
-does *not* happen to the run already in flight:
+   > starting worker task_queue=flowstate-run-task-queue deployment=flowstate build_id=1a2b3c4
 
-```console
-$ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
-```
+3. In a third terminal, make that build the deployment's **current version**:
 
-Nothing. The in-flight run keeps executing on the version it started on. That is the
-whole guarantee, and it is worth confirming by watching rather than trusting.
+   ```console
+   $ temporal worker deployment set-current-version --yes \
+       --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+   Successfully set the current worker deployment version
+   ```
+
+   A versioned worker receives new runs only once its version is current, and
+   nothing in `flow` sets it. Skip this step and a run submitted next is
+   accepted, then waits with nothing recorded (`flow timeline` says *this run
+   has recorded nothing yet*) until some version is made current.
+
+4. Submit a run that will still be going when you deploy again. The
+   [release-approval example](../../release-approval/) waits up to an hour for
+   an approval:
+
+   ```console
+   $ ID=$(flow run --detach examples/release-approval/workflow.yaml --input version=1.4.0 -o json | jq -r .workflowId)
+   $ flow get "$ID"
+   RUNNING workflow flowstate-request-… run 01a0e4fb-… (running for 25s) on approval
+     waiting at approval for signal "release-approved", lapsing in 59m56s
+   ```
+
+5. In a fourth terminal, deploy a second build beside the first:
+
+   ```console
+   $ flow worker --temporal-deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
+   ```
+
+   Back in the third, make it current:
+
+   ```console
+   $ temporal worker deployment set-current-version --yes \
+       --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)-next"
+   ```
+
+6. Approve the first run, and see which version finished it:
+
+   ```console
+   $ flow signal "$ID" release-approved --data '{"approved": true}'
+   $ temporal workflow describe -w "$ID"
+   ...
+   Versioning Info:
+     Behavior        Pinned
+     DeploymentName  flowstate
+     BuildId         1a2b3c4
+   ```
+
+   The run finished on the version it started on, even though another version
+   was current by then. A run submitted after step 5 reports the `-next` build
+   instead, and `temporal worker deployment describe --name flowstate` shows the
+   first version as `draining`: keep its worker running until the runs pinned
+   to it finish.
+
+To clean up, stop the workers and the server, then the Temporal development
+server; it keeps nothing unless you gave it `--db-filename`.
+
+Gradual rollouts (`set-ramping-version`), draining, and retiring a version are
+Temporal's [Worker Versioning](https://docs.temporal.io/production-deployment/worker-deployments/worker-versioning)
+operations, and they apply to Flowstate workers unchanged.
 
 ## Pinned within a run, upgraded between segments
 
@@ -92,11 +148,14 @@ Two consequences worth holding onto:
 
 ```console
 $ flow worker --temporal-deployment-name flowstate
-Error: worker deployment "flowstate" has no build id: a version is the pair, so set
---build-id (or FLOWSTATE_BUILD_ID) to something unique per build, such as the commit
+ERROR
+worker deployment "flowstate" has no build id: a version is the pair, so set
+--build-id (or FLOWSTATE_BUILD_ID) to something unique per build, such as the
+commit
 
 $ flow worker --build-id 1a2b3c4
-Error: build id "1a2b3c4" has no worker deployment: a version is the pair, so set
+ERROR
+build id "1a2b3c4" has no worker deployment: a version is the pair, so set
 --temporal-deployment-name (or FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME) to the Worker
 Deployment this worker belongs to
 ```
@@ -116,15 +175,17 @@ the argument rather than a code:
 
 ```console
 $ flow worker
-Error: refusing to start an unversioned worker: this worker evaluates workflow
+ERROR
+refusing to start an unversioned worker: this worker evaluates workflow
 expressions (step conditions, a loop's items:, a step's vars:, task inputs) in
 workflow code, so the expression engine built into this binary decides what they
 mean; with no version, deploying a different binary changes what every run
 already in flight computes, including where a run resumes after continue-as-new.
 Pass --temporal-deployment-name and --build-id (or
-FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to the
-interpreter it started on, or --allow-unversioned-interpreter to accept that
-exposure, which is what a local `temporal server start-dev` session usually wants
+FLOWSTATE_TEMPORAL_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID) to pin each run to
+the interpreter it started on, or --allow-unversioned-interpreter to accept that
+exposure, which is what a local `temporal server start-dev` session usually
+wants
 ```
 
 Typing the flag is the whole cost of a dev-server session, which is what keeps this
@@ -143,11 +204,14 @@ line fails saying which flag it meant:
 
 ```console
 $ flow worker --deployment-name flowstate
-Error: --deployment-name was removed from `flow worker`: it named Temporal's Worker
+ERROR
+--deployment-name was removed from `flow worker`: it named Temporal's Worker
 Deployment (picatz/flowstate#2121)
 --temporal-deployment-name names Temporal's Worker Deployment
 --deployment-name on `flow server` names the Flowstate installation recorded in
 workload identities; a worker does not take it
+
+Try `flow --help` for the commands and flags.
 ```
 
 `FLOWSTATE_DEPLOYMENT_NAME` is `flow server`'s variable; a worker ignores it.

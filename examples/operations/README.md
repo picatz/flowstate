@@ -38,7 +38,8 @@ by the change that closes the coverage gap.
 process topology that a reader confirms by starting two processes and watching what
 they refuse — and both are read by the same person on the same afternoon, the one
 standing up a deployment. `docs/DEPLOYMENT.md` is where the tiers and the matrix
-live; these are the two command-line walkthroughs that document links out to.
+live; these are the two command-line walkthroughs beside it, and
+[`examples/README.md`](../README.md) lists them with every other example.
 
 ## The bar these are held to
 

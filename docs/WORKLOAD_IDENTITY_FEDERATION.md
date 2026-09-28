@@ -7,10 +7,10 @@ OpenID Provider: there is no authorization endpoint, no token endpoint, no clien
 registration, no end-user authentication.
 
 That distinction is a wire contract, not terminology. Metadata must never make a
-client attempt a protocol this server cannot finish. But the inverse is just as
-real, and it is the reason this document exists in the shape it does: **a document
-that omits what a consumer requires does not make the consumer more correct, it
-makes federation stop working at the far end**, with no error on this side.
+client attempt a protocol this server cannot finish. The inverse is just as
+real: **a document that omits what a consumer requires does not make the
+consumer more correct, it makes federation stop working at the far end**, with
+no error on this side.
 
 So Flowstate publishes two documents, and they are not alternatives.
 

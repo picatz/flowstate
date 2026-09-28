@@ -22,14 +22,16 @@ attempt it was on — nothing repeats and nothing is skipped.
 ## Two commands
 
 ```console
-$ flow run local examples/data-enrichment/workflow.yaml -o json | jq .runOutputs
+$ flow run local examples/data-enrichment/workflow.yaml \
+    --input-file examples/data-enrichment/inputs.json -o json | jq .runOutputs
 ```
 
 And the same file run durably instead of in this process (needs a Temporal dev
 server, `flow worker`, and `flow server` — see the main README's Quickstart):
 
 ```console
-$ flow run examples/data-enrichment/workflow.yaml -o json | jq .runOutputs
+$ flow run examples/data-enrichment/workflow.yaml \
+    --input-file examples/data-enrichment/inputs.json -o json | jq .runOutputs
 ```
 
 Both process the same worklist with the same bound on concurrency and answer with
@@ -40,10 +42,10 @@ restart by hand.
 ## The interesting lines
 
 - **`max_parallel: 2` on a four-record list.** Local execution still runs iterations
-  one after another regardless of this number — see `fan-out-and-parallel`'s
-  README-adjacent note in the main README — so the two drivers process the same
-  requests in the same order either way; only the durable driver's concurrency is
-  actually bounded by it.
+  one after another regardless of this number — see `for_each:` in
+  [docs/LANGUAGE.md](../../docs/LANGUAGE.md#repeating-over-a-list-for_each) — so the
+  two drivers process the same requests in the same order either way; only the
+  durable driver's concurrency is actually bounded by it.
 - **"flagged" fails once, on purpose, and `retry` never sees it.** `expect` rejects
   it the instant a response comes back — `record != 'flagged' && ...` — and that
   kind of failure is permanent: the request was never going to be accepted, so
