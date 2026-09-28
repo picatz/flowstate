@@ -341,7 +341,10 @@ The server's rules:
   It is refused unless you start the server with `--allow-shared-namespaces`,
   accepting that any authorized tenant there reads all of them.
 - **Bounded before keys are used.** Bodies are capped at 4 MiB, requests at
-  256 payloads, and each caller at 600 requests a minute.
+  256 payloads, and each caller at 600 requests a minute. At most 16 requests
+  are read and decoded at once across every caller; past that a request is
+  refused with 503 before its body is read, so the server never holds more
+  than 64 MiB of request bodies.
 - **Nothing kept or echoed.** Responses are `Cache-Control: no-store`. Errors
   never contain a payload, a key, or which of wrong key, wrong namespace or
   tampering made a payload undecodable. CORS origins are compared exactly.
