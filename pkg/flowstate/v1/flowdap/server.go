@@ -382,6 +382,17 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
+// fileURI is the file URI naming path: slashed, and with a drive letter's
+// path rooted as a URI's must be ("C:\\x" is "file:///C:/x").
+func fileURI(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
 // leaveLost ends a conversation whose output is gone: the session detaches
 // and the stream is closed. It answers ctx's error when ctx has ended too, so
 // a caller sees the same result whichever of the two Serve noticed first.
@@ -1136,7 +1147,7 @@ func (s *Server) sourceOf(location *v1.DebugSourceLocation) *source {
 	if uriPaths {
 		// In the form the client asked for, so a frame and a breakpoint it
 		// set name one document.
-		return &source{Name: filepath.Base(path), Path: (&url.URL{Scheme: "file", Path: path}).String()}
+		return &source{Name: filepath.Base(path), Path: fileURI(path)}
 	}
 
 	return &source{Name: filepath.Base(path), Path: path}
@@ -1368,6 +1379,7 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 			HitCondition *string `json:"hitCondition"`
 			LogMessage   *string `json:"logMessage"`
 		} `json:"breakpoints"`
+		SourceModified bool `json:"sourceModified"`
 	}
 	// A missing array is malformed, not an empty replacement: only an explicit
 	// empty set clears a source's breakpoints.
@@ -1379,6 +1391,16 @@ func (s *Server) setLineBreakpoints(ctx context.Context, request inbound) {
 	}
 	if len(asked.Breakpoints) > flowdebug.MaxBreakpoints {
 		s.fail(request, errTooManyBreakpoints.Error())
+
+		return
+	}
+	// Lines in a file edited since the program was compiled are not the lines
+	// the source map knows: set through it, a breakpoint would stop on
+	// another step or never. They are answered unverified, and the set
+	// already installed stands.
+	if asked.SourceModified {
+		s.reply(request, breakpointsBody{Breakpoints: refused(len(asked.Breakpoints),
+			"the file changed since the program was compiled, so its lines no longer name the steps that run; restart the debug session to break on the edited file")})
 
 		return
 	}

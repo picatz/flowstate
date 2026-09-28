@@ -1020,3 +1020,37 @@ func TestAURIClientGetsURIPaths(t *testing.T) {
 	path, _ := first["source"].(map[string]any)["path"].(string)
 	assert.Equal(t, uri, path, "a URI client was not sent the program's URI")
 }
+
+// TestBreakpointsInAModifiedSourceAreNotBound is an editor that changed the
+// Flowfile after launch: its lines are not the compiled program's, so its
+// breakpoints are answered unverified rather than bound through a source map
+// of bytes that no longer match, and the set already installed stands.
+func TestBreakpointsInAModifiedSourceAreNotBound(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+
+	c.send(3, "setBreakpoints", map[string]any{"source": map[string]any{"path": program}, "breakpoints": []map[string]any{{"line": 13}}})
+	require.Equal(t, true, body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)["verified"])
+
+	c.send(4, "setBreakpoints", map[string]any{
+		"source": map[string]any{"path": program}, "breakpoints": []map[string]any{{"line": 5}}, "sourceModified": true,
+	})
+	modified := body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)
+	assert.Equal(t, false, modified["verified"], "a breakpoint in an edited file was bound through the old lines")
+	assert.Contains(t, modified["message"], "changed")
+
+	// The installed breakpoint still stops the run.
+	c.send(5, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+	c.send(6, "continue", map[string]any{"threadId": 1})
+	c.await("response", "continue")
+	assert.Equal(t, "breakpoint", body(c.await("event", "stopped"))["reason"], "the set installed before the edit was dropped")
+}

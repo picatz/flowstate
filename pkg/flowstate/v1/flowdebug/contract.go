@@ -1353,15 +1353,32 @@ func SameSourceURI(a, b string) bool {
 // path, or the spelling itself. A URI that does not parse is compared as
 // written, with only its scheme removed.
 func sourcePath(uri string) string {
-	if !strings.HasPrefix(uri, "file:") {
-		return uri
-	}
-	if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
-		return parsed.Path
+	path := uri
+	if strings.HasPrefix(uri, "file:") {
+		path = strings.TrimPrefix(uri, "file://")
+		if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
+			path = parsed.Path
+		}
 	}
 
-	return strings.TrimPrefix(uri, "file://")
+	return driveForm(path)
 }
+
+// driveForm spells a Windows drive path one way, whichever way it arrived: a
+// URI's "/c:/dir/x.yaml" and a path's `C:\dir\x.yaml` both become
+// "c:/dir/x.yaml". Any other path is returned as it is.
+func driveForm(path string) string {
+	if len(path) >= 3 && path[0] == '/' && path[2] == ':' && isDriveLetter(path[1]) {
+		path = path[1:]
+	}
+	if len(path) < 2 || path[1] != ':' || !isDriveLetter(path[0]) {
+		return path
+	}
+
+	return strings.ToLower(path[:1]) + strings.ReplaceAll(path[1:], `\`, "/")
+}
+
+func isDriveLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
 
 // matches reports whether an arrival is one this breakpoint arms.
 func (b breakpoint) matches(occurrence *v1.DebugOccurrence) bool {
