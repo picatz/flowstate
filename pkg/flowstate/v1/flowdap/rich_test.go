@@ -52,8 +52,15 @@ steps:
 func launched(t *testing.T) (*client, string, <-chan error) {
 	t.Helper()
 
-	dir := t.TempDir()
-	program := filepath.Join(dir, "rich.yaml")
+	return launchedAt(t, "rich.yaml")
+}
+
+// launchedAt is [launched] with the program at name under a fresh directory.
+func launchedAt(t *testing.T, name string) (*client, string, <-chan error) {
+	t.Helper()
+
+	program := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(program), 0o700))
 	require.NoError(t, os.WriteFile(program, []byte(richFlowfile), 0o600))
 
 	c := newClient(t)
@@ -981,24 +988,35 @@ func TestAPendingBreakpointTheRunNeverInstalledIsSettledAtItsEnd(t *testing.T) {
 }
 
 // TestAURIClientGetsURIPaths is an editor that initializes with pathFormat
-// "uri": the frames it is sent name their source as a file URI, the form it
-// names its own breakpoints in.
+// "uri", on a program whose path needs escaping: the frames it is sent name
+// their source as a file URI, and the URI it sends its breakpoints under names
+// the same document.
 func TestAURIClientGetsURIPaths(t *testing.T) {
 	t.Parallel()
 
-	c, program, _ := launched(t)
+	c, program, _ := launchedAt(t, "my flows/rich #1.yaml")
+	uri := (&url.URL{Scheme: "file", Path: program}).String()
+	require.Contains(t, uri, "%20", "the path needs no escaping, so the test proves nothing")
 
 	c.send(1, "initialize", map[string]any{"adapterID": "flowstate", "pathFormat": "uri"})
 	c.await("response", "initialize")
 	c.await("event", "initialized")
 	c.send(2, "launch", map[string]any{"program": program})
 	c.await("response", "launch")
-	c.send(3, "configurationDone", nil)
+
+	c.send(3, "setBreakpoints", map[string]any{
+		"source":      map[string]any{"path": uri},
+		"breakpoints": []map[string]any{{"line": 13}},
+	})
+	set := body(c.await("response", "setBreakpoints"))["breakpoints"].([]any)[0].(map[string]any)
+	assert.Equal(t, true, set["verified"], "a breakpoint under the program's URI named no source: %v", set)
+
+	c.send(4, "configurationDone", nil)
 	c.await("response", "configurationDone")
 	c.await("event", "stopped")
 
-	c.send(4, "stackTrace", map[string]any{"threadId": 1})
+	c.send(5, "stackTrace", map[string]any{"threadId": 1})
 	first := body(c.await("response", "stackTrace"))["stackFrames"].([]any)[0].(map[string]any)
 	path, _ := first["source"].(map[string]any)["path"].(string)
-	assert.Equal(t, (&url.URL{Scheme: "file", Path: program}).String(), path, "a URI client was sent a file system path")
+	assert.Equal(t, uri, path, "a URI client was not sent the program's URI")
 }

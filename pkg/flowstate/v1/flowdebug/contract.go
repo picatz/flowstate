@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -1342,13 +1343,24 @@ func siteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.Deb
 }
 
 // SameSourceURI reports whether two spellings name one source: equal, or equal
-// once a `file://` scheme is removed from either.
+// once each is read as a path — a `file:` URI decoded to the path it names,
+// so a client that sends `file:///my%20flows/x.yaml` names `/my flows/x.yaml`.
 func SameSourceURI(a, b string) bool {
-	trim := func(uri string) string {
-		return strings.TrimPrefix(uri, "file://")
+	return sourcePath(a) == sourcePath(b)
+}
+
+// sourcePath is the path a source spelling names: a `file:` URI's decoded
+// path, or the spelling itself. A URI that does not parse is compared as
+// written, with only its scheme removed.
+func sourcePath(uri string) string {
+	if !strings.HasPrefix(uri, "file:") {
+		return uri
+	}
+	if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
+		return parsed.Path
 	}
 
-	return trim(a) == trim(b)
+	return strings.TrimPrefix(uri, "file://")
 }
 
 // matches reports whether an arrival is one this breakpoint arms.

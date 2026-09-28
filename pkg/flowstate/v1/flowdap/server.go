@@ -344,19 +344,13 @@ func (s *Server) Serve(ctx context.Context) error {
 		// A lost output ends the conversation before anything else is read.
 		select {
 		case <-s.lost:
-			s.end(false)
-			_ = s.stream.Close()
-
-			return nil
+			return s.leaveLost(ctx)
 		default:
 		}
 
 		select {
 		case <-s.lost:
-			s.end(false)
-			_ = s.stream.Close()
-
-			return nil
+			return s.leaveLost(ctx)
 
 		case <-ctx.Done():
 			// Ended from outside: the session detaches as it does when the
@@ -386,6 +380,16 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// leaveLost ends a conversation whose output is gone: the session detaches
+// and the stream is closed. It answers ctx's error when ctx has ended too, so
+// a caller sees the same result whichever of the two Serve noticed first.
+func (s *Server) leaveLost(ctx context.Context) error {
+	s.end(false)
+	_ = s.stream.Close()
+
+	return ctx.Err()
 }
 
 // received is one read from the client: a request, or why there was none.
