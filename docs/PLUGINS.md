@@ -405,7 +405,7 @@ attached to the descriptors your manifest already shipped
 (`pkg/flowstate/v1/messagedescriptor.go`), and the language server's existing
 "prefer the descriptor's own source info" branch is what reads it.
 
-Four properties worth knowing, all of them the fail-closed direction:
+Three properties worth knowing, all of them the fail-closed direction:
 
 - **Omitting it costs only the paragraph.** A plugin that generates no comments
   behaves exactly as every plugin did before this existed. Hover renders one
@@ -417,11 +417,6 @@ Four properties worth knowing, all of them the fail-closed direction:
   repository pins its own, and a stale comment is caught like a stale type.
 - **A name registered twice with different text is not described at all**,
   rather than described by whichever copy happened to register first.
-
-- **A descriptor too large for a host is refused at your startup.** Comments are
-  text you can grow without limit, so the SDK applies the host's descriptor size
-  limit to what it is about to send and fails at startup, naming the message,
-  rather than letting a host refuse the plugin later.
 
 Earlier versions of the SDK took a `buf build --exclude-imports` descriptor set
 through a `Plugin.SchemaProse` field instead. That field is gone: it was a second
@@ -932,7 +927,7 @@ constructors rather than as a bare error (`pkg/flowstate/v1/plugin/sdk/errors.go
 > An error from a plugin is surfaced to users and written to workflow history,
 > which is durable and broadly readable. Never interpolate a secret, a token, or
 > a credential-bearing backend message into one. The same applies to stderr and
-> what a `Health` check returns, which the engine logs (`pkg/flowstate/v1/plugin/sdk/sdk.go:1070-1080`). As
+> what a `Health` check returns, which the engine logs (`pkg/flowstate/v1/plugin/sdk/sdk.go:1061-1071`). As
 > accidental containment, the host scrubs known resolved values and their common
 > encodings from plugin stderr, reserved post-handshake stdout, health text, and
 > manifest text. It retains at most 256 delivered values per plugin process while

@@ -933,29 +933,20 @@ func (t Task) checkInputNames() error {
 // this reads had them stripped by protoc (#723). Nil comments leave the bytes
 // exactly as they were before comments existed.
 //
-// The result is bounded by the same [flowstatev1.DefaultMaxDescriptorBytes] a
-// host applies to what arrives, because comments are text an author can grow
-// without limit: a descriptor too large for a host to accept is refused here,
-// at this plugin's own startup where its author sees it, rather than as an
-// opaque refusal at a host.
+// The size is bounded where it is spent, by the host that reads it: an operator
+// can raise plugin.Config.MaxDescriptorBytes for a deployment with large
+// schemas, and a limit applied here could only be the default, refusing a
+// plugin that deployment accepts.
 func describeMessage(msg proto.Message, comments flowstatev1.CommentLookup) ([]byte, string, error) {
 	if msg == nil {
 		return nil, "", nil
 	}
 
-	raw, name, err := flowstatev1.MessageDescriptorBytesWithComments(
+	return flowstatev1.MessageDescriptorBytesWithComments(
 		msg.ProtoReflect().Descriptor(),
 		comments,
 		pluginv1.File_flowstate_plugin_v1_plugin_proto,
 	)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(raw) > flowstatev1.DefaultMaxDescriptorBytes {
-		return nil, "", fmt.Errorf("the descriptor of %s is %d bytes, over the %d byte limit a host accepts; shorten its schema's comments or split the schema",
-			name, len(raw), flowstatev1.DefaultMaxDescriptorBytes)
-	}
-	return raw, name, nil
 }
 
 // handler builds the HTTP handler serving this plugin's services.

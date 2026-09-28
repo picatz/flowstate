@@ -140,12 +140,9 @@ const (
 	// manifest. Descriptors are attacker-chosen input that the host parses and
 	// links, so their size is bounded before any of that happens.
 	//
-	// Defined in flowstatev1 rather than here, because the *writing* side needs
-	// the same number: the plugin SDK bounds the descriptors it is about to
-	// send, comments included, with this, so one too large for a host to accept
-	// is refused at the plugin's startup — where its author sees it — rather
-	// than refused later (#874 review). One bound, read by both sides, cannot
-	// come to mean two different sizes.
+	// Defined in flowstatev1 rather than here, in the package both sides of
+	// the plugin boundary import, so one bound cannot come to mean two
+	// different sizes (#874 review).
 	DefaultMaxDescriptorBytes = flowstatev1.DefaultMaxDescriptorBytes
 
 	// DefaultMaxDescriptorFiles bounds how many files one descriptor may carry

@@ -28,12 +28,10 @@ import (
 // The bounds on a serialized descriptor, in the package both sides of the
 // plugin boundary import.
 //
-// They are the numbers [github.com/picatz/flowstate/pkg/flowstate/v1/plugin]'s
-// Config applies to a descriptor arriving from a plugin, defined here so the
-// side that *writes* one bounds it with the same value: a plugin whose
-// descriptor, comments included, is too large for a host to accept is refused
-// at its own startup rather than at the host. A second pair of constants would
-// be one bound wearing two numbers.
+// They are the defaults [github.com/picatz/flowstate/pkg/flowstate/v1/plugin]'s
+// Config applies to a descriptor arriving from a plugin, defined here, in the
+// package both sides import, so there is one pair of numbers rather than two
+// that could come to disagree.
 const (
 	// DefaultMaxDescriptorBytes bounds one serialized descriptor.
 	DefaultMaxDescriptorBytes = 1 << 20 // 1 MiB

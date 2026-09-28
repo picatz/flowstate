@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,27 +78,6 @@ func TestGeneratedProseTravelsInTheTaskDescriptor(t *testing.T) {
 		commentOn(t, task.GetInputDescriptor(), "GreetInputs", "name"))
 	assert.Equal(t, " Message is the assembled greeting.\n",
 		commentOn(t, task.GetOutputDescriptor(), "GreetOutputs", "message"))
-}
-
-// TestCommentsThatOutgrowTheHostBoundFailAtStartup is the bound applied where
-// the bytes are produced: comments are text an author can grow without limit,
-// and a descriptor too large for a host to accept is refused at this plugin's
-// own startup, naming the message, rather than as an opaque refusal later.
-func TestCommentsThatOutgrowTheHostBoundFailAtStartup(t *testing.T) {
-	t.Parallel()
-
-	path := (&examplev1.GreetInputs{}).ProtoReflect().Descriptor().ParentFile().Path()
-	huge := strings.Repeat(" This sentence is long.\n", flowstatev1.DefaultMaxDescriptorBytes/20)
-	comments := func(name protoreflect.FullName) (string, string, bool) {
-		if name == "example.v1.GreetInputs.name" {
-			return huge, path, true
-		}
-		return "", "", false
-	}
-
-	_, err := exampleTask().manifest(comments)
-	require.ErrorContains(t, err, "example.v1.GreetInputs")
-	require.ErrorContains(t, err, "byte limit")
 }
 
 // TestATaskWithNoProseShipsWhatItAlwaysDid is the fallback, which is the
