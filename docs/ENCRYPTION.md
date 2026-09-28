@@ -145,6 +145,11 @@ flow codec keygen --out /etc/flowstate/payload-keys/default-2026-09.key
 The key is 32 random bytes, base64 on one line, written at mode 0600. Nothing
 of it is printed. `keygen` refuses to overwrite a file.
 
+A keyring refuses to load a key file, or an escrow private key, that anyone
+but its owner can read, or that is owned by any account other than the one
+Flowstate runs as or root. Mode 0600 on a file another account owns protects
+nothing: that account could have written its own key there.
+
 Keep a backup of every local key somewhere at least as protected as the key
 itself, or configure an [escrow key](#escrow-and-recovery). **A lost key is
 lost history**: nothing can decrypt what it sealed, except through escrow.

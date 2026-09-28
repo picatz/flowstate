@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,4 +32,25 @@ func TestAKeyFileIsCheckedAsTheFileItReads(t *testing.T) {
 
 	_, err = readBounded(path, MaxKeyFileBytes, func(info fs.FileInfo) error { return checkKeyFileMode(path, info) })
 	require.ErrorContains(t, err, "accessible by its owner only", "the planted file's own mode was not checked")
+}
+
+// TestAKeyFileOwnedByAnotherAccountIsRefused: mode 0600 protects a key only
+// from accounts other than its owner, so a key another account owns, and
+// could have planted, is refused whatever its mode.
+func TestAKeyFileOwnedByAnotherAccountIsRefused(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" || os.Geteuid() != 0 {
+		t.Skip("changing a file's owner needs root on a Unix system")
+	}
+
+	path := filepath.Join(t.TempDir(), "planted.key")
+	require.NoError(t, os.WriteFile(path, []byte("planted"), 0o600))
+	require.NoError(t, os.Chown(path, 65534, 65534))
+
+	_, err := readBounded(path, MaxKeyFileBytes, func(info fs.FileInfo) error { return checkKeyFileMode(path, info) })
+	require.ErrorContains(t, err, "owned by uid 65534")
+
+	require.NoError(t, os.Chown(path, 0, 0))
+	_, err = readBounded(path, MaxKeyFileBytes, func(info fs.FileInfo) error { return checkKeyFileMode(path, info) })
+	require.NoError(t, err, "a key root owns is one the platform mounted")
 }
