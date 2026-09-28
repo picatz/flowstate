@@ -788,8 +788,8 @@ duration folded in — nodes styled by outcome, the form worth having for a
 post-mortem: "show me the shape of this workflow, coloured by how the failed run
 actually went." This is blocked on the same run-telemetry schema 6.1 names
 (gap inventory slice 3) for the identical reason: a finished run's timeline
-records task activity only under a display label that cannot key a node, and
-the other nodes record no outcome; what 6.1 lists is what that slice adds. The flag and its rendering are designed now so the
+records task activity and wait timers only under a display label that cannot
+key a node, and the other nodes record no outcome; what 6.1 lists is what that slice adds. The flag and its rendering are designed now so the
 exporter slice does not have to be revisited when the telemetry lands; the flag
 itself does not ship until slice 3 does.
 
@@ -997,7 +997,10 @@ line. What is not: everything below.
 3. **The run-telemetry schema.** Status and duration are recorded today in
    `GetTimeline`'s event history for the activities task steps schedule and
    for the timers a `sleep:`, a `wait_until:`, or a signal wait's `timeout:`
-   starts (a started and a fired row, each timed), and those events name their
+   starts (a started row, and a fired row when it fires; a timer cancelled
+   because the signal arrived or the run was cancelled leaves only the
+   started row, and a `sleep:` or `wait_until:` whose moment has passed starts
+   none), and those events name their
    step by `TimelineEntry.step`, a display label that is elided past 256 bytes
    and empty on runs started before labels existed — not a node identity. An activity's outcome is not its step's
    terminal outcome either: a step that fails evaluating its `if:`, resolving
