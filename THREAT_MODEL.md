@@ -478,6 +478,68 @@ payloads too large for history — the seam they occupy landed; the codecs are #
 A.1 (design record #113, gap #271), not landed. `flow shred` and crypto-shredding,
 #353 A.2, not landed.
 
+### Debugger to run
+
+**Today.** A durable run is debuggable only by a caller its workflow's `debug:`
+policy names; without the block nobody may hold, step or inspect it, including
+its starter (`pkg/flowstate/v1/debuglease.go`). Authority is split in two
+actions (`proto/flowstate/v1/authorization.proto`): `workload.debug` attaches,
+reads, resumes and sets breakpoints; `workload.debug_inspect` evaluates CEL
+against the held scope. A breakpoint condition or log message is evaluation too
+— whether the run stopped answers one bit of whatever the expression reads — so
+a set carrying one needs the inspect action as well
+(`pkg/flowstate/v1/server/debug.go`). The run, not the server, decides
+everything after that: a command is applied only for the session's attested
+holder, a resume only at the revision the caller last saw, and inspection only
+while the run is held at the revision named. The server holds no session state.
+
+The reserved channel has no side door. The typed RPCs deliver on
+`flowstate_debug`; a raw `Signal` onto it needs `workload.debug` beside
+`workload.signal`, and the inspect action when it carries a condition, and
+`SignalWithStart` refuses every `flowstate_` name (`pkg/flowstate/v1/server/lifecycle.go`).
+Every debug decision, allowed or denied, is an audit record naming the session,
+request id, revision and operation (`AuditDebugDetail` in
+`proto/flowstate/v1/audit.proto`); an inspection or a conditional breakpoint
+set is recorded by the digest of its expressions, never their text, because the
+text can be a guessed value.
+
+Inputs are bounded where the boundary can refuse them: a request id is at most
+128 bytes of `[A-Za-z0-9._:-]`, a session id 128 on the RPC and 256 in the run,
+a condition or inspected expression 64 KiB, a log message 16 KiB, a breakpoint
+set 1024 entries, an inspection page 500 children, a server-side wait 30 seconds
+(`proto/flowstate/v1/debug.proto`). The run bounds what it keeps for retries —
+64 receipts, each message cut to 1 KiB — because those cross Continue-As-New
+in its own state (`pkg/flowstate/v1/debugask.go`), and applies at most 64
+buffered asks per step boundary. An inspection runs under the evaluator's cost
+limit and a two-second wall-clock bound on the worker. A hold is a lease: two
+minutes by default, ten at most per ask, and ten for the whole session however
+often it is renewed, after which the run resumes on its own
+(`pkg/flowstate/v1/debuglease.go`). An abandoned debugger cannot park a run
+indefinitely.
+
+Durable history holds the debug protocol, not the run's secrets: the asks (session
+ids, request ids, breakpoint targets and their conditions and hit counts, as the
+caller wrote them), the receipts, and the attested holder's identity. Inspection
+is a query and writes nothing to history. A condition is the caller's own
+expression; `secret(...)` is compiled to a reference and is never a function a
+debugger can call, so no resolved secret reaches a condition, an answer, or
+history (invariant 7).
+
+**Limits.** Redaction in a debugger is a transcript control, not a
+confidentiality boundary. A durable inspection renders declared-`sensitive:`
+inputs as `[redacted]`, and a local session applies the case's or run's own
+redaction to everything it prints, but a predicate over a withheld value answers
+truthfully: `inputs.token == "guess"` is a yes or no about the real value. That
+is what `workload.debug_inspect` gates, and a deployment that must not disclose
+a run's values to an operator does not grant it. A condition's text is written
+to history in the ask that carries it, readable by whoever can read history. A
+hold stops workflow code only: activities, timers and called work already
+dispatched keep going, and so does the run's execution timeout. Local debugging
+(`flow run local --debug`, `flow test --debug`, a `flow dap` launch,
+`flowstate_debug` and `flowstate_debug_session_start`, `embed.Debug`) has no policy, lease or audit, because the run is
+the caller's own process; `flow run local --debug` and `flow dap` refuse a
+workflow with sensitive declarations unless the reveal is stated.
+
 ### Editor and agent tooling to workspace
 
 **Today.** Validation performs no I/O on the keystroke path; `CheckURL` resolves

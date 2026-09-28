@@ -1250,11 +1250,13 @@ debug:
         team: sre
 ```
 
-`debug:` has the same grammar as one `signals:` entry, and says who may hold a
-durable run at a step boundary, under a lease that expires on its own.
+`debug:` has the same grammar as one `signals:` entry, and says who may attach
+a debugger to a durable run — hold it at a step boundary, step it, and set
+breakpoints — under a lease that expires on its own. Evaluating expressions
+against it also needs the `workload.debug_inspect` action.
 **Without `debug:`, nobody can**, including the person who started the run.
 Local debugging needs no policy. See
-[Debugging](DEBUGGING.md#holding-a-durable-run).
+[Debugging](DEBUGGING.md#debugging-a-durable-run).
 
 ### Labels are not policy
 

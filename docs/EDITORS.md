@@ -554,8 +554,11 @@ Take the connection as confirmed and the squiggles as expected.
 ## Stepping a run: `flow dap`
 
 Everything above is `flow lsp`, which answers questions about a *file*. `flow dap`
-is the other half: it speaks the Debug Adapter Protocol, so an editor's step and
-continue buttons drive a real local run of the workflow you are looking at.
+is the other half: it speaks the Debug Adapter Protocol, so an editor's step,
+continue and pause buttons drive a run of the workflow you are looking at. A
+`launch` request starts a real local run; an `attach` request joins a durable run
+on a server. Both are the [debugger](DEBUGGING.md) the terminal drives, behind a
+different front.
 
 ```console
 $ flow dap
@@ -563,9 +566,10 @@ $ flow dap
 
 Run by hand it prints a banner saying so and waits — like `flow lsp`, it is meant
 to be launched by an editor rather than typed. For a terminal debugger, use
-`flow run local --debug`, which is the same session behind the same commands.
+`flow run local --debug` or `flow debug attach`, which are the same sessions
+behind the same commands.
 
-This *runs* the workflow, so it takes the same deployment policy flags the
+A launch *runs* the workflow, so it takes the same deployment policy flags the
 worker and `flow run local` take. Pass `--egress-policy` and `--task-policy` in
 the editor's adapter arguments whenever the worker being rehearsed uses them: a
 rehearsal under a different policy rehearses a different production, and this
@@ -587,31 +591,70 @@ must not choose which executable an editor launches. `flow dap` executes the
 debuggee, so it does not accept `--plugin-catalog`; catalog-only task definitions
 cannot execute.
 
-**Breakpoints are step ids, not source lines.** The debugger is handed steps and
-not files — the engine calls it with a node, and a node carries an `id` and no
-position — so there is nothing to hang a gutter dot on. Set them as *function*
-breakpoints named after a step. A line breakpoint is answered rather than
-ignored, unverified and carrying that reason, so an editor shows a hollow marker
-instead of a filled one you would wait at forever.
+An attach reaches a server with the adapter's own `--address`, `--token-file`
+(or `--credential-source`) and TLS flags, exactly as `flow debug attach` does, so
+the durable session is the adapter's caller's: the run's `debug:` policy must
+name that identity, and its token must carry `workload.debug`, and
+`workload.debug_inspect` to evaluate or set a conditional breakpoint.
 
-Two more consequences of the same seam: stack frames name the current step and
-every `call:` site that reached it, but cannot be navigated to; only the
-innermost frame has a readable scope because it is the one actually paused. A
-run is one thread even where a `parallel:` block is running several steps at
-once, and the debugger does not stop inside one.
+**What a launch reads.** `program`, the workflow to run; `revealSensitive`, the
+deliberate reveal [Debugging](DEBUGGING.md#sensitive-values) describes; and
+`stopOnEntry`, true unless set false, which holds the run at its first step.
+The run starts with no inputs and no signals, so a workflow with a required
+input that has no default cannot be launched this way today, and a
+`wait_for_signal:` step can only time out. Use `flow test --debug` on a test
+case, which supplies both, or `flow run local --debug` with `--input` and
+`--signal`.
 
-**What a launch can say.** A launch request reads `program` and
-`revealSensitive`, nothing else. The run starts with no inputs and no signals,
-so a workflow with a required input that has no default cannot be debugged
-through `flow dap` today, and a `wait_for_signal:` step can only time out. Use
-`flow test --debug` on a test case, which supplies both, or
-`flow run local --debug` with `--input` and `--signal`. `attach` is treated as
-`launch`: it starts a local run, and cannot attach to a durable one. The
-debugger inspects values but cannot change them.
+**What an attach reads.** `workflowId`, required; `runId`, the first run id of
+the chain to pin, unset to follow the current one; `sessionId`, to rejoin a
+session another client left attached; and `program`, the Flowfile the run was
+started from, used for lines only when it compiles to the program the run
+executes.
+
+**A refused launch is a failed launch.** When the adapter will not start a run —
+no `program`, a file that does not compile, a workflow whose sensitive-value
+declarations would need a reveal nobody stated — the `launch` response carries
+`success: false` and the reason, so the editor shows the error instead of a
+session that never stops:
+
+```text
+flowdap: the workflow declares sensitive inputs or outputs whose values the debugger would expose; add --reveal-sensitive to the adapter command or "revealSensitive": true to the launch configuration to debug it with values shown
+```
+
+An attach the server refuses — no `debug:` naming you, or a token without
+`workload.debug` — fails the same way, with the server's reason.
+
+### What the adapter does
+
+It advertises what the backend reports, and refuses the rest by name.
+
+| Request | Launch (local) | Attach (durable) |
+| --- | --- | --- |
+| `next` | steps over: a loop, parallel, switch or call runs whole | the same, at the boundaries a durable run holds |
+| `stepIn`, `stepOut` | into and out of loop iterations, parallel branches, switch arms and calls | into and out of calls |
+| `pause` | holds at the next step boundary; work already running finishes | the same |
+| Line breakpoints | resolved through the file's source map to the innermost step whose span holds the line | resolved the same way on the client when `program` matches; otherwise unverified, saying so |
+| Function breakpoints | a step id or an address, such as `orders/charge` or `checks#1/fraud` | the same |
+| Conditions and hit counts | yes | yes |
+| Logpoints | yes | not advertised |
+| Exception filters `uncaught`, `all` | stop where a step fails and the failure will propagate, or at every failure | not offered; the durable driver has no failure stops |
+| `terminate` | ends the run | never ends the run; disconnecting detaches |
+
+An attach sends a `capabilities` event as soon as it knows the backend, so an
+editor stops offering what a durable run does not do. A breakpoint set before
+the run exists is answered unverified — `pending until the program is launched
+or attached` — and re-sent, with a `breakpoint` event for each, once it does.
+
+A run is one thread even where a `parallel:` block is running: a stop inside a
+branch is shown as a frame for that branch, not as a second thread. Frames run
+innermost first — the step, then each iteration, branch, arm or call around it —
+and navigate to the line a verified source map names. Only the innermost frame
+has a readable scope, because it is the one actually held.
 
 ### Visual Studio Code
 
-Add to `.vscode/launch.json`:
+Two configurations in `.vscode/launch.json`, one per request:
 
 ```json
 {
@@ -621,19 +664,34 @@ Add to `.vscode/launch.json`:
       "type": "flowstate",
       "request": "launch",
       "name": "Debug this Flowfile",
-      "program": "${workspaceFolder}/examples/hello-world/workflow.yaml"
+      "program": "${workspaceFolder}/examples/debugging/workflow.yaml",
+      "stopOnEntry": true
+    },
+    {
+      "type": "flowstate",
+      "request": "attach",
+      "name": "Attach to a durable run",
+      "workflowId": "${input:workflowId}",
+      "program": "${workspaceFolder}/examples/debugging/workflow.yaml"
     }
+  ],
+  "inputs": [
+    { "id": "workflowId", "type": "promptString", "description": "Workflow id of the run to attach to" }
   ]
 }
 ```
 
-`program` is the workflow to run, and it is read from the launch configuration
-rather than from the adapter's own arguments — one `flow dap` serves whatever you
-point it at. Registering the `flowstate` debug type needs an extension
+`program` is read from the configuration rather than from the adapter's own
+arguments — one `flow dap` serves whatever you point it at. The attach reaches
+whichever server the adapter was started against, so the debug type's adapter
+command carries `--address` and `--token-file` beside `dap`. Registering the
+`flowstate` debug type, and with it that command, needs an extension
 contribution; `editors/vscode/` does not ship one yet.
 
-Function breakpoints go in the Breakpoints view's own section — the **+** beside
-*Function Breakpoints* — typed as a step's `id`.
+Line breakpoints are gutter dots as usual. Function breakpoints go in the
+Breakpoints view's own section — the **+** beside *Function Breakpoints* —
+typed as a step id or an address. The *Failed steps* and *All step failures*
+checkboxes there are the two exception filters.
 
 ### Helix
 
@@ -661,20 +719,22 @@ has something to open.
 ### What the debug console can do
 
 The `evaluate` request is wired to the same CEL evaluator the terminal debugger's
-`inspect` uses, against the scope the run is actually paused in — so the debug
-console is a REPL over the paused run:
+`inspect` uses, against the scope the run is actually held in — so the debug
+console is a REPL over the held run, and hovering a name evaluates it:
 
 ```text
-> steps.build.value
-"web.tar.gz"
-> steps.build.value.endsWith('.tar.gz')
+> steps.flagged.value
+[900]
+> steps.flagged.value.exists(a, a > 500)
 true
 ```
 
-The variables pane is the same scope, grouped as `scope` groups it: `steps`,
-`vars`, `inputs`, the workflow's declared vars, `run` and `trigger`. A very large
-scope is rendered up to a bound and then says how many it did not render, rather
-than stopping silently.
+A map or list answers with a reference the variables pane expands, a page at a
+time. The pane is the same scope, grouped as `scope` groups it: `steps`, `vars`,
+`inputs`, a loop's binding, `run` and `trigger`. A very large scope is rendered
+up to a bound and then says how many it did not render, rather than stopping
+silently. Against a durable run, evaluation is `DebugInspect`: it needs
+`workload.debug_inspect`, only answers while the run is held, and is audited.
 
 Secrets are withheld here exactly as they are at the terminal prompt. The
 redaction is a property of the session rather than of the front end, so a value a
@@ -799,9 +859,11 @@ protocol to it over real `Content-Length` framing — initialize, launch, a
 function breakpoint on a step id, `configurationDone`, continue, the stopped
 event, a stack frame naming the step, an `evaluate` reading an earlier step's
 output, and the variables pane — so the conversation is checked on every pull
-request the way the Neovim job checks `flow lsp`. What is *not* checked is the
-half above that is a settings key: neither the `launch.json` nor the Helix
-`[language.debugger]` stanza has been loaded by the editor it is written for.
+request the way the Neovim job checks `flow lsp`. The attach half is checked in
+process against a fake durable target (`pkg/flowstate/v1/flowdap/rich_test.go`),
+not against a server. What is *not* checked is the half above that is a
+settings key: neither the `launch.json` nor the Helix `[language.debugger]`
+stanza has been loaded by the editor it is written for.
 
 **Not verified inside a real editor:** Visual Studio Code and Zed. Both are GUI
 applications with no headless mode worth scripting. The VS Code extension under

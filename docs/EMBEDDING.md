@@ -232,6 +232,66 @@ time moved, which stub answered it, scripted signals with their sender, the
 `switch:` arm taken — through the subtest's own log, so `go test` shows it
 exactly when the CLI would: on a failing case, and under `-v` for every case.
 
+## Debugging an embedded run
+
+`embed.Debug` starts a workflow under the step [debugger](DEBUGGING.md), in
+this process, with the same registry, egress, secret and clock rules
+`RunLocal` applies — no listener, no CLI, and nothing serialized. It returns
+once the run is under way. The `*embed.Debugging` it returns is the same local
+session `flow run local --debug`, `flow dap` and the MCP sessions drive, so a
+snapshot, a breakpoint state or an inspection means here what it means there:
+
+```go
+debugging, err := embed.Debug(ctx, workflow, embed.DebugOptions{
+	RunOptions:  embed.RunOptions{Tasks: tasks},
+	Continue:    true, // run until something stops it; false holds at the first step
+	Breakpoints: []*v1.DebugBreakpoint{{Step: "orders/charge", Condition: "amount > 500"}},
+})
+if err != nil {
+	return err // a breakpoint that does not resolve or compile is refused here
+}
+
+held, _ := debugging.WaitSnapshot(ctx, 0) // loop until the state is HELD
+answer, _ := debugging.Inspect(ctx, &v1.DebugInspectRequest{
+	Revision: held.GetRevision(), Expression: "amount * 2",
+})
+next, _ := debugging.Driver().Do(ctx, "next") // or Resume with a typed action
+
+_ = debugging.Close() // detach: breakpoints stop holding, the run finishes
+outputs, err := debugging.Wait(ctx)
+```
+
+`Debugging` embeds the session, so `Snapshot`, `WaitSnapshot`, `Resume`,
+`Pause`, `ReplaceBreakpoints` and `Inspect` are the typed contract, and
+`Driver()` takes the debugger's command lines — `next`, `break charge if amount
+> 500`, `inspect steps.fetch` — for a program that would rather speak those.
+`Wait` returns what `RunLocal` would have; a run held at a stop does not finish
+until something moves it or `Close` detaches. `Cancel`, or cancelling `ctx`,
+ends the run. `DebugOptions.Output` receives the session's narration, and
+`SourceMap` relates steps to lines when a program has one.
+
+A custom task is opaque to a debugger: the run stops before it and after it,
+and nothing in between. `v1.NoteTask` is how its author says what happened in
+between:
+
+```go
+Fn: func(ctx context.Context, inputs map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
+	amount := inputs["amount"].GetLiteral().GetInt64Value()
+	v1.NoteTask(ctx, fmt.Sprintf("authorizing %d", amount))
+	// ...
+}
+```
+
+A note reaches the session as an observation (`charge: authorizing 900`) and
+its `Output`, and is a no-op when nobody is debugging. It is presentation, not
+data: it never enters the step's outputs or the run's history, it is cut to 1
+KiB, and it is rendered through the session's redaction — which is a transcript
+control, not a boundary, so a task must not write a secret into one. Notes are
+local-only; a durable run does not carry them.
+
+`Example_debug` in `pkg/flowstate/embed/debug_example_test.go` is the whole
+program, run as a test.
+
 ## What is not curated here
 
 - **`call:` across embedder files.** Compiling from bytes has no directory to

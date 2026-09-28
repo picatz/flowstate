@@ -35,14 +35,15 @@ func newDAPCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dap",
 		Short: "Debug a workflow from an editor, over the Debug Adapter Protocol",
-		Long: "Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step and " +
-			"continue buttons drive a real local run.\n\n" +
-			"The workflow to run comes from the client's launch configuration, as `program`, " +
-			"so one adapter serves whatever the editor points it at.\n\n" +
-			"Breakpoints are step ids rather than source lines. The debugger is handed steps " +
-			"and not files, so there is no line to break on — set them as *function* " +
-			"breakpoints named after a step. A line breakpoint is answered, unverified, " +
-			"saying so.",
+		Long: "Speak the Debug Adapter Protocol on stdin and stdout, so an editor's step, " +
+			"continue and pause buttons drive a real local run, or a durable one.\n\n" +
+			"A `launch` request runs the workflow its configuration names as `program`, so " +
+			"one adapter serves whatever the editor points it at. An `attach` request names " +
+			"a durable run's `workflowId` and reaches it through the server flags below, as " +
+			"their identity; the run's `debug:` policy must allow it.\n\n" +
+			"Line breakpoints resolve to the innermost step written at that line. Function " +
+			"breakpoints name a step id or an address such as `orders/charge`. A breakpoint " +
+			"that resolves to nothing is answered unverified, saying why.",
 		Args: cobra.NoArgs,
 		RunE: runDAP,
 		Example: `# What an editor's launch configuration runs, rather than a person:
