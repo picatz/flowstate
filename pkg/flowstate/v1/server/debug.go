@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -416,7 +417,7 @@ func (s *FlowstateServer) DebugAttach(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	return connect.NewResponse(&v1.DebugAttachResponse{Receipt: receipt, Snapshot: snapshot, SessionId: session}), nil
+	return connect.NewResponse(&v1.DebugAttachResponse{Receipt: receipt, Snapshot: expressionsFor(ctx, snapshot), SessionId: session}), nil
 }
 
 // DebugGet reads a durable run's debug state, optionally waiting for a
@@ -442,7 +443,7 @@ func (s *FlowstateServer) DebugGet(ctx context.Context, req *connect.Request[v1.
 			return nil, run.readError(ctx, err)
 		}
 		if snapshot.GetRevision() > req.Msg.GetAfterRevision() || deadline.IsZero() || time.Now().After(deadline) || !run.open() {
-			return connect.NewResponse(&v1.DebugGetResponse{Snapshot: snapshot}), nil
+			return connect.NewResponse(&v1.DebugGetResponse{Snapshot: expressionsFor(ctx, snapshot)}), nil
 		}
 		if err := sleepCtx(ctx, debugPollEvery); err != nil {
 			return nil, err
@@ -483,7 +484,7 @@ func (s *FlowstateServer) DebugResume(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	return connect.NewResponse(&v1.DebugResumeResponse{Receipt: receipt, Snapshot: snapshot}), nil
+	return connect.NewResponse(&v1.DebugResumeResponse{Receipt: receipt, Snapshot: expressionsFor(ctx, snapshot)}), nil
 }
 
 // DebugSetBreakpoints replaces a durable session's breakpoints.
@@ -516,6 +517,8 @@ func (s *FlowstateServer) DebugSetBreakpoints(ctx context.Context, req *connect.
 	if err != nil {
 		return nil, err
 	}
+
+	snapshot = expressionsFor(ctx, snapshot)
 
 	return connect.NewResponse(&v1.DebugSetBreakpointsResponse{
 		Receipt:     receipt,
@@ -635,6 +638,40 @@ func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowI
 	refusal.Meta().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, scope))
 
 	return s.auditDebugDeny(ctx, rpc, workflowID, detail, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, refusal)
+}
+
+// expressionsFor is snapshot as the caller may read it. Setting a breakpoint's
+// condition or log message needs `workload.debug_inspect`, so reading one back
+// does too: for a caller whose action list lacks it, every breakpoint that
+// carries one is reported without its definition — as a target too old to
+// report definitions would, so a client that would resend the set refuses
+// rather than drop the expression — and without its message, which for a
+// condition that did not compile can quote it. A caller with no action list
+// keeps the legacy posture [FlowstateServer.requireDebugAction] documents.
+func expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSnapshot {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok || principal.Actions == nil ||
+		slices.Contains(principal.Actions, v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT)) {
+		return snapshot
+	}
+	carries := func(state *v1.DebugBreakpointState) bool {
+		definition := state.GetDefinition()
+		return strings.TrimSpace(definition.GetCondition()) != "" || strings.TrimSpace(definition.GetLogMessage()) != ""
+	}
+	if !slices.ContainsFunc(snapshot.GetBreakpoints(), carries) {
+		return snapshot
+	}
+
+	withheld := proto.CloneOf(snapshot)
+	for _, state := range withheld.GetBreakpoints() {
+		if carries(state) {
+			state.Definition = nil
+			state.Message = "its condition or log message needs " +
+				v1.AuthorizationActionScope(v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT) + " to read"
+		}
+	}
+
+	return withheld
 }
 
 // debugConditionsDigest is the digest of every expression a breakpoint set
