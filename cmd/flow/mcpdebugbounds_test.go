@@ -317,3 +317,33 @@ func TestAReadTranscriptFreesItsRoom(t *testing.T) {
 	}
 	assert.Empty(t, transcript.note(), "fragments were dropped though every one was read")
 }
+
+// TestAnEndCancelsACommandInFlight: a command waiting for the run's next stop
+// can wait maxDebugSessionWait. Ending the session cancels it rather than
+// waiting it out, so an end stays within its own bound.
+func TestAnEndCancelsACommandInFlight(t *testing.T) {
+	t.Parallel()
+
+	r := newDebugSessions(nil)
+	target := newStepTarget(false) // a move runs until arrive, which never comes
+	entry := addStepSession(t, r, target)
+
+	answered := make(chan *mcp.CallToolResult)
+	go func() {
+		result, _ := r.command(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id, "command": "next"}))
+		answered <- result
+	}()
+	require.Eventually(t, func() bool {
+		target.mu.Lock()
+		defer target.mu.Unlock()
+
+		return target.moves == 1
+	}, 5*time.Second, time.Millisecond, "the command never reached the target")
+
+	start := time.Now()
+	result, err := r.end(t.Context(), toolRequest(t, map[string]any{"session_id": entry.id}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, replyOf(t, result).raw)
+	assert.Less(t, time.Since(start), 2*debugSessionEndSettle, "the end waited out the command's wait")
+	assert.True(t, (<-answered).IsError, "the cancelled command answered as though it had stopped")
+}

@@ -891,7 +891,7 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 
 		return noSiteMatches(id), true
 	}
-	qualified := strings.ContainsRune(id, '/')
+	address, qualified := id, strings.ContainsRune(id, '/')
 	id = target.Step()
 
 	// Built once at construction ([declaredStepIDs]); this is a lookup rather
@@ -916,8 +916,10 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	// inventory said, so it is admitted — but it never *makes* an inventory:
 	// what has run so far is not what the workflow declares, and reading it
 	// that way would refuse every step the run has not reached yet, which on
-	// an empty inventory is all of them.
-	if !known {
+	// an empty inventory is all of them. A program answers for itself: every
+	// id it has run is one it declares, so the fallback could only admit a
+	// qualified target the program has already refused.
+	if !known && program == nil {
 		_, known = s.seen[id]
 	}
 	s.mu.Unlock()
@@ -925,6 +927,11 @@ func (s *Session) unknownStepNotice(id string) (string, bool) {
 	names := s.declared
 	if known || (len(names) == 0 && inProgram == nil) {
 		return "", false
+	}
+	if qualified && program != nil {
+		// The step is declared; the containers the address names are not
+		// around it, and a notice about the bare step would say otherwise.
+		return noSiteMatches(address), true
 	}
 	if len(names) == 0 {
 		return fmt.Sprintf("no step named %q is declared by this workflow or a workflow it calls", id), true

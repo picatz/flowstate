@@ -46,6 +46,15 @@ func TestATruncatedProgramRefusesAStepItNeverDeclares(t *testing.T) {
 	assert.Contains(t, notice, `"lsat"`)
 	_, unknown = session.unknownStepNotice("call3/s7")
 	assert.False(t, unknown, "a callee's step under the call that declares it was refused")
-	_, unknown = session.unknownStepNotice("bogus/last")
+	notice, unknown = session.unknownStepNotice("bogus/last")
 	assert.True(t, unknown, "a declared step under a container the program does not have was accepted")
+	assert.Contains(t, notice, "bogus/last", "the refusal named the bare step, which is declared")
+
+	// A step the run has gone past is still judged by the program: having
+	// run `last` does not make `bogus/last` a place it can stop.
+	session.mu.Lock()
+	session.seen["last"] = StepDone
+	session.mu.Unlock()
+	_, unknown = session.unknownStepNotice("bogus/last")
+	assert.True(t, unknown, "a qualified target was admitted because its step had run")
 }

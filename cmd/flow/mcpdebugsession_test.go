@@ -366,6 +366,14 @@ func TestAnAnswerReadsTheTranscriptNoteUnderItsLock(t *testing.T) {
 		_ = entry.transcript.note()
 	}
 	wg.Wait()
+
+	// Answers free what they carry, so how many of the writes above were
+	// dropped depends on how the two interleaved. An overflow no answer
+	// reads in between is dropped whatever the schedule, and the note —
+	// read under the lock — says so.
+	for range maxDebugFragments + 1 {
+		entry.transcript.add("x", flowdebug.ToneInfo)
+	}
 	answer, err := entry.answer(t.Context())
 	require.NoError(t, err)
 	assert.Contains(t, answer.Note, "were dropped")

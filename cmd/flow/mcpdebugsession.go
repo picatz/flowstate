@@ -94,6 +94,10 @@ type debugSessionEntry struct {
 	order    []string
 	// receiptBytes is what receipts holds, for [maxSessionReceiptBytes].
 	receiptBytes int
+	// stopCall cancels the command in flight, if any, so retiring the
+	// session ends it at once rather than leaving the end to wait out its
+	// wait for the next stop.
+	stopCall context.CancelFunc
 
 	transcript *lockedTranscript
 
@@ -210,6 +214,11 @@ func (r *debugSessions) retireLocked(id string) *debugSessionEntry {
 	}
 	r.forgetLocked(id)
 	entry.retired.Store(true)
+	entry.mu.Lock()
+	if entry.stopCall != nil {
+		entry.stopCall()
+	}
+	entry.mu.Unlock()
 	entry.released = make(chan struct{})
 	r.ending[id] = entry
 
@@ -962,6 +971,20 @@ func (r *debugSessions) command(ctx context.Context, req *mcp.CallToolRequest) (
 	}
 	entry.calls.Lock()
 	defer entry.calls.Unlock()
+
+	// Registered before retired is read, so a retirement either is seen here
+	// or cancels the call: the end that follows it waits for calls, and never
+	// for more than a cancelled call takes to return.
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	entry.mu.Lock()
+	entry.stopCall = stop
+	entry.mu.Unlock()
+	defer func() {
+		entry.mu.Lock()
+		entry.stopCall = nil
+		entry.mu.Unlock()
+	}()
 	if entry.retired.Load() {
 		return flowmcp.ToolError(errNoDebugSession(entry.id)), nil
 	}
